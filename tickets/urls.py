@@ -4,6 +4,9 @@ from . import views
 app_name = 'tickets'
 
 urlpatterns = [
+    # Health check endpoint
+    path('health/', views.health_check, name='health_check'),
+    
     # Home/Dashboard
     path('', views.home, name='home'),
     

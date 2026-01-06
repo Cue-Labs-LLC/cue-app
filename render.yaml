@@ -1,0 +1,35 @@
+services:
+  # Web service
+  - type: web
+    name: ltv-updater
+    runtime: python
+    plan: starter
+    buildCommand: pip install -r requirements.txt && python manage.py collectstatic --noinput
+    startCommand: gunicorn ltv_updater.wsgi:application
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.0
+      - key: SECRET_KEY
+        generateValue: true
+      - key: DEBUG
+        value: False
+      - key: ALLOWED_HOSTS
+        sync: false
+      - key: AWS_ACCESS_KEY_ID
+        sync: false
+      - key: AWS_SECRET_ACCESS_KEY
+        sync: false
+      - key: AWS_STORAGE_BUCKET_NAME
+        sync: false
+      - key: AWS_S3_REGION_NAME
+        value: us-east-1
+      - key: AWS_S3_CUSTOM_DOMAIN
+        sync: false
+    healthCheckPath: /health/
+
+  # PostgreSQL database
+  - type: pspg
+    name: ltv-updater-db
+    plan: starter
+    databaseName: ltv_updater
+    user: ltv_updater_user

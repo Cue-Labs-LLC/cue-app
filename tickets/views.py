@@ -5,8 +5,9 @@ from django.shortcuts import render, redirect, get_object_or_404
 from django.contrib import messages
 from django.db.models import Sum, Count, Avg
 from django.core.paginator import Paginator
-from django.http import JsonResponse, Http404
+from django.http import JsonResponse, Http404, HttpResponse
 from django.views.decorators.http import require_http_methods
+from django.db import connection
 import pandas as pd
 
 from .models import (
@@ -14,6 +15,17 @@ from .models import (
 )
 from .forms import CSVUploadForm, TicketPriceEntryForm, CSVFormatForm, VenueForm
 from .services import CSVProcessor
+
+
+def health_check(request):
+    """Health check endpoint for Render monitoring."""
+    try:
+        # Check database connection
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT 1")
+        return HttpResponse("OK", status=200)
+    except Exception as e:
+        return HttpResponse(f"Database connection failed: {str(e)}", status=503)
 
 
 def home(request):

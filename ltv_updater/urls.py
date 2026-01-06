@@ -24,7 +24,10 @@ urlpatterns = [
     path('', include('tickets.urls')),
 ]
 
-# Serve media files in development
+# Serve media files in development only
+# In production, static files are served by WhiteNoise
+# Media files are served from S3 (if configured) or not served directly
 if settings.DEBUG:
     urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
+    # Static files in development
     urlpatterns += static(settings.STATIC_URL, document_root=settings.STATIC_ROOT)
