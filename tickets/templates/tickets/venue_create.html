@@ -1,0 +1,48 @@
+{% extends 'tickets/base.html' %}
+{% load crispy_forms_tags %}
+
+{% block title %}Create Venue - Event Ticket Order Upload System{% endblock %}
+
+{% block content %}
+<div class="row mb-4">
+    <div class="col">
+        <h1><i class="bi bi-geo-alt"></i> Create Venue</h1>
+        <p class="text-muted">Add a new venue to the system.</p>
+    </div>
+</div>
+
+<div class="row">
+    <div class="col-md-8">
+        <div class="card">
+            <div class="card-body">
+                {% crispy form %}
+            </div>
+        </div>
+        
+        <div class="mt-3">
+            <a href="{% url 'tickets:upload_csv' %}" class="btn btn-outline-secondary">
+                <i class="bi bi-arrow-left"></i> Back to Upload
+            </a>
+        </div>
+    </div>
+    <div class="col-md-4">
+        <div class="card">
+            <div class="card-header">
+                <h5 class="mb-0"><i class="bi bi-info-circle"></i> Venue Information</h5>
+            </div>
+            <div class="card-body">
+                <p class="small text-muted">
+                    <strong>Venue Name:</strong> Enter the name of the venue (e.g., "The Fillmore", "Madison Square Garden").
+                </p>
+                <p class="small text-muted">
+                    <strong>City:</strong> Enter the city where the venue is located (e.g., "San Francisco", "New York").
+                </p>
+                <hr>
+                <p class="small text-muted mb-0">
+                    <strong>Note:</strong> Each venue must have a unique combination of name and city. After creating a venue, you can select it when uploading CSV files.
+                </p>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

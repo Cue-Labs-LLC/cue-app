@@ -1,0 +1,291 @@
+{% extends 'tickets/base.html' %}
+{% load crispy_forms_tags %}
+
+{% block title %}{% if uses_tiers %}Enter Ticket Tiers{% else %}Enter Ticket Prices{% endif %} - Event Ticket Order Upload System{% endblock %}
+
+{% block content %}
+<div class="row mb-4">
+    <div class="col">
+        <h1><i class="bi bi-currency-dollar"></i> {% if uses_tiers %}Enter Ticket Tiers{% else %}Enter Ticket Prices{% endif %}</h1>
+        <p class="text-muted">
+            {% if uses_tiers %}
+                The selected CSV format uses tier-based pricing. Please define pricing tiers with allotments for each ticket type found in the file.
+            {% else %}
+                The selected CSV format requires manual price entry. Please enter prices for each ticket type found in the file.
+            {% endif %}
+        </p>
+    </div>
+</div>
+
+<div class="row mb-4">
+    <div class="col-md-8">
+        <div class="card">
+            <div class="card-header">
+                <h5 class="mb-0">Ticket Types Found in CSV</h5>
+            </div>
+            <div class="card-body">
+                <div class="table-responsive">
+                    <table class="table">
+                        <thead>
+                            <tr>
+                                <th>Ticket Type</th>
+                                <th>Quantity</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for ticket_type, count in ticket_type_counts.items %}
+                                <tr>
+                                    <td><strong>{{ ticket_type }}</strong></td>
+                                    <td>{{ count }} ticket{{ count|pluralize }}</td>
+                                </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+{% if uses_tiers %}
+    {# Tier Entry Mode #}
+    <div class="row">
+        <div class="col-md-8">
+            <div class="card">
+                <div class="card-header">
+                    <h5 class="mb-0">Define Pricing Tiers</h5>
+                </div>
+                <div class="card-body">
+                    <form method="post" id="tier-form">
+                        {% csrf_token %}
+                        {% for ticket_type, count in ticket_type_counts.items %}
+                            <div class="ticket-type-section mb-4" data-ticket-type="{{ ticket_type }}">
+                                <h5 class="mb-3">{{ ticket_type }} <span class="badge bg-secondary">{{ count }} tickets</span></h5>
+                                {# Hidden field to store original ticket type for form submission #}
+                                <input type="hidden" name="ticket_type_{{ forloop.counter0 }}" value="{{ ticket_type }}">
+                                <div class="tiers-container" id="tiers-{{ ticket_type|slugify }}">
+                                    {# Tiers will be added here by JavaScript #}
+                                </div>
+                                <button type="button" class="btn btn-sm btn-outline-primary add-tier-btn" data-ticket-type="{{ ticket_type }}">
+                                    <i class="bi bi-plus-circle"></i> Add Tier
+                                </button>
+                                <div class="mt-2">
+                                    <small class="text-muted">Total Allotment: <span class="total-allotment" id="total-{{ ticket_type|slugify }}">0</span></small>
+                                </div>
+                            </div>
+                            <hr>
+                        {% endfor %}
+                        <button type="submit" class="btn btn-primary">
+                            <i class="bi bi-check-circle"></i> Process with Tiers
+                        </button>
+                    </form>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-4">
+            <div class="card">
+                <div class="card-header">
+                    <h5 class="mb-0"><i class="bi bi-info-circle"></i> Information</h5>
+                </div>
+                <div class="card-body">
+                    <p><strong>File:</strong> {{ uploaded_file.filename }}</p>
+                    <p><strong>Format:</strong> {{ uploaded_file.csv_format.name }}</p>
+                    <p class="text-muted small">
+                        Orders will be assigned to tiers based on order date (first-come-first-served) until tier allotments are filled.
+                    </p>
+                </div>
+            </div>
+            
+            <div class="mt-3">
+                <a href="{% url 'tickets:upload_csv' %}" class="btn btn-outline-secondary">
+                    <i class="bi bi-arrow-left"></i> Back to Upload
+                </a>
+            </div>
+        </div>
+    </div>
+
+    {# Tier Row Template (hidden, used by JavaScript) #}
+    <template id="tier-row-template">
+        <div class="tier-row card mb-2">
+            <div class="card-body">
+                <div class="row g-3">
+                    <div class="col-md-3">
+                        <label class="form-label">Tier Name</label>
+                        <input type="text" class="form-control tier-name" placeholder="e.g., Early Bird" required>
+                    </div>
+                    <div class="col-md-2">
+                        <label class="form-label">Price</label>
+                        <input type="number" class="form-control tier-price" step="0.01" min="0" placeholder="0.00" required>
+                    </div>
+                    <div class="col-md-2">
+                        <label class="form-label">Allotment</label>
+                        <input type="number" class="form-control tier-allotment" min="1" placeholder="100" required>
+                    </div>
+                    <div class="col-md-2">
+                        <label class="form-label">Order</label>
+                        <input type="number" class="form-control tier-order" min="1" placeholder="1" required>
+                    </div>
+                    <div class="col-md-2">
+                        <label class="form-label">&nbsp;</label>
+                        <button type="button" class="btn btn-danger w-100 remove-tier-btn">
+                            <i class="bi bi-trash"></i> Remove
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </template>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            const tierRowTemplate = document.getElementById('tier-row-template');
+            let tierCounters = {};
+            
+            // Initialize tier counters
+            document.querySelectorAll('.ticket-type-section').forEach(section => {
+                const ticketType = section.dataset.ticketType;
+                tierCounters[ticketType] = 0;
+            });
+            
+            // Add tier button handler
+            document.querySelectorAll('.add-tier-btn').forEach(btn => {
+                btn.addEventListener('click', function() {
+                    const ticketType = this.dataset.ticketType;
+                    // Find container by traversing DOM from button instead of by ID
+                    const section = this.closest('.ticket-type-section');
+                    const container = section.querySelector('.tiers-container');
+                    
+                    if (!container) {
+                        console.error('Could not find tiers container for ticket type:', ticketType);
+                        return;
+                    }
+                    
+                    const newRow = tierRowTemplate.content.cloneNode(true);
+                    const tierIndex = tierCounters[ticketType]++;
+                    
+                    // Set field names - use ticket type index for reliable matching
+                    // Find the ticket type index from the hidden input field
+                    const ticketTypeInput = section.querySelector('input[name^="ticket_type_"]');
+                    const ticketTypeIndex = ticketTypeInput ? ticketTypeInput.name.replace('ticket_type_', '') : '';
+                    
+                    // Use format: tier_{ticket_type_index}_{tier_index}_{field}
+                    newRow.querySelector('.tier-name').name = `tier_${ticketTypeIndex}_${tierIndex}_name`;
+                    newRow.querySelector('.tier-price').name = `tier_${ticketTypeIndex}_${tierIndex}_price`;
+                    newRow.querySelector('.tier-allotment').name = `tier_${ticketTypeIndex}_${tierIndex}_allotment`;
+                    newRow.querySelector('.tier-order').name = `tier_${ticketTypeIndex}_${tierIndex}_order`;
+                    
+                    // Set default order value
+                    const orderInput = newRow.querySelector('.tier-order');
+                    orderInput.value = container.children.length + 1;
+                    
+                    // Remove button handler
+                    newRow.querySelector('.remove-tier-btn').addEventListener('click', function() {
+                        this.closest('.tier-row').remove();
+                        updateAllotmentTotal(section);
+                        renumberOrders(container);
+                    });
+                    
+                    // Update allotment total on change
+                    newRow.querySelector('.tier-allotment').addEventListener('input', function() {
+                        updateAllotmentTotal(section);
+                    });
+                    
+                    container.appendChild(newRow);
+                    updateAllotmentTotal(section);
+                });
+            });
+            
+            function updateAllotmentTotal(section) {
+                const container = section.querySelector('.tiers-container');
+                const totalSpan = section.querySelector('.total-allotment');
+                
+                if (!container || !totalSpan) {
+                    return;
+                }
+                
+                let total = 0;
+                container.querySelectorAll('.tier-allotment').forEach(input => {
+                    const value = parseInt(input.value) || 0;
+                    total += value;
+                });
+                
+                totalSpan.textContent = total;
+            }
+            
+            function renumberOrders(container) {
+                const orderInputs = container.querySelectorAll('.tier-order');
+                orderInputs.forEach((input, index) => {
+                    input.value = index + 1;
+                });
+            }
+            
+            // Form validation
+            document.getElementById('tier-form').addEventListener('submit', function(e) {
+                let isValid = true;
+                const errors = [];
+                
+                document.querySelectorAll('.ticket-type-section').forEach(section => {
+                    const ticketType = section.dataset.ticketType;
+                    const container = section.querySelector('.tiers-container');
+                    
+                    if (container.children.length === 0) {
+                        isValid = false;
+                        errors.push(`Please add at least one tier for "${ticketType}"`);
+                    }
+                    
+                    // Check for sequential order numbers
+                    const orders = Array.from(container.querySelectorAll('.tier-order'))
+                        .map(input => parseInt(input.value))
+                        .filter(val => !isNaN(val))
+                        .sort((a, b) => a - b);
+                    
+                    for (let i = 0; i < orders.length; i++) {
+                        if (orders[i] !== i + 1) {
+                            isValid = false;
+                            errors.push(`Tier orders for "${ticketType}" must be sequential (1, 2, 3, ...)`);
+                            break;
+                        }
+                    }
+                });
+                
+                if (!isValid) {
+                    e.preventDefault();
+                    alert('Please fix the following errors:\n\n' + errors.join('\n'));
+                }
+            });
+        });
+    </script>
+{% else %}
+    {# Simple Price Entry Mode #}
+    <div class="row">
+        <div class="col-md-8">
+            <div class="card">
+                <div class="card-header">
+                    <h5 class="mb-0">Enter Prices</h5>
+                </div>
+                <div class="card-body">
+                    {% crispy form %}
+                </div>
+            </div>
+        </div>
+        <div class="col-md-4">
+            <div class="card">
+                <div class="card-header">
+                    <h5 class="mb-0"><i class="bi bi-info-circle"></i> Information</h5>
+                </div>
+                <div class="card-body">
+                    <p><strong>File:</strong> {{ uploaded_file.filename }}</p>
+                    <p><strong>Format:</strong> {{ uploaded_file.csv_format.name }}</p>
+                    <p class="text-muted small">Order totals will be calculated automatically based on ticket prices and quantities.</p>
+                </div>
+            </div>
+            
+            <div class="mt-3">
+                <a href="{% url 'tickets:upload_csv' %}" class="btn btn-outline-secondary">
+                    <i class="bi bi-arrow-left"></i> Back to Upload
+                </a>
+            </div>
+        </div>
+    </div>
+{% endif %}
+{% endblock %}

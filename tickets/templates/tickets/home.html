@@ -1,0 +1,109 @@
+{% extends 'tickets/base.html' %}
+
+{% block title %}Dashboard - Event Ticket Order Upload System{% endblock %}
+
+{% block content %}
+<div class="row mb-4">
+    <div class="col">
+        <h1><i class="bi bi-speedometer2"></i> Dashboard</h1>
+    </div>
+</div>
+
+<div class="row mb-4">
+    <div class="col-md-3 mb-3">
+        <div class="card text-white bg-primary">
+            <div class="card-body">
+                <h5 class="card-title"><i class="bi bi-people"></i> Total Customers</h5>
+                <h2 class="card-text">{{ total_customers|default:0 }}</h2>
+                <a href="{% url 'tickets:customer_list' %}" class="text-white text-decoration-none">
+                    View all <i class="bi bi-arrow-right"></i>
+                </a>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3 mb-3">
+        <div class="card text-white bg-success">
+            <div class="card-body">
+                <h5 class="card-title"><i class="bi bi-cart"></i> Total Orders</h5>
+                <h2 class="card-text">{{ total_orders|default:0 }}</h2>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3 mb-3">
+        <div class="card text-white bg-info">
+            <div class="card-body">
+                <h5 class="card-title"><i class="bi bi-currency-dollar"></i> Total Revenue</h5>
+                <h2 class="card-text">${{ total_revenue|floatformat:2|default:"0.00" }}</h2>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3 mb-3">
+        <div class="card text-white bg-warning">
+            <div class="card-body">
+                <h5 class="card-title"><i class="bi bi-ticket-perforated"></i> Total Tickets</h5>
+                <h2 class="card-text">{{ total_tickets|default:0 }}</h2>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="row mb-4">
+    <div class="col">
+        <div class="d-grid gap-2">
+            <a href="{% url 'tickets:upload_csv' %}" class="btn btn-primary btn-lg">
+                <i class="bi bi-upload"></i> Upload New CSV File
+            </a>
+        </div>
+    </div>
+</div>
+
+<div class="row">
+    <div class="col">
+        <div class="card">
+            <div class="card-header">
+                <h5 class="mb-0"><i class="bi bi-clock-history"></i> Recent Uploads</h5>
+            </div>
+            <div class="card-body">
+                {% if recent_uploads %}
+                    <div class="table-responsive">
+                        <table class="table table-hover">
+                            <thead>
+                                <tr>
+                                    <th>Filename</th>
+                                    <th>Format</th>
+                                    <th>Upload Date</th>
+                                    <th>Status</th>
+                                    <th>Rows Processed</th>
+                                    <th>Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {% for upload in recent_uploads %}
+                                    <tr>
+                                        <td>{{ upload.filename }}</td>
+                                        <td>{{ upload.csv_format.name }}</td>
+                                        <td>{{ upload.uploaded_at|date:"M d, Y H:i" }}</td>
+                                        <td>
+                                            <span class="badge bg-{% if upload.status == 'completed' %}success{% elif upload.status == 'failed' %}danger{% elif upload.status == 'processing' %}warning{% else %}secondary{% endif %}">
+                                                {{ upload.get_status_display }}
+                                            </span>
+                                        </td>
+                                        <td>{{ upload.processed_rows }} / {{ upload.total_rows }}</td>
+                                        <td>
+                                            <a href="{% url 'tickets:upload_results' upload.id %}" class="btn btn-sm btn-outline-primary">
+                                                View Results
+                                            </a>
+                                        </td>
+                                    </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+                {% else %}
+                    <p class="text-muted">No uploads yet. <a href="{% url 'tickets:upload_csv' %}">Upload your first CSV file</a>.</p>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

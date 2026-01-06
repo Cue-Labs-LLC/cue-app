@@ -1,0 +1,125 @@
+{% extends 'tickets/base.html' %}
+
+{% block title %}Customers - Event Ticket Order Upload System{% endblock %}
+
+{% block content %}
+<div class="row mb-4">
+    <div class="col">
+        <h1><i class="bi bi-people"></i> Customers</h1>
+    </div>
+</div>
+
+<div class="row mb-4">
+    <div class="col">
+        <div class="card">
+            <div class="card-body">
+                <form method="get" class="row g-3">
+                    <div class="col-md-8">
+                        <input type="text" name="search" class="form-control" 
+                               placeholder="Search by name or email..." 
+                               value="{{ search_query }}">
+                    </div>
+                    <div class="col-md-4">
+                        <button type="submit" class="btn btn-primary">
+                            <i class="bi bi-search"></i> Search
+                        </button>
+                        <a href="{% url 'tickets:customer_list' %}" class="btn btn-outline-secondary">
+                            Clear
+                        </a>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="row">
+    <div class="col">
+        <div class="card">
+            <div class="card-body">
+                {% if page_obj %}
+                    <div class="table-responsive">
+                        <table class="table table-hover">
+                            <thead>
+                                <tr>
+                                    <th>
+                                        <a href="?sort=name&search={{ search_query }}" class="text-decoration-none">
+                                            Name <i class="bi bi-arrow-down-up"></i>
+                                        </a>
+                                    </th>
+                                    <th>
+                                        <a href="?sort=email&search={{ search_query }}" class="text-decoration-none">
+                                            Email <i class="bi bi-arrow-down-up"></i>
+                                        </a>
+                                    </th>
+                                    <th>Phone</th>
+                                    <th>
+                                        <a href="?sort=-lifetime_value&search={{ search_query }}" class="text-decoration-none">
+                                            Lifetime Value <i class="bi bi-arrow-down-up"></i>
+                                        </a>
+                                    </th>
+                                    <th>
+                                        <a href="?sort=-last_order_date&search={{ search_query }}" class="text-decoration-none">
+                                            Last Order <i class="bi bi-arrow-down-up"></i>
+                                        </a>
+                                    </th>
+                                    <th>Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {% for customer in page_obj %}
+                                    <tr>
+                                        <td>{{ customer.name }}</td>
+                                        <td>{{ customer.email }}</td>
+                                        <td>{{ customer.phone|default:"—" }}</td>
+                                        <td>
+                                            <strong class="text-success">${{ customer.lifetime_value|floatformat:2 }}</strong>
+                                        </td>
+                                        <td>{{ customer.last_order_date|date:"M d, Y"|default:"—" }}</td>
+                                        <td>
+                                            <a href="{% url 'tickets:customer_detail' customer.id %}" 
+                                               class="btn btn-sm btn-outline-primary">
+                                                View Details
+                                            </a>
+                                        </td>
+                                    </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+                    
+                    {% if page_obj.has_other_pages %}
+                        <nav aria-label="Page navigation">
+                            <ul class="pagination justify-content-center">
+                                {% if page_obj.has_previous %}
+                                    <li class="page-item">
+                                        <a class="page-link" href="?page={{ page_obj.previous_page_number }}&search={{ search_query }}&sort={{ sort_by }}">
+                                            Previous
+                                        </a>
+                                    </li>
+                                {% endif %}
+                                
+                                <li class="page-item active">
+                                    <span class="page-link">
+                                        Page {{ page_obj.number }} of {{ page_obj.paginator.num_pages }}
+                                    </span>
+                                </li>
+                                
+                                {% if page_obj.has_next %}
+                                    <li class="page-item">
+                                        <a class="page-link" href="?page={{ page_obj.next_page_number }}&search={{ search_query }}&sort={{ sort_by }}">
+                                            Next
+                                        </a>
+                                    </li>
+                                {% endif %}
+                            </ul>
+                        </nav>
+                    {% endif %}
+                {% else %}
+                    <p class="text-muted">No customers found.</p>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
