@@ -233,10 +233,72 @@ Once your service is deployed:
 1. Open Render Shell
 2. Run: `python manage.py migrate`
 
-### Creating New Superuser
+### Creating New Superuser (First-Time Login)
 
-1. Open Render Shell
-2. Run: `python manage.py createsuperuser`
+**Important**: You must create a superuser account before you can log in to your deployed application.
+
+#### Option 1: Using Environment Variables (Recommended - No Shell Access Needed)
+
+This is the easiest method if you don't have access to the Shell tab:
+
+1. In Render dashboard, go to your web service → **Environment** tab
+2. Add these environment variables:
+   - `INITIAL_SUPERUSER_USERNAME` - Your desired username (e.g., `admin`)
+   - `INITIAL_SUPERUSER_PASSWORD` - Your desired password
+   - `INITIAL_SUPERUSER_EMAIL` - (Optional) Your email address
+3. Save the environment variables
+4. Trigger a new deployment (or wait for the next build)
+5. The superuser will be automatically created during the build process
+6. **IMPORTANT**: After you successfully log in, remove these environment variables from Render for security!
+
+**Note**: The `render.yaml` file is already configured to run this command during build, so the superuser will be created automatically if the environment variables are set.
+
+#### Option 2: Using Render CLI (If You Have CLI Access)
+
+If you have the Render CLI installed locally:
+
+1. Install Render CLI (if not already installed):
+   ```bash
+   npm install -g render-cli
+   ```
+2. Authenticate:
+   ```bash
+   render login
+   ```
+3. Run the command:
+   ```bash
+   render exec -s ltv-updater -- python manage.py createsuperuser
+   ```
+4. Follow the prompts to create your superuser
+
+#### Option 3: Using Render Shell (If Available)
+
+1. In Render dashboard, go to your web service
+2. Click on the **Shell** tab (or use the "Shell" button in the top right)
+3. Run the following command:
+   ```bash
+   python manage.py createsuperuser
+   ```
+4. Follow the prompts to enter:
+   - Username (required)
+   - Email address (optional)
+   - Password (required - enter twice for confirmation)
+5. Once created, you can log in at your app URL
+
+### Logging In to Your Deployed Application
+
+1. Navigate to your Render app URL (e.g., `https://your-app.onrender.com`)
+2. You will be automatically redirected to the login page (`/login/`)
+3. Enter the username and password you created with `createsuperuser`
+4. After successful login, you'll be redirected to the home page
+
+**Note**: All pages require authentication. If you're not logged in, you'll be redirected to the login page automatically.
+
+### Creating Additional Users
+
+Additional users can be created through:
+- **Django Admin**: Log in as superuser → Go to `/admin/` → Users → Add User
+- **Render Shell**: Use `python manage.py createsuperuser` for admin users, or create regular users via Django admin
 
 ### Viewing Logs
 
