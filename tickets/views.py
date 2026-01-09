@@ -3,6 +3,9 @@ import json
 from decimal import Decimal
 from django.shortcuts import render, redirect, get_object_or_404
 from django.contrib import messages
+from django.contrib.auth import views as auth_views
+from django.contrib.auth.decorators import login_required
+from django.urls import reverse_lazy
 from django.db.models import Sum, Count, Avg
 from django.core.paginator import Paginator
 from django.http import JsonResponse, Http404, HttpResponse
@@ -13,8 +16,75 @@ import pandas as pd
 from .models import (
     CSVFormat, UploadedFile, Customer, Event, TicketOrder, Ticket, Venue
 )
-from .forms import CSVUploadForm, TicketPriceEntryForm, CSVFormatForm, VenueForm
+from .forms import CSVUploadForm, TicketPriceEntryForm, CSVFormatForm, VenueForm, LoginForm
 from .services import CSVProcessor
+
+
+# Authentication Views
+class LoginView(auth_views.LoginView):
+    """Custom login view."""
+    template_name = 'tickets/auth/login.html'
+    form_class = LoginForm
+    redirect_authenticated_user = True
+
+
+def login_view(request):
+    """Login view wrapper."""
+    return LoginView.as_view()(request)
+
+
+class LogoutView(auth_views.LogoutView):
+    """Custom logout view."""
+    template_name = 'tickets/auth/logged_out.html'
+
+
+def logout_view(request):
+    """Logout view wrapper."""
+    return LogoutView.as_view()(request)
+
+
+class PasswordResetView(auth_views.PasswordResetView):
+    """Password reset request view."""
+    template_name = 'tickets/auth/password_reset.html'
+    email_template_name = 'tickets/auth/password_reset_email.html'
+    subject_template_name = 'tickets/auth/password_reset_subject.txt'
+    success_url = reverse_lazy('tickets:password_reset_done')
+
+
+def password_reset_request(request):
+    """Password reset request view wrapper."""
+    return PasswordResetView.as_view()(request)
+
+
+class PasswordResetDoneView(auth_views.PasswordResetDoneView):
+    """Password reset done view."""
+    template_name = 'tickets/auth/password_reset_done.html'
+
+
+def password_reset_done(request):
+    """Password reset done view wrapper."""
+    return PasswordResetDoneView.as_view()(request)
+
+
+class PasswordResetConfirmView(auth_views.PasswordResetConfirmView):
+    """Password reset confirm view."""
+    template_name = 'tickets/auth/password_reset_confirm.html'
+    success_url = reverse_lazy('tickets:password_reset_complete')
+
+
+def password_reset_confirm(request, uidb64, token):
+    """Password reset confirm view wrapper."""
+    return PasswordResetConfirmView.as_view()(request, uidb64=uidb64, token=token)
+
+
+class PasswordResetCompleteView(auth_views.PasswordResetCompleteView):
+    """Password reset complete view."""
+    template_name = 'tickets/auth/password_reset_complete.html'
+
+
+def password_reset_complete(request):
+    """Password reset complete view wrapper."""
+    return PasswordResetCompleteView.as_view()(request)
 
 
 def health_check(request):
@@ -28,6 +98,7 @@ def health_check(request):
         return HttpResponse(f"Database connection failed: {str(e)}", status=503)
 
 
+@login_required
 def home(request):
     """Home/dashboard page with overview statistics."""
     # Recent uploads
@@ -51,6 +122,7 @@ def home(request):
     return render(request, 'tickets/home.html', context)
 
 
+@login_required
 @require_http_methods(["GET", "POST"])
 def upload_csv(request):
     """Handle CSV file upload and processing."""
@@ -100,6 +172,7 @@ def upload_csv(request):
     return render(request, 'tickets/upload.html', {'form': form})
 
 
+@login_required
 @require_http_methods(["GET", "POST"])
 def price_entry(request, file_id):
     """Display form for manually entering ticket prices or tiers."""
@@ -285,6 +358,7 @@ def price_entry(request, file_id):
         return render(request, 'tickets/price_entry.html', context)
 
 
+@login_required
 def process_csv_file(request, uploaded_file, manual_prices=None, tier_definitions=None):
     """Process CSV file and redirect to results."""
     try:
@@ -359,6 +433,7 @@ def process_csv_file(request, uploaded_file, manual_prices=None, tier_definition
         return redirect('tickets:upload_results', file_id=uploaded_file.id)
 
 
+@login_required
 def upload_results(request, file_id):
     """Display processing results."""
     uploaded_file = get_object_or_404(UploadedFile, id=file_id)
@@ -372,6 +447,7 @@ def upload_results(request, file_id):
     return render(request, 'tickets/results.html', context)
 
 
+@login_required
 def customer_list(request):
     """Display list of all customers with LTV."""
     customers = Customer.objects.all()
@@ -405,6 +481,7 @@ def customer_list(request):
     return render(request, 'tickets/customer_list.html', context)
 
 
+@login_required
 def customer_detail(request, customer_id):
     """Display detailed customer information with LTV and order history."""
     customer = get_object_or_404(Customer, id=customer_id)
@@ -443,6 +520,7 @@ def customer_detail(request, customer_id):
 
 # Format Management Views
 
+@login_required
 def format_list(request):
     """List all CSV formats."""
     formats = CSVFormat.objects.all()
@@ -452,6 +530,7 @@ def format_list(request):
     return render(request, 'tickets/format_list.html', context)
 
 
+@login_required
 def format_create(request):
     """Create new CSV format."""
     if request.method == 'POST':
@@ -470,6 +549,7 @@ def format_create(request):
     return render(request, 'tickets/format_form.html', context)
 
 
+@login_required
 def format_edit(request, format_id):
     """Edit existing CSV format."""
     format_obj = get_object_or_404(CSVFormat, id=format_id)
@@ -481,11 +561,8 @@ def format_edit(request, format_id):
             messages.success(request, f"CSV format '{format_obj.name}' updated successfully.")
             return redirect('tickets:format_list')
     else:
-        # Convert column_mapping to JSON string for textarea
-        initial_data = format_obj.__dict__.copy()
-        if isinstance(initial_data.get('column_mapping'), dict):
-            initial_data['column_mapping'] = json.dumps(initial_data['column_mapping'], indent=2)
-        form = CSVFormatForm(instance=format_obj, initial=initial_data)
+        # Form will handle JSON formatting in __init__ method
+        form = CSVFormatForm(instance=format_obj)
     
     context = {
         'form': form,
@@ -495,6 +572,7 @@ def format_edit(request, format_id):
     return render(request, 'tickets/format_form.html', context)
 
 
+@login_required
 def format_delete(request, format_id):
     """Delete CSV format."""
     format_obj = get_object_or_404(CSVFormat, id=format_id)
@@ -519,6 +597,7 @@ def format_delete(request, format_id):
     return render(request, 'tickets/format_delete.html', context)
 
 
+@login_required
 def format_set_default(request, format_id):
     """Set CSV format as default."""
     format_obj = get_object_or_404(CSVFormat, id=format_id)
@@ -536,6 +615,7 @@ def format_set_default(request, format_id):
 
 # Venue Management Views
 
+@login_required
 def venue_create(request):
     """Create new venue."""
     if request.method == 'POST':

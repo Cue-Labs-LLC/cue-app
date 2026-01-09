@@ -1,9 +1,28 @@
+import json
 from django.contrib import admin
 from django.utils.html import format_html
 from django.db.models import Sum, Count
+from django import forms
 from .models import (
     CSVFormat, UploadedFile, Customer, Event, TicketOrder, Ticket, TicketTier, Venue
 )
+
+
+class JSONWidget(forms.Textarea):
+    """Custom widget to format JSON properly in admin."""
+    def format_value(self, value):
+        if value is None:
+            return ''
+        if isinstance(value, dict):
+            return json.dumps(value, indent=2)
+        if isinstance(value, str):
+            try:
+                # Try to parse and reformat if it's valid JSON
+                parsed = json.loads(value)
+                return json.dumps(parsed, indent=2)
+            except (json.JSONDecodeError, TypeError):
+                return value
+        return str(value)
 
 
 @admin.register(CSVFormat)
@@ -12,6 +31,15 @@ class CSVFormatAdmin(admin.ModelAdmin):
     list_filter = ['is_default', 'requires_manual_pricing', 'uses_tiers', 'created_at']
     search_fields = ['name', 'description']
     readonly_fields = ['id', 'created_at', 'updated_at']
+    
+    def get_form(self, request, obj=None, **kwargs):
+        form = super().get_form(request, obj, **kwargs)
+        # Use custom widget for column_mapping field
+        form.base_fields['column_mapping'].widget = JSONWidget(attrs={
+            'rows': 15,
+            'style': 'font-family: monospace;'
+        })
+        return form
     
     fieldsets = (
         ('Basic Information', {

@@ -1,7 +1,85 @@
+import json
 from django import forms
+from django.contrib.auth.forms import AuthenticationForm
 from crispy_forms.helper import FormHelper
 from crispy_forms.layout import Layout, Row, Column, Submit, Field
 from .models import CSVFormat, Venue
+
+
+class LoginForm(AuthenticationForm):
+    """Custom login form with Bootstrap styling."""
+    
+    username = forms.CharField(
+        widget=forms.TextInput(attrs={
+            'class': 'form-control',
+            'placeholder': 'Username',
+            'autofocus': True
+        })
+    )
+    password = forms.CharField(
+        widget=forms.PasswordInput(attrs={
+            'class': 'form-control',
+            'placeholder': 'Password'
+        })
+    )
+    
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.helper = FormHelper()
+        self.helper.layout = Layout(
+            Field('username'),
+            Field('password'),
+            Submit('submit', 'Login', css_class='btn btn-primary w-100')
+        )
+
+
+class PrettyJSONField(forms.JSONField):
+    """Custom JSONField that formats JSON with indentation for display."""
+    def prepare_value(self, value):
+        """Format the value as pretty JSON when preparing for widget display."""
+        if value is None:
+            return ''
+        # If it's already a dict/list, format it with indentation
+        if isinstance(value, (dict, list)):
+            return json.dumps(value, indent=2)
+        # If it's a string, try to parse and reformat it
+        if isinstance(value, str):
+            value = value.strip()
+            if not value:
+                return ''
+            try:
+                # Try to parse as JSON
+                parsed = json.loads(value)
+                return json.dumps(parsed, indent=2)
+            except (json.JSONDecodeError, TypeError, ValueError):
+                # If parsing fails, return as-is (might be user input in progress)
+                return value
+        return str(value)
+
+
+class JSONTextarea(forms.Textarea):
+    """Custom textarea widget that formats JSON properly."""
+    def format_value(self, value):
+        """Format the value as pretty JSON."""
+        if value is None:
+            return ''
+        # If it's already a dict, format it
+        if isinstance(value, dict):
+            return json.dumps(value, indent=2)
+        # If it's a string, try to parse and reformat it
+        if isinstance(value, str):
+            # Remove any leading/trailing whitespace
+            value = value.strip()
+            if not value:
+                return ''
+            try:
+                # Try to parse as JSON
+                parsed = json.loads(value)
+                return json.dumps(parsed, indent=2)
+            except (json.JSONDecodeError, TypeError, ValueError) as e:
+                # If parsing fails, return as-is (might be user input in progress)
+                return value
+        return str(value)
 
 
 class CSVUploadForm(forms.Form):
@@ -227,6 +305,15 @@ class TicketPriceEntryForm(forms.Form):
 class CSVFormatForm(forms.ModelForm):
     """Form for creating/editing CSV format configurations."""
     
+    # Override column_mapping field to use PrettyJSONField
+    column_mapping = PrettyJSONField(
+        widget=JSONTextarea(attrs={
+            'rows': 15,
+            'class': 'form-control font-monospace',
+            'placeholder': '{\n  "order_number": ["order_id", "order_number"],\n  "customer_email": ["email", "customer_email"],\n  ...\n}'
+        })
+    )
+    
     class Meta:
         model = CSVFormat
         fields = ['name', 'description', 'is_default', 'requires_manual_pricing', 'uses_tiers', 'column_mapping']
@@ -236,15 +323,25 @@ class CSVFormatForm(forms.ModelForm):
             'is_default': forms.CheckboxInput(attrs={'class': 'form-check-input'}),
             'requires_manual_pricing': forms.CheckboxInput(attrs={'class': 'form-check-input'}),
             'uses_tiers': forms.CheckboxInput(attrs={'class': 'form-check-input'}),
-            'column_mapping': forms.Textarea(attrs={
-                'rows': 15,
-                'class': 'form-control font-monospace',
-                'placeholder': '{\n  "order_number": ["order_id", "order_number"],\n  "customer_email": ["email", "customer_email"],\n  ...\n}'
-            }),
         }
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        
+        # Ensure column_mapping is formatted as pretty JSON
+        # The widget will handle formatting, but we also set initial value here
+        if self.instance and self.instance.pk:
+            if hasattr(self.instance, 'column_mapping') and self.instance.column_mapping:
+                if isinstance(self.instance.column_mapping, dict):
+                    self.initial['column_mapping'] = json.dumps(self.instance.column_mapping, indent=2)
+                elif isinstance(self.instance.column_mapping, str):
+                    # Try to parse and reformat if it's a string
+                    try:
+                        parsed = json.loads(self.instance.column_mapping)
+                        self.initial['column_mapping'] = json.dumps(parsed, indent=2)
+                    except (json.JSONDecodeError, TypeError):
+                        pass
+        
         self.helper = FormHelper()
         self.helper.layout = Layout(
             Field('name'),

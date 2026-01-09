@@ -1,0 +1,53 @@
+{% extends 'tickets/base.html' %}
+{% load crispy_forms_tags %}
+
+{% block title %}Login - Event Ticket Order Upload System{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center">
+    <div class="col-md-5">
+        <div class="card shadow">
+            <div class="card-body p-5">
+                <h2 class="card-title text-center mb-4">
+                    <i class="bi bi-box-arrow-in-right"></i> Login
+                </h2>
+                
+                {% if form.errors %}
+                    <div class="alert alert-danger" role="alert">
+                        <i class="bi bi-exclamation-triangle"></i>
+                        Your username and password didn't match. Please try again.
+                    </div>
+                {% endif %}
+                
+                {% if next %}
+                    {% if user.is_authenticated %}
+                        <div class="alert alert-warning" role="alert">
+                            Your account doesn't have access to this page. To proceed, please login with an account that has access.
+                        </div>
+                    {% else %}
+                        <div class="alert alert-info" role="alert">
+                            Please login to see this page.
+                        </div>
+                    {% endif %}
+                {% endif %}
+                
+                <form method="post" action="{% url 'tickets:login' %}">
+                    {% csrf_token %}
+                    {% crispy form %}
+                    <input type="hidden" name="next" value="{{ next }}" />
+                </form>
+                
+                <div class="text-center mt-4">
+                    <a href="{% url 'tickets:password_reset' %}" class="text-decoration-none">
+                        <i class="bi bi-key"></i> Forgot your password?
+                    </a>
+                </div>
+            </div>
+        </div>
+        
+        <div class="text-center mt-3 text-muted">
+            <small>Don't have an account? Contact an administrator to create one.</small>
+        </div>
+    </div>
+</div>
+{% endblock %}
