@@ -6,7 +6,7 @@ from django.contrib import messages
 from django.contrib.auth import views as auth_views
 from django.contrib.auth.decorators import login_required
 from django.urls import reverse_lazy
-from django.db.models import Sum, Count, Avg
+from django.db.models import Sum, Count, Avg, Q
 from django.core.paginator import Paginator
 from django.http import JsonResponse, Http404, HttpResponse
 from django.views.decorators.http import require_http_methods
@@ -516,6 +516,138 @@ def customer_detail(request, customer_id):
         'page_obj': page_obj,
     }
     return render(request, 'tickets/customer_detail.html', context)
+
+
+# Event Management Views
+
+@login_required
+def event_list(request):
+    """Display list of all events with associated uploads."""
+    events = Event.objects.annotate(
+        upload_count=Count('ticket_orders__uploaded_file', distinct=True),
+        total_orders=Count('ticket_orders', distinct=True),
+        total_revenue=Sum('ticket_orders__total_amount'),
+        total_tickets=Count('ticket_orders__tickets', distinct=True)
+    ).select_related('venue')
+    
+    # Search functionality
+    search_query = request.GET.get('search', '')
+    if search_query:
+        events = events.filter(
+            Q(name__icontains=search_query) |
+            Q(venue__name__icontains=search_query) |
+            Q(venue__city__icontains=search_query)
+        )
+    
+    # Sorting
+    sort_by = request.GET.get('sort', '-event_date')
+    if sort_by in ['name', 'event_date', 'upload_count', 'total_revenue']:
+        events = events.order_by(sort_by)
+    elif sort_by == '-event_date':
+        events = events.order_by('-event_date')
+    elif sort_by == '-upload_count':
+        events = events.order_by('-upload_count')
+    elif sort_by == '-total_revenue':
+        events = events.order_by('-total_revenue')
+    else:
+        events = events.order_by('-event_date')
+    
+    # Pagination
+    paginator = Paginator(events, 50)
+    page_number = request.GET.get('page')
+    page_obj = paginator.get_page(page_number)
+    
+    context = {
+        'page_obj': page_obj,
+        'search_query': search_query,
+        'sort_by': sort_by,
+    }
+    return render(request, 'tickets/event_list.html', context)
+
+
+@login_required
+def event_detail(request, event_id):
+    """Display detailed event information with associated uploads."""
+    event = get_object_or_404(
+        Event.objects.select_related('venue'),
+        id=event_id
+    )
+    
+    # Get all distinct uploads associated with this event
+    associated_uploads = event.get_associated_uploads().select_related('csv_format')
+    
+    # Calculate statistics per upload
+    upload_stats = []
+    for upload in associated_uploads:
+        orders = TicketOrder.objects.filter(event=event, uploaded_file=upload)
+        orders_count = orders.count()
+        revenue = orders.aggregate(total=Sum('total_amount'))['total'] or Decimal('0.00')
+        tickets_count = Ticket.objects.filter(ticket_order__event=event, ticket_order__uploaded_file=upload).count()
+        
+        upload_stats.append({
+            'upload': upload,
+            'orders_count': orders_count,
+            'revenue': revenue,
+            'tickets_count': tickets_count,
+        })
+    
+    # Event statistics
+    orders = event.ticket_orders.all()
+    total_orders = orders.count()
+    total_revenue = orders.aggregate(total=Sum('total_amount'))['total'] or Decimal('0.00')
+    total_tickets = Ticket.objects.filter(ticket_order__event=event).count()
+    total_customers = Customer.objects.filter(ticket_orders__event=event).distinct().count()
+    
+    # Paginate orders
+    paginator = Paginator(orders.order_by('-order_date'), 20)
+    page_number = request.GET.get('page')
+    page_obj = paginator.get_page(page_number)
+    
+    context = {
+        'event': event,
+        'upload_stats': upload_stats,
+        'total_orders': total_orders,
+        'total_revenue': total_revenue,
+        'total_tickets': total_tickets,
+        'total_customers': total_customers,
+        'page_obj': page_obj,
+    }
+    return render(request, 'tickets/event_detail.html', context)
+
+
+@login_required
+def order_detail(request, order_id):
+    """Display detailed order information with all tickets."""
+    order = get_object_or_404(
+        TicketOrder.objects.select_related('customer', 'event', 'event__venue', 'uploaded_file'),
+        id=order_id
+    )
+    
+    # Get all tickets for this order with tier information
+    tickets = order.tickets.select_related('tier').all()
+    
+    # Calculate ticket statistics
+    total_tickets = tickets.count()
+    ticket_types = {}
+    for ticket in tickets:
+        ticket_type = ticket.ticket_type
+        if ticket_type not in ticket_types:
+            ticket_types[ticket_type] = {
+                'count': 0,
+                'total_price': Decimal('0.00'),
+                'tier_name': ticket.tier_name,
+                'unit_price': ticket.price
+            }
+        ticket_types[ticket_type]['count'] += 1
+        ticket_types[ticket_type]['total_price'] += ticket.price
+    
+    context = {
+        'order': order,
+        'tickets': tickets,
+        'total_tickets': total_tickets,
+        'ticket_types': ticket_types,
+    }
+    return render(request, 'tickets/order_detail.html', context)
 
 
 # Format Management Views

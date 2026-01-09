@@ -27,6 +27,13 @@ urlpatterns = [
     path('customers/', views.customer_list, name='customer_list'),
     path('customers/<uuid:customer_id>/', views.customer_detail, name='customer_detail'),
     
+    # Events
+    path('events/', views.event_list, name='event_list'),
+    path('events/<uuid:event_id>/', views.event_detail, name='event_detail'),
+    
+    # Orders
+    path('orders/<uuid:order_id>/', views.order_detail, name='order_detail'),
+    
     # CSV Formats
     path('formats/', views.format_list, name='format_list'),
     path('formats/create/', views.format_create, name='format_create'),

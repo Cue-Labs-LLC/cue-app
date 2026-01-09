@@ -232,6 +232,16 @@ class Event(AuditBaseModel):
 
     def __str__(self):
         return f"{self.name} - {self.venue.name}, {self.venue.city} ({self.event_date.date()})"
+    
+    def get_associated_uploads(self):
+        """Get all distinct uploads associated with this event via ticket orders."""
+        return UploadedFile.objects.filter(
+            ticket_orders__event=self
+        ).distinct()
+    
+    def get_upload_count(self):
+        """Get count of distinct uploads associated with this event."""
+        return self.get_associated_uploads().count()
 
 
 class TicketOrder(AuditBaseModel):

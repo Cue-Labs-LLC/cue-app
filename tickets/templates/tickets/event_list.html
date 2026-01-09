@@ -1,0 +1,133 @@
+{% extends 'tickets/base.html' %}
+
+{% block title %}Events - Event Ticket Order Upload System{% endblock %}
+
+{% block content %}
+<div class="row mb-4">
+    <div class="col">
+        <h1><i class="bi bi-calendar-event"></i> Events</h1>
+    </div>
+</div>
+
+<div class="row mb-4">
+    <div class="col">
+        <div class="card">
+            <div class="card-body">
+                <form method="get" class="row g-3">
+                    <div class="col-md-8">
+                        <input type="text" name="search" class="form-control" 
+                               placeholder="Search by event name, venue, or city..." 
+                               value="{{ search_query }}">
+                    </div>
+                    <div class="col-md-4">
+                        <button type="submit" class="btn btn-primary">
+                            <i class="bi bi-search"></i> Search
+                        </button>
+                        <a href="{% url 'tickets:event_list' %}" class="btn btn-outline-secondary">
+                            Clear
+                        </a>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="row">
+    <div class="col">
+        <div class="card">
+            <div class="card-body">
+                {% if page_obj %}
+                    <div class="table-responsive">
+                        <table class="table table-hover">
+                            <thead>
+                                <tr>
+                                    <th>
+                                        <a href="?sort=name&search={{ search_query }}" class="text-decoration-none">
+                                            Event Name <i class="bi bi-arrow-down-up"></i>
+                                        </a>
+                                    </th>
+                                    <th>
+                                        <a href="?sort=-event_date&search={{ search_query }}" class="text-decoration-none">
+                                            Event Date <i class="bi bi-arrow-down-up"></i>
+                                        </a>
+                                    </th>
+                                    <th>Venue</th>
+                                    <th>
+                                        <a href="?sort=-upload_count&search={{ search_query }}" class="text-decoration-none">
+                                            Uploads <i class="bi bi-arrow-down-up"></i>
+                                        </a>
+                                    </th>
+                                    <th>Orders</th>
+                                    <th>
+                                        <a href="?sort=-total_revenue&search={{ search_query }}" class="text-decoration-none">
+                                            Revenue <i class="bi bi-arrow-down-up"></i>
+                                        </a>
+                                    </th>
+                                    <th>Tickets</th>
+                                    <th>Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {% for event in page_obj %}
+                                    <tr>
+                                        <td><strong>{{ event.name }}</strong></td>
+                                        <td>{{ event.event_date|date:"M d, Y H:i" }}</td>
+                                        <td>{{ event.venue.name }}, {{ event.venue.city }}</td>
+                                        <td>
+                                            <span class="badge bg-info">
+                                                <i class="bi bi-file-earmark-arrow-up"></i> {{ event.upload_count|default:0 }}
+                                            </span>
+                                        </td>
+                                        <td>{{ event.total_orders|default:0 }}</td>
+                                        <td>
+                                            <strong class="text-success">${{ event.total_revenue|floatformat:2|default:"0.00" }}</strong>
+                                        </td>
+                                        <td>{{ event.total_tickets|default:0 }}</td>
+                                        <td>
+                                            <a href="{% url 'tickets:event_detail' event.id %}" 
+                                               class="btn btn-sm btn-outline-primary">
+                                                <i class="bi bi-eye"></i> View Details
+                                            </a>
+                                        </td>
+                                    </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+                    
+                    {% if page_obj.has_other_pages %}
+                        <nav aria-label="Page navigation">
+                            <ul class="pagination justify-content-center">
+                                {% if page_obj.has_previous %}
+                                    <li class="page-item">
+                                        <a class="page-link" href="?page={{ page_obj.previous_page_number }}&search={{ search_query }}&sort={{ sort_by }}">
+                                            Previous
+                                        </a>
+                                    </li>
+                                {% endif %}
+                                
+                                <li class="page-item active">
+                                    <span class="page-link">
+                                        Page {{ page_obj.number }} of {{ page_obj.paginator.num_pages }}
+                                    </span>
+                                </li>
+                                
+                                {% if page_obj.has_next %}
+                                    <li class="page-item">
+                                        <a class="page-link" href="?page={{ page_obj.next_page_number }}&search={{ search_query }}&sort={{ sort_by }}">
+                                            Next
+                                        </a>
+                                    </li>
+                                {% endif %}
+                            </ul>
+                        </nav>
+                    {% endif %}
+                {% else %}
+                    <p class="text-muted">No events found.</p>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

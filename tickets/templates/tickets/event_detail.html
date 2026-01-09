@@ -1,0 +1,222 @@
+{% extends 'tickets/base.html' %}
+
+{% block title %}{{ event.name }} - Event Details{% endblock %}
+
+{% block content %}
+<div class="row mb-4">
+    <div class="col">
+        <nav aria-label="breadcrumb">
+            <ol class="breadcrumb">
+                <li class="breadcrumb-item"><a href="{% url 'tickets:home' %}">Home</a></li>
+                <li class="breadcrumb-item"><a href="{% url 'tickets:event_list' %}">Events</a></li>
+                <li class="breadcrumb-item active">{{ event.name }}</li>
+            </ol>
+        </nav>
+        <h1><i class="bi bi-calendar-event"></i> {{ event.name }}</h1>
+        <p class="text-muted">
+            <i class="bi bi-geo-alt"></i> {{ event.venue.name }}, {{ event.venue.city }} | 
+            <i class="bi bi-clock"></i> {{ event.event_date|date:"M d, Y H:i" }}
+        </p>
+    </div>
+</div>
+
+<div class="row mb-4">
+    <div class="col-md-3 mb-3">
+        <div class="card text-white bg-primary">
+            <div class="card-body text-center">
+                <h5 class="card-title">Total Orders</h5>
+                <h2 class="card-text">{{ total_orders }}</h2>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3 mb-3">
+        <div class="card text-white bg-success">
+            <div class="card-body text-center">
+                <h5 class="card-title">Total Revenue</h5>
+                <h2 class="card-text">${{ total_revenue|floatformat:2 }}</h2>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3 mb-3">
+        <div class="card text-white bg-info">
+            <div class="card-body text-center">
+                <h5 class="card-title">Total Tickets</h5>
+                <h2 class="card-text">{{ total_tickets }}</h2>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3 mb-3">
+        <div class="card text-white bg-warning">
+            <div class="card-body text-center">
+                <h5 class="card-title">Customers</h5>
+                <h2 class="card-text">{{ total_customers }}</h2>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="row mb-4">
+    <div class="col">
+        <div class="card">
+            <div class="card-header">
+                <h5 class="mb-0"><i class="bi bi-file-earmark-arrow-up"></i> Associated Uploads</h5>
+            </div>
+            <div class="card-body">
+                {% if upload_stats %}
+                    <div class="table-responsive">
+                        <table class="table table-hover">
+                            <thead>
+                                <tr>
+                                    <th>Filename</th>
+                                    <th>Format</th>
+                                    <th>Upload Date</th>
+                                    <th>Status</th>
+                                    <th>Orders</th>
+                                    <th>Revenue</th>
+                                    <th>Tickets</th>
+                                    <th>Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {% for stat in upload_stats %}
+                                    <tr>
+                                        <td><strong>{{ stat.upload.filename }}</strong></td>
+                                        <td>{{ stat.upload.csv_format.name }}</td>
+                                        <td>{{ stat.upload.uploaded_at|date:"M d, Y H:i" }}</td>
+                                        <td>
+                                            <span class="badge bg-{% if stat.upload.status == 'completed' %}success{% elif stat.upload.status == 'failed' %}danger{% elif stat.upload.status == 'processing' %}warning{% else %}secondary{% endif %}">
+                                                {{ stat.upload.get_status_display }}
+                                            </span>
+                                        </td>
+                                        <td>{{ stat.orders_count }}</td>
+                                        <td><strong class="text-success">${{ stat.revenue|floatformat:2 }}</strong></td>
+                                        <td>{{ stat.tickets_count }}</td>
+                                        <td>
+                                            <a href="{% url 'tickets:upload_results' stat.upload.id %}" 
+                                               class="btn btn-sm btn-outline-primary">
+                                                <i class="bi bi-eye"></i> View Results
+                                            </a>
+                                        </td>
+                                    </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+                {% else %}
+                    <p class="text-muted">No uploads associated with this event.</p>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="row mb-4">
+    <div class="col">
+        <div class="card">
+            <div class="card-header">
+                <h5 class="mb-0"><i class="bi bi-list-ul"></i> Recent Orders</h5>
+            </div>
+            <div class="card-body">
+                {% if page_obj %}
+                    <div class="table-responsive">
+                        <table class="table table-hover">
+                            <thead>
+                                <tr>
+                                    <th>Order Number</th>
+                                    <th>Date</th>
+                                    <th>Customer</th>
+                                    <th>Total Amount</th>
+                                    <th>Tickets</th>
+                                    <th>Upload</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {% for order in page_obj %}
+                                    <tr>
+                                        <td>
+                                            <a href="{% url 'tickets:order_detail' order.id %}" class="text-decoration-none">
+                                                <strong>{{ order.order_number }}</strong>
+                                            </a>
+                                        </td>
+                                        <td>{{ order.order_date|date:"M d, Y H:i" }}</td>
+                                        <td>
+                                            <a href="{% url 'tickets:customer_detail' order.customer.id %}">
+                                                {{ order.customer.name }}
+                                            </a>
+                                        </td>
+                                        <td><strong>${{ order.total_amount|floatformat:2 }}</strong></td>
+                                        <td>{{ order.tickets.count }}</td>
+                                        <td>
+                                            {% if order.uploaded_file %}
+                                                <a href="{% url 'tickets:upload_results' order.uploaded_file.id %}" 
+                                                   class="text-decoration-none">
+                                                    <i class="bi bi-file-earmark"></i> {{ order.uploaded_file.filename|truncatewords:3 }}
+                                                </a>
+                                            {% else %}
+                                                <span class="text-muted">—</span>
+                                            {% endif %}
+                                        </td>
+                                    </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+                    
+                    {% if page_obj.has_other_pages %}
+                        <nav aria-label="Page navigation">
+                            <ul class="pagination justify-content-center">
+                                {% if page_obj.has_previous %}
+                                    <li class="page-item">
+                                        <a class="page-link" href="?page={{ page_obj.previous_page_number }}">
+                                            Previous
+                                        </a>
+                                    </li>
+                                {% endif %}
+                                
+                                <li class="page-item active">
+                                    <span class="page-link">
+                                        Page {{ page_obj.number }} of {{ page_obj.paginator.num_pages }}
+                                    </span>
+                                </li>
+                                
+                                {% if page_obj.has_next %}
+                                    <li class="page-item">
+                                        <a class="page-link" href="?page={{ page_obj.next_page_number }}">
+                                            Next
+                                        </a>
+                                    </li>
+                                {% endif %}
+                            </ul>
+                        </nav>
+                    {% endif %}
+                {% else %}
+                    <p class="text-muted">No orders found for this event.</p>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</div>
+
+{% if event.description %}
+<div class="row mb-4">
+    <div class="col">
+        <div class="card">
+            <div class="card-header">
+                <h5 class="mb-0"><i class="bi bi-info-circle"></i> Description</h5>
+            </div>
+            <div class="card-body">
+                <p>{{ event.description }}</p>
+            </div>
+        </div>
+    </div>
+</div>
+{% endif %}
+
+<div class="row mt-4">
+    <div class="col">
+        <a href="{% url 'tickets:event_list' %}" class="btn btn-outline-secondary">
+            <i class="bi bi-arrow-left"></i> Back to Events List
+        </a>
+    </div>
+</div>
+{% endblock %}
