@@ -190,15 +190,20 @@ def price_entry(request, file_id):
         df = pd.read_csv(file_path, dtype=str, keep_default_na=False)
         processor = CSVProcessor(uploaded_file, uploaded_file.csv_format)
         
-        ticket_types = set()
+        # Use dict to preserve order (same as GET request)
+        ticket_type_counts = {}
         for _, row in df.iterrows():
             mapped_row = processor.map_columns(row.to_dict())
             ticket_type = mapped_row.get('ticket_type')
+            quantity = int(mapped_row.get('quantity', 1) or 1)
             if ticket_type:
-                ticket_types.add(ticket_type)
+                ticket_type_counts[ticket_type] = ticket_type_counts.get(ticket_type, 0) + quantity
+        
+        # Use ordered list from dict keys (same order as GET request)
+        ticket_types_list = list(ticket_type_counts.keys())
         
         # Create form with ticket types and uses_tiers flag
-        form = TicketPriceEntryForm(list(ticket_types), uses_tiers=uses_tiers, data=request.POST)
+        form = TicketPriceEntryForm(ticket_types_list, uses_tiers=uses_tiers, data=request.POST)
         
         if uses_tiers:
             # For tier mode, we need to extract data directly from POST since fields are dynamic
@@ -215,7 +220,6 @@ def price_entry(request, file_id):
             
             # First, build a mapping of ticket type indices to actual ticket types
             ticket_type_map = {}
-            ticket_types_list = list(ticket_types)
             for key, value in request.POST.items():
                 if key.startswith('ticket_type_'):
                     try:
@@ -301,7 +305,7 @@ def price_entry(request, file_id):
                     cleaned_definitions[ticket_type] = valid_tiers
             
             # Validate that we have tiers for all ticket types
-            ticket_types_set = set(ticket_types)
+            ticket_types_set = set(ticket_types_list)
             cleaned_types_set = set(cleaned_definitions.keys())
             
             if not cleaned_definitions or len(cleaned_definitions) < len(ticket_types_set):
@@ -347,7 +351,9 @@ def price_entry(request, file_id):
             if ticket_type:
                 ticket_type_counts[ticket_type] = ticket_type_counts.get(ticket_type, 0) + quantity
         
-        form = TicketPriceEntryForm(list(ticket_type_counts.keys()), uses_tiers=uses_tiers)
+        ticket_types_list = list(ticket_type_counts.keys())
+        
+        form = TicketPriceEntryForm(ticket_types_list, uses_tiers=uses_tiers)
         
         context = {
             'uploaded_file': uploaded_file,

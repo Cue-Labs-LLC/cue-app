@@ -2,7 +2,7 @@ import csv
 import json
 import logging
 from decimal import Decimal
-from datetime import datetime
+from datetime import datetime, timezone as dt_timezone
 from typing import Dict, List, Optional, Tuple
 from django.db import transaction
 from django.utils import timezone
@@ -15,10 +15,6 @@ from .models import (
 )
 
 logger = logging.getLogger(__name__)
-
-# #region agent log
-DEBUG_LOG_PATH = r'c:\Users\Owen1\dev\github.com\personal\enhanced-ltv-updater\.cursor\debug.log'
-# #endregion
 
 
 class CSVProcessor:
@@ -108,7 +104,8 @@ class CSVProcessor:
             # Make timezone-aware if it's naive (Django requires timezone-aware when USE_TZ=True)
             if parsed and timezone.is_naive(parsed):
                 # Assume UTC if no timezone info is provided
-                parsed = timezone.make_aware(parsed, timezone.utc)
+                # Use Python's built-in UTC timezone (works with all Django versions)
+                parsed = timezone.make_aware(parsed, dt_timezone.utc)
             return parsed
         except (ValueError, TypeError):
             logger.warning(f"Could not parse date: {date_str}")
@@ -337,20 +334,12 @@ class CSVProcessor:
         tickets_to_create = []
         
         # Track existing customers and events for bulk operations
-        # #region agent log
         chunk_emails = [row.get('customer_email', '').lower().strip() for row in chunk_data if row.get('customer_email')]
-        with open(DEBUG_LOG_PATH, 'a', encoding='utf-8') as f:
-            f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "A", "location": "services.py:332", "message": "Querying existing customers for chunk", "data": {"chunk_emails_count": len(chunk_emails), "chunk_emails_sample": chunk_emails[:5], "uploaded_file_id": str(self.uploaded_file.id)}, "timestamp": int(timezone.now().timestamp() * 1000)}) + "\n")
-        # #endregion
         existing_customers = {
             c.email: c for c in Customer.objects.filter(
                 email__in=chunk_emails
             )
         }
-        # #region agent log
-        with open(DEBUG_LOG_PATH, 'a', encoding='utf-8') as f:
-            f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "A", "location": "services.py:337", "message": "Found existing customers", "data": {"found_count": len(existing_customers), "found_emails": list(existing_customers.keys())[:5]}, "timestamp": int(timezone.now().timestamp() * 1000)}) + "\n")
-        # #endregion
         
         existing_events = {}
         # Pre-fetch existing events for this chunk
@@ -412,10 +401,6 @@ class CSVProcessor:
             TicketOrder.objects.filter(order_number__in=order_numbers)
             .values_list('order_number', flat=True)
         )
-        # #region agent log
-        with open(DEBUG_LOG_PATH, 'a', encoding='utf-8') as f:
-            f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "B", "location": "services.py:400", "message": "Checked existing order numbers", "data": {"chunk_order_count": len(order_numbers), "existing_count": len(existing_orders), "existing_sample": list(existing_orders)[:5]}, "timestamp": int(timezone.now().timestamp() * 1000)}) + "\n")
-        # #endregion
         
         # If using tiers, sort orders by order_date (earliest first) for tier assignment
         if self.uses_tiers:
@@ -453,52 +438,25 @@ class CSVProcessor:
                 else:
                     # Check database directly to catch orders from previous files/chunks
                     if TicketOrder.objects.filter(order_number=order_number).exists():
-                        # #region agent log
-                        with open(DEBUG_LOG_PATH, 'a', encoding='utf-8') as f:
-                            f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "B", "location": "services.py:432", "message": "Order number found in database but not in existing_orders", "data": {"order_number": order_number}, "timestamp": int(timezone.now().timestamp() * 1000)}) + "\n")
-                        # #endregion
                         results['skipped_duplicates'] += 1
                         results['skipped_order_numbers'].append(order_number)
                         existing_orders.add(order_number)
-                    continue
+                        continue
                 
                 # Get or create customer
                 customer_email = mapped_row.get('customer_email', '').lower().strip()
-                # #region agent log
-                with open(DEBUG_LOG_PATH, 'a', encoding='utf-8') as f:
-                    f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "A", "location": "services.py:421", "message": "Processing customer email", "data": {"customer_email": customer_email, "in_existing_customers": customer_email in existing_customers, "order_number": mapped_row.get('order_number')}, "timestamp": int(timezone.now().timestamp() * 1000)}) + "\n")
-                # #endregion
                 customer = existing_customers.get(customer_email)
                 if not customer:
-                    # #region agent log
-                    with open(DEBUG_LOG_PATH, 'a', encoding='utf-8') as f:
-                        f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "A", "location": "services.py:424", "message": "Customer not found, checking database", "data": {"customer_email": customer_email}, "timestamp": int(timezone.now().timestamp() * 1000)}) + "\n")
-                    # #endregion
                     # Check database directly before creating (HYPOTHESIS A: existing_customers only queries current chunk)
                     db_customer = Customer.objects.filter(email=customer_email).first()
                     if db_customer:
-                        # #region agent log
-                        with open(DEBUG_LOG_PATH, 'a', encoding='utf-8') as f:
-                            f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "A", "location": "services.py:430", "message": "Customer found in database but not in existing_customers", "data": {"customer_email": customer_email, "customer_id": str(db_customer.id)}, "timestamp": int(timezone.now().timestamp() * 1000)}) + "\n")
-                        # #endregion
                         customer = db_customer
                         existing_customers[customer_email] = customer
                         # Remove from customers_to_create if it was added earlier in this chunk
-                        before_count = len(customers_to_create)
                         customers_to_create = [c for c in customers_to_create if c.email != customer_email]
-                        after_count = len(customers_to_create)
-                        # #region agent log
-                        if before_count != after_count:
-                            with open(DEBUG_LOG_PATH, 'a', encoding='utf-8') as f:
-                                f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "A", "location": "services.py:455", "message": "Removed customer from customers_to_create", "data": {"customer_email": customer_email, "before_count": before_count, "after_count": after_count}, "timestamp": int(timezone.now().timestamp() * 1000)}) + "\n")
-                        # #endregion
                     else:
                         # Check if already in customers_to_create to avoid duplicates within chunk
                         already_in_create = any(c.email == customer_email for c in customers_to_create)
-                        # #region agent log
-                        with open(DEBUG_LOG_PATH, 'a', encoding='utf-8') as f:
-                            f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "A", "location": "services.py:435", "message": "Customer not in database, adding to create list", "data": {"customer_email": customer_email, "already_in_create_list": already_in_create}, "timestamp": int(timezone.now().timestamp() * 1000)}) + "\n")
-                        # #endregion
                         if not already_in_create:
                             customer = Customer(
                                 email=customer_email,
@@ -712,24 +670,9 @@ class CSVProcessor:
             final_emails = [c.email for c in customers_to_create]
             existing_in_db = {c.email: c for c in Customer.objects.filter(email__in=final_emails)}
             if existing_in_db:
-                # #region agent log
-                with open(DEBUG_LOG_PATH, 'a', encoding='utf-8') as f:
-                    f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "A", "location": "services.py:636", "message": "Found existing customers in database before bulk_create", "data": {"existing_emails": list(existing_in_db.keys()), "customers_to_create_count": len(customers_to_create)}, "timestamp": int(timezone.now().timestamp() * 1000)}) + "\n")
-                # #endregion
                 customers_to_create = [c for c in customers_to_create if c.email not in existing_in_db]
-            # #region agent log
-            with open(DEBUG_LOG_PATH, 'a', encoding='utf-8') as f:
-                f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "A", "location": "services.py:642", "message": "About to bulk_create customers", "data": {"count": len(customers_to_create), "emails": [c.email for c in customers_to_create][:10]}, "timestamp": int(timezone.now().timestamp() * 1000)}) + "\n")
-            # #endregion
             if customers_to_create:
-                try:
-                    Customer.objects.bulk_create(customers_to_create)
-                except Exception as e:
-                    # #region agent log
-                    with open(DEBUG_LOG_PATH, 'a', encoding='utf-8') as f:
-                        f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "A", "location": "services.py:695", "message": "bulk_create failed", "data": {"error": str(e), "error_type": type(e).__name__, "emails": [c.email for c in customers_to_create][:10]}, "timestamp": int(timezone.now().timestamp() * 1000)}) + "\n")
-                    # #endregion
-                    raise
+                Customer.objects.bulk_create(customers_to_create)
             # Refetch created customers to get their IDs
             created_emails = [c.email for c in customers_to_create]
             created_customers = {
@@ -767,10 +710,6 @@ class CSVProcessor:
                 .values_list('order_number', flat=True)
             )
             if existing_orders_in_db:
-                # #region agent log
-                with open(DEBUG_LOG_PATH, 'a', encoding='utf-8') as f:
-                    f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "B", "location": "services.py:760", "message": "Found existing orders in database before bulk_create", "data": {"existing_order_numbers": list(existing_orders_in_db), "ticket_orders_to_create_count": len(ticket_orders_to_create)}, "timestamp": int(timezone.now().timestamp() * 1000)}) + "\n")
-                # #endregion
                 ticket_orders_to_create = [o for o in ticket_orders_to_create if o.order_number not in existing_orders_in_db]
         if ticket_orders_to_create:
             TicketOrder.objects.bulk_create(ticket_orders_to_create)
