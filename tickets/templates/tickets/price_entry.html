@@ -33,12 +33,21 @@
                             </tr>
                         </thead>
                         <tbody>
-                            {% for ticket_type, count in ticket_type_counts.items %}
+                            {% if ticket_type_counts %}
+                                {% for ticket_type, count in ticket_type_counts.items %}
+                                    <tr>
+                                        <td><strong>{{ ticket_type }}</strong></td>
+                                        <td>{{ count }} ticket{{ count|pluralize }}</td>
+                                    </tr>
+                                {% endfor %}
+                            {% else %}
                                 <tr>
-                                    <td><strong>{{ ticket_type }}</strong></td>
-                                    <td>{{ count }} ticket{{ count|pluralize }}</td>
+                                    <td colspan="2" class="text-muted text-center">
+                                        <i class="bi bi-exclamation-triangle"></i> No ticket types found in CSV file.
+                                        <br><small>Please check your CSV format configuration and ensure the 'ticket_type' column mapping is correct.</small>
+                                    </td>
                                 </tr>
-                            {% endfor %}
+                            {% endif %}
                         </tbody>
                     </table>
                 </div>
@@ -58,26 +67,44 @@
                 <div class="card-body">
                     <form method="post" id="tier-form">
                         {% csrf_token %}
-                        {% for ticket_type, count in ticket_type_counts.items %}
-                            <div class="ticket-type-section mb-4" data-ticket-type="{{ ticket_type }}">
-                                <h5 class="mb-3">{{ ticket_type }} <span class="badge bg-secondary">{{ count }} tickets</span></h5>
-                                {# Hidden field to store original ticket type for form submission #}
-                                <input type="hidden" name="ticket_type_{{ forloop.counter0 }}" value="{{ ticket_type }}">
-                                <div class="tiers-container" id="tiers-{{ ticket_type|slugify }}">
-                                    {# Tiers will be added here by JavaScript #}
+                        {% if ticket_type_counts %}
+                            {% for ticket_type, count in ticket_type_counts.items %}
+                                <div class="ticket-type-section mb-4" data-ticket-type="{{ ticket_type }}">
+                                    <h5 class="mb-3">{{ ticket_type }} <span class="badge bg-secondary">{{ count }} tickets</span></h5>
+                                    {# Hidden field to store original ticket type for form submission #}
+                                    <input type="hidden" name="ticket_type_{{ forloop.counter0 }}" value="{{ ticket_type }}">
+                                    <div class="tiers-container" id="tiers-{{ ticket_type|slugify }}">
+                                        {# Tiers will be added here by JavaScript #}
+                                    </div>
+                                    <button type="button" class="btn btn-sm btn-outline-primary add-tier-btn" data-ticket-type="{{ ticket_type }}">
+                                        <i class="bi bi-plus-circle"></i> Add Tier
+                                    </button>
+                                    <div class="mt-2">
+                                        <small class="text-muted">Total Allotment: <span class="total-allotment" id="total-{{ ticket_type|slugify }}">0</span></small>
+                                    </div>
                                 </div>
-                                <button type="button" class="btn btn-sm btn-outline-primary add-tier-btn" data-ticket-type="{{ ticket_type }}">
-                                    <i class="bi bi-plus-circle"></i> Add Tier
-                                </button>
-                                <div class="mt-2">
-                                    <small class="text-muted">Total Allotment: <span class="total-allotment" id="total-{{ ticket_type|slugify }}">0</span></small>
-                                </div>
+                                <hr>
+                            {% endfor %}
+                            <button type="submit" class="btn btn-primary">
+                                <i class="bi bi-check-circle"></i> Process with Tiers
+                            </button>
+                        {% else %}
+                            <div class="alert alert-warning">
+                                <i class="bi bi-exclamation-triangle"></i> 
+                                <strong>No ticket types found in CSV.</strong>
+                                <p class="mb-0 mt-2">
+                                    Please check your CSV format configuration and ensure:
+                                    <ul class="mb-0">
+                                        <li>The 'ticket_type' column is properly mapped in your CSV format</li>
+                                        <li>The CSV file contains ticket type data</li>
+                                        <li>The column mapping matches the actual CSV column names</li>
+                                    </ul>
+                                </p>
                             </div>
-                            <hr>
-                        {% endfor %}
-                        <button type="submit" class="btn btn-primary">
-                            <i class="bi bi-check-circle"></i> Process with Tiers
-                        </button>
+                            <a href="{% url 'tickets:upload_csv' %}" class="btn btn-outline-secondary">
+                                <i class="bi bi-arrow-left"></i> Back to Upload
+                            </a>
+                        {% endif %}
                     </form>
                 </div>
             </div>
@@ -139,20 +166,40 @@
     <script>
         document.addEventListener('DOMContentLoaded', function() {
             const tierRowTemplate = document.getElementById('tier-row-template');
+            
+            if (!tierRowTemplate) {
+                console.error('Tier row template not found');
+                return;
+            }
+            
             let tierCounters = {};
             
             // Initialize tier counters
             document.querySelectorAll('.ticket-type-section').forEach(section => {
                 const ticketType = section.dataset.ticketType;
-                tierCounters[ticketType] = 0;
+                if (ticketType) {
+                    tierCounters[ticketType] = 0;
+                }
             });
             
             // Add tier button handler
             document.querySelectorAll('.add-tier-btn').forEach(btn => {
-                btn.addEventListener('click', function() {
+                btn.addEventListener('click', function(e) {
+                    e.preventDefault();
                     const ticketType = this.dataset.ticketType;
+                    
+                    if (!ticketType) {
+                        console.error('Ticket type not found in button data');
+                        return;
+                    }
+                    
                     // Find container by traversing DOM from button instead of by ID
                     const section = this.closest('.ticket-type-section');
+                    if (!section) {
+                        console.error('Could not find ticket type section');
+                        return;
+                    }
+                    
                     const container = section.querySelector('.tiers-container');
                     
                     if (!container) {
@@ -161,7 +208,8 @@
                     }
                     
                     const newRow = tierRowTemplate.content.cloneNode(true);
-                    const tierIndex = tierCounters[ticketType]++;
+                    const tierIndex = tierCounters[ticketType] || 0;
+                    tierCounters[ticketType] = tierIndex + 1;
                     
                     // Set field names - use ticket type index for reliable matching
                     // Find the ticket type index from the hidden input field
@@ -169,26 +217,35 @@
                     const ticketTypeIndex = ticketTypeInput ? ticketTypeInput.name.replace('ticket_type_', '') : '';
                     
                     // Use format: tier_{ticket_type_index}_{tier_index}_{field}
-                    newRow.querySelector('.tier-name').name = `tier_${ticketTypeIndex}_${tierIndex}_name`;
-                    newRow.querySelector('.tier-price').name = `tier_${ticketTypeIndex}_${tierIndex}_price`;
-                    newRow.querySelector('.tier-allotment').name = `tier_${ticketTypeIndex}_${tierIndex}_allotment`;
-                    newRow.querySelector('.tier-order').name = `tier_${ticketTypeIndex}_${tierIndex}_order`;
-                    
-                    // Set default order value
+                    const nameInput = newRow.querySelector('.tier-name');
+                    const priceInput = newRow.querySelector('.tier-price');
+                    const allotmentInput = newRow.querySelector('.tier-allotment');
                     const orderInput = newRow.querySelector('.tier-order');
-                    orderInput.value = container.children.length + 1;
+                    
+                    if (nameInput) nameInput.name = `tier_${ticketTypeIndex}_${tierIndex}_name`;
+                    if (priceInput) priceInput.name = `tier_${ticketTypeIndex}_${tierIndex}_price`;
+                    if (allotmentInput) allotmentInput.name = `tier_${ticketTypeIndex}_${tierIndex}_allotment`;
+                    if (orderInput) {
+                        orderInput.name = `tier_${ticketTypeIndex}_${tierIndex}_order`;
+                        orderInput.value = container.children.length + 1;
+                    }
                     
                     // Remove button handler
-                    newRow.querySelector('.remove-tier-btn').addEventListener('click', function() {
-                        this.closest('.tier-row').remove();
-                        updateAllotmentTotal(section);
-                        renumberOrders(container);
-                    });
+                    const removeBtn = newRow.querySelector('.remove-tier-btn');
+                    if (removeBtn) {
+                        removeBtn.addEventListener('click', function() {
+                            this.closest('.tier-row').remove();
+                            updateAllotmentTotal(section);
+                            renumberOrders(container);
+                        });
+                    }
                     
                     // Update allotment total on change
-                    newRow.querySelector('.tier-allotment').addEventListener('input', function() {
-                        updateAllotmentTotal(section);
-                    });
+                    if (allotmentInput) {
+                        allotmentInput.addEventListener('input', function() {
+                            updateAllotmentTotal(section);
+                        });
+                    }
                     
                     container.appendChild(newRow);
                     updateAllotmentTotal(section);
@@ -219,8 +276,19 @@
                 });
             }
             
+            // Debug: Log initialization
+            console.log('Tier configuration initialized');
+            console.log('Ticket type sections found:', document.querySelectorAll('.ticket-type-section').length);
+            console.log('Add tier buttons found:', document.querySelectorAll('.add-tier-btn').length);
+            
             // Form validation
-            document.getElementById('tier-form').addEventListener('submit', function(e) {
+            const tierForm = document.getElementById('tier-form');
+            if (!tierForm) {
+                console.error('Tier form not found');
+                return;
+            }
+            
+            tierForm.addEventListener('submit', function(e) {
                 let isValid = true;
                 const errors = [];
                 

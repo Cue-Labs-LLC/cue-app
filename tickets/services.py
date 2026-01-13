@@ -460,7 +460,7 @@ class CSVProcessor:
                         results['skipped_duplicates'] += 1
                         results['skipped_order_numbers'].append(order_number)
                         existing_orders.add(order_number)
-                        continue
+                    continue
                 
                 # Get or create customer
                 customer_email = mapped_row.get('customer_email', '').lower().strip()
@@ -772,8 +772,8 @@ class CSVProcessor:
                     f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "B", "location": "services.py:760", "message": "Found existing orders in database before bulk_create", "data": {"existing_order_numbers": list(existing_orders_in_db), "ticket_orders_to_create_count": len(ticket_orders_to_create)}, "timestamp": int(timezone.now().timestamp() * 1000)}) + "\n")
                 # #endregion
                 ticket_orders_to_create = [o for o in ticket_orders_to_create if o.order_number not in existing_orders_in_db]
-            if ticket_orders_to_create:
-                TicketOrder.objects.bulk_create(ticket_orders_to_create)
+        if ticket_orders_to_create:
+            TicketOrder.objects.bulk_create(ticket_orders_to_create)
         if tickets_to_create:
             Ticket.objects.bulk_create(tickets_to_create)
         

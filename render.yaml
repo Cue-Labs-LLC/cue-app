@@ -25,11 +25,7 @@ services:
         value: us-east-1
       - key: AWS_S3_CUSTOM_DOMAIN
         sync: false
+      # DATABASE_URL is manually set in Render dashboard to point to your manually created database
+      - key: DATABASE_URL
+        sync: false  # This tells Render not to auto-generate it
     healthCheckPath: /health/
-
-  # PostgreSQL database
-  - type: pspg
-    name: ltv-updater-db
-    plan: starter
-    databaseName: ltv_updater
-    user: ltv_updater_user

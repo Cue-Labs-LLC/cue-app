@@ -232,7 +232,7 @@ class Event(AuditBaseModel):
 
     def __str__(self):
         return f"{self.name} - {self.venue.name}, {self.venue.city} ({self.event_date.date()})"
-    
+
     def get_associated_uploads(self):
         """Get all distinct uploads associated with this event via ticket orders."""
         return UploadedFile.objects.filter(
