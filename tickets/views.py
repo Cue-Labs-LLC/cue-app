@@ -6,7 +6,9 @@ from django.contrib import messages
 from django.contrib.auth import views as auth_views
 from django.contrib.auth.decorators import login_required
 from django.urls import reverse_lazy
-from django.db.models import Sum, Count, Avg, Q
+from django.db.models import Sum, Count, Avg, Q, Subquery, OuterRef
+from django.db.models.functions import Coalesce
+from django.db import models
 from django.core.paginator import Paginator
 from django.http import JsonResponse, Http404, HttpResponse
 from django.views.decorators.http import require_http_methods
@@ -529,10 +531,21 @@ def customer_detail(request, customer_id):
 @login_required
 def event_list(request):
     """Display list of all events with associated uploads."""
+    # Use Subquery to calculate revenue correctly (avoids double-counting when orders have multiple tickets)
     events = Event.objects.annotate(
         upload_count=Count('ticket_orders__uploaded_file', distinct=True),
         total_orders=Count('ticket_orders', distinct=True),
-        total_revenue=Sum('ticket_orders__total_amount'),
+        total_revenue=Coalesce(
+            Subquery(
+                TicketOrder.objects.filter(
+                    event=OuterRef('pk')
+                ).values('event').annotate(
+                    total=Sum('total_amount')
+                ).values('total')[:1],
+                output_field=models.DecimalField(max_digits=10, decimal_places=2)
+            ),
+            Decimal('0.00')
+        ),
         total_tickets=Count('ticket_orders__tickets', distinct=True)
     ).select_related('venue')
     
