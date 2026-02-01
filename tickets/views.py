@@ -806,6 +806,7 @@ def forecast_api(request):
     venue_id = request.GET.get('venue_id', '').strip()
     event_date_str = request.GET.get('event_date', '').strip()
     capacity_str = request.GET.get('capacity', '').strip()
+    starting_tickets_str = request.GET.get('starting_tickets', '').strip()
 
     # Validate inputs
     errors = []
@@ -828,6 +829,15 @@ def forecast_api(request):
         errors.append('Invalid date format')
         event_date = None
 
+    starting_tickets = None
+    if starting_tickets_str:
+        try:
+            starting_tickets = int(starting_tickets_str)
+            if starting_tickets < 0:
+                errors.append('Tickets sold to date must be non-negative')
+        except ValueError:
+            errors.append('Tickets sold to date must be a valid number')
+
     if errors:
         return JsonResponse({'error': '; '.join(errors)}, status=400)
 
@@ -836,6 +846,7 @@ def forecast_api(request):
         venue_id=venue_id if venue_id else None,
         event_date=event_date,
         capacity=capacity,
+        starting_tickets=starting_tickets,
     )
 
     response = JsonResponse(result)

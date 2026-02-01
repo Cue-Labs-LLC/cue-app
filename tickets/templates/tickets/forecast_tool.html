@@ -23,7 +23,7 @@
 </div>
 
 <div class="row mb-4">
-    <div class="col-md-4 mb-3">
+    <div class="col-md-3 mb-3">
         <label for="venue" class="form-label">Venue</label>
         <select id="venue" class="form-select">
             <option value="">All venues (global baseline)</option>
@@ -33,15 +33,20 @@
         </select>
         <div class="form-text">Select a venue for venue-specific predictions, or leave blank for global baseline.</div>
     </div>
-    <div class="col-md-4 mb-3">
+    <div class="col-md-3 mb-3">
         <label for="event_date" class="form-label">Event Date</label>
         <input type="date" id="event_date" class="form-control" required>
         <div class="form-text">The date of your event.</div>
     </div>
-    <div class="col-md-4 mb-3">
+    <div class="col-md-3 mb-3">
         <label for="capacity" class="form-label">Capacity</label>
         <input type="number" id="capacity" class="form-control" min="1" placeholder="e.g. 500" required>
         <div class="form-text">Total ticket capacity for the event.</div>
+    </div>
+    <div class="col-md-3 mb-3">
+        <label for="starting_tickets" class="form-label">Tickets sold to date</label>
+        <input type="number" id="starting_tickets" class="form-control" min="0" placeholder="optional">
+        <div class="form-text">Leave blank for a new event; set for events already in progress.</div>
     </div>
 </div>
 
@@ -134,6 +139,7 @@
     const venueSelect = document.getElementById('venue');
     const eventDateInput = document.getElementById('event_date');
     const capacityInput = document.getElementById('capacity');
+    const startingTicketsInput = document.getElementById('starting_tickets');
     const chartCanvas = document.getElementById('forecastChart');
     const chartPlaceholder = document.getElementById('chartPlaceholder');
     const chartLoading = document.getElementById('chartLoading');
@@ -289,6 +295,10 @@
                 event_date: eventDate,
                 capacity: capacity
             });
+            const startingTickets = startingTicketsInput.value.trim();
+            if (startingTickets) {
+                params.set('starting_tickets', startingTickets);
+            }
 
             const response = await fetch(`{% url 'tickets:forecast_api' %}?${params}`, {
                 cache: 'no-store',
@@ -362,6 +372,8 @@
     venueSelect.addEventListener('change', debouncedFetch);
     eventDateInput.addEventListener('change', debouncedFetch);
     capacityInput.addEventListener('input', debouncedFetch);
+    startingTicketsInput.addEventListener('input', debouncedFetch);
+    startingTicketsInput.addEventListener('change', debouncedFetch);
 
     viewToggle.forEach(radio => {
         radio.addEventListener('change', updateChartData);

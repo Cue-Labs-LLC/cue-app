@@ -20,7 +20,8 @@ def generate_forecast_preview(
     venue_id: Optional[str],
     event_date: date,
     capacity: int,
-    min_events: int = 1
+    min_events: int = 1,
+    starting_tickets: Optional[int] = None,
 ) -> dict:
     """
     Generate a forecast preview for a hypothetical event.
@@ -32,11 +33,16 @@ def generate_forecast_preview(
     day-of), so the chart shows only the event's sales window. Past events
     return no curve points.
 
+    When starting_tickets is set, the curve is for an event already in progress:
+    "today" shows that ticket count and the curve from today to event day keeps
+    the same shape (pace) as the baseline but is shifted and scaled accordingly.
+
     Args:
         venue_id: UUID string of the venue (optional, uses global if None)
         event_date: The date of the hypothetical event
         capacity: Expected total ticket capacity
         min_events: Minimum events required for valid baseline (at least one)
+        starting_tickets: Optional tickets already sold; when set, curve starts at this value
 
     Returns:
         dict with:
@@ -215,6 +221,36 @@ def generate_forecast_preview(
                 'expected_tickets': expected_tickets,
                 'expected_percent': expected_percent,
             })
+
+    # Re-anchor curve when event is already in progress (starting_tickets set)
+    if starting_tickets is not None and starting_tickets >= 0 and curve_points:
+        if starting_tickets >= capacity:
+            # Sold out: flat line at capacity
+            for pt in curve_points:
+                pt['expected_tickets'] = capacity
+                pt['expected_percent'] = round(100.0 * capacity / capacity, 2) if capacity > 0 else 0.0
+        else:
+            tickets_at_today = curve_points[0]['expected_tickets']
+            tickets_at_end = curve_points[-1]['expected_tickets']
+            incremental_baseline = tickets_at_end - tickets_at_today
+            if incremental_baseline <= 0:
+                projected_end = min(capacity, starting_tickets)
+            else:
+                projected_end = min(capacity, starting_tickets + incremental_baseline)
+            for pt in curve_points:
+                if incremental_baseline <= 0:
+                    new_tickets = starting_tickets
+                else:
+                    new_tickets = starting_tickets + (
+                        (pt['expected_tickets'] - tickets_at_today)
+                        / incremental_baseline
+                        * (projected_end - starting_tickets)
+                    )
+                new_tickets = max(0, min(capacity, round(new_tickets)))
+                pt['expected_tickets'] = int(new_tickets)
+                pt['expected_percent'] = (
+                    round(100.0 * new_tickets / capacity, 2) if capacity > 0 else 0.0
+                )
 
     return {
         'curve_points': curve_points,
