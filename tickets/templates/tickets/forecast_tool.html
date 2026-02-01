@@ -1,0 +1,328 @@
+{% extends 'tickets/base.html' %}
+
+{% block title %}Sales Forecast Tool{% endblock %}
+
+{% block extra_head %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+{% endblock %}
+
+{% block content %}
+<div class="row mb-4">
+    <div class="col">
+        <nav aria-label="breadcrumb">
+            <ol class="breadcrumb">
+                <li class="breadcrumb-item"><a href="{% url 'tickets:home' %}">Home</a></li>
+                <li class="breadcrumb-item active">Forecast Tool</li>
+            </ol>
+        </nav>
+        <h1><i class="bi bi-graph-up-arrow"></i> Sales Forecast Tool</h1>
+        <p class="text-muted">
+            Enter event details to see a predicted ticket sales curve based on historical data.
+        </p>
+    </div>
+</div>
+
+<div class="row mb-4">
+    <div class="col-md-4 mb-3">
+        <label for="venue" class="form-label">Venue</label>
+        <select id="venue" class="form-select">
+            <option value="">All venues (global baseline)</option>
+            {% for venue in venues %}
+            <option value="{{ venue.id }}">{{ venue.name }}, {{ venue.city }}</option>
+            {% endfor %}
+        </select>
+        <div class="form-text">Select a venue for venue-specific predictions, or leave blank for global baseline.</div>
+    </div>
+    <div class="col-md-4 mb-3">
+        <label for="event_date" class="form-label">Event Date</label>
+        <input type="date" id="event_date" class="form-control" required>
+        <div class="form-text">The date of your event.</div>
+    </div>
+    <div class="col-md-4 mb-3">
+        <label for="capacity" class="form-label">Capacity</label>
+        <input type="number" id="capacity" class="form-control" min="1" placeholder="e.g. 500" required>
+        <div class="form-text">Total ticket capacity for the event.</div>
+    </div>
+</div>
+
+<div class="row mb-3">
+    <div id="extrapolationWarning" class="alert alert-warning d-none" role="alert">
+        <i class="bi bi-exclamation-triangle"></i>
+        <span id="extrapolationMessage"></span>
+    </div>
+    <div class="col">
+        <div class="btn-group" role="group" aria-label="Chart view toggle">
+            <input type="radio" class="btn-check" name="chartView" id="viewTickets" value="tickets" checked>
+            <label class="btn btn-outline-primary" for="viewTickets">Tickets</label>
+            <input type="radio" class="btn-check" name="chartView" id="viewPercent" value="percent">
+            <label class="btn btn-outline-primary" for="viewPercent">Percentage</label>
+        </div>
+    </div>
+</div>
+
+<div class="row mb-4">
+    <div class="col">
+        <div class="card">
+            <div class="card-body">
+                <div id="chartContainer" style="position: relative; height: 400px;">
+                    <div id="chartPlaceholder" class="d-flex align-items-center justify-content-center h-100 text-muted">
+                        <div class="text-center">
+                            <i class="bi bi-graph-up" style="font-size: 3rem;"></i>
+                            <p class="mt-2">Enter event details above to generate a forecast</p>
+                        </div>
+                    </div>
+                    <div id="chartLoading" class="d-none d-flex align-items-center justify-content-center h-100">
+                        <div class="spinner-border text-primary" role="status">
+                            <span class="visually-hidden">Loading...</span>
+                        </div>
+                    </div>
+                    <canvas id="forecastChart" class="d-none"></canvas>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="row mb-4">
+    <div class="col">
+        <div id="baselineInfo" class="card d-none">
+            <div class="card-body">
+                <p class="mb-0">
+                    <strong>Baseline:</strong>
+                    <span id="baselineSegment"></span>
+                    <span class="text-muted">(<span id="baselineCount"></span> past events)</span>
+                </p>
+            </div>
+        </div>
+        <div id="noDataWarning" class="alert alert-warning d-none">
+            <i class="bi bi-exclamation-triangle"></i>
+            <strong>Insufficient data:</strong> Not enough historical events to generate a reliable forecast.
+            Try selecting a different venue or use the global baseline.
+        </div>
+        <div id="errorMessage" class="alert alert-danger d-none"></div>
+    </div>
+</div>
+
+<script>
+(function() {
+    const venueSelect = document.getElementById('venue');
+    const eventDateInput = document.getElementById('event_date');
+    const capacityInput = document.getElementById('capacity');
+    const chartCanvas = document.getElementById('forecastChart');
+    const chartPlaceholder = document.getElementById('chartPlaceholder');
+    const chartLoading = document.getElementById('chartLoading');
+    const baselineInfo = document.getElementById('baselineInfo');
+    const baselineSegment = document.getElementById('baselineSegment');
+    const baselineCount = document.getElementById('baselineCount');
+    const extrapolationWarning = document.getElementById('extrapolationWarning');
+    const extrapolationMessage = document.getElementById('extrapolationMessage');
+    const noDataWarning = document.getElementById('noDataWarning');
+    const errorMessage = document.getElementById('errorMessage');
+    const viewToggle = document.querySelectorAll('input[name="chartView"]');
+
+    let chart = null;
+    let currentData = null;
+    let debounceTimer = null;
+
+    // Initialize Chart.js
+    function initChart() {
+        const ctx = chartCanvas.getContext('2d');
+        chart = new Chart(ctx, {
+            type: 'line',
+            data: {
+                labels: [],
+                datasets: [{
+                    label: 'Expected Tickets',
+                    data: [],
+                    borderColor: 'rgb(75, 192, 192)',
+                    backgroundColor: 'rgba(75, 192, 192, 0.1)',
+                    fill: true,
+                    tension: 0.3,
+                    pointRadius: 4,
+                    pointHoverRadius: 6,
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {
+                    legend: {
+                        display: false
+                    },
+                    tooltip: {
+                        callbacks: {
+                            title: function(items) {
+                                return items[0].label + ' days before event';
+                            }
+                        }
+                    }
+                },
+                scales: {
+                    x: {
+                        reverse: false,
+                        title: {
+                            display: true,
+                            text: 'Days Before Event'
+                        }
+                    },
+                    y: {
+                        beginAtZero: true,
+                        title: {
+                            display: true,
+                            text: 'Expected Tickets Sold'
+                        }
+                    }
+                }
+            }
+        });
+    }
+
+    function getSelectedView() {
+        return document.querySelector('input[name="chartView"]:checked').value;
+    }
+
+    function updateChartData() {
+        if (!chart || !currentData || !currentData.curve_points.length) return;
+
+        const view = getSelectedView();
+        const labels = currentData.curve_points.map(p => p.days_before);
+        const data = currentData.curve_points.map(p =>
+            view === 'tickets' ? p.expected_tickets : p.expected_percent
+        );
+
+        chart.data.labels = labels;
+        chart.data.datasets[0].data = data;
+        chart.data.datasets[0].label = view === 'tickets' ? 'Expected Tickets' : 'Expected %';
+        chart.options.scales.y.title.text = view === 'tickets' ? 'Expected Tickets Sold' : 'Expected % of Capacity';
+
+        if (view === 'percent') {
+            chart.options.scales.y.max = 100;
+        } else {
+            // Scale y-axis up to entered capacity so the full range is visible
+            const capacity = parseInt(capacityInput.value, 10);
+            chart.options.scales.y.max = Number.isNaN(capacity) || capacity <= 0 ? undefined : capacity;
+        }
+
+        chart.update();
+    }
+
+    function showLoading() {
+        chartPlaceholder.classList.add('d-none');
+        chartCanvas.classList.add('d-none');
+        chartLoading.classList.remove('d-none');
+        baselineInfo.classList.add('d-none');
+        extrapolationWarning.classList.add('d-none');
+        noDataWarning.classList.add('d-none');
+        errorMessage.classList.add('d-none');
+    }
+
+    function showChart() {
+        chartPlaceholder.classList.add('d-none');
+        chartLoading.classList.add('d-none');
+        chartCanvas.classList.remove('d-none');
+    }
+
+    function showPlaceholder() {
+        chartPlaceholder.classList.remove('d-none');
+        chartCanvas.classList.add('d-none');
+        chartLoading.classList.add('d-none');
+    }
+
+    function showError(message) {
+        chartLoading.classList.add('d-none');
+        showPlaceholder();
+        errorMessage.textContent = message;
+        errorMessage.classList.remove('d-none');
+    }
+
+    function showNoData() {
+        chartLoading.classList.add('d-none');
+        showPlaceholder();
+        noDataWarning.classList.remove('d-none');
+    }
+
+    async function fetchForecast() {
+        const venueId = venueSelect.value;
+        const eventDate = eventDateInput.value;
+        const capacity = capacityInput.value;
+
+        // Only fetch if we have the required inputs
+        if (!eventDate || !capacity) {
+            showPlaceholder();
+            return;
+        }
+
+        showLoading();
+
+        try {
+            const params = new URLSearchParams({
+                venue_id: venueId,
+                event_date: eventDate,
+                capacity: capacity
+            });
+
+            const response = await fetch(`{% url 'tickets:forecast_api' %}?${params}`, {
+                cache: 'no-store',
+                headers: { 'X-Requested-With': 'XMLHttpRequest' }
+            });
+            const data = await response.json();
+
+            if (!response.ok) {
+                showError(data.error || 'An error occurred');
+                return;
+            }
+
+            currentData = data;
+
+            if (!data.has_sufficient_data || !data.curve_points.length) {
+                showNoData();
+                return;
+            }
+
+            // Update baseline info
+            baselineSegment.textContent = data.baseline_info.segment_name;
+            baselineCount.textContent = data.baseline_info.events_count;
+            baselineInfo.classList.remove('d-none');
+
+            // Show or hide extrapolation warning
+            if (data.baseline_info.extrapolation_warning && data.baseline_info.extrapolation_message) {
+                extrapolationMessage.textContent = data.baseline_info.extrapolation_message;
+                extrapolationWarning.classList.remove('d-none');
+            } else {
+                extrapolationWarning.classList.add('d-none');
+            }
+
+            // Update chart
+            if (!chart) {
+                initChart();
+            }
+            updateChartData();
+            showChart();
+
+        } catch (err) {
+            showError('Failed to fetch forecast data');
+            console.error(err);
+        }
+    }
+
+    function debouncedFetch() {
+        clearTimeout(debounceTimer);
+        debounceTimer = setTimeout(fetchForecast, 300);
+    }
+
+    // Event listeners
+    venueSelect.addEventListener('change', debouncedFetch);
+    eventDateInput.addEventListener('change', debouncedFetch);
+    capacityInput.addEventListener('input', debouncedFetch);
+
+    viewToggle.forEach(radio => {
+        radio.addEventListener('change', updateChartData);
+    });
+
+    // Set default date to 30 days from now
+    const defaultDate = new Date();
+    defaultDate.setDate(defaultDate.getDate() + 30);
+    eventDateInput.value = defaultDate.toISOString().split('T')[0];
+})();
+</script>
+{% endblock %}

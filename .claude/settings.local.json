@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(pip install:*)",
+      "Bash(python -m pytest:*)",
+      "Bash(python:*)",
+      "Bash(curl:*)",
+      "Bash(cat:*)"
+    ]
+  }
+}

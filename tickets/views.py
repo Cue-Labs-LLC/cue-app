@@ -19,7 +19,8 @@ from .models import (
     CSVFormat, UploadedFile, Customer, Event, TicketOrder, Ticket, Venue
 )
 from .forms import CSVUploadForm, TicketPriceEntryForm, CSVFormatForm, VenueForm, LoginForm
-from .services import CSVProcessor
+from .csv_processor import CSVProcessor
+from .services.forecasting.preview import generate_forecast_preview
 
 
 # Authentication Views
@@ -546,7 +547,7 @@ def event_list(request):
             ),
             Decimal('0.00')
         ),
-        total_tickets=Count('ticket_orders__tickets', distinct=True)
+        total_tickets=Count('ticket_orders__tickets', distinct=True),
     ).select_related('venue')
     
     # Search functionality
@@ -783,3 +784,61 @@ def venue_create(request):
         'form': form,
     }
     return render(request, 'tickets/venue_create.html', context)
+
+
+# Forecast Tool Views
+
+@login_required
+def forecast_tool(request):
+    """Display the standalone forecast tool page."""
+    venues = Venue.objects.all().order_by('city', 'name')
+    context = {
+        'venues': venues,
+    }
+    return render(request, 'tickets/forecast_tool.html', context)
+
+
+@login_required
+def forecast_api(request):
+    """Return forecast data as JSON for the chart."""
+    from datetime import datetime
+
+    venue_id = request.GET.get('venue_id', '').strip()
+    event_date_str = request.GET.get('event_date', '').strip()
+    capacity_str = request.GET.get('capacity', '').strip()
+
+    # Validate inputs
+    errors = []
+    if not event_date_str:
+        errors.append('Event date is required')
+    if not capacity_str:
+        errors.append('Capacity is required')
+
+    try:
+        capacity = int(capacity_str) if capacity_str else 0
+        if capacity <= 0:
+            errors.append('Capacity must be a positive number')
+    except ValueError:
+        errors.append('Capacity must be a valid number')
+        capacity = 0
+
+    try:
+        event_date = datetime.strptime(event_date_str, '%Y-%m-%d').date() if event_date_str else None
+    except ValueError:
+        errors.append('Invalid date format')
+        event_date = None
+
+    if errors:
+        return JsonResponse({'error': '; '.join(errors)}, status=400)
+
+    # Generate forecast preview
+    result = generate_forecast_preview(
+        venue_id=venue_id if venue_id else None,
+        event_date=event_date,
+        capacity=capacity,
+    )
+
+    response = JsonResponse(result)
+    response['Cache-Control'] = 'no-store, no-cache, must-revalidate'
+    response['Pragma'] = 'no-cache'
+    return response

@@ -222,6 +222,11 @@ class Event(AuditBaseModel):
     )
     event_date = models.DateTimeField(db_index=True)
     description = models.TextField(blank=True)
+    capacity = models.IntegerField(
+        null=True,
+        blank=True,
+        help_text="Total ticket capacity for the event (optional)"
+    )
 
     class Meta:
         unique_together = [['name', 'event_date']]

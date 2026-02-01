@@ -156,7 +156,7 @@ class VenueAdmin(admin.ModelAdmin):
 
 @admin.register(Event)
 class EventAdmin(admin.ModelAdmin):
-    list_display = ['name', 'venue', 'event_date', 'order_count', 'created_at']
+    list_display = ['name', 'venue', 'event_date', 'capacity', 'order_count', 'created_at']
     list_filter = ['event_date', 'created_at', 'venue__city']
     search_fields = ['name', 'venue__name', 'venue__city', 'description']
     readonly_fields = ['id', 'created_at', 'updated_at']
@@ -164,7 +164,7 @@ class EventAdmin(admin.ModelAdmin):
     
     fieldsets = (
         ('Event Information', {
-            'fields': ('name', 'venue', 'event_date', 'description')
+            'fields': ('name', 'venue', 'event_date', 'description', 'capacity')
         }),
         ('Metadata', {
             'fields': ('id', 'created_at', 'updated_at'),

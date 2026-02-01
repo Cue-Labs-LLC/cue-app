@@ -30,6 +30,10 @@ urlpatterns = [
     # Events
     path('events/', views.event_list, name='event_list'),
     path('events/<uuid:event_id>/', views.event_detail, name='event_detail'),
+
+    # Forecast Tool
+    path('forecast/', views.forecast_tool, name='forecast_tool'),
+    path('forecast/api/', views.forecast_api, name='forecast_api'),
     
     # Orders
     path('orders/<uuid:order_id>/', views.order_detail, name='order_detail'),
