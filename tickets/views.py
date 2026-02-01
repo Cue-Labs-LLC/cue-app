@@ -619,7 +619,7 @@ def event_detail(request, event_id):
     total_customers = Customer.objects.filter(ticket_orders__event=event).distinct().count()
     
     # Paginate orders
-    paginator = Paginator(orders.order_by('-order_date'), 20)
+    paginator = Paginator(orders.order_by('-order_date'), 100)
     page_number = request.GET.get('page')
     page_obj = paginator.get_page(page_number)
     

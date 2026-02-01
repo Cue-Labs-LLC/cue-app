@@ -83,6 +83,32 @@
     </div>
 </div>
 
+<div id="historicalEventsCard" class="row mb-4 d-none">
+    <div class="col">
+        <div class="card">
+            <div class="card-header">
+                <h5 class="mb-0">Historical events (baseline)</h5>
+            </div>
+            <div class="card-body">
+                <div class="table-responsive">
+                    <table class="table table-striped table-hover mb-0">
+                        <thead>
+                            <tr>
+                                <th>Event name</th>
+                                <th>Date</th>
+                                <th>Venue</th>
+                                <th>Tickets sold</th>
+                            </tr>
+                        </thead>
+                        <tbody id="historicalEventsBody">
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
 <div class="row mb-4">
     <div class="col">
         <div id="baselineInfo" class="card d-none">
@@ -118,6 +144,8 @@
     const extrapolationMessage = document.getElementById('extrapolationMessage');
     const noDataWarning = document.getElementById('noDataWarning');
     const errorMessage = document.getElementById('errorMessage');
+    const historicalEventsCard = document.getElementById('historicalEventsCard');
+    const historicalEventsBody = document.getElementById('historicalEventsBody');
     const viewToggle = document.querySelectorAll('input[name="chartView"]');
 
     let chart = null;
@@ -211,6 +239,7 @@
         chartCanvas.classList.add('d-none');
         chartLoading.classList.remove('d-none');
         baselineInfo.classList.add('d-none');
+        historicalEventsCard.classList.add('d-none');
         extrapolationWarning.classList.add('d-none');
         noDataWarning.classList.add('d-none');
         errorMessage.classList.add('d-none');
@@ -298,6 +327,25 @@
             }
             updateChartData();
             showChart();
+
+            // Historical events table
+            const events = data.historical_events || [];
+            historicalEventsBody.innerHTML = '';
+            if (events.length > 0) {
+                events.forEach(function(ev) {
+                    const tr = document.createElement('tr');
+                    const dateStr = ev.event_date ? new Date(ev.event_date + 'T00:00:00').toLocaleDateString() : '';
+                    [ev.name, dateStr, ev.venue_name || '', String(ev.total_tickets_sold ?? '')].forEach(function(text) {
+                        const td = document.createElement('td');
+                        td.textContent = text;
+                        tr.appendChild(td);
+                    });
+                    historicalEventsBody.appendChild(tr);
+                });
+                historicalEventsCard.classList.remove('d-none');
+            } else {
+                historicalEventsCard.classList.add('d-none');
+            }
 
         } catch (err) {
             showError('Failed to fetch forecast data');

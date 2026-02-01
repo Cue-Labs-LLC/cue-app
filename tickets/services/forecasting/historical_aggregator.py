@@ -250,6 +250,58 @@ class HistoricalAggregator:
         baseline.segment_id = None
         return baseline
 
+    def get_events_used_for_baseline(
+        self,
+        city: Optional[str] = None,
+        venue: Optional[Venue] = None,
+        reference_days_before: Optional[int] = None,
+    ) -> QuerySet:
+        """
+        Return the same Event queryset used to build the baseline curve.
+
+        Mirrors the fallback logic in get_baseline_curve (venue -> city -> global)
+        and applies the same reference_days_before filter. Use this to list
+        historical events that contributed to the baseline.
+
+        Args:
+            city: Preferred city segment (used when falling back from venue).
+            venue: Preferred venue segment (most specific).
+            reference_days_before: If set, filter to events whose sales length
+                is in [0.5*ref, 2*ref]. If fewer than min_events pass,
+                returns unfiltered events.
+
+        Returns:
+            QuerySet of Event objects, ordered by event_date descending.
+        """
+        # Try venue-specific first (most specific)
+        if venue is not None:
+            events = self.get_events_for_segment(venue=venue)
+            if events.count() >= self.min_events:
+                if reference_days_before is not None:
+                    events = self._filter_events_by_sales_length(
+                        events, reference_days_before
+                    )
+                return events.order_by('-event_date')
+            city = venue.city
+
+        # Try city-specific
+        if city is not None:
+            events = self.get_events_for_segment(city=city)
+            if events.count() >= self.min_events:
+                if reference_days_before is not None:
+                    events = self._filter_events_by_sales_length(
+                        events, reference_days_before
+                    )
+                return events.order_by('-event_date')
+
+        # Fall back to global
+        events = self.get_events_for_segment()
+        if reference_days_before is not None:
+            events = self._filter_events_by_sales_length(
+                events, reference_days_before
+            )
+        return events.order_by('-event_date')
+
     def get_available_segments(self) -> dict:
         """
         Get information about available segments and their event counts.

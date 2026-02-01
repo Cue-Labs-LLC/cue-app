@@ -39,14 +39,24 @@ class SalesCurveCalculator:
         Returns:
             Number of days before event (negative if after event)
         """
-        # Ensure we're comparing dates, not datetimes
+        # Use calendar dates in a consistent timezone so order and event dates
+        # are comparable (e.g. Oct 15 22:01 local and Nov 2 00:00 local both
+        # contribute to the correct "days before event").
         if hasattr(order_date, 'date'):
-            order_day = order_date.date()
+            order_day = (
+                timezone.localtime(order_date).date()
+                if timezone.is_aware(order_date)
+                else order_date.date()
+            )
         else:
             order_day = order_date
 
         if hasattr(event_date, 'date'):
-            event_day = event_date.date()
+            event_day = (
+                timezone.localtime(event_date).date()
+                if timezone.is_aware(event_date)
+                else event_date.date()
+            )
         else:
             event_day = event_date
 

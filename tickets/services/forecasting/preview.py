@@ -13,6 +13,7 @@ from django.utils import timezone
 
 from tickets.models import Event, Venue
 from .historical_aggregator import HistoricalAggregator
+from .sales_curve import SalesCurveCalculator
 
 
 def generate_forecast_preview(
@@ -109,7 +110,33 @@ def generate_forecast_preview(
             'curve_points': [],
             'baseline_info': baseline_info,
             'has_sufficient_data': False,
+            'historical_events': [],
         }
+
+    # Build historical_events list (same segment as baseline)
+    city_for_events = venue.city if venue else None
+    events_queryset = aggregator.get_events_used_for_baseline(
+        city=city_for_events,
+        venue=venue,
+        reference_days_before=reference,
+    )
+    curve_calculator = SalesCurveCalculator()
+    historical_events = []
+    for event in events_queryset:
+        curve = curve_calculator.get_event_sales_curve(event)
+        if curve.total_tickets > 0:
+            event_date_str = (
+                event.event_date.date().isoformat()
+                if hasattr(event.event_date, 'date')
+                else str(event.event_date)
+            )
+            venue_name = f"{event.venue.name}, {event.venue.city}"
+            historical_events.append({
+                'name': event.name,
+                'event_date': event_date_str,
+                'venue_name': venue_name,
+                'total_tickets_sold': curve.total_tickets,
+            })
 
     # Past event: no curve points
     if days_until_event < 0:
@@ -117,6 +144,7 @@ def generate_forecast_preview(
             'curve_points': [],
             'baseline_info': baseline_info,
             'has_sufficient_data': has_sufficient_data,
+            'historical_events': historical_events,
         }
 
     curve_points = []
@@ -128,17 +156,46 @@ def generate_forecast_preview(
         max_incremental = max(0.0, tickets_at_end - tickets_at_start)
         end_cap = min(capacity, max_incremental) if max_incremental > 0 else 0
 
-        for day in range(days_until_event, -2, -1):
-            incremental = baseline.interpolate_tickets(day) - tickets_at_start
-            relative = (incremental / max_incremental) if max_incremental > 0 else 0.0
-            relative = max(0.0, min(1.0, relative))
-            expected_tickets = min(capacity, round(relative * end_cap))
-            expected_percent = round(100 * expected_tickets / capacity, 2) if capacity > 0 else 0.0
-            curve_points.append({
-                'days_before': day,
-                'expected_tickets': expected_tickets,
-                'expected_percent': expected_percent,
-            })
+        if max_incremental > 0 and end_cap > 0:
+            for day in range(days_until_event, -2, -1):
+                incremental = baseline.interpolate_tickets(day) - tickets_at_start
+                relative = (incremental / max_incremental) if max_incremental > 0 else 0.0
+                relative = max(0.0, min(1.0, relative))
+                expected_tickets = min(capacity, round(relative * end_cap))
+                expected_percent = round(100 * expected_tickets / capacity, 2) if capacity > 0 else 0.0
+                curve_points.append({
+                    'days_before': day,
+                    'expected_tickets': expected_tickets,
+                    'expected_percent': expected_percent,
+                })
+        # When historical sales in the forecast window are zero (baseline flat in [days_until_event, -1]),
+        # map the forecast window onto the baseline's full range so the chart shows the historical shape.
+        else:
+            pts = baseline.points_tickets or baseline.points
+            baseline_start_day = max(pts.keys()) if pts else days_until_event
+            baseline_end_day = -1
+            forecast_window_len = float(days_until_event - baseline_end_day)  # e.g. 31
+            tickets_at_end = baseline.interpolate_tickets(-1) if baseline.points_tickets else 0.0
+            for day in range(days_until_event, -2, -1):
+                t = (day - days_until_event) / (-1 - days_until_event) if forecast_window_len else 0.0
+                t = max(0.0, min(1.0, t))
+                baseline_day = baseline_start_day + t * (baseline_end_day - baseline_start_day)
+                baseline_day = int(round(baseline_day))
+                if baseline.points_tickets and tickets_at_end > 0:
+                    tickets_at_b = baseline.interpolate_tickets(baseline_day)
+                    sell_through_pct = 100.0 * tickets_at_b / tickets_at_end
+                    # Cap expected tickets at historical sales so forecast level matches baseline
+                    expected_tickets = min(capacity, int(round(tickets_at_end * sell_through_pct / 100.0)))
+                else:
+                    sell_through_pct = baseline.interpolate(baseline_day)
+                    sell_through_pct = max(0.0, min(100.0, sell_through_pct))
+                    expected_tickets = int(round(capacity * sell_through_pct / 100.0))
+                expected_percent = round(100.0 * expected_tickets / capacity, 2) if capacity > 0 else 0.0
+                curve_points.append({
+                    'days_before': day,
+                    'expected_tickets': expected_tickets,
+                    'expected_percent': expected_percent,
+                })
     else:
         # Fallback: sell-through percentage (legacy)
         pct_at_start = baseline.interpolate(days_until_event)
@@ -163,4 +220,5 @@ def generate_forecast_preview(
         'curve_points': curve_points,
         'baseline_info': baseline_info,
         'has_sufficient_data': has_sufficient_data,
+        'historical_events': historical_events,
     }
