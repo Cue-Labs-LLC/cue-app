@@ -62,6 +62,10 @@
             <input type="radio" class="btn-check" name="chartView" id="viewPercent" value="percent">
             <label class="btn btn-outline-primary" for="viewPercent">Percentage</label>
         </div>
+        <div class="form-check form-check-inline ms-3 mt-2 mt-md-0">
+            <input class="form-check-input" type="checkbox" id="showTrendline" name="showTrendline">
+            <label class="form-check-label" for="showTrendline">Show trendline</label>
+        </div>
     </div>
 </div>
 
@@ -153,6 +157,7 @@
     const historicalEventsCard = document.getElementById('historicalEventsCard');
     const historicalEventsBody = document.getElementById('historicalEventsBody');
     const viewToggle = document.querySelectorAll('input[name="chartView"]');
+    const showTrendlineCheckbox = document.getElementById('showTrendline');
 
     let chart = null;
     let currentData = null;
@@ -215,6 +220,61 @@
         return document.querySelector('input[name="chartView"]:checked').value;
     }
 
+    function logisticEval(x, L, k, x0) {
+        return L / (1 + Math.exp(-k * (x - x0)));
+    }
+
+    function logisticRegression(x, y) {
+        var n = x.length;
+        if (n < 2) {
+            var c = y.length ? y[0] : 0;
+            return { L: c, k: 0, x0: x.length ? x[0] : 0 };
+        }
+        var yMax = Math.max.apply(null, y);
+        var yMin = Math.min.apply(null, y);
+        var xMin = Math.min.apply(null, x);
+        var xMax = Math.max.apply(null, x);
+        var xRange = xMax - xMin;
+        if (xRange < 1e-10) xRange = 1;
+        if (Math.abs(yMax - yMin) < 1e-10) {
+            return { L: yMax, k: 0, x0: (xMin + xMax) / 2 };
+        }
+        var L = Math.max(yMax * 1.05, 1);
+        var x0 = (xMin + xMax) / 2;
+        var k = Math.max(0.05, 2 / xRange);
+
+        var low = 0.02 * L;
+        var high = 0.98 * L;
+        var xx = [], zz = [];
+        for (var i = 0; i < n; i++) {
+            if (y[i] > low && y[i] < high) {
+                xx.push(x[i]);
+                zz.push(Math.log(y[i] / (L - y[i])));
+            }
+        }
+        if (xx.length >= 2) {
+            var Sx = 0, Sx2 = 0, Sz = 0, Sxz = 0;
+            var m = xx.length;
+            for (var j = 0; j < m; j++) {
+                Sx += xx[j];
+                Sx2 += xx[j] * xx[j];
+                Sz += zz[j];
+                Sxz += xx[j] * zz[j];
+            }
+            var det = m * Sx2 - Sx * Sx;
+            if (Math.abs(det) > 1e-10) {
+                var b = (m * Sxz - Sx * Sz) / det;
+                var a = (Sz - b * Sx) / m;
+                if (b > 0.01) {
+                    k = b;
+                    x0 = -a / b;
+                    x0 = Math.max(xMin, Math.min(xMax, x0));
+                }
+            }
+        }
+        return { L: L, k: k, x0: x0 };
+    }
+
     function updateChartData() {
         if (!chart || !currentData || !currentData.curve_points.length) return;
 
@@ -228,6 +288,34 @@
         chart.data.datasets[0].data = data;
         chart.data.datasets[0].label = view === 'tickets' ? 'Expected Tickets' : 'Expected %';
         chart.options.scales.y.title.text = view === 'tickets' ? 'Expected Tickets Sold' : 'Expected % of Capacity';
+
+        var showTrendline = showTrendlineCheckbox && showTrendlineCheckbox.checked;
+        chart.options.plugins.legend.display = showTrendline;
+
+        if (showTrendline && labels.length >= 2) {
+            // x is "days before event": high x = far out (low sales), low x = event day (high sales).
+            // Logistic curve is increasing in x; fit on -x so relationship is increasing.
+            var xFit = labels.map(function(x) { return -x; });
+            var lr = logisticRegression(xFit, data);
+            var trendlineData = labels.map(function(x) {
+                var val = logisticEval(-x, lr.L, lr.k, lr.x0);
+                return Math.max(0, Math.min(lr.L, val));
+            });
+            chart.data.datasets = [
+                chart.data.datasets[0],
+                {
+                    label: 'Trendline',
+                    data: trendlineData,
+                    borderColor: 'rgba(255, 159, 64, 0.8)',
+                    borderDash: [5, 5],
+                    fill: false,
+                    pointRadius: 0,
+                    tension: 0.3
+                }
+            ];
+        } else {
+            chart.data.datasets = [chart.data.datasets[0]];
+        }
 
         if (view === 'percent') {
             chart.options.scales.y.max = 100;
@@ -378,6 +466,10 @@
     viewToggle.forEach(radio => {
         radio.addEventListener('change', updateChartData);
     });
+
+    if (showTrendlineCheckbox) {
+        showTrendlineCheckbox.addEventListener('change', updateChartData);
+    }
 
     // Set default date to 30 days from now
     const defaultDate = new Date();
