@@ -97,23 +97,16 @@
                                                class="btn btn-sm btn-outline-primary">
                                                 <i class="bi bi-eye"></i> View Results
                                             </a>
-                                            {# TODO: Re-enable processing check after temporary bypass #}
-                                            {# {% if stat.upload.status == 'processing' %}
-                                                <button type="button" class="btn btn-sm btn-outline-secondary" disabled
-                                                        title="Cannot delete while processing">
-                                                    <i class="bi bi-trash"></i>
-                                                </button>
-                                            {% else %} #}
-                                                <button type="button" class="btn btn-sm btn-outline-danger btn-delete-upload"
-                                                        data-upload-id="{{ stat.upload.id }}"
-                                                        data-upload-filename="{{ stat.upload.filename }}"
-                                                        data-upload-orders="{{ stat.orders_count }}"
-                                                        data-upload-revenue="{{ stat.revenue|floatformat:2 }}"
-                                                        data-bs-toggle="modal"
-                                                        data-bs-target="#deleteUploadModal">
-                                                    <i class="bi bi-trash"></i>
-                                                </button>
-                                            {# {% endif %} #}
+                                            <!-- TODO: Re-enable processing check after temporary bypass -->
+                                            <button type="button" class="btn btn-sm btn-outline-danger btn-delete-upload"
+                                                    data-upload-id="{{ stat.upload.id }}"
+                                                    data-upload-filename="{{ stat.upload.filename }}"
+                                                    data-upload-orders="{{ stat.orders_count }}"
+                                                    data-upload-revenue="{{ stat.revenue|floatformat:2 }}"
+                                                    data-bs-toggle="modal"
+                                                    data-bs-target="#deleteUploadModal">
+                                                <i class="bi bi-trash"></i>
+                                            </button>
                                         </td>
                                     </tr>
                                 {% endfor %}
