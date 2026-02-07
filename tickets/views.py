@@ -12,7 +12,7 @@ from django.db import models
 from django.core.paginator import Paginator
 from django.http import JsonResponse, Http404, HttpResponse
 from django.views.decorators.http import require_http_methods
-from django.db import connection
+from django.db import connection, transaction
 import pandas as pd
 
 from .models import (
@@ -446,14 +446,69 @@ def process_csv_file(request, uploaded_file, manual_prices=None, tier_definition
 def upload_results(request, file_id):
     """Display processing results."""
     uploaded_file = get_object_or_404(UploadedFile, id=file_id)
-    
+
     results = uploaded_file.metadata.get('processing_results', {})
-    
+
     context = {
         'uploaded_file': uploaded_file,
         'results': results,
     }
     return render(request, 'tickets/results.html', context)
+
+
+@login_required
+@require_http_methods(["POST"])
+def upload_delete(request, file_id):
+    """Delete an upload and all associated order data."""
+    uploaded_file = get_object_or_404(UploadedFile, id=file_id)
+    is_ajax = request.headers.get('X-Requested-With') == 'XMLHttpRequest'
+
+    # Block deletion if status is 'processing'
+    if uploaded_file.status == 'processing':
+        error_msg = "Cannot delete upload while it is processing. Please wait for processing to complete."
+        if is_ajax:
+            return JsonResponse({'success': False, 'error': error_msg}, status=400)
+        messages.error(request, error_msg)
+        return redirect('tickets:home')
+
+    try:
+        with transaction.atomic():
+            # Get all orders associated with this upload
+            orders = uploaded_file.ticket_orders.all()
+            orders_count = orders.count()
+
+            # Collect affected customers before deletion
+            affected_customer_ids = list(
+                orders.values_list('customer_id', flat=True).distinct()
+            )
+
+            # Delete orders first (Tickets will cascade delete)
+            orders.delete()
+
+            # Delete the upload file (TicketTiers will cascade delete)
+            filename = uploaded_file.filename
+            uploaded_file.hard_delete()
+
+            # Recalculate LTV for affected customers
+            for customer_id in affected_customer_ids:
+                try:
+                    customer = Customer.objects.get(id=customer_id)
+                    customer.update_lifetime_value()
+                except Customer.DoesNotExist:
+                    pass
+
+        success_msg = f"Successfully deleted '{filename}' and {orders_count} associated order(s)."
+        if is_ajax:
+            return JsonResponse({'success': True, 'message': success_msg})
+        messages.success(request, success_msg)
+        return redirect('tickets:home')
+
+    except Exception as e:
+        error_msg = f"Error deleting upload: {str(e)}"
+        if is_ajax:
+            return JsonResponse({'success': False, 'error': error_msg}, status=500)
+        messages.error(request, error_msg)
+        return redirect('tickets:home')
 
 
 @login_required

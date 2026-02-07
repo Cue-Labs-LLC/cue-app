@@ -93,10 +93,26 @@
                                         <td><strong class="text-success">${{ stat.revenue|floatformat:2 }}</strong></td>
                                         <td>{{ stat.tickets_count }}</td>
                                         <td>
-                                            <a href="{% url 'tickets:upload_results' stat.upload.id %}" 
+                                            <a href="{% url 'tickets:upload_results' stat.upload.id %}"
                                                class="btn btn-sm btn-outline-primary">
                                                 <i class="bi bi-eye"></i> View Results
                                             </a>
+                                            {% if stat.upload.status == 'processing' %}
+                                                <button type="button" class="btn btn-sm btn-outline-secondary" disabled
+                                                        title="Cannot delete while processing">
+                                                    <i class="bi bi-trash"></i>
+                                                </button>
+                                            {% else %}
+                                                <button type="button" class="btn btn-sm btn-outline-danger btn-delete-upload"
+                                                        data-upload-id="{{ stat.upload.id }}"
+                                                        data-upload-filename="{{ stat.upload.filename }}"
+                                                        data-upload-orders="{{ stat.orders_count }}"
+                                                        data-upload-revenue="{{ stat.revenue|floatformat:2 }}"
+                                                        data-bs-toggle="modal"
+                                                        data-bs-target="#deleteUploadModal">
+                                                    <i class="bi bi-trash"></i>
+                                                </button>
+                                            {% endif %}
                                         </td>
                                     </tr>
                                 {% endfor %}
@@ -220,4 +236,143 @@
         </a>
     </div>
 </div>
+
+<!-- Delete Upload Modal -->
+<div class="modal fade" id="deleteUploadModal" tabindex="-1" aria-labelledby="deleteUploadModalLabel" aria-hidden="true">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header bg-danger text-white">
+                <h5 class="modal-title" id="deleteUploadModalLabel">
+                    <i class="bi bi-exclamation-triangle"></i> Delete Upload
+                </h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <p>Are you sure you want to delete the following upload?</p>
+                <table class="table table-sm">
+                    <tr>
+                        <th>Filename:</th>
+                        <td id="modal-filename"></td>
+                    </tr>
+                    <tr>
+                        <th>Orders:</th>
+                        <td id="modal-orders"></td>
+                    </tr>
+                    <tr>
+                        <th>Revenue Impact:</th>
+                        <td id="modal-revenue"></td>
+                    </tr>
+                </table>
+                <div class="alert alert-warning">
+                    <i class="bi bi-exclamation-triangle"></i>
+                    <strong>Warning:</strong> This action is permanent and cannot be undone.
+                    All associated orders and tickets will be deleted, and customer lifetime values will be recalculated.
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-danger" id="confirmDeleteBtn">
+                    <span class="btn-text"><i class="bi bi-trash"></i> Delete Upload</span>
+                    <span class="btn-loading d-none">
+                        <span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>
+                        Deleting...
+                    </span>
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    const deleteModal = document.getElementById('deleteUploadModal');
+    const confirmBtn = document.getElementById('confirmDeleteBtn');
+    let currentUploadId = null;
+    let currentRow = null;
+
+    // Populate modal when shown
+    deleteModal.addEventListener('show.bs.modal', function(event) {
+        const button = event.relatedTarget;
+        currentUploadId = button.getAttribute('data-upload-id');
+        currentRow = button.closest('tr');
+
+        document.getElementById('modal-filename').textContent = button.getAttribute('data-upload-filename');
+        document.getElementById('modal-orders').textContent = button.getAttribute('data-upload-orders');
+        document.getElementById('modal-revenue').textContent = '$' + button.getAttribute('data-upload-revenue');
+
+        // Reset button state
+        confirmBtn.disabled = false;
+        confirmBtn.querySelector('.btn-text').classList.remove('d-none');
+        confirmBtn.querySelector('.btn-loading').classList.add('d-none');
+    });
+
+    // Handle delete confirmation
+    confirmBtn.addEventListener('click', function() {
+        if (!currentUploadId) return;
+
+        // Show loading state
+        confirmBtn.disabled = true;
+        confirmBtn.querySelector('.btn-text').classList.add('d-none');
+        confirmBtn.querySelector('.btn-loading').classList.remove('d-none');
+
+        fetch(`/upload/${currentUploadId}/delete/`, {
+            method: 'POST',
+            headers: {
+                'X-CSRFToken': '{{ csrf_token }}',
+                'X-Requested-With': 'XMLHttpRequest'
+            }
+        })
+        .then(response => response.json().then(data => ({status: response.status, data})))
+        .then(({status, data}) => {
+            const modal = bootstrap.Modal.getInstance(deleteModal);
+            modal.hide();
+
+            if (data.success) {
+                // Remove row with animation
+                if (currentRow) {
+                    currentRow.style.transition = 'opacity 0.3s';
+                    currentRow.style.opacity = '0';
+                    setTimeout(() => {
+                        currentRow.remove();
+                        // Check if table is now empty
+                        const tbody = document.querySelector('.card:first-of-type tbody');
+                        if (tbody && tbody.children.length === 0) {
+                            const cardBody = tbody.closest('.card-body');
+                            cardBody.innerHTML = '<p class="text-muted">No uploads associated with this event.</p>';
+                        }
+                    }, 300);
+                }
+                // Show success alert
+                showAlert('success', data.message);
+            } else {
+                showAlert('danger', data.error || 'An error occurred while deleting the upload.');
+            }
+        })
+        .catch(error => {
+            const modal = bootstrap.Modal.getInstance(deleteModal);
+            modal.hide();
+            showAlert('danger', 'An error occurred while deleting the upload.');
+        });
+    });
+
+    function showAlert(type, message) {
+        const alertDiv = document.createElement('div');
+        alertDiv.className = `alert alert-${type} alert-dismissible fade show`;
+        alertDiv.innerHTML = `
+            ${message}
+            <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+        `;
+        const container = document.querySelector('.row.mb-4');
+        container.parentNode.insertBefore(alertDiv, container);
+
+        // Auto-dismiss after 5 seconds
+        setTimeout(() => {
+            alertDiv.classList.remove('show');
+            setTimeout(() => alertDiv.remove(), 150);
+        }, 5000);
+    }
+});
+</script>
 {% endblock %}
