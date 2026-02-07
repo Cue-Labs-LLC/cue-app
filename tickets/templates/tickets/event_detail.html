@@ -97,12 +97,13 @@
                                                class="btn btn-sm btn-outline-primary">
                                                 <i class="bi bi-eye"></i> View Results
                                             </a>
-                                            {% if stat.upload.status == 'processing' %}
+                                            {# TODO: Re-enable processing check after temporary bypass #}
+                                            {# {% if stat.upload.status == 'processing' %}
                                                 <button type="button" class="btn btn-sm btn-outline-secondary" disabled
                                                         title="Cannot delete while processing">
                                                     <i class="bi bi-trash"></i>
                                                 </button>
-                                            {% else %}
+                                            {% else %} #}
                                                 <button type="button" class="btn btn-sm btn-outline-danger btn-delete-upload"
                                                         data-upload-id="{{ stat.upload.id }}"
                                                         data-upload-filename="{{ stat.upload.filename }}"
@@ -112,7 +113,7 @@
                                                         data-bs-target="#deleteUploadModal">
                                                     <i class="bi bi-trash"></i>
                                                 </button>
-                                            {% endif %}
+                                            {# {% endif %} #}
                                         </td>
                                     </tr>
                                 {% endfor %}
