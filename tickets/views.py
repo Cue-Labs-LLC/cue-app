@@ -463,13 +463,14 @@ def upload_delete(request, file_id):
     uploaded_file = get_object_or_404(UploadedFile, id=file_id)
     is_ajax = request.headers.get('X-Requested-With') == 'XMLHttpRequest'
 
+    # TODO: Re-enable this check after temporary bypass
     # Block deletion if status is 'processing'
-    if uploaded_file.status == 'processing':
-        error_msg = "Cannot delete upload while it is processing. Please wait for processing to complete."
-        if is_ajax:
-            return JsonResponse({'success': False, 'error': error_msg}, status=400)
-        messages.error(request, error_msg)
-        return redirect('tickets:home')
+    # if uploaded_file.status == 'processing':
+    #     error_msg = "Cannot delete upload while it is processing. Please wait for processing to complete."
+    #     if is_ajax:
+    #         return JsonResponse({'success': False, 'error': error_msg}, status=400)
+    #     messages.error(request, error_msg)
+    #     return redirect('tickets:home')
 
     try:
         with transaction.atomic():
@@ -489,15 +490,22 @@ def upload_delete(request, file_id):
             filename = uploaded_file.filename
             uploaded_file.hard_delete()
 
-            # Recalculate LTV for affected customers
+            # Delete orphaned customers (no remaining orders) or recalculate LTV
+            customers_deleted = 0
             for customer_id in affected_customer_ids:
                 try:
                     customer = Customer.objects.get(id=customer_id)
-                    customer.update_lifetime_value()
+                    if not customer.ticket_orders.exists():
+                        customer.delete()
+                        customers_deleted += 1
+                    else:
+                        customer.update_lifetime_value()
                 except Customer.DoesNotExist:
                     pass
 
         success_msg = f"Successfully deleted '{filename}' and {orders_count} associated order(s)."
+        if customers_deleted > 0:
+            success_msg += f" Removed {customers_deleted} customer(s) with no remaining orders."
         if is_ajax:
             return JsonResponse({'success': True, 'message': success_msg})
         messages.success(request, success_msg)

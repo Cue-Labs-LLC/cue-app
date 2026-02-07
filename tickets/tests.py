@@ -177,10 +177,35 @@ class UploadDeleteViewTests(TestCase):
 
         self.assertEqual(response.status_code, 405)
 
-    def test_delete_recalculates_customer_ltv(self):
-        """Test that customer LTV is recalculated after deletion."""
-        # Customer starts with LTV matching the order
-        self.assertEqual(self.customer.lifetime_value, Decimal('150.00'))
+    def test_delete_removes_orphaned_customer(self):
+        """Test that customers with no remaining orders are deleted."""
+        response = self.client.post(
+            reverse('tickets:upload_delete', args=[self.upload.id]),
+            HTTP_X_REQUESTED_WITH='XMLHttpRequest'
+        )
+
+        self.assertEqual(response.status_code, 200)
+        # Customer had only one order from this upload, should be deleted
+        self.assertFalse(
+            Customer.objects.filter(id=self.customer.id).exists()
+        )
+
+    def test_delete_preserves_customer_with_other_orders(self):
+        """Test that customers with orders from other uploads are preserved."""
+        # Create another upload with an order for the same customer
+        other_upload = UploadedFile.objects.create(
+            csv_format=self.csv_format,
+            filename='other_upload.csv',
+            status='completed'
+        )
+        TicketOrder.objects.create(
+            customer=self.customer,
+            event=self.event,
+            uploaded_file=other_upload,
+            order_number='ORD-OTHER',
+            order_date='2024-06-02 10:00:00',
+            total_amount=Decimal('200.00')
+        )
 
         response = self.client.post(
             reverse('tickets:upload_delete', args=[self.upload.id]),
@@ -188,10 +213,13 @@ class UploadDeleteViewTests(TestCase):
         )
 
         self.assertEqual(response.status_code, 200)
-
-        # Refresh customer and check LTV is recalculated
+        # Customer should still exist (has order from other upload)
+        self.assertTrue(
+            Customer.objects.filter(id=self.customer.id).exists()
+        )
+        # LTV should be recalculated to reflect only the remaining order
         self.customer.refresh_from_db()
-        self.assertEqual(self.customer.lifetime_value, Decimal('0.00'))
+        self.assertEqual(self.customer.lifetime_value, Decimal('200.00'))
 
     def test_delete_cascades_to_tickets(self):
         """Test that associated tickets are deleted with orders."""
