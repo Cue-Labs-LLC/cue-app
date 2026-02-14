@@ -43,15 +43,9 @@
                                         <i class="bi bi-calendar-event"></i> Events
                                     </a>
                                 </li>
-                                <li><hr class="dropdown-divider"></li>
                                 <li>
-                                    <a class="dropdown-item" href="{% url 'tickets:event_create' %}">
-                                        <i class="bi bi-calendar-plus"></i> Create Event
-                                    </a>
-                                </li>
-                                <li>
-                                    <a class="dropdown-item" href="{% url 'tickets:venue_create' %}">
-                                        <i class="bi bi-geo-alt"></i> Create Venue
+                                    <a class="dropdown-item{% if '/venues/' in request.path %} active{% endif %}" href="{% url 'tickets:venue_list' %}">
+                                        <i class="bi bi-geo-alt"></i> Venues
                                     </a>
                                 </li>
                             </ul>

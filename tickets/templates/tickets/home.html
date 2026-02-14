@@ -75,6 +75,7 @@
                                     <th>Orders</th>
                                     <th>Revenue</th>
                                     <th>Uploads</th>
+                                    <th>Ticket Link</th>
                                     <th>Actions</th>
                                 </tr>
                             </thead>
@@ -92,6 +93,13 @@
                                         <td>{{ event.total_orders }}</td>
                                         <td>${{ event.total_revenue|floatformat:2 }}</td>
                                         <td>{{ event.upload_count }}</td>
+                                        <td>
+                                            {% if event.ticket_link %}
+                                                <a href="{{ event.ticket_link }}" target="_blank" rel="noopener noreferrer" class="text-decoration-none" title="Buy tickets"><i class="bi bi-link-45deg"></i></a>
+                                            {% else %}
+                                                —
+                                            {% endif %}
+                                        </td>
                                         <td>
                                             <a href="{% url 'tickets:event_detail' event.id %}" class="btn btn-sm btn-outline-primary">
                                                 View Details

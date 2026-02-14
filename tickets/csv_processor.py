@@ -333,13 +333,13 @@ class CSVProcessor:
         ticket_orders_to_create = []
         tickets_to_create = []
         
-        # Track existing customers and events for bulk operations
+        # Track existing customers and events for bulk operations (org-scoped)
+        org = getattr(self.uploaded_file, 'organization', None)
         chunk_emails = [row.get('customer_email', '').lower().strip() for row in chunk_data if row.get('customer_email')]
-        existing_customers = {
-            c.email: c for c in Customer.objects.filter(
-                email__in=chunk_emails
-            )
-        }
+        customer_filter = Customer.objects.filter(email__in=chunk_emails)
+        if org is not None:
+            customer_filter = customer_filter.filter(organization=org)
+        existing_customers = {c.email: c for c in customer_filter}
         
         existing_events = {}
         # Pre-fetch existing events for this chunk
@@ -473,8 +473,11 @@ class CSVProcessor:
                 customer_email = mapped_row.get('customer_email', '').lower().strip()
                 customer = existing_customers.get(customer_email)
                 if not customer:
-                    # Check database directly before creating (HYPOTHESIS A: existing_customers only queries current chunk)
-                    db_customer = Customer.objects.filter(email=customer_email).first()
+                    # Check database directly before creating (org-scoped)
+                    db_filter = Customer.objects.filter(email=customer_email)
+                    if org is not None:
+                        db_filter = db_filter.filter(organization=org)
+                    db_customer = db_filter.first()
                     if db_customer:
                         customer = db_customer
                         existing_customers[customer_email] = customer
@@ -487,7 +490,8 @@ class CSVProcessor:
                             customer = Customer(
                                 email=customer_email,
                                 name=mapped_row.get('customer_name', ''),
-                                phone=mapped_row.get('customer_phone', '')
+                                phone=mapped_row.get('customer_phone', ''),
+                                **({'organization': org} if org is not None else {}),
                             )
                             customers_to_create.append(customer)
                             existing_customers[customer_email] = customer
@@ -531,8 +535,9 @@ class CSVProcessor:
                 venue_id = self.uploaded_file.metadata.get('venue_id')
                 if venue_id:
                     try:
-                        venue = Venue.objects.get(id=venue_id)
-                    except Venue.DoesNotExist:
+                        org = self.uploaded_file.organization
+                        venue = Venue.objects.filter(organization=org).get(id=venue_id)
+                    except (Venue.DoesNotExist, AttributeError):
                         venue = None
                 else:
                     venue = None
@@ -543,9 +548,18 @@ class CSVProcessor:
                     venue_name_meta = self.uploaded_file.metadata.get('venue_name', '')
                     venue_city_meta = self.uploaded_file.metadata.get('venue_city', '')
                     
+                    org = getattr(self.uploaded_file, 'organization', None)
+                    venue_defaults = lambda n, c: {'name': n, 'city': c}
+                    if org:
+                        venue_defaults = lambda n, c: {'name': n, 'city': c, 'organization': org}
                     if venue_name_meta and venue_city_meta:
                         # Use metadata venue name and city
                         venue, created = Venue.objects.get_or_create(
+                            organization=org,
+                            name=venue_name_meta,
+                            city=venue_city_meta,
+                            defaults=venue_defaults(venue_name_meta, venue_city_meta)
+                        ) if org else Venue.objects.get_or_create(
                             name=venue_name_meta,
                             city=venue_city_meta,
                             defaults={'name': venue_name_meta, 'city': venue_city_meta}
@@ -564,30 +578,49 @@ class CSVProcessor:
                             venue_name_parsed = venue_string
                             venue_city_parsed = 'Unknown'
                         
-                        venue, created = Venue.objects.get_or_create(
-                            name=venue_name_parsed,
-                            city=venue_city_parsed,
-                            defaults={'name': venue_name_parsed, 'city': venue_city_parsed}
-                        )
+                        if org:
+                            venue, created = Venue.objects.get_or_create(
+                                organization=org,
+                                name=venue_name_parsed,
+                                city=venue_city_parsed,
+                                defaults=venue_defaults(venue_name_parsed, venue_city_parsed)
+                            )
+                        else:
+                            venue, created = Venue.objects.get_or_create(
+                                name=venue_name_parsed,
+                                city=venue_city_parsed,
+                                defaults={'name': venue_name_parsed, 'city': venue_city_parsed}
+                            )
                     else:
                         # Default venue
-                        venue, created = Venue.objects.get_or_create(
-                            name='Unknown Venue',
-                            city='Unknown',
-                            defaults={'name': 'Unknown Venue', 'city': 'Unknown'}
-                        )
+                        if org:
+                            venue, created = Venue.objects.get_or_create(
+                                organization=org,
+                                name='Unknown Venue',
+                                city='Unknown',
+                                defaults=venue_defaults('Unknown Venue', 'Unknown')
+                            )
+                        else:
+                            venue, created = Venue.objects.get_or_create(
+                                name='Unknown Venue',
+                                city='Unknown',
+                                defaults={'name': 'Unknown Venue', 'city': 'Unknown'}
+                            )
                 
                 event_key = (event_name, start_date)
 
                 event = existing_events.get(event_key)
                 if not event:
-                    event = Event(
+                    event_kwargs = dict(
                         name=event_name,
                         venue=venue,
                         start_date=start_date,
                         start_time=start_time,
-                        description=mapped_row.get('event_description', '')
+                        description=mapped_row.get('event_description', ''),
                     )
+                    if org is not None:
+                        event_kwargs['organization'] = org
+                    event = Event(**event_kwargs)
                     events_to_create.append(event)
                     existing_events[event_key] = event
                 
@@ -697,18 +730,22 @@ class CSVProcessor:
         
         # Bulk create/update
         if customers_to_create:
-            # Final check: remove any customers that exist in database
+            # Final check: remove any customers that exist in database (org-scoped)
             final_emails = [c.email for c in customers_to_create]
-            existing_in_db = {c.email: c for c in Customer.objects.filter(email__in=final_emails)}
+            existing_in_db_qs = Customer.objects.filter(email__in=final_emails)
+            if org is not None:
+                existing_in_db_qs = existing_in_db_qs.filter(organization=org)
+            existing_in_db = {c.email: c for c in existing_in_db_qs}
             if existing_in_db:
                 customers_to_create = [c for c in customers_to_create if c.email not in existing_in_db]
             if customers_to_create:
                 Customer.objects.bulk_create(customers_to_create)
             # Refetch created customers to get their IDs
             created_emails = [c.email for c in customers_to_create]
-            created_customers = {
-                c.email: c for c in Customer.objects.filter(email__in=created_emails)
-            }
+            created_qs = Customer.objects.filter(email__in=created_emails)
+            if org is not None:
+                created_qs = created_qs.filter(organization=org)
+            created_customers = {c.email: c for c in created_qs}
             # Update existing_customers dict with newly created customers
             for email, customer in created_customers.items():
                 existing_customers[email] = customer
@@ -724,9 +761,12 @@ class CSVProcessor:
             # Refetch created events to get their IDs
             created_event_keys = [(e.name, e.start_date) for e in events_to_create]
             created_events = {}
-            for event in Event.objects.filter(
+            event_filter = Event.objects.filter(
                 name__in=[key[0] for key in created_event_keys if key[0]]
-            ):
+            )
+            if org is not None:
+                event_filter = event_filter.filter(organization=org)
+            for event in event_filter:
                 event_key_tuple = (event.name, event.start_date)
                 created_events[event_key_tuple] = event
             # Update existing_events dict

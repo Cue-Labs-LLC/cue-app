@@ -1,9 +1,32 @@
 import json
 from django import forms
+from django.forms import modelformset_factory
 from django.contrib.auth.forms import AuthenticationForm
 from crispy_forms.helper import FormHelper
 from crispy_forms.layout import Layout, Row, Column, Submit, Field
-from .models import CSVFormat, Venue, Event
+from .models import Organization, CSVFormat, Venue, Event, EventTalent, CustomField
+
+
+class OrganizationForm(forms.ModelForm):
+    """Form for creating a new organization."""
+
+    class Meta:
+        model = Organization
+        fields = ['name', 'slug']
+        widgets = {
+            'name': forms.TextInput(attrs={'class': 'form-control', 'placeholder': 'e.g., Acme Events'}),
+            'slug': forms.TextInput(attrs={'class': 'form-control', 'placeholder': 'e.g., acme-events'}),
+        }
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.helper = FormHelper()
+        self.helper.form_method = 'post'
+        self.helper.layout = Layout(
+            Field('name'),
+            Field('slug'),
+            Submit('submit', 'Create Organization', css_class='btn btn-primary'),
+        )
 
 
 class LoginForm(AuthenticationForm):
@@ -132,7 +155,15 @@ class CSVUploadForm(forms.Form):
     )
 
     def __init__(self, *args, **kwargs):
+        organization = kwargs.pop('organization', None)
         super().__init__(*args, **kwargs)
+        if organization is not None:
+            self.fields['csv_format'].queryset = CSVFormat.objects.filter(
+                organization=organization
+            ).order_by('-is_default', 'name')
+            self.fields['venue'].queryset = Venue.objects.filter(
+                organization=organization
+            ).order_by('name', 'city')
         self.helper = FormHelper()
         self.helper.layout = Layout(
             Field('csv_file'),
@@ -149,10 +180,13 @@ class CSVUploadForm(forms.Form):
             Submit('submit', 'Upload CSV', css_class='btn btn-primary')
         )
 
-        # Auto-select default format if available
-        default_format = CSVFormat.objects.filter(is_default=True).first()
-        if default_format:
-            self.fields['csv_format'].initial = default_format
+        # Auto-select default format if available (org-scoped)
+        if organization is not None:
+            default_format = CSVFormat.objects.filter(
+                organization=organization, is_default=True
+            ).first()
+            if default_format:
+                self.fields['csv_format'].initial = default_format
 
     def clean(self):
         """Validate form data."""
@@ -444,6 +478,7 @@ class VenueForm(forms.ModelForm):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.fields['capacity'].required = False
+        submit_label = 'Update Venue' if (self.instance and self.instance.pk) else 'Create Venue'
         self.helper = FormHelper()
         self.helper.layout = Layout(
             Field('name'),
@@ -453,8 +488,31 @@ class VenueForm(forms.ModelForm):
             Field('postal_code'),
             Field('country'),
             Field('capacity'),
-            Submit('submit', 'Create Venue', css_class='btn btn-primary')
+            Submit('submit', submit_label, css_class='btn btn-primary')
         )
+
+
+class EventTalentForm(forms.ModelForm):
+    """Single talent row for formset; name optional so extra rows can be left blank."""
+    class Meta:
+        model = EventTalent
+        fields = ('name', 'order')
+        widgets = {
+            'name': forms.TextInput(attrs={'class': 'form-control', 'placeholder': 'e.g., DJ Shadow'}),
+            'order': forms.NumberInput(attrs={'class': 'form-control', 'min': '0'}),
+        }
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields['name'].required = False
+
+
+EventTalentFormSet = modelformset_factory(
+    EventTalent,
+    form=EventTalentForm,
+    extra=0,
+    can_delete=True,
+)
 
 
 class EventForm(forms.ModelForm):
@@ -462,7 +520,10 @@ class EventForm(forms.ModelForm):
 
     class Meta:
         model = Event
-        fields = ['name', 'venue', 'start_date', 'start_time', 'end_date', 'end_time', 'description', 'capacity']
+        fields = [
+            'name', 'venue', 'start_date', 'start_time', 'end_date', 'end_time',
+            'description', 'capacity', 'ticket_link',
+        ]
         widgets = {
             'name': forms.TextInput(attrs={'class': 'form-control', 'placeholder': 'e.g., Familiar Faces'}),
             'venue': forms.Select(attrs={'class': 'form-select'}),
@@ -472,15 +533,30 @@ class EventForm(forms.ModelForm):
             'end_time': forms.TimeInput(attrs={'type': 'time', 'class': 'form-control'}),
             'description': forms.Textarea(attrs={'rows': 3, 'class': 'form-control', 'placeholder': 'Optional event description'}),
             'capacity': forms.NumberInput(attrs={'class': 'form-control', 'placeholder': 'e.g., 500', 'min': '1'}),
+            'ticket_link': forms.URLInput(attrs={'class': 'form-control', 'placeholder': 'https://...'}),
         }
 
     def __init__(self, *args, **kwargs):
+        organization = kwargs.pop('organization', None)
         super().__init__(*args, **kwargs)
-        self.fields['venue'].queryset = Venue.objects.all().order_by('name', 'city')
+        if organization is not None:
+            self.fields['venue'].queryset = Venue.objects.filter(
+                organization=organization
+            ).order_by('name', 'city')
+        else:
+            self.fields['venue'].queryset = Venue.objects.none()
         self.fields['description'].required = False
         self.fields['capacity'].required = False
-        self.helper = FormHelper()
-        self.helper.layout = Layout(
+        self.fields['ticket_link'].required = False
+
+        # Add a ChoiceField per dropdown custom field (org-scoped)
+        if organization is not None:
+            dropdown_fields = CustomField.objects.filter(
+                field_type='dropdown', organization=organization
+            ).prefetch_related('options').order_by('order', 'name')
+        else:
+            dropdown_fields = []
+        layout_fields = [
             Field('name'),
             Row(
                 Column('venue', css_class='form-group col-md-4 mb-0'),
@@ -493,8 +569,32 @@ class EventForm(forms.ModelForm):
                 Column('capacity', css_class='form-group col-md-4 mb-0'),
             ),
             Field('description'),
-            Submit('submit', 'Create Event', css_class='btn btn-primary')
-        )
+            Field('ticket_link'),
+        ]
+        for cf in dropdown_fields:
+            choices = [('', '---------')] + [
+                (opt.id, opt.label) for opt in cf.options.all()
+            ]
+            field_name = f'custom_field_{cf.id}'
+            required = getattr(cf, 'required', False)
+            self.fields[field_name] = forms.ChoiceField(
+                label=cf.name,
+                choices=choices,
+                required=required,
+                widget=forms.Select(attrs={'class': 'form-select'}),
+            )
+            default_option_id = getattr(cf, 'default_option_id', None)
+            if (
+                not self.is_bound
+                and (getattr(self.instance, 'pk', None) is None or not self.instance.pk)
+                and default_option_id
+            ):
+                self.fields[field_name].initial = default_option_id
+            layout_fields.append(Field(field_name))
+
+        self.helper = FormHelper()
+        self.helper.form_tag = False
+        self.helper.layout = Layout(*layout_fields)
 
     def clean(self):
         cleaned_data = super().clean()

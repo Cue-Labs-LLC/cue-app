@@ -23,6 +23,31 @@
             <i class="bi bi-pin-map"></i> {{ event.venue.get_display_address }}
         </p>
         {% endif %}
+        {% if event.ticket_link or event.talent_lineup.exists or custom_field_values_display %}
+        <div class="card mt-2">
+            <div class="card-body py-2 small">
+                {% if event.ticket_link %}
+                <p class="mb-1">
+                    <i class="bi bi-ticket-perforated"></i>
+                    <a href="{{ event.ticket_link }}" target="_blank" rel="noopener noreferrer">Ticket Link</a>
+                </p>
+                {% endif %}
+                {% if event.talent_lineup.exists %}
+                <p class="mb-1">
+                    <strong><i class="bi bi-music-note-list"></i> Talent Lineup:</strong>
+                    {% for t in event.talent_lineup.all %}{{ t.name }}{% if not forloop.last %}, {% endif %}{% endfor %}
+                </p>
+                {% endif %}
+                {% for val in custom_field_values_display %}
+                    {% if val.custom_field_option %}
+                <p class="mb-0">
+                    <strong>{{ val.custom_field.name }}:</strong> {{ val.custom_field_option.label }}
+                </p>
+                    {% endif %}
+                {% endfor %}
+            </div>
+        </div>
+        {% endif %}
     </div>
 </div>
 

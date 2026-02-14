@@ -15,6 +15,10 @@ urlpatterns = [
     # Health check endpoint
     path('health/', views.health_check, name='health_check'),
     
+    # Organization (no-org flow)
+    path('org-required/', views.org_required, name='org_required'),
+    path('create-organization/', views.create_organization, name='create_organization'),
+    
     # Home/Dashboard
     path('', views.home, name='home'),
     
@@ -48,5 +52,7 @@ urlpatterns = [
     path('formats/<uuid:format_id>/set-default/', views.format_set_default, name='format_set_default'),
     
     # Venues
+    path('venues/', views.venue_list, name='venue_list'),
     path('venues/create/', views.venue_create, name='venue_create'),
+    path('venues/<uuid:venue_id>/edit/', views.venue_edit, name='venue_edit'),
 ]

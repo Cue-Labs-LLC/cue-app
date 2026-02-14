@@ -1,0 +1,47 @@
+{% extends 'tickets/base.html' %}
+{% load crispy_forms_tags %}
+
+{% block title %}Edit Venue - Event Ticket Order Upload System{% endblock %}
+
+{% block content %}
+<div class="row mb-4">
+    <div class="col">
+        <nav aria-label="breadcrumb">
+            <ol class="breadcrumb">
+                <li class="breadcrumb-item"><a href="{% url 'tickets:home' %}">Home</a></li>
+                <li class="breadcrumb-item"><a href="{% url 'tickets:venue_list' %}">Venues</a></li>
+                <li class="breadcrumb-item active">Edit {{ venue.name }}, {{ venue.city }}</li>
+            </ol>
+        </nav>
+        <h1><i class="bi bi-pencil"></i> Edit Venue</h1>
+        <p class="text-muted">Update venue details.</p>
+    </div>
+</div>
+
+<div class="row">
+    <div class="col-md-8">
+        <div class="card">
+            <div class="card-body">
+                {% crispy form %}
+            </div>
+        </div>
+        <div class="mt-3">
+            <a href="{% url 'tickets:venue_list' %}" class="btn btn-outline-secondary">
+                <i class="bi bi-arrow-left"></i> Back to Venues
+            </a>
+        </div>
+    </div>
+    <div class="col-md-4">
+        <div class="card">
+            <div class="card-header">
+                <h5 class="mb-0"><i class="bi bi-info-circle"></i> Venue</h5>
+            </div>
+            <div class="card-body">
+                <p class="small text-muted mb-0">
+                    Each venue must have a unique combination of name and city. Changes here apply to all events at this venue.
+                </p>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

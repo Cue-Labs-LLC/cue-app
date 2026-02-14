@@ -55,8 +55,48 @@ class AuditBaseModel(BaseModel):
         super().delete(using=using, keep_parents=keep_parents)
 
 
+class Organization(BaseModel):
+    """Organization that owns venues, events, uploads, customers, and custom fields."""
+    name = models.CharField(max_length=200)
+    slug = models.SlugField(max_length=100, unique=True)
+
+    class Meta:
+        ordering = ['name']
+
+    def __str__(self):
+        return self.name
+
+
+class UserProfile(models.Model):
+    """OneToOne profile linking a user to an organization."""
+    user = models.OneToOneField(
+        'auth.User',
+        on_delete=models.CASCADE,
+        related_name='profile',
+    )
+    organization = models.ForeignKey(
+        Organization,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='members',
+    )
+
+    class Meta:
+        verbose_name = "User profile"
+        verbose_name_plural = "User profiles"
+
+    def __str__(self):
+        return f"{self.user.get_username()} ({self.organization or 'no org'})"
+
+
 class CSVFormat(AuditBaseModel):
     """Defines CSV file format configurations with column mappings."""
+    organization = models.ForeignKey(
+        Organization,
+        on_delete=models.CASCADE,
+        related_name='csv_formats',
+    )
     name = models.CharField(max_length=200, unique=True)
     description = models.TextField(blank=True)
     is_default = models.BooleanField(default=False)
@@ -83,15 +123,15 @@ class CSVFormat(AuditBaseModel):
 
     def clean(self):
         """Validate format configuration."""
-        if self.is_default:
-            # Check if another format is already default
+        if self.is_default and self.organization_id:
+            # Check if another format is already default in this organization
             existing_default = CSVFormat.objects.filter(
-                is_default=True
+                organization=self.organization_id, is_default=True
             ).exclude(id=self.id).first()
             if existing_default:
                 raise ValidationError(
                     f"'{existing_default.name}' is already set as default. "
-                    "Only one format can be default at a time."
+                    "Only one format can be default per organization."
                 )
         
         # Tiers can only be used when manual pricing is required
@@ -103,14 +143,21 @@ class CSVFormat(AuditBaseModel):
     def save(self, *args, **kwargs):
         """Override save to ensure only one default format."""
         self.full_clean()
-        # If setting this as default, unset others
-        if self.is_default:
-            CSVFormat.objects.filter(is_default=True).exclude(id=self.id).update(is_default=False)
+        # If setting this as default, unset others in the same organization
+        if self.is_default and self.organization_id:
+            CSVFormat.objects.filter(
+                organization=self.organization_id, is_default=True
+            ).exclude(id=self.id).update(is_default=False)
         super().save(*args, **kwargs)
 
 
 class UploadedFile(AuditBaseModel):
     """Tracks uploaded CSV files and metadata."""
+    organization = models.ForeignKey(
+        Organization,
+        on_delete=models.CASCADE,
+        related_name='uploaded_files',
+    )
     csv_format = models.ForeignKey(
         CSVFormat,
         on_delete=models.PROTECT,
@@ -145,6 +192,11 @@ class UploadedFile(AuditBaseModel):
 
 class Customer(BaseModel):
     """Customer information with lifetime value tracking."""
+    organization = models.ForeignKey(
+        Organization,
+        on_delete=models.CASCADE,
+        related_name='customers',
+    )
     email = models.EmailField(unique=True, db_index=True)
     name = models.CharField(max_length=200)
     phone = models.CharField(max_length=50, blank=True)
@@ -198,6 +250,11 @@ class Customer(BaseModel):
 
 class Venue(BaseModel):
     """Venue information for events."""
+    organization = models.ForeignKey(
+        Organization,
+        on_delete=models.CASCADE,
+        related_name='venues',
+    )
     name = models.CharField(max_length=200, db_index=True)
     city = models.CharField(max_length=100, db_index=True)
     street_address = models.CharField(max_length=255, blank=True)
@@ -211,7 +268,7 @@ class Venue(BaseModel):
     )
 
     class Meta:
-        unique_together = [['name', 'city']]
+        unique_together = [['organization', 'name', 'city']]
         ordering = ['name', 'city']
         indexes = [
             models.Index(fields=['name', 'city']),
@@ -239,6 +296,11 @@ class Venue(BaseModel):
 
 class Event(AuditBaseModel):
     """Event information."""
+    organization = models.ForeignKey(
+        Organization,
+        on_delete=models.CASCADE,
+        related_name='events',
+    )
     name = models.CharField(max_length=200, db_index=True)
     venue = models.ForeignKey(
         'Venue',
@@ -255,9 +317,10 @@ class Event(AuditBaseModel):
         blank=True,
         help_text="Total ticket capacity for the event (optional)"
     )
+    ticket_link = models.URLField(max_length=500, blank=True)
 
     class Meta:
-        unique_together = [['name', 'start_date']]
+        unique_together = [['organization', 'name', 'start_date']]
         ordering = ['-start_date', '-start_time', 'name']
         indexes = [
             models.Index(fields=['name', 'start_date']),
@@ -271,10 +334,102 @@ class Event(AuditBaseModel):
         return UploadedFile.objects.filter(
             ticket_orders__event=self
         ).distinct()
-    
+
     def get_upload_count(self):
         """Get count of distinct uploads associated with this event."""
         return self.get_associated_uploads().count()
+
+
+class EventTalent(models.Model):
+    """One talent entry in an event's lineup."""
+    event = models.ForeignKey(
+        Event,
+        on_delete=models.CASCADE,
+        related_name='talent_lineup',
+    )
+    name = models.CharField(max_length=200)
+    order = models.PositiveSmallIntegerField(default=0)
+
+    class Meta:
+        ordering = ['order', 'name']
+
+    def __str__(self):
+        return self.name
+
+
+class CustomField(models.Model):
+    """Definition of a custom field (e.g. Event Type) shown as dropdown; scoped per organization."""
+    FIELD_TYPE_CHOICES = [
+        ('dropdown', 'Dropdown'),
+    ]
+    organization = models.ForeignKey(
+        Organization,
+        on_delete=models.CASCADE,
+        related_name='custom_fields',
+    )
+    name = models.CharField(max_length=100)
+    field_type = models.CharField(max_length=20, choices=FIELD_TYPE_CHOICES, default='dropdown')
+    order = models.PositiveSmallIntegerField(default=0)
+    required = models.BooleanField(
+        default=False,
+        help_text="When set, event form requires a value for this field.",
+    )
+    default_option = models.ForeignKey(
+        'CustomFieldOption',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='default_for_custom_fields',
+        help_text="Option to pre-select when creating a new event.",
+    )
+
+    class Meta:
+        ordering = ['order', 'name']
+
+    def __str__(self):
+        return self.name
+
+
+class CustomFieldOption(models.Model):
+    """One option for a dropdown-type custom field."""
+    custom_field = models.ForeignKey(
+        CustomField,
+        on_delete=models.CASCADE,
+        related_name='options',
+    )
+    label = models.CharField(max_length=200)
+    order = models.PositiveSmallIntegerField(default=0)
+
+    class Meta:
+        ordering = ['order', 'label']
+
+    def __str__(self):
+        return self.label
+
+
+class EventCustomFieldValue(models.Model):
+    """Stores the selected custom field value per event (e.g. Event Type = Day Party)."""
+    event = models.ForeignKey(
+        'Event',
+        on_delete=models.CASCADE,
+        related_name='custom_field_values',
+    )
+    custom_field = models.ForeignKey(
+        CustomField,
+        on_delete=models.CASCADE,
+    )
+    custom_field_option = models.ForeignKey(
+        CustomFieldOption,
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+    )
+
+    class Meta:
+        unique_together = [['event', 'custom_field']]
+
+    def __str__(self):
+        return f"{self.event} - {self.custom_field}: {self.custom_field_option}"
 
 
 class TicketOrder(AuditBaseModel):

@@ -7,7 +7,7 @@ from django.contrib import messages
 from django.contrib.auth import views as auth_views
 from django.contrib.auth.decorators import login_required
 from django.urls import reverse_lazy
-from django.db.models import Sum, Count, Avg, Q, Subquery, OuterRef
+from django.db.models import Sum, Count, Avg, Q, Subquery, OuterRef, Prefetch
 from django.db.models.functions import Coalesce
 from django.db import models
 from django.core.paginator import Paginator
@@ -17,11 +17,17 @@ from django.db import connection, transaction
 import pandas as pd
 
 from .models import (
-    CSVFormat, UploadedFile, Customer, Event, TicketOrder, Ticket, Venue
+    Organization, UserProfile,
+    CSVFormat, UploadedFile, Customer, Event, EventTalent, TicketOrder, Ticket, Venue,
+    CustomField, EventCustomFieldValue,
 )
-from .forms import CSVUploadForm, TicketPriceEntryForm, CSVFormatForm, VenueForm, EventForm, LoginForm
+from .forms import (
+    CSVUploadForm, TicketPriceEntryForm, CSVFormatForm, VenueForm, EventForm,
+    EventTalentFormSet, LoginForm,
+)
 from .csv_processor import CSVProcessor
 from .services.forecasting.preview import generate_forecast_preview
+from .utils import get_organization, require_org
 
 
 # Authentication Views
@@ -103,10 +109,43 @@ def health_check(request):
 
 
 @login_required
+def org_required(request):
+    """Shown when user has no organization; prompt to create or join one."""
+    return render(request, 'tickets/org_required.html')
+
+
+@login_required
+@require_http_methods(["GET", "POST"])
+def create_organization(request):
+    """Create a new organization and assign the current user to it."""
+    from .forms import OrganizationForm
+    profile, _ = UserProfile.objects.get_or_create(
+        user=request.user,
+        defaults={'organization_id': None},
+    )
+    if profile.organization_id and not request.user.is_superuser:
+        # Already has an org, redirect home
+        return redirect('tickets:home')
+    if request.method == 'POST':
+        form = OrganizationForm(request.POST)
+        if form.is_valid():
+            org = form.save()
+            profile.organization = org
+            profile.save()
+            messages.success(request, f"Organization '{org.name}' created. You can now use the app.")
+            return redirect('tickets:home')
+    else:
+        form = OrganizationForm()
+    return render(request, 'tickets/create_organization.html', {'form': form})
+
+
+@login_required
+@require_org
 def home(request):
     """Home/dashboard page with overview statistics."""
-    # Recent events
-    recent_events = Event.objects.annotate(
+    org = get_organization(request)
+    # Recent events (org-scoped)
+    recent_events = Event.objects.filter(organization=org).annotate(
         total_orders=Count('ticket_orders', distinct=True),
         upload_count=Count('ticket_orders__uploaded_file', distinct=True),
         total_revenue=Coalesce(
@@ -122,13 +161,13 @@ def home(request):
         ),
     ).select_related('venue').order_by('-start_date')[:10]
 
-    # Summary statistics
-    total_customers = Customer.objects.count()
-    total_orders = TicketOrder.objects.count()
-    total_revenue = TicketOrder.objects.aggregate(
+    # Summary statistics (org-scoped via Event/Customer/UploadedFile)
+    total_customers = Customer.objects.filter(organization=org).count()
+    total_orders = TicketOrder.objects.filter(event__organization=org).count()
+    total_revenue = TicketOrder.objects.filter(event__organization=org).aggregate(
         total=Sum('total_amount')
     )['total'] or Decimal('0.00')
-    total_tickets = Ticket.objects.count()
+    total_tickets = Ticket.objects.filter(ticket_order__event__organization=org).count()
     
     context = {
         'recent_events': recent_events,
@@ -142,18 +181,21 @@ def home(request):
 
 
 @login_required
+@require_org
 @require_http_methods(["GET", "POST"])
 def upload_csv(request):
     """Handle CSV file upload and processing."""
+    org = get_organization(request)
     if request.method == 'POST':
-        form = CSVUploadForm(request.POST, request.FILES)
+        form = CSVUploadForm(request.POST, request.FILES, organization=org)
         if form.is_valid():
             csv_file = form.cleaned_data['csv_file']
             csv_format = form.cleaned_data['csv_format']
             venue = form.cleaned_data['venue']
             
-            # Save uploaded file
+            # Save uploaded file (org-scoped)
             uploaded_file = UploadedFile.objects.create(
+                organization=org,
                 csv_format=csv_format,
                 filename=csv_file.name,
                 description='',
@@ -187,16 +229,18 @@ def upload_csv(request):
                 # Process CSV directly
                 return process_csv_file(request, uploaded_file)
     else:
-        form = CSVUploadForm()
+        form = CSVUploadForm(organization=org)
     
     return render(request, 'tickets/upload.html', {'form': form})
 
 
 @login_required
+@require_org
 @require_http_methods(["GET", "POST"])
 def price_entry(request, file_id):
     """Display form for manually entering ticket prices or tiers."""
-    uploaded_file = get_object_or_404(UploadedFile, id=file_id)
+    org = get_organization(request)
+    uploaded_file = get_object_or_404(UploadedFile.objects.filter(organization=org), id=file_id)
     uses_tiers = uploaded_file.csv_format.uses_tiers
     
     if request.method == 'POST':
@@ -460,9 +504,11 @@ def process_csv_file(request, uploaded_file, manual_prices=None, tier_definition
 
 
 @login_required
+@require_org
 def upload_results(request, file_id):
     """Display processing results."""
-    uploaded_file = get_object_or_404(UploadedFile, id=file_id)
+    org = get_organization(request)
+    uploaded_file = get_object_or_404(UploadedFile.objects.filter(organization=org), id=file_id)
 
     results = uploaded_file.metadata.get('processing_results', {})
 
@@ -474,10 +520,12 @@ def upload_results(request, file_id):
 
 
 @login_required
+@require_org
 @require_http_methods(["POST"])
 def upload_delete(request, file_id):
     """Delete an upload and all associated order data."""
-    uploaded_file = get_object_or_404(UploadedFile, id=file_id)
+    org = get_organization(request)
+    uploaded_file = get_object_or_404(UploadedFile.objects.filter(organization=org), id=file_id)
     is_ajax = request.headers.get('X-Requested-With') == 'XMLHttpRequest'
 
     # TODO: Re-enable this check after temporary bypass
@@ -511,7 +559,7 @@ def upload_delete(request, file_id):
             customers_deleted = 0
             for customer_id in affected_customer_ids:
                 try:
-                    customer = Customer.objects.get(id=customer_id)
+                    customer = Customer.objects.filter(organization=org).get(id=customer_id)
                     if not customer.ticket_orders.exists():
                         customer.delete()
                         customers_deleted += 1
@@ -537,9 +585,11 @@ def upload_delete(request, file_id):
 
 
 @login_required
+@require_org
 def customer_list(request):
     """Display list of all customers with LTV."""
-    customers = Customer.objects.all()
+    org = get_organization(request)
+    customers = Customer.objects.filter(organization=org)
     
     # Search
     search_query = request.GET.get('search', '')
@@ -571,9 +621,11 @@ def customer_list(request):
 
 
 @login_required
+@require_org
 def customer_detail(request, customer_id):
     """Display detailed customer information with LTV and order history."""
-    customer = get_object_or_404(Customer, id=customer_id)
+    org = get_organization(request)
+    customer = get_object_or_404(Customer.objects.filter(organization=org), id=customer_id)
     
     # Order statistics
     orders = customer.ticket_orders.all()
@@ -610,10 +662,12 @@ def customer_detail(request, customer_id):
 # Event Management Views
 
 @login_required
+@require_org
 def event_list(request):
     """Display list of all events with associated uploads."""
+    org = get_organization(request)
     # Use Subquery to calculate revenue correctly (avoids double-counting when orders have multiple tickets)
-    events = Event.objects.annotate(
+    events = Event.objects.filter(organization=org).annotate(
         upload_count=Count('ticket_orders__uploaded_file', distinct=True),
         total_orders=Count('ticket_orders', distinct=True),
         total_revenue=Coalesce(
@@ -666,11 +720,18 @@ def event_list(request):
 
 
 @login_required
+@require_org
 def event_detail(request, event_id):
     """Display detailed event information with associated uploads."""
+    org = get_organization(request)
     event = get_object_or_404(
-        Event.objects.select_related('venue'),
-        id=event_id
+        Event.objects.filter(organization=org).select_related('venue').prefetch_related(
+            Prefetch(
+                'custom_field_values',
+                EventCustomFieldValue.objects.select_related('custom_field', 'custom_field_option'),
+            ),
+        ),
+        id=event_id,
     )
     
     # Get all distinct uploads associated with this event
@@ -702,7 +763,13 @@ def event_detail(request, event_id):
     paginator = Paginator(orders.order_by('-order_date'), 100)
     page_number = request.GET.get('page')
     page_obj = paginator.get_page(page_number)
-    
+
+    # Custom field values: only show those for the current org's custom fields
+    custom_field_values_display = [
+        v for v in event.custom_field_values.all()
+        if v.custom_field.organization_id == org.id
+    ]
+
     context = {
         'event': event,
         'upload_stats': upload_stats,
@@ -711,15 +778,20 @@ def event_detail(request, event_id):
         'total_tickets': total_tickets,
         'total_customers': total_customers,
         'page_obj': page_obj,
+        'custom_field_values_display': custom_field_values_display,
     }
     return render(request, 'tickets/event_detail.html', context)
 
 
 @login_required
+@require_org
 def order_detail(request, order_id):
     """Display detailed order information with all tickets."""
+    org = get_organization(request)
     order = get_object_or_404(
-        TicketOrder.objects.select_related('customer', 'event', 'event__venue', 'uploaded_file'),
+        TicketOrder.objects.filter(event__organization=org).select_related(
+            'customer', 'event', 'event__venue', 'uploaded_file'
+        ),
         id=order_id
     )
     
@@ -753,9 +825,11 @@ def order_detail(request, order_id):
 # Format Management Views
 
 @login_required
+@require_org
 def format_list(request):
     """List all CSV formats."""
-    formats = CSVFormat.objects.all()
+    org = get_organization(request)
+    formats = CSVFormat.objects.filter(organization=org)
     context = {
         'formats': formats,
     }
@@ -763,12 +837,16 @@ def format_list(request):
 
 
 @login_required
+@require_org
 def format_create(request):
     """Create new CSV format."""
+    org = get_organization(request)
     if request.method == 'POST':
         form = CSVFormatForm(request.POST)
         if form.is_valid():
-            format_obj = form.save()
+            format_obj = form.save(commit=False)
+            format_obj.organization = org
+            format_obj.save()
             messages.success(request, f"CSV format '{format_obj.name}' created successfully.")
             return redirect('tickets:format_list')
     else:
@@ -782,9 +860,11 @@ def format_create(request):
 
 
 @login_required
+@require_org
 def format_edit(request, format_id):
     """Edit existing CSV format."""
-    format_obj = get_object_or_404(CSVFormat, id=format_id)
+    org = get_organization(request)
+    format_obj = get_object_or_404(CSVFormat.objects.filter(organization=org), id=format_id)
     
     if request.method == 'POST':
         form = CSVFormatForm(request.POST, instance=format_obj)
@@ -805,9 +885,11 @@ def format_edit(request, format_id):
 
 
 @login_required
+@require_org
 def format_delete(request, format_id):
     """Delete CSV format."""
-    format_obj = get_object_or_404(CSVFormat, id=format_id)
+    org = get_organization(request)
+    format_obj = get_object_or_404(CSVFormat.objects.filter(organization=org), id=format_id)
     
     if request.method == 'POST':
         # Check if format is in use
@@ -830,12 +912,14 @@ def format_delete(request, format_id):
 
 
 @login_required
+@require_org
 def format_set_default(request, format_id):
     """Set CSV format as default."""
-    format_obj = get_object_or_404(CSVFormat, id=format_id)
+    org = get_organization(request)
+    format_obj = get_object_or_404(CSVFormat.objects.filter(organization=org), id=format_id)
     
-    # Unset other defaults
-    CSVFormat.objects.filter(is_default=True).exclude(id=format_id).update(is_default=False)
+    # Unset other defaults in this org
+    CSVFormat.objects.filter(organization=org, is_default=True).exclude(id=format_id).update(is_default=False)
     
     # Set this as default
     format_obj.is_default = True
@@ -848,40 +932,108 @@ def format_set_default(request, format_id):
 # Venue Management Views
 
 @login_required
+@require_org
+def venue_list(request):
+    """List all venues with optional search and pagination."""
+    org = get_organization(request)
+    venues = Venue.objects.filter(organization=org).annotate(event_count=Count('events')).order_by('name', 'city')
+    search_query = request.GET.get('search', '')
+    if search_query:
+        venues = venues.filter(
+            Q(name__icontains=search_query) |
+            Q(city__icontains=search_query) |
+            Q(state__icontains=search_query) |
+            Q(country__icontains=search_query)
+        )
+    paginator = Paginator(venues, 25)
+    page_number = request.GET.get('page')
+    page_obj = paginator.get_page(page_number)
+    context = {
+        'page_obj': page_obj,
+        'search_query': search_query,
+    }
+    return render(request, 'tickets/venue_list.html', context)
+
+
+@login_required
+@require_org
 def venue_create(request):
     """Create new venue."""
+    org = get_organization(request)
     if request.method == 'POST':
         form = VenueForm(request.POST)
         if form.is_valid():
-            venue = form.save()
+            venue = form.save(commit=False)
+            venue.organization = org
+            venue.save()
             messages.success(request, f"Venue '{venue.name}, {venue.city}' created successfully.")
-            # Stay on the page to allow creating multiple venues
-            form = VenueForm()
+            return redirect('tickets:venue_list')
     else:
         form = VenueForm()
-    
-    context = {
-        'form': form,
-    }
+    context = {'form': form}
     return render(request, 'tickets/venue_create.html', context)
 
 
 @login_required
+@require_org
+def venue_edit(request, venue_id):
+    """Edit an existing venue."""
+    org = get_organization(request)
+    venue = get_object_or_404(Venue.objects.filter(organization=org), id=venue_id)
+    if request.method == 'POST':
+        form = VenueForm(request.POST, instance=venue)
+        if form.is_valid():
+            form.save()
+            messages.success(request, f"Venue '{venue.name}, {venue.city}' updated successfully.")
+            return redirect('tickets:venue_list')
+    else:
+        form = VenueForm(instance=venue)
+    context = {'form': form, 'venue': venue}
+    return render(request, 'tickets/venue_edit.html', context)
+
+
+@login_required
+@require_org
 def event_create(request):
     """Create new event."""
+    org = get_organization(request)
     if request.method == 'POST':
-        form = EventForm(request.POST)
-        if form.is_valid():
+        form = EventForm(request.POST, organization=org)
+        talent_formset = EventTalentFormSet(request.POST, prefix='talent')
+        if form.is_valid() and talent_formset.is_valid():
             event = form.save(commit=False)
+            event.organization = org
             event.created_by = request.user
             event.save()
+            instances = talent_formset.save(commit=False)
+            for obj in instances:
+                if obj.name and obj.name.strip():
+                    obj.event = event
+                    obj.save()
+            for obj in talent_formset.deleted_objects:
+                obj.delete()
+            # Save custom field values for current org's dropdown custom fields only
+            for cf in CustomField.objects.filter(field_type='dropdown', organization=org):
+                field_name = f'custom_field_{cf.id}'
+                option_id = form.cleaned_data.get(field_name)
+                value, _ = EventCustomFieldValue.objects.get_or_create(
+                    event=event, custom_field=cf,
+                    defaults={'custom_field_option_id': None},
+                )
+                if option_id:
+                    value.custom_field_option_id = int(option_id)
+                else:
+                    value.custom_field_option_id = None
+                value.save()
             messages.success(request, f"Event '{event.name}' created successfully.")
             return redirect('tickets:event_detail', event_id=event.id)
     else:
-        form = EventForm()
+        form = EventForm(organization=org)
+        talent_formset = EventTalentFormSet(queryset=EventTalent.objects.none(), prefix='talent')
 
     context = {
         'form': form,
+        'talent_formset': talent_formset,
     }
     return render(request, 'tickets/event_create.html', context)
 
@@ -889,9 +1041,11 @@ def event_create(request):
 # Forecast Tool Views
 
 @login_required
+@require_org
 def forecast_tool(request):
     """Display the standalone forecast tool page."""
-    venues = Venue.objects.all().order_by('city', 'name')
+    org = get_organization(request)
+    venues = Venue.objects.filter(organization=org).order_by('city', 'name')
     context = {
         'venues': venues,
     }
@@ -899,10 +1053,12 @@ def forecast_tool(request):
 
 
 @login_required
+@require_org
 def forecast_api(request):
     """Return forecast data as JSON for the chart."""
     from datetime import datetime
 
+    org = get_organization(request)
     venue_id = request.GET.get('venue_id', '').strip()
     event_date_str = request.GET.get('event_date', '').strip()
     capacity_str = request.GET.get('capacity', '').strip()
