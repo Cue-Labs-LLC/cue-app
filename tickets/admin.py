@@ -128,14 +128,19 @@ class CustomerAdmin(admin.ModelAdmin):
 
 @admin.register(Venue)
 class VenueAdmin(admin.ModelAdmin):
-    list_display = ['name', 'city', 'event_count', 'created_at']
-    list_filter = ['city', 'created_at']
-    search_fields = ['name', 'city']
+    list_display = ['name', 'city', 'state', 'country', 'capacity', 'event_count', 'created_at']
+    list_filter = ['city', 'state', 'country', 'created_at']
+    search_fields = [
+        'name', 'city', 'street_address', 'state', 'postal_code', 'country'
+    ]
     readonly_fields = ['id', 'created_at', 'updated_at']
     
     fieldsets = (
         ('Venue Information', {
-            'fields': ('name', 'city')
+            'fields': ('name', 'city', 'capacity')
+        }),
+        ('Address', {
+            'fields': ('street_address', 'state', 'postal_code', 'country')
         }),
         ('Metadata', {
             'fields': ('id', 'created_at', 'updated_at'),

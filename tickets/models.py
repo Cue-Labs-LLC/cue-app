@@ -200,14 +200,39 @@ class Venue(BaseModel):
     """Venue information for events."""
     name = models.CharField(max_length=200, db_index=True)
     city = models.CharField(max_length=100, db_index=True)
-    
+    street_address = models.CharField(max_length=255, blank=True)
+    state = models.CharField(max_length=100, blank=True)
+    postal_code = models.CharField(max_length=20, blank=True)
+    country = models.CharField(max_length=100, blank=True)
+    capacity = models.IntegerField(
+        null=True,
+        blank=True,
+        help_text="Total capacity for the venue (optional)",
+    )
+
     class Meta:
         unique_together = [['name', 'city']]
         ordering = ['name', 'city']
         indexes = [
             models.Index(fields=['name', 'city']),
         ]
-    
+
+    def get_display_address(self):
+        """Return a single formatted line from street, state, postal_code, country.
+        Empty when none of those are set, so templates can hide the address block.
+        """
+        parts = []
+        if self.street_address:
+            parts.append(self.street_address)
+        line2 = ', '.join(
+            p for p in [self.state, self.postal_code] if p
+        )
+        if line2:
+            parts.append(line2)
+        if self.country:
+            parts.append(self.country)
+        return ' | '.join(parts) if parts else ''
+
     def __str__(self):
         return f"{self.name}, {self.city}"
 

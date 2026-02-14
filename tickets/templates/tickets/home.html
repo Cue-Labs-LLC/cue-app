@@ -50,8 +50,8 @@
 <div class="row mb-4">
     <div class="col">
         <div class="d-grid gap-2">
-            <a href="{% url 'tickets:upload_csv' %}" class="btn btn-primary btn-lg">
-                <i class="bi bi-upload"></i> Upload New CSV File
+            <a href="{% url 'tickets:event_create' %}" class="btn btn-primary btn-lg">
+                <i class="bi bi-calendar-plus"></i> Create Event
             </a>
         </div>
     </div>
@@ -103,7 +103,7 @@
                         </table>
                     </div>
                 {% else %}
-                    <p class="text-muted">No events yet. <a href="{% url 'tickets:upload_csv' %}">Upload a CSV file</a> to create events.</p>
+                    <p class="text-muted">No events yet. <a href="{% url 'tickets:event_create' %}">Create an event</a> to get started.</p>
                 {% endif %}
             </div>
         </div>

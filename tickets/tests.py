@@ -275,3 +275,53 @@ class UploadDeleteViewTests(TestCase):
 
         data = response.json()
         self.assertIn('2', data['message'])  # Should mention 2 orders
+
+
+class VenueAddressFieldsTests(TestCase):
+    """Test venue address fields and get_display_address."""
+
+    def test_venue_saves_address_fields(self):
+        """Venue with all address fields saves and reads back correctly."""
+        venue = Venue.objects.create(
+            name='The Fillmore',
+            city='San Francisco',
+            street_address='1805 Geary Blvd',
+            state='CA',
+            postal_code='94115',
+            country='USA',
+        )
+        venue.refresh_from_db()
+        self.assertEqual(venue.street_address, '1805 Geary Blvd')
+        self.assertEqual(venue.state, 'CA')
+        self.assertEqual(venue.postal_code, '94115')
+        self.assertEqual(venue.country, 'USA')
+
+    def test_venue_get_display_address(self):
+        """get_display_address returns formatted line when address fields present."""
+        venue = Venue.objects.create(
+            name='The Fillmore',
+            city='San Francisco',
+            street_address='1805 Geary Blvd',
+            state='CA',
+            postal_code='94115',
+            country='USA',
+        )
+        addr = venue.get_display_address()
+        self.assertIn('1805 Geary Blvd', addr)
+        self.assertIn('CA', addr)
+        self.assertIn('94115', addr)
+        self.assertIn('USA', addr)
+
+    def test_venue_get_display_address_empty_when_no_address(self):
+        """get_display_address returns empty string when no address fields."""
+        venue = Venue.objects.create(name='No Address Venue', city='Somewhere')
+        self.assertEqual(venue.get_display_address(), '')
+
+    def test_venue_form_includes_address_fields(self):
+        """VenueForm has address fields in form."""
+        from .forms import VenueForm
+        form = VenueForm()
+        self.assertIn('street_address', form.fields)
+        self.assertIn('state', form.fields)
+        self.assertIn('postal_code', form.fields)
+        self.assertIn('country', form.fields)

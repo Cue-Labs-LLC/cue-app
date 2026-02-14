@@ -18,6 +18,11 @@
             <i class="bi bi-clock"></i> {{ event.start_date|date:"M d, Y" }}{% if event.start_time %} {{ event.start_time|time:"H:i" }}{% endif %}{% if event.end_date %} &ndash; {{ event.end_date|date:"M d, Y" }}{% if event.end_time %} {{ event.end_time|time:"H:i" }}{% endif %}{% endif %}
             {% if event.capacity %}| <i class="bi bi-people"></i> Capacity: {{ event.capacity }}{% else %}| <i class="bi bi-people"></i> Capacity: —{% endif %}
         </p>
+        {% if event.venue.get_display_address %}
+        <p class="text-muted small">
+            <i class="bi bi-pin-map"></i> {{ event.venue.get_display_address }}
+        </p>
+        {% endif %}
     </div>
 </div>
 

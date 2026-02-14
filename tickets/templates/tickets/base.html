@@ -21,40 +21,77 @@
             <div class="collapse navbar-collapse" id="navbarNav">
                 <ul class="navbar-nav me-auto">
                     {% if user.is_authenticated %}
+                        <!-- Home -->
                         <li class="nav-item">
-                            <a class="nav-link" href="{% url 'tickets:home' %}">
+                            <a class="nav-link{% if request.path == '/' %} active{% endif %}" href="{% url 'tickets:home' %}">
                                 <i class="bi bi-house"></i> Home
                             </a>
                         </li>
-                        <li class="nav-item">
-                            <a class="nav-link" href="{% url 'tickets:upload_csv' %}">
-                                <i class="bi bi-upload"></i> Upload CSV
+                        <!-- Data dropdown -->
+                        <li class="nav-item dropdown">
+                            <a class="nav-link dropdown-toggle{% if '/customers/' in request.path or '/events/' in request.path or '/venues/' in request.path %} active{% endif %}" href="#" role="button" data-bs-toggle="dropdown" aria-expanded="false">
+                                <i class="bi bi-database"></i> Data
                             </a>
+                            <ul class="dropdown-menu">
+                                <li>
+                                    <a class="dropdown-item{% if '/customers/' in request.path %} active{% endif %}" href="{% url 'tickets:customer_list' %}">
+                                        <i class="bi bi-people"></i> Customers
+                                    </a>
+                                </li>
+                                <li>
+                                    <a class="dropdown-item{% if '/events/' in request.path %} active{% endif %}" href="{% url 'tickets:event_list' %}">
+                                        <i class="bi bi-calendar-event"></i> Events
+                                    </a>
+                                </li>
+                                <li><hr class="dropdown-divider"></li>
+                                <li>
+                                    <a class="dropdown-item" href="{% url 'tickets:event_create' %}">
+                                        <i class="bi bi-calendar-plus"></i> Create Event
+                                    </a>
+                                </li>
+                                <li>
+                                    <a class="dropdown-item" href="{% url 'tickets:venue_create' %}">
+                                        <i class="bi bi-geo-alt"></i> Create Venue
+                                    </a>
+                                </li>
+                            </ul>
                         </li>
-                        <li class="nav-item">
-                            <a class="nav-link" href="{% url 'tickets:customer_list' %}">
-                                <i class="bi bi-people"></i> Customers
+                        <!-- Tools dropdown -->
+                        <li class="nav-item dropdown">
+                            <a class="nav-link dropdown-toggle{% if '/upload/' in request.path or '/forecast/' in request.path %} active{% endif %}" href="#" role="button" data-bs-toggle="dropdown" aria-expanded="false">
+                                <i class="bi bi-tools"></i> Tools
                             </a>
+                            <ul class="dropdown-menu">
+                                <li>
+                                    <a class="dropdown-item{% if '/upload/' in request.path %} active{% endif %}" href="{% url 'tickets:upload_csv' %}">
+                                        <i class="bi bi-upload"></i> Upload CSV
+                                    </a>
+                                </li>
+                                <li>
+                                    <a class="dropdown-item{% if '/forecast/' in request.path %} active{% endif %}" href="{% url 'tickets:forecast_tool' %}">
+                                        <i class="bi bi-graph-up-arrow"></i> Forecast
+                                    </a>
+                                </li>
+                            </ul>
                         </li>
-                        <li class="nav-item">
-                            <a class="nav-link" href="{% url 'tickets:event_list' %}">
-                                <i class="bi bi-calendar-event"></i> Events
+                        <!-- Settings dropdown -->
+                        <li class="nav-item dropdown">
+                            <a class="nav-link dropdown-toggle{% if '/formats/' in request.path %} active{% endif %}" href="#" role="button" data-bs-toggle="dropdown" aria-expanded="false">
+                                <i class="bi bi-gear"></i> Settings
                             </a>
-                        </li>
-                        <li class="nav-item">
-                            <a class="nav-link" href="{% url 'tickets:forecast_tool' %}">
-                                <i class="bi bi-graph-up-arrow"></i> Forecast
-                            </a>
-                        </li>
-                        <li class="nav-item">
-                            <a class="nav-link" href="{% url 'tickets:format_list' %}">
-                                <i class="bi bi-file-earmark-spreadsheet"></i> CSV Formats
-                            </a>
-                        </li>
-                        <li class="nav-item">
-                            <a class="nav-link" href="{% url 'admin:index' %}">
-                                <i class="bi bi-gear"></i> Admin
-                            </a>
+                            <ul class="dropdown-menu">
+                                <li>
+                                    <a class="dropdown-item{% if '/formats/' in request.path %} active{% endif %}" href="{% url 'tickets:format_list' %}">
+                                        <i class="bi bi-file-earmark-spreadsheet"></i> CSV Formats
+                                    </a>
+                                </li>
+                                <li><hr class="dropdown-divider"></li>
+                                <li>
+                                    <a class="dropdown-item" href="{% url 'admin:index' %}">
+                                        <i class="bi bi-shield-lock"></i> Admin Panel
+                                    </a>
+                                </li>
+                            </ul>
                         </li>
                     {% endif %}
                 </ul>

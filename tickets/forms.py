@@ -427,18 +427,32 @@ class VenueForm(forms.ModelForm):
     
     class Meta:
         model = Venue
-        fields = ['name', 'city']
+        fields = [
+            'name', 'city', 'street_address', 'state', 'postal_code', 'country',
+            'capacity',
+        ]
         widgets = {
             'name': forms.TextInput(attrs={'class': 'form-control', 'placeholder': 'e.g., The Fillmore'}),
             'city': forms.TextInput(attrs={'class': 'form-control', 'placeholder': 'e.g., San Francisco'}),
+            'street_address': forms.TextInput(attrs={'class': 'form-control', 'placeholder': 'e.g., 123 Main St'}),
+            'state': forms.TextInput(attrs={'class': 'form-control', 'placeholder': 'e.g., CA'}),
+            'postal_code': forms.TextInput(attrs={'class': 'form-control', 'placeholder': 'e.g., 94102'}),
+            'country': forms.TextInput(attrs={'class': 'form-control', 'placeholder': 'e.g., USA'}),
+            'capacity': forms.NumberInput(attrs={'class': 'form-control', 'placeholder': 'e.g., 500', 'min': '1'}),
         }
     
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        self.fields['capacity'].required = False
         self.helper = FormHelper()
         self.helper.layout = Layout(
             Field('name'),
             Field('city'),
+            Field('street_address'),
+            Field('state'),
+            Field('postal_code'),
+            Field('country'),
+            Field('capacity'),
             Submit('submit', 'Create Venue', css_class='btn btn-primary')
         )
 
