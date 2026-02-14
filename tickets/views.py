@@ -1,5 +1,6 @@
 import os
 import json
+from datetime import date
 from decimal import Decimal
 from django.shortcuts import render, redirect, get_object_or_404
 from django.contrib import messages
@@ -104,9 +105,23 @@ def health_check(request):
 @login_required
 def home(request):
     """Home/dashboard page with overview statistics."""
-    # Recent uploads
-    recent_uploads = UploadedFile.objects.all()[:10]
-    
+    # Recent events
+    recent_events = Event.objects.annotate(
+        total_orders=Count('ticket_orders', distinct=True),
+        upload_count=Count('ticket_orders__uploaded_file', distinct=True),
+        total_revenue=Coalesce(
+            Subquery(
+                TicketOrder.objects.filter(
+                    event=OuterRef('pk')
+                ).values('event').annotate(
+                    total=Sum('total_amount')
+                ).values('total')[:1],
+                output_field=models.DecimalField(max_digits=10, decimal_places=2)
+            ),
+            Decimal('0.00')
+        ),
+    ).select_related('venue').order_by('-start_date')[:10]
+
     # Summary statistics
     total_customers = Customer.objects.count()
     total_orders = TicketOrder.objects.count()
@@ -116,7 +131,8 @@ def home(request):
     total_tickets = Ticket.objects.count()
     
     context = {
-        'recent_uploads': recent_uploads,
+        'recent_events': recent_events,
+        'today': date.today(),
         'total_customers': total_customers,
         'total_orders': total_orders,
         'total_revenue': total_revenue,
