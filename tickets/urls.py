@@ -51,6 +51,9 @@ urlpatterns = [
     path('formats/<uuid:format_id>/delete/', views.format_delete, name='format_delete'),
     path('formats/<uuid:format_id>/set-default/', views.format_set_default, name='format_set_default'),
     
+    # Tools
+    path('tools/regenerate-event-doc/', views.regenerate_event_doc, name='regenerate_event_doc'),
+
     # Venues
     path('venues/', views.venue_list, name='venue_list'),
     path('venues/create/', views.venue_create, name='venue_create'),

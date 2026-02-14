@@ -1038,6 +1038,46 @@ def event_create(request):
     return render(request, 'tickets/event_create.html', context)
 
 
+@login_required
+@require_org
+@require_http_methods(["POST"])
+def regenerate_event_doc(request):
+    """Trigger regeneration of the Upcoming Events Google Doc."""
+    from django.conf import settings
+    from .services.google_docs import EventDocFormatter, GoogleDocWriter
+
+    org = get_organization(request)
+    doc_id = settings.GOOGLE_DOC_ID
+
+    if not doc_id:
+        messages.error(request, "Google Doc ID is not configured.")
+        return redirect('tickets:home')
+
+    if not settings.GOOGLE_SERVICE_ACCOUNT_JSON:
+        messages.error(request, "Google service account credentials are not configured.")
+        return redirect('tickets:home')
+
+    formatter = EventDocFormatter(org)
+    events = formatter.get_upcoming_events()
+    content = formatter.generate_full_document()
+
+    try:
+        writer = GoogleDocWriter(doc_id)
+        result = writer.update_document(content)
+        if result['success']:
+            messages.success(
+                request,
+                f"Updated Google Doc with {len(events)} upcoming event(s) "
+                f"({result['characters_written']} characters)."
+            )
+        else:
+            messages.error(request, f"Failed to update Google Doc: {result['error']}")
+    except Exception as e:
+        messages.error(request, f"Error updating Google Doc: {e}")
+
+    return redirect('tickets:home')
+
+
 # Forecast Tool Views
 
 @login_required
