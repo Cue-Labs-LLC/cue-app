@@ -811,6 +811,7 @@ def event_delete(request, event_id):
 
     if request.method == 'POST':
         try:
+            was_future = event.start_date >= date.today()
             with transaction.atomic():
                 orders_count = event.ticket_orders.count()
                 affected_customer_ids = list(
@@ -834,6 +835,8 @@ def event_delete(request, event_id):
             success_msg = f"Event '{event_name}' and {orders_count} associated order(s) have been permanently deleted."
             if customers_deleted > 0:
                 success_msg += f" Removed {customers_deleted} customer(s) with no remaining orders."
+            if was_future:
+                _regenerate_event_doc_background(org)
             messages.success(request, success_msg)
             return redirect('tickets:event_list')
         except Exception as e:
@@ -1087,8 +1090,8 @@ def event_create(request):
                     value.custom_field_option_id = None
                 value.save()
             messages.success(request, f"Event '{event.name}' created successfully.")
-            # Auto-regenerate the Upcoming Events Google Doc
-            _regenerate_event_doc_background(org)
+            if event.start_date >= date.today():
+                _regenerate_event_doc_background(org)
             return redirect('tickets:event_detail', event_id=event.id)
     else:
         form = EventForm(organization=org)
@@ -1117,6 +1120,7 @@ def event_edit(request, event_id):
         form = EventForm(request.POST, instance=event, organization=org)
         talent_formset = EventTalentFormSet(request.POST, prefix='talent')
         if form.is_valid() and talent_formset.is_valid():
+            was_future = event.start_date >= date.today()
             event = form.save(commit=False)
             event.updated_by = request.user
             event.save()
@@ -1141,7 +1145,8 @@ def event_edit(request, event_id):
                     value.custom_field_option_id = None
                 value.save()
             messages.success(request, f"Event '{event.name}' updated successfully.")
-            _regenerate_event_doc_background(org)
+            if was_future or event.start_date >= date.today():
+                _regenerate_event_doc_background(org)
             return redirect('tickets:event_detail', event_id=event.id)
     else:
         form = EventForm(instance=event, organization=org)
