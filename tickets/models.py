@@ -441,7 +441,7 @@ class TicketOrder(AuditBaseModel):
     )
     event = models.ForeignKey(
         Event,
-        on_delete=models.PROTECT,
+        on_delete=models.CASCADE,
         related_name='ticket_orders'
     )
     uploaded_file = models.ForeignKey(

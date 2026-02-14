@@ -38,6 +38,7 @@ urlpatterns = [
     path('events/<uuid:event_id>/', views.event_detail, name='event_detail'),
     path('events/<uuid:event_id>/edit/', views.event_edit, name='event_edit'),
     path('events/<uuid:event_id>/upload/', views.event_upload_csv, name='event_upload_csv'),
+    path('events/<uuid:event_id>/delete/', views.event_delete, name='event_delete'),
 
     # Forecast Tool
     path('forecast/', views.forecast_tool, name='forecast_tool'),

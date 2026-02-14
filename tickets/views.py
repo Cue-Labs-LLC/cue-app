@@ -803,6 +803,49 @@ def event_detail(request, event_id):
 
 @login_required
 @require_org
+@require_http_methods(["GET", "POST"])
+def event_delete(request, event_id):
+    """Permanently delete an event and all its orders and tickets."""
+    org = get_organization(request)
+    event = get_object_or_404(Event.objects.filter(organization=org), id=event_id)
+
+    if request.method == 'POST':
+        try:
+            with transaction.atomic():
+                orders_count = event.ticket_orders.count()
+                affected_customer_ids = list(
+                    event.ticket_orders.values_list('customer_id', flat=True).distinct()
+                )
+                event_name = event.name
+                event.hard_delete()
+
+                customers_deleted = 0
+                for customer_id in affected_customer_ids:
+                    try:
+                        customer = Customer.objects.filter(organization=org).get(id=customer_id)
+                        if not customer.ticket_orders.exists():
+                            customer.delete()
+                            customers_deleted += 1
+                        else:
+                            customer.update_lifetime_value()
+                    except Customer.DoesNotExist:
+                        pass
+
+            success_msg = f"Event '{event_name}' and {orders_count} associated order(s) have been permanently deleted."
+            if customers_deleted > 0:
+                success_msg += f" Removed {customers_deleted} customer(s) with no remaining orders."
+            messages.success(request, success_msg)
+            return redirect('tickets:event_list')
+        except Exception as e:
+            messages.error(request, f"Error deleting event: {str(e)}")
+            return redirect('tickets:event_detail', event_id=event_id)
+
+    context = {'event': event}
+    return render(request, 'tickets/event_delete.html', context)
+
+
+@login_required
+@require_org
 def order_detail(request, order_id):
     """Display detailed order information with all tickets."""
     org = get_organization(request)
