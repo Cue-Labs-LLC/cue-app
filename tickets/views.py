@@ -1318,6 +1318,7 @@ def forecast_api(request):
         event_date=event_date,
         capacity=capacity,
         starting_tickets=starting_tickets,
+        organization=org,
     )
 
     response = JsonResponse(result)

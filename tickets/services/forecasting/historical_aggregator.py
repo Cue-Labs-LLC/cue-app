@@ -23,7 +23,7 @@ class HistoricalAggregator:
     combines their sales curves to create an average baseline curve.
     """
 
-    def __init__(self, min_events: int = 1):
+    def __init__(self, min_events: int = 1, organization=None):
         """
         Initialize the aggregator.
 
@@ -31,8 +31,10 @@ class HistoricalAggregator:
             min_events: Minimum number of events required for a segment
                        to be considered valid. Falls back to broader
                        segment if threshold not met.
+            organization: Optional organization to scope events to (current org for forecast).
         """
         self.min_events = min_events
+        self.organization = organization
         self.curve_calculator = SalesCurveCalculator()
 
     def get_events_for_segment(
@@ -67,6 +69,9 @@ class HistoricalAggregator:
         # Apply city filter
         elif city is not None:
             events = events.filter(venue__city=city)
+
+        if self.organization is not None:
+            events = events.filter(organization=self.organization)
 
         return events.order_by('-start_date')
 
