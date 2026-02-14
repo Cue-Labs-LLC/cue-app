@@ -156,15 +156,15 @@ class VenueAdmin(admin.ModelAdmin):
 
 @admin.register(Event)
 class EventAdmin(admin.ModelAdmin):
-    list_display = ['name', 'venue', 'event_date', 'capacity', 'order_count', 'created_at']
-    list_filter = ['event_date', 'created_at', 'venue__city']
+    list_display = ['name', 'venue', 'start_date', 'start_time', 'end_date', 'end_time', 'capacity', 'order_count', 'created_at']
+    list_filter = ['start_date', 'created_at', 'venue__city']
     search_fields = ['name', 'venue__name', 'venue__city', 'description']
     readonly_fields = ['id', 'created_at', 'updated_at']
-    date_hierarchy = 'event_date'
-    
+    date_hierarchy = 'start_date'
+
     fieldsets = (
         ('Event Information', {
-            'fields': ('name', 'venue', 'event_date', 'description', 'capacity')
+            'fields': ('name', 'venue', 'start_date', 'start_time', 'end_date', 'end_time', 'description', 'capacity')
         }),
         ('Metadata', {
             'fields': ('id', 'created_at', 'updated_at'),

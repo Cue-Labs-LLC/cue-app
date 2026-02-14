@@ -54,7 +54,7 @@ class HistoricalAggregator:
         """
         # Start with past events that have orders
         events = Event.objects.filter(
-            event_date__lt=timezone.now()
+            start_date__lt=timezone.now().date()
         ).annotate(
             order_count=Count('ticket_orders')
         ).filter(
@@ -68,7 +68,7 @@ class HistoricalAggregator:
         elif city is not None:
             events = events.filter(venue__city=city)
 
-        return events.order_by('-event_date')
+        return events.order_by('-start_date')
 
     def aggregate_curves(self, events: QuerySet, use_capacity: bool = True) -> BaselineCurveData:
         """
@@ -281,7 +281,7 @@ class HistoricalAggregator:
                     events = self._filter_events_by_sales_length(
                         events, reference_days_before
                     )
-                return events.order_by('-event_date')
+                return events.order_by('-start_date')
             city = venue.city
 
         # Try city-specific
@@ -292,7 +292,7 @@ class HistoricalAggregator:
                     events = self._filter_events_by_sales_length(
                         events, reference_days_before
                     )
-                return events.order_by('-event_date')
+                return events.order_by('-start_date')
 
         # Fall back to global
         events = self.get_events_for_segment()
@@ -300,7 +300,7 @@ class HistoricalAggregator:
             events = self._filter_events_by_sales_length(
                 events, reference_days_before
             )
-        return events.order_by('-event_date')
+        return events.order_by('-start_date')
 
     def get_available_segments(self) -> dict:
         """

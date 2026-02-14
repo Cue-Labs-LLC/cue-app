@@ -220,7 +220,10 @@ class Event(AuditBaseModel):
         on_delete=models.PROTECT,
         related_name='events'
     )
-    event_date = models.DateTimeField(db_index=True)
+    start_date = models.DateField(db_index=True)
+    start_time = models.TimeField(null=True, blank=True)
+    end_date = models.DateField(null=True, blank=True)
+    end_time = models.TimeField(null=True, blank=True)
     description = models.TextField(blank=True)
     capacity = models.IntegerField(
         null=True,
@@ -229,14 +232,14 @@ class Event(AuditBaseModel):
     )
 
     class Meta:
-        unique_together = [['name', 'event_date']]
-        ordering = ['-event_date', 'name']
+        unique_together = [['name', 'start_date']]
+        ordering = ['-start_date', '-start_time', 'name']
         indexes = [
-            models.Index(fields=['name', 'event_date']),
+            models.Index(fields=['name', 'start_date']),
         ]
 
     def __str__(self):
-        return f"{self.name} - {self.venue.name}, {self.venue.city} ({self.event_date.date()})"
+        return f"{self.name} - {self.venue.name}, {self.venue.city} ({self.start_date})"
 
     def get_associated_uploads(self):
         """Get all distinct uploads associated with this event via ticket orders."""

@@ -15,7 +15,7 @@
         <h1><i class="bi bi-calendar-event"></i> {{ event.name }}</h1>
         <p class="text-muted">
             <i class="bi bi-geo-alt"></i> {{ event.venue.name }}, {{ event.venue.city }} |
-            <i class="bi bi-clock"></i> {{ event.event_date|date:"M d, Y H:i" }}
+            <i class="bi bi-clock"></i> {{ event.start_date|date:"M d, Y" }}{% if event.start_time %} {{ event.start_time|time:"H:i" }}{% endif %}{% if event.end_date %} &ndash; {{ event.end_date|date:"M d, Y" }}{% if event.end_time %} {{ event.end_time|time:"H:i" }}{% endif %}{% endif %}
             {% if event.capacity %}| <i class="bi bi-people"></i> Capacity: {{ event.capacity }}{% else %}| <i class="bi bi-people"></i> Capacity: —{% endif %}
         </p>
     </div>

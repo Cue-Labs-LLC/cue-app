@@ -3,7 +3,7 @@ from django import forms
 from django.contrib.auth.forms import AuthenticationForm
 from crispy_forms.helper import FormHelper
 from crispy_forms.layout import Layout, Row, Column, Submit, Field
-from .models import CSVFormat, Venue
+from .models import CSVFormat, Venue, Event
 
 
 class LoginForm(AuthenticationForm):
@@ -103,11 +103,17 @@ class CSVUploadForm(forms.Form):
         help_text="Enter the name of the event",
         widget=forms.TextInput(attrs={'class': 'form-control', 'placeholder': 'e.g., Familiar Faces'})
     )
-    event_date = forms.DateTimeField(
+    event_start_date = forms.DateField(
         required=True,
-        label="Event Date",
-        help_text="Date and time of the event",
-        widget=forms.DateTimeInput(attrs={'type': 'datetime-local', 'class': 'form-control'})
+        label="Event Start Date",
+        help_text="Date of the event",
+        widget=forms.DateInput(attrs={'type': 'date', 'class': 'form-control'})
+    )
+    event_start_time = forms.TimeField(
+        required=False,
+        label="Event Start Time",
+        help_text="Time of the event (optional)",
+        widget=forms.TimeInput(attrs={'type': 'time', 'class': 'form-control'})
     )
     venue = forms.ModelChoiceField(
         queryset=Venue.objects.all().order_by('name', 'city'),
@@ -135,8 +141,9 @@ class CSVUploadForm(forms.Form):
                 Column('event_name', css_class='form-group col-md-12 mb-0'),
             ),
             Row(
-                Column('event_date', css_class='form-group col-md-6 mb-0'),
-                Column('venue', css_class='form-group col-md-6 mb-0'),
+                Column('event_start_date', css_class='form-group col-md-4 mb-0'),
+                Column('event_start_time', css_class='form-group col-md-4 mb-0'),
+                Column('venue', css_class='form-group col-md-4 mb-0'),
             ),
             Field('notes'),
             Submit('submit', 'Upload CSV', css_class='btn btn-primary')
@@ -434,3 +441,68 @@ class VenueForm(forms.ModelForm):
             Field('city'),
             Submit('submit', 'Create Venue', css_class='btn btn-primary')
         )
+
+
+class EventForm(forms.ModelForm):
+    """Form for creating events."""
+
+    class Meta:
+        model = Event
+        fields = ['name', 'venue', 'start_date', 'start_time', 'end_date', 'end_time', 'description', 'capacity']
+        widgets = {
+            'name': forms.TextInput(attrs={'class': 'form-control', 'placeholder': 'e.g., Familiar Faces'}),
+            'venue': forms.Select(attrs={'class': 'form-select'}),
+            'start_date': forms.DateInput(attrs={'type': 'date', 'class': 'form-control'}),
+            'start_time': forms.TimeInput(attrs={'type': 'time', 'class': 'form-control'}),
+            'end_date': forms.DateInput(attrs={'type': 'date', 'class': 'form-control'}),
+            'end_time': forms.TimeInput(attrs={'type': 'time', 'class': 'form-control'}),
+            'description': forms.Textarea(attrs={'rows': 3, 'class': 'form-control', 'placeholder': 'Optional event description'}),
+            'capacity': forms.NumberInput(attrs={'class': 'form-control', 'placeholder': 'e.g., 500', 'min': '1'}),
+        }
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields['venue'].queryset = Venue.objects.all().order_by('name', 'city')
+        self.fields['description'].required = False
+        self.fields['capacity'].required = False
+        self.helper = FormHelper()
+        self.helper.layout = Layout(
+            Field('name'),
+            Row(
+                Column('venue', css_class='form-group col-md-4 mb-0'),
+                Column('start_date', css_class='form-group col-md-4 mb-0'),
+                Column('start_time', css_class='form-group col-md-4 mb-0'),
+            ),
+            Row(
+                Column('end_date', css_class='form-group col-md-4 mb-0'),
+                Column('end_time', css_class='form-group col-md-4 mb-0'),
+                Column('capacity', css_class='form-group col-md-4 mb-0'),
+            ),
+            Field('description'),
+            Submit('submit', 'Create Event', css_class='btn btn-primary')
+        )
+
+    def clean(self):
+        cleaned_data = super().clean()
+        start_date = cleaned_data.get('start_date')
+        start_time = cleaned_data.get('start_time')
+        end_date = cleaned_data.get('end_date')
+        end_time = cleaned_data.get('end_time')
+
+        if end_time and not end_date:
+            self.add_error('end_date', 'End date is required when end time is provided.')
+
+        if end_date and start_date:
+            if end_date < start_date:
+                self.add_error('end_date', 'End date cannot be before start date.')
+            elif end_date == start_date and end_time and start_time:
+                if end_time <= start_time:
+                    self.add_error('end_time', 'End time must be after start time on the same date.')
+
+        return cleaned_data
+
+    def validate_unique(self):
+        try:
+            self.instance.validate_unique()
+        except forms.ValidationError as e:
+            self._update_errors(e)

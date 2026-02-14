@@ -18,7 +18,7 @@ import pandas as pd
 from .models import (
     CSVFormat, UploadedFile, Customer, Event, TicketOrder, Ticket, Venue
 )
-from .forms import CSVUploadForm, TicketPriceEntryForm, CSVFormatForm, VenueForm, LoginForm
+from .forms import CSVUploadForm, TicketPriceEntryForm, CSVFormatForm, VenueForm, EventForm, LoginForm
 from .csv_processor import CSVProcessor
 from .services.forecasting.preview import generate_forecast_preview
 
@@ -145,7 +145,8 @@ def upload_csv(request):
                 metadata={
                     'notes': form.cleaned_data.get('notes', ''),
                     'event_name': form.cleaned_data.get('event_name', ''),
-                    'event_date': form.cleaned_data.get('event_date').isoformat() if form.cleaned_data.get('event_date') else '',
+                    'event_start_date': form.cleaned_data.get('event_start_date').isoformat() if form.cleaned_data.get('event_start_date') else '',
+                    'event_start_time': form.cleaned_data.get('event_start_time').isoformat() if form.cleaned_data.get('event_start_time') else '',
                     'venue_id': str(venue.id),
                     'venue_name': venue.name,
                     'venue_city': venue.city,
@@ -623,17 +624,17 @@ def event_list(request):
         )
     
     # Sorting
-    sort_by = request.GET.get('sort', '-event_date')
-    if sort_by in ['name', 'event_date', 'upload_count', 'total_revenue']:
+    sort_by = request.GET.get('sort', '-start_date')
+    if sort_by in ['name', 'start_date', 'upload_count', 'total_revenue']:
         events = events.order_by(sort_by)
-    elif sort_by == '-event_date':
-        events = events.order_by('-event_date')
+    elif sort_by == '-start_date':
+        events = events.order_by('-start_date')
     elif sort_by == '-upload_count':
         events = events.order_by('-upload_count')
     elif sort_by == '-total_revenue':
         events = events.order_by('-total_revenue')
     else:
-        events = events.order_by('-event_date')
+        events = events.order_by('-start_date')
     
     # Pagination
     paginator = Paginator(events, 50)
@@ -847,6 +848,26 @@ def venue_create(request):
         'form': form,
     }
     return render(request, 'tickets/venue_create.html', context)
+
+
+@login_required
+def event_create(request):
+    """Create new event."""
+    if request.method == 'POST':
+        form = EventForm(request.POST)
+        if form.is_valid():
+            event = form.save(commit=False)
+            event.created_by = request.user
+            event.save()
+            messages.success(request, f"Event '{event.name}' created successfully.")
+            return redirect('tickets:event_detail', event_id=event.id)
+    else:
+        form = EventForm()
+
+    context = {
+        'form': form,
+    }
+    return render(request, 'tickets/event_create.html', context)
 
 
 # Forecast Tool Views

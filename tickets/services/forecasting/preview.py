@@ -84,7 +84,7 @@ def generate_forecast_preview(
     if venue is not None:
         venue_max = Event.objects.filter(
             venue=venue,
-            event_date__lt=today,
+            start_date__lt=today,
             capacity__isnull=False,
         ).exclude(capacity=0).aggregate(Max('capacity'))['capacity__max']
         if venue_max is not None:
@@ -131,11 +131,7 @@ def generate_forecast_preview(
     for event in events_queryset:
         curve = curve_calculator.get_event_sales_curve(event)
         if curve.total_tickets > 0:
-            event_date_str = (
-                event.event_date.date().isoformat()
-                if hasattr(event.event_date, 'date')
-                else str(event.event_date)
-            )
+            event_date_str = event.start_date.isoformat()
             venue_name = f"{event.venue.name}, {event.venue.city}"
             historical_events.append({
                 'name': event.name,

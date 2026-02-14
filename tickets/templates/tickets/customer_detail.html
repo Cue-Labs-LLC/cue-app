@@ -169,7 +169,7 @@
                     {% for event in events_attended %}
                         <li class="list-group-item">
                             <strong>{{ event.name }}</strong> - {{ event.venue.name }}, {{ event.venue.city }} 
-                            <span class="text-muted">({{ event.event_date|date:"M d, Y" }})</span>
+                            <span class="text-muted">({{ event.start_date|date:"M d, Y" }})</span>
                         </li>
                     {% endfor %}
                 </ul>

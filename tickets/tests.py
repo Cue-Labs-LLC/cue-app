@@ -1,3 +1,4 @@
+from datetime import date, time
 from django.test import TestCase, Client
 from django.urls import reverse
 from django.contrib.auth.models import User
@@ -33,7 +34,8 @@ class UploadDeleteViewTests(TestCase):
         self.event = Event.objects.create(
             name='Test Event',
             venue=self.venue,
-            event_date='2024-06-15 19:00:00'
+            start_date=date(2024, 6, 15),
+            start_time=time(19, 0, 0)
         )
         self.upload = UploadedFile.objects.create(
             csv_format=self.csv_format,
