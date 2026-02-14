@@ -29,6 +29,24 @@ from .csv_processor import CSVProcessor
 from .services.forecasting.preview import generate_forecast_preview
 from .utils import get_organization, require_org
 
+import logging
+logger = logging.getLogger(__name__)
+
+
+def _regenerate_event_doc_background(org):
+    """Regenerate the Upcoming Events Google Doc. Fails silently if not configured."""
+    from django.conf import settings
+    if not settings.GOOGLE_DOC_ID or not settings.GOOGLE_SERVICE_ACCOUNT_JSON:
+        return
+    try:
+        from .services.google_docs import EventDocFormatter, GoogleDocWriter
+        formatter = EventDocFormatter(org)
+        content = formatter.generate_full_document()
+        writer = GoogleDocWriter(settings.GOOGLE_DOC_ID)
+        writer.update_document(content)
+    except Exception:
+        logger.exception("Failed to regenerate event doc")
+
 
 # Authentication Views
 class LoginView(auth_views.LoginView):
@@ -1026,6 +1044,8 @@ def event_create(request):
                     value.custom_field_option_id = None
                 value.save()
             messages.success(request, f"Event '{event.name}' created successfully.")
+            # Auto-regenerate the Upcoming Events Google Doc
+            _regenerate_event_doc_background(org)
             return redirect('tickets:event_detail', event_id=event.id)
     else:
         form = EventForm(organization=org)
