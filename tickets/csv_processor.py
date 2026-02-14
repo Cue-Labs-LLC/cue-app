@@ -75,6 +75,24 @@ class CSVProcessor:
                     if value:
                         name_parts.append(value)
                 mapped[internal_field] = ' '.join(name_parts) if name_parts else None
+            elif internal_field == 'processed_in_person':
+                # Optional: map CSV column(s) and normalize to boolean
+                value = None
+                for csv_col in csv_columns:
+                    if csv_col in row:
+                        value = row[csv_col]
+                        break
+                    for key in row.keys():
+                        if key.lower() == csv_col.lower():
+                            value = row[key]
+                            break
+                    if value is not None:
+                        break
+                if value is not None:
+                    s = str(value).strip().lower()
+                    mapped[internal_field] = s in ('true', 'yes', '1')
+                else:
+                    mapped[internal_field] = False
             else:
                 # Standard single column mapping
                 value = None
@@ -137,9 +155,11 @@ class CSVProcessor:
     
     def validate_ticket_order_data(self, row: Dict) -> Tuple[bool, Optional[str]]:
         """Validate individual ticket order row."""
-        # Core required fields (order_number can be auto-generated, event fields can come from metadata)
-        required_fields = ['order_date', 'customer_email', 
-                          'customer_name', 'ticket_type']
+        # In-person rows (processed_in_person=true) only require order_date and ticket_type
+        if row.get('processed_in_person'):
+            required_fields = ['order_date', 'ticket_type']
+        else:
+            required_fields = ['order_date', 'customer_email', 'customer_name', 'ticket_type']
         
         missing = [field for field in required_fields if not row.get(field)]
         if missing:
@@ -340,8 +360,30 @@ class CSVProcessor:
         if org is not None:
             customer_filter = customer_filter.filter(organization=org)
         existing_customers = {c.email: c for c in customer_filter}
-        
+
+        # Placeholder customer for in-person (no-email) rows; get-or-create when format supports it
+        placeholder_customer = None
+        if org is not None and 'processed_in_person' in self.column_mapping:
+            placeholder_email = f"in-person-{org.id}@placeholder.local"
+            placeholder_customer, _ = Customer.objects.get_or_create(
+                organization=org,
+                email=placeholder_email,
+                defaults={'name': 'In-Person Sales'},
+            )
+            existing_customers[placeholder_email] = placeholder_customer
+
         existing_events = {}
+
+        # Fast path: if event_id is in metadata, use that event directly (org-scoped)
+        metadata_event_id = self.uploaded_file.metadata.get('event_id')
+        pinned_event = None
+        if metadata_event_id and org is not None:
+            try:
+                pinned_event = Event.objects.filter(organization=org).get(id=metadata_event_id)
+                existing_events[(pinned_event.name, pinned_event.start_date)] = pinned_event
+            except Event.DoesNotExist:
+                pass
+
         # Pre-fetch existing events for this chunk
         # Get event info from metadata (used when CSV doesn't have event columns)
         metadata_event_name = self.uploaded_file.metadata.get('event_name', 'Unknown Event')
@@ -374,41 +416,42 @@ class CSVProcessor:
         if not metadata_start_date:
             metadata_start_date = timezone.now().date()
 
-        # Try to get event info from CSV rows first, fall back to metadata
-        event_keys = []
-        for row in chunk_data:
-            mapped = self.map_columns(row)
-            event_name = mapped.get('event_name')
-            event_date = self.parse_date(mapped.get('event_date'))
-            # If CSV doesn't have event info, use metadata
-            if not event_name:
-                event_name = metadata_event_name
-            start_date = None
-            if event_date:
-                local_dt = timezone.localtime(event_date)
-                start_date = local_dt.date()
-            else:
-                start_date = metadata_start_date
-            if event_name and start_date:
-                event_keys.append((event_name, start_date))
+        if not pinned_event:
+            # Try to get event info from CSV rows first, fall back to metadata
+            event_keys = []
+            for row in chunk_data:
+                mapped = self.map_columns(row)
+                event_name = mapped.get('event_name')
+                event_date = self.parse_date(mapped.get('event_date'))
+                # If CSV doesn't have event info, use metadata
+                if not event_name:
+                    event_name = metadata_event_name
+                start_date = None
+                if event_date:
+                    local_dt = timezone.localtime(event_date)
+                    start_date = local_dt.date()
+                else:
+                    start_date = metadata_start_date
+                if event_name and start_date:
+                    event_keys.append((event_name, start_date))
 
-        # If no event keys found from CSV, use metadata event info
-        if not event_keys and metadata_event_name and metadata_start_date:
-            event_keys = [(metadata_event_name, metadata_start_date)]
-        
-        
-        if event_keys:
-            # Get unique event names and dates to query
-            unique_names = list(set([key[0] for key in event_keys if key[0]]))
-            unique_dates = list(set([key[1] for key in event_keys if key[1]]))
+            # If no event keys found from CSV, use metadata event info
+            if not event_keys and metadata_event_name and metadata_start_date:
+                event_keys = [(metadata_event_name, metadata_start_date)]
 
-            existing_events_query = Event.objects.filter(
-                name__in=unique_names,
-                start_date__in=unique_dates
-            )
-            for event in existing_events_query:
-                event_key_tuple = (event.name, event.start_date)
-                existing_events[event_key_tuple] = event
+
+            if event_keys:
+                # Get unique event names and dates to query
+                unique_names = list(set([key[0] for key in event_keys if key[0]]))
+                unique_dates = list(set([key[1] for key in event_keys if key[1]]))
+
+                existing_events_query = Event.objects.filter(
+                    name__in=unique_names,
+                    start_date__in=unique_dates
+                )
+                for event in existing_events_query:
+                    event_key_tuple = (event.name, event.start_date)
+                    existing_events[event_key_tuple] = event
         
         # Check for existing order numbers
         # Note: We need to check all order numbers, not just those in the current chunk,
@@ -442,7 +485,6 @@ class CSVProcessor:
             try:
                 # Map columns
                 mapped_row = self.map_columns(row)
-                
                 # Generate order_number if missing
                 if not mapped_row.get('order_number'):
                     mapped_row['order_number'] = self.generate_order_number(mapped_row)
@@ -469,160 +511,171 @@ class CSVProcessor:
                         existing_orders.add(order_number)
                         continue
                 
-                # Get or create customer
-                customer_email = mapped_row.get('customer_email', '').lower().strip()
-                customer = existing_customers.get(customer_email)
-                if not customer:
-                    # Check database directly before creating (org-scoped)
-                    db_filter = Customer.objects.filter(email=customer_email)
-                    if org is not None:
-                        db_filter = db_filter.filter(organization=org)
-                    db_customer = db_filter.first()
-                    if db_customer:
-                        customer = db_customer
-                        existing_customers[customer_email] = customer
-                        # Remove from customers_to_create if it was added earlier in this chunk
-                        customers_to_create = [c for c in customers_to_create if c.email != customer_email]
-                    else:
-                        # Check if already in customers_to_create to avoid duplicates within chunk
-                        already_in_create = any(c.email == customer_email for c in customers_to_create)
-                        if not already_in_create:
-                            customer = Customer(
-                                email=customer_email,
-                                name=mapped_row.get('customer_name', ''),
-                                phone=mapped_row.get('customer_phone', ''),
-                                **({'organization': org} if org is not None else {}),
-                            )
-                            customers_to_create.append(customer)
-                            existing_customers[customer_email] = customer
-                        else:
-                            # Find the customer in customers_to_create
-                            customer = next(c for c in customers_to_create if c.email == customer_email)
+                # Customer: use placeholder for in-person rows, else get or create by email
+                if mapped_row.get('processed_in_person') and placeholder_customer is not None:
+                    customer = placeholder_customer
                 else:
-                    # Update customer info if needed
-                    if mapped_row.get('customer_name') and customer.name != mapped_row.get('customer_name'):
-                        customer.name = mapped_row.get('customer_name')
-                        customers_to_update.append(customer)
-                    if mapped_row.get('customer_phone') and customer.phone != mapped_row.get('customer_phone'):
-                        customer.phone = mapped_row.get('customer_phone')
-                        customers_to_update.append(customer)
+                    if mapped_row.get('processed_in_person') and placeholder_customer is None:
+                        results['error_count'] += 1
+                        results['errors'].append("Row validation error: In-person row but no organization context.")
+                        continue
+                    customer_email = mapped_row.get('customer_email', '').lower().strip()
+                    customer = existing_customers.get(customer_email)
+                    if not customer:
+                        # Check database directly before creating (org-scoped)
+                        db_filter = Customer.objects.filter(email=customer_email)
+                        if org is not None:
+                            db_filter = db_filter.filter(organization=org)
+                        db_customer = db_filter.first()
+                        if db_customer:
+                            customer = db_customer
+                            existing_customers[customer_email] = customer
+                            # Remove from customers_to_create if it was added earlier in this chunk
+                            customers_to_create = [c for c in customers_to_create if c.email != customer_email]
+                        else:
+                            # Check if already in customers_to_create to avoid duplicates within chunk
+                            already_in_create = any(c.email == customer_email for c in customers_to_create)
+                            if not already_in_create:
+                                customer = Customer(
+                                    email=customer_email,
+                                    name=mapped_row.get('customer_name', ''),
+                                    phone=mapped_row.get('customer_phone', ''),
+                                    **({'organization': org} if org is not None else {}),
+                                )
+                                customers_to_create.append(customer)
+                                existing_customers[customer_email] = customer
+                            else:
+                                # Find the customer in customers_to_create
+                                customer = next(c for c in customers_to_create if c.email == customer_email)
+                    else:
+                        # Update customer info if needed
+                        if mapped_row.get('customer_name') and customer.name != mapped_row.get('customer_name'):
+                            customer.name = mapped_row.get('customer_name')
+                            customers_to_update.append(customer)
+                        if mapped_row.get('customer_phone') and customer.phone != mapped_row.get('customer_phone'):
+                            customer.phone = mapped_row.get('customer_phone')
+                            customers_to_update.append(customer)
                 
                 results['customer_ids'].add(customer.id if customer.id else customer_email)
                 
                 # Get or create event
-                # Use event info from mapped_row, or fall back to metadata/defaults
-                event_name = mapped_row.get('event_name')
-                event_date_raw = self.parse_date(mapped_row.get('event_date'))
-                venue_name = mapped_row.get('venue', '')
-                venue_city = ''
-
-                # If event fields are missing, try to get from uploaded_file metadata
-                if not event_name:
-                    event_name = self.uploaded_file.metadata.get('event_name', 'Unknown Event')
-
-                # Derive start_date and start_time
-                start_date = None
-                start_time = None
-                if event_date_raw:
-                    local_dt = timezone.localtime(event_date_raw)
-                    start_date = local_dt.date()
-                    start_time = local_dt.time()
+                if pinned_event:
+                    # Event was specified via event_id metadata — use it directly
+                    event = pinned_event
                 else:
-                    start_date = metadata_start_date
-                    start_time = metadata_start_time
-                
-                # Handle venue - try to get from metadata first (new format with venue_id)
-                venue_id = self.uploaded_file.metadata.get('venue_id')
-                if venue_id:
-                    try:
-                        org = self.uploaded_file.organization
-                        venue = Venue.objects.filter(organization=org).get(id=venue_id)
-                    except (Venue.DoesNotExist, AttributeError):
+                    # Use event info from mapped_row, or fall back to metadata/defaults
+                    event_name = mapped_row.get('event_name')
+                    event_date_raw = self.parse_date(mapped_row.get('event_date'))
+                    venue_name = mapped_row.get('venue', '')
+                    venue_city = ''
+
+                    # If event fields are missing, try to get from uploaded_file metadata
+                    if not event_name:
+                        event_name = self.uploaded_file.metadata.get('event_name', 'Unknown Event')
+
+                    # Derive start_date and start_time
+                    start_date = None
+                    start_time = None
+                    if event_date_raw:
+                        local_dt = timezone.localtime(event_date_raw)
+                        start_date = local_dt.date()
+                        start_time = local_dt.time()
+                    else:
+                        start_date = metadata_start_date
+                        start_time = metadata_start_time
+
+                    # Handle venue - try to get from metadata first (new format with venue_id)
+                    venue_id = self.uploaded_file.metadata.get('venue_id')
+                    if venue_id:
+                        try:
+                            org = self.uploaded_file.organization
+                            venue = Venue.objects.filter(organization=org).get(id=venue_id)
+                        except (Venue.DoesNotExist, AttributeError):
+                            venue = None
+                    else:
                         venue = None
-                else:
-                    venue = None
-                
-                # If no venue from metadata, try to parse from CSV or metadata string
-                if not venue:
-                    venue_string = venue_name or self.uploaded_file.metadata.get('venue', '')
-                    venue_name_meta = self.uploaded_file.metadata.get('venue_name', '')
-                    venue_city_meta = self.uploaded_file.metadata.get('venue_city', '')
-                    
-                    org = getattr(self.uploaded_file, 'organization', None)
-                    venue_defaults = lambda n, c: {'name': n, 'city': c}
-                    if org:
-                        venue_defaults = lambda n, c: {'name': n, 'city': c, 'organization': org}
-                    if venue_name_meta and venue_city_meta:
-                        # Use metadata venue name and city
-                        venue, created = Venue.objects.get_or_create(
-                            organization=org,
-                            name=venue_name_meta,
-                            city=venue_city_meta,
-                            defaults=venue_defaults(venue_name_meta, venue_city_meta)
-                        ) if org else Venue.objects.get_or_create(
-                            name=venue_name_meta,
-                            city=venue_city_meta,
-                            defaults={'name': venue_name_meta, 'city': venue_city_meta}
-                        )
-                    elif venue_string:
-                        # Try to parse venue string (e.g., "Seattle, WA" or "The Fillmore, San Francisco")
-                        if ',' in venue_string:
-                            parts = [p.strip() for p in venue_string.rsplit(',', 1)]
-                            if len(parts) == 2:
-                                venue_name_parsed = parts[0]
-                                venue_city_parsed = parts[1]
+
+                    # If no venue from metadata, try to parse from CSV or metadata string
+                    if not venue:
+                        venue_string = venue_name or self.uploaded_file.metadata.get('venue', '')
+                        venue_name_meta = self.uploaded_file.metadata.get('venue_name', '')
+                        venue_city_meta = self.uploaded_file.metadata.get('venue_city', '')
+
+                        org = getattr(self.uploaded_file, 'organization', None)
+                        venue_defaults = lambda n, c: {'name': n, 'city': c}
+                        if org:
+                            venue_defaults = lambda n, c: {'name': n, 'city': c, 'organization': org}
+                        if venue_name_meta and venue_city_meta:
+                            # Use metadata venue name and city
+                            venue, created = Venue.objects.get_or_create(
+                                organization=org,
+                                name=venue_name_meta,
+                                city=venue_city_meta,
+                                defaults=venue_defaults(venue_name_meta, venue_city_meta)
+                            ) if org else Venue.objects.get_or_create(
+                                name=venue_name_meta,
+                                city=venue_city_meta,
+                                defaults={'name': venue_name_meta, 'city': venue_city_meta}
+                            )
+                        elif venue_string:
+                            # Try to parse venue string (e.g., "Seattle, WA" or "The Fillmore, San Francisco")
+                            if ',' in venue_string:
+                                parts = [p.strip() for p in venue_string.rsplit(',', 1)]
+                                if len(parts) == 2:
+                                    venue_name_parsed = parts[0]
+                                    venue_city_parsed = parts[1]
+                                else:
+                                    venue_name_parsed = venue_string
+                                    venue_city_parsed = 'Unknown'
                             else:
                                 venue_name_parsed = venue_string
                                 venue_city_parsed = 'Unknown'
-                        else:
-                            venue_name_parsed = venue_string
-                            venue_city_parsed = 'Unknown'
-                        
-                        if org:
-                            venue, created = Venue.objects.get_or_create(
-                                organization=org,
-                                name=venue_name_parsed,
-                                city=venue_city_parsed,
-                                defaults=venue_defaults(venue_name_parsed, venue_city_parsed)
-                            )
-                        else:
-                            venue, created = Venue.objects.get_or_create(
-                                name=venue_name_parsed,
-                                city=venue_city_parsed,
-                                defaults={'name': venue_name_parsed, 'city': venue_city_parsed}
-                            )
-                    else:
-                        # Default venue
-                        if org:
-                            venue, created = Venue.objects.get_or_create(
-                                organization=org,
-                                name='Unknown Venue',
-                                city='Unknown',
-                                defaults=venue_defaults('Unknown Venue', 'Unknown')
-                            )
-                        else:
-                            venue, created = Venue.objects.get_or_create(
-                                name='Unknown Venue',
-                                city='Unknown',
-                                defaults={'name': 'Unknown Venue', 'city': 'Unknown'}
-                            )
-                
-                event_key = (event_name, start_date)
 
-                event = existing_events.get(event_key)
-                if not event:
-                    event_kwargs = dict(
-                        name=event_name,
-                        venue=venue,
-                        start_date=start_date,
-                        start_time=start_time,
-                        description=mapped_row.get('event_description', ''),
-                    )
-                    if org is not None:
-                        event_kwargs['organization'] = org
-                    event = Event(**event_kwargs)
-                    events_to_create.append(event)
-                    existing_events[event_key] = event
+                            if org:
+                                venue, created = Venue.objects.get_or_create(
+                                    organization=org,
+                                    name=venue_name_parsed,
+                                    city=venue_city_parsed,
+                                    defaults=venue_defaults(venue_name_parsed, venue_city_parsed)
+                                )
+                            else:
+                                venue, created = Venue.objects.get_or_create(
+                                    name=venue_name_parsed,
+                                    city=venue_city_parsed,
+                                    defaults={'name': venue_name_parsed, 'city': venue_city_parsed}
+                                )
+                        else:
+                            # Default venue
+                            if org:
+                                venue, created = Venue.objects.get_or_create(
+                                    organization=org,
+                                    name='Unknown Venue',
+                                    city='Unknown',
+                                    defaults=venue_defaults('Unknown Venue', 'Unknown')
+                                )
+                            else:
+                                venue, created = Venue.objects.get_or_create(
+                                    name='Unknown Venue',
+                                    city='Unknown',
+                                    defaults={'name': 'Unknown Venue', 'city': 'Unknown'}
+                                )
+
+                    event_key = (event_name, start_date)
+
+                    event = existing_events.get(event_key)
+                    if not event:
+                        event_kwargs = dict(
+                            name=event_name,
+                            venue=venue,
+                            start_date=start_date,
+                            start_time=start_time,
+                            description=mapped_row.get('event_description', ''),
+                        )
+                        if org is not None:
+                            event_kwargs['organization'] = org
+                        event = Event(**event_kwargs)
+                        events_to_create.append(event)
+                        existing_events[event_key] = event
                 
                 # Get ticket price
                 ticket_type = mapped_row.get('ticket_type', '')

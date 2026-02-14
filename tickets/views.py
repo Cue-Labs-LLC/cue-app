@@ -22,8 +22,8 @@ from .models import (
     CustomField, EventCustomFieldValue,
 )
 from .forms import (
-    CSVUploadForm, TicketPriceEntryForm, CSVFormatForm, VenueForm, EventForm,
-    EventTalentFormSet, LoginForm,
+    CSVUploadForm, EventCSVUploadForm, TicketPriceEntryForm, CSVFormatForm,
+    VenueForm, EventForm, EventTalentFormSet, LoginForm,
 )
 from .csv_processor import CSVProcessor
 from .services.forecasting.preview import generate_forecast_preview
@@ -1051,11 +1051,123 @@ def event_create(request):
         form = EventForm(organization=org)
         talent_formset = EventTalentFormSet(queryset=EventTalent.objects.none(), prefix='talent')
 
+    venue_capacities = {
+        str(v.id): v.capacity
+        for v in Venue.objects.filter(organization=org)
+        if v.capacity
+    }
     context = {
         'form': form,
         'talent_formset': talent_formset,
+        'venue_capacities_json': json.dumps(venue_capacities),
     }
     return render(request, 'tickets/event_create.html', context)
+
+
+@login_required
+@require_org
+def event_edit(request, event_id):
+    """Edit an existing event."""
+    org = get_organization(request)
+    event = get_object_or_404(Event.objects.filter(organization=org), id=event_id)
+    if request.method == 'POST':
+        form = EventForm(request.POST, instance=event, organization=org)
+        talent_formset = EventTalentFormSet(request.POST, prefix='talent')
+        if form.is_valid() and talent_formset.is_valid():
+            event = form.save(commit=False)
+            event.updated_by = request.user
+            event.save()
+            instances = talent_formset.save(commit=False)
+            for obj in instances:
+                if obj.name and obj.name.strip():
+                    obj.event = event
+                    obj.save()
+            for obj in talent_formset.deleted_objects:
+                obj.delete()
+            # Save custom field values
+            for cf in CustomField.objects.filter(field_type='dropdown', organization=org):
+                field_name = f'custom_field_{cf.id}'
+                option_id = form.cleaned_data.get(field_name)
+                value, _ = EventCustomFieldValue.objects.get_or_create(
+                    event=event, custom_field=cf,
+                    defaults={'custom_field_option_id': None},
+                )
+                if option_id:
+                    value.custom_field_option_id = int(option_id)
+                else:
+                    value.custom_field_option_id = None
+                value.save()
+            messages.success(request, f"Event '{event.name}' updated successfully.")
+            _regenerate_event_doc_background(org)
+            return redirect('tickets:event_detail', event_id=event.id)
+    else:
+        form = EventForm(instance=event, organization=org)
+        talent_formset = EventTalentFormSet(
+            queryset=EventTalent.objects.filter(event=event).order_by('order', 'name'),
+            prefix='talent',
+        )
+
+    context = {
+        'form': form,
+        'talent_formset': talent_formset,
+        'event': event,
+    }
+    return render(request, 'tickets/event_edit.html', context)
+
+
+@login_required
+@require_org
+@require_http_methods(["GET", "POST"])
+def event_upload_csv(request, event_id):
+    """Upload a CSV directly for an existing event."""
+    org = get_organization(request)
+    event = get_object_or_404(Event.objects.filter(organization=org).select_related('venue'), id=event_id)
+
+    if request.method == 'POST':
+        form = EventCSVUploadForm(request.POST, request.FILES, organization=org)
+        if form.is_valid():
+            csv_file = form.cleaned_data['csv_file']
+            csv_format = form.cleaned_data['csv_format']
+
+            uploaded_file = UploadedFile.objects.create(
+                organization=org,
+                csv_format=csv_format,
+                filename=csv_file.name,
+                description='',
+                source='',
+                metadata={
+                    'notes': form.cleaned_data.get('notes', ''),
+                    'event_id': str(event.id),
+                    'event_name': event.name,
+                    'event_start_date': event.start_date.isoformat() if event.start_date else '',
+                    'event_start_time': event.start_time.isoformat() if event.start_time else '',
+                    'venue_id': str(event.venue.id) if event.venue else '',
+                    'venue_name': event.venue.name if event.venue else '',
+                    'venue_city': event.venue.city if event.venue else '',
+                }
+            )
+
+            media_path = os.path.join('uploads', f"{uploaded_file.id}_{csv_file.name}")
+            os.makedirs(os.path.dirname(os.path.join('media', media_path)), exist_ok=True)
+            with open(os.path.join('media', media_path), 'wb+') as destination:
+                for chunk in csv_file.chunks():
+                    destination.write(chunk)
+
+            uploaded_file.metadata['file_path'] = media_path
+            uploaded_file.save(update_fields=['metadata'])
+
+            if csv_format.requires_manual_pricing:
+                return redirect('tickets:price_entry', file_id=uploaded_file.id)
+            else:
+                return process_csv_file(request, uploaded_file)
+    else:
+        form = EventCSVUploadForm(organization=org)
+
+    context = {
+        'form': form,
+        'event': event,
+    }
+    return render(request, 'tickets/event_upload.html', context)
 
 
 @login_required

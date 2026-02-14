@@ -212,6 +212,58 @@ class CSVUploadForm(forms.Form):
         return file
 
 
+class EventCSVUploadForm(forms.Form):
+    """Simplified CSV upload form for uploading directly from an event detail page."""
+    csv_file = forms.FileField(
+        label="CSV File",
+        help_text="Upload a CSV file (max 10MB)",
+        widget=forms.FileInput(attrs={'accept': '.csv', 'class': 'form-control'})
+    )
+    csv_format = forms.ModelChoiceField(
+        queryset=CSVFormat.objects.all(),
+        label="CSV Format",
+        help_text="Select the format configuration for this CSV file",
+        empty_label="Select a format...",
+        widget=forms.Select(attrs={'class': 'form-select'})
+    )
+    notes = forms.CharField(
+        required=False,
+        label="Notes",
+        widget=forms.Textarea(attrs={'rows': 2, 'class': 'form-control'})
+    )
+
+    def __init__(self, *args, **kwargs):
+        organization = kwargs.pop('organization', None)
+        super().__init__(*args, **kwargs)
+        if organization is not None:
+            self.fields['csv_format'].queryset = CSVFormat.objects.filter(
+                organization=organization
+            ).order_by('-is_default', 'name')
+        self.helper = FormHelper()
+        self.helper.layout = Layout(
+            Field('csv_file'),
+            Field('csv_format'),
+            Field('notes'),
+            Submit('submit', 'Upload CSV', css_class='btn btn-primary')
+        )
+
+        if organization is not None:
+            default_format = CSVFormat.objects.filter(
+                organization=organization, is_default=True
+            ).first()
+            if default_format:
+                self.fields['csv_format'].initial = default_format
+
+    def clean_csv_file(self):
+        file = self.cleaned_data.get('csv_file')
+        if file:
+            if file.size > 10 * 1024 * 1024:
+                raise forms.ValidationError("File size exceeds 10MB limit.")
+            if not file.name.lower().endswith('.csv'):
+                raise forms.ValidationError("File must be a CSV file.")
+        return file
+
+
 class TicketPriceEntryForm(forms.Form):
     """Dynamic form for manually entering ticket prices or tiers."""
     
@@ -398,6 +450,12 @@ class CSVFormatForm(forms.ModelForm):
         
         # Add help text for uses_tiers
         self.fields['uses_tiers'].help_text = "Enable tier-based pricing with allotments. Only available when manual pricing is required."
+        # Optional: document in-person support for column_mapping
+        self.fields['column_mapping'].help_text = (
+            "Required keys: order_number, order_date, customer_email, customer_name, ticket_type. "
+            "Optional: add \"processed_in_person\": [\"Was Processed In Person\"] for exports that include in-person sales; "
+            "rows with that column set to true can omit email/name and will be attributed to \"In-Person Sales\"."
+        )
 
     def clean_column_mapping(self):
         """Validate column mapping JSON."""
@@ -584,7 +642,18 @@ class EventForm(forms.ModelForm):
                 widget=forms.Select(attrs={'class': 'form-select'}),
             )
             default_option_id = getattr(cf, 'default_option_id', None)
-            if (
+            if not self.is_bound and self.instance.pk:
+                # Editing: pre-populate with existing value
+                from .models import EventCustomFieldValue
+                try:
+                    existing = EventCustomFieldValue.objects.get(
+                        event=self.instance, custom_field=cf
+                    )
+                    if existing.custom_field_option_id:
+                        self.fields[field_name].initial = existing.custom_field_option_id
+                except EventCustomFieldValue.DoesNotExist:
+                    pass
+            elif (
                 not self.is_bound
                 and (getattr(self.instance, 'pk', None) is None or not self.instance.pk)
                 and default_option_id

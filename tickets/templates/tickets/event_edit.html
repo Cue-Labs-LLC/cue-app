@@ -1,13 +1,21 @@
 {% extends 'tickets/base.html' %}
 {% load crispy_forms_tags %}
 
-{% block title %}Create Event - Event Ticket Order Upload System{% endblock %}
+{% block title %}Edit Event - {{ event.name }}{% endblock %}
 
 {% block content %}
 <div class="row mb-4">
     <div class="col">
-        <h1><i class="bi bi-calendar-plus"></i> Create Event</h1>
-        <p class="text-muted">Add a new event to the system.</p>
+        <nav aria-label="breadcrumb">
+            <ol class="breadcrumb">
+                <li class="breadcrumb-item"><a href="{% url 'tickets:home' %}">Home</a></li>
+                <li class="breadcrumb-item"><a href="{% url 'tickets:event_list' %}">Events</a></li>
+                <li class="breadcrumb-item"><a href="{% url 'tickets:event_detail' event.id %}">{{ event.name }}</a></li>
+                <li class="breadcrumb-item active">Edit</li>
+            </ol>
+        </nav>
+        <h1><i class="bi bi-pencil"></i> Edit Event</h1>
+        <p class="text-muted">Modify event details for {{ event.name }}.</p>
     </div>
 </div>
 
@@ -31,6 +39,17 @@
                                 </tr>
                             </thead>
                             <tbody id="talent-formset-tbody">
+                                {% for tf in talent_formset %}
+                                <tr class="talent-form-row">
+                                    <td>{{ tf.name }}</td>
+                                    <td>{{ tf.order }}</td>
+                                    <td>
+                                        <button type="button" class="btn btn-sm btn-outline-danger talent-remove" aria-label="Remove row">Remove</button>
+                                        <span class="d-none">{{ tf.DELETE }}</span>
+                                        {{ tf.id }}
+                                    </td>
+                                </tr>
+                                {% endfor %}
                             </tbody>
                         </table>
                     </div>
@@ -50,7 +69,7 @@
                     </template>
                     <div class="mt-4">
                         <button type="submit" class="btn btn-primary">
-                            <i class="bi bi-check-lg"></i> Create Event
+                            <i class="bi bi-check-lg"></i> Save Changes
                         </button>
                     </div>
                 </div>
@@ -58,8 +77,8 @@
         </form>
 
         <div class="mt-3">
-            <a href="{% url 'tickets:event_list' %}" class="btn btn-outline-secondary">
-                <i class="bi bi-arrow-left"></i> Back to Events
+            <a href="{% url 'tickets:event_detail' event.id %}" class="btn btn-outline-secondary">
+                <i class="bi bi-arrow-left"></i> Back to Event
             </a>
         </div>
     </div>
@@ -179,20 +198,6 @@
                 });
             }
             setTotalForms(rows.length);
-        }
-    });
-})();
-
-// Auto-fill capacity from venue selection
-(function() {
-    var venueCapacities = {{ venue_capacities_json|safe }};
-    var venueSelect = document.getElementById('id_venue');
-    var capacityInput = document.getElementById('id_capacity');
-    if (!venueSelect || !capacityInput) return;
-    venueSelect.addEventListener('change', function() {
-        var cap = venueCapacities[venueSelect.value];
-        if (cap && !capacityInput.value) {
-            capacityInput.value = cap;
         }
     });
 })();
