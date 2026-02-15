@@ -753,23 +753,9 @@ def customer_segments(request):
 @require_http_methods(["POST"])
 def recalculate_segments(request):
     """Enqueue Celery task to recalculate RFM segments; redirect with message."""
-    import json
-    import os
-    from django.conf import settings as django_settings
     from .tasks import recalculate_rfm_task
 
     org = get_organization(request)
-    # #region agent log
-    try:
-        from pathlib import Path
-        _base = Path(django_settings.BASE_DIR)
-        _lp = str(_base / '.cursor' / 'debug.log')
-        _rb = getattr(django_settings, 'CELERY_RESULT_BACKEND', None)
-        with open(_lp, 'a') as _f:
-            _f.write(json.dumps({"id": "recalc_before_delay", "timestamp": __import__('time').time() * 1000, "location": "views.py:recalculate_segments", "message": "before delay", "data": {"CELERY_BROKER_URL_set": bool(os.environ.get('CELERY_BROKER_URL')), "CELERY_RESULT_BACKEND": str(_rb)[:60] if _rb else None, "CELERY_TASK_ALWAYS_EAGER": getattr(django_settings, 'CELERY_TASK_ALWAYS_EAGER', None)}, "hypothesisId": "H1,H2,H4,H5"}) + "\n")
-    except Exception:
-        pass
-    # #endregion
     if org.rfm_recalc_in_progress:
         messages.info(request, 'Recalculation already in progress.')
     else:

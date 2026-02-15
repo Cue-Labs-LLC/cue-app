@@ -10,7 +10,6 @@ For the full list of settings and their values, see
 https://docs.djangoproject.com/en/5.2/ref/settings/
 """
 
-import json
 import os
 from pathlib import Path
 import dj_database_url
@@ -239,14 +238,6 @@ else:
 CELERY_ACCEPT_CONTENT = ['json']
 CELERY_TASK_SERIALIZER = 'json'
 CELERY_RESULT_SERIALIZER = 'json'
-# #region agent log
-try:
-    _lp = str(BASE_DIR / '.cursor' / 'debug.log')
-    with open(_lp, 'a') as _f:
-        _f.write(json.dumps({"id": "celery_settings_load", "timestamp": __import__('time').time() * 1000, "location": "settings.py:Celery", "message": "Celery config at load", "data": {"CELERY_BROKER_URL_set": bool(_CELERY_BROKER_URL), "CELERY_RESULT_BACKEND": str(CELERY_RESULT_BACKEND)[:60] if CELERY_RESULT_BACKEND else None, "CELERY_TASK_ALWAYS_EAGER": CELERY_TASK_ALWAYS_EAGER}, "hypothesisId": "H1,H2,H5"}) + "\n")
-except Exception:
-    pass
-# #endregion
 
 # Logging configuration
 LOGGING = {
