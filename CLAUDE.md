@@ -39,7 +39,8 @@ tickets/              # Main (and only) Django app
 ├── urls.py           # URL patterns (app_name = 'tickets')
 ├── forms.py          # Crispy forms (Bootstrap 5)
 ├── tasks.py          # Celery shared_tasks
-├── utils.py          # get_organization(), require_org decorator
+├── utils.py          # get_organization() (session-cached), require_org, clear_org_cache
+├── context_processors.py  # organization_context() — injects org_name into templates
 ├── csv_processor.py  # CSV ingestion pipeline (CSVProcessor class)
 ├── admin.py          # Django admin registration
 ├── tests.py          # Test cases
@@ -74,6 +75,8 @@ Event.objects.all()
 ```
 
 - Views use `@require_org` decorator + `get_organization(request)` from `tickets/utils.py`
+- `get_organization()` **caches the org PK in `request.session['_org_id']`** — safe to call multiple times per request (decorator + view body) without extra DB hits
+- Call `clear_org_cache(request)` whenever a user's org assignment changes (e.g., org creation, admin reassignment) so the next request re-fetches from DB
 - Services accept `organization` in `__init__` and scope all queries internally
 - Never expose unscoped querysets
 
@@ -84,6 +87,7 @@ Event.objects.all()
 - **Soft delete:** `AuditBaseModel` has `deleted_at`; call `delete()` for soft, `hard_delete()` for permanent
 - **Currency:** Always `DecimalField(max_digits=10, decimal_places=2)` — never use floats for money
 - **Indexing:** Add `db_index=True` on fields used in filters/ordering (dates, foreign keys, email)
+- **Composite indexes:** Add `models.Index(fields=[...])` in `Meta.indexes` for multi-column filter+sort patterns (e.g., `(organization, -start_date)` on Event). Don't duplicate indexes already implied by `unique=True` or `unique_together`.
 - No new models unless absolutely necessary — derive insights from existing data when possible
 
 ### Views
@@ -100,7 +104,7 @@ Event.objects.all()
 - **Always use `prefetch_related()`** for reverse FK / M2M sets iterated in templates.
 - **Never call `.count()` or `.aggregate()` inside a Python loop** over a queryset — this is an N+1 pattern. Instead, annotate the queryset with `Count()` / `Sum()` so the DB does it in one pass.
 - **Combine multiple aggregations** on the same table into a single `.aggregate()` call to reduce DB roundtrips (e.g., `Count('id')` + `Sum('total_amount')` together).
-- **Beware of join inflation with mixed annotations:** When a queryset annotates both `Count('related__nested')` and `Sum('related__amount')`, the join through `nested` multiplies rows and inflates the `Sum`. Use a `Subquery` to isolate the `Sum`, or use `distinct=True` on `Count`. See `event_list` view for the canonical pattern.
+- **Use isolated Subqueries for all per-row annotations:** When annotating a queryset with multiple stats (`Count`, `Sum`) across related tables, use a separate `Subquery` for each stat instead of joining through `Count('related__nested', distinct=True)`. This prevents join inflation where one join multiplies rows for another. Wrap each in `Coalesce(..., 0)` or `Coalesce(..., Decimal('0.00'))`. See `event_list` and `home` views for the canonical pattern.
 - **Use `.values()` + `.annotate()`** for group-by aggregation instead of loading full model instances into Python.
 - **Annotate counts instead of calling `.count()` in templates:** `{{ order.tickets.count }}` triggers a query per row. Annotate `ticket_count=Count('tickets')` in the view and use `{{ order.ticket_count }}`.
 - **Paginate before accessing querysets** — never call `.all()` unbounded when results go to a template.
@@ -124,6 +128,7 @@ Event.objects.all()
 ### Templates
 
 - All templates extend `tickets/base.html`
+- **`{{ org_name }}`** is available in every template via `tickets.context_processors.organization_context` — use this instead of `user.userprofile.organization.name` to avoid lazy OneToOneField lookups
 - Use blocks: `{% block title %}`, `{% block content %}`, `{% block extra_head %}`, `{% block extra_js %}`
 - Charts: Chart.js 4.4.1 loaded via CDN in `extra_head`
 - Pass chart data as `json.dumps()` in a `<script type="application/json" id="...">` tag, parse in JS
@@ -168,7 +173,7 @@ Event.objects.all()
 - **No emojis** in UI or code unless explicitly requested
 - **Third-party scripts:** Always load with `async` or `defer` — never block rendering on external domains
 - **CDN libraries (Chart.js, etc.):** Load with `defer` in `{% block extra_head %}` and wrap chart initialization in `DOMContentLoaded` to ensure the library is available. Never load libraries synchronously in `<head>`.
-- **Google Fonts:** Use `rel="preload"` + `media="print" onload="this.media='all'"` pattern so fonts don't block first paint. Always include `display=swap` in the font URL.
+- **Google Fonts & Bootstrap Icons:** Use `rel="preload"` + `media="print" onload="this.media='all'"` pattern with a `<noscript>` fallback so fonts/icons don't block first paint. Always include `display=swap` in Google Font URLs.
 - **Keep embedded JSON payloads small** — for large datasets, consider paginating server-side or fetching via API instead of embedding everything in the HTML.
 
 ---
@@ -180,7 +185,17 @@ Event.objects.all()
 - All migrations committed — never edit or squash without coordinating
 - Use `select_related()` / `prefetch_related()` for N+1 prevention
 - Use `.values()` / `.annotate()` for aggregation queries — avoid loading full model instances when only stats are needed
-- **Subquery pattern for isolated aggregation:** When annotating both `Count` (through a nested relation) and `Sum` on the same queryset, use `Subquery` for the `Sum` to prevent join inflation. See `event_list` view for the canonical example.
+- **Subquery pattern for all per-row stats:** Use an isolated `Subquery` for every annotation (`Count`, `Sum`) on related tables. Never mix `Count` joins with `Sum` on the same queryset — this causes row multiplication. See `event_list` and `home` views for the canonical pattern.
+
+---
+
+## Caching
+
+- **Backend:** Redis (`django.core.cache.backends.redis.RedisCache`) on DB 1 in prod (isolated from Celery on DB 0), `LocMemCache` fallback in dev. Default TTL: 300s.
+- **Session-level caching:** `get_organization()` stores the org PK in `request.session['_org_id']` — eliminates repeated DB lookups within a session. Call `clear_org_cache(request)` when org assignment changes.
+- **View-level caching (event_list):** Rendered HTML is cached with org-scoped, versioned keys: `event_list:{version}:{org_id}:{search}:{sort}:{page}`. Invalidation uses a version counter bump (`_invalidate_event_list_cache(org)`) rather than key deletion.
+- **Invalidation points:** Call `_invalidate_event_list_cache(org)` after any data mutation that affects the events list: CSV upload success, event create, event edit, event delete.
+- **Pattern for new cached views:** Use versioned keys (`{view}:{version}:{org_id}:{params}`) with `django_cache.incr()` for invalidation. This avoids needing to enumerate and delete individual cache keys.
 
 ---
 

@@ -224,12 +224,16 @@ def home(request):
             ),
             Decimal('0.00'),
         ),
-    ).select_related('venue').order_by('-start_date')[:10]
+    ).select_related('venue').order_by('-start_date')
 
-    # Show warning when current time is past the event's end date+time and upload_count is 0
+    page_number = request.GET.get('page', 1)
+    paginator = Paginator(recent_events, 10)
+    page_obj = paginator.get_page(page_number)
+
+    # Show warning when current time is past the event's end date+time and upload_count is 0 (current page only)
     now_local = django_tz.localtime(django_tz.now()).replace(tzinfo=None)
     event_ids_show_warning = set()
-    for ev in recent_events:
+    for ev in page_obj:
         if ev.upload_count != 0:
             continue
         end_date = ev.end_date or ev.start_date
@@ -249,7 +253,7 @@ def home(request):
     total_tickets = Ticket.objects.filter(ticket_order__event__organization=org).count()
     
     context = {
-        'recent_events': recent_events,
+        'page_obj': page_obj,
         'event_ids_show_warning': event_ids_show_warning,
         'today': date.today(),
         'total_customers': total_customers,
