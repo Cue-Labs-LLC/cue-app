@@ -1,209 +1,106 @@
 {% extends 'tickets/base.html' %}
 
-{% block title %}Order {{ order.order_number }} - Order Details{% endblock %}
+{% block title %}Order {{ order.order_number }}{% endblock %}
 
 {% block content %}
-<div class="row mb-4">
-    <div class="col">
-        <nav aria-label="breadcrumb">
-            <ol class="breadcrumb">
-                <li class="breadcrumb-item"><a href="{% url 'tickets:home' %}">Home</a></li>
-                <li class="breadcrumb-item"><a href="{% url 'tickets:event_list' %}">Events</a></li>
-                <li class="breadcrumb-item"><a href="{% url 'tickets:event_detail' order.event.id %}">{{ order.event.name }}</a></li>
-                <li class="breadcrumb-item active">Order {{ order.order_number }}</li>
-            </ol>
-        </nav>
-        <h1><i class="bi bi-receipt"></i> Order {{ order.order_number }}</h1>
-        <p class="text-muted">
-            <i class="bi bi-clock"></i> {{ order.order_date|date:"M d, Y H:i" }}
-        </p>
+<nav aria-label="breadcrumb">
+    <ol class="breadcrumb">
+        <li class="breadcrumb-item"><a href="{% url 'tickets:home' %}">Dashboard</a></li>
+        <li class="breadcrumb-item"><a href="{% url 'tickets:event_list' %}">Events</a></li>
+        <li class="breadcrumb-item"><a href="{% url 'tickets:event_detail' order.event.id %}">{{ order.event.name }}</a></li>
+        <li class="breadcrumb-item active">Order {{ order.order_number }}</li>
+    </ol>
+</nav>
+
+<div class="page-header">
+    <div>
+        <h1>Order {{ order.order_number }}</h1>
+        <p class="page-header-subtitle"><i class="bi bi-clock"></i> {{ order.order_date|date:"M d, Y H:i" }}</p>
     </div>
 </div>
 
-<div class="row mb-4">
-    <div class="col-md-4 mb-3">
-        <div class="card text-white bg-primary">
-            <div class="card-body text-center">
-                <h5 class="card-title">Total Amount</h5>
-                <h2 class="card-text">${{ order.total_amount|floatformat:2 }}</h2>
-            </div>
-        </div>
+<div class="stats-grid">
+    <div class="stat-card stat-card--accent">
+        <div class="stat-label">Total Amount</div>
+        <div class="stat-value">${{ order.total_amount|floatformat:2 }}</div>
     </div>
-    <div class="col-md-4 mb-3">
-        <div class="card text-white bg-success">
-            <div class="card-body text-center">
-                <h5 class="card-title">Total Tickets</h5>
-                <h2 class="card-text">{{ total_tickets }}</h2>
-            </div>
-        </div>
+    <div class="stat-card stat-card--success">
+        <div class="stat-label">Total Tickets</div>
+        <div class="stat-value">{{ total_tickets }}</div>
     </div>
-    <div class="col-md-4 mb-3">
-        <div class="card text-white bg-info">
-            <div class="card-body text-center">
-                <h5 class="card-title">Ticket Types</h5>
-                <h2 class="card-text">{{ ticket_types|length }}</h2>
-            </div>
-        </div>
+    <div class="stat-card stat-card--info">
+        <div class="stat-label">Ticket Types</div>
+        <div class="stat-value">{{ ticket_types|length }}</div>
     </div>
 </div>
 
-<div class="row mb-4">
-    <div class="col-md-6 mb-3">
-        <div class="card">
-            <div class="card-header">
-                <h5 class="mb-0"><i class="bi bi-person"></i> Customer Information</h5>
-            </div>
+<div class="row mb-4 g-3">
+    <div class="col-md-6">
+        <div class="card" style="height:100%">
+            <div class="card-header"><h5>Customer</h5></div>
             <div class="card-body">
-                <table class="table table-borderless">
-                    <tr>
-                        <th>Name:</th>
-                        <td>
-                            <a href="{% url 'tickets:customer_detail' order.customer.id %}">
-                                {{ order.customer.name }}
-                            </a>
-                        </td>
-                    </tr>
-                    <tr>
-                        <th>Email:</th>
-                        <td>{{ order.customer.email }}</td>
-                    </tr>
-                    {% if order.customer.phone %}
-                    <tr>
-                        <th>Phone:</th>
-                        <td>{{ order.customer.phone }}</td>
-                    </tr>
-                    {% endif %}
+                <table class="table table-borderless mb-0">
+                    <tr><th style="width:80px">Name:</th><td><a href="{% url 'tickets:customer_detail' order.customer.id %}">{{ order.customer.name }}</a></td></tr>
+                    <tr><th>Email:</th><td>{{ order.customer.email }}</td></tr>
+                    {% if order.customer.phone %}<tr><th>Phone:</th><td>{{ order.customer.phone }}</td></tr>{% endif %}
                 </table>
             </div>
         </div>
     </div>
-    <div class="col-md-6 mb-3">
-        <div class="card">
-            <div class="card-header">
-                <h5 class="mb-0"><i class="bi bi-calendar-event"></i> Event Information</h5>
-            </div>
+    <div class="col-md-6">
+        <div class="card" style="height:100%">
+            <div class="card-header"><h5>Event</h5></div>
             <div class="card-body">
-                <table class="table table-borderless">
-                    <tr>
-                        <th>Event:</th>
-                        <td>
-                            <a href="{% url 'tickets:event_detail' order.event.id %}">
-                                {{ order.event.name }}
-                            </a>
-                        </td>
-                    </tr>
-                    <tr>
-                        <th>Venue:</th>
-                        <td>{{ order.event.venue.name }}, {{ order.event.venue.city }}</td>
-                    </tr>
-                    <tr>
-                        <th>Event Date:</th>
-                        <td>{{ order.event.start_date|date:"M d, Y" }}{% if order.event.start_time %} {{ order.event.start_time|time:"H:i" }}{% endif %}</td>
-                    </tr>
+                <table class="table table-borderless mb-0">
+                    <tr><th style="width:80px">Event:</th><td><a href="{% url 'tickets:event_detail' order.event.id %}">{{ order.event.name }}</a></td></tr>
+                    <tr><th>Venue:</th><td>{{ order.event.venue.name }}, {{ order.event.venue.city }}</td></tr>
+                    <tr><th>Date:</th><td>{{ order.event.start_date|date:"M d, Y" }}{% if order.event.start_time %} {{ order.event.start_time|time:"H:i" }}{% endif %}</td></tr>
                 </table>
             </div>
         </div>
     </div>
 </div>
 
-<div class="row mb-4">
-    <div class="col">
-        <div class="card">
-            <div class="card-header">
-                <h5 class="mb-0"><i class="bi bi-ticket-perforated"></i> Tickets in Order</h5>
-            </div>
-            <div class="card-body">
-                {% if tickets %}
-                    <div class="table-responsive">
-                        <table class="table table-hover">
-                            <thead>
-                                <tr>
-                                    <th>Ticket Type</th>
-                                    <th>Price</th>
-                                    <th>Tier</th>
-                                    <th>Quantity</th>
-                                    <th>Subtotal</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                {% for ticket_type, stats in ticket_types.items %}
-                                    <tr>
-                                        <td><strong>{{ ticket_type }}</strong></td>
-                                        <td>${{ stats.unit_price|floatformat:2 }}</td>
-                                        <td>
-                                            {% if stats.tier_name %}
-                                                <span class="badge bg-secondary">{{ stats.tier_name }}</span>
-                                            {% else %}
-                                                <span class="text-muted">—</span>
-                                            {% endif %}
-                                        </td>
-                                        <td>{{ stats.count }}</td>
-                                        <td><strong>${{ stats.total_price|floatformat:2 }}</strong></td>
-                                    </tr>
-                                {% endfor %}
-                            </tbody>
-                            <tfoot>
-                                <tr class="table-primary">
-                                    <th colspan="4" class="text-end">Total:</th>
-                                    <th>${{ order.total_amount|floatformat:2 }}</th>
-                                </tr>
-                            </tfoot>
-                        </table>
-                    </div>
-                    
-                    <div class="mt-3">
-                        <h6>Individual Tickets:</h6>
-                        <div class="list-group">
-                            {% for ticket in tickets %}
-                                <div class="list-group-item">
-                                    <div class="d-flex w-100 justify-content-between">
-                                        <h6 class="mb-1">{{ ticket.ticket_type }}</h6>
-                                        <strong>${{ ticket.price|floatformat:2 }}</strong>
-                                    </div>
-                                    {% if ticket.tier_name %}
-                                        <p class="mb-1">
-                                            <span class="badge bg-secondary">{{ ticket.tier_name }}</span>
-                                        </p>
-                                    {% endif %}
-                                </div>
-                            {% endfor %}
-                        </div>
-                    </div>
-                {% else %}
-                    <p class="text-muted">No tickets found for this order.</p>
-                {% endif %}
-            </div>
+<div class="card mb-4">
+    <div class="card-header"><h5>Tickets</h5></div>
+    <div class="card-body p-0">
+        {% if tickets %}
+        <div class="table-responsive">
+            <table class="table mb-0">
+                <thead>
+                    <tr><th>Ticket Type</th><th>Price</th><th>Tier</th><th>Qty</th><th>Subtotal</th></tr>
+                </thead>
+                <tbody>
+                    {% for ticket_type, stats in ticket_types.items %}
+                    <tr>
+                        <td><strong>{{ ticket_type }}</strong></td>
+                        <td>${{ stats.unit_price|floatformat:2 }}</td>
+                        <td>{% if stats.tier_name %}<span class="badge bg-secondary">{{ stats.tier_name }}</span>{% else %}<span class="text-muted">&mdash;</span>{% endif %}</td>
+                        <td>{{ stats.count }}</td>
+                        <td><strong>${{ stats.total_price|floatformat:2 }}</strong></td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+                <tfoot>
+                    <tr class="table-primary"><th colspan="4" class="text-end">Total:</th><th>${{ order.total_amount|floatformat:2 }}</th></tr>
+                </tfoot>
+            </table>
         </div>
+        {% else %}
+        <div class="empty-state" style="padding:32px"><p class="mb-0">No tickets found.</p></div>
+        {% endif %}
     </div>
 </div>
 
 {% if order.uploaded_file %}
-<div class="row mb-4">
-    <div class="col">
-        <div class="card">
-            <div class="card-header">
-                <h5 class="mb-0"><i class="bi bi-file-earmark-arrow-up"></i> Source Upload</h5>
-            </div>
-            <div class="card-body">
-                <p class="mb-0">
-                    <a href="{% url 'tickets:upload_results' order.uploaded_file.id %}" class="text-decoration-none">
-                        <i class="bi bi-file-earmark"></i> {{ order.uploaded_file.filename }}
-                    </a>
-                    <span class="text-muted ms-2">
-                        (Uploaded: {{ order.uploaded_file.uploaded_at|date:"M d, Y H:i" }})
-                    </span>
-                </p>
-            </div>
-        </div>
+<div class="card mb-4">
+    <div class="card-header"><h5>Source Upload</h5></div>
+    <div class="card-body">
+        <a href="{% url 'tickets:upload_results' order.uploaded_file.id %}"><i class="bi bi-file-earmark"></i> {{ order.uploaded_file.filename }}</a>
+        <span class="text-muted ms-2">({{ order.uploaded_file.uploaded_at|date:"M d, Y H:i" }})</span>
     </div>
 </div>
 {% endif %}
 
-<div class="row mt-4">
-    <div class="col">
-        <a href="{% url 'tickets:event_detail' order.event.id %}" class="btn btn-outline-secondary">
-            <i class="bi bi-arrow-left"></i> Back to Event
-        </a>
-    </div>
-</div>
+<a href="{% url 'tickets:event_detail' order.event.id %}" class="btn btn-outline-secondary"><i class="bi bi-arrow-left"></i> Back to Event</a>
 {% endblock %}

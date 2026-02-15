@@ -1,120 +1,96 @@
 {% extends 'tickets/base.html' %}
 
-{% block title %}Dashboard - Event Ticket Order Upload System{% endblock %}
+{% block title %}Dashboard{% endblock %}
 
 {% block content %}
-<div class="row mb-4">
-    <div class="col">
-        <h1><i class="bi bi-speedometer2"></i> Dashboard</h1>
+<div class="page-header">
+    <div>
+        <h1>Dashboard</h1>
+        <p class="page-header-subtitle">Overview of your events and customers</p>
+    </div>
+    <div class="page-header-actions">
+        <a href="{% url 'tickets:event_create' %}" class="btn btn-primary">
+            <i class="bi bi-plus-lg"></i> Create Event
+        </a>
     </div>
 </div>
 
-<div class="row mb-4">
-    <div class="col-md-3 mb-3">
-        <div class="card text-white bg-primary">
-            <div class="card-body">
-                <h5 class="card-title"><i class="bi bi-people"></i> Total Customers</h5>
-                <h2 class="card-text">{{ total_customers|default:0 }}</h2>
-                <a href="{% url 'tickets:customer_list' %}" class="text-white text-decoration-none">
-                    View all <i class="bi bi-arrow-right"></i>
-                </a>
-            </div>
-        </div>
+<div class="stats-grid">
+    <div class="stat-card stat-card--accent">
+        <div class="stat-label">Total Customers</div>
+        <div class="stat-value">{{ total_customers|default:0 }}</div>
+        <a href="{% url 'tickets:customer_list' %}" class="stat-link">View all <i class="bi bi-arrow-right"></i></a>
     </div>
-    <div class="col-md-3 mb-3">
-        <div class="card text-white bg-success">
-            <div class="card-body">
-                <h5 class="card-title"><i class="bi bi-cart"></i> Total Orders</h5>
-                <h2 class="card-text">{{ total_orders|default:0 }}</h2>
-            </div>
-        </div>
+    <div class="stat-card stat-card--success">
+        <div class="stat-label">Total Orders</div>
+        <div class="stat-value">{{ total_orders|default:0 }}</div>
     </div>
-    <div class="col-md-3 mb-3">
-        <div class="card text-white bg-info">
-            <div class="card-body">
-                <h5 class="card-title"><i class="bi bi-currency-dollar"></i> Total Revenue</h5>
-                <h2 class="card-text">${{ total_revenue|floatformat:2|default:"0.00" }}</h2>
-            </div>
-        </div>
+    <div class="stat-card stat-card--info">
+        <div class="stat-label">Total Revenue</div>
+        <div class="stat-value">${{ total_revenue|floatformat:2|default:"0.00" }}</div>
     </div>
-    <div class="col-md-3 mb-3">
-        <div class="card text-white bg-warning">
-            <div class="card-body">
-                <h5 class="card-title"><i class="bi bi-ticket-perforated"></i> Total Tickets</h5>
-                <h2 class="card-text">{{ total_tickets|default:0 }}</h2>
-            </div>
-        </div>
+    <div class="stat-card stat-card--warning">
+        <div class="stat-label">Total Tickets</div>
+        <div class="stat-value">{{ total_tickets|default:0 }}</div>
     </div>
 </div>
 
-<div class="row mb-4">
-    <div class="col">
-        <div class="d-grid gap-2">
-            <a href="{% url 'tickets:event_create' %}" class="btn btn-primary btn-lg">
-                <i class="bi bi-calendar-plus"></i> Create Event
-            </a>
-        </div>
+<div class="card">
+    <div class="card-header d-flex justify-content-between align-items-center">
+        <h5>Events</h5>
     </div>
-</div>
-
-<div class="row">
-    <div class="col">
-        <div class="card">
-            <div class="card-header">
-                <h5 class="mb-0"><i class="bi bi-calendar-event"></i> Events</h5>
-            </div>
-            <div class="card-body">
-                {% if recent_events %}
-                    <div class="table-responsive">
-                        <table class="table table-hover">
-                            <thead>
-                                <tr>
-                                    <th>Event Name</th>
-                                    <th>Date</th>
-                                    <th>Venue</th>
-                                    <th>Orders</th>
-                                    <th>Revenue</th>
-                                    <th>Uploads</th>
-                                    <th>Ticket Link</th>
-                                    <th>Actions</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                {% for event in recent_events %}
-                                    <tr>
-                                        <td>
-                                            {% if event.upload_count == 0 and event.end_date and event.end_date < today %}
-                                                <i class="bi bi-exclamation-triangle-fill text-warning me-1" title="No uploads for past event"></i>
-                                            {% endif %}
-                                            {{ event.name }}
-                                        </td>
-                                        <td>{{ event.start_date|date:"M d, Y" }}</td>
-                                        <td>{{ event.venue.name|default:"—" }}</td>
-                                        <td>{{ event.total_orders }}</td>
-                                        <td>${{ event.total_revenue|floatformat:2 }}</td>
-                                        <td>{{ event.upload_count }}</td>
-                                        <td>
-                                            {% if event.ticket_link %}
-                                                <a href="{{ event.ticket_link }}" target="_blank" rel="noopener noreferrer" class="text-decoration-none" title="Buy tickets"><i class="bi bi-link-45deg"></i></a>
-                                            {% else %}
-                                                —
-                                            {% endif %}
-                                        </td>
-                                        <td>
-                                            <a href="{% url 'tickets:event_detail' event.id %}" class="btn btn-sm btn-outline-primary">
-                                                View Details
-                                            </a>
-                                        </td>
-                                    </tr>
-                                {% endfor %}
-                            </tbody>
-                        </table>
-                    </div>
-                {% else %}
-                    <p class="text-muted">No events yet. <a href="{% url 'tickets:event_create' %}">Create an event</a> to get started.</p>
-                {% endif %}
-            </div>
+    <div class="card-body p-0">
+        {% if recent_events %}
+        <div class="table-responsive">
+            <table class="table table-hover mb-0">
+                <thead>
+                    <tr>
+                        <th>Event Name</th>
+                        <th>Date</th>
+                        <th>Venue</th>
+                        <th>Orders</th>
+                        <th>Revenue</th>
+                        <th>Uploads</th>
+                        <th>Ticket Link</th>
+                        <th></th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for event in recent_events %}
+                    <tr>
+                        <td>
+                            {% if event.upload_count == 0 and event.end_date and event.end_date < today %}
+                                <i class="bi bi-exclamation-triangle-fill text-warning me-1" title="No uploads for past event"></i>
+                            {% endif %}
+                            <strong>{{ event.name }}</strong>
+                        </td>
+                        <td>{{ event.start_date|date:"M d, Y" }}</td>
+                        <td>{{ event.venue.name|default:"\u2014" }}</td>
+                        <td>{{ event.total_orders }}</td>
+                        <td><span class="revenue">${{ event.total_revenue|floatformat:2 }}</span></td>
+                        <td>{{ event.upload_count }}</td>
+                        <td>
+                            {% if event.ticket_link %}
+                                <a href="{{ event.ticket_link }}" target="_blank" rel="noopener noreferrer" title="Buy tickets"><i class="bi bi-link-45deg"></i></a>
+                            {% else %}
+                                —
+                            {% endif %}
+                        </td>
+                        <td>
+                            <a href="{% url 'tickets:event_detail' event.id %}" class="btn btn-sm btn-outline-secondary">View</a>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
         </div>
+        {% else %}
+        <div class="empty-state">
+            <i class="bi bi-calendar-event d-block"></i>
+            <p>No events yet. Create your first event to get started.</p>
+            <a href="{% url 'tickets:event_create' %}" class="btn btn-primary"><i class="bi bi-plus-lg"></i> Create Event</a>
+        </div>
+        {% endif %}
     </div>
 </div>
 {% endblock %}

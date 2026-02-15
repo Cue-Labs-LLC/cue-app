@@ -1,12 +1,10 @@
 {% extends 'tickets/base.html' %}
 
-{% block title %}Delete CSV Format - Event Ticket Order Upload System{% endblock %}
+{% block title %}Delete CSV Format{% endblock %}
 
 {% block content %}
-<div class="row mb-4">
-    <div class="col">
-        <h1><i class="bi bi-exclamation-triangle"></i> Delete CSV Format</h1>
-    </div>
+<div class="page-header">
+    <h1>Delete CSV Format</h1>
 </div>
 
 <div class="row">
@@ -14,11 +12,11 @@
         <div class="card">
             <div class="card-body">
                 <p>Are you sure you want to delete the CSV format <strong>"{{ format.name }}"</strong>?</p>
-                
+
                 {% if format.uploaded_files.exists %}
                     <div class="alert alert-warning">
-                        <i class="bi bi-exclamation-triangle"></i> 
-                        This format is in use by {{ format.uploaded_files.count }} uploaded file(s). 
+                        <i class="bi bi-exclamation-triangle"></i>
+                        This format is in use by {{ format.uploaded_files.count }} uploaded file(s).
                         You cannot delete it.
                     </div>
                     <a href="{% url 'tickets:format_list' %}" class="btn btn-secondary">

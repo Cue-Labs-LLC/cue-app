@@ -7,13 +7,15 @@
     <div class="col-md-6">
         <div class="card">
             <div class="card-body text-center">
-                <h2 class="card-title"><i class="bi bi-building"></i> Organization required</h2>
-                <p class="card-text">
-                    You need to belong to an organization to use this app. Create one below or ask an administrator to add you to an existing organization.
-                </p>
-                <a href="{% url 'tickets:create_organization' %}" class="btn btn-primary">
-                    <i class="bi bi-plus-circle"></i> Create organization
-                </a>
+                <div class="empty-state">
+                    <h2 class="card-title">Organization required</h2>
+                    <p>
+                        You need to belong to an organization to use this app. Create one below or ask an administrator to add you to an existing organization.
+                    </p>
+                    <a href="{% url 'tickets:create_organization' %}" class="btn btn-primary">
+                        Create organization
+                    </a>
+                </div>
             </div>
         </div>
     </div>

@@ -1,144 +1,108 @@
 {% extends 'tickets/base.html' %}
 
-{% block title %}Sales Forecast Tool{% endblock %}
+{% block title %}Sales Forecast{% endblock %}
 
 {% block extra_head %}
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 {% endblock %}
 
 {% block content %}
-<div class="row mb-4">
-    <div class="col">
-        <nav aria-label="breadcrumb">
-            <ol class="breadcrumb">
-                <li class="breadcrumb-item"><a href="{% url 'tickets:home' %}">Home</a></li>
-                <li class="breadcrumb-item active">Forecast Tool</li>
-            </ol>
-        </nav>
-        <h1><i class="bi bi-graph-up-arrow"></i> Sales Forecast Tool</h1>
-        <p class="text-muted">
-            Enter event details to see a predicted ticket sales curve based on historical data.
-        </p>
+<div class="page-header">
+    <div>
+        <h1>Sales Forecast</h1>
+        <p class="page-header-subtitle">Predict ticket sales curves based on historical data</p>
     </div>
 </div>
 
-<div class="row mb-4">
-    <div class="col-md-3 mb-3">
-        <label for="venue" class="form-label">Venue</label>
-        <select id="venue" class="form-select">
-            <option value="">All venues (global baseline)</option>
-            {% for venue in venues %}
-            <option value="{{ venue.id }}">{{ venue.name }}, {{ venue.city }}</option>
-            {% endfor %}
-        </select>
-        <div class="form-text">Select a venue for venue-specific predictions, or leave blank for global baseline.</div>
-    </div>
-    <div class="col-md-3 mb-3">
-        <label for="event_date" class="form-label">Event Date</label>
-        <input type="date" id="event_date" class="form-control" required>
-        <div class="form-text">The date of your event.</div>
-    </div>
-    <div class="col-md-3 mb-3">
-        <label for="capacity" class="form-label">Capacity</label>
-        <input type="number" id="capacity" class="form-control" min="1" placeholder="e.g. 500" required>
-        <div class="form-text">Total ticket capacity for the event.</div>
-    </div>
-    <div class="col-md-3 mb-3">
-        <label for="starting_tickets" class="form-label">Tickets sold to date</label>
-        <input type="number" id="starting_tickets" class="form-control" min="0" placeholder="optional">
-        <div class="form-text">Leave blank for a new event; set for events already in progress.</div>
-    </div>
-</div>
-
-<div class="row mb-3">
-    <div id="extrapolationWarning" class="alert alert-warning d-none" role="alert">
-        <i class="bi bi-exclamation-triangle"></i>
-        <span id="extrapolationMessage"></span>
-    </div>
-    <div class="col">
-        <div class="btn-group" role="group" aria-label="Chart view toggle">
-            <input type="radio" class="btn-check" name="chartView" id="viewTickets" value="tickets" checked>
-            <label class="btn btn-outline-primary" for="viewTickets">Tickets</label>
-            <input type="radio" class="btn-check" name="chartView" id="viewPercent" value="percent">
-            <label class="btn btn-outline-primary" for="viewPercent">Percentage</label>
-        </div>
-        <div class="form-check form-check-inline ms-3 mt-2 mt-md-0">
-            <input class="form-check-input" type="checkbox" id="showTrendline" name="showTrendline">
-            <label class="form-check-label" for="showTrendline">Show trendline</label>
+<div class="card mb-4">
+    <div class="card-body">
+        <div class="row g-3">
+            <div class="col-md-3">
+                <label for="venue" class="form-label">Venue</label>
+                <select id="venue" class="form-select">
+                    <option value="">All venues (global)</option>
+                    {% for venue in venues %}
+                    <option value="{{ venue.id }}">{{ venue.name }}, {{ venue.city }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div class="col-md-3">
+                <label for="event_date" class="form-label">Event Date</label>
+                <input type="date" id="event_date" class="form-control" required>
+            </div>
+            <div class="col-md-3">
+                <label for="capacity" class="form-label">Capacity</label>
+                <input type="number" id="capacity" class="form-control" min="1" placeholder="e.g. 500" required>
+            </div>
+            <div class="col-md-3">
+                <label for="starting_tickets" class="form-label">Tickets sold to date</label>
+                <input type="number" id="starting_tickets" class="form-control" min="0" placeholder="optional">
+            </div>
         </div>
     </div>
 </div>
 
-<div class="row mb-4">
-    <div class="col">
-        <div class="card">
-            <div class="card-body">
-                <div id="chartContainer" style="position: relative; height: 400px;">
-                    <div id="chartPlaceholder" class="d-flex align-items-center justify-content-center h-100 text-muted">
-                        <div class="text-center">
-                            <i class="bi bi-graph-up" style="font-size: 3rem;"></i>
-                            <p class="mt-2">Enter event details above to generate a forecast</p>
-                        </div>
-                    </div>
-                    <div id="chartLoading" class="d-none d-flex align-items-center justify-content-center h-100">
-                        <div class="spinner-border text-primary" role="status">
-                            <span class="visually-hidden">Loading...</span>
-                        </div>
-                    </div>
-                    <canvas id="forecastChart" class="d-none"></canvas>
+<div id="extrapolationWarning" class="alert alert-warning d-none mb-3">
+    <i class="bi bi-exclamation-triangle"></i> <span id="extrapolationMessage"></span>
+</div>
+
+<div class="d-flex align-items-center gap-3 mb-3">
+    <div class="btn-group" role="group">
+        <input type="radio" class="btn-check" name="chartView" id="viewTickets" value="tickets" checked>
+        <label class="btn btn-outline-primary" for="viewTickets">Tickets</label>
+        <input type="radio" class="btn-check" name="chartView" id="viewPercent" value="percent">
+        <label class="btn btn-outline-primary" for="viewPercent">Percentage</label>
+    </div>
+    <div class="form-check">
+        <input class="form-check-input" type="checkbox" id="showTrendline">
+        <label class="form-check-label" for="showTrendline" style="font-size: 13px;">Show trendline</label>
+    </div>
+</div>
+
+<div class="card mb-4">
+    <div class="card-body">
+        <div class="chart-container">
+            <div id="chartPlaceholder" class="d-flex align-items-center justify-content-center h-100 text-muted">
+                <div class="text-center">
+                    <i class="bi bi-graph-up" style="font-size: 2.5rem; opacity: 0.3;"></i>
+                    <p class="mt-2" style="font-size: 14px;">Enter event details above to generate a forecast</p>
                 </div>
             </div>
+            <div id="chartLoading" class="d-none d-flex align-items-center justify-content-center h-100">
+                <div class="spinner-border" role="status"><span class="visually-hidden">Loading...</span></div>
+            </div>
+            <canvas id="forecastChart" class="d-none"></canvas>
         </div>
     </div>
 </div>
 
-<div id="historicalEventsCard" class="row mb-4 d-none">
-    <div class="col">
-        <div class="card">
-            <div class="card-header">
-                <h5 class="mb-0">Historical events (baseline)</h5>
-            </div>
-            <div class="card-body">
-                <div class="table-responsive">
-                    <table class="table table-striped table-hover mb-0">
-                        <thead>
-                            <tr>
-                                <th>Event name</th>
-                                <th>Date</th>
-                                <th>Venue</th>
-                                <th>Tickets sold</th>
-                            </tr>
-                        </thead>
-                        <tbody id="historicalEventsBody">
-                        </tbody>
-                    </table>
-                </div>
-            </div>
+<div id="historicalEventsCard" class="card mb-4 d-none">
+    <div class="card-header"><h5>Historical Events (baseline)</h5></div>
+    <div class="card-body p-0">
+        <div class="table-responsive">
+            <table class="table table-hover mb-0">
+                <thead><tr><th>Event</th><th>Date</th><th>Venue</th><th>Tickets Sold</th></tr></thead>
+                <tbody id="historicalEventsBody"></tbody>
+            </table>
         </div>
     </div>
 </div>
 
-<div class="row mb-4">
-    <div class="col">
-        <div id="baselineInfo" class="card d-none">
-            <div class="card-body">
-                <p class="mb-0">
-                    <strong>Baseline:</strong>
-                    <span id="baselineSegment"></span>
-                    <span class="text-muted">(<span id="baselineCount"></span> past events)</span>
-                </p>
-                <p id="baselineFallbackMessage" class="mb-0 small text-muted d-none"></p>
-            </div>
-        </div>
-        <div id="noDataWarning" class="alert alert-warning d-none">
-            <i class="bi bi-exclamation-triangle"></i>
-            <strong>Insufficient data:</strong> Not enough historical events to generate a reliable forecast.
-            Try selecting a different venue or use the global baseline.
-        </div>
-        <div id="errorMessage" class="alert alert-danger d-none"></div>
+<div id="baselineInfo" class="card d-none mb-4">
+    <div class="card-body" style="font-size: 13px;">
+        <strong>Baseline:</strong> <span id="baselineSegment"></span>
+        <span class="text-muted">(<span id="baselineCount"></span> past events)</span>
+        <p id="baselineFallbackMessage" class="mb-0 small text-muted d-none mt-1"></p>
     </div>
 </div>
 
+<div id="noDataWarning" class="alert alert-warning d-none">
+    <strong>Insufficient data:</strong> Not enough historical events. Try a different venue or the global baseline.
+</div>
+<div id="errorMessage" class="alert alert-danger d-none"></div>
+{% endblock %}
+
+{% block extra_js %}
 <script>
 (function() {
     const venueSelect = document.getElementById('venue');
@@ -164,327 +128,108 @@
     let currentData = null;
     let debounceTimer = null;
 
-    // Initialize Chart.js
     function initChart() {
         const ctx = chartCanvas.getContext('2d');
         chart = new Chart(ctx, {
             type: 'line',
-            data: {
-                labels: [],
-                datasets: [{
-                    label: 'Expected Tickets',
-                    data: [],
-                    borderColor: 'rgb(75, 192, 192)',
-                    backgroundColor: 'rgba(75, 192, 192, 0.1)',
-                    fill: true,
-                    tension: 0.3,
-                    pointRadius: 4,
-                    pointHoverRadius: 6,
-                }]
-            },
+            data: { labels: [], datasets: [{ label: 'Expected Tickets', data: [], borderColor: 'rgb(232, 89, 12)', backgroundColor: 'rgba(232, 89, 12, 0.08)', fill: true, tension: 0.3, pointRadius: 3, pointHoverRadius: 5 }] },
             options: {
-                responsive: true,
-                maintainAspectRatio: false,
-                plugins: {
-                    legend: {
-                        display: false
-                    },
-                    tooltip: {
-                        callbacks: {
-                            title: function(items) {
-                                return items[0].label + ' days before event';
-                            }
-                        }
-                    }
-                },
-                scales: {
-                    x: {
-                        reverse: false,
-                        title: {
-                            display: true,
-                            text: 'Days Before Event'
-                        }
-                    },
-                    y: {
-                        beginAtZero: true,
-                        title: {
-                            display: true,
-                            text: 'Expected Tickets Sold'
-                        }
-                    }
-                }
+                responsive: true, maintainAspectRatio: false,
+                plugins: { legend: { display: false }, tooltip: { callbacks: { title: function(items) { return items[0].label + ' days before event'; } } } },
+                scales: { x: { reverse: false, title: { display: true, text: 'Days Before Event' } }, y: { beginAtZero: true, title: { display: true, text: 'Expected Tickets Sold' } } }
             }
         });
     }
 
-    function getSelectedView() {
-        return document.querySelector('input[name="chartView"]:checked').value;
-    }
+    function getSelectedView() { return document.querySelector('input[name="chartView"]:checked').value; }
 
-    function logisticEval(x, L, k, x0) {
-        return L / (1 + Math.exp(-k * (x - x0)));
-    }
+    function logisticEval(x, L, k, x0) { return L / (1 + Math.exp(-k * (x - x0))); }
 
     function logisticRegression(x, y) {
         var n = x.length;
-        if (n < 2) {
-            var c = y.length ? y[0] : 0;
-            return { L: c, k: 0, x0: x.length ? x[0] : 0 };
-        }
-        var yMax = Math.max.apply(null, y);
-        var yMin = Math.min.apply(null, y);
-        var xMin = Math.min.apply(null, x);
-        var xMax = Math.max.apply(null, x);
-        var xRange = xMax - xMin;
-        if (xRange < 1e-10) xRange = 1;
-        if (Math.abs(yMax - yMin) < 1e-10) {
-            return { L: yMax, k: 0, x0: (xMin + xMax) / 2 };
-        }
-        var L = Math.max(yMax * 1.05, 1);
-        var x0 = (xMin + xMax) / 2;
-        var k = Math.max(0.05, 2 / xRange);
-
-        var low = 0.02 * L;
-        var high = 0.98 * L;
-        var xx = [], zz = [];
-        for (var i = 0; i < n; i++) {
-            if (y[i] > low && y[i] < high) {
-                xx.push(x[i]);
-                zz.push(Math.log(y[i] / (L - y[i])));
-            }
-        }
+        if (n < 2) { var c = y.length ? y[0] : 0; return { L: c, k: 0, x0: x.length ? x[0] : 0 }; }
+        var yMax = Math.max.apply(null, y), yMin = Math.min.apply(null, y);
+        var xMin = Math.min.apply(null, x), xMax = Math.max.apply(null, x);
+        var xRange = xMax - xMin; if (xRange < 1e-10) xRange = 1;
+        if (Math.abs(yMax - yMin) < 1e-10) return { L: yMax, k: 0, x0: (xMin + xMax) / 2 };
+        var L = Math.max(yMax * 1.05, 1), x0 = (xMin + xMax) / 2, k = Math.max(0.05, 2 / xRange);
+        var low = 0.02 * L, high = 0.98 * L, xx = [], zz = [];
+        for (var i = 0; i < n; i++) { if (y[i] > low && y[i] < high) { xx.push(x[i]); zz.push(Math.log(y[i] / (L - y[i]))); } }
         if (xx.length >= 2) {
-            var Sx = 0, Sx2 = 0, Sz = 0, Sxz = 0;
-            var m = xx.length;
-            for (var j = 0; j < m; j++) {
-                Sx += xx[j];
-                Sx2 += xx[j] * xx[j];
-                Sz += zz[j];
-                Sxz += xx[j] * zz[j];
-            }
-            var det = m * Sx2 - Sx * Sx;
-            if (Math.abs(det) > 1e-10) {
-                var b = (m * Sxz - Sx * Sz) / det;
-                var a = (Sz - b * Sx) / m;
-                if (b > 0.01) {
-                    k = b;
-                    x0 = -a / b;
-                    x0 = Math.max(xMin, Math.min(xMax, x0));
-                }
-            }
+            var Sx=0,Sx2=0,Sz=0,Sxz=0,m=xx.length;
+            for (var j=0;j<m;j++){Sx+=xx[j];Sx2+=xx[j]*xx[j];Sz+=zz[j];Sxz+=xx[j]*zz[j];}
+            var det=m*Sx2-Sx*Sx;
+            if(Math.abs(det)>1e-10){var b=(m*Sxz-Sx*Sz)/det;var a=(Sz-b*Sx)/m;if(b>0.01){k=b;x0=-a/b;x0=Math.max(xMin,Math.min(xMax,x0));}}
         }
         return { L: L, k: k, x0: x0 };
     }
 
     function updateChartData() {
         if (!chart || !currentData || !currentData.curve_points.length) return;
-
         const view = getSelectedView();
         const labels = currentData.curve_points.map(p => p.days_before);
-        const data = currentData.curve_points.map(p =>
-            view === 'tickets' ? p.expected_tickets : p.expected_percent
-        );
-
+        const data = currentData.curve_points.map(p => view === 'tickets' ? p.expected_tickets : p.expected_percent);
         chart.data.labels = labels;
         chart.data.datasets[0].data = data;
         chart.data.datasets[0].label = view === 'tickets' ? 'Expected Tickets' : 'Expected %';
         chart.options.scales.y.title.text = view === 'tickets' ? 'Expected Tickets Sold' : 'Expected % of Capacity';
-
         var showTrendline = showTrendlineCheckbox && showTrendlineCheckbox.checked;
         chart.options.plugins.legend.display = showTrendline;
-
         if (showTrendline && labels.length >= 2) {
-            // x is "days before event": high x = far out (low sales), low x = event day (high sales).
-            // Logistic curve is increasing in x; fit on -x so relationship is increasing.
-            var xFit = labels.map(function(x) { return -x; });
-            var lr = logisticRegression(xFit, data);
-            var trendlineData = labels.map(function(x) {
-                var val = logisticEval(-x, lr.L, lr.k, lr.x0);
-                return Math.max(0, Math.min(lr.L, val));
-            });
-            chart.data.datasets = [
-                chart.data.datasets[0],
-                {
-                    label: 'Trendline',
-                    data: trendlineData,
-                    borderColor: 'rgba(255, 159, 64, 0.8)',
-                    borderDash: [5, 5],
-                    fill: false,
-                    pointRadius: 0,
-                    tension: 0.3
-                }
-            ];
-        } else {
-            chart.data.datasets = [chart.data.datasets[0]];
-        }
-
-        if (view === 'percent') {
-            chart.options.scales.y.max = 100;
-        } else {
-            // Scale y-axis up to entered capacity so the full range is visible
-            const capacity = parseInt(capacityInput.value, 10);
-            chart.options.scales.y.max = Number.isNaN(capacity) || capacity <= 0 ? undefined : capacity;
-        }
-
+            var xFit = labels.map(function(x){return -x;}), lr = logisticRegression(xFit, data);
+            var trendlineData = labels.map(function(x){return Math.max(0,Math.min(lr.L,logisticEval(-x,lr.L,lr.k,lr.x0)));});
+            chart.data.datasets = [chart.data.datasets[0], { label:'Trendline', data:trendlineData, borderColor:'rgba(124,58,237,0.6)', borderDash:[5,5], fill:false, pointRadius:0, tension:0.3 }];
+        } else { chart.data.datasets = [chart.data.datasets[0]]; }
+        if (view === 'percent') { chart.options.scales.y.max = 100; }
+        else { const cap = parseInt(capacityInput.value, 10); chart.options.scales.y.max = Number.isNaN(cap)||cap<=0 ? undefined : cap; }
         chart.update();
     }
 
-    function showLoading() {
-        chartPlaceholder.classList.add('d-none');
-        chartCanvas.classList.add('d-none');
-        chartLoading.classList.remove('d-none');
-        baselineInfo.classList.add('d-none');
-        historicalEventsCard.classList.add('d-none');
-        extrapolationWarning.classList.add('d-none');
-        noDataWarning.classList.add('d-none');
-        errorMessage.classList.add('d-none');
-    }
-
-    function showChart() {
-        chartPlaceholder.classList.add('d-none');
-        chartLoading.classList.add('d-none');
-        chartCanvas.classList.remove('d-none');
-    }
-
-    function showPlaceholder() {
-        chartPlaceholder.classList.remove('d-none');
-        chartCanvas.classList.add('d-none');
-        chartLoading.classList.add('d-none');
-    }
-
-    function showError(message) {
-        chartLoading.classList.add('d-none');
-        showPlaceholder();
-        errorMessage.textContent = message;
-        errorMessage.classList.remove('d-none');
-    }
-
-    function showNoData() {
-        chartLoading.classList.add('d-none');
-        showPlaceholder();
-        noDataWarning.classList.remove('d-none');
-    }
+    function showLoading(){chartPlaceholder.classList.add('d-none');chartCanvas.classList.add('d-none');chartLoading.classList.remove('d-none');baselineInfo.classList.add('d-none');historicalEventsCard.classList.add('d-none');extrapolationWarning.classList.add('d-none');noDataWarning.classList.add('d-none');errorMessage.classList.add('d-none');}
+    function showChart(){chartPlaceholder.classList.add('d-none');chartLoading.classList.add('d-none');chartCanvas.classList.remove('d-none');}
+    function showPlaceholder(){chartPlaceholder.classList.remove('d-none');chartCanvas.classList.add('d-none');chartLoading.classList.add('d-none');}
+    function showError(msg){chartLoading.classList.add('d-none');showPlaceholder();errorMessage.textContent=msg;errorMessage.classList.remove('d-none');}
+    function showNoData(){chartLoading.classList.add('d-none');showPlaceholder();noDataWarning.classList.remove('d-none');}
 
     async function fetchForecast() {
-        const venueId = venueSelect.value;
-        const eventDate = eventDateInput.value;
-        const capacity = capacityInput.value;
-
-        // Only fetch if we have the required inputs
-        if (!eventDate || !capacity) {
-            showPlaceholder();
-            return;
-        }
-
+        const venueId=venueSelect.value,eventDate=eventDateInput.value,capacity=capacityInput.value;
+        if(!eventDate||!capacity){showPlaceholder();return;}
         showLoading();
-
         try {
-            const params = new URLSearchParams({
-                venue_id: venueId,
-                event_date: eventDate,
-                capacity: capacity
-            });
-            const startingTickets = startingTicketsInput.value.trim();
-            if (startingTickets) {
-                params.set('starting_tickets', startingTickets);
-            }
-
-            const response = await fetch(`{% url 'tickets:forecast_api' %}?${params}`, {
-                cache: 'no-store',
-                headers: { 'X-Requested-With': 'XMLHttpRequest' }
-            });
-            const data = await response.json();
-
-            if (!response.ok) {
-                showError(data.error || 'An error occurred');
-                return;
-            }
-
-            currentData = data;
-
-            if (!data.has_sufficient_data || !data.curve_points.length) {
-                showNoData();
-                return;
-            }
-
-            // Update baseline info
-            baselineSegment.textContent = data.baseline_info.segment_name;
-            baselineCount.textContent = data.baseline_info.events_count;
+            const params=new URLSearchParams({venue_id:venueId,event_date:eventDate,capacity:capacity});
+            const st=startingTicketsInput.value.trim();if(st)params.set('starting_tickets',st);
+            const response=await fetch("{% url 'tickets:forecast_api' %}?"+params,{cache:'no-store',headers:{'X-Requested-With':'XMLHttpRequest'}});
+            const data=await response.json();
+            if(!response.ok){showError(data.error||'An error occurred');return;}
+            currentData=data;
+            if(!data.has_sufficient_data||!data.curve_points.length){showNoData();return;}
+            baselineSegment.textContent=data.baseline_info.segment_name;
+            baselineCount.textContent=data.baseline_info.events_count;
             baselineInfo.classList.remove('d-none');
-
-            var fallbackEl = document.getElementById('baselineFallbackMessage');
-            if (data.baseline_info.venue_no_data_fallback && data.baseline_info.fallback_message) {
-                fallbackEl.textContent = data.baseline_info.fallback_message;
-                fallbackEl.classList.remove('d-none');
-            } else {
-                fallbackEl.textContent = '';
-                fallbackEl.classList.add('d-none');
-            }
-
-            // Show or hide extrapolation warning
-            if (data.baseline_info.extrapolation_warning && data.baseline_info.extrapolation_message) {
-                extrapolationMessage.textContent = data.baseline_info.extrapolation_message;
-                extrapolationWarning.classList.remove('d-none');
-            } else {
-                extrapolationWarning.classList.add('d-none');
-            }
-
-            // Update chart
-            if (!chart) {
-                initChart();
-            }
-            updateChartData();
-            showChart();
-
-            // Historical events table
-            const events = data.historical_events || [];
-            historicalEventsBody.innerHTML = '';
-            if (events.length > 0) {
-                events.forEach(function(ev) {
-                    const tr = document.createElement('tr');
-                    const dateStr = ev.event_date ? new Date(ev.event_date + 'T00:00:00').toLocaleDateString() : '';
-                    [ev.name, dateStr, ev.venue_name || '', String(ev.total_tickets_sold ?? '')].forEach(function(text) {
-                        const td = document.createElement('td');
-                        td.textContent = text;
-                        tr.appendChild(td);
-                    });
-                    historicalEventsBody.appendChild(tr);
-                });
-                historicalEventsCard.classList.remove('d-none');
-            } else {
-                historicalEventsCard.classList.add('d-none');
-            }
-
-        } catch (err) {
-            showError('Failed to fetch forecast data');
-            console.error(err);
-        }
+            var fallbackEl=document.getElementById('baselineFallbackMessage');
+            if(data.baseline_info.venue_no_data_fallback&&data.baseline_info.fallback_message){fallbackEl.textContent=data.baseline_info.fallback_message;fallbackEl.classList.remove('d-none');}
+            else{fallbackEl.textContent='';fallbackEl.classList.add('d-none');}
+            if(data.baseline_info.extrapolation_warning&&data.baseline_info.extrapolation_message){extrapolationMessage.textContent=data.baseline_info.extrapolation_message;extrapolationWarning.classList.remove('d-none');}
+            else{extrapolationWarning.classList.add('d-none');}
+            if(!chart)initChart();
+            updateChartData();showChart();
+            const events=data.historical_events||[];
+            historicalEventsBody.innerHTML='';
+            if(events.length>0){events.forEach(function(ev){const tr=document.createElement('tr');const dateStr=ev.event_date?new Date(ev.event_date+'T00:00:00').toLocaleDateString():'';[ev.name,dateStr,ev.venue_name||'',String(ev.total_tickets_sold??'')].forEach(function(text){const td=document.createElement('td');td.textContent=text;tr.appendChild(td);});historicalEventsBody.appendChild(tr);});historicalEventsCard.classList.remove('d-none');}
+            else{historicalEventsCard.classList.add('d-none');}
+        } catch(err){showError('Failed to fetch forecast data');console.error(err);}
     }
 
-    function debouncedFetch() {
-        clearTimeout(debounceTimer);
-        debounceTimer = setTimeout(fetchForecast, 300);
-    }
-
-    // Event listeners
-    venueSelect.addEventListener('change', debouncedFetch);
-    eventDateInput.addEventListener('change', debouncedFetch);
-    capacityInput.addEventListener('input', debouncedFetch);
-    startingTicketsInput.addEventListener('input', debouncedFetch);
-    startingTicketsInput.addEventListener('change', debouncedFetch);
-
-    viewToggle.forEach(radio => {
-        radio.addEventListener('change', updateChartData);
-    });
-
-    if (showTrendlineCheckbox) {
-        showTrendlineCheckbox.addEventListener('change', updateChartData);
-    }
-
-    // Set default date to 30 days from now
-    const defaultDate = new Date();
-    defaultDate.setDate(defaultDate.getDate() + 30);
-    eventDateInput.value = defaultDate.toISOString().split('T')[0];
+    function debouncedFetch(){clearTimeout(debounceTimer);debounceTimer=setTimeout(fetchForecast,300);}
+    venueSelect.addEventListener('change',debouncedFetch);
+    eventDateInput.addEventListener('change',debouncedFetch);
+    capacityInput.addEventListener('input',debouncedFetch);
+    startingTicketsInput.addEventListener('input',debouncedFetch);
+    startingTicketsInput.addEventListener('change',debouncedFetch);
+    viewToggle.forEach(r=>r.addEventListener('change',updateChartData));
+    if(showTrendlineCheckbox)showTrendlineCheckbox.addEventListener('change',updateChartData);
+    const defaultDate=new Date();defaultDate.setDate(defaultDate.getDate()+30);
+    eventDateInput.value=defaultDate.toISOString().split('T')[0];
 })();
 </script>
 {% endblock %}
