@@ -5,7 +5,11 @@
       "Bash(python -m pytest:*)",
       "Bash(python:*)",
       "Bash(curl:*)",
-      "Bash(cat:*)"
+      "Bash(cat:*)",
+      "Bash(tail:*)"
     ]
+  },
+  "enabledPlugins": {
+    "github@claude-plugins-official": true
   }
 }

@@ -3,187 +3,127 @@
 {% block title %}{{ customer.name }} - Customer Details{% endblock %}
 
 {% block content %}
-<div class="row mb-4">
-    <div class="col">
-        <h1><i class="bi bi-person"></i> {{ customer.name }}</h1>
-        <p class="text-muted">{{ customer.email }}</p>
+<nav aria-label="breadcrumb">
+    <ol class="breadcrumb">
+        <li class="breadcrumb-item"><a href="{% url 'tickets:home' %}">Dashboard</a></li>
+        <li class="breadcrumb-item"><a href="{% url 'tickets:customer_list' %}">Customers</a></li>
+        <li class="breadcrumb-item active">{{ customer.name }}</li>
+    </ol>
+</nav>
+
+<div class="page-header">
+    <div>
+        <h1>{{ customer.name }}</h1>
+        <p class="page-header-subtitle">{{ customer.email }}</p>
     </div>
 </div>
 
-<div class="row mb-4">
-    <div class="col-md-4 mb-3">
-        <div class="card text-white bg-success">
-            <div class="card-body text-center">
-                <h5 class="card-title">Lifetime Value</h5>
-                <h2 class="card-text">${{ customer.lifetime_value|floatformat:2 }}</h2>
-            </div>
+<div class="row mb-4 g-3">
+    <div class="col-md-4">
+        <div class="stat-card stat-card--success" style="height: 100%;">
+            <div class="stat-label">Lifetime Value</div>
+            <div class="stat-value">${{ customer.lifetime_value|floatformat:2 }}</div>
         </div>
     </div>
     <div class="col-md-8">
-        <div class="card">
-            <div class="card-header">
-                <h5 class="mb-0">Customer Information</h5>
-            </div>
+        <div class="card" style="height: 100%;">
+            <div class="card-header"><h5>Customer Information</h5></div>
             <div class="card-body">
-                <table class="table table-borderless">
-                    <tr>
-                        <th>Name:</th>
-                        <td>{{ customer.name }}</td>
-                    </tr>
-                    <tr>
-                        <th>Email:</th>
-                        <td>{{ customer.email }}</td>
-                    </tr>
-                    <tr>
-                        <th>Phone:</th>
-                        <td>{{ customer.phone|default:"—" }}</td>
-                    </tr>
-                    <tr>
-                        <th>Customer Since:</th>
-                        <td>{{ customer.created_at|date:"M d, Y" }}</td>
-                    </tr>
+                <table class="table table-borderless mb-0">
+                    <tr><th style="width: 140px;">Name:</th><td>{{ customer.name }}</td></tr>
+                    <tr><th>Email:</th><td>{{ customer.email }}</td></tr>
+                    <tr><th>Phone:</th><td>{{ customer.phone|default:"\u2014" }}</td></tr>
+                    <tr><th>Customer Since:</th><td>{{ customer.created_at|date:"M d, Y" }}</td></tr>
                 </table>
             </div>
         </div>
     </div>
 </div>
 
-<div class="row mb-4">
-    <div class="col-md-3 mb-3">
-        <div class="card">
-            <div class="card-body text-center">
-                <h5 class="card-title">Total Orders</h5>
-                <h3 class="card-text">{{ total_orders }}</h3>
-            </div>
-        </div>
+<div class="stats-grid">
+    <div class="stat-card stat-card--accent">
+        <div class="stat-label">Total Orders</div>
+        <div class="stat-value">{{ total_orders }}</div>
     </div>
-    <div class="col-md-3 mb-3">
-        <div class="card">
-            <div class="card-body text-center">
-                <h5 class="card-title">Total Tickets</h5>
-                <h3 class="card-text">{{ total_tickets }}</h3>
-            </div>
-        </div>
+    <div class="stat-card stat-card--info">
+        <div class="stat-label">Total Tickets</div>
+        <div class="stat-value">{{ total_tickets }}</div>
     </div>
-    <div class="col-md-3 mb-3">
-        <div class="card">
-            <div class="card-body text-center">
-                <h5 class="card-title">Avg Order Value</h5>
-                <h3 class="card-text">${{ avg_order_value|floatformat:2 }}</h3>
-            </div>
-        </div>
+    <div class="stat-card stat-card--warning">
+        <div class="stat-label">Avg Order Value</div>
+        <div class="stat-value">${{ avg_order_value|floatformat:2 }}</div>
     </div>
-    <div class="col-md-3 mb-3">
-        <div class="card">
-            <div class="card-body text-center">
-                <h5 class="card-title">Last Order</h5>
-                <h6 class="card-text">
-                    {% if last_order %}
-                        {{ last_order.order_date|date:"M d, Y" }}
-                    {% else %}
-                        —
-                    {% endif %}
-                </h6>
-            </div>
-        </div>
+    <div class="stat-card">
+        <div class="stat-label">Last Order</div>
+        <div class="stat-value" style="font-size: 1.125rem;">{% if last_order %}{{ last_order.order_date|date:"M d, Y" }}{% else %}&mdash;{% endif %}</div>
     </div>
 </div>
 
-<div class="row mb-4">
-    <div class="col">
-        <div class="card">
-            <div class="card-header">
-                <h5 class="mb-0"><i class="bi bi-list-ul"></i> Order History</h5>
-            </div>
-            <div class="card-body">
-                {% if page_obj %}
-                    <div class="table-responsive">
-                        <table class="table table-hover">
-                            <thead>
-                                <tr>
-                                    <th>Order Number</th>
-                                    <th>Date</th>
-                                    <th>Event</th>
-                                    <th>Total Amount</th>
-                                    <th>Tickets</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                {% for order in page_obj %}
-                                    <tr>
-                                        <td>{{ order.order_number }}</td>
-                                        <td>{{ order.order_date|date:"M d, Y H:i" }}</td>
-                                        <td>{{ order.event.name }}</td>
-                                        <td><strong>${{ order.total_amount|floatformat:2 }}</strong></td>
-                                        <td>{{ order.tickets.count }}</td>
-                                    </tr>
-                                {% endfor %}
-                            </tbody>
-                        </table>
-                    </div>
-                    
-                    {% if page_obj.has_other_pages %}
-                        <nav aria-label="Page navigation">
-                            <ul class="pagination justify-content-center">
-                                {% if page_obj.has_previous %}
-                                    <li class="page-item">
-                                        <a class="page-link" href="?page={{ page_obj.previous_page_number }}">
-                                            Previous
-                                        </a>
-                                    </li>
-                                {% endif %}
-                                
-                                <li class="page-item active">
-                                    <span class="page-link">
-                                        Page {{ page_obj.number }} of {{ page_obj.paginator.num_pages }}
-                                    </span>
-                                </li>
-                                
-                                {% if page_obj.has_next %}
-                                    <li class="page-item">
-                                        <a class="page-link" href="?page={{ page_obj.next_page_number }}">
-                                            Next
-                                        </a>
-                                    </li>
-                                {% endif %}
-                            </ul>
-                        </nav>
-                    {% endif %}
-                {% else %}
-                    <p class="text-muted">No orders found.</p>
-                {% endif %}
-            </div>
+<div class="card mb-4">
+    <div class="card-header"><h5>Order History</h5></div>
+    <div class="card-body p-0">
+        {% if page_obj %}
+        <div class="table-responsive">
+            <table class="table table-hover mb-0">
+                <thead>
+                    <tr>
+                        <th>Order Number</th>
+                        <th>Date</th>
+                        <th>Event</th>
+                        <th>Total Amount</th>
+                        <th>Tickets</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for order in page_obj %}
+                    <tr>
+                        <td><strong>{{ order.order_number }}</strong></td>
+                        <td>{{ order.order_date|date:"M d, Y H:i" }}</td>
+                        <td>{{ order.event.name }}</td>
+                        <td><strong>${{ order.total_amount|floatformat:2 }}</strong></td>
+                        <td>{{ order.tickets.count }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
         </div>
+
+        {% if page_obj.has_other_pages %}
+        <div class="d-flex justify-content-center py-3">
+            <nav>
+                <ul class="pagination mb-0">
+                    {% if page_obj.has_previous %}
+                    <li class="page-item"><a class="page-link" href="?page={{ page_obj.previous_page_number }}">Previous</a></li>
+                    {% endif %}
+                    <li class="page-item active"><span class="page-link">{{ page_obj.number }} / {{ page_obj.paginator.num_pages }}</span></li>
+                    {% if page_obj.has_next %}
+                    <li class="page-item"><a class="page-link" href="?page={{ page_obj.next_page_number }}">Next</a></li>
+                    {% endif %}
+                </ul>
+            </nav>
+        </div>
+        {% endif %}
+        {% else %}
+        <div class="empty-state" style="padding: 32px;"><p class="mb-0">No orders found.</p></div>
+        {% endif %}
     </div>
 </div>
 
 {% if events_attended %}
-<div class="row">
-    <div class="col">
-        <div class="card">
-            <div class="card-header">
-                <h5 class="mb-0"><i class="bi bi-calendar-event"></i> Events Attended</h5>
-            </div>
-            <div class="card-body">
-                <ul class="list-group">
-                    {% for event in events_attended %}
-                        <li class="list-group-item">
-                            <strong>{{ event.name }}</strong> - {{ event.venue.name }}, {{ event.venue.city }} 
-                            <span class="text-muted">({{ event.start_date|date:"M d, Y" }})</span>
-                        </li>
-                    {% endfor %}
-                </ul>
-            </div>
-        </div>
+<div class="card mb-4">
+    <div class="card-header"><h5>Events Attended</h5></div>
+    <div class="card-body">
+        <ul class="list-group list-group-flush">
+            {% for event in events_attended %}
+            <li class="list-group-item px-0">
+                <strong>{{ event.name }}</strong> &mdash; {{ event.venue.name }}, {{ event.venue.city }}
+                <span class="text-muted">({{ event.start_date|date:"M d, Y" }})</span>
+            </li>
+            {% endfor %}
+        </ul>
     </div>
 </div>
 {% endif %}
 
-<div class="row mt-4">
-    <div class="col">
-        <a href="{% url 'tickets:customer_list' %}" class="btn btn-outline-secondary">
-            <i class="bi bi-arrow-left"></i> Back to Customer List
-        </a>
-    </div>
-</div>
+<a href="{% url 'tickets:customer_list' %}" class="btn btn-outline-secondary"><i class="bi bi-arrow-left"></i> Back to Customers</a>
 {% endblock %}

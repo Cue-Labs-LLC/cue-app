@@ -134,7 +134,9 @@ AUTH_PASSWORD_VALIDATORS = [
 
 LANGUAGE_CODE = 'en-us'
 
-TIME_ZONE = 'UTC'
+# Use app timezone so "today" and event filters match your business timezone (e.g. where events are held).
+# Set TIME_ZONE in environment to override (e.g. America/New_York).
+TIME_ZONE = os.environ.get('TIME_ZONE', 'America/Los_Angeles')
 
 USE_I18N = True
 

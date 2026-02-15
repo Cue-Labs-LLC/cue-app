@@ -4,32 +4,34 @@
 {% block title %}Upload CSV - {{ event.name }}{% endblock %}
 
 {% block content %}
-<div class="row mb-4">
-    <div class="col">
-        <nav aria-label="breadcrumb">
-            <ol class="breadcrumb">
-                <li class="breadcrumb-item"><a href="{% url 'tickets:home' %}">Home</a></li>
-                <li class="breadcrumb-item"><a href="{% url 'tickets:event_list' %}">Events</a></li>
-                <li class="breadcrumb-item"><a href="{% url 'tickets:event_detail' event.id %}">{{ event.name }}</a></li>
-                <li class="breadcrumb-item active">Upload CSV</li>
-            </ol>
-        </nav>
-        <h1><i class="bi bi-upload"></i> Upload CSV for Event</h1>
-    </div>
+<nav aria-label="breadcrumb">
+    <ol class="breadcrumb">
+        <li class="breadcrumb-item"><a href="{% url 'tickets:home' %}">Dashboard</a></li>
+        <li class="breadcrumb-item"><a href="{% url 'tickets:event_list' %}">Events</a></li>
+        <li class="breadcrumb-item"><a href="{% url 'tickets:event_detail' event.id %}">{{ event.name }}</a></li>
+        <li class="breadcrumb-item active">Upload CSV</li>
+    </ol>
+</nav>
+
+<div class="page-header">
+    <h1>Upload CSV for Event</h1>
 </div>
 
 <div class="row">
     <div class="col-md-8">
         <div class="card mb-3">
             <div class="card-header">
-                <h5 class="mb-0"><i class="bi bi-calendar-event"></i> Target Event</h5>
+                <h5 class="mb-0">Target Event</h5>
             </div>
             <div class="card-body">
                 <h5 class="card-title mb-1">{{ event.name }}</h5>
-                <p class="text-muted mb-0">
-                    {% if event.venue %}<i class="bi bi-geo-alt"></i> {{ event.venue.name }}, {{ event.venue.city }} | {% endif %}
-                    <i class="bi bi-clock"></i> {{ event.start_date|date:"M d, Y" }}{% if event.start_time %} {{ event.start_time|time:"H:i" }}{% endif %}
-                </p>
+                <div class="detail-meta">
+                    {% if event.venue %}
+                    <span class="detail-meta-item">{{ event.venue.name }}, {{ event.venue.city }}</span>
+                    <span class="detail-meta-divider"></span>
+                    {% endif %}
+                    <span class="detail-meta-item">{{ event.start_date|date:"M d, Y" }}{% if event.start_time %} {{ event.start_time|time:"H:i" }}{% endif %}</span>
+                </div>
             </div>
         </div>
 
@@ -48,7 +50,7 @@
     <div class="col-md-4">
         <div class="card">
             <div class="card-header">
-                <h5 class="mb-0"><i class="bi bi-info-circle"></i> Upload Instructions</h5>
+                <h5 class="mb-0">Upload Instructions</h5>
             </div>
             <div class="card-body">
                 <ul class="list-unstyled">
@@ -59,7 +61,7 @@
                 </ul>
                 <hr>
                 <p class="small text-muted mb-0">
-                    <i class="bi bi-info-circle"></i> All orders will be associated with <strong>{{ event.name }}</strong>.
+                    All orders will be associated with <strong>{{ event.name }}</strong>.
                     Event name, date, and venue are inherited from the event.
                 </p>
             </div>

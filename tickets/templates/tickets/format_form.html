@@ -1,13 +1,11 @@
 {% extends 'tickets/base.html' %}
 {% load crispy_forms_tags %}
 
-{% block title %}{{ action }} CSV Format - Event Ticket Order Upload System{% endblock %}
+{% block title %}{{ action }} CSV Format{% endblock %}
 
 {% block content %}
-<div class="row mb-4">
-    <div class="col">
-        <h1><i class="bi bi-file-earmark-spreadsheet"></i> {{ action }} CSV Format</h1>
-    </div>
+<div class="page-header">
+    <h1>{{ action }} CSV Format</h1>
 </div>
 
 <div class="row">
@@ -21,7 +19,7 @@
     <div class="col-md-4">
         <div class="card">
             <div class="card-header">
-                <h5 class="mb-0"><i class="bi bi-info-circle"></i> Format Configuration Help</h5>
+                <h5 class="mb-0">Format Configuration Help</h5>
             </div>
             <div class="card-body">
                 <p><strong>Column Mapping Format:</strong></p>
@@ -50,7 +48,7 @@
                 <hr>
                 <p><strong>Tier-Based Pricing:</strong></p>
                 <p class="small text-muted">
-                    When enabled, you can define multiple pricing tiers per ticket type with allotments. 
+                    When enabled, you can define multiple pricing tiers per ticket type with allotments.
                     Orders are assigned to tiers based on order date (first-come-first-served) until tier capacity is reached.
                     <strong>Note:</strong> Tier-based pricing can only be enabled when manual pricing is required.
                 </p>

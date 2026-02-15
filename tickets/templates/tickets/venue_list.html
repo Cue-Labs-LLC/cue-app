@@ -1,110 +1,80 @@
 {% extends 'tickets/base.html' %}
 
-{% block title %}Venues - Event Ticket Order Upload System{% endblock %}
+{% block title %}Venues{% endblock %}
 
 {% block content %}
-<div class="row mb-4">
-    <div class="col d-flex justify-content-between align-items-center">
-        <h1><i class="bi bi-geo-alt"></i> Venues</h1>
+<div class="page-header">
+    <h1>Venues</h1>
+    <div class="page-header-actions">
         <a href="{% url 'tickets:venue_create' %}" class="btn btn-primary">
             <i class="bi bi-plus-lg"></i> Create Venue
         </a>
     </div>
 </div>
 
-<div class="row mb-4">
-    <div class="col">
-        <div class="card">
-            <div class="card-body">
-                <form method="get" class="row g-3">
-                    <div class="col-md-8">
-                        <input type="text" name="search" class="form-control"
-                               placeholder="Search by name, city, state, or country..."
-                               value="{{ search_query }}">
-                    </div>
-                    <div class="col-md-4">
-                        <button type="submit" class="btn btn-primary">
-                            <i class="bi bi-search"></i> Search
-                        </button>
-                        <a href="{% url 'tickets:venue_list' %}" class="btn btn-outline-secondary">
-                            Clear
-                        </a>
-                    </div>
-                </form>
-            </div>
-        </div>
-    </div>
+<div class="search-bar">
+    <form method="get" class="d-flex gap-2 w-100">
+        <input type="text" name="search" class="form-control" placeholder="Search by name, city, state, or country..." value="{{ search_query }}">
+        <button type="submit" class="btn btn-outline-secondary"><i class="bi bi-search"></i></button>
+        {% if search_query %}
+        <a href="{% url 'tickets:venue_list' %}" class="btn btn-outline-secondary">Clear</a>
+        {% endif %}
+    </form>
 </div>
 
-<div class="row">
-    <div class="col">
-        <div class="card">
-            <div class="card-body">
-                {% if page_obj %}
-                    <div class="table-responsive">
-                        <table class="table table-hover">
-                            <thead>
-                                <tr>
-                                    <th>Name</th>
-                                    <th>City</th>
-                                    <th>State</th>
-                                    <th>Country</th>
-                                    <th>Capacity</th>
-                                    <th>Events</th>
-                                    <th>Actions</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                {% for venue in page_obj %}
-                                    <tr>
-                                        <td><strong>{{ venue.name }}</strong></td>
-                                        <td>{{ venue.city }}</td>
-                                        <td>{{ venue.state|default:"—" }}</td>
-                                        <td>{{ venue.country|default:"—" }}</td>
-                                        <td>{{ venue.capacity|default:"—" }}</td>
-                                        <td>{{ venue.event_count|default:0 }}</td>
-                                        <td>
-                                            <a href="{% url 'tickets:venue_edit' venue.id %}"
-                                               class="btn btn-sm btn-outline-primary">
-                                                <i class="bi bi-pencil"></i> Edit
-                                            </a>
-                                        </td>
-                                    </tr>
-                                {% endfor %}
-                            </tbody>
-                        </table>
-                    </div>
-
-                    {% if page_obj.has_other_pages %}
-                        <nav aria-label="Page navigation">
-                            <ul class="pagination justify-content-center">
-                                {% if page_obj.has_previous %}
-                                    <li class="page-item">
-                                        <a class="page-link" href="?page={{ page_obj.previous_page_number }}&search={{ search_query }}">
-                                            Previous
-                                        </a>
-                                    </li>
-                                {% endif %}
-                                <li class="page-item active">
-                                    <span class="page-link">
-                                        Page {{ page_obj.number }} of {{ page_obj.paginator.num_pages }}
-                                    </span>
-                                </li>
-                                {% if page_obj.has_next %}
-                                    <li class="page-item">
-                                        <a class="page-link" href="?page={{ page_obj.next_page_number }}&search={{ search_query }}">
-                                            Next
-                                        </a>
-                                    </li>
-                                {% endif %}
-                            </ul>
-                        </nav>
-                    {% endif %}
-                {% else %}
-                    <p class="text-muted">No venues found. <a href="{% url 'tickets:venue_create' %}">Create one</a> to get started.</p>
-                {% endif %}
-            </div>
+<div class="card">
+    <div class="card-body p-0">
+        {% if page_obj %}
+        <div class="table-responsive">
+            <table class="table table-hover mb-0">
+                <thead>
+                    <tr>
+                        <th>Name</th>
+                        <th>City</th>
+                        <th>State</th>
+                        <th>Country</th>
+                        <th>Capacity</th>
+                        <th>Events</th>
+                        <th></th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for venue in page_obj %}
+                    <tr>
+                        <td><strong>{{ venue.name }}</strong></td>
+                        <td>{{ venue.city }}</td>
+                        <td>{{ venue.state|default:"\u2014" }}</td>
+                        <td>{{ venue.country|default:"\u2014" }}</td>
+                        <td>{{ venue.capacity|default:"\u2014" }}</td>
+                        <td>{{ venue.event_count|default:0 }}</td>
+                        <td><a href="{% url 'tickets:venue_edit' venue.id %}" class="btn btn-sm btn-outline-secondary"><i class="bi bi-pencil"></i> Edit</a></td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
         </div>
+
+        {% if page_obj.has_other_pages %}
+        <div class="d-flex justify-content-center py-3">
+            <nav>
+                <ul class="pagination mb-0">
+                    {% if page_obj.has_previous %}
+                    <li class="page-item"><a class="page-link" href="?page={{ page_obj.previous_page_number }}&search={{ search_query }}">Previous</a></li>
+                    {% endif %}
+                    <li class="page-item active"><span class="page-link">{{ page_obj.number }} / {{ page_obj.paginator.num_pages }}</span></li>
+                    {% if page_obj.has_next %}
+                    <li class="page-item"><a class="page-link" href="?page={{ page_obj.next_page_number }}&search={{ search_query }}">Next</a></li>
+                    {% endif %}
+                </ul>
+            </nav>
+        </div>
+        {% endif %}
+        {% else %}
+        <div class="empty-state">
+            <i class="bi bi-geo-alt d-block"></i>
+            <p>No venues found. <a href="{% url 'tickets:venue_create' %}">Create one</a> to get started.</p>
+        </div>
+        {% endif %}
     </div>
 </div>
 {% endblock %}

@@ -4,6 +4,7 @@ import platform
 from datetime import date
 
 from django.db.models import Prefetch
+from django.utils import timezone
 
 from tickets.models import Event, EventCustomFieldValue, Organization
 
@@ -40,7 +41,7 @@ class EventDocFormatter:
 
     def get_upcoming_events(self):
         """Query upcoming events for the organization, sorted by date."""
-        today = date.today()
+        today = timezone.localdate()
         return list(
             Event.objects.filter(
                 organization=self.organization,
@@ -196,7 +197,7 @@ class EventDocFormatter:
         sections.append(f'{org_name} — UPCOMING EVENTS')
         sections.append('Knowledge Base for AI Instagram DM Agent')
         sections.append('')
-        sections.append(f'Last updated: {_format_date(date.today())}')
+        sections.append(f'Last updated: {_format_date(timezone.localdate())}')
         sections.append(f'Total upcoming events: {len(events)}')
         sections.append('')
 

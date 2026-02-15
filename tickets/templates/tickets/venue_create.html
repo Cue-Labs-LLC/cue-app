@@ -1,13 +1,13 @@
 {% extends 'tickets/base.html' %}
 {% load crispy_forms_tags %}
 
-{% block title %}Create Venue - Event Ticket Order Upload System{% endblock %}
+{% block title %}Create Venue{% endblock %}
 
 {% block content %}
-<div class="row mb-4">
-    <div class="col">
-        <h1><i class="bi bi-geo-alt"></i> Create Venue</h1>
-        <p class="text-muted">Add a new venue to the system.</p>
+<div class="page-header">
+    <div>
+        <h1>Create Venue</h1>
+        <p class="page-header-subtitle">Add a new venue to the system.</p>
     </div>
 </div>
 
@@ -18,8 +18,8 @@
                 {% crispy form %}
             </div>
         </div>
-        
-        <div class="mt-3">
+
+        <div class="d-flex gap-2 mt-3">
             <a href="{% url 'tickets:venue_list' %}" class="btn btn-outline-secondary">
                 <i class="bi bi-arrow-left"></i> Back to Venues
             </a>
@@ -28,7 +28,7 @@
     <div class="col-md-4">
         <div class="card">
             <div class="card-header">
-                <h5 class="mb-0"><i class="bi bi-info-circle"></i> Venue Information</h5>
+                <h5 class="mb-0">Venue Information</h5>
             </div>
             <div class="card-body">
                 <p class="small text-muted">
