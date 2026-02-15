@@ -124,6 +124,20 @@
     filter: invert(1) grayscale(100%) brightness(200%);
 }
 
+[data-theme="dark"] .card,
+[data-theme="dark"] .card-body {
+    color: var(--text-primary);
+}
+
+[data-theme="dark"] .event-venue-address,
+[data-theme="dark"] .event-details-card .card-body {
+    color: var(--text-secondary);
+}
+
+[data-theme="dark"] .event-details-card .card-body strong {
+    color: var(--text-primary);
+}
+
 /* -- Base -------------------------------------- */
 * {
     margin: 0;

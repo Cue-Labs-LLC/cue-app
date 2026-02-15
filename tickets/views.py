@@ -37,6 +37,8 @@ from .services.segmentation.segment_definitions import (
     SEGMENT_DESCRIPTIONS,
     SEGMENT_RULES,
 )
+from .services.cohort_analysis.repeat_customer_calculator import RepeatCustomerCalculator
+from .services.cohort_analysis.cohort_retention_calculator import CohortRetentionCalculator
 from .utils import get_organization, require_org
 
 import logging
@@ -797,6 +799,38 @@ def recalculate_segments(request):
         recalculate_rfm_task.delay(str(org.id))
         messages.success(request, 'Segment recalculation started. Results will appear shortly.')
     return redirect('tickets:customer_segments')
+
+
+@login_required
+@require_org
+def repeat_customers(request):
+    """Analytics page: new vs returning customers per event."""
+    org = get_organization(request)
+    calculator = RepeatCustomerCalculator(org)
+    result = calculator.calculate()
+    chart_data = json.dumps(result['events'], default=str)
+    return render(request, 'tickets/repeat_customers.html', {
+        'events': result['events'],
+        'summary': result['summary'],
+        'chart_data_json': chart_data,
+    })
+
+
+@login_required
+@require_org
+def cohort_retention(request):
+    """Analytics page: monthly cohort retention heatmap and line chart."""
+    org = get_organization(request)
+    calculator = CohortRetentionCalculator(org)
+    result = calculator.calculate()
+    chart_data = json.dumps(result['cohorts'], default=str)
+    max_periods = max(len(c['periods']) for c in result['cohorts']) if result['cohorts'] else 0
+    return render(request, 'tickets/cohort_retention.html', {
+        'cohorts': result['cohorts'],
+        'summary': result['summary'],
+        'max_periods': range(max_periods),
+        'chart_data_json': chart_data,
+    })
 
 
 @login_required

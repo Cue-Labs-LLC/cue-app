@@ -34,7 +34,9 @@ urlpatterns = [
     # Analytics - Segments
     path('analytics/segments/', views.customer_segments, name='customer_segments'),
     path('analytics/segments/recalculate/', views.recalculate_segments, name='recalculate_segments'),
-    
+    path('analytics/repeat-customers/', views.repeat_customers, name='repeat_customers'),
+    path('analytics/cohort-retention/', views.cohort_retention, name='cohort_retention'),
+
     # Events
     path('events/', views.event_list, name='event_list'),
     path('events/calendar/', views.event_calendar, name='event_calendar'),

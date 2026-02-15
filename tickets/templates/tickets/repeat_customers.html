@@ -1,0 +1,160 @@
+{% extends 'tickets/base.html' %}
+
+{% block title %}Repeat Customers{% endblock %}
+
+{% block extra_head %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1>Repeat Customers</h1>
+</div>
+
+{% if events %}
+<script type="application/json" id="chart-data">{{ chart_data_json|safe }}</script>
+
+<div class="row mb-4 g-3">
+    <div class="col-md-4">
+        <div class="stat-card stat-card--accent">
+            <div class="stat-label">Total Attendees</div>
+            <div class="stat-value">{{ summary.total_attendees|floatformat:0 }}</div>
+        </div>
+    </div>
+    <div class="col-md-4">
+        <div class="stat-card stat-card--info">
+            <div class="stat-label">New Customers</div>
+            <div class="stat-value">{{ summary.new_pct }}%</div>
+            <div class="text-muted small mt-1">{{ summary.new_count }} attendees</div>
+        </div>
+    </div>
+    <div class="col-md-4">
+        <div class="stat-card stat-card--success">
+            <div class="stat-label">Returning Customers</div>
+            <div class="stat-value">{{ summary.returning_pct }}%</div>
+            <div class="text-muted small mt-1">{{ summary.returning_count }} attendees</div>
+        </div>
+    </div>
+</div>
+
+<div class="card mb-4">
+    <div class="card-header"><h5 class="mb-0">New vs Returning by Event</h5></div>
+    <div class="card-body">
+        <div class="chart-container" style="height: 320px;">
+            <canvas id="stackedBarChart"></canvas>
+        </div>
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-body p-0">
+        <div class="table-responsive">
+            <table class="table table-hover mb-0">
+                <thead>
+                    <tr>
+                        <th>Event</th>
+                        <th>Date</th>
+                        <th>Venue</th>
+                        <th>Total</th>
+                        <th>New</th>
+                        <th>Returning</th>
+                        <th>Returning %</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for e in events %}
+                    <tr>
+                        <td><a href="{% url 'tickets:event_detail' e.event_id %}">{{ e.event_name }}</a></td>
+                        <td>{{ e.event_date }}</td>
+                        <td>{{ e.venue_name }}</td>
+                        <td>{{ e.total }}</td>
+                        <td>{{ e.new_count }}</td>
+                        <td>{{ e.returning_count }}</td>
+                        <td>{{ e.returning_pct }}%</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<script>
+(function() {
+    var el = document.getElementById('chart-data');
+    if (!el) return;
+    var data = JSON.parse(el.textContent);
+    if (!data.length) return;
+
+    var isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+    var gridColor = isDark ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.1)';
+    var textColor = isDark ? '#ccc' : '#666';
+
+    new Chart(document.getElementById('stackedBarChart').getContext('2d'), {
+        type: 'bar',
+        data: {
+            labels: data.map(function(d) { return d.event_name; }),
+            datasets: [
+                {
+                    label: 'New',
+                    data: data.map(function(d) { return d.new_count; }),
+                    backgroundColor: 'rgba(13, 110, 253, 0.7)',
+                    borderColor: 'rgb(13, 110, 253)',
+                    borderWidth: 1,
+                    borderRadius: 2,
+                },
+                {
+                    label: 'Returning',
+                    data: data.map(function(d) { return d.returning_count; }),
+                    backgroundColor: 'rgba(25, 135, 84, 0.7)',
+                    borderColor: 'rgb(25, 135, 84)',
+                    borderWidth: 1,
+                    borderRadius: 2,
+                }
+            ]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+                legend: { labels: { color: textColor } },
+                tooltip: {
+                    callbacks: {
+                        afterBody: function(items) {
+                            var idx = items[0].dataIndex;
+                            return 'Total: ' + data[idx].total + ' | Returning: ' + data[idx].returning_pct + '%';
+                        }
+                    }
+                }
+            },
+            scales: {
+                x: {
+                    stacked: true,
+                    ticks: { color: textColor, maxRotation: 45 },
+                    grid: { color: gridColor }
+                },
+                y: {
+                    stacked: true,
+                    beginAtZero: true,
+                    title: { display: true, text: 'Customers', color: textColor },
+                    ticks: { color: textColor },
+                    grid: { color: gridColor }
+                }
+            }
+        }
+    });
+})();
+</script>
+
+{% else %}
+<div class="card">
+    <div class="card-body">
+        <div class="empty-state">
+            <i class="bi bi-arrow-repeat d-block"></i>
+            <p>No event attendance data yet. Upload ticket orders to see new vs returning customer analysis.</p>
+            <a href="{% url 'tickets:event_list' %}" class="btn btn-primary"><i class="bi bi-calendar-event"></i> View Events</a>
+        </div>
+    </div>
+</div>
+{% endif %}
+{% endblock %}

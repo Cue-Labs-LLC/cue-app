@@ -1,0 +1,188 @@
+{% extends 'tickets/base.html' %}
+
+{% block title %}Cohort Retention{% endblock %}
+
+{% block extra_head %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<style>
+    .heatmap-cell {
+        text-align: center;
+        font-size: 13px;
+        font-weight: 500;
+        min-width: 56px;
+        padding: 6px 8px;
+    }
+    .heatmap-header {
+        text-align: center;
+        font-size: 12px;
+        font-weight: 600;
+        min-width: 56px;
+    }
+    .cohort-label {
+        white-space: nowrap;
+        font-weight: 500;
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1>Cohort Retention</h1>
+</div>
+
+{% if cohorts %}
+<script type="application/json" id="chart-data">{{ chart_data_json|safe }}</script>
+
+<div class="row mb-4 g-3">
+    <div class="col-md-4">
+        <div class="stat-card stat-card--accent">
+            <div class="stat-label">Total Cohorts</div>
+            <div class="stat-value">{{ summary.total_cohorts }}</div>
+        </div>
+    </div>
+    <div class="col-md-4">
+        <div class="stat-card stat-card--info">
+            <div class="stat-label">Avg Month-1 Retention</div>
+            <div class="stat-value">{{ summary.avg_m1_retention }}%</div>
+        </div>
+    </div>
+    <div class="col-md-4">
+        <div class="stat-card stat-card--success">
+            <div class="stat-label">Avg Month-3 Retention</div>
+            <div class="stat-value">{{ summary.avg_m3_retention }}%</div>
+        </div>
+    </div>
+</div>
+
+<div class="card mb-4">
+    <div class="card-header"><h5 class="mb-0">Retention Over Time</h5></div>
+    <div class="card-body">
+        <div class="chart-container" style="height: 320px;">
+            <canvas id="retentionLineChart"></canvas>
+        </div>
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-header"><h5 class="mb-0">Retention Heatmap</h5></div>
+    <div class="card-body p-0">
+        <div class="table-responsive">
+            <table class="table table-hover mb-0">
+                <thead>
+                    <tr>
+                        <th>Cohort</th>
+                        <th>Size</th>
+                        {% for p in max_periods %}
+                        <th class="heatmap-header">M{{ p }}</th>
+                        {% endfor %}
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for c in cohorts %}
+                    <tr>
+                        <td class="cohort-label">{{ c.cohort }}</td>
+                        <td>{{ c.size }}</td>
+                        {% for period in c.periods %}
+                        <td class="heatmap-cell" style="background-color: rgba(25, 135, 84, {{ period.bg_opacity }});">
+                            {{ period.retention_pct }}%
+                        </td>
+                        {% endfor %}
+                        {# Fill empty cells for cohorts with fewer periods #}
+                        {% with periods_len=c.periods|length %}
+                        {% for p in max_periods %}
+                        {% if forloop.counter0 >= periods_len %}
+                        <td class="heatmap-cell"></td>
+                        {% endif %}
+                        {% endfor %}
+                        {% endwith %}
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<script>
+(function() {
+    var el = document.getElementById('chart-data');
+    if (!el) return;
+    var data = JSON.parse(el.textContent);
+    if (!data.length) return;
+
+    var isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+    var gridColor = isDark ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.1)';
+    var textColor = isDark ? '#ccc' : '#666';
+
+    // Show only the most recent 8 cohorts on the line chart
+    var chartCohorts = data.slice(-8);
+    var palette = [
+        'rgb(13, 110, 253)', 'rgb(25, 135, 84)', 'rgb(220, 53, 69)',
+        'rgb(255, 193, 7)', 'rgb(13, 202, 240)', 'rgb(111, 66, 193)',
+        'rgb(253, 126, 20)', 'rgb(108, 117, 125)'
+    ];
+
+    var datasets = chartCohorts.map(function(c, i) {
+        return {
+            label: c.cohort,
+            data: c.periods.map(function(p) { return p.retention_pct; }),
+            borderColor: palette[i % palette.length],
+            backgroundColor: 'transparent',
+            tension: 0.3,
+            pointRadius: 3,
+            borderWidth: 2,
+        };
+    });
+
+    // x-axis labels = M0, M1, M2, ...
+    var maxLen = Math.max.apply(null, chartCohorts.map(function(c) { return c.periods.length; }));
+    var labels = [];
+    for (var i = 0; i < maxLen; i++) labels.push('M' + i);
+
+    new Chart(document.getElementById('retentionLineChart').getContext('2d'), {
+        type: 'line',
+        data: { labels: labels, datasets: datasets },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+                legend: { labels: { color: textColor } },
+                tooltip: {
+                    callbacks: {
+                        label: function(ctx) {
+                            return ctx.dataset.label + ': ' + ctx.parsed.y + '%';
+                        }
+                    }
+                }
+            },
+            scales: {
+                x: {
+                    title: { display: true, text: 'Months since first event', color: textColor },
+                    ticks: { color: textColor },
+                    grid: { color: gridColor }
+                },
+                y: {
+                    beginAtZero: true,
+                    max: 100,
+                    title: { display: true, text: 'Retention %', color: textColor },
+                    ticks: { color: textColor, callback: function(v) { return v + '%'; } },
+                    grid: { color: gridColor }
+                }
+            }
+        }
+    });
+})();
+</script>
+
+{% else %}
+<div class="card">
+    <div class="card-body">
+        <div class="empty-state">
+            <i class="bi bi-calendar2-range d-block"></i>
+            <p>No cohort data yet. Upload ticket orders across multiple events to see retention analysis.</p>
+            <a href="{% url 'tickets:event_list' %}" class="btn btn-primary"><i class="bi bi-calendar-event"></i> View Events</a>
+        </div>
+    </div>
+</div>
+{% endif %}
+{% endblock %}
