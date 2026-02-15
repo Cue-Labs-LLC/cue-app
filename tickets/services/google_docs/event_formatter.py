@@ -183,6 +183,15 @@ class EventDocFormatter:
             lines.append(f'A: {custom_values["Parking Info"]}')
             lines.append('')
 
+        if 'Accepting Vendors' in custom_values:
+            lines.append(f'Q: Is {event.name} accepting vendors?')
+            val = custom_values['Accepting Vendors']
+            if val.lower() == 'yes':
+                lines.append('A: Yes, this event is accepting vendors.')
+            else:
+                lines.append('A: No, this event is not accepting vendors.')
+            lines.append('')
+
         lines.append('')
         return '\n'.join(lines)
 
