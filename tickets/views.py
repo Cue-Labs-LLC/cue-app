@@ -40,10 +40,27 @@ from .services.segmentation.segment_definitions import (
 )
 from .services.cohort_analysis.repeat_customer_calculator import RepeatCustomerCalculator
 from .services.cohort_analysis.cohort_retention_calculator import CohortRetentionCalculator
-from .utils import get_organization, require_org
+from .utils import get_organization, require_org, clear_org_cache
+
+from django.core.cache import cache as django_cache
 
 import logging
 logger = logging.getLogger(__name__)
+
+
+def _event_list_cache_key(org_id, search, sort, page):
+    """Build a versioned, org-scoped cache key for the event_list response."""
+    version = django_cache.get(f'event_list_ver:{org_id}', 0)
+    return f'event_list:{version}:{org_id}:{search}:{sort}:{page}'
+
+
+def _invalidate_event_list_cache(org):
+    """Bump the version counter so all existing event_list cache entries expire naturally."""
+    key = f'event_list_ver:{org.pk}'
+    try:
+        django_cache.incr(key)
+    except ValueError:
+        django_cache.set(key, 1, timeout=None)
 
 
 def _regenerate_event_doc_background(org):
@@ -163,6 +180,7 @@ def create_organization(request):
             org = form.save()
             profile.organization = org
             profile.save()
+            clear_org_cache(request)
             messages.success(request, f"Organization '{org.name}' created. You can now use the app.")
             return redirect('tickets:home')
     else:
@@ -177,18 +195,34 @@ def home(request):
     org = get_organization(request)
     # Recent events (org-scoped)
     recent_events = Event.objects.filter(organization=org).annotate(
-        total_orders=Count('ticket_orders', distinct=True),
-        upload_count=Count('ticket_orders__uploaded_file', distinct=True),
+        total_orders=Coalesce(
+            Subquery(
+                TicketOrder.objects.filter(event=OuterRef('pk'))
+                .values('event')
+                .annotate(n=Count('id'))
+                .values('n')[:1]
+            ),
+            0,
+        ),
+        upload_count=Coalesce(
+            Subquery(
+                TicketOrder.objects.filter(event=OuterRef('pk'))
+                .exclude(uploaded_file__isnull=True)
+                .values('event')
+                .annotate(n=Count('uploaded_file', distinct=True))
+                .values('n')[:1]
+            ),
+            0,
+        ),
         total_revenue=Coalesce(
             Subquery(
-                TicketOrder.objects.filter(
-                    event=OuterRef('pk')
-                ).values('event').annotate(
-                    total=Sum('total_amount')
-                ).values('total')[:1],
-                output_field=models.DecimalField(max_digits=10, decimal_places=2)
+                TicketOrder.objects.filter(event=OuterRef('pk'))
+                .values('event')
+                .annotate(total=Sum('total_amount'))
+                .values('total')[:1],
+                output_field=models.DecimalField(max_digits=10, decimal_places=2),
             ),
-            Decimal('0.00')
+            Decimal('0.00'),
         ),
     ).select_related('venue').order_by('-start_date')[:10]
 
@@ -498,6 +532,7 @@ def process_csv_file(request, uploaded_file, manual_prices=None, tier_definition
                 RFMCalculator(uploaded_file.organization).calculate_all()
             except Exception:
                 logger.exception("RFM recalc after CSV import failed")
+            _invalidate_event_list_cache(uploaded_file.organization)
 
         return redirect('tickets:upload_results', file_id=uploaded_file.id)
 
@@ -903,35 +938,68 @@ def customer_detail(request, customer_id):
 def event_list(request):
     """Display list of all events with associated uploads."""
     org = get_organization(request)
-    # Use Subquery to calculate revenue correctly (avoids double-counting when orders have multiple tickets)
+
+    search_query = request.GET.get('search', '')
+    sort_by = request.GET.get('sort', '-start_date')
+    page_number = request.GET.get('page', '1')
+
+    # Check cache first
+    cache_key = _event_list_cache_key(org.pk, search_query, sort_by, page_number)
+    cached = django_cache.get(cache_key)
+    if cached is not None:
+        return HttpResponse(cached, content_type='text/html')
+
+    # Each stat is an isolated Subquery to avoid join inflation from mixed Count/Sum annotations
     events = Event.objects.filter(organization=org).annotate(
-        upload_count=Count('ticket_orders__uploaded_file', distinct=True),
-        total_orders=Count('ticket_orders', distinct=True),
+        total_orders=Coalesce(
+            Subquery(
+                TicketOrder.objects.filter(event=OuterRef('pk'))
+                .values('event')
+                .annotate(n=Count('id'))
+                .values('n')[:1]
+            ),
+            0,
+        ),
+        upload_count=Coalesce(
+            Subquery(
+                TicketOrder.objects.filter(event=OuterRef('pk'))
+                .exclude(uploaded_file__isnull=True)
+                .values('event')
+                .annotate(n=Count('uploaded_file', distinct=True))
+                .values('n')[:1]
+            ),
+            0,
+        ),
         total_revenue=Coalesce(
             Subquery(
-                TicketOrder.objects.filter(
-                    event=OuterRef('pk')
-                ).values('event').annotate(
-                    total=Sum('total_amount')
-                ).values('total')[:1],
-                output_field=models.DecimalField(max_digits=10, decimal_places=2)
+                TicketOrder.objects.filter(event=OuterRef('pk'))
+                .values('event')
+                .annotate(total=Sum('total_amount'))
+                .values('total')[:1],
+                output_field=models.DecimalField(max_digits=10, decimal_places=2),
             ),
-            Decimal('0.00')
+            Decimal('0.00'),
         ),
-        total_tickets=Count('ticket_orders__tickets', distinct=True),
+        total_tickets=Coalesce(
+            Subquery(
+                Ticket.objects.filter(ticket_order__event=OuterRef('pk'))
+                .values('ticket_order__event')
+                .annotate(n=Count('id'))
+                .values('n')[:1]
+            ),
+            0,
+        ),
     ).select_related('venue')
-    
+
     # Search functionality
-    search_query = request.GET.get('search', '')
     if search_query:
         events = events.filter(
             Q(name__icontains=search_query) |
             Q(venue__name__icontains=search_query) |
             Q(venue__city__icontains=search_query)
         )
-    
+
     # Sorting
-    sort_by = request.GET.get('sort', '-start_date')
     if sort_by in ['name', 'start_date', 'upload_count', 'total_revenue']:
         events = events.order_by(sort_by)
     elif sort_by == '-start_date':
@@ -942,18 +1010,19 @@ def event_list(request):
         events = events.order_by('-total_revenue')
     else:
         events = events.order_by('-start_date')
-    
+
     # Pagination
     paginator = Paginator(events, 50)
-    page_number = request.GET.get('page')
     page_obj = paginator.get_page(page_number)
-    
+
     context = {
         'page_obj': page_obj,
         'search_query': search_query,
         'sort_by': sort_by,
     }
-    return render(request, 'tickets/event_list.html', context)
+    response = render(request, 'tickets/event_list.html', context)
+    django_cache.set(cache_key, response.content, 300)
+    return response
 
 
 @login_required
@@ -1138,6 +1207,7 @@ def event_delete(request, event_id):
                     except Customer.DoesNotExist:
                         pass
 
+            _invalidate_event_list_cache(org)
             success_msg = f"Event '{event_name}' and {orders_count} associated order(s) have been permanently deleted."
             if customers_deleted > 0:
                 success_msg += f" Removed {customers_deleted} customer(s) with no remaining orders."
@@ -1404,6 +1474,7 @@ def event_create(request):
                 else:
                     value.custom_field_option_id = None
                 value.save()
+            _invalidate_event_list_cache(org)
             messages.success(request, f"Event '{event.name}' created successfully.")
             if event.start_date >= date.today():
                 _regenerate_event_doc_background(org)
@@ -1459,6 +1530,7 @@ def event_edit(request, event_id):
                 else:
                     value.custom_field_option_id = None
                 value.save()
+            _invalidate_event_list_cache(org)
             messages.success(request, f"Event '{event.name}' updated successfully.")
             if was_future or event.start_date >= date.today():
                 _regenerate_event_doc_background(org)

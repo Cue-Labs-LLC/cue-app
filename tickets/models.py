@@ -331,6 +331,7 @@ class Event(AuditBaseModel):
         ordering = ['-start_date', '-start_time', 'name']
         indexes = [
             models.Index(fields=['name', 'start_date']),
+            models.Index(fields=['organization', '-start_date']),
         ]
 
     def __str__(self):
@@ -465,9 +466,9 @@ class TicketOrder(AuditBaseModel):
     class Meta:
         ordering = ['-order_date']
         indexes = [
-            models.Index(fields=['order_number']),
             models.Index(fields=['order_date']),
             models.Index(fields=['customer', 'order_date']),
+            models.Index(fields=['event', 'total_amount']),
         ]
 
     def __str__(self):
@@ -538,6 +539,7 @@ class Ticket(BaseModel):
     class Meta:
         ordering = ['ticket_order', 'ticket_type']
         indexes = [
+            models.Index(fields=['ticket_order']),
             models.Index(fields=['tier']),
         ]
 

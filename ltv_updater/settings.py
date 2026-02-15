@@ -80,6 +80,7 @@ TEMPLATES = [
                 'django.template.context_processors.request',
                 'django.contrib.auth.context_processors.auth',
                 'django.contrib.messages.context_processors.messages',
+                'tickets.context_processors.organization_context',
             ],
         },
     },
@@ -241,6 +242,25 @@ else:
 CELERY_ACCEPT_CONTENT = ['json']
 CELERY_TASK_SERIALIZER = 'json'
 CELERY_RESULT_SERIALIZER = 'json'
+
+# Cache framework — Redis when available, in-memory fallback for dev
+if _CELERY_BROKER_URL:
+    # Use DB 1 to isolate from Celery broker on DB 0
+    _cache_url = _CELERY_BROKER_URL.rsplit('/', 1)[0] + '/1'
+    CACHES = {
+        'default': {
+            'BACKEND': 'django.core.cache.backends.redis.RedisCache',
+            'LOCATION': _cache_url,
+            'TIMEOUT': 300,
+        }
+    }
+else:
+    CACHES = {
+        'default': {
+            'BACKEND': 'django.core.cache.backends.locmem.LocMemCache',
+            'TIMEOUT': 300,
+        }
+    }
 
 # Logging configuration
 LOGGING = {

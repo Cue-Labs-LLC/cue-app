@@ -8,7 +8,9 @@
       "Bash(cat:*)",
       "Bash(tail:*)",
       "Bash(grep:*)",
-      "Bash(find:*)"
+      "Bash(find:*)",
+      "Bash(ls:*)",
+      "Bash(wc:*)"
     ]
   },
   "enabledPlugins": {

@@ -9,16 +9,42 @@ def get_organization(request):
     """
     Return the current user's organization, or None if not authenticated or no org.
 
-    Ensures UserProfile exists for the user (creates one with organization=None if missing).
+    Caches the organization PK in request.session['_org_id'] to avoid
+    hitting the DB on every call (the decorator + view body both call this).
     """
     if not request.user.is_authenticated:
         return None
-    from .models import UserProfile
-    profile, _ = UserProfile.objects.get_or_create(
+
+    from .models import Organization, UserProfile
+
+    org_id = request.session.get('_org_id')
+    if org_id is not None:
+        # Fast path: org id cached in session
+        if org_id == '':
+            return None  # user has no org
+        try:
+            return Organization.objects.get(pk=org_id)
+        except Organization.DoesNotExist:
+            # Stale session value — fall through to DB lookup
+            pass
+
+    # Slow path: DB lookup
+    profile, _ = UserProfile.objects.select_related('organization').get_or_create(
         user=request.user,
         defaults={'organization_id': None},
     )
-    return profile.organization
+    org = profile.organization
+    request.session['_org_id'] = str(org.pk) if org else ''
+    return org
+
+
+def clear_org_cache(request):
+    """Remove the cached organization from the session.
+
+    Call this when a user's org assignment changes (e.g. admin reassignment,
+    org creation) so the next get_organization() re-fetches from the DB.
+    """
+    request.session.pop('_org_id', None)
 
 
 def require_org(view_func):
