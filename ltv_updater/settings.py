@@ -10,6 +10,7 @@ For the full list of settings and their values, see
 https://docs.djangoproject.com/en/5.2/ref/settings/
 """
 
+import json
 import os
 from pathlib import Path
 import dj_database_url
@@ -225,14 +226,27 @@ if IS_RENDER or not DEBUG:
     SECURE_HSTS_PRELOAD = True
 
 # Celery configuration
-CELERY_BROKER_URL = os.environ.get('CELERY_BROKER_URL', 'redis://localhost:6379/0')
-CELERY_RESULT_BACKEND = os.environ.get('CELERY_RESULT_BACKEND', 'redis://localhost:6379/0')
+_CELERY_BROKER_URL = os.environ.get('CELERY_BROKER_URL')
+CELERY_BROKER_URL = _CELERY_BROKER_URL or 'redis://localhost:6379/0'
+# When no broker URL is set (e.g. local dev without Redis), run tasks eagerly and do not use Redis backend
+CELERY_TASK_ALWAYS_EAGER = not _CELERY_BROKER_URL
+CELERY_TASK_EAGER_PROPAGATES = True
+if _CELERY_BROKER_URL:
+    CELERY_RESULT_BACKEND = os.environ.get('CELERY_RESULT_BACKEND', _CELERY_BROKER_URL)
+else:
+    # Use cache backend so Celery never connects to Redis when broker is unset (Celery may treat None as "use broker")
+    CELERY_RESULT_BACKEND = 'cache+memory://'
 CELERY_ACCEPT_CONTENT = ['json']
 CELERY_TASK_SERIALIZER = 'json'
 CELERY_RESULT_SERIALIZER = 'json'
-# Run tasks synchronously when no broker is set (local dev without Redis)
-CELERY_TASK_ALWAYS_EAGER = not os.environ.get('CELERY_BROKER_URL')
-CELERY_TASK_EAGER_PROPAGATES = True
+# #region agent log
+try:
+    _lp = str(BASE_DIR / '.cursor' / 'debug.log')
+    with open(_lp, 'a') as _f:
+        _f.write(json.dumps({"id": "celery_settings_load", "timestamp": __import__('time').time() * 1000, "location": "settings.py:Celery", "message": "Celery config at load", "data": {"CELERY_BROKER_URL_set": bool(_CELERY_BROKER_URL), "CELERY_RESULT_BACKEND": str(CELERY_RESULT_BACKEND)[:60] if CELERY_RESULT_BACKEND else None, "CELERY_TASK_ALWAYS_EAGER": CELERY_TASK_ALWAYS_EAGER}, "hypothesisId": "H1,H2,H5"}) + "\n")
+except Exception:
+    pass
+# #endregion
 
 # Logging configuration
 LOGGING = {
