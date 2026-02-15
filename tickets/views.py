@@ -1,6 +1,7 @@
+import calendar
 import os
 import json
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 from django.shortcuts import render, redirect, get_object_or_404
 from django.contrib import messages
@@ -640,6 +641,72 @@ def customer_list(request):
 
 @login_required
 @require_org
+def customer_ltv_by_market(request):
+    """Display customer LTV metrics aggregated by city (event venue city)."""
+    org = get_organization(request)
+    qs = (
+        TicketOrder.objects.filter(event__organization=org)
+        .values('event__venue__city')
+        .annotate(
+            total_ltv=Sum('total_amount'),
+            order_count=Count('id'),
+            customer_count=Count('customer', distinct=True),
+        )
+    )
+    sort_by = request.GET.get('sort', '-total_ltv')
+    if sort_by == 'city':
+        qs = qs.order_by('event__venue__city')
+    elif sort_by == '-city':
+        qs = qs.order_by('-event__venue__city')
+    elif sort_by == 'total_ltv':
+        qs = qs.order_by('total_ltv')
+    elif sort_by == '-total_ltv':
+        qs = qs.order_by('-total_ltv')
+    elif sort_by == 'customer_count':
+        qs = qs.order_by('customer_count')
+    elif sort_by == '-customer_count':
+        qs = qs.order_by('-customer_count')
+    elif sort_by == 'order_count':
+        qs = qs.order_by('order_count')
+    elif sort_by == '-order_count':
+        qs = qs.order_by('-order_count')
+    else:
+        qs = qs.order_by('-total_ltv')
+
+    market_stats = []
+    for row in qs:
+        city = row['event__venue__city'] or ''
+        customer_count = row['customer_count'] or 0
+        total_ltv = row['total_ltv'] or Decimal('0.00')
+        avg_ltv = (total_ltv / customer_count) if customer_count else Decimal('0.00')
+        market_stats.append({
+            'city': city.strip() or '—',
+            'total_ltv': total_ltv,
+            'order_count': row['order_count'] or 0,
+            'customer_count': customer_count,
+            'avg_ltv': avg_ltv,
+        })
+
+    chart_data = [
+        {
+            'city': row['city'],
+            'total_ltv': float(row['total_ltv']),
+            'avg_ltv': float(row['avg_ltv']),
+        }
+        for row in market_stats
+    ]
+    market_stats_json = json.dumps(chart_data)
+
+    context = {
+        'market_stats': market_stats,
+        'market_stats_json': market_stats_json,
+        'sort_by': sort_by,
+    }
+    return render(request, 'tickets/ltv_by_market.html', context)
+
+
+@login_required
+@require_org
 def customer_detail(request, customer_id):
     """Display detailed customer information with LTV and order history."""
     org = get_organization(request)
@@ -735,6 +802,77 @@ def event_list(request):
         'sort_by': sort_by,
     }
     return render(request, 'tickets/event_list.html', context)
+
+
+@login_required
+@require_org
+def event_calendar(request):
+    """Display events in a month calendar grid."""
+    org = get_organization(request)
+    today = date.today()
+
+    try:
+        year = int(request.GET.get('year', today.year))
+        month = int(request.GET.get('month', today.month))
+    except (TypeError, ValueError):
+        year, month = today.year, today.month
+    if not (1 <= month <= 12) or not (2000 <= year <= 2100):
+        year, month = today.year, today.month
+
+    first_day = date(year, month, 1)
+    _, last_day_num = calendar.monthrange(year, month)
+    last_day = date(year, month, last_day_num)
+
+    events = (
+        Event.objects.filter(
+            organization=org,
+            deleted_at__isnull=True,
+            start_date__gte=first_day,
+            start_date__lte=last_day,
+        )
+        .select_related('venue')
+        .order_by('start_date', 'start_time', 'name')
+    )
+
+    events_by_date = {}
+    for event in events:
+        events_by_date.setdefault(event.start_date, []).append(event)
+
+    cal = calendar.Calendar(firstweekday=6)  # Sunday = 6
+    raw_weeks = cal.monthdatescalendar(year, month)
+    weeks = []
+    for week in raw_weeks:
+        week_cells = []
+        for d in week:
+            week_cells.append({
+                'date': d,
+                'in_month': d.month == month,
+                'events': events_by_date.get(d, []),
+            })
+        weeks.append(week_cells)
+    month_name = calendar.month_name[month]
+
+    if month == 1:
+        prev_month, prev_year = 12, year - 1
+    else:
+        prev_month, prev_year = month - 1, year
+    if month == 12:
+        next_month, next_year = 1, year + 1
+    else:
+        next_month, next_year = month + 1, year
+
+    context = {
+        'month_name': month_name,
+        'year': year,
+        'month': month,
+        'weeks': weeks,
+        'events_by_date': events_by_date,
+        'prev_month': prev_month,
+        'prev_year': prev_year,
+        'next_month': next_month,
+        'next_year': next_year,
+    }
+    return render(request, 'tickets/event_calendar.html', context)
 
 
 @login_required

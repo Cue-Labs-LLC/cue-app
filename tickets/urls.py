@@ -30,10 +30,12 @@ urlpatterns = [
 
     # Customers
     path('customers/', views.customer_list, name='customer_list'),
+    path('customers/ltv-by-market/', views.customer_ltv_by_market, name='customer_ltv_by_market'),
     path('customers/<uuid:customer_id>/', views.customer_detail, name='customer_detail'),
     
     # Events
     path('events/', views.event_list, name='event_list'),
+    path('events/calendar/', views.event_calendar, name='event_calendar'),
     path('events/create/', views.event_create, name='event_create'),
     path('events/<uuid:event_id>/', views.event_detail, name='event_detail'),
     path('events/<uuid:event_id>/edit/', views.event_edit, name='event_edit'),

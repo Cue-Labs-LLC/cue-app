@@ -34,13 +34,23 @@
                             </a>
                             <ul class="dropdown-menu">
                                 <li>
-                                    <a class="dropdown-item{% if '/customers/' in request.path %} active{% endif %}" href="{% url 'tickets:customer_list' %}">
+                                    <a class="dropdown-item{% if '/customers/' in request.path and '/customers/ltv-by-market/' not in request.path %} active{% endif %}" href="{% url 'tickets:customer_list' %}">
                                         <i class="bi bi-people"></i> Customers
                                     </a>
                                 </li>
                                 <li>
-                                    <a class="dropdown-item{% if '/events/' in request.path %} active{% endif %}" href="{% url 'tickets:event_list' %}">
+                                    <a class="dropdown-item{% if '/customers/ltv-by-market/' in request.path %} active{% endif %}" href="{% url 'tickets:customer_ltv_by_market' %}">
+                                        <i class="bi bi-bar-chart"></i> LTV by Market
+                                    </a>
+                                </li>
+                                <li>
+                                    <a class="dropdown-item{% if '/events/' in request.path and '/events/calendar/' not in request.path %} active{% endif %}" href="{% url 'tickets:event_list' %}">
                                         <i class="bi bi-calendar-event"></i> Events
+                                    </a>
+                                </li>
+                                <li>
+                                    <a class="dropdown-item{% if '/events/calendar/' in request.path %} active{% endif %}" href="{% url 'tickets:event_calendar' %}">
+                                        <i class="bi bi-calendar3"></i> Calendar
                                     </a>
                                 </li>
                                 <li>
