@@ -224,6 +224,16 @@ if IS_RENDER or not DEBUG:
     SECURE_HSTS_INCLUDE_SUBDOMAINS = True
     SECURE_HSTS_PRELOAD = True
 
+# Celery configuration
+CELERY_BROKER_URL = os.environ.get('CELERY_BROKER_URL', 'redis://localhost:6379/0')
+CELERY_RESULT_BACKEND = os.environ.get('CELERY_RESULT_BACKEND', 'redis://localhost:6379/0')
+CELERY_ACCEPT_CONTENT = ['json']
+CELERY_TASK_SERIALIZER = 'json'
+CELERY_RESULT_SERIALIZER = 'json'
+# Run tasks synchronously when no broker is set (local dev without Redis)
+CELERY_TASK_ALWAYS_EAGER = not os.environ.get('CELERY_BROKER_URL')
+CELERY_TASK_EAGER_PROPAGATES = True
+
 # Logging configuration
 LOGGING = {
     'version': 1,

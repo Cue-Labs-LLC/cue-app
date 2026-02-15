@@ -12,11 +12,18 @@
     <div class="page-header-actions">
         <form method="post" action="{% url 'tickets:recalculate_segments' %}" class="d-inline">
             {% csrf_token %}
-            <button type="submit" class="btn btn-primary"><i class="bi bi-arrow-clockwise"></i> Recalculate</button>
+            <button type="submit" class="btn btn-primary" {% if rfm_recalc_in_progress %}disabled{% endif %}><i class="bi bi-arrow-clockwise"></i> Recalculate</button>
         </form>
         <a href="{% url 'tickets:customer_list' %}" class="btn btn-outline-secondary"><i class="bi bi-people"></i> Customers</a>
     </div>
 </div>
+
+{% if rfm_recalc_in_progress %}
+<div class="alert alert-info">
+    <i class="bi bi-hourglass-split"></i>
+    Segment recalculation is in progress. Refresh the page in a few moments to see updated results.
+</div>
+{% endif %}
 
 {% if segment_stats %}
 <script type="application/json" id="segment-stats-data">{{ segment_stats_json|safe }}</script>
@@ -81,7 +88,7 @@
             <p>No customer data yet. Upload CSV or add orders, then click Recalculate.</p>
             <form method="post" action="{% url 'tickets:recalculate_segments' %}">
                 {% csrf_token %}
-                <button type="submit" class="btn btn-primary"><i class="bi bi-arrow-clockwise"></i> Recalculate</button>
+                <button type="submit" class="btn btn-primary" {% if rfm_recalc_in_progress %}disabled{% endif %}><i class="bi bi-arrow-clockwise"></i> Recalculate</button>
             </form>
         </div>
         {% endif %}

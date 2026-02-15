@@ -1,13 +1,56 @@
 """
 RFM (Recency, Frequency, Monetary) calculator.
 Computes percentile-based quintiles per organization and assigns segments.
+Uses chunked two-pass processing for bounded memory with large datasets.
 """
-import pandas as pd
+import numpy as np
 from django.db.models import Count, Max, Sum
 from django.utils import timezone
 
 from tickets.models import Customer
 from .segment_definitions import classify_segment
+
+CHUNK_SIZE = 2000
+RFM_UPDATE_FIELDS = [
+    "rfm_recency_score",
+    "rfm_frequency_score",
+    "rfm_monetary_score",
+    "rfm_segment",
+    "rfm_updated_at",
+]
+
+
+def _assign_score(value, breakpoints, lower_is_better=False):
+    """
+    Assign quintile score 1-5 from value and four breakpoints (20th, 40th, 60th, 80th percentiles).
+    If breakpoints are empty or all equal, return 3.
+    lower_is_better: True for recency (fewer days = higher score).
+    """
+    if value is None or breakpoints is None or len(breakpoints) == 0:
+        return 3
+    b = breakpoints
+    if lower_is_better:
+        # Recency: lower value -> higher score (5 = best)
+        if value <= b[0]:
+            return 5
+        if value <= b[1]:
+            return 4
+        if value <= b[2]:
+            return 3
+        if value <= b[3]:
+            return 2
+        return 1
+    else:
+        # Frequency/Monetary: higher value -> higher score (5 = best)
+        if value <= b[0]:
+            return 1
+        if value <= b[1]:
+            return 2
+        if value <= b[2]:
+            return 3
+        if value <= b[3]:
+            return 4
+        return 5
 
 
 class RFMCalculator:
@@ -16,130 +59,97 @@ class RFMCalculator:
     def __init__(self, organization):
         self.organization = organization
 
+    def _base_queryset(self):
+        return Customer.objects.filter(organization=self.organization).annotate(
+            order_count=Count("ticket_orders"),
+            total_spend=Sum("ticket_orders__total_amount"),
+            last_order=Max("ticket_orders__order_date"),
+        )
+
+    def _compute_breakpoints(self, now):
+        """
+        Pass 1: Stream all customers, collect recency_days, order_count, total_spend
+        for customers with orders. Compute 20/40/60/80 percentiles for quintile boundaries.
+        Returns (breakpoints_r, breakpoints_f, breakpoints_m) or (None, None, None) if no orders.
+        """
+        recency_days = []
+        order_counts = []
+        total_spends = []
+        qs = self._base_queryset()
+        for c in qs.iterator(chunk_size=CHUNK_SIZE):
+            oc = c.order_count or 0
+            if oc <= 0:
+                continue
+            recency_days.append(
+                (now - c.last_order.date()).days if c.last_order else 9999
+            )
+            order_counts.append(oc)
+            total_spends.append(float(c.total_spend or 0))
+
+        if not recency_days:
+            return None, None, None
+
+        def percentiles(arr):
+            a = np.array(arr, dtype=float)
+            p = np.percentile(a, [20, 40, 60, 80])
+            if np.any(np.isnan(p)) or np.all(p == p[0]):
+                return None
+            return p.tolist()
+
+        breakpoints_r = percentiles(recency_days)
+        breakpoints_f = percentiles(order_counts)
+        breakpoints_m = percentiles(total_spends)
+        if breakpoints_r is None:
+            breakpoints_r = [np.median(recency_days)] * 4
+        if breakpoints_f is None:
+            breakpoints_f = [np.median(order_counts)] * 4
+        if breakpoints_m is None:
+            breakpoints_m = [np.median(total_spends)] * 4
+        return breakpoints_r, breakpoints_f, breakpoints_m
+
+    def _score_customer(self, customer, now, breakpoints_r, breakpoints_f, breakpoints_m):
+        """Assign R, F, M scores (1-5) for one customer. Returns (r, f, m)."""
+        oc = customer.order_count or 0
+        if oc <= 0:
+            return 1, 1, 1
+        recency_days = (
+            (now - customer.last_order.date()).days if customer.last_order else 9999
+        )
+        r = _assign_score(recency_days, breakpoints_r, lower_is_better=True)
+        f = _assign_score(oc, breakpoints_f, lower_is_better=False)
+        m = _assign_score(float(customer.total_spend or 0), breakpoints_m, lower_is_better=False)
+        return r, f, m
+
     def calculate_all(self):
         """
         Compute RFM scores and segments for all customers in the organization.
-        Uses percentile-based quintiles (1-5) per org. Recency: fewer days since
-        last order = higher score. Updates all customers via bulk_update.
+        Two-pass chunked: pass 1 computes org-wide quintile breakpoints; pass 2
+        streams customers in chunks, assigns scores, and bulk_updates each chunk.
         """
-        qs = (
-            Customer.objects.filter(organization=self.organization)
-            .annotate(
-                order_count=Count("ticket_orders"),
-                total_spend=Sum("ticket_orders__total_amount"),
-                last_order=Max("ticket_orders__order_date"),
-            )
-        )
         now = timezone.now().date()
-        rows = []
-        for c in qs:
-            rows.append({
-                "id": c.id,
-                "order_count": c.order_count or 0,
-                "total_spend": float(c.total_spend or 0),
-                "last_order": c.last_order.date() if c.last_order else None,
-            })
-        if not rows:
-            return
-
-        df = pd.DataFrame(rows)
-        has_orders = df["order_count"] > 0
-
-        # Customers with no orders: Dormant, scores 1,1,1
-        df["rfm_recency_score"] = None
-        df["rfm_frequency_score"] = None
-        df["rfm_monetary_score"] = None
-        df.loc[~has_orders, "rfm_recency_score"] = 1
-        df.loc[~has_orders, "rfm_frequency_score"] = 1
-        df.loc[~has_orders, "rfm_monetary_score"] = 1
-
-        if has_orders.any():
-            subset = df.loc[has_orders].copy()
-            subset["recency_days"] = subset["last_order"].apply(
-                lambda d: (now - d).days if d else 9999
-            )
-            # Quintiles 1-5; recency: lower days = better, so label best bin 5
-            try:
-                subset["_r_q"] = pd.qcut(
-                    subset["recency_days"],
-                    q=5,
-                    labels=[5, 4, 3, 2, 1],
-                    duplicates="drop",
-                )
-            except Exception:
-                subset["_r_q"] = 3
-            if hasattr(subset["_r_q"].iloc[0], "item"):
-                subset["rfm_recency_score"] = subset["_r_q"].astype(int)
-            else:
-                subset["rfm_recency_score"] = subset["_r_q"].cat.codes + 1
-                subset["rfm_recency_score"] = 6 - subset["rfm_recency_score"]
-
-            try:
-                subset["rfm_frequency_score"] = pd.qcut(
-                    subset["order_count"],
-                    q=5,
-                    labels=[1, 2, 3, 4, 5],
-                    duplicates="drop",
-                )
-            except Exception:
-                subset["rfm_frequency_score"] = 3
-            if hasattr(subset["rfm_frequency_score"].iloc[0], "item"):
-                subset["rfm_frequency_score"] = subset["rfm_frequency_score"].astype(int)
-            else:
-                subset["rfm_frequency_score"] = subset["rfm_frequency_score"].cat.codes + 1
-
-            try:
-                subset["rfm_monetary_score"] = pd.qcut(
-                    subset["total_spend"],
-                    q=5,
-                    labels=[1, 2, 3, 4, 5],
-                    duplicates="drop",
-                )
-            except Exception:
-                subset["rfm_monetary_score"] = 3
-            if hasattr(subset["rfm_monetary_score"].iloc[0], "item"):
-                subset["rfm_monetary_score"] = subset["rfm_monetary_score"].astype(int)
-            else:
-                subset["rfm_monetary_score"] = subset["rfm_monetary_score"].cat.codes + 1
-
-            for col in ("rfm_recency_score", "rfm_frequency_score", "rfm_monetary_score"):
-                df.loc[has_orders, col] = subset[col].values
-
-        df["rfm_segment"] = df.apply(
-            lambda row: classify_segment(
-                row["rfm_recency_score"],
-                row["rfm_frequency_score"],
-                row["rfm_monetary_score"],
-            ),
-            axis=1,
-        )
         updated_at = timezone.now()
-        df["rfm_updated_at"] = updated_at
 
-        # Map back to customer IDs and bulk_update
-        customers_to_update = list(
-            Customer.objects.filter(
-                organization=self.organization,
-                id__in=df["id"].tolist(),
-            )
-        )
-        by_id = df.set_index("id")
-        for c in customers_to_update:
-            r = by_id.loc[c.id]
-            c.rfm_recency_score = int(r["rfm_recency_score"]) if r["rfm_recency_score"] is not None else None
-            c.rfm_frequency_score = int(r["rfm_frequency_score"]) if r["rfm_frequency_score"] is not None else None
-            c.rfm_monetary_score = int(r["rfm_monetary_score"]) if r["rfm_monetary_score"] is not None else None
-            c.rfm_segment = (r["rfm_segment"] or "")[:30]
-            c.rfm_updated_at = updated_at
+        breakpoints_r, breakpoints_f, breakpoints_m = self._compute_breakpoints(now)
+        has_breakpoints = breakpoints_r is not None
 
-        if customers_to_update:
-            Customer.objects.bulk_update(
-                customers_to_update,
-                [
-                    "rfm_recency_score",
-                    "rfm_frequency_score",
-                    "rfm_monetary_score",
-                    "rfm_segment",
-                    "rfm_updated_at",
-                ],
-            )
+        qs = self._base_queryset()
+        chunk = []
+        for customer in qs.iterator(chunk_size=CHUNK_SIZE):
+            if has_breakpoints:
+                r, f, m = self._score_customer(
+                    customer, now, breakpoints_r, breakpoints_f, breakpoints_m
+                )
+            else:
+                r = f = m = 1
+            segment = (classify_segment(r, f, m) or "Dormant")[:30]
+            customer.rfm_recency_score = r
+            customer.rfm_frequency_score = f
+            customer.rfm_monetary_score = m
+            customer.rfm_segment = segment
+            customer.rfm_updated_at = updated_at
+            chunk.append(customer)
+            if len(chunk) >= CHUNK_SIZE:
+                Customer.objects.bulk_update(chunk, RFM_UPDATE_FIELDS)
+                chunk = []
+        if chunk:
+            Customer.objects.bulk_update(chunk, RFM_UPDATE_FIELDS)

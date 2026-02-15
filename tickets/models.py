@@ -59,6 +59,7 @@ class Organization(BaseModel):
     """Organization that owns venues, events, uploads, customers, and custom fields."""
     name = models.CharField(max_length=200)
     slug = models.SlugField(max_length=100, unique=True)
+    rfm_recalc_in_progress = models.BooleanField(default=False)
 
     class Meta:
         ordering = ['name']

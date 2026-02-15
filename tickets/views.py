@@ -8,7 +8,10 @@ from django.contrib import messages
 from django.contrib.auth import views as auth_views
 from django.contrib.auth.decorators import login_required
 from django.urls import reverse_lazy
-from django.db.models import Sum, Count, Avg, Q, Subquery, OuterRef, Prefetch
+from django.db.models import (
+    Sum, Count, Avg, Q, Subquery, OuterRef, Prefetch,
+    Case, When, Value, F, CharField,
+)
 from django.db.models.functions import Coalesce
 from django.db import models
 from django.core.paginator import Paginator
@@ -680,31 +683,50 @@ def customer_ltv_by_market(request):
 def customer_segments(request):
     """Analytics page: segment distribution (donut), avg LTV per segment (bar), table with links."""
     org = get_organization(request)
-    # Customers with order_count for avg_orders
-    customers = list(
-        Customer.objects.filter(organization=org).annotate(
-            order_count=Count('ticket_orders')
-        ).values('rfm_segment', 'lifetime_value', 'order_count')
-    )
-    total_customers = len(customers)
     segment_order = list(SEGMENT_BADGE_COLORS.keys())
-    by_segment = {}
-    for seg in segment_order:
-        by_segment[seg] = {'count': 0, 'total_ltv': Decimal('0'), 'total_orders': 0}
-    for c in customers:
-        seg = (c['rfm_segment'] or '').strip() or 'Dormant'
-        if seg not in by_segment:
-            by_segment[seg] = {'count': 0, 'total_ltv': Decimal('0'), 'total_orders': 0}
-        by_segment[seg]['count'] += 1
-        by_segment[seg]['total_ltv'] += (c['lifetime_value'] or Decimal('0'))
-        by_segment[seg]['total_orders'] += (c['order_count'] or 0)
+
+    # Query 1: count + total_ltv per segment (normalize null/blank to Dormant)
+    seg_data = (
+        Customer.objects.filter(organization=org)
+        .annotate(
+            seg=Case(
+                When(rfm_segment='', then=Value('Dormant')),
+                When(rfm_segment__isnull=True, then=Value('Dormant')),
+                default=F('rfm_segment'),
+                output_field=CharField(),
+            )
+        )
+        .values('seg')
+        .annotate(count=Count('id'), total_ltv=Sum('lifetime_value'))
+    )
+    seg_map = {r['seg'] or 'Dormant': r for r in seg_data}
+
+    # Query 2: total orders per segment
+    order_data = (
+        TicketOrder.objects.filter(customer__organization=org)
+        .annotate(
+            seg=Case(
+                When(customer__rfm_segment='', then=Value('Dormant')),
+                When(customer__rfm_segment__isnull=True, then=Value('Dormant')),
+                default=F('customer__rfm_segment'),
+                output_field=CharField(),
+            )
+        )
+        .values('seg')
+        .annotate(total_orders=Count('id'))
+    )
+    order_map = {r['seg'] or 'Dormant': r['total_orders'] for r in order_data}
+
+    total_customers = sum(r['count'] for r in seg_map.values())
     segment_stats = []
     for seg in segment_order:
-        d = by_segment[seg]
+        d = seg_map.get(seg, {'count': 0, 'total_ltv': Decimal('0')})
         count = d['count']
+        total_ltv = d.get('total_ltv') or Decimal('0')
+        total_orders = order_map.get(seg, 0)
         pct = (100.0 * count / total_customers) if total_customers else 0
-        avg_ltv = (d['total_ltv'] / count) if count else Decimal('0')
-        avg_orders = (d['total_orders'] / count) if count else 0
+        avg_ltv = (total_ltv / count) if count else Decimal('0')
+        avg_orders = (total_orders / count) if count else 0
         segment_stats.append({
             'segment': seg,
             'count': count,
@@ -713,19 +735,15 @@ def customer_segments(request):
             'avg_orders': round(avg_orders, 1),
             'badge_color': SEGMENT_BADGE_COLORS.get(seg, 'secondary'),
         })
-    # Chart data: donut (count per segment), bar (avg LTV per segment)
     segment_stats_json = json.dumps([
-        {
-            'segment': s['segment'],
-            'count': s['count'],
-            'avg_ltv': float(s['avg_ltv']),
-        }
+        {'segment': s['segment'], 'count': s['count'], 'avg_ltv': float(s['avg_ltv'])}
         for s in segment_stats
     ])
     context = {
         'segment_stats': segment_stats,
         'segment_stats_json': segment_stats_json,
         'total_customers': total_customers,
+        'rfm_recalc_in_progress': org.rfm_recalc_in_progress,
     }
     return render(request, 'tickets/customer_segments.html', context)
 
@@ -734,14 +752,15 @@ def customer_segments(request):
 @require_org
 @require_http_methods(["POST"])
 def recalculate_segments(request):
-    """Trigger full RFM recalc for the organization and redirect to segments page."""
+    """Enqueue Celery task to recalculate RFM segments; redirect with message."""
+    from .tasks import recalculate_rfm_task
+
     org = get_organization(request)
-    try:
-        RFMCalculator(org).calculate_all()
-        messages.success(request, 'Customer segments recalculated successfully.')
-    except Exception as e:
-        logger.exception("RFM recalculate failed")
-        messages.error(request, f'Segment recalculation failed: {str(e)}')
+    if org.rfm_recalc_in_progress:
+        messages.info(request, 'Recalculation already in progress.')
+    else:
+        recalculate_rfm_task.delay(str(org.id))
+        messages.success(request, 'Segment recalculation started. Results will appear shortly.')
     return redirect('tickets:customer_segments')
 
 
