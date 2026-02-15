@@ -437,6 +437,8 @@ def process_csv_file(request, uploaded_file, manual_prices=None, tier_definition
             'errors': results['errors'][:50],  # Limit to first 50 errors
             'skipped_order_numbers': results['skipped_order_numbers'][:50],  # Limit to first 50
             'rejected_orders': results.get('rejected_orders', [])[:50],  # Limit to first 50
+            'skipped_rows_count': results.get('skipped_rows_count', 0),
+            'skipped_rows_by_reason': results.get('skipped_rows_by_reason', {}),
         }
         uploaded_file.save(update_fields=['metadata'])
         
@@ -459,6 +461,11 @@ def process_csv_file(request, uploaded_file, manual_prices=None, tier_definition
             messages.warning(
                 request,
                 f"{len(results['rejected_orders'])} orders were rejected due to tier capacity limits."
+            )
+        if results.get('skipped_rows_count', 0) > 0:
+            messages.info(
+                request,
+                f"{results['skipped_rows_count']} row(s) were skipped (section headers, blank rows, etc.). See results for details."
             )
 
         if results['success_count'] > 0:

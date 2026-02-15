@@ -38,6 +38,12 @@
         <div class="stat-label">Skipped Duplicates</div>
         <div class="stat-value">{{ results.skipped_duplicates|default:0 }}</div>
     </div>
+    {% if results.skipped_rows_count %}
+    <div class="stat-card stat-card--info">
+        <div class="stat-label">Skipped Rows</div>
+        <div class="stat-value">{{ results.skipped_rows_count }}</div>
+    </div>
+    {% endif %}
     {% if results.rejected_orders %}
     <div class="stat-card stat-card--danger">
         <div class="stat-label">Rejected Orders</div>
@@ -45,6 +51,29 @@
     </div>
     {% endif %}
 </div>
+
+{% if results.skipped_rows_count %}
+<div class="card mb-4">
+    <div class="card-header"><h5>Skipped Rows ({{ results.skipped_rows_count }} total)</h5></div>
+    <div class="card-body">
+        <p class="text-muted small mb-3">These rows were not processed because they are not valid order data (e.g. section headers, repeated headers, or blank rows).</p>
+        <ul class="list-unstyled mb-0">
+            {% for reason, count in results.skipped_rows_by_reason.items %}
+            <li class="mb-2">
+                <strong>{{ count }}</strong>
+                {% if reason == "too_few_columns" %}
+                — Too few columns (fewer than 4 non-empty cells). Row may be a section title, blank line, or malformed.
+                {% elif reason == "header_repeat" %}
+                — Repeated header row (cell value matches column header). Appears when the CSV has a second header block in the middle of the file.
+                {% else %}
+                — {{ reason }}
+                {% endif %}
+            </li>
+            {% endfor %}
+        </ul>
+    </div>
+</div>
+{% endif %}
 
 {% if results.skipped_order_numbers %}
 <div class="card mb-4">

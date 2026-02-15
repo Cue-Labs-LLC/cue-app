@@ -153,6 +153,37 @@ class CSVProcessor:
         
         return rows
     
+    # Reason codes for skipped rows (used in processing_results and results template)
+    SKIP_REASON_TOO_FEW_COLUMNS = "too_few_columns"
+    SKIP_REASON_HEADER_REPEAT = "header_repeat"
+
+    def _should_skip_row(self, row: Dict) -> Tuple[bool, Optional[str]]:
+        """
+        Determine if a row should be skipped (not real data). Returns (skip, reason_code).
+        Reason codes are used on the Processing Results page to explain why rows were skipped.
+        """
+        if not row:
+            return True, self.SKIP_REASON_TOO_FEW_COLUMNS
+        non_empty = sum(1 for v in row.values() if v is not None and str(v).strip())
+        min_required_cells = 4
+        if non_empty < min_required_cells:
+            return True, self.SKIP_REASON_TOO_FEW_COLUMNS
+        # Skip if any mapped column value equals the column header (repeated header row)
+        for internal_field, csv_columns in self.column_mapping.items():
+            for csv_col in csv_columns:
+                val = None
+                if csv_col in row:
+                    val = row[csv_col]
+                else:
+                    for k in row.keys():
+                        if str(k).lower() == str(csv_col).lower():
+                            val = row[k]
+                            break
+                if val is not None and str(val).strip():
+                    if str(val).strip().lower() == str(csv_col).strip().lower():
+                        return True, self.SKIP_REASON_HEADER_REPEAT
+        return False, None
+
     def validate_ticket_order_data(self, row: Dict) -> Tuple[bool, Optional[str]]:
         """Validate individual ticket order row."""
         # In-person rows (processed_in_person=true) only require order_date and ticket_type
@@ -215,7 +246,9 @@ class CSVProcessor:
             'skipped_duplicates': 0,
             'errors': [],
             'skipped_order_numbers': [],
-            'rejected_orders': []
+            'rejected_orders': [],
+            'skipped_rows_count': 0,
+            'skipped_rows_by_reason': {},
         }
         
         # If using tiers, create tier instances first
@@ -246,6 +279,11 @@ class CSVProcessor:
                     results['errors'].extend(chunk_results['errors'])
                     results['skipped_order_numbers'].extend(chunk_results['skipped_order_numbers'])
                     results['rejected_orders'].extend(chunk_results.get('rejected_orders', []))
+                    results['skipped_rows_count'] += chunk_results.get('skipped_rows_count', 0)
+                    for reason, count in chunk_results.get('skipped_rows_by_reason', {}).items():
+                        results['skipped_rows_by_reason'][reason] = (
+                            results['skipped_rows_by_reason'].get(reason, 0) + count
+                        )
                     
                     # Update progress
                     self.uploaded_file.processed_rows = chunk_end
@@ -336,6 +374,17 @@ class CSVProcessor:
         tier_definitions: Optional[Dict] = None
     ) -> Dict:
         """Process a single chunk of CSV rows."""
+        # Classify each row: skip with reason or keep for processing
+        skipped_by_reason = {}
+        rows_to_process = []
+        for row in chunk_data:
+            skip, reason = self._should_skip_row(row)
+            if skip and reason:
+                skipped_by_reason[reason] = skipped_by_reason.get(reason, 0) + 1
+            else:
+                rows_to_process.append(row)
+        chunk_data = rows_to_process
+
         results = {
             'success_count': 0,
             'error_count': 0,
@@ -343,7 +392,9 @@ class CSVProcessor:
             'errors': [],
             'skipped_order_numbers': [],
             'customer_ids': set(),
-            'rejected_orders': []
+            'rejected_orders': [],
+            'skipped_rows_count': sum(skipped_by_reason.values()),
+            'skipped_rows_by_reason': skipped_by_reason,
         }
         
         customers_to_create = []
