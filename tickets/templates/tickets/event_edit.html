@@ -1,0 +1,205 @@
+{% extends 'tickets/base.html' %}
+{% load crispy_forms_tags %}
+
+{% block title %}Edit Event - {{ event.name }}{% endblock %}
+
+{% block content %}
+<div class="row mb-4">
+    <div class="col">
+        <nav aria-label="breadcrumb">
+            <ol class="breadcrumb">
+                <li class="breadcrumb-item"><a href="{% url 'tickets:home' %}">Home</a></li>
+                <li class="breadcrumb-item"><a href="{% url 'tickets:event_list' %}">Events</a></li>
+                <li class="breadcrumb-item"><a href="{% url 'tickets:event_detail' event.id %}">{{ event.name }}</a></li>
+                <li class="breadcrumb-item active">Edit</li>
+            </ol>
+        </nav>
+        <h1><i class="bi bi-pencil"></i> Edit Event</h1>
+        <p class="text-muted">Modify event details for {{ event.name }}.</p>
+    </div>
+</div>
+
+<div class="row">
+    <div class="col-md-8">
+        <form method="post">
+            {% csrf_token %}
+            <div class="card">
+                <div class="card-body">
+                    {% crispy form %}
+                    <h6 class="mt-4"><i class="bi bi-music-note-list"></i> Talent Lineup (optional)</h6>
+                    <p class="small text-muted">Add performers or DJs in display order. Click "Add talent" to add a row.</p>
+                    {{ talent_formset.management_form }}
+                    <div class="table-responsive">
+                        <table class="table table-sm" id="talent-formset-table">
+                            <thead>
+                                <tr>
+                                    <th>Name</th>
+                                    <th>Order</th>
+                                    <th>Remove</th>
+                                </tr>
+                            </thead>
+                            <tbody id="talent-formset-tbody">
+                                {% for tf in talent_formset %}
+                                <tr class="talent-form-row">
+                                    <td>{{ tf.name }}</td>
+                                    <td>{{ tf.order }}</td>
+                                    <td>
+                                        <button type="button" class="btn btn-sm btn-outline-danger talent-remove" aria-label="Remove row">Remove</button>
+                                        <span class="d-none">{{ tf.DELETE }}</span>
+                                        {{ tf.id }}
+                                    </td>
+                                </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+                    <button type="button" id="talent-add-row" class="btn btn-sm btn-outline-secondary mb-3">
+                        <i class="bi bi-plus-lg"></i> Add talent
+                    </button>
+                    <template id="talent-row-template">
+                        <tr class="talent-form-row">
+                            <td>{{ talent_formset.empty_form.name }}</td>
+                            <td>{{ talent_formset.empty_form.order }}</td>
+                            <td>
+                                <button type="button" class="btn btn-sm btn-outline-danger talent-remove" aria-label="Remove row">Remove</button>
+                                <span class="d-none">{{ talent_formset.empty_form.DELETE }}</span>
+                                {{ talent_formset.empty_form.id }}
+                            </td>
+                        </tr>
+                    </template>
+                    <div class="mt-4">
+                        <button type="submit" class="btn btn-primary">
+                            <i class="bi bi-check-lg"></i> Save Changes
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </form>
+
+        <div class="mt-3">
+            <a href="{% url 'tickets:event_detail' event.id %}" class="btn btn-outline-secondary">
+                <i class="bi bi-arrow-left"></i> Back to Event
+            </a>
+        </div>
+    </div>
+    <div class="col-md-4">
+        <div class="card">
+            <div class="card-header">
+                <h5 class="mb-0"><i class="bi bi-info-circle"></i> Event Information</h5>
+            </div>
+            <div class="card-body">
+                <p class="small text-muted">
+                    <strong>Event Name:</strong> The name of the event (e.g., "Familiar Faces", "Summer Festival").
+                </p>
+                <p class="small text-muted">
+                    <strong>Venue:</strong> Select the venue where the event takes place. If the venue doesn't exist yet, <a href="{% url 'tickets:venue_create' %}">create one first</a>.
+                </p>
+                <p class="small text-muted">
+                    <strong>Start Date / Time:</strong> The date (required) and time (optional) the event starts.
+                </p>
+                <p class="small text-muted">
+                    <strong>End Date / Time:</strong> Optional end date and time. End date is required if end time is provided.
+                </p>
+                <p class="small text-muted">
+                    <strong>Description:</strong> Optional description or notes about the event.
+                </p>
+                <p class="small text-muted">
+                    <strong>Capacity:</strong> Optional total ticket capacity for the event.
+                </p>
+                <p class="small text-muted">
+                    <strong>Ticket link:</strong> Optional URL to the ticket purchase page.
+                </p>
+                <p class="small text-muted">
+                    <strong>Parking Info:</strong> If your organization uses the Parking Info custom field, select from the dropdown (e.g. Street parking, Lot available, No parking, See venue).
+                </p>
+                <p class="small text-muted">
+                    <strong>Talent lineup:</strong> Optional list of performers or DJs; use Order to set display order.
+                </p>
+                <hr>
+                <p class="small text-muted mb-0">
+                    <strong>Note:</strong> Each event must have a unique combination of name and date. You can also create events automatically by uploading a CSV file.
+                </p>
+            </div>
+        </div>
+    </div>
+</div>
+<script>
+(function() {
+    var totalFormsInput = document.querySelector('input[name="talent-TOTAL_FORMS"]');
+    var tbody = document.getElementById('talent-formset-tbody');
+    var template = document.getElementById('talent-row-template');
+    var addBtn = document.getElementById('talent-add-row');
+    if (!totalFormsInput || !tbody || !template || !addBtn) return;
+
+    function getTotalForms() {
+        return parseInt(totalFormsInput.value, 10) || 0;
+    }
+    function setTotalForms(n) {
+        totalFormsInput.value = n;
+    }
+
+    function replacePrefix(node, index) {
+        if (node.id) node.id = node.id.replace(/__prefix__/g, index);
+        if (node.name) node.name = node.name.replace(/__prefix__/g, index);
+        if (node.getAttribute('for')) node.setAttribute('for', node.getAttribute('for').replace(/__prefix__/g, index));
+        var i, children = node.children || [];
+        for (i = 0; i < children.length; i++) replacePrefix(children[i], index);
+        if (node.querySelectorAll) {
+            node.querySelectorAll('[name], [id], [for]').forEach(function(el) {
+                if (el.id) el.id = el.id.replace(/__prefix__/g, index);
+                if (el.name) el.name = el.name.replace(/__prefix__/g, index);
+                if (el.getAttribute('for')) el.setAttribute('for', el.getAttribute('for').replace(/__prefix__/g, index));
+            });
+        }
+    }
+
+    addBtn.addEventListener('click', function() {
+        var index = getTotalForms();
+        var clone = template.content.cloneNode(true);
+        clone.querySelectorAll('[name], [id], [for]').forEach(function(el) {
+            if (el.id) el.id = el.id.replace(/__prefix__/g, index);
+            if (el.name) el.name = el.name.replace(/__prefix__/g, index);
+            if (el.getAttribute('for')) el.setAttribute('for', el.getAttribute('for').replace(/__prefix__/g, index));
+        });
+        clone.querySelectorAll('input:not([type="hidden"]), select, textarea').forEach(function(el) {
+            if (el.type !== 'hidden') el.value = '';
+        });
+        tbody.appendChild(clone);
+        setTotalForms(index + 1);
+    });
+
+    tbody.addEventListener('click', function(e) {
+        var removeBtn = e.target.closest('.talent-remove');
+        if (!removeBtn) return;
+        e.preventDefault();
+        var row = removeBtn.closest('tr');
+        if (!row) return;
+        var idInput = row.querySelector('input[name^="talent-"][name$="-id"]');
+        var deleteInput = row.querySelector('input[name^="talent-"][name$="-DELETE"]');
+        if (idInput && idInput.value) {
+            if (deleteInput) deleteInput.checked = true;
+            row.style.display = 'none';
+        } else {
+            row.remove();
+            var rows = tbody.querySelectorAll('tr.talent-form-row');
+            var i, r, names;
+            for (i = 0; i < rows.length; i++) {
+                r = rows[i];
+                names = r.querySelectorAll('[name^="talent-"], [id^="id_talent-"]');
+                names.forEach(function(el) {
+                    if (el.name) {
+                        var match = el.name.match(/^talent-(\d+)-(.*)$/);
+                        if (match) el.name = 'talent-' + i + '-' + match[2];
+                    }
+                    if (el.id) {
+                        var idMatch = el.id.match(/^id_talent-(\d+)-(.*)$/);
+                        if (idMatch) el.id = 'id_talent-' + i + '-' + idMatch[2];
+                    }
+                });
+            }
+            setTotalForms(rows.length);
+        }
+    });
+})();
+</script>
+{% endblock %}

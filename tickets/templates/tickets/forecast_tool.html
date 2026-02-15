@@ -127,6 +127,7 @@
                     <span id="baselineSegment"></span>
                     <span class="text-muted">(<span id="baselineCount"></span> past events)</span>
                 </p>
+                <p id="baselineFallbackMessage" class="mb-0 small text-muted d-none"></p>
             </div>
         </div>
         <div id="noDataWarning" class="alert alert-warning d-none">
@@ -410,6 +411,15 @@
             baselineSegment.textContent = data.baseline_info.segment_name;
             baselineCount.textContent = data.baseline_info.events_count;
             baselineInfo.classList.remove('d-none');
+
+            var fallbackEl = document.getElementById('baselineFallbackMessage');
+            if (data.baseline_info.venue_no_data_fallback && data.baseline_info.fallback_message) {
+                fallbackEl.textContent = data.baseline_info.fallback_message;
+                fallbackEl.classList.remove('d-none');
+            } else {
+                fallbackEl.textContent = '';
+                fallbackEl.classList.add('d-none');
+            }
 
             // Show or hide extrapolation warning
             if (data.baseline_info.extrapolation_warning && data.baseline_info.extrapolation_message) {

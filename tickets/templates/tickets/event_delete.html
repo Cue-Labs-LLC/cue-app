@@ -1,0 +1,41 @@
+{% extends 'tickets/base.html' %}
+
+{% block title %}Delete Event - Event Ticket Order Upload System{% endblock %}
+
+{% block content %}
+<div class="row mb-4">
+    <div class="col">
+        <nav aria-label="breadcrumb">
+            <ol class="breadcrumb">
+                <li class="breadcrumb-item"><a href="{% url 'tickets:home' %}">Home</a></li>
+                <li class="breadcrumb-item"><a href="{% url 'tickets:event_list' %}">Events</a></li>
+                <li class="breadcrumb-item"><a href="{% url 'tickets:event_detail' event.id %}">{{ event.name }}</a></li>
+                <li class="breadcrumb-item active">Delete</li>
+            </ol>
+        </nav>
+        <h1><i class="bi bi-exclamation-triangle"></i> Delete Event</h1>
+    </div>
+</div>
+
+<div class="row">
+    <div class="col-md-6">
+        <div class="card">
+            <div class="card-body">
+                <p>Are you sure you want to delete the event <strong>"{{ event.name }}"</strong>?</p>
+                <p class="text-muted">
+                    This will permanently remove the event and all associated orders and tickets. This cannot be undone.
+                </p>
+                <form method="post">
+                    {% csrf_token %}
+                    <button type="submit" class="btn btn-danger">
+                        <i class="bi bi-trash"></i> Yes, Delete
+                    </button>
+                    <a href="{% url 'tickets:event_detail' event.id %}" class="btn btn-outline-secondary">
+                        Cancel
+                    </a>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

@@ -15,6 +15,10 @@ urlpatterns = [
     # Health check endpoint
     path('health/', views.health_check, name='health_check'),
     
+    # Organization (no-org flow)
+    path('org-required/', views.org_required, name='org_required'),
+    path('create-organization/', views.create_organization, name='create_organization'),
+    
     # Home/Dashboard
     path('', views.home, name='home'),
     
@@ -26,11 +30,17 @@ urlpatterns = [
 
     # Customers
     path('customers/', views.customer_list, name='customer_list'),
+    path('customers/ltv-by-market/', views.customer_ltv_by_market, name='customer_ltv_by_market'),
     path('customers/<uuid:customer_id>/', views.customer_detail, name='customer_detail'),
     
     # Events
     path('events/', views.event_list, name='event_list'),
+    path('events/calendar/', views.event_calendar, name='event_calendar'),
+    path('events/create/', views.event_create, name='event_create'),
     path('events/<uuid:event_id>/', views.event_detail, name='event_detail'),
+    path('events/<uuid:event_id>/edit/', views.event_edit, name='event_edit'),
+    path('events/<uuid:event_id>/upload/', views.event_upload_csv, name='event_upload_csv'),
+    path('events/<uuid:event_id>/delete/', views.event_delete, name='event_delete'),
 
     # Forecast Tool
     path('forecast/', views.forecast_tool, name='forecast_tool'),
@@ -46,6 +56,11 @@ urlpatterns = [
     path('formats/<uuid:format_id>/delete/', views.format_delete, name='format_delete'),
     path('formats/<uuid:format_id>/set-default/', views.format_set_default, name='format_set_default'),
     
+    # Tools
+    path('tools/regenerate-event-doc/', views.regenerate_event_doc, name='regenerate_event_doc'),
+
     # Venues
+    path('venues/', views.venue_list, name='venue_list'),
     path('venues/create/', views.venue_create, name='venue_create'),
+    path('venues/<uuid:venue_id>/edit/', views.venue_edit, name='venue_edit'),
 ]

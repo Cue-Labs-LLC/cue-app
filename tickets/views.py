@@ -1,12 +1,14 @@
+import calendar
 import os
 import json
+from datetime import date, timedelta
 from decimal import Decimal
 from django.shortcuts import render, redirect, get_object_or_404
 from django.contrib import messages
 from django.contrib.auth import views as auth_views
 from django.contrib.auth.decorators import login_required
 from django.urls import reverse_lazy
-from django.db.models import Sum, Count, Avg, Q, Subquery, OuterRef
+from django.db.models import Sum, Count, Avg, Q, Subquery, OuterRef, Prefetch
 from django.db.models.functions import Coalesce
 from django.db import models
 from django.core.paginator import Paginator
@@ -16,11 +18,35 @@ from django.db import connection, transaction
 import pandas as pd
 
 from .models import (
-    CSVFormat, UploadedFile, Customer, Event, TicketOrder, Ticket, Venue
+    Organization, UserProfile,
+    CSVFormat, UploadedFile, Customer, Event, EventTalent, TicketOrder, Ticket, Venue,
+    CustomField, EventCustomFieldValue,
 )
-from .forms import CSVUploadForm, TicketPriceEntryForm, CSVFormatForm, VenueForm, LoginForm
+from .forms import (
+    CSVUploadForm, EventCSVUploadForm, TicketPriceEntryForm, CSVFormatForm,
+    VenueForm, EventForm, EventTalentFormSet, LoginForm,
+)
 from .csv_processor import CSVProcessor
 from .services.forecasting.preview import generate_forecast_preview
+from .utils import get_organization, require_org
+
+import logging
+logger = logging.getLogger(__name__)
+
+
+def _regenerate_event_doc_background(org):
+    """Regenerate the Upcoming Events Google Doc. Fails silently if not configured."""
+    from django.conf import settings
+    if not settings.GOOGLE_DOC_ID or not settings.GOOGLE_SERVICE_ACCOUNT_JSON:
+        return
+    try:
+        from .services.google_docs import EventDocFormatter, GoogleDocWriter
+        formatter = EventDocFormatter(org)
+        content = formatter.generate_full_document()
+        writer = GoogleDocWriter(settings.GOOGLE_DOC_ID)
+        writer.update_document(content)
+    except Exception:
+        logger.exception("Failed to regenerate event doc")
 
 
 # Authentication Views
@@ -102,21 +128,69 @@ def health_check(request):
 
 
 @login_required
+def org_required(request):
+    """Shown when user has no organization; prompt to create or join one."""
+    return render(request, 'tickets/org_required.html')
+
+
+@login_required
+@require_http_methods(["GET", "POST"])
+def create_organization(request):
+    """Create a new organization and assign the current user to it."""
+    from .forms import OrganizationForm
+    profile, _ = UserProfile.objects.get_or_create(
+        user=request.user,
+        defaults={'organization_id': None},
+    )
+    if profile.organization_id and not request.user.is_superuser:
+        # Already has an org, redirect home
+        return redirect('tickets:home')
+    if request.method == 'POST':
+        form = OrganizationForm(request.POST)
+        if form.is_valid():
+            org = form.save()
+            profile.organization = org
+            profile.save()
+            messages.success(request, f"Organization '{org.name}' created. You can now use the app.")
+            return redirect('tickets:home')
+    else:
+        form = OrganizationForm()
+    return render(request, 'tickets/create_organization.html', {'form': form})
+
+
+@login_required
+@require_org
 def home(request):
     """Home/dashboard page with overview statistics."""
-    # Recent uploads
-    recent_uploads = UploadedFile.objects.all()[:10]
-    
-    # Summary statistics
-    total_customers = Customer.objects.count()
-    total_orders = TicketOrder.objects.count()
-    total_revenue = TicketOrder.objects.aggregate(
+    org = get_organization(request)
+    # Recent events (org-scoped)
+    recent_events = Event.objects.filter(organization=org).annotate(
+        total_orders=Count('ticket_orders', distinct=True),
+        upload_count=Count('ticket_orders__uploaded_file', distinct=True),
+        total_revenue=Coalesce(
+            Subquery(
+                TicketOrder.objects.filter(
+                    event=OuterRef('pk')
+                ).values('event').annotate(
+                    total=Sum('total_amount')
+                ).values('total')[:1],
+                output_field=models.DecimalField(max_digits=10, decimal_places=2)
+            ),
+            Decimal('0.00')
+        ),
+    ).select_related('venue').order_by('-start_date')[:10]
+
+    # Summary statistics (org-scoped via Event/Customer/UploadedFile)
+    total_customers = Customer.objects.filter(organization=org).count()
+    total_orders = TicketOrder.objects.filter(event__organization=org).count()
+    total_revenue = TicketOrder.objects.filter(event__organization=org).aggregate(
         total=Sum('total_amount')
     )['total'] or Decimal('0.00')
-    total_tickets = Ticket.objects.count()
+    total_tickets = Ticket.objects.filter(ticket_order__event__organization=org).count()
     
     context = {
-        'recent_uploads': recent_uploads,
+        'recent_events': recent_events,
+        'today': date.today(),
         'total_customers': total_customers,
         'total_orders': total_orders,
         'total_revenue': total_revenue,
@@ -126,18 +200,21 @@ def home(request):
 
 
 @login_required
+@require_org
 @require_http_methods(["GET", "POST"])
 def upload_csv(request):
     """Handle CSV file upload and processing."""
+    org = get_organization(request)
     if request.method == 'POST':
-        form = CSVUploadForm(request.POST, request.FILES)
+        form = CSVUploadForm(request.POST, request.FILES, organization=org)
         if form.is_valid():
             csv_file = form.cleaned_data['csv_file']
             csv_format = form.cleaned_data['csv_format']
             venue = form.cleaned_data['venue']
             
-            # Save uploaded file
+            # Save uploaded file (org-scoped)
             uploaded_file = UploadedFile.objects.create(
+                organization=org,
                 csv_format=csv_format,
                 filename=csv_file.name,
                 description='',
@@ -145,7 +222,8 @@ def upload_csv(request):
                 metadata={
                     'notes': form.cleaned_data.get('notes', ''),
                     'event_name': form.cleaned_data.get('event_name', ''),
-                    'event_date': form.cleaned_data.get('event_date').isoformat() if form.cleaned_data.get('event_date') else '',
+                    'event_start_date': form.cleaned_data.get('event_start_date').isoformat() if form.cleaned_data.get('event_start_date') else '',
+                    'event_start_time': form.cleaned_data.get('event_start_time').isoformat() if form.cleaned_data.get('event_start_time') else '',
                     'venue_id': str(venue.id),
                     'venue_name': venue.name,
                     'venue_city': venue.city,
@@ -170,16 +248,18 @@ def upload_csv(request):
                 # Process CSV directly
                 return process_csv_file(request, uploaded_file)
     else:
-        form = CSVUploadForm()
+        form = CSVUploadForm(organization=org)
     
     return render(request, 'tickets/upload.html', {'form': form})
 
 
 @login_required
+@require_org
 @require_http_methods(["GET", "POST"])
 def price_entry(request, file_id):
     """Display form for manually entering ticket prices or tiers."""
-    uploaded_file = get_object_or_404(UploadedFile, id=file_id)
+    org = get_organization(request)
+    uploaded_file = get_object_or_404(UploadedFile.objects.filter(organization=org), id=file_id)
     uses_tiers = uploaded_file.csv_format.uses_tiers
     
     if request.method == 'POST':
@@ -443,9 +523,11 @@ def process_csv_file(request, uploaded_file, manual_prices=None, tier_definition
 
 
 @login_required
+@require_org
 def upload_results(request, file_id):
     """Display processing results."""
-    uploaded_file = get_object_or_404(UploadedFile, id=file_id)
+    org = get_organization(request)
+    uploaded_file = get_object_or_404(UploadedFile.objects.filter(organization=org), id=file_id)
 
     results = uploaded_file.metadata.get('processing_results', {})
 
@@ -457,10 +539,12 @@ def upload_results(request, file_id):
 
 
 @login_required
+@require_org
 @require_http_methods(["POST"])
 def upload_delete(request, file_id):
     """Delete an upload and all associated order data."""
-    uploaded_file = get_object_or_404(UploadedFile, id=file_id)
+    org = get_organization(request)
+    uploaded_file = get_object_or_404(UploadedFile.objects.filter(organization=org), id=file_id)
     is_ajax = request.headers.get('X-Requested-With') == 'XMLHttpRequest'
 
     # TODO: Re-enable this check after temporary bypass
@@ -494,7 +578,7 @@ def upload_delete(request, file_id):
             customers_deleted = 0
             for customer_id in affected_customer_ids:
                 try:
-                    customer = Customer.objects.get(id=customer_id)
+                    customer = Customer.objects.filter(organization=org).get(id=customer_id)
                     if not customer.ticket_orders.exists():
                         customer.delete()
                         customers_deleted += 1
@@ -520,9 +604,11 @@ def upload_delete(request, file_id):
 
 
 @login_required
+@require_org
 def customer_list(request):
     """Display list of all customers with LTV."""
-    customers = Customer.objects.all()
+    org = get_organization(request)
+    customers = Customer.objects.filter(organization=org)
     
     # Search
     search_query = request.GET.get('search', '')
@@ -554,9 +640,77 @@ def customer_list(request):
 
 
 @login_required
+@require_org
+def customer_ltv_by_market(request):
+    """Display customer LTV metrics aggregated by city (event venue city)."""
+    org = get_organization(request)
+    qs = (
+        TicketOrder.objects.filter(event__organization=org)
+        .values('event__venue__city')
+        .annotate(
+            total_ltv=Sum('total_amount'),
+            order_count=Count('id'),
+            customer_count=Count('customer', distinct=True),
+        )
+    )
+    sort_by = request.GET.get('sort', '-total_ltv')
+    if sort_by == 'city':
+        qs = qs.order_by('event__venue__city')
+    elif sort_by == '-city':
+        qs = qs.order_by('-event__venue__city')
+    elif sort_by == 'total_ltv':
+        qs = qs.order_by('total_ltv')
+    elif sort_by == '-total_ltv':
+        qs = qs.order_by('-total_ltv')
+    elif sort_by == 'customer_count':
+        qs = qs.order_by('customer_count')
+    elif sort_by == '-customer_count':
+        qs = qs.order_by('-customer_count')
+    elif sort_by == 'order_count':
+        qs = qs.order_by('order_count')
+    elif sort_by == '-order_count':
+        qs = qs.order_by('-order_count')
+    else:
+        qs = qs.order_by('-total_ltv')
+
+    market_stats = []
+    for row in qs:
+        city = row['event__venue__city'] or ''
+        customer_count = row['customer_count'] or 0
+        total_ltv = row['total_ltv'] or Decimal('0.00')
+        avg_ltv = (total_ltv / customer_count) if customer_count else Decimal('0.00')
+        market_stats.append({
+            'city': city.strip() or '—',
+            'total_ltv': total_ltv,
+            'order_count': row['order_count'] or 0,
+            'customer_count': customer_count,
+            'avg_ltv': avg_ltv,
+        })
+
+    chart_data = [
+        {
+            'city': row['city'],
+            'total_ltv': float(row['total_ltv']),
+            'avg_ltv': float(row['avg_ltv']),
+        }
+        for row in market_stats
+    ]
+    market_stats_json = json.dumps(chart_data)
+
+    context = {
+        'market_stats': market_stats,
+        'market_stats_json': market_stats_json,
+        'sort_by': sort_by,
+    }
+    return render(request, 'tickets/ltv_by_market.html', context)
+
+
+@login_required
+@require_org
 def customer_detail(request, customer_id):
     """Display detailed customer information with LTV and order history."""
-    customer = get_object_or_404(Customer, id=customer_id)
+    org = get_organization(request)
+    customer = get_object_or_404(Customer.objects.filter(organization=org), id=customer_id)
     
     # Order statistics
     orders = customer.ticket_orders.all()
@@ -593,10 +747,12 @@ def customer_detail(request, customer_id):
 # Event Management Views
 
 @login_required
+@require_org
 def event_list(request):
     """Display list of all events with associated uploads."""
+    org = get_organization(request)
     # Use Subquery to calculate revenue correctly (avoids double-counting when orders have multiple tickets)
-    events = Event.objects.annotate(
+    events = Event.objects.filter(organization=org).annotate(
         upload_count=Count('ticket_orders__uploaded_file', distinct=True),
         total_orders=Count('ticket_orders', distinct=True),
         total_revenue=Coalesce(
@@ -623,17 +779,17 @@ def event_list(request):
         )
     
     # Sorting
-    sort_by = request.GET.get('sort', '-event_date')
-    if sort_by in ['name', 'event_date', 'upload_count', 'total_revenue']:
+    sort_by = request.GET.get('sort', '-start_date')
+    if sort_by in ['name', 'start_date', 'upload_count', 'total_revenue']:
         events = events.order_by(sort_by)
-    elif sort_by == '-event_date':
-        events = events.order_by('-event_date')
+    elif sort_by == '-start_date':
+        events = events.order_by('-start_date')
     elif sort_by == '-upload_count':
         events = events.order_by('-upload_count')
     elif sort_by == '-total_revenue':
         events = events.order_by('-total_revenue')
     else:
-        events = events.order_by('-event_date')
+        events = events.order_by('-start_date')
     
     # Pagination
     paginator = Paginator(events, 50)
@@ -649,11 +805,89 @@ def event_list(request):
 
 
 @login_required
+@require_org
+def event_calendar(request):
+    """Display events in a month calendar grid."""
+    org = get_organization(request)
+    today = date.today()
+
+    try:
+        year = int(request.GET.get('year', today.year))
+        month = int(request.GET.get('month', today.month))
+    except (TypeError, ValueError):
+        year, month = today.year, today.month
+    if not (1 <= month <= 12) or not (2000 <= year <= 2100):
+        year, month = today.year, today.month
+
+    first_day = date(year, month, 1)
+    _, last_day_num = calendar.monthrange(year, month)
+    last_day = date(year, month, last_day_num)
+
+    events = (
+        Event.objects.filter(
+            organization=org,
+            deleted_at__isnull=True,
+            start_date__gte=first_day,
+            start_date__lte=last_day,
+        )
+        .select_related('venue')
+        .order_by('start_date', 'start_time', 'name')
+    )
+
+    events_by_date = {}
+    for event in events:
+        events_by_date.setdefault(event.start_date, []).append(event)
+
+    cal = calendar.Calendar(firstweekday=6)  # Sunday = 6
+    raw_weeks = cal.monthdatescalendar(year, month)
+    weeks = []
+    for week in raw_weeks:
+        week_cells = []
+        for d in week:
+            week_cells.append({
+                'date': d,
+                'in_month': d.month == month,
+                'events': events_by_date.get(d, []),
+            })
+        weeks.append(week_cells)
+    month_name = calendar.month_name[month]
+
+    if month == 1:
+        prev_month, prev_year = 12, year - 1
+    else:
+        prev_month, prev_year = month - 1, year
+    if month == 12:
+        next_month, next_year = 1, year + 1
+    else:
+        next_month, next_year = month + 1, year
+
+    context = {
+        'month_name': month_name,
+        'year': year,
+        'month': month,
+        'weeks': weeks,
+        'events_by_date': events_by_date,
+        'prev_month': prev_month,
+        'prev_year': prev_year,
+        'next_month': next_month,
+        'next_year': next_year,
+    }
+    return render(request, 'tickets/event_calendar.html', context)
+
+
+@login_required
+@require_org
 def event_detail(request, event_id):
     """Display detailed event information with associated uploads."""
+    org = get_organization(request)
     event = get_object_or_404(
-        Event.objects.select_related('venue'),
-        id=event_id
+        Event.objects.filter(organization=org).select_related('venue').prefetch_related(
+            Prefetch(
+                'custom_field_values',
+                EventCustomFieldValue.objects.select_related('custom_field', 'custom_field_option'),
+            ),
+        ),
+        id=event_id,
     )
     
     # Get all distinct uploads associated with this event
@@ -685,7 +919,13 @@ def event_detail(request, event_id):
     paginator = Paginator(orders.order_by('-order_date'), 100)
     page_number = request.GET.get('page')
     page_obj = paginator.get_page(page_number)
-    
+
+    # Custom field values: only show those for the current org's custom fields
+    custom_field_values_display = [
+        v for v in event.custom_field_values.all()
+        if v.custom_field.organization_id == org.id
+    ]
+
     context = {
         'event': event,
         'upload_stats': upload_stats,
@@ -694,15 +934,66 @@ def event_detail(request, event_id):
         'total_tickets': total_tickets,
         'total_customers': total_customers,
         'page_obj': page_obj,
+        'custom_field_values_display': custom_field_values_display,
     }
     return render(request, 'tickets/event_detail.html', context)
 
 
 @login_required
+@require_org
+@require_http_methods(["GET", "POST"])
+def event_delete(request, event_id):
+    """Permanently delete an event and all its orders and tickets."""
+    org = get_organization(request)
+    event = get_object_or_404(Event.objects.filter(organization=org), id=event_id)
+
+    if request.method == 'POST':
+        try:
+            was_future = event.start_date >= date.today()
+            with transaction.atomic():
+                orders_count = event.ticket_orders.count()
+                affected_customer_ids = list(
+                    event.ticket_orders.values_list('customer_id', flat=True).distinct()
+                )
+                event_name = event.name
+                event.hard_delete()
+
+                customers_deleted = 0
+                for customer_id in affected_customer_ids:
+                    try:
+                        customer = Customer.objects.filter(organization=org).get(id=customer_id)
+                        if not customer.ticket_orders.exists():
+                            customer.delete()
+                            customers_deleted += 1
+                        else:
+                            customer.update_lifetime_value()
+                    except Customer.DoesNotExist:
+                        pass
+
+            success_msg = f"Event '{event_name}' and {orders_count} associated order(s) have been permanently deleted."
+            if customers_deleted > 0:
+                success_msg += f" Removed {customers_deleted} customer(s) with no remaining orders."
+            if was_future:
+                _regenerate_event_doc_background(org)
+            messages.success(request, success_msg)
+            return redirect('tickets:event_list')
+        except Exception as e:
+            messages.error(request, f"Error deleting event: {str(e)}")
+            return redirect('tickets:event_detail', event_id=event_id)
+
+    context = {'event': event}
+    return render(request, 'tickets/event_delete.html', context)
+
+
+@login_required
+@require_org
 def order_detail(request, order_id):
     """Display detailed order information with all tickets."""
+    org = get_organization(request)
     order = get_object_or_404(
-        TicketOrder.objects.select_related('customer', 'event', 'event__venue', 'uploaded_file'),
+        TicketOrder.objects.filter(event__organization=org).select_related(
+            'customer', 'event', 'event__venue', 'uploaded_file'
+        ),
         id=order_id
     )
     
@@ -736,9 +1027,11 @@ def order_detail(request, order_id):
 # Format Management Views
 
 @login_required
+@require_org
 def format_list(request):
     """List all CSV formats."""
-    formats = CSVFormat.objects.all()
+    org = get_organization(request)
+    formats = CSVFormat.objects.filter(organization=org)
     context = {
         'formats': formats,
     }
@@ -746,12 +1039,16 @@ def format_list(request):
 
 
 @login_required
+@require_org
 def format_create(request):
     """Create new CSV format."""
+    org = get_organization(request)
     if request.method == 'POST':
         form = CSVFormatForm(request.POST)
         if form.is_valid():
-            format_obj = form.save()
+            format_obj = form.save(commit=False)
+            format_obj.organization = org
+            format_obj.save()
             messages.success(request, f"CSV format '{format_obj.name}' created successfully.")
             return redirect('tickets:format_list')
     else:
@@ -765,9 +1062,11 @@ def format_create(request):
 
 
 @login_required
+@require_org
 def format_edit(request, format_id):
     """Edit existing CSV format."""
-    format_obj = get_object_or_404(CSVFormat, id=format_id)
+    org = get_organization(request)
+    format_obj = get_object_or_404(CSVFormat.objects.filter(organization=org), id=format_id)
     
     if request.method == 'POST':
         form = CSVFormatForm(request.POST, instance=format_obj)
@@ -788,9 +1087,11 @@ def format_edit(request, format_id):
 
 
 @login_required
+@require_org
 def format_delete(request, format_id):
     """Delete CSV format."""
-    format_obj = get_object_or_404(CSVFormat, id=format_id)
+    org = get_organization(request)
+    format_obj = get_object_or_404(CSVFormat.objects.filter(organization=org), id=format_id)
     
     if request.method == 'POST':
         # Check if format is in use
@@ -813,12 +1114,14 @@ def format_delete(request, format_id):
 
 
 @login_required
+@require_org
 def format_set_default(request, format_id):
     """Set CSV format as default."""
-    format_obj = get_object_or_404(CSVFormat, id=format_id)
+    org = get_organization(request)
+    format_obj = get_object_or_404(CSVFormat.objects.filter(organization=org), id=format_id)
     
-    # Unset other defaults
-    CSVFormat.objects.filter(is_default=True).exclude(id=format_id).update(is_default=False)
+    # Unset other defaults in this org
+    CSVFormat.objects.filter(organization=org, is_default=True).exclude(id=format_id).update(is_default=False)
     
     # Set this as default
     format_obj.is_default = True
@@ -831,30 +1134,276 @@ def format_set_default(request, format_id):
 # Venue Management Views
 
 @login_required
+@require_org
+def venue_list(request):
+    """List all venues with optional search and pagination."""
+    org = get_organization(request)
+    venues = Venue.objects.filter(organization=org).annotate(event_count=Count('events')).order_by('name', 'city')
+    search_query = request.GET.get('search', '')
+    if search_query:
+        venues = venues.filter(
+            Q(name__icontains=search_query) |
+            Q(city__icontains=search_query) |
+            Q(state__icontains=search_query) |
+            Q(country__icontains=search_query)
+        )
+    paginator = Paginator(venues, 25)
+    page_number = request.GET.get('page')
+    page_obj = paginator.get_page(page_number)
+    context = {
+        'page_obj': page_obj,
+        'search_query': search_query,
+    }
+    return render(request, 'tickets/venue_list.html', context)
+
+
+@login_required
+@require_org
 def venue_create(request):
     """Create new venue."""
+    org = get_organization(request)
     if request.method == 'POST':
         form = VenueForm(request.POST)
         if form.is_valid():
-            venue = form.save()
+            venue = form.save(commit=False)
+            venue.organization = org
+            venue.save()
             messages.success(request, f"Venue '{venue.name}, {venue.city}' created successfully.")
-            # Stay on the page to allow creating multiple venues
-            form = VenueForm()
+            return redirect('tickets:venue_list')
     else:
         form = VenueForm()
-    
+    context = {'form': form}
+    return render(request, 'tickets/venue_create.html', context)
+
+
+@login_required
+@require_org
+def venue_edit(request, venue_id):
+    """Edit an existing venue."""
+    org = get_organization(request)
+    venue = get_object_or_404(Venue.objects.filter(organization=org), id=venue_id)
+    if request.method == 'POST':
+        form = VenueForm(request.POST, instance=venue)
+        if form.is_valid():
+            form.save()
+            messages.success(request, f"Venue '{venue.name}, {venue.city}' updated successfully.")
+            return redirect('tickets:venue_list')
+    else:
+        form = VenueForm(instance=venue)
+    context = {'form': form, 'venue': venue}
+    return render(request, 'tickets/venue_edit.html', context)
+
+
+@login_required
+@require_org
+def event_create(request):
+    """Create new event."""
+    org = get_organization(request)
+    if request.method == 'POST':
+        form = EventForm(request.POST, organization=org)
+        talent_formset = EventTalentFormSet(request.POST, prefix='talent')
+        if form.is_valid() and talent_formset.is_valid():
+            event = form.save(commit=False)
+            event.organization = org
+            event.created_by = request.user
+            event.save()
+            instances = talent_formset.save(commit=False)
+            for obj in instances:
+                if obj.name and obj.name.strip():
+                    obj.event = event
+                    obj.save()
+            for obj in talent_formset.deleted_objects:
+                obj.delete()
+            # Save custom field values for current org's dropdown custom fields only
+            for cf in CustomField.objects.filter(field_type='dropdown', organization=org):
+                field_name = f'custom_field_{cf.id}'
+                option_id = form.cleaned_data.get(field_name)
+                value, _ = EventCustomFieldValue.objects.get_or_create(
+                    event=event, custom_field=cf,
+                    defaults={'custom_field_option_id': None},
+                )
+                if option_id:
+                    value.custom_field_option_id = int(option_id)
+                else:
+                    value.custom_field_option_id = None
+                value.save()
+            messages.success(request, f"Event '{event.name}' created successfully.")
+            if event.start_date >= date.today():
+                _regenerate_event_doc_background(org)
+            return redirect('tickets:event_detail', event_id=event.id)
+    else:
+        form = EventForm(organization=org)
+        talent_formset = EventTalentFormSet(queryset=EventTalent.objects.none(), prefix='talent')
+
+    venue_capacities = {
+        str(v.id): v.capacity
+        for v in Venue.objects.filter(organization=org)
+        if v.capacity
+    }
     context = {
         'form': form,
+        'talent_formset': talent_formset,
+        'venue_capacities_json': json.dumps(venue_capacities),
     }
-    return render(request, 'tickets/venue_create.html', context)
+    return render(request, 'tickets/event_create.html', context)
+
+
+@login_required
+@require_org
+def event_edit(request, event_id):
+    """Edit an existing event."""
+    org = get_organization(request)
+    event = get_object_or_404(Event.objects.filter(organization=org), id=event_id)
+    if request.method == 'POST':
+        form = EventForm(request.POST, instance=event, organization=org)
+        talent_formset = EventTalentFormSet(request.POST, prefix='talent')
+        if form.is_valid() and talent_formset.is_valid():
+            was_future = event.start_date >= date.today()
+            event = form.save(commit=False)
+            event.updated_by = request.user
+            event.save()
+            instances = talent_formset.save(commit=False)
+            for obj in instances:
+                if obj.name and obj.name.strip():
+                    obj.event = event
+                    obj.save()
+            for obj in talent_formset.deleted_objects:
+                obj.delete()
+            # Save custom field values
+            for cf in CustomField.objects.filter(field_type='dropdown', organization=org):
+                field_name = f'custom_field_{cf.id}'
+                option_id = form.cleaned_data.get(field_name)
+                value, _ = EventCustomFieldValue.objects.get_or_create(
+                    event=event, custom_field=cf,
+                    defaults={'custom_field_option_id': None},
+                )
+                if option_id:
+                    value.custom_field_option_id = int(option_id)
+                else:
+                    value.custom_field_option_id = None
+                value.save()
+            messages.success(request, f"Event '{event.name}' updated successfully.")
+            if was_future or event.start_date >= date.today():
+                _regenerate_event_doc_background(org)
+            return redirect('tickets:event_detail', event_id=event.id)
+    else:
+        form = EventForm(instance=event, organization=org)
+        talent_formset = EventTalentFormSet(
+            queryset=EventTalent.objects.filter(event=event).order_by('order', 'name'),
+            prefix='talent',
+        )
+
+    context = {
+        'form': form,
+        'talent_formset': talent_formset,
+        'event': event,
+    }
+    return render(request, 'tickets/event_edit.html', context)
+
+
+@login_required
+@require_org
+@require_http_methods(["GET", "POST"])
+def event_upload_csv(request, event_id):
+    """Upload a CSV directly for an existing event."""
+    org = get_organization(request)
+    event = get_object_or_404(Event.objects.filter(organization=org).select_related('venue'), id=event_id)
+
+    if request.method == 'POST':
+        form = EventCSVUploadForm(request.POST, request.FILES, organization=org)
+        if form.is_valid():
+            csv_file = form.cleaned_data['csv_file']
+            csv_format = form.cleaned_data['csv_format']
+
+            uploaded_file = UploadedFile.objects.create(
+                organization=org,
+                csv_format=csv_format,
+                filename=csv_file.name,
+                description='',
+                source='',
+                metadata={
+                    'notes': form.cleaned_data.get('notes', ''),
+                    'event_id': str(event.id),
+                    'event_name': event.name,
+                    'event_start_date': event.start_date.isoformat() if event.start_date else '',
+                    'event_start_time': event.start_time.isoformat() if event.start_time else '',
+                    'venue_id': str(event.venue.id) if event.venue else '',
+                    'venue_name': event.venue.name if event.venue else '',
+                    'venue_city': event.venue.city if event.venue else '',
+                }
+            )
+
+            media_path = os.path.join('uploads', f"{uploaded_file.id}_{csv_file.name}")
+            os.makedirs(os.path.dirname(os.path.join('media', media_path)), exist_ok=True)
+            with open(os.path.join('media', media_path), 'wb+') as destination:
+                for chunk in csv_file.chunks():
+                    destination.write(chunk)
+
+            uploaded_file.metadata['file_path'] = media_path
+            uploaded_file.save(update_fields=['metadata'])
+
+            if csv_format.requires_manual_pricing:
+                return redirect('tickets:price_entry', file_id=uploaded_file.id)
+            else:
+                return process_csv_file(request, uploaded_file)
+    else:
+        form = EventCSVUploadForm(organization=org)
+
+    context = {
+        'form': form,
+        'event': event,
+    }
+    return render(request, 'tickets/event_upload.html', context)
+
+
+@login_required
+@require_org
+@require_http_methods(["POST"])
+def regenerate_event_doc(request):
+    """Trigger regeneration of the Upcoming Events Google Doc."""
+    from django.conf import settings
+    from .services.google_docs import EventDocFormatter, GoogleDocWriter
+
+    org = get_organization(request)
+    doc_id = settings.GOOGLE_DOC_ID
+
+    if not doc_id:
+        messages.error(request, "Google Doc ID is not configured.")
+        return redirect('tickets:home')
+
+    if not settings.GOOGLE_SERVICE_ACCOUNT_JSON:
+        messages.error(request, "Google service account credentials are not configured.")
+        return redirect('tickets:home')
+
+    formatter = EventDocFormatter(org)
+    events = formatter.get_upcoming_events()
+    content = formatter.generate_full_document()
+
+    try:
+        writer = GoogleDocWriter(doc_id)
+        result = writer.update_document(content)
+        if result['success']:
+            messages.success(
+                request,
+                f"Updated Google Doc with {len(events)} upcoming event(s) "
+                f"({result['characters_written']} characters)."
+            )
+        else:
+            messages.error(request, f"Failed to update Google Doc: {result['error']}")
+    except Exception as e:
+        messages.error(request, f"Error updating Google Doc: {e}")
+
+    return redirect('tickets:home')
 
 
 # Forecast Tool Views
 
 @login_required
+@require_org
 def forecast_tool(request):
     """Display the standalone forecast tool page."""
-    venues = Venue.objects.all().order_by('city', 'name')
+    org = get_organization(request)
+    venues = Venue.objects.filter(organization=org).order_by('city', 'name')
     context = {
         'venues': venues,
     }
@@ -862,10 +1411,12 @@ def forecast_tool(request):
 
 
 @login_required
+@require_org
 def forecast_api(request):
     """Return forecast data as JSON for the chart."""
     from datetime import datetime
 
+    org = get_organization(request)
     venue_id = request.GET.get('venue_id', '').strip()
     event_date_str = request.GET.get('event_date', '').strip()
     capacity_str = request.GET.get('capacity', '').strip()
@@ -910,6 +1461,7 @@ def forecast_api(request):
         event_date=event_date,
         capacity=capacity,
         starting_tickets=starting_tickets,
+        organization=org,
     )
 
     response = JsonResponse(result)

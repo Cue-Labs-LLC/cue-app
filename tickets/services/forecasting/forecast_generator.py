@@ -165,8 +165,7 @@ class ForecastGenerator:
 
         # Calculate days to event
         now = timezone.now()
-        event_date = event.event_date
-        days_to_event = (event_date.date() - now.date()).days
+        days_to_event = (event.start_date - now.date()).days
 
         # Get baseline expectation for this point
         baseline = self.aggregator.get_baseline_curve(venue=event.venue)
@@ -215,7 +214,7 @@ class ForecastGenerator:
             capacity=capacity,
             days_to_event=days_to_event,
             projected_total=projected_total,
-            event_date=event_date.date()
+            event_date=event.start_date
         )
 
         return PaceMetrics(
@@ -337,7 +336,7 @@ class ForecastGenerator:
             'event': {
                 'id': str(event.id),
                 'name': event.name,
-                'date': event.event_date.isoformat(),
+                'date': event.start_date.isoformat(),
                 'venue': str(event.venue),
             },
             'capacity': capacity,

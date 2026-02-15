@@ -175,6 +175,10 @@ else:
     MEDIA_URL = 'media/'
     MEDIA_ROOT = BASE_DIR / 'media'
 
+# Google Docs API Configuration
+GOOGLE_SERVICE_ACCOUNT_JSON = os.environ.get('GOOGLE_SERVICE_ACCOUNT_JSON', '')
+GOOGLE_DOC_ID = os.environ.get('GOOGLE_DOC_ID', '')
+
 # Crispy Forms Configuration
 CRISPY_ALLOWED_TEMPLATE_PACKS = 'bootstrap5'
 CRISPY_TEMPLATE_PACK = 'bootstrap5'

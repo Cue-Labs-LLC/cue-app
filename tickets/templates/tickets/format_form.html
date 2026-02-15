@@ -41,6 +41,13 @@
                     The system will try each column name in the array until it finds a match in the CSV file.
                 </p>
                 <hr>
+                <p><strong>In-Person Sales (optional):</strong></p>
+                <p class="small text-muted">
+                    For Eventbrite or similar exports that include a "Was Processed In Person" column, add
+                    <code>"processed_in_person": ["Was Processed In Person"]</code> to the column mapping.
+                    Rows with that column set to true can omit email and name; they will be imported and attributed to "In-Person Sales."
+                </p>
+                <hr>
                 <p><strong>Tier-Based Pricing:</strong></p>
                 <p class="small text-muted">
                     When enabled, you can define multiple pricing tiers per ticket type with allotments. 

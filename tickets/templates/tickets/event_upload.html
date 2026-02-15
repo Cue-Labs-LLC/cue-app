@@ -1,0 +1,69 @@
+{% extends 'tickets/base.html' %}
+{% load crispy_forms_tags %}
+
+{% block title %}Upload CSV - {{ event.name }}{% endblock %}
+
+{% block content %}
+<div class="row mb-4">
+    <div class="col">
+        <nav aria-label="breadcrumb">
+            <ol class="breadcrumb">
+                <li class="breadcrumb-item"><a href="{% url 'tickets:home' %}">Home</a></li>
+                <li class="breadcrumb-item"><a href="{% url 'tickets:event_list' %}">Events</a></li>
+                <li class="breadcrumb-item"><a href="{% url 'tickets:event_detail' event.id %}">{{ event.name }}</a></li>
+                <li class="breadcrumb-item active">Upload CSV</li>
+            </ol>
+        </nav>
+        <h1><i class="bi bi-upload"></i> Upload CSV for Event</h1>
+    </div>
+</div>
+
+<div class="row">
+    <div class="col-md-8">
+        <div class="card mb-3">
+            <div class="card-header">
+                <h5 class="mb-0"><i class="bi bi-calendar-event"></i> Target Event</h5>
+            </div>
+            <div class="card-body">
+                <h5 class="card-title mb-1">{{ event.name }}</h5>
+                <p class="text-muted mb-0">
+                    {% if event.venue %}<i class="bi bi-geo-alt"></i> {{ event.venue.name }}, {{ event.venue.city }} | {% endif %}
+                    <i class="bi bi-clock"></i> {{ event.start_date|date:"M d, Y" }}{% if event.start_time %} {{ event.start_time|time:"H:i" }}{% endif %}
+                </p>
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="card-body">
+                {% crispy form %}
+            </div>
+        </div>
+
+        <div class="mt-3">
+            <a href="{% url 'tickets:event_detail' event.id %}" class="btn btn-outline-secondary">
+                <i class="bi bi-arrow-left"></i> Back to Event
+            </a>
+        </div>
+    </div>
+    <div class="col-md-4">
+        <div class="card">
+            <div class="card-header">
+                <h5 class="mb-0"><i class="bi bi-info-circle"></i> Upload Instructions</h5>
+            </div>
+            <div class="card-body">
+                <ul class="list-unstyled">
+                    <li class="mb-2"><i class="bi bi-check-circle text-success"></i> Select a CSV format configuration</li>
+                    <li class="mb-2"><i class="bi bi-check-circle text-success"></i> Upload CSV file (max 10MB)</li>
+                    <li class="mb-2"><i class="bi bi-check-circle text-success"></i> Add notes (optional)</li>
+                    <li class="mb-2"><i class="bi bi-check-circle text-success"></i> If format requires manual pricing, you'll be prompted to enter prices</li>
+                </ul>
+                <hr>
+                <p class="small text-muted mb-0">
+                    <i class="bi bi-info-circle"></i> All orders will be associated with <strong>{{ event.name }}</strong>.
+                    Event name, date, and venue are inherited from the event.
+                </p>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

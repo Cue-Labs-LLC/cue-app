@@ -98,7 +98,7 @@
                     </tr>
                     <tr>
                         <th>Event Date:</th>
-                        <td>{{ order.event.event_date|date:"M d, Y H:i" }}</td>
+                        <td>{{ order.event.start_date|date:"M d, Y" }}{% if order.event.start_time %} {{ order.event.start_time|time:"H:i" }}{% endif %}</td>
                     </tr>
                 </table>
             </div>

@@ -84,7 +84,7 @@ class SalesCurveCalculator:
         for order in orders:
             days_before = self.calculate_days_before(
                 order.order_date,
-                event.event_date
+                event.start_date
             )
             # Count tickets in this order
             ticket_count = order.tickets.count()

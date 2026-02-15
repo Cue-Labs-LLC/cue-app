@@ -8,7 +8,7 @@ from datetime import date
 from typing import Optional
 from uuid import UUID
 
-from django.db.models import Max
+from django.db.models import Count, Max
 from django.utils import timezone
 
 from tickets.models import Event, Venue
@@ -22,6 +22,7 @@ def generate_forecast_preview(
     capacity: int,
     min_events: int = 1,
     starting_tickets: Optional[int] = None,
+    organization=None,
 ) -> dict:
     """
     Generate a forecast preview for a hypothetical event.
@@ -43,6 +44,7 @@ def generate_forecast_preview(
         capacity: Expected total ticket capacity
         min_events: Minimum events required for valid baseline (at least one)
         starting_tickets: Optional tickets already sold; when set, curve starts at this value
+        organization: Optional organization to scope baseline and venue capacity to
 
     Returns:
         dict with:
@@ -50,7 +52,7 @@ def generate_forecast_preview(
             - baseline_info: {segment_type, segment_name, events_count}
             - has_sufficient_data: bool
     """
-    aggregator = HistoricalAggregator(min_events=min_events)
+    aggregator = HistoricalAggregator(min_events=min_events, organization=organization)
 
     # Get venue if provided
     venue = None
@@ -79,14 +81,20 @@ def generate_forecast_preview(
         segment_name = 'All Events'
 
     # When a venue is selected, use that venue's max historical capacity for the warning
-    # (so the warning reflects the selected venue even if the baseline fell back to city/global)
+    # (so the warning reflects the selected venue even if the baseline fell back to city/global).
+    # Only consider past events with at least one ticket order.
     max_capacity_for_warning = baseline.max_historical_capacity
     if venue is not None:
-        venue_max = Event.objects.filter(
+        venue_events = Event.objects.filter(
             venue=venue,
-            event_date__lt=today,
+            start_date__lt=today,
             capacity__isnull=False,
-        ).exclude(capacity=0).aggregate(Max('capacity'))['capacity__max']
+        ).exclude(capacity=0).annotate(
+            order_count=Count('ticket_orders')
+        ).filter(order_count__gt=0)
+        if organization is not None:
+            venue_events = venue_events.filter(organization=organization)
+        venue_max = venue_events.aggregate(Max('capacity'))['capacity__max']
         if venue_max is not None:
             max_capacity_for_warning = venue_max
 
@@ -131,11 +139,7 @@ def generate_forecast_preview(
     for event in events_queryset:
         curve = curve_calculator.get_event_sales_curve(event)
         if curve.total_tickets > 0:
-            event_date_str = (
-                event.event_date.date().isoformat()
-                if hasattr(event.event_date, 'date')
-                else str(event.event_date)
-            )
+            event_date_str = event.start_date.isoformat()
             venue_name = f"{event.venue.name}, {event.venue.city}"
             historical_events.append({
                 'name': event.name,
@@ -143,6 +147,18 @@ def generate_forecast_preview(
                 'venue_name': venue_name,
                 'total_tickets_sold': curve.total_tickets,
             })
+
+    # When a venue is selected but baseline fell back to city/global, do not show
+    # fallback events in the table (misleading). Return empty list and a message.
+    if venue is not None and baseline.segment_type != 'venue':
+        historical_events = []
+        baseline_info['venue_no_data_fallback'] = True
+        baseline_info['fallback_message'] = (
+            f"No past events with order data at this venue. Baseline uses {segment_name}."
+        )
+    else:
+        baseline_info['venue_no_data_fallback'] = False
+        baseline_info['fallback_message'] = None
 
     # Past event: no curve points
     if days_until_event < 0:

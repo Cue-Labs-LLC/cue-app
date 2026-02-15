@@ -4,7 +4,9 @@ from django.utils.html import format_html
 from django.db.models import Sum, Count
 from django import forms
 from .models import (
-    CSVFormat, UploadedFile, Customer, Event, TicketOrder, Ticket, TicketTier, Venue
+    Organization, UserProfile,
+    CSVFormat, UploadedFile, Customer, Event, EventTalent, TicketOrder, Ticket, TicketTier, Venue,
+    CustomField, CustomFieldOption, EventCustomFieldValue,
 )
 
 
@@ -27,8 +29,8 @@ class JSONWidget(forms.Textarea):
 
 @admin.register(CSVFormat)
 class CSVFormatAdmin(admin.ModelAdmin):
-    list_display = ['name', 'is_default', 'requires_manual_pricing', 'uses_tiers', 'created_at']
-    list_filter = ['is_default', 'requires_manual_pricing', 'uses_tiers', 'created_at']
+    list_display = ['name', 'organization', 'is_default', 'requires_manual_pricing', 'uses_tiers', 'created_at']
+    list_filter = ['organization', 'is_default', 'requires_manual_pricing', 'uses_tiers', 'created_at']
     search_fields = ['name', 'description']
     readonly_fields = ['id', 'created_at', 'updated_at']
     
@@ -55,11 +57,27 @@ class CSVFormatAdmin(admin.ModelAdmin):
         }),
     )
 
+    def get_queryset(self, request):
+        qs = super().get_queryset(request)
+        if request.user.is_superuser:
+            return qs
+        profile = getattr(request.user, 'profile', None)
+        if profile and profile.organization_id:
+            return qs.filter(organization=profile.organization)
+        return qs.none()
+
+    def save_model(self, request, obj, form, change):
+        if not change and not getattr(obj, 'organization_id', None):
+            profile = getattr(request.user, 'profile', None)
+            if profile and profile.organization_id:
+                obj.organization = profile.organization
+        super().save_model(request, obj, form, change)
+
 
 @admin.register(UploadedFile)
 class UploadedFileAdmin(admin.ModelAdmin):
-    list_display = ['filename', 'csv_format', 'status', 'total_rows', 'processed_rows', 'uploaded_at']
-    list_filter = ['status', 'csv_format', 'uploaded_at']
+    list_display = ['filename', 'csv_format', 'organization', 'status', 'total_rows', 'processed_rows', 'uploaded_at']
+    list_filter = ['organization', 'status', 'csv_format', 'uploaded_at']
     search_fields = ['filename', 'description', 'source']
     readonly_fields = ['id', 'uploaded_at', 'created_at', 'updated_at']
     date_hierarchy = 'uploaded_at'
@@ -77,6 +95,22 @@ class UploadedFileAdmin(admin.ModelAdmin):
         }),
     )
 
+    def get_queryset(self, request):
+        qs = super().get_queryset(request)
+        if request.user.is_superuser:
+            return qs
+        profile = getattr(request.user, 'profile', None)
+        if profile and profile.organization_id:
+            return qs.filter(organization=profile.organization)
+        return qs.none()
+
+    def save_model(self, request, obj, form, change):
+        if not change and not getattr(obj, 'organization_id', None):
+            profile = getattr(request.user, 'profile', None)
+            if profile and profile.organization_id:
+                obj.organization = profile.organization
+        super().save_model(request, obj, form, change)
+
 
 class TicketInline(admin.TabularInline):
     model = Ticket
@@ -87,8 +121,8 @@ class TicketInline(admin.TabularInline):
 
 @admin.register(Customer)
 class CustomerAdmin(admin.ModelAdmin):
-    list_display = ['name', 'email', 'phone', 'lifetime_value_display', 'last_order_date', 'order_count', 'created_at']
-    list_filter = ['last_order_date', 'created_at']
+    list_display = ['name', 'email', 'phone', 'organization', 'lifetime_value_display', 'last_order_date', 'order_count', 'created_at']
+    list_filter = ['organization', 'last_order_date', 'created_at']
     search_fields = ['name', 'email', 'phone']
     readonly_fields = ['id', 'lifetime_value', 'last_order_date', 'created_at', 'updated_at']
     date_hierarchy = 'created_at'
@@ -108,10 +142,8 @@ class CustomerAdmin(admin.ModelAdmin):
     
     def lifetime_value_display(self, obj):
         """Display LTV as formatted currency."""
-        return format_html(
-            '<strong style="color: green;">${:,.2f}</strong>',
-            float(obj.lifetime_value)
-        )
+        value_str = '${:,.2f}'.format(float(obj.lifetime_value))
+        return format_html('<strong style="color: green;">{}</strong>', value_str)
     lifetime_value_display.short_description = 'Lifetime Value'
     lifetime_value_display.admin_order_field = 'lifetime_value'
     
@@ -121,21 +153,55 @@ class CustomerAdmin(admin.ModelAdmin):
     order_count.short_description = 'Orders'
     
     def get_queryset(self, request):
-        """Optimize queryset with order count."""
+        """Optimize queryset with order count; filter by org for non-superusers."""
         qs = super().get_queryset(request)
+        if not request.user.is_superuser:
+            profile = getattr(request.user, 'profile', None)
+            if profile and profile.organization_id:
+                qs = qs.filter(organization=profile.organization)
+            else:
+                qs = qs.none()
         return qs.annotate(order_count=Count('ticket_orders'))
+
+    def save_model(self, request, obj, form, change):
+        if not change and not getattr(obj, 'organization_id', None):
+            profile = getattr(request.user, 'profile', None)
+            if profile and profile.organization_id:
+                obj.organization = profile.organization
+        super().save_model(request, obj, form, change)
 
 
 @admin.register(Venue)
 class VenueAdmin(admin.ModelAdmin):
-    list_display = ['name', 'city', 'event_count', 'created_at']
-    list_filter = ['city', 'created_at']
-    search_fields = ['name', 'city']
+    list_display = ['name', 'city', 'state', 'country', 'capacity', 'event_count', 'organization', 'created_at']
+    list_filter = ['organization', 'city', 'state', 'country', 'created_at']
+    search_fields = [
+        'name', 'city', 'street_address', 'state', 'postal_code', 'country'
+    ]
     readonly_fields = ['id', 'created_at', 'updated_at']
+
+    def get_queryset(self, request):
+        qs = super().get_queryset(request)
+        if request.user.is_superuser:
+            return qs
+        profile = getattr(request.user, 'profile', None)
+        if profile and profile.organization_id:
+            return qs.filter(organization=profile.organization)
+        return qs.none()
+
+    def save_model(self, request, obj, form, change):
+        if not change and not getattr(obj, 'organization_id', None):
+            profile = getattr(request.user, 'profile', None)
+            if profile and profile.organization_id:
+                obj.organization = profile.organization
+        super().save_model(request, obj, form, change)
     
     fieldsets = (
         ('Venue Information', {
-            'fields': ('name', 'city')
+            'fields': ('name', 'city', 'capacity')
+        }),
+        ('Address', {
+            'fields': ('street_address', 'state', 'postal_code', 'country')
         }),
         ('Metadata', {
             'fields': ('id', 'created_at', 'updated_at'),
@@ -154,17 +220,26 @@ class VenueAdmin(admin.ModelAdmin):
         return qs.annotate(event_count=Count('events'))
 
 
+class EventTalentInline(admin.TabularInline):
+    model = EventTalent
+    extra = 2
+
+
 @admin.register(Event)
 class EventAdmin(admin.ModelAdmin):
-    list_display = ['name', 'venue', 'event_date', 'capacity', 'order_count', 'created_at']
-    list_filter = ['event_date', 'created_at', 'venue__city']
-    search_fields = ['name', 'venue__name', 'venue__city', 'description']
+    list_display = ['name', 'venue', 'organization', 'start_date', 'start_time', 'end_date', 'end_time', 'capacity', 'order_count', 'created_at']
+    list_filter = ['organization', 'start_date', 'created_at', 'venue__city']
+    search_fields = ['name', 'venue__name', 'venue__city', 'description', 'ticket_link']
     readonly_fields = ['id', 'created_at', 'updated_at']
-    date_hierarchy = 'event_date'
-    
+    date_hierarchy = 'start_date'
+    inlines = [EventTalentInline]
+
     fieldsets = (
         ('Event Information', {
-            'fields': ('name', 'venue', 'event_date', 'description', 'capacity')
+            'fields': (
+                'name', 'venue', 'start_date', 'start_time', 'end_date', 'end_time',
+                'description', 'capacity', 'ticket_link',
+            )
         }),
         ('Metadata', {
             'fields': ('id', 'created_at', 'updated_at'),
@@ -178,19 +253,37 @@ class EventAdmin(admin.ModelAdmin):
     order_count.short_description = 'Orders'
     
     def get_queryset(self, request):
-        """Optimize queryset with order count."""
+        """Optimize queryset with order count; filter by org for non-superusers."""
         qs = super().get_queryset(request)
+        if not request.user.is_superuser:
+            profile = getattr(request.user, 'profile', None)
+            if profile and profile.organization_id:
+                qs = qs.filter(organization=profile.organization)
+            else:
+                qs = qs.none()
         return qs.select_related('venue').annotate(order_count=Count('ticket_orders'))
+
+    def save_model(self, request, obj, form, change):
+        if not change and not getattr(obj, 'organization_id', None):
+            profile = getattr(request.user, 'profile', None)
+            if profile and profile.organization_id:
+                obj.organization = profile.organization
+        super().save_model(request, obj, form, change)
 
 
 @admin.register(TicketOrder)
 class TicketOrderAdmin(admin.ModelAdmin):
-    list_display = ['order_number', 'customer', 'event', 'order_date', 'total_amount', 'ticket_count', 'uploaded_file']
-    list_filter = ['order_date', 'event', 'uploaded_file', 'created_at']
+    list_display = ['order_number', 'customer', 'event', 'get_organization', 'order_date', 'total_amount', 'ticket_count', 'uploaded_file']
+    list_filter = ['event__organization', 'order_date', 'event', 'uploaded_file', 'created_at']
     search_fields = ['order_number', 'customer__name', 'customer__email', 'event__name']
     readonly_fields = ['id', 'created_at', 'updated_at']
     date_hierarchy = 'order_date'
     inlines = [TicketInline]
+
+    def get_organization(self, obj):
+        return obj.event.organization if obj.event_id else ''
+    get_organization.short_description = 'Organization'
+    get_organization.admin_order_field = 'event__organization'
     
     fieldsets = (
         ('Order Information', {
@@ -211,15 +304,26 @@ class TicketOrderAdmin(admin.ModelAdmin):
     ticket_count.short_description = 'Tickets'
     
     def get_queryset(self, request):
-        """Optimize queryset with ticket count."""
+        """Optimize queryset with ticket count; filter by org for non-superusers."""
         qs = super().get_queryset(request)
+        if not request.user.is_superuser:
+            profile = getattr(request.user, 'profile', None)
+            if profile and profile.organization_id:
+                qs = qs.filter(event__organization=profile.organization)
+            else:
+                qs = qs.none()
         return qs.select_related('customer', 'event', 'uploaded_file').prefetch_related('tickets')
 
 
 @admin.register(TicketTier)
 class TicketTierAdmin(admin.ModelAdmin):
-    list_display = ['ticket_type', 'name', 'price', 'allotment', 'tickets_assigned', 'remaining_capacity', 'order', 'uploaded_file']
-    list_filter = ['ticket_type', 'uploaded_file', 'created_at']
+    list_display = ['ticket_type', 'name', 'price', 'allotment', 'tickets_assigned', 'remaining_capacity', 'order', 'uploaded_file', 'get_organization']
+    list_filter = ['uploaded_file__organization', 'ticket_type', 'uploaded_file', 'created_at']
+
+    def get_organization(self, obj):
+        return obj.uploaded_file.organization if obj.uploaded_file_id else ''
+    get_organization.short_description = 'Organization'
+    get_organization.admin_order_field = 'uploaded_file__organization'
     search_fields = ['ticket_type', 'name', 'uploaded_file__filename']
     readonly_fields = ['id', 'created_at', 'updated_at']
     
@@ -242,13 +346,27 @@ class TicketTierAdmin(admin.ModelAdmin):
     remaining_capacity.short_description = 'Remaining'
     remaining_capacity.admin_order_field = 'tickets_assigned'
 
+    def get_queryset(self, request):
+        qs = super().get_queryset(request)
+        if request.user.is_superuser:
+            return qs
+        profile = getattr(request.user, 'profile', None)
+        if profile and profile.organization_id:
+            return qs.filter(uploaded_file__organization=profile.organization)
+        return qs.none()
+
 
 @admin.register(Ticket)
 class TicketAdmin(admin.ModelAdmin):
-    list_display = ['ticket_order', 'ticket_type', 'tier_name', 'price', 'created_at']
-    list_filter = ['ticket_type', 'tier_name', 'created_at']
+    list_display = ['ticket_order', 'ticket_type', 'tier_name', 'price', 'get_organization', 'created_at']
+    list_filter = ['ticket_order__event__organization', 'ticket_type', 'tier_name', 'created_at']
     search_fields = ['ticket_order__order_number', 'ticket_type', 'tier_name']
     readonly_fields = ['id', 'created_at', 'updated_at']
+
+    def get_organization(self, obj):
+        return obj.ticket_order.event.organization if obj.ticket_order_id and obj.ticket_order.event_id else ''
+    get_organization.short_description = 'Organization'
+    get_organization.admin_order_field = 'ticket_order__event__organization'
     
     fieldsets = (
         ('Ticket Information', {
@@ -261,6 +379,117 @@ class TicketAdmin(admin.ModelAdmin):
     )
     
     def get_queryset(self, request):
-        """Optimize queryset."""
+        """Optimize queryset; filter by org for non-superusers."""
         qs = super().get_queryset(request)
+        if not request.user.is_superuser:
+            profile = getattr(request.user, 'profile', None)
+            if profile and profile.organization_id:
+                qs = qs.filter(ticket_order__event__organization=profile.organization)
+            else:
+                qs = qs.none()
         return qs.select_related('ticket_order', 'ticket_order__customer', 'ticket_order__event')
+
+
+class CustomFieldOptionInline(admin.TabularInline):
+    model = CustomFieldOption
+    extra = 1
+
+
+@admin.register(CustomField)
+class CustomFieldAdmin(admin.ModelAdmin):
+    list_display = ['name', 'field_type', 'order', 'required', 'default_option', 'organization']
+    list_filter = ['organization', 'field_type', 'required']
+    ordering = ['order', 'name']
+    inlines = [CustomFieldOptionInline]
+
+    def get_queryset(self, request):
+        qs = super().get_queryset(request)
+        if request.user.is_superuser:
+            return qs
+        profile = getattr(request.user, 'profile', None)
+        if profile and profile.organization_id:
+            return qs.filter(organization=profile.organization)
+        return qs.none()
+
+    def formfield_for_foreignkey(self, db_field, request, **kwargs):
+        if db_field.name == 'default_option':
+            obj = getattr(request, '_current_customfield_obj', None)
+            if obj is not None and obj.pk:
+                kwargs['queryset'] = CustomFieldOption.objects.filter(custom_field_id=obj.pk)
+            else:
+                kwargs['queryset'] = CustomFieldOption.objects.none()
+        return super().formfield_for_foreignkey(db_field, request, **kwargs)
+
+    def get_form(self, request, obj=None, **kwargs):
+        request._current_customfield_obj = obj
+        return super().get_form(request, obj, **kwargs)
+
+    def save_model(self, request, obj, form, change):
+        if not change and not getattr(obj, 'organization_id', None):
+            profile = getattr(request.user, 'profile', None)
+            if profile and profile.organization_id:
+                obj.organization = profile.organization
+        super().save_model(request, obj, form, change)
+
+
+@admin.register(CustomFieldOption)
+class CustomFieldOptionAdmin(admin.ModelAdmin):
+    list_display = ['custom_field', 'label', 'order', 'get_organization']
+    list_filter = ['custom_field__organization', 'custom_field']
+
+    def get_organization(self, obj):
+        return obj.custom_field.organization if obj.custom_field_id else ''
+    get_organization.short_description = 'Organization'
+    get_organization.admin_order_field = 'custom_field__organization'
+    ordering = ['custom_field', 'order', 'label']
+
+    def get_queryset(self, request):
+        qs = super().get_queryset(request)
+        if request.user.is_superuser:
+            return qs
+        profile = getattr(request.user, 'profile', None)
+        if profile and profile.organization_id:
+            return qs.filter(custom_field__organization=profile.organization)
+        return qs.none()
+
+
+@admin.register(EventCustomFieldValue)
+class EventCustomFieldValueAdmin(admin.ModelAdmin):
+    list_display = ['event', 'custom_field', 'custom_field_option', 'get_organization']
+    list_filter = ['event__organization', 'custom_field']
+
+    def get_organization(self, obj):
+        return obj.event.organization if obj.event_id else ''
+    get_organization.short_description = 'Organization'
+    get_organization.admin_order_field = 'event__organization'
+    search_fields = ['event__name']
+    raw_id_fields = ['event']
+
+    def get_queryset(self, request):
+        qs = super().get_queryset(request)
+        if request.user.is_superuser:
+            return qs
+        profile = getattr(request.user, 'profile', None)
+        if profile and profile.organization_id:
+            return qs.filter(custom_field__organization=profile.organization)
+        return qs.none()
+
+
+@admin.register(Organization)
+class OrganizationAdmin(admin.ModelAdmin):
+    list_display = ['name', 'slug', 'created_at']
+    search_fields = ['name', 'slug']
+    readonly_fields = ['id', 'created_at', 'updated_at']
+    prepopulated_fields = {'slug': ('name',)}
+
+
+@admin.register(UserProfile)
+class UserProfileAdmin(admin.ModelAdmin):
+    list_display = ['user', 'organization', 'user_email']
+    list_filter = ['organization']
+    search_fields = ['user__username', 'user__email']
+    raw_id_fields = ['user']
+
+    def user_email(self, obj):
+        return obj.user.email if obj.user_id else ''
+    user_email.short_description = 'Email'

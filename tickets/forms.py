@@ -1,9 +1,32 @@
 import json
 from django import forms
+from django.forms import modelformset_factory
 from django.contrib.auth.forms import AuthenticationForm
 from crispy_forms.helper import FormHelper
 from crispy_forms.layout import Layout, Row, Column, Submit, Field
-from .models import CSVFormat, Venue
+from .models import Organization, CSVFormat, Venue, Event, EventTalent, CustomField
+
+
+class OrganizationForm(forms.ModelForm):
+    """Form for creating a new organization."""
+
+    class Meta:
+        model = Organization
+        fields = ['name', 'slug']
+        widgets = {
+            'name': forms.TextInput(attrs={'class': 'form-control', 'placeholder': 'e.g., Acme Events'}),
+            'slug': forms.TextInput(attrs={'class': 'form-control', 'placeholder': 'e.g., acme-events'}),
+        }
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.helper = FormHelper()
+        self.helper.form_method = 'post'
+        self.helper.layout = Layout(
+            Field('name'),
+            Field('slug'),
+            Submit('submit', 'Create Organization', css_class='btn btn-primary'),
+        )
 
 
 class LoginForm(AuthenticationForm):
@@ -103,11 +126,17 @@ class CSVUploadForm(forms.Form):
         help_text="Enter the name of the event",
         widget=forms.TextInput(attrs={'class': 'form-control', 'placeholder': 'e.g., Familiar Faces'})
     )
-    event_date = forms.DateTimeField(
+    event_start_date = forms.DateField(
         required=True,
-        label="Event Date",
-        help_text="Date and time of the event",
-        widget=forms.DateTimeInput(attrs={'type': 'datetime-local', 'class': 'form-control'})
+        label="Event Start Date",
+        help_text="Date of the event",
+        widget=forms.DateInput(attrs={'type': 'date', 'class': 'form-control'})
+    )
+    event_start_time = forms.TimeField(
+        required=False,
+        label="Event Start Time",
+        help_text="Time of the event (optional)",
+        widget=forms.TimeInput(attrs={'type': 'time', 'class': 'form-control'})
     )
     venue = forms.ModelChoiceField(
         queryset=Venue.objects.all().order_by('name', 'city'),
@@ -126,7 +155,15 @@ class CSVUploadForm(forms.Form):
     )
 
     def __init__(self, *args, **kwargs):
+        organization = kwargs.pop('organization', None)
         super().__init__(*args, **kwargs)
+        if organization is not None:
+            self.fields['csv_format'].queryset = CSVFormat.objects.filter(
+                organization=organization
+            ).order_by('-is_default', 'name')
+            self.fields['venue'].queryset = Venue.objects.filter(
+                organization=organization
+            ).order_by('name', 'city')
         self.helper = FormHelper()
         self.helper.layout = Layout(
             Field('csv_file'),
@@ -135,17 +172,21 @@ class CSVUploadForm(forms.Form):
                 Column('event_name', css_class='form-group col-md-12 mb-0'),
             ),
             Row(
-                Column('event_date', css_class='form-group col-md-6 mb-0'),
-                Column('venue', css_class='form-group col-md-6 mb-0'),
+                Column('event_start_date', css_class='form-group col-md-4 mb-0'),
+                Column('event_start_time', css_class='form-group col-md-4 mb-0'),
+                Column('venue', css_class='form-group col-md-4 mb-0'),
             ),
             Field('notes'),
             Submit('submit', 'Upload CSV', css_class='btn btn-primary')
         )
 
-        # Auto-select default format if available
-        default_format = CSVFormat.objects.filter(is_default=True).first()
-        if default_format:
-            self.fields['csv_format'].initial = default_format
+        # Auto-select default format if available (org-scoped)
+        if organization is not None:
+            default_format = CSVFormat.objects.filter(
+                organization=organization, is_default=True
+            ).first()
+            if default_format:
+                self.fields['csv_format'].initial = default_format
 
     def clean(self):
         """Validate form data."""
@@ -166,6 +207,58 @@ class CSVUploadForm(forms.Form):
             if file.size > 10 * 1024 * 1024:
                 raise forms.ValidationError("File size exceeds 10MB limit.")
             # Check file extension
+            if not file.name.lower().endswith('.csv'):
+                raise forms.ValidationError("File must be a CSV file.")
+        return file
+
+
+class EventCSVUploadForm(forms.Form):
+    """Simplified CSV upload form for uploading directly from an event detail page."""
+    csv_file = forms.FileField(
+        label="CSV File",
+        help_text="Upload a CSV file (max 10MB)",
+        widget=forms.FileInput(attrs={'accept': '.csv', 'class': 'form-control'})
+    )
+    csv_format = forms.ModelChoiceField(
+        queryset=CSVFormat.objects.all(),
+        label="CSV Format",
+        help_text="Select the format configuration for this CSV file",
+        empty_label="Select a format...",
+        widget=forms.Select(attrs={'class': 'form-select'})
+    )
+    notes = forms.CharField(
+        required=False,
+        label="Notes",
+        widget=forms.Textarea(attrs={'rows': 2, 'class': 'form-control'})
+    )
+
+    def __init__(self, *args, **kwargs):
+        organization = kwargs.pop('organization', None)
+        super().__init__(*args, **kwargs)
+        if organization is not None:
+            self.fields['csv_format'].queryset = CSVFormat.objects.filter(
+                organization=organization
+            ).order_by('-is_default', 'name')
+        self.helper = FormHelper()
+        self.helper.layout = Layout(
+            Field('csv_file'),
+            Field('csv_format'),
+            Field('notes'),
+            Submit('submit', 'Upload CSV', css_class='btn btn-primary')
+        )
+
+        if organization is not None:
+            default_format = CSVFormat.objects.filter(
+                organization=organization, is_default=True
+            ).first()
+            if default_format:
+                self.fields['csv_format'].initial = default_format
+
+    def clean_csv_file(self):
+        file = self.cleaned_data.get('csv_file')
+        if file:
+            if file.size > 10 * 1024 * 1024:
+                raise forms.ValidationError("File size exceeds 10MB limit.")
             if not file.name.lower().endswith('.csv'):
                 raise forms.ValidationError("File must be a CSV file.")
         return file
@@ -357,6 +450,12 @@ class CSVFormatForm(forms.ModelForm):
         
         # Add help text for uses_tiers
         self.fields['uses_tiers'].help_text = "Enable tier-based pricing with allotments. Only available when manual pricing is required."
+        # Optional: document in-person support for column_mapping
+        self.fields['column_mapping'].help_text = (
+            "Required keys: order_number, order_date, customer_email, customer_name, ticket_type. "
+            "Optional: add \"processed_in_person\": [\"Was Processed In Person\"] for exports that include in-person sales; "
+            "rows with that column set to true can omit email/name and will be attributed to \"In-Person Sales\"."
+        )
 
     def clean_column_mapping(self):
         """Validate column mapping JSON."""
@@ -420,17 +519,173 @@ class VenueForm(forms.ModelForm):
     
     class Meta:
         model = Venue
-        fields = ['name', 'city']
+        fields = [
+            'name', 'city', 'street_address', 'state', 'postal_code', 'country',
+            'capacity',
+        ]
         widgets = {
             'name': forms.TextInput(attrs={'class': 'form-control', 'placeholder': 'e.g., The Fillmore'}),
             'city': forms.TextInput(attrs={'class': 'form-control', 'placeholder': 'e.g., San Francisco'}),
+            'street_address': forms.TextInput(attrs={'class': 'form-control', 'placeholder': 'e.g., 123 Main St'}),
+            'state': forms.TextInput(attrs={'class': 'form-control', 'placeholder': 'e.g., CA'}),
+            'postal_code': forms.TextInput(attrs={'class': 'form-control', 'placeholder': 'e.g., 94102'}),
+            'country': forms.TextInput(attrs={'class': 'form-control', 'placeholder': 'e.g., USA'}),
+            'capacity': forms.NumberInput(attrs={'class': 'form-control', 'placeholder': 'e.g., 500', 'min': '1'}),
         }
     
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        self.fields['capacity'].required = False
+        submit_label = 'Update Venue' if (self.instance and self.instance.pk) else 'Create Venue'
         self.helper = FormHelper()
         self.helper.layout = Layout(
             Field('name'),
             Field('city'),
-            Submit('submit', 'Create Venue', css_class='btn btn-primary')
+            Field('street_address'),
+            Field('state'),
+            Field('postal_code'),
+            Field('country'),
+            Field('capacity'),
+            Submit('submit', submit_label, css_class='btn btn-primary')
         )
+
+
+class EventTalentForm(forms.ModelForm):
+    """Single talent row for formset; name optional so extra rows can be left blank."""
+    class Meta:
+        model = EventTalent
+        fields = ('name', 'order')
+        widgets = {
+            'name': forms.TextInput(attrs={'class': 'form-control', 'placeholder': 'e.g., DJ Shadow'}),
+            'order': forms.NumberInput(attrs={'class': 'form-control', 'min': '0'}),
+        }
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields['name'].required = False
+
+
+EventTalentFormSet = modelformset_factory(
+    EventTalent,
+    form=EventTalentForm,
+    extra=0,
+    can_delete=True,
+)
+
+
+class EventForm(forms.ModelForm):
+    """Form for creating events."""
+
+    class Meta:
+        model = Event
+        fields = [
+            'name', 'venue', 'start_date', 'start_time', 'end_date', 'end_time',
+            'description', 'capacity', 'ticket_link',
+        ]
+        widgets = {
+            'name': forms.TextInput(attrs={'class': 'form-control', 'placeholder': 'e.g., Familiar Faces'}),
+            'venue': forms.Select(attrs={'class': 'form-select'}),
+            'start_date': forms.DateInput(attrs={'type': 'date', 'class': 'form-control'}),
+            'start_time': forms.TimeInput(attrs={'type': 'time', 'class': 'form-control'}),
+            'end_date': forms.DateInput(attrs={'type': 'date', 'class': 'form-control'}),
+            'end_time': forms.TimeInput(attrs={'type': 'time', 'class': 'form-control'}),
+            'description': forms.Textarea(attrs={'rows': 3, 'class': 'form-control', 'placeholder': 'Optional event description'}),
+            'capacity': forms.NumberInput(attrs={'class': 'form-control', 'placeholder': 'e.g., 500', 'min': '1'}),
+            'ticket_link': forms.URLInput(attrs={'class': 'form-control', 'placeholder': 'https://...'}),
+        }
+
+    def __init__(self, *args, **kwargs):
+        organization = kwargs.pop('organization', None)
+        super().__init__(*args, **kwargs)
+        if organization is not None:
+            self.fields['venue'].queryset = Venue.objects.filter(
+                organization=organization
+            ).order_by('name', 'city')
+        else:
+            self.fields['venue'].queryset = Venue.objects.none()
+        self.fields['description'].required = False
+        self.fields['capacity'].required = False
+        self.fields['ticket_link'].required = False
+
+        # Add a ChoiceField per dropdown custom field (org-scoped)
+        if organization is not None:
+            dropdown_fields = CustomField.objects.filter(
+                field_type='dropdown', organization=organization
+            ).prefetch_related('options').order_by('order', 'name')
+        else:
+            dropdown_fields = []
+        layout_fields = [
+            Field('name'),
+            Row(
+                Column('venue', css_class='form-group col-md-4 mb-0'),
+                Column('start_date', css_class='form-group col-md-4 mb-0'),
+                Column('start_time', css_class='form-group col-md-4 mb-0'),
+            ),
+            Row(
+                Column('end_date', css_class='form-group col-md-4 mb-0'),
+                Column('end_time', css_class='form-group col-md-4 mb-0'),
+                Column('capacity', css_class='form-group col-md-4 mb-0'),
+            ),
+            Field('description'),
+            Field('ticket_link'),
+        ]
+        for cf in dropdown_fields:
+            choices = [('', '---------')] + [
+                (opt.id, opt.label) for opt in cf.options.all()
+            ]
+            field_name = f'custom_field_{cf.id}'
+            required = getattr(cf, 'required', False)
+            self.fields[field_name] = forms.ChoiceField(
+                label=cf.name,
+                choices=choices,
+                required=required,
+                widget=forms.Select(attrs={'class': 'form-select'}),
+            )
+            default_option_id = getattr(cf, 'default_option_id', None)
+            if not self.is_bound and self.instance.pk:
+                # Editing: pre-populate with existing value
+                from .models import EventCustomFieldValue
+                try:
+                    existing = EventCustomFieldValue.objects.get(
+                        event=self.instance, custom_field=cf
+                    )
+                    if existing.custom_field_option_id:
+                        self.fields[field_name].initial = existing.custom_field_option_id
+                except EventCustomFieldValue.DoesNotExist:
+                    pass
+            elif (
+                not self.is_bound
+                and (getattr(self.instance, 'pk', None) is None or not self.instance.pk)
+                and default_option_id
+            ):
+                self.fields[field_name].initial = default_option_id
+            layout_fields.append(Field(field_name))
+
+        self.helper = FormHelper()
+        self.helper.form_tag = False
+        self.helper.layout = Layout(*layout_fields)
+
+    def clean(self):
+        cleaned_data = super().clean()
+        start_date = cleaned_data.get('start_date')
+        start_time = cleaned_data.get('start_time')
+        end_date = cleaned_data.get('end_date')
+        end_time = cleaned_data.get('end_time')
+
+        if end_time and not end_date:
+            self.add_error('end_date', 'End date is required when end time is provided.')
+
+        if end_date and start_date:
+            if end_date < start_date:
+                self.add_error('end_date', 'End date cannot be before start date.')
+            elif end_date == start_date and end_time and start_time:
+                if end_time <= start_time:
+                    self.add_error('end_time', 'End time must be after start time on the same date.')
+
+        return cleaned_data
+
+    def validate_unique(self):
+        try:
+            self.instance.validate_unique()
+        except forms.ValidationError as e:
+            self._update_errors(e)

@@ -12,12 +12,50 @@
                 <li class="breadcrumb-item active">{{ event.name }}</li>
             </ol>
         </nav>
-        <h1><i class="bi bi-calendar-event"></i> {{ event.name }}</h1>
+        <div class="d-flex align-items-center gap-2">
+            <h1 class="mb-0"><i class="bi bi-calendar-event"></i> {{ event.name }}</h1>
+            <a href="{% url 'tickets:event_edit' event.id %}" class="btn btn-sm btn-outline-primary">
+                <i class="bi bi-pencil"></i> Edit
+            </a>
+            <a href="{% url 'tickets:event_delete' event.id %}" class="btn btn-sm btn-outline-danger">
+                <i class="bi bi-trash"></i> Delete
+            </a>
+        </div>
         <p class="text-muted">
             <i class="bi bi-geo-alt"></i> {{ event.venue.name }}, {{ event.venue.city }} |
-            <i class="bi bi-clock"></i> {{ event.event_date|date:"M d, Y H:i" }}
+            <i class="bi bi-clock"></i> {{ event.start_date|date:"M d, Y" }}{% if event.start_time %} {{ event.start_time|time:"H:i" }}{% endif %}{% if event.end_date %} &ndash; {{ event.end_date|date:"M d, Y" }}{% if event.end_time %} {{ event.end_time|time:"H:i" }}{% endif %}{% endif %}
             {% if event.capacity %}| <i class="bi bi-people"></i> Capacity: {{ event.capacity }}{% else %}| <i class="bi bi-people"></i> Capacity: —{% endif %}
         </p>
+        {% if event.venue.get_display_address %}
+        <p class="text-muted small">
+            <i class="bi bi-pin-map"></i> {{ event.venue.get_display_address }}
+        </p>
+        {% endif %}
+        {% if event.ticket_link or event.talent_lineup.exists or custom_field_values_display %}
+        <div class="card mt-2">
+            <div class="card-body py-2 small">
+                {% if event.ticket_link %}
+                <p class="mb-1">
+                    <i class="bi bi-ticket-perforated"></i>
+                    <a href="{{ event.ticket_link }}" target="_blank" rel="noopener noreferrer">Ticket Link</a>
+                </p>
+                {% endif %}
+                {% if event.talent_lineup.exists %}
+                <p class="mb-1">
+                    <strong><i class="bi bi-music-note-list"></i> Talent Lineup:</strong>
+                    {% for t in event.talent_lineup.all %}{{ t.name }}{% if not forloop.last %}, {% endif %}{% endfor %}
+                </p>
+                {% endif %}
+                {% for val in custom_field_values_display %}
+                    {% if val.custom_field_option %}
+                <p class="mb-0">
+                    <strong>{{ val.custom_field.name }}:</strong> {{ val.custom_field_option.label }}
+                </p>
+                    {% endif %}
+                {% endfor %}
+            </div>
+        </div>
+        {% endif %}
     </div>
 </div>
 
@@ -59,8 +97,11 @@
 <div class="row mb-4">
     <div class="col">
         <div class="card">
-            <div class="card-header">
+            <div class="card-header d-flex justify-content-between align-items-center">
                 <h5 class="mb-0"><i class="bi bi-file-earmark-arrow-up"></i> Associated Uploads</h5>
+                <a href="{% url 'tickets:event_upload_csv' event.id %}" class="btn btn-sm btn-primary">
+                    <i class="bi bi-upload"></i> Upload CSV
+                </a>
             </div>
             <div class="card-body">
                 {% if upload_stats %}

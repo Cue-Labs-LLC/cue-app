@@ -50,8 +50,8 @@
 <div class="row mb-4">
     <div class="col">
         <div class="d-grid gap-2">
-            <a href="{% url 'tickets:upload_csv' %}" class="btn btn-primary btn-lg">
-                <i class="bi bi-upload"></i> Upload New CSV File
+            <a href="{% url 'tickets:event_create' %}" class="btn btn-primary btn-lg">
+                <i class="bi bi-calendar-plus"></i> Create Event
             </a>
         </div>
     </div>
@@ -61,37 +61,48 @@
     <div class="col">
         <div class="card">
             <div class="card-header">
-                <h5 class="mb-0"><i class="bi bi-clock-history"></i> Recent Uploads</h5>
+                <h5 class="mb-0"><i class="bi bi-calendar-event"></i> Events</h5>
             </div>
             <div class="card-body">
-                {% if recent_uploads %}
+                {% if recent_events %}
                     <div class="table-responsive">
                         <table class="table table-hover">
                             <thead>
                                 <tr>
-                                    <th>Filename</th>
-                                    <th>Format</th>
-                                    <th>Upload Date</th>
-                                    <th>Status</th>
-                                    <th>Rows Processed</th>
+                                    <th>Event Name</th>
+                                    <th>Date</th>
+                                    <th>Venue</th>
+                                    <th>Orders</th>
+                                    <th>Revenue</th>
+                                    <th>Uploads</th>
+                                    <th>Ticket Link</th>
                                     <th>Actions</th>
                                 </tr>
                             </thead>
                             <tbody>
-                                {% for upload in recent_uploads %}
+                                {% for event in recent_events %}
                                     <tr>
-                                        <td>{{ upload.filename }}</td>
-                                        <td>{{ upload.csv_format.name }}</td>
-                                        <td>{{ upload.uploaded_at|date:"M d, Y H:i" }}</td>
                                         <td>
-                                            <span class="badge bg-{% if upload.status == 'completed' %}success{% elif upload.status == 'failed' %}danger{% elif upload.status == 'processing' %}warning{% else %}secondary{% endif %}">
-                                                {{ upload.get_status_display }}
-                                            </span>
+                                            {% if event.upload_count == 0 and event.end_date and event.end_date < today %}
+                                                <i class="bi bi-exclamation-triangle-fill text-warning me-1" title="No uploads for past event"></i>
+                                            {% endif %}
+                                            {{ event.name }}
                                         </td>
-                                        <td>{{ upload.processed_rows }} / {{ upload.total_rows }}</td>
+                                        <td>{{ event.start_date|date:"M d, Y" }}</td>
+                                        <td>{{ event.venue.name|default:"—" }}</td>
+                                        <td>{{ event.total_orders }}</td>
+                                        <td>${{ event.total_revenue|floatformat:2 }}</td>
+                                        <td>{{ event.upload_count }}</td>
                                         <td>
-                                            <a href="{% url 'tickets:upload_results' upload.id %}" class="btn btn-sm btn-outline-primary">
-                                                View Results
+                                            {% if event.ticket_link %}
+                                                <a href="{{ event.ticket_link }}" target="_blank" rel="noopener noreferrer" class="text-decoration-none" title="Buy tickets"><i class="bi bi-link-45deg"></i></a>
+                                            {% else %}
+                                                —
+                                            {% endif %}
+                                        </td>
+                                        <td>
+                                            <a href="{% url 'tickets:event_detail' event.id %}" class="btn btn-sm btn-outline-primary">
+                                                View Details
                                             </a>
                                         </td>
                                     </tr>
@@ -100,7 +111,7 @@
                         </table>
                     </div>
                 {% else %}
-                    <p class="text-muted">No uploads yet. <a href="{% url 'tickets:upload_csv' %}">Upload your first CSV file</a>.</p>
+                    <p class="text-muted">No events yet. <a href="{% url 'tickets:event_create' %}">Create an event</a> to get started.</p>
                 {% endif %}
             </div>
         </div>

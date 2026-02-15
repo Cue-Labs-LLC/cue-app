@@ -1,0 +1,151 @@
+{% extends 'tickets/base.html' %}
+
+{% block title %}LTV by Market - Event Ticket Order Upload System{% endblock %}
+
+{% block extra_head %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+{% endblock %}
+
+{% block content %}
+<div class="row mb-4">
+    <div class="col d-flex justify-content-between align-items-center">
+        <h1><i class="bi bi-bar-chart"></i> Customer LTV by Market</h1>
+        <a href="{% url 'tickets:customer_list' %}" class="btn btn-outline-secondary">
+            <i class="bi bi-people"></i> Customers
+        </a>
+    </div>
+</div>
+
+{% if market_stats %}
+<script type="application/json" id="market-stats-data">{{ market_stats_json|safe }}</script>
+<div class="row mb-4">
+    <div class="col">
+        <div class="card">
+            <div class="card-body">
+                <div class="btn-group mb-3" role="group" aria-label="Chart metric">
+                    <input type="radio" class="btn-check" name="chartMetric" id="metricTotal" value="total" checked>
+                    <label class="btn btn-outline-primary" for="metricTotal">Total LTV</label>
+                    <input type="radio" class="btn-check" name="chartMetric" id="metricAvg" value="avg">
+                    <label class="btn btn-outline-primary" for="metricAvg">Average LTV</label>
+                </div>
+                <div style="position: relative; height: 360px;">
+                    <canvas id="ltvByMarketChart"></canvas>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endif %}
+
+<div class="row">
+    <div class="col">
+        <div class="card">
+            <div class="card-body">
+                {% if market_stats %}
+                <div class="table-responsive">
+                    <table class="table table-hover">
+                        <thead>
+                            <tr>
+                                <th>
+                                    <a href="?sort=city" class="text-decoration-none">City <i class="bi bi-arrow-down-up"></i></a>
+                                </th>
+                                <th>
+                                    <a href="?sort=-total_ltv" class="text-decoration-none">Total LTV <i class="bi bi-arrow-down-up"></i></a>
+                                </th>
+                                <th>
+                                    <a href="?sort=-customer_count" class="text-decoration-none">Customers <i class="bi bi-arrow-down-up"></i></a>
+                                </th>
+                                <th>
+                                    <a href="?sort=-order_count" class="text-decoration-none">Orders <i class="bi bi-arrow-down-up"></i></a>
+                                </th>
+                                <th>Avg LTV</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for row in market_stats %}
+                            <tr>
+                                <td>{{ row.city }}</td>
+                                <td><strong class="text-success">${{ row.total_ltv|floatformat:2 }}</strong></td>
+                                <td>{{ row.customer_count }}</td>
+                                <td>{{ row.order_count }}</td>
+                                <td>${{ row.avg_ltv|floatformat:2 }}</td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+                {% else %}
+                <p class="mb-0 text-muted">No order data by market yet.</p>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</div>
+
+{% if market_stats %}
+<script>
+(function() {
+    var el = document.getElementById('market-stats-data');
+    if (!el) return;
+    var marketChartData = JSON.parse(el.textContent);
+    if (marketChartData.length === 0) return;
+    var ctx = document.getElementById('ltvByMarketChart').getContext('2d');
+    var chart = new Chart(ctx, {
+        type: 'bar',
+        data: {
+            labels: marketChartData.map(function(d) { return d.city; }),
+            datasets: [{
+                label: 'Total LTV',
+                data: marketChartData.map(function(d) { return d.total_ltv; }),
+                backgroundColor: 'rgba(13, 110, 253, 0.7)',
+                borderColor: 'rgb(13, 110, 253)',
+                borderWidth: 1
+            }]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+                tooltip: {
+                    callbacks: {
+                        label: function(context) {
+                            var value = context.parsed.y;
+                            return '$' + Number(value).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+                        }
+                    }
+                }
+            },
+            scales: {
+                y: {
+                    beginAtZero: true,
+                    title: {
+                        display: true,
+                        text: 'Total LTV ($)'
+                    }
+                }
+            }
+        }
+    });
+    function getMetric() {
+        return document.querySelector('input[name="chartMetric"]:checked').value;
+    }
+    function updateChart() {
+        var metric = getMetric();
+        if (metric === 'avg') {
+            chart.data.datasets[0].label = 'Average LTV';
+            chart.data.datasets[0].data = marketChartData.map(function(d) { return d.avg_ltv; });
+            chart.options.scales.y.title.text = 'Average LTV ($)';
+        } else {
+            chart.data.datasets[0].label = 'Total LTV';
+            chart.data.datasets[0].data = marketChartData.map(function(d) { return d.total_ltv; });
+            chart.options.scales.y.title.text = 'Total LTV ($)';
+        }
+        chart.update();
+    }
+    document.querySelectorAll('input[name="chartMetric"]').forEach(function(radio) {
+        radio.addEventListener('change', updateChart);
+    });
+})();
+</script>
+{% endif %}
+{% endblock %}
