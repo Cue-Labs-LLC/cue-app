@@ -3,6 +3,9 @@
 
 {% block title %}Create Venue{% endblock %}
 
+{% block extra_head %}
+{% endblock %}
+
 {% block content %}
 <div class="page-header">
     <div>
@@ -45,4 +48,89 @@
         </div>
     </div>
 </div>
+{% endblock %}
+
+{% block extra_js %}
+{% if google_maps_api_key %}
+<script>
+window.initVenuePlacesAutocomplete = function() {
+    var input = document.getElementById('id_street_address');
+    if (!input) return;
+
+    var autocomplete = new google.maps.places.Autocomplete(input, {
+        types: ['address'],
+    });
+
+    input.addEventListener('keydown', function(e) {
+        if (e.key === 'Enter') {
+            var pac = document.querySelector('.pac-container');
+            if (pac && pac.style.display !== 'none') {
+                e.preventDefault();
+            }
+        }
+    });
+
+    autocomplete.addListener('place_changed', function() {
+        var place = autocomplete.getPlace();
+        if (!place.address_components) return;
+
+        var streetNumber = '';
+        var route = '';
+        var city = '';
+        var state = '';
+        var postalCode = '';
+        var country = '';
+
+        for (var i = 0; i < place.address_components.length; i++) {
+            var component = place.address_components[i];
+            var types = component.types;
+
+            if (types.indexOf('street_number') !== -1) {
+                streetNumber = component.long_name;
+            } else if (types.indexOf('route') !== -1) {
+                route = component.long_name;
+            } else if (types.indexOf('locality') !== -1) {
+                city = component.long_name;
+            } else if (types.indexOf('administrative_area_level_1') !== -1) {
+                state = component.short_name;
+            } else if (types.indexOf('postal_code') !== -1) {
+                postalCode = component.long_name;
+            } else if (types.indexOf('country') !== -1) {
+                country = component.long_name;
+            }
+        }
+
+        var street = '';
+        if (streetNumber && route) {
+            street = streetNumber + ' ' + route;
+        } else if (route) {
+            street = route;
+        } else if (streetNumber) {
+            street = streetNumber;
+        }
+
+        if (street) input.value = street;
+
+        var cityField = document.getElementById('id_city');
+        var stateField = document.getElementById('id_state');
+        var postalField = document.getElementById('id_postal_code');
+        var countryField = document.getElementById('id_country');
+
+        if (cityField && city) cityField.value = city;
+        if (stateField && state) stateField.value = state;
+        if (postalField && postalCode) postalField.value = postalCode;
+        if (countryField && country) countryField.value = country;
+    });
+};
+(function() {
+    var key = '{{ google_maps_api_key|escapejs }}';
+    if (!key) return;
+    var s = document.createElement('script');
+    s.src = 'https://maps.googleapis.com/maps/api/js?key=' + key + '&libraries=places&callback=initVenuePlacesAutocomplete';
+    s.async = true;
+    s.defer = true;
+    document.head.appendChild(s);
+})();
+</script>
+{% endif %}
 {% endblock %}

@@ -17,7 +17,7 @@
         <div class="detail-meta">
             <div class="detail-meta-item"><i class="bi bi-geo-alt"></i> {{ event.venue.name }}, {{ event.venue.city }}</div>
             <div class="detail-meta-divider"></div>
-            <div class="detail-meta-item"><i class="bi bi-clock"></i> {{ event.start_date|date:"M d, Y" }}{% if event.start_time %} {{ event.start_time|time:"H:i" }}{% endif %}{% if event.end_date %} &ndash; {{ event.end_date|date:"M d, Y" }}{% if event.end_time %} {{ event.end_time|time:"H:i" }}{% endif %}{% endif %}</div>
+            <div class="detail-meta-item"><i class="bi bi-clock"></i> {{ event.start_date|date:"M d, Y" }}{% if event.start_time %} {{ event.start_time|time:"g:i A" }}{% endif %}{% if event.end_date %} &ndash; {{ event.end_date|date:"M d, Y" }}{% if event.end_time %} {{ event.end_time|time:"g:i A" }}{% endif %}{% endif %}</div>
             {% if event.capacity %}
             <div class="detail-meta-divider"></div>
             <div class="detail-meta-item"><i class="bi bi-people"></i> Capacity: {{ event.capacity }}</div>
@@ -160,7 +160,7 @@
                         <td>{{ order.order_date|date:"M d, Y H:i" }}</td>
                         <td><a href="{% url 'tickets:customer_detail' order.customer.id %}">{{ order.customer.name }}</a></td>
                         <td><strong>${{ order.total_amount|floatformat:2 }}</strong></td>
-                        <td>{{ order.tickets.count }}</td>
+                        <td>{{ order.tickets_count }}</td>
                         <td>
                             {% if order.uploaded_file %}
                                 <a href="{% url 'tickets:upload_results' order.uploaded_file.id %}"><i class="bi bi-file-earmark"></i> {{ order.uploaded_file.filename|truncatewords:3 }}</a>

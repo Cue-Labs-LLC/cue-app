@@ -181,6 +181,9 @@ else:
 GOOGLE_SERVICE_ACCOUNT_JSON = os.environ.get('GOOGLE_SERVICE_ACCOUNT_JSON', '')
 GOOGLE_DOC_ID = os.environ.get('GOOGLE_DOC_ID', '')
 
+# Google Maps API (Places Autocomplete on venue forms)
+GOOGLE_MAPS_API_KEY = os.environ.get('GOOGLE_MAPS_API_KEY', '')
+
 # Crispy Forms Configuration
 CRISPY_ALLOWED_TEMPLATE_PACKS = 'bootstrap5'
 CRISPY_TEMPLATE_PACK = 'bootstrap5'

@@ -80,7 +80,7 @@
     </div>
     <div class="stat-card">
         <div class="stat-label">Last Order</div>
-        <div class="stat-value" style="font-size: 1.125rem;">{% if last_order %}{{ last_order.order_date|date:"M d, Y" }}{% else %}&mdash;{% endif %}</div>
+        <div class="stat-value" style="font-size: 1.125rem;">{% if last_order_date %}{{ last_order_date|date:"M d, Y" }}{% else %}&mdash;{% endif %}</div>
     </div>
 </div>
 
@@ -106,7 +106,7 @@
                         <td>{{ order.order_date|date:"M d, Y H:i" }}</td>
                         <td>{{ order.event.name }}</td>
                         <td><strong>${{ order.total_amount|floatformat:2 }}</strong></td>
-                        <td>{{ order.tickets.count }}</td>
+                        <td>{{ order.tickets_count }}</td>
                     </tr>
                     {% endfor %}
                 </tbody>

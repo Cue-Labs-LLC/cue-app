@@ -526,7 +526,7 @@ class VenueForm(forms.ModelForm):
         widgets = {
             'name': forms.TextInput(attrs={'class': 'form-control', 'placeholder': 'e.g., The Fillmore'}),
             'city': forms.TextInput(attrs={'class': 'form-control', 'placeholder': 'e.g., San Francisco'}),
-            'street_address': forms.TextInput(attrs={'class': 'form-control', 'placeholder': 'e.g., 123 Main St'}),
+            'street_address': forms.TextInput(attrs={'class': 'form-control', 'placeholder': 'e.g., 123 Main St', 'autocomplete': 'off'}),
             'state': forms.TextInput(attrs={'class': 'form-control', 'placeholder': 'e.g., CA'}),
             'postal_code': forms.TextInput(attrs={'class': 'form-control', 'placeholder': 'e.g., 94102'}),
             'country': forms.TextInput(attrs={'class': 'form-control', 'placeholder': 'e.g., USA'}),

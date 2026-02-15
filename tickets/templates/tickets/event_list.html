@@ -43,7 +43,7 @@
                     {% for event in page_obj %}
                     <tr>
                         <td><strong>{{ event.name }}</strong></td>
-                        <td>{{ event.start_date|date:"M d, Y" }}{% if event.start_time %} {{ event.start_time|time:"H:i" }}{% endif %}</td>
+                        <td>{{ event.start_date|date:"M d, Y" }}{% if event.start_time %} {{ event.start_time|time:"g:i A" }}{% endif %}</td>
                         <td>{{ event.venue.name }}, {{ event.venue.city }}</td>
                         <td><span class="badge bg-info">{{ event.upload_count|default:0 }}</span></td>
                         <td>{{ event.total_orders|default:0 }}</td>

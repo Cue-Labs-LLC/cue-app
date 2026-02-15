@@ -9,7 +9,7 @@ from django.contrib.auth import views as auth_views
 from django.contrib.auth.decorators import login_required
 from django.urls import reverse_lazy
 from django.db.models import (
-    Sum, Count, Avg, Q, Subquery, OuterRef, Prefetch,
+    Sum, Count, Avg, Max, Q, Subquery, OuterRef, Prefetch,
     Case, When, Value, F, CharField,
 )
 from django.db.models.functions import Coalesce
@@ -193,10 +193,12 @@ def home(request):
 
     # Summary statistics (org-scoped via Event/Customer/UploadedFile)
     total_customers = Customer.objects.filter(organization=org).count()
-    total_orders = TicketOrder.objects.filter(event__organization=org).count()
-    total_revenue = TicketOrder.objects.filter(event__organization=org).aggregate(
-        total=Sum('total_amount')
-    )['total'] or Decimal('0.00')
+    order_agg = TicketOrder.objects.filter(event__organization=org).aggregate(
+        total_orders=Count('id'),
+        total_revenue=Coalesce(Sum('total_amount'), Decimal('0.00')),
+    )
+    total_orders = order_agg['total_orders']
+    total_revenue = order_agg['total_revenue']
     total_tickets = Ticket.objects.filter(ticket_order__event__organization=org).count()
     
     context = {
@@ -840,25 +842,30 @@ def customer_detail(request, customer_id):
     org = get_organization(request)
     customer = get_object_or_404(Customer.objects.filter(organization=org), id=customer_id)
     
-    # Order statistics
-    orders = customer.ticket_orders.all()
-    total_orders = orders.count()
+    # Order statistics — single aggregate instead of 5 separate queries
+    order_stats = customer.ticket_orders.aggregate(
+        total_orders=Count('id'),
+        avg_order_value=Coalesce(Avg('total_amount'), Decimal('0.00')),
+        last_order_date=Max('order_date'),
+    )
+    total_orders = order_stats['total_orders']
+    avg_order_value = order_stats['avg_order_value']
+    last_order_date = order_stats['last_order_date']
     total_tickets = Ticket.objects.filter(ticket_order__customer=customer).count()
-    avg_order_value = orders.aggregate(avg=Avg('total_amount'))['avg'] or Decimal('0.00')
-    
-    first_order = orders.order_by('order_date').first()
-    last_order = orders.order_by('-order_date').first()
-    
-    # Event attendance
+
+    # Event attendance — select_related to avoid N+1 on venue in template
     events_attended = Event.objects.filter(
         ticket_orders__customer=customer
-    ).distinct()
-    
-    # Paginate orders
+    ).select_related('venue').distinct()
+
+    # Paginate orders — select_related + annotate to avoid N+1 in template
+    orders = customer.ticket_orders.select_related('event').annotate(
+        tickets_count=Count('tickets')
+    ).order_by('-order_date')
     paginator = Paginator(orders, 20)
     page_number = request.GET.get('page')
     page_obj = paginator.get_page(page_number)
-    
+
     segment_badge_color = SEGMENT_BADGE_COLORS.get(
         (customer.rfm_segment or '').strip(), 'secondary'
     )
@@ -867,8 +874,7 @@ def customer_detail(request, customer_id):
         'total_orders': total_orders,
         'total_tickets': total_tickets,
         'avg_order_value': avg_order_value,
-        'first_order': first_order,
-        'last_order': last_order,
+        'last_order_date': last_order_date,
         'events_attended': events_attended,
         'page_obj': page_obj,
         'segment_badge_color': segment_badge_color,
@@ -1014,6 +1020,7 @@ def event_detail(request, event_id):
     org = get_organization(request)
     event = get_object_or_404(
         Event.objects.filter(organization=org).select_related('venue').prefetch_related(
+            'talent_lineup',
             Prefetch(
                 'custom_field_values',
                 EventCustomFieldValue.objects.select_related('custom_field', 'custom_field_option'),
@@ -1021,34 +1028,49 @@ def event_detail(request, event_id):
         ),
         id=event_id,
     )
-    
+
     # Get all distinct uploads associated with this event
     associated_uploads = event.get_associated_uploads().select_related('csv_format')
-    
-    # Calculate statistics per upload
+
+    # Calculate statistics per upload — single query instead of 3 per upload
+    upload_agg = (
+        TicketOrder.objects.filter(event=event, uploaded_file__in=associated_uploads)
+        .values('uploaded_file')
+        .annotate(
+            orders_count=Count('id'),
+            revenue=Coalesce(Sum('total_amount'), Decimal('0.00')),
+            tickets_count=Count('tickets', distinct=True),
+        )
+    )
+    upload_stats_map = {row['uploaded_file']: row for row in upload_agg}
     upload_stats = []
     for upload in associated_uploads:
-        orders = TicketOrder.objects.filter(event=event, uploaded_file=upload)
-        orders_count = orders.count()
-        revenue = orders.aggregate(total=Sum('total_amount'))['total'] or Decimal('0.00')
-        tickets_count = Ticket.objects.filter(ticket_order__event=event, ticket_order__uploaded_file=upload).count()
-        
+        stats = upload_stats_map.get(upload.id, {})
         upload_stats.append({
             'upload': upload,
-            'orders_count': orders_count,
-            'revenue': revenue,
-            'tickets_count': tickets_count,
+            'orders_count': stats.get('orders_count', 0),
+            'revenue': stats.get('revenue', Decimal('0.00')),
+            'tickets_count': stats.get('tickets_count', 0),
         })
-    
-    # Event statistics
-    orders = event.ticket_orders.all()
-    total_orders = orders.count()
-    total_revenue = orders.aggregate(total=Sum('total_amount'))['total'] or Decimal('0.00')
+
+    # Event statistics — combine into single aggregate (tickets separate to avoid join inflation)
+    event_stats = event.ticket_orders.aggregate(
+        total_orders=Count('id'),
+        total_revenue=Coalesce(Sum('total_amount'), Decimal('0.00')),
+        total_customers=Count('customer', distinct=True),
+    )
+    total_orders = event_stats['total_orders']
+    total_revenue = event_stats['total_revenue']
+    total_customers = event_stats['total_customers']
     total_tickets = Ticket.objects.filter(ticket_order__event=event).count()
-    total_customers = Customer.objects.filter(ticket_orders__event=event).distinct().count()
-    
-    # Paginate orders
-    paginator = Paginator(orders.order_by('-order_date'), 100)
+
+    # Paginate orders — select_related + annotate to avoid N+1 in template
+    orders_qs = event.ticket_orders.select_related(
+        'customer', 'uploaded_file'
+    ).annotate(
+        tickets_count=Count('tickets')
+    ).order_by('-order_date')
+    paginator = Paginator(orders_qs, 100)
     page_number = request.GET.get('page')
     page_obj = paginator.get_page(page_number)
 
@@ -1304,7 +1326,11 @@ def venue_create(request):
             return redirect('tickets:venue_list')
     else:
         form = VenueForm()
-    context = {'form': form}
+    from django.conf import settings as django_settings
+    context = {
+        'form': form,
+        'google_maps_api_key': django_settings.GOOGLE_MAPS_API_KEY,
+    }
     return render(request, 'tickets/venue_create.html', context)
 
 
@@ -1322,7 +1348,12 @@ def venue_edit(request, venue_id):
             return redirect('tickets:venue_list')
     else:
         form = VenueForm(instance=venue)
-    context = {'form': form, 'venue': venue}
+    from django.conf import settings as django_settings
+    context = {
+        'form': form,
+        'venue': venue,
+        'google_maps_api_key': django_settings.GOOGLE_MAPS_API_KEY,
+    }
     return render(request, 'tickets/venue_edit.html', context)
 
 
