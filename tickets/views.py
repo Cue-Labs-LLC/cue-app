@@ -23,7 +23,7 @@ from .models import (
     CustomField, EventCustomFieldValue,
 )
 from .forms import (
-    CSVUploadForm, EventCSVUploadForm, TicketPriceEntryForm, CSVFormatForm,
+    EventCSVUploadForm, TicketPriceEntryForm, CSVFormatForm,
     VenueForm, EventForm, EventTalentFormSet, LoginForm,
 )
 from .csv_processor import CSVProcessor
@@ -202,60 +202,6 @@ def home(request):
 @login_required
 @require_org
 @require_http_methods(["GET", "POST"])
-def upload_csv(request):
-    """Handle CSV file upload and processing."""
-    org = get_organization(request)
-    if request.method == 'POST':
-        form = CSVUploadForm(request.POST, request.FILES, organization=org)
-        if form.is_valid():
-            csv_file = form.cleaned_data['csv_file']
-            csv_format = form.cleaned_data['csv_format']
-            venue = form.cleaned_data['venue']
-            
-            # Save uploaded file (org-scoped)
-            uploaded_file = UploadedFile.objects.create(
-                organization=org,
-                csv_format=csv_format,
-                filename=csv_file.name,
-                description='',
-                source='',
-                metadata={
-                    'notes': form.cleaned_data.get('notes', ''),
-                    'event_name': form.cleaned_data.get('event_name', ''),
-                    'event_start_date': form.cleaned_data.get('event_start_date').isoformat() if form.cleaned_data.get('event_start_date') else '',
-                    'event_start_time': form.cleaned_data.get('event_start_time').isoformat() if form.cleaned_data.get('event_start_time') else '',
-                    'venue_id': str(venue.id),
-                    'venue_name': venue.name,
-                    'venue_city': venue.city,
-                }
-            )
-            
-            # Save file to media directory
-            media_path = os.path.join('uploads', f"{uploaded_file.id}_{csv_file.name}")
-            os.makedirs(os.path.dirname(os.path.join('media', media_path)), exist_ok=True)
-            with open(os.path.join('media', media_path), 'wb+') as destination:
-                for chunk in csv_file.chunks():
-                    destination.write(chunk)
-            
-            uploaded_file.metadata['file_path'] = media_path
-            uploaded_file.save(update_fields=['metadata'])
-            
-            # Check if manual pricing is required
-            if csv_format.requires_manual_pricing:
-                # Redirect to price entry
-                return redirect('tickets:price_entry', file_id=uploaded_file.id)
-            else:
-                # Process CSV directly
-                return process_csv_file(request, uploaded_file)
-    else:
-        form = CSVUploadForm(organization=org)
-    
-    return render(request, 'tickets/upload.html', {'form': form})
-
-
-@login_required
-@require_org
-@require_http_methods(["GET", "POST"])
 def price_entry(request, file_id):
     """Display form for manually entering ticket prices or tiers."""
     org = get_organization(request)
@@ -267,7 +213,7 @@ def price_entry(request, file_id):
         file_path = os.path.join('media', uploaded_file.metadata.get('file_path', ''))
         if not os.path.exists(file_path):
             messages.error(request, "CSV file not found.")
-            return redirect('tickets:upload_csv')
+            return redirect('tickets:event_list')
         
         # Parse CSV to get ticket types
         df = pd.read_csv(file_path, dtype=str, keep_default_na=False)
@@ -420,7 +366,7 @@ def price_entry(request, file_id):
         file_path = os.path.join('media', uploaded_file.metadata.get('file_path', ''))
         if not os.path.exists(file_path):
             messages.error(request, "CSV file not found.")
-            return redirect('tickets:upload_csv')
+            return redirect('tickets:event_list')
         
         # Parse CSV to extract unique ticket types and quantities
         df = pd.read_csv(file_path, dtype=str, keep_default_na=False)
@@ -454,7 +400,7 @@ def process_csv_file(request, uploaded_file, manual_prices=None, tier_definition
         file_path = os.path.join('media', uploaded_file.metadata.get('file_path', ''))
         if not os.path.exists(file_path):
             messages.error(request, "CSV file not found.")
-            return redirect('tickets:upload_csv')
+            return redirect('tickets:event_list')
         
         # Initialize processor
         processor = CSVProcessor(uploaded_file, uploaded_file.csv_format)

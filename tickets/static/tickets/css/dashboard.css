@@ -6,25 +6,25 @@
 /* -- CSS Variables ----------------------------- */
 :root {
     /* Backgrounds */
-    --bg-page: #F5F5F0;
+    --bg-page: #F7F7F5;
     --bg-surface: #FFFFFF;
-    --bg-sidebar: #111111;
-    --bg-sidebar-hover: #1C1C1C;
-    --bg-sidebar-active: #262626;
-    --bg-inset: #F0F0EB;
+    --bg-sidebar: #FFFFFF;
+    --bg-sidebar-hover: #F2F2EF;
+    --bg-sidebar-active: #EEEEE9;
+    --bg-inset: #F2F2EF;
 
     /* Borders */
-    --border: #E8E8E3;
-    --border-light: #F0F0EB;
-    --border-sidebar: #2A2A2A;
+    --border: #E4E4DF;
+    --border-light: #EDEDEA;
+    --border-sidebar: #E4E4DF;
 
     /* Text */
-    --text-primary: #111111;
-    --text-secondary: #555555;
-    --text-tertiary: #999999;
+    --text-primary: #1A1A1A;
+    --text-secondary: #5C5C5C;
+    --text-tertiary: #9A9A9A;
     --text-inverse: #FFFFFF;
-    --text-sidebar: #AAAAAA;
-    --text-sidebar-active: #FFFFFF;
+    --text-sidebar: #6B6B6B;
+    --text-sidebar-active: #1A1A1A;
 
     /* Accent - deep warm orange (stage fire) */
     --accent: #E8590C;
@@ -57,6 +57,71 @@
     --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.04);
     --shadow-md: 0 2px 8px rgba(0, 0, 0, 0.06);
     --shadow-lg: 0 4px 16px rgba(0, 0, 0, 0.08);
+}
+
+/* -- Dark Theme ------------------------------- */
+[data-theme="dark"] {
+    color-scheme: dark;
+
+    --bg-page: #131316;
+    --bg-surface: #1C1C21;
+    --bg-sidebar: #16161A;
+    --bg-sidebar-hover: #22222A;
+    --bg-sidebar-active: #2A2A34;
+    --bg-inset: #1C1C21;
+
+    --border: #2E2E38;
+    --border-light: #25252D;
+    --border-sidebar: #2E2E38;
+
+    --text-primary: #E8E8ED;
+    --text-secondary: #A0A0AD;
+    --text-tertiary: #6B6B78;
+    --text-inverse: #131316;
+    --text-sidebar: #8A8A98;
+    --text-sidebar-active: #E8E8ED;
+
+    --accent-muted: rgba(232, 89, 12, 0.12);
+    --accent-muted-border: rgba(232, 89, 12, 0.25);
+
+    --success-muted: rgba(22, 163, 74, 0.12);
+    --warning-muted: rgba(202, 138, 4, 0.12);
+    --danger-muted: rgba(220, 38, 38, 0.12);
+    --info-muted: rgba(124, 58, 237, 0.12);
+
+    --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.2);
+    --shadow-md: 0 2px 8px rgba(0, 0, 0, 0.3);
+    --shadow-lg: 0 4px 16px rgba(0, 0, 0, 0.4);
+}
+
+[data-theme="dark"] .topbar {
+    background: rgba(28, 28, 33, 0.85);
+}
+
+[data-theme="dark"] .alert-success { color: #4ADE80; }
+[data-theme="dark"] .alert-danger { color: #FCA5A5; }
+[data-theme="dark"] .alert-warning { color: #FDE68A; }
+[data-theme="dark"] .alert-info { color: #C4B5FD; }
+
+[data-theme="dark"] .modal-content {
+    background: var(--bg-surface);
+}
+
+[data-theme="dark"] .dropdown-menu {
+    background: var(--bg-surface);
+}
+
+[data-theme="dark"] .list-group-item {
+    background: var(--bg-surface);
+    color: var(--text-primary);
+}
+
+[data-theme="dark"] .table-striped > tbody > tr:nth-of-type(odd) > * {
+    --bs-table-bg-type: rgba(255, 255, 255, 0.02);
+}
+
+[data-theme="dark"] .btn-close {
+    filter: invert(1) grayscale(100%) brightness(200%);
 }
 
 /* -- Base -------------------------------------- */
@@ -110,6 +175,7 @@ a:hover {
 .sidebar {
     width: var(--sidebar-width);
     background: var(--bg-sidebar);
+    border-right: 1px solid var(--border);
     position: fixed;
     top: 0;
     left: 0;
@@ -156,7 +222,7 @@ a:hover {
 }
 
 .sidebar-brand-text {
-    color: var(--text-inverse);
+    color: var(--text-primary);
     font-family: var(--font-display);
     font-size: 15px;
     font-weight: 600;
@@ -176,7 +242,7 @@ a:hover {
     font-weight: 600;
     text-transform: uppercase;
     letter-spacing: 0.08em;
-    color: #555;
+    color: var(--text-tertiary);
     padding: 8px 8px 4px;
     font-family: var(--font-body);
 }
@@ -256,11 +322,12 @@ a:hover {
     width: 28px;
     height: 28px;
     border-radius: 50%;
-    background: var(--bg-sidebar-active);
+    background: var(--bg-inset);
+    border: 1px solid var(--border);
     display: flex;
     align-items: center;
     justify-content: center;
-    color: var(--text-sidebar-active);
+    color: var(--text-secondary);
     font-size: 12px;
     font-weight: 600;
     flex-shrink: 0;
@@ -286,7 +353,7 @@ a:hover {
 /* -- Topbar (mobile only) ---------------------- */
 .topbar {
     height: 56px;
-    background: rgba(245, 245, 240, 0.85);
+    background: rgba(255, 255, 255, 0.85);
     backdrop-filter: blur(8px);
     border-bottom: 1px solid var(--border);
     display: flex;
@@ -1075,7 +1142,7 @@ a:hover {
     display: none;
     position: fixed;
     inset: 0;
-    background: rgba(0, 0, 0, 0.4);
+    background: rgba(0, 0, 0, 0.2);
     z-index: 99;
 }
 
@@ -1124,6 +1191,7 @@ code {
 @media (max-width: 991px) {
     .sidebar {
         transform: translateX(-100%);
+        box-shadow: var(--shadow-lg);
     }
 
     .sidebar.open {
