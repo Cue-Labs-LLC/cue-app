@@ -59,7 +59,7 @@
                     {% for event in recent_events %}
                     <tr>
                         <td>
-                            {% if event.upload_count == 0 and event.end_date and event.end_date < today %}
+                            {% if event.id in event_ids_show_warning %}
                                 <i class="bi bi-exclamation-triangle-fill text-warning me-1" title="No uploads for past event"></i>
                             {% endif %}
                             <strong>{{ event.name }}</strong>

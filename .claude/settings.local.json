@@ -6,7 +6,9 @@
       "Bash(python:*)",
       "Bash(curl:*)",
       "Bash(cat:*)",
-      "Bash(tail:*)"
+      "Bash(tail:*)",
+      "Bash(grep:*)",
+      "Bash(find:*)"
     ]
   },
   "enabledPlugins": {

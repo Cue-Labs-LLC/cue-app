@@ -1,7 +1,7 @@
 import calendar
 import os
 import json
-from datetime import date, timedelta
+from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 from django.shortcuts import render, redirect, get_object_or_404
 from django.contrib import messages
@@ -18,6 +18,7 @@ from django.core.paginator import Paginator
 from django.http import JsonResponse, Http404, HttpResponse
 from django.views.decorators.http import require_http_methods
 from django.db import connection, transaction
+from django.utils import timezone as django_tz
 import pandas as pd
 
 from .models import (
@@ -191,6 +192,18 @@ def home(request):
         ),
     ).select_related('venue').order_by('-start_date')[:10]
 
+    # Show warning when current time is past the event's end date+time and upload_count is 0
+    now_local = django_tz.localtime(django_tz.now()).replace(tzinfo=None)
+    event_ids_show_warning = set()
+    for ev in recent_events:
+        if ev.upload_count != 0:
+            continue
+        end_date = ev.end_date or ev.start_date
+        end_time = ev.end_time or ev.start_time or time(23, 59, 59)
+        event_end = datetime.combine(end_date, end_time)
+        if now_local > event_end:
+            event_ids_show_warning.add(ev.id)
+
     # Summary statistics (org-scoped via Event/Customer/UploadedFile)
     total_customers = Customer.objects.filter(organization=org).count()
     order_agg = TicketOrder.objects.filter(event__organization=org).aggregate(
@@ -203,6 +216,7 @@ def home(request):
     
     context = {
         'recent_events': recent_events,
+        'event_ids_show_warning': event_ids_show_warning,
         'today': date.today(),
         'total_customers': total_customers,
         'total_orders': total_orders,
