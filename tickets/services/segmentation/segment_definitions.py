@@ -27,6 +27,30 @@ SEGMENT_BADGE_COLORS = {
     "Dormant": "secondary",
 }
 
+# Plain-English descriptions for UI (simple language)
+SEGMENT_DESCRIPTIONS = {
+    "VIP": "Your best customers: they buy often, recently, and spend a lot.",
+    "Loyal": "Regular customers who order often and spend well.",
+    "Big Spender": "High spenders who don't order very often, but when they do they spend a lot.",
+    "New": "Recently active with only one order so far; low spend.",
+    "Promising": "Somewhat recent, few orders, moderate spend—could grow.",
+    "At-Risk": "Used to be active but haven't bought recently; good order history.",
+    "Lapsed": "Haven't bought in a while but had multiple orders before.",
+    "Dormant": "Inactive, one or no orders, low spend.",
+}
+
+# Plain-English descriptions for UI (one short sentence per segment).
+SEGMENT_DESCRIPTIONS = {
+    "VIP": "Your best customers: they buy often, recently, and spend a lot.",
+    "Loyal": "Regular customers who order often and spend well.",
+    "Big Spender": "High spenders who don't order very often, but when they do they spend a lot.",
+    "New": "Recently active with only one order so far; low spend.",
+    "Promising": "Somewhat recent, few orders, moderate spend—could grow.",
+    "At-Risk": "Used to be active but haven't bought recently; good order history.",
+    "Lapsed": "Haven't bought in a while but had multiple orders before.",
+    "Dormant": "Inactive, one or no orders, low spend.",
+}
+
 
 def _in_range(value, min_max):
     if value is None:

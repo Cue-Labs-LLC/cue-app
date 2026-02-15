@@ -32,7 +32,11 @@ from .forms import (
 from .csv_processor import CSVProcessor
 from .services.forecasting.preview import generate_forecast_preview
 from .services.segmentation.rfm_calculator import RFMCalculator
-from .services.segmentation.segment_definitions import SEGMENT_BADGE_COLORS
+from .services.segmentation.segment_definitions import (
+    SEGMENT_BADGE_COLORS,
+    SEGMENT_DESCRIPTIONS,
+    SEGMENT_RULES,
+)
 from .utils import get_organization, require_org
 
 import logging
@@ -601,6 +605,15 @@ def customer_list(request):
     page_obj = paginator.get_page(page_number)
 
     segment_choices = list(SEGMENT_BADGE_COLORS.keys())
+    current_segment_definition = None
+    if segment_filter:
+        desc = SEGMENT_DESCRIPTIONS.get(segment_filter, '')
+        if desc:
+            current_segment_definition = {
+                'segment': segment_filter,
+                'description': desc,
+                'badge_color': SEGMENT_BADGE_COLORS.get(segment_filter, 'secondary'),
+            }
     context = {
         'page_obj': page_obj,
         'search_query': search_query,
@@ -608,6 +621,7 @@ def customer_list(request):
         'segment_filter': segment_filter,
         'segment_choices': segment_choices,
         'segment_badge_colors': SEGMENT_BADGE_COLORS,
+        'current_segment_definition': current_segment_definition,
     }
     return render(request, 'tickets/customer_list.html', context)
 
@@ -678,12 +692,32 @@ def customer_ltv_by_market(request):
     return render(request, 'tickets/ltv_by_market.html', context)
 
 
+def _format_range(min_max):
+    """Format (lo, hi) as 'lo-hi'; None as 'any'."""
+    if min_max is None:
+        return "any"
+    lo, hi = min_max
+    return f"{lo}-{hi}"
+
+
 @login_required
 @require_org
 def customer_segments(request):
     """Analytics page: segment distribution (donut), avg LTV per segment (bar), table with links."""
     org = get_organization(request)
     segment_order = list(SEGMENT_BADGE_COLORS.keys())
+
+    # Build segment definitions for "What the segments mean" card (simple language + optional R/F/M).
+    segment_definitions = []
+    for name, r_range, f_range, m_range in SEGMENT_RULES:
+        segment_definitions.append({
+            "segment": name,
+            "description": SEGMENT_DESCRIPTIONS.get(name, ""),
+            "badge_color": SEGMENT_BADGE_COLORS.get(name, "secondary"),
+            "r_range": _format_range(r_range),
+            "f_range": _format_range(f_range),
+            "m_range": _format_range(m_range),
+        })
 
     # Query 1: count + total_ltv per segment (normalize null/blank to Dormant)
     seg_data = (
@@ -742,6 +776,7 @@ def customer_segments(request):
     context = {
         'segment_stats': segment_stats,
         'segment_stats_json': segment_stats_json,
+        'segment_definitions': segment_definitions,
         'total_customers': total_customers,
         'rfm_recalc_in_progress': org.rfm_recalc_in_progress,
     }

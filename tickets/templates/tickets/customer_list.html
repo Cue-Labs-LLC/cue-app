@@ -8,6 +8,13 @@
     <h1>Customers</h1>
 </div>
 
+{% if current_segment_definition %}
+<div class="alert alert-light border mb-3 py-2 px-3 d-flex align-items-start gap-2">
+    <span class="badge bg-{{ current_segment_definition.badge_color }} mt-1">{{ current_segment_definition.segment }}</span>
+    <span class="small text-muted">{{ current_segment_definition.description }}</span>
+</div>
+{% endif %}
+
 <div class="search-bar">
     <form method="get" class="d-flex flex-wrap gap-2 w-100 align-items-center">
         <input type="text" name="search" class="form-control" style="max-width: 240px;" placeholder="Search by name or email..." value="{{ search_query }}">
