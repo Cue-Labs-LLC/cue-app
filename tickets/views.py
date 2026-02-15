@@ -1016,7 +1016,7 @@ def event_list(request):
         events = events.order_by('-start_date')
 
     # Pagination
-    paginator = Paginator(events, 50)
+    paginator = Paginator(events, 25)
     page_obj = paginator.get_page(page_number)
 
     context = {

@@ -61,7 +61,6 @@
             </table>
         </div>
 
-        {% if page_obj.has_other_pages %}
         <div class="d-flex justify-content-center py-3">
             <nav>
                 <ul class="pagination mb-0">
@@ -75,7 +74,6 @@
                 </ul>
             </nav>
         </div>
-        {% endif %}
         {% else %}
         <div class="empty-state">
             <i class="bi bi-calendar-event d-block"></i>
