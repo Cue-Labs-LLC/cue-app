@@ -1,0 +1,146 @@
+{% extends 'tickets/base.html' %}
+
+{% block title %}Customer Segments{% endblock %}
+
+{% block extra_head %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1>Customer Segments</h1>
+    <div class="page-header-actions">
+        <form method="post" action="{% url 'tickets:recalculate_segments' %}" class="d-inline">
+            {% csrf_token %}
+            <button type="submit" class="btn btn-primary"><i class="bi bi-arrow-clockwise"></i> Recalculate</button>
+        </form>
+        <a href="{% url 'tickets:customer_list' %}" class="btn btn-outline-secondary"><i class="bi bi-people"></i> Customers</a>
+    </div>
+</div>
+
+{% if segment_stats %}
+<script type="application/json" id="segment-stats-data">{{ segment_stats_json|safe }}</script>
+<div class="row mb-4 g-3">
+    <div class="col-md-6">
+        <div class="card h-100">
+            <div class="card-header"><h5 class="mb-0">Segment distribution</h5></div>
+            <div class="card-body d-flex align-items-center justify-content-center">
+                <div class="chart-container" style="height: 280px; width: 100%; max-width: 320px;">
+                    <canvas id="segmentDonutChart"></canvas>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-6">
+        <div class="card h-100">
+            <div class="card-header"><h5 class="mb-0">Avg LTV by segment</h5></div>
+            <div class="card-body">
+                <div class="chart-container" style="height: 280px;">
+                    <canvas id="segmentBarChart"></canvas>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endif %}
+
+<div class="card">
+    <div class="card-body p-0">
+        {% if segment_stats %}
+        <div class="table-responsive">
+            <table class="table table-hover mb-0">
+                <thead>
+                    <tr>
+                        <th>Segment</th>
+                        <th>Count</th>
+                        <th>% of total</th>
+                        <th>Avg LTV</th>
+                        <th>Avg orders</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for row in segment_stats %}
+                    <tr>
+                        <td>
+                            <a href="{% url 'tickets:customer_list' %}?segment={{ row.segment|urlencode }}">
+                                <span class="badge bg-{{ row.badge_color }}">{{ row.segment }}</span>
+                            </a>
+                        </td>
+                        <td>{{ row.count }}</td>
+                        <td>{{ row.pct }}%</td>
+                        <td><span class="revenue">${{ row.avg_ltv|floatformat:2 }}</span></td>
+                        <td>{{ row.avg_orders }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% else %}
+        <div class="empty-state">
+            <i class="bi bi-diagram-3 d-block"></i>
+            <p>No customer data yet. Upload CSV or add orders, then click Recalculate.</p>
+            <form method="post" action="{% url 'tickets:recalculate_segments' %}">
+                {% csrf_token %}
+                <button type="submit" class="btn btn-primary"><i class="bi bi-arrow-clockwise"></i> Recalculate</button>
+            </form>
+        </div>
+        {% endif %}
+    </div>
+</div>
+
+{% if segment_stats %}
+<script>
+(function() {
+    var el = document.getElementById('segment-stats-data');
+    if (!el) return;
+    var data = JSON.parse(el.textContent);
+    if (!data.length) return;
+
+    var colors = {
+        'VIP': 'rgb(220, 53, 69)',
+        'Loyal': 'rgb(25, 135, 84)',
+        'Big Spender': 'rgb(13, 202, 240)',
+        'New': 'rgb(13, 110, 253)',
+        'Promising': 'rgb(13, 110, 253)',
+        'At-Risk': 'rgb(255, 193, 7)',
+        'Lapsed': 'rgb(253, 126, 20)',
+        'Dormant': 'rgb(108, 117, 125)'
+    };
+    var bg = data.map(function(d) { return colors[d.segment] || 'rgb(108, 117, 125)'; });
+    var bgAlpha = data.map(function(d) {
+        var c = colors[d.segment] || 'rgb(108, 117, 125)';
+        return c.replace('rgb', 'rgba').replace(')', ', 0.7)');
+    });
+
+    var donutCtx = document.getElementById('segmentDonutChart');
+    if (donutCtx) {
+        new Chart(donutCtx.getContext('2d'), {
+            type: 'doughnut',
+            data: {
+                labels: data.map(function(d) { return d.segment; }),
+                datasets: [{ data: data.map(function(d) { return d.count; }), backgroundColor: bgAlpha, borderColor: bg, borderWidth: 1 }]
+            },
+            options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'right' } } }
+        });
+    }
+
+    var barCtx = document.getElementById('segmentBarChart');
+    if (barCtx) {
+        new Chart(barCtx.getContext('2d'), {
+            type: 'bar',
+            data: {
+                labels: data.map(function(d) { return d.segment; }),
+                datasets: [{ label: 'Avg LTV', data: data.map(function(d) { return d.avg_ltv; }), backgroundColor: bgAlpha, borderColor: bg, borderWidth: 1, borderRadius: 4 }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: { tooltip: { callbacks: { label: function(c) { return '$' + Number(c.parsed.y).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); } } } },
+                scales: { y: { beginAtZero: true, title: { display: true, text: 'Avg LTV ($)' } } }
+            }
+        });
+    }
+})();
+</script>
+{% endif %}
+{% endblock %}

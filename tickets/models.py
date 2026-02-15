@@ -208,6 +208,12 @@ class Customer(BaseModel):
         help_text="Total amount spent across all orders"
     )
     last_order_date = models.DateField(null=True, blank=True, db_index=True)
+    # RFM segmentation (Recency, Frequency, Monetary)
+    rfm_recency_score = models.IntegerField(null=True, blank=True, db_index=True)
+    rfm_frequency_score = models.IntegerField(null=True, blank=True, db_index=True)
+    rfm_monetary_score = models.IntegerField(null=True, blank=True, db_index=True)
+    rfm_segment = models.CharField(max_length=30, blank=True, db_index=True)
+    rfm_updated_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         ordering = ['-lifetime_value', 'name']

@@ -77,6 +77,11 @@
                             <i class="bi bi-bar-chart"></i> LTV by Market
                         </a>
                     </li>
+                    <li>
+                        <a href="{% url 'tickets:customer_segments' %}" class="sidebar-link{% if '/analytics/segments/' in request.path %} active{% endif %}">
+                            <i class="bi bi-diagram-3"></i> Segments
+                        </a>
+                    </li>
                 </ul>
             </div>
 

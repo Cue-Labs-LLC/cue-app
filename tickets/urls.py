@@ -31,6 +31,9 @@ urlpatterns = [
     path('customers/', views.customer_list, name='customer_list'),
     path('customers/ltv-by-market/', views.customer_ltv_by_market, name='customer_ltv_by_market'),
     path('customers/<uuid:customer_id>/', views.customer_detail, name='customer_detail'),
+    # Analytics - Segments
+    path('analytics/segments/', views.customer_segments, name='customer_segments'),
+    path('analytics/segments/recalculate/', views.recalculate_segments, name='recalculate_segments'),
     
     # Events
     path('events/', views.event_list, name='event_list'),

@@ -1,4 +1,5 @@
 {% extends 'tickets/base.html' %}
+{% load tickets_extras %}
 
 {% block title %}Customers{% endblock %}
 
@@ -8,10 +9,16 @@
 </div>
 
 <div class="search-bar">
-    <form method="get" class="d-flex gap-2 w-100">
-        <input type="text" name="search" class="form-control" placeholder="Search by name or email..." value="{{ search_query }}">
+    <form method="get" class="d-flex flex-wrap gap-2 w-100 align-items-center">
+        <input type="text" name="search" class="form-control" style="max-width: 240px;" placeholder="Search by name or email..." value="{{ search_query }}">
+        <select name="segment" class="form-select" style="max-width: 180px;">
+            <option value="">All segments</option>
+            {% for seg in segment_choices %}
+            <option value="{{ seg }}" {% if segment_filter == seg %}selected{% endif %}>{{ seg }}</option>
+            {% endfor %}
+        </select>
         <button type="submit" class="btn btn-outline-secondary"><i class="bi bi-search"></i></button>
-        {% if search_query %}
+        {% if search_query or segment_filter %}
         <a href="{% url 'tickets:customer_list' %}" class="btn btn-outline-secondary">Clear</a>
         {% endif %}
     </form>
@@ -24,11 +31,12 @@
             <table class="table table-hover mb-0">
                 <thead>
                     <tr>
-                        <th><a href="?sort=name&search={{ search_query }}">Name <i class="bi bi-arrow-down-up"></i></a></th>
-                        <th><a href="?sort=email&search={{ search_query }}">Email <i class="bi bi-arrow-down-up"></i></a></th>
+                        <th><a href="?sort=name&search={{ search_query }}&segment={{ segment_filter }}">Name <i class="bi bi-arrow-down-up"></i></a></th>
+                        <th><a href="?sort=email&search={{ search_query }}&segment={{ segment_filter }}">Email <i class="bi bi-arrow-down-up"></i></a></th>
                         <th>Phone</th>
-                        <th><a href="?sort=-lifetime_value&search={{ search_query }}">Lifetime Value <i class="bi bi-arrow-down-up"></i></a></th>
-                        <th><a href="?sort=-last_order_date&search={{ search_query }}">Last Order <i class="bi bi-arrow-down-up"></i></a></th>
+                        <th>Segment</th>
+                        <th><a href="?sort=-lifetime_value&search={{ search_query }}&segment={{ segment_filter }}">Lifetime Value <i class="bi bi-arrow-down-up"></i></a></th>
+                        <th><a href="?sort=-last_order_date&search={{ search_query }}&segment={{ segment_filter }}">Last Order <i class="bi bi-arrow-down-up"></i></a></th>
                         <th></th>
                     </tr>
                 </thead>
@@ -38,6 +46,13 @@
                         <td><strong>{{ customer.name }}</strong></td>
                         <td>{{ customer.email }}</td>
                         <td>{{ customer.phone|default:"\u2014" }}</td>
+                        <td>
+                            {% if customer.rfm_segment %}
+                            <span class="badge bg-{{ segment_badge_colors|get_item:customer.rfm_segment }}">{{ customer.rfm_segment }}</span>
+                            {% else %}
+                            <span class="text-muted">—</span>
+                            {% endif %}
+                        </td>
                         <td><span class="revenue">${{ customer.lifetime_value|floatformat:2 }}</span></td>
                         <td>{{ customer.last_order_date|date:"M d, Y"|default:"\u2014" }}</td>
                         <td><a href="{% url 'tickets:customer_detail' customer.id %}" class="btn btn-sm btn-outline-secondary">View</a></td>
@@ -52,11 +67,11 @@
             <nav>
                 <ul class="pagination mb-0">
                     {% if page_obj.has_previous %}
-                    <li class="page-item"><a class="page-link" href="?page={{ page_obj.previous_page_number }}&search={{ search_query }}&sort={{ sort_by }}">Previous</a></li>
+                    <li class="page-item"><a class="page-link" href="?page={{ page_obj.previous_page_number }}&search={{ search_query }}&sort={{ sort_by }}&segment={{ segment_filter }}">Previous</a></li>
                     {% endif %}
                     <li class="page-item active"><span class="page-link">{{ page_obj.number }} / {{ page_obj.paginator.num_pages }}</span></li>
                     {% if page_obj.has_next %}
-                    <li class="page-item"><a class="page-link" href="?page={{ page_obj.next_page_number }}&search={{ search_query }}&sort={{ sort_by }}">Next</a></li>
+                    <li class="page-item"><a class="page-link" href="?page={{ page_obj.next_page_number }}&search={{ search_query }}&sort={{ sort_by }}&segment={{ segment_filter }}">Next</a></li>
                     {% endif %}
                 </ul>
             </nav>

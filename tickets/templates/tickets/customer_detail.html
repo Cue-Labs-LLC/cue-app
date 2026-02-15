@@ -40,6 +40,31 @@
     </div>
 </div>
 
+{% if customer.rfm_segment or customer.rfm_recency_score is not None %}
+<div class="card mb-4">
+    <div class="card-header"><h5 class="mb-0">RFM Segment</h5></div>
+    <div class="card-body">
+        <div class="d-flex flex-wrap align-items-center gap-3">
+            {% if customer.rfm_segment %}
+            <span class="badge bg-{{ segment_badge_color }} fs-6">{{ customer.rfm_segment }}</span>
+            {% endif %}
+            {% if customer.rfm_recency_score is not None %}
+            <span><strong>R</strong> {{ customer.rfm_recency_score }}</span>
+            {% endif %}
+            {% if customer.rfm_frequency_score is not None %}
+            <span><strong>F</strong> {{ customer.rfm_frequency_score }}</span>
+            {% endif %}
+            {% if customer.rfm_monetary_score is not None %}
+            <span><strong>M</strong> {{ customer.rfm_monetary_score }}</span>
+            {% endif %}
+            {% if customer.rfm_updated_at %}
+            <span class="text-muted small">Updated {{ customer.rfm_updated_at|date:"M d, Y" }}</span>
+            {% endif %}
+        </div>
+    </div>
+</div>
+{% endif %}
+
 <div class="stats-grid">
     <div class="stat-card stat-card--accent">
         <div class="stat-label">Total Orders</div>

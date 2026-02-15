@@ -28,6 +28,8 @@ from .forms import (
 )
 from .csv_processor import CSVProcessor
 from .services.forecasting.preview import generate_forecast_preview
+from .services.segmentation.rfm_calculator import RFMCalculator
+from .services.segmentation.segment_definitions import SEGMENT_BADGE_COLORS
 from .utils import get_organization, require_org
 
 import logging
@@ -458,9 +460,15 @@ def process_csv_file(request, uploaded_file, manual_prices=None, tier_definition
                 request,
                 f"{len(results['rejected_orders'])} orders were rejected due to tier capacity limits."
             )
-        
+
+        if results['success_count'] > 0:
+            try:
+                RFMCalculator(uploaded_file.organization).calculate_all()
+            except Exception:
+                logger.exception("RFM recalc after CSV import failed")
+
         return redirect('tickets:upload_results', file_id=uploaded_file.id)
-        
+
     except Exception as e:
         uploaded_file.status = 'failed'
         uploaded_file.save(update_fields=['status'])
@@ -552,10 +560,15 @@ def upload_delete(request, file_id):
 @login_required
 @require_org
 def customer_list(request):
-    """Display list of all customers with LTV."""
+    """Display list of all customers with LTV and optional segment filter."""
     org = get_organization(request)
     customers = Customer.objects.filter(organization=org)
-    
+
+    # Segment filter
+    segment_filter = request.GET.get('segment', '').strip()
+    if segment_filter:
+        customers = customers.filter(rfm_segment=segment_filter)
+
     # Search
     search_query = request.GET.get('search', '')
     if search_query:
@@ -564,23 +577,27 @@ def customer_list(request):
         ) | customers.filter(
             email__icontains=search_query
         )
-    
+
     # Sorting
     sort_by = request.GET.get('sort', '-lifetime_value')
     if sort_by in ['name', 'email', 'lifetime_value', 'last_order_date']:
         customers = customers.order_by(sort_by)
     elif sort_by == '-lifetime_value':
         customers = customers.order_by('-lifetime_value')
-    
+
     # Pagination
     paginator = Paginator(customers, 50)
     page_number = request.GET.get('page')
     page_obj = paginator.get_page(page_number)
-    
+
+    segment_choices = list(SEGMENT_BADGE_COLORS.keys())
     context = {
         'page_obj': page_obj,
         'search_query': search_query,
         'sort_by': sort_by,
+        'segment_filter': segment_filter,
+        'segment_choices': segment_choices,
+        'segment_badge_colors': SEGMENT_BADGE_COLORS,
     }
     return render(request, 'tickets/customer_list.html', context)
 
@@ -653,6 +670,76 @@ def customer_ltv_by_market(request):
 
 @login_required
 @require_org
+def customer_segments(request):
+    """Analytics page: segment distribution (donut), avg LTV per segment (bar), table with links."""
+    org = get_organization(request)
+    # Customers with order_count for avg_orders
+    customers = list(
+        Customer.objects.filter(organization=org).annotate(
+            order_count=Count('ticket_orders')
+        ).values('rfm_segment', 'lifetime_value', 'order_count')
+    )
+    total_customers = len(customers)
+    segment_order = list(SEGMENT_BADGE_COLORS.keys())
+    by_segment = {}
+    for seg in segment_order:
+        by_segment[seg] = {'count': 0, 'total_ltv': Decimal('0'), 'total_orders': 0}
+    for c in customers:
+        seg = (c['rfm_segment'] or '').strip() or 'Dormant'
+        if seg not in by_segment:
+            by_segment[seg] = {'count': 0, 'total_ltv': Decimal('0'), 'total_orders': 0}
+        by_segment[seg]['count'] += 1
+        by_segment[seg]['total_ltv'] += (c['lifetime_value'] or Decimal('0'))
+        by_segment[seg]['total_orders'] += (c['order_count'] or 0)
+    segment_stats = []
+    for seg in segment_order:
+        d = by_segment[seg]
+        count = d['count']
+        pct = (100.0 * count / total_customers) if total_customers else 0
+        avg_ltv = (d['total_ltv'] / count) if count else Decimal('0')
+        avg_orders = (d['total_orders'] / count) if count else 0
+        segment_stats.append({
+            'segment': seg,
+            'count': count,
+            'pct': round(pct, 1),
+            'avg_ltv': avg_ltv,
+            'avg_orders': round(avg_orders, 1),
+            'badge_color': SEGMENT_BADGE_COLORS.get(seg, 'secondary'),
+        })
+    # Chart data: donut (count per segment), bar (avg LTV per segment)
+    segment_stats_json = json.dumps([
+        {
+            'segment': s['segment'],
+            'count': s['count'],
+            'avg_ltv': float(s['avg_ltv']),
+        }
+        for s in segment_stats
+    ])
+    context = {
+        'segment_stats': segment_stats,
+        'segment_stats_json': segment_stats_json,
+        'total_customers': total_customers,
+    }
+    return render(request, 'tickets/customer_segments.html', context)
+
+
+@login_required
+@require_org
+@require_http_methods(["POST"])
+def recalculate_segments(request):
+    """Trigger full RFM recalc for the organization and redirect to segments page."""
+    org = get_organization(request)
+    try:
+        RFMCalculator(org).calculate_all()
+        messages.success(request, 'Customer segments recalculated successfully.')
+    except Exception as e:
+        logger.exception("RFM recalculate failed")
+        messages.error(request, f'Segment recalculation failed: {str(e)}')
+    return redirect('tickets:customer_segments')
+
+
+@login_required
+@require_org
 def customer_detail(request, customer_id):
     """Display detailed customer information with LTV and order history."""
     org = get_organization(request)
@@ -677,6 +764,9 @@ def customer_detail(request, customer_id):
     page_number = request.GET.get('page')
     page_obj = paginator.get_page(page_number)
     
+    segment_badge_color = SEGMENT_BADGE_COLORS.get(
+        (customer.rfm_segment or '').strip(), 'secondary'
+    )
     context = {
         'customer': customer,
         'total_orders': total_orders,
@@ -686,6 +776,7 @@ def customer_detail(request, customer_id):
         'last_order': last_order,
         'events_attended': events_attended,
         'page_obj': page_obj,
+        'segment_badge_color': segment_badge_color,
     }
     return render(request, 'tickets/customer_detail.html', context)
 
