@@ -252,6 +252,10 @@ if _CELERY_BROKER_URL:
             'BACKEND': 'django.core.cache.backends.redis.RedisCache',
             'LOCATION': _cache_url,
             'TIMEOUT': 300,
+            'OPTIONS': {
+                'socket_connect_timeout': 2,
+                'socket_timeout': 2,
+            }
         }
     }
 else:
