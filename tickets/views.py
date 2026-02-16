@@ -63,6 +63,69 @@ def _invalidate_event_list_cache(org):
         django_cache.set(key, 1, timeout=None)
 
 
+_ANNOTATED_SORT_FIELDS = {
+    'upload_count', '-upload_count', 'total_revenue', '-total_revenue',
+}
+_ALLOWED_SORTS = {
+    'name', '-name', 'start_date', '-start_date',
+    'upload_count', '-upload_count', 'total_revenue', '-total_revenue',
+}
+
+
+def _annotate_events(queryset):
+    """Add the 5 subquery annotations (orders, uploads, revenue, tickets, expenses) to an Event queryset."""
+    return queryset.annotate(
+        total_orders=Coalesce(
+            Subquery(
+                TicketOrder.objects.filter(event=OuterRef('pk'))
+                .values('event')
+                .annotate(n=Count('id'))
+                .values('n')[:1]
+            ),
+            0,
+        ),
+        upload_count=Coalesce(
+            Subquery(
+                TicketOrder.objects.filter(event=OuterRef('pk'))
+                .exclude(uploaded_file__isnull=True)
+                .values('event')
+                .annotate(n=Count('uploaded_file', distinct=True))
+                .values('n')[:1]
+            ),
+            0,
+        ),
+        total_revenue=Coalesce(
+            Subquery(
+                TicketOrder.objects.filter(event=OuterRef('pk'))
+                .values('event')
+                .annotate(total=Sum('total_amount'))
+                .values('total')[:1],
+                output_field=models.DecimalField(max_digits=10, decimal_places=2),
+            ),
+            Decimal('0.00'),
+        ),
+        total_tickets=Coalesce(
+            Subquery(
+                Ticket.objects.filter(ticket_order__event=OuterRef('pk'))
+                .values('ticket_order__event')
+                .annotate(n=Count('id'))
+                .values('n')[:1]
+            ),
+            0,
+        ),
+        total_expenses=Coalesce(
+            Subquery(
+                EventExpense.objects.filter(event=OuterRef('pk'), deleted_at__isnull=True)
+                .values('event')
+                .annotate(total=Sum('amount'))
+                .values('total')[:1],
+                output_field=models.DecimalField(max_digits=10, decimal_places=2),
+            ),
+            Decimal('0.00'),
+        ),
+    )
+
+
 def _regenerate_event_doc_background(org):
     """Regenerate the Upcoming Events Google Doc. Fails silently if not configured."""
     from django.conf import settings
@@ -947,87 +1010,48 @@ def event_list(request):
     sort_by = request.GET.get('sort', '-start_date')
     page_number = request.GET.get('page', '1')
 
+    # Validate sort parameter
+    if sort_by not in _ALLOWED_SORTS:
+        sort_by = '-start_date'
+
     # Check cache first
     cache_key = _event_list_cache_key(org.pk, search_query, sort_by, page_number)
     cached = django_cache.get(cache_key)
     if cached is not None:
         return HttpResponse(cached, content_type='text/html')
 
-    # Each stat is an isolated Subquery to avoid join inflation from mixed Count/Sum annotations
-    events = Event.objects.filter(organization=org).annotate(
-        total_orders=Coalesce(
-            Subquery(
-                TicketOrder.objects.filter(event=OuterRef('pk'))
-                .values('event')
-                .annotate(n=Count('id'))
-                .values('n')[:1]
-            ),
-            0,
-        ),
-        upload_count=Coalesce(
-            Subquery(
-                TicketOrder.objects.filter(event=OuterRef('pk'))
-                .exclude(uploaded_file__isnull=True)
-                .values('event')
-                .annotate(n=Count('uploaded_file', distinct=True))
-                .values('n')[:1]
-            ),
-            0,
-        ),
-        total_revenue=Coalesce(
-            Subquery(
-                TicketOrder.objects.filter(event=OuterRef('pk'))
-                .values('event')
-                .annotate(total=Sum('total_amount'))
-                .values('total')[:1],
-                output_field=models.DecimalField(max_digits=10, decimal_places=2),
-            ),
-            Decimal('0.00'),
-        ),
-        total_tickets=Coalesce(
-            Subquery(
-                Ticket.objects.filter(ticket_order__event=OuterRef('pk'))
-                .values('ticket_order__event')
-                .annotate(n=Count('id'))
-                .values('n')[:1]
-            ),
-            0,
-        ),
-        total_expenses=Coalesce(
-            Subquery(
-                EventExpense.objects.filter(event=OuterRef('pk'), deleted_at__isnull=True)
-                .values('event')
-                .annotate(total=Sum('amount'))
-                .values('total')[:1],
-                output_field=models.DecimalField(max_digits=10, decimal_places=2),
-            ),
-            Decimal('0.00'),
-        ),
-    ).select_related('venue')
+    base_qs = Event.objects.filter(organization=org).select_related('venue')
 
     # Search functionality
     if search_query:
-        events = events.filter(
+        base_qs = base_qs.filter(
             Q(name__icontains=search_query) |
             Q(venue__name__icontains=search_query) |
             Q(venue__city__icontains=search_query)
         )
 
-    # Sorting
-    if sort_by in ['name', 'start_date', 'upload_count', 'total_revenue']:
-        events = events.order_by(sort_by)
-    elif sort_by == '-start_date':
-        events = events.order_by('-start_date')
-    elif sort_by == '-upload_count':
-        events = events.order_by('-upload_count')
-    elif sort_by == '-total_revenue':
-        events = events.order_by('-total_revenue')
+    if sort_by in _ANNOTATED_SORT_FIELDS:
+        # Slow path: must annotate all rows before sorting by a computed field.
+        # Caching mitigates repeat hits.
+        events = _annotate_events(base_qs).order_by(sort_by)
+        paginator = Paginator(events, 25)
+        page_obj = paginator.get_page(page_number)
     else:
-        events = events.order_by('-start_date')
+        # Fast path: sort + paginate on native columns first, then annotate only the page.
+        events = base_qs.order_by(sort_by)
+        paginator = Paginator(events, 25)
+        page_obj = paginator.get_page(page_number)
 
-    # Pagination
-    paginator = Paginator(events, 25)
-    page_obj = paginator.get_page(page_number)
+        # Annotate only the events on the current page
+        page_pks = [e.pk for e in page_obj.object_list]
+        annotated_map = {
+            e.pk: e
+            for e in _annotate_events(
+                Event.objects.filter(pk__in=page_pks)
+            ).select_related('venue')
+        }
+        # Replace the page's object list, preserving the paginator's sort order
+        page_obj.object_list = [annotated_map[pk] for pk in page_pks]
 
     context = {
         'page_obj': page_obj,
