@@ -36,6 +36,7 @@ urlpatterns = [
     path('analytics/segments/recalculate/', views.recalculate_segments, name='recalculate_segments'),
     path('analytics/repeat-customers/', views.repeat_customers, name='repeat_customers'),
     path('analytics/cohort-retention/', views.cohort_retention, name='cohort_retention'),
+    path('analytics/profitability/', views.profitability_overview, name='profitability_overview'),
 
     # Events
     path('events/', views.event_list, name='event_list'),
@@ -45,6 +46,9 @@ urlpatterns = [
     path('events/<uuid:event_id>/edit/', views.event_edit, name='event_edit'),
     path('events/<uuid:event_id>/upload/', views.event_upload_csv, name='event_upload_csv'),
     path('events/<uuid:event_id>/delete/', views.event_delete, name='event_delete'),
+    path('events/<uuid:event_id>/expenses/add/', views.expense_create, name='expense_create'),
+    path('events/<uuid:event_id>/expenses/<uuid:expense_id>/edit/', views.expense_edit, name='expense_edit'),
+    path('events/<uuid:event_id>/expenses/<uuid:expense_id>/delete/', views.expense_delete, name='expense_delete'),
 
     # Forecast Tool
     path('forecast/', views.forecast_tool, name='forecast_tool'),

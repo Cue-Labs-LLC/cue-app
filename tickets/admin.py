@@ -5,7 +5,7 @@ from django.db.models import Sum, Count
 from django import forms
 from .models import (
     Organization, UserProfile,
-    CSVFormat, UploadedFile, Customer, Event, EventTalent, TicketOrder, Ticket, TicketTier, Venue,
+    CSVFormat, UploadedFile, Customer, Event, EventExpense, EventTalent, TicketOrder, Ticket, TicketTier, Venue,
     CustomField, CustomFieldOption, EventCustomFieldValue,
 )
 
@@ -225,6 +225,12 @@ class EventTalentInline(admin.TabularInline):
     extra = 2
 
 
+class EventExpenseInline(admin.TabularInline):
+    model = EventExpense
+    extra = 1
+    fields = ['category', 'description', 'amount', 'expense_date', 'notes']
+
+
 @admin.register(Event)
 class EventAdmin(admin.ModelAdmin):
     list_display = ['name', 'venue', 'organization', 'start_date', 'start_time', 'end_date', 'end_time', 'capacity', 'order_count', 'created_at']
@@ -232,7 +238,7 @@ class EventAdmin(admin.ModelAdmin):
     search_fields = ['name', 'venue__name', 'venue__city', 'description', 'ticket_link']
     readonly_fields = ['id', 'created_at', 'updated_at']
     date_hierarchy = 'start_date'
-    inlines = [EventTalentInline]
+    inlines = [EventTalentInline, EventExpenseInline]
 
     fieldsets = (
         ('Event Information', {
@@ -269,6 +275,44 @@ class EventAdmin(admin.ModelAdmin):
             if profile and profile.organization_id:
                 obj.organization = profile.organization
         super().save_model(request, obj, form, change)
+
+
+@admin.register(EventExpense)
+class EventExpenseAdmin(admin.ModelAdmin):
+    list_display = ['description', 'category', 'amount', 'expense_date', 'get_event', 'get_organization', 'created_at']
+    list_filter = ['event__organization', 'category', 'expense_date', 'created_at']
+    search_fields = ['description', 'notes', 'event__name']
+    readonly_fields = ['id', 'created_at', 'updated_at']
+    date_hierarchy = 'expense_date'
+
+    fieldsets = (
+        ('Expense Information', {
+            'fields': ('event', 'category', 'description', 'amount', 'expense_date', 'notes')
+        }),
+        ('Metadata', {
+            'fields': ('id', 'created_at', 'updated_at'),
+            'classes': ('collapse',)
+        }),
+    )
+
+    def get_event(self, obj):
+        return obj.event.name if obj.event_id else ''
+    get_event.short_description = 'Event'
+    get_event.admin_order_field = 'event__name'
+
+    def get_organization(self, obj):
+        return obj.event.organization if obj.event_id else ''
+    get_organization.short_description = 'Organization'
+    get_organization.admin_order_field = 'event__organization'
+
+    def get_queryset(self, request):
+        qs = super().get_queryset(request)
+        if request.user.is_superuser:
+            return qs.select_related('event', 'event__organization')
+        profile = getattr(request.user, 'profile', None)
+        if profile and profile.organization_id:
+            return qs.filter(event__organization=profile.organization).select_related('event', 'event__organization')
+        return qs.none()
 
 
 @admin.register(TicketOrder)

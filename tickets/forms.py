@@ -4,7 +4,7 @@ from django.forms import modelformset_factory
 from django.contrib.auth.forms import AuthenticationForm
 from crispy_forms.helper import FormHelper
 from crispy_forms.layout import Layout, Row, Column, Submit, Field
-from .models import Organization, CSVFormat, Venue, Event, EventTalent, CustomField
+from .models import Organization, CSVFormat, Venue, Event, EventTalent, EventExpense, CustomField
 
 
 class OrganizationForm(forms.ModelForm):
@@ -547,6 +547,38 @@ class VenueForm(forms.ModelForm):
             Field('country'),
             Field('capacity'),
             Submit('submit', submit_label, css_class='btn btn-primary')
+        )
+
+
+class EventExpenseForm(forms.ModelForm):
+    """Form for creating/editing event expenses."""
+
+    class Meta:
+        model = EventExpense
+        fields = ['category', 'description', 'amount', 'expense_date', 'notes']
+        widgets = {
+            'category': forms.Select(attrs={'class': 'form-select'}),
+            'description': forms.TextInput(attrs={'class': 'form-control', 'placeholder': 'e.g., DJ fee for headliner'}),
+            'amount': forms.NumberInput(attrs={'class': 'form-control', 'step': '0.01', 'min': '0', 'placeholder': '0.00'}),
+            'expense_date': forms.DateInput(attrs={'type': 'date', 'class': 'form-control'}),
+            'notes': forms.Textarea(attrs={'rows': 2, 'class': 'form-control', 'placeholder': 'Optional notes'}),
+        }
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields['notes'].required = False
+        self.fields['expense_date'].required = False
+        submit_label = 'Update Expense' if (self.instance and self.instance.pk) else 'Add Expense'
+        self.helper = FormHelper()
+        self.helper.layout = Layout(
+            Row(
+                Column('category', css_class='form-group col-md-4 mb-0'),
+                Column('amount', css_class='form-group col-md-4 mb-0'),
+                Column('expense_date', css_class='form-group col-md-4 mb-0'),
+            ),
+            Field('description'),
+            Field('notes'),
+            Submit('submit', submit_label, css_class='btn btn-primary'),
         )
 
 

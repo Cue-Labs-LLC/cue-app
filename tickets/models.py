@@ -348,6 +348,38 @@ class Event(AuditBaseModel):
         return self.get_associated_uploads().count()
 
 
+class EventExpense(AuditBaseModel):
+    """Expense line item for an event."""
+    CATEGORY_CHOICES = [
+        ('talent', 'Talent / Artist Fees'),
+        ('venue', 'Venue Rental'),
+        ('production', 'Production / AV / Sound'),
+        ('marketing', 'Marketing / Promotion'),
+        ('staffing', 'Staffing / Security'),
+        ('catering', 'Catering / Hospitality'),
+        ('insurance', 'Insurance / Permits'),
+        ('travel', 'Travel / Accommodation'),
+        ('other', 'Other'),
+    ]
+
+    event = models.ForeignKey(Event, on_delete=models.CASCADE, related_name='expenses')
+    category = models.CharField(max_length=30, choices=CATEGORY_CHOICES, db_index=True)
+    description = models.CharField(max_length=300)
+    amount = models.DecimalField(max_digits=10, decimal_places=2)
+    expense_date = models.DateField(null=True, blank=True, db_index=True)
+    notes = models.TextField(blank=True)
+
+    class Meta:
+        ordering = ['-expense_date', '-created_at']
+        indexes = [
+            models.Index(fields=['event', 'category']),
+            models.Index(fields=['event', '-expense_date']),
+        ]
+
+    def __str__(self):
+        return f"{self.get_category_display()} - {self.description} (${self.amount})"
+
+
 class EventTalent(models.Model):
     """One talent entry in an event's lineup."""
     event = models.ForeignKey(

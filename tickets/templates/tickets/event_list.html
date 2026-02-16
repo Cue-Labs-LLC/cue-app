@@ -1,4 +1,5 @@
 {% extends 'tickets/base.html' %}
+{% load tickets_extras %}
 
 {% block title %}Events{% endblock %}
 
@@ -35,6 +36,7 @@
                         <th><a href="?sort=-upload_count&search={{ search_query }}">Uploads <i class="bi bi-arrow-down-up"></i></a></th>
                         <th>Orders</th>
                         <th><a href="?sort=-total_revenue&search={{ search_query }}">Revenue <i class="bi bi-arrow-down-up"></i></a></th>
+                        <th>Profit</th>
                         <th>Tickets</th>
                         <th></th>
                     </tr>
@@ -48,6 +50,9 @@
                         <td><span class="badge bg-info">{{ event.upload_count|default:0 }}</span></td>
                         <td>{{ event.total_orders|default:0 }}</td>
                         <td><span class="revenue">${{ event.total_revenue|floatformat:2|default:"0.00" }}</span></td>
+                        {% with profit=event.total_revenue|subtract:event.total_expenses %}
+                        <td{% if profit < 0 %} style="color: var(--danger, #dc3545);"{% endif %}>${{ profit|floatformat:2 }}</td>
+                        {% endwith %}
                         <td>{{ event.total_tickets|default:0 }}</td>
                         <td>
                             <div class="d-flex gap-1">
