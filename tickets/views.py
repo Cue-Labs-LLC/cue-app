@@ -918,9 +918,13 @@ def repeat_customers(request):
     org = get_organization(request)
     calculator = RepeatCustomerCalculator(org)
     result = calculator.calculate()
-    chart_data = json.dumps(result['events'], default=str)
+    # Chart: left to right earliest → most recent (calculator order)
+    chart_events = result['events']
+    chart_data = json.dumps(chart_events, default=str)
+    # Table: top to bottom most recent → earliest
+    table_events = list(reversed(chart_events))
     return render(request, 'tickets/repeat_customers.html', {
-        'events': result['events'],
+        'events': table_events,
         'summary': result['summary'],
         'chart_data_json': chart_data,
     })
