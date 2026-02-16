@@ -50,7 +50,10 @@ logger = logging.getLogger(__name__)
 
 def _event_list_cache_key(org_id, search, sort, page):
     """Build a versioned, org-scoped cache key for the event_list response."""
-    version = django_cache.get(f'event_list_ver:{org_id}', 0)
+    try:
+        version = django_cache.get(f'event_list_ver:{org_id}', 0)
+    except Exception:
+        version = 0
     return f'event_list:{version}:{org_id}:{search}:{sort}:{page}'
 
 
@@ -60,7 +63,12 @@ def _invalidate_event_list_cache(org):
     try:
         django_cache.incr(key)
     except ValueError:
-        django_cache.set(key, 1, timeout=None)
+        try:
+            django_cache.set(key, 1, timeout=None)
+        except Exception:
+            pass
+    except Exception:
+        pass
 
 
 _ANNOTATED_SORT_FIELDS = {
@@ -256,42 +264,25 @@ def create_organization(request):
 def home(request):
     """Home/dashboard page with overview statistics."""
     org = get_organization(request)
-    # Recent events (org-scoped)
-    recent_events = Event.objects.filter(organization=org).annotate(
-        total_orders=Coalesce(
-            Subquery(
-                TicketOrder.objects.filter(event=OuterRef('pk'))
-                .values('event')
-                .annotate(n=Count('id'))
-                .values('n')[:1]
-            ),
-            0,
-        ),
-        upload_count=Coalesce(
-            Subquery(
-                TicketOrder.objects.filter(event=OuterRef('pk'))
-                .exclude(uploaded_file__isnull=True)
-                .values('event')
-                .annotate(n=Count('uploaded_file', distinct=True))
-                .values('n')[:1]
-            ),
-            0,
-        ),
-        total_revenue=Coalesce(
-            Subquery(
-                TicketOrder.objects.filter(event=OuterRef('pk'))
-                .values('event')
-                .annotate(total=Sum('total_amount'))
-                .values('total')[:1],
-                output_field=models.DecimalField(max_digits=10, decimal_places=2),
-            ),
-            Decimal('0.00'),
-        ),
-    ).select_related('venue').order_by('-start_date')
 
+    # Paginate lightweight queryset first, then annotate only the page
+    recent_events = (
+        Event.objects.filter(organization=org)
+        .select_related('venue')
+        .order_by('-start_date')
+    )
     page_number = request.GET.get('page', 1)
     paginator = Paginator(recent_events, 10)
     page_obj = paginator.get_page(page_number)
+
+    page_pks = [e.pk for e in page_obj.object_list]
+    annotated_map = {
+        e.pk: e
+        for e in _annotate_events(
+            Event.objects.filter(pk__in=page_pks)
+        ).select_related('venue')
+    }
+    page_obj.object_list = [annotated_map[pk] for pk in page_pks]
 
     # Show warning when current time is past the event's end date+time and upload_count is 0 (current page only)
     now_local = django_tz.localtime(django_tz.now()).replace(tzinfo=None)
@@ -1014,9 +1005,12 @@ def event_list(request):
     if sort_by not in _ALLOWED_SORTS:
         sort_by = '-start_date'
 
-    # Check cache first
+    # Check cache first (skip gracefully when Redis is unavailable)
     cache_key = _event_list_cache_key(org.pk, search_query, sort_by, page_number)
-    cached = django_cache.get(cache_key)
+    try:
+        cached = django_cache.get(cache_key)
+    except Exception:
+        cached = None
     if cached is not None:
         return HttpResponse(cached, content_type='text/html')
 
@@ -1059,7 +1053,10 @@ def event_list(request):
         'sort_by': sort_by,
     }
     response = render(request, 'tickets/event_list.html', context)
-    django_cache.set(cache_key, response.content, 300)
+    try:
+        django_cache.set(cache_key, response.content, 300)
+    except Exception:
+        pass
     return response
 
 
