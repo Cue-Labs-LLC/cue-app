@@ -11,7 +11,8 @@
       "Bash(find:*)",
       "Bash(ls:*)",
       "Bash(wc:*)",
-      "Bash(git stash:*)"
+      "Bash(git stash:*)",
+      "Bash(DJANGO_SETTINGS_MODULE=ltv_updater.settings python:*)"
     ]
   },
   "enabledPlugins": {
