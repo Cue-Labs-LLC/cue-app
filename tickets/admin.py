@@ -7,6 +7,7 @@ from .models import (
     Organization, UserProfile,
     CSVFormat, UploadedFile, Customer, Event, EventExpense, EventTalent, TicketOrder, Ticket, TicketTier, Venue,
     CustomField, CustomFieldOption, EventCustomFieldValue,
+    IncomeSource, EventIncome,
 )
 
 
@@ -312,6 +313,61 @@ class EventExpenseAdmin(admin.ModelAdmin):
         profile = getattr(request.user, 'profile', None)
         if profile and profile.organization_id:
             return qs.filter(event__organization=profile.organization).select_related('event', 'event__organization')
+        return qs.none()
+
+
+@admin.register(IncomeSource)
+class IncomeSourceAdmin(admin.ModelAdmin):
+    list_display = ['name', 'order', 'organization', 'created_at']
+    list_filter = ['organization', 'created_at']
+    search_fields = ['name']
+    ordering = ['organization', 'order', 'name']
+
+    def get_queryset(self, request):
+        qs = super().get_queryset(request)
+        if request.user.is_superuser:
+            return qs.select_related('organization')
+        profile = getattr(request.user, 'profile', None)
+        if profile and profile.organization_id:
+            return qs.filter(organization=profile.organization).select_related('organization')
+        return qs.none()
+
+
+@admin.register(EventIncome)
+class EventIncomeAdmin(admin.ModelAdmin):
+    list_display = ['income_source', 'amount', 'income_date', 'get_event', 'get_organization', 'created_at']
+    list_filter = ['event__organization', 'income_source', 'income_date', 'created_at']
+    search_fields = ['income_source__name', 'notes', 'event__name']
+    readonly_fields = ['id', 'created_at', 'updated_at']
+    date_hierarchy = 'income_date'
+
+    fieldsets = (
+        ('Income Information', {
+            'fields': ('event', 'income_source', 'amount', 'income_date', 'notes')
+        }),
+        ('Metadata', {
+            'fields': ('id', 'created_at', 'updated_at'),
+            'classes': ('collapse',)
+        }),
+    )
+
+    def get_event(self, obj):
+        return obj.event.name if obj.event_id else ''
+    get_event.short_description = 'Event'
+    get_event.admin_order_field = 'event__name'
+
+    def get_organization(self, obj):
+        return obj.event.organization if obj.event_id else ''
+    get_organization.short_description = 'Organization'
+    get_organization.admin_order_field = 'event__organization'
+
+    def get_queryset(self, request):
+        qs = super().get_queryset(request)
+        if request.user.is_superuser:
+            return qs.select_related('event', 'event__organization', 'income_source')
+        profile = getattr(request.user, 'profile', None)
+        if profile and profile.organization_id:
+            return qs.filter(event__organization=profile.organization).select_related('event', 'event__organization', 'income_source')
         return qs.none()
 
 

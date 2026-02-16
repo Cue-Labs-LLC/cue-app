@@ -380,6 +380,54 @@ class EventExpense(AuditBaseModel):
         return f"{self.get_category_display()} - {self.description} (${self.amount})"
 
 
+class IncomeSource(BaseModel):
+    """User-defined income source type (e.g. Bar Splits, Merch) scoped per organization."""
+    organization = models.ForeignKey(
+        Organization,
+        on_delete=models.CASCADE,
+        related_name='income_sources',
+    )
+    name = models.CharField(max_length=100)
+    order = models.PositiveSmallIntegerField(default=0)
+
+    class Meta:
+        ordering = ['order', 'name']
+        unique_together = [['organization', 'name']]
+        indexes = [
+            models.Index(fields=['organization', 'order']),
+        ]
+
+    def __str__(self):
+        return self.name
+
+
+class EventIncome(AuditBaseModel):
+    """Additional income line item for an event (e.g. Bar Splits $500, Merch $200)."""
+    event = models.ForeignKey(
+        Event,
+        on_delete=models.CASCADE,
+        related_name='additional_income',
+    )
+    income_source = models.ForeignKey(
+        IncomeSource,
+        on_delete=models.PROTECT,
+        related_name='event_income_lines',
+    )
+    amount = models.DecimalField(max_digits=10, decimal_places=2)
+    income_date = models.DateField(null=True, blank=True, db_index=True)
+    notes = models.TextField(blank=True)
+
+    class Meta:
+        ordering = ['income_source__order', 'income_source__name']
+        indexes = [
+            models.Index(fields=['event', 'income_source']),
+            models.Index(fields=['event', '-income_date']),
+        ]
+
+    def __str__(self):
+        return f"{self.income_source.name} - ${self.amount}"
+
+
 class EventTalent(models.Model):
     """One talent entry in an event's lineup."""
     event = models.ForeignKey(

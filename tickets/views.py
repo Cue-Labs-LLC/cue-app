@@ -24,11 +24,12 @@ import pandas as pd
 from .models import (
     Organization, UserProfile,
     CSVFormat, UploadedFile, Customer, Event, EventExpense, EventTalent, TicketOrder, Ticket, Venue,
-    CustomField, EventCustomFieldValue,
+    CustomField, EventCustomFieldValue, IncomeSource, EventIncome,
 )
 from .forms import (
     EventCSVUploadForm, EventExpenseForm, TicketPriceEntryForm, CSVFormatForm,
     VenueForm, EventForm, EventTalentFormSet, LoginForm,
+    IncomeSourceForm, EventIncomeForm,
 )
 from .csv_processor import CSVProcessor
 from .services.forecasting.preview import generate_forecast_preview
@@ -1143,6 +1144,10 @@ def event_detail(request, event_id):
                 'custom_field_values',
                 EventCustomFieldValue.objects.select_related('custom_field', 'custom_field_option'),
             ),
+            Prefetch(
+                'additional_income',
+                EventIncome.objects.filter(deleted_at__isnull=True).select_related('income_source'),
+            ),
         ),
         id=event_id,
     )
@@ -1188,9 +1193,14 @@ def event_detail(request, event_id):
         total_customers=Count('customer', distinct=True),
     )
     total_orders = event_stats['total_orders']
-    total_revenue = event_stats['total_revenue']
+    ticket_revenue = event_stats['total_revenue']
     total_customers = event_stats['total_customers']
     total_tickets = Ticket.objects.filter(ticket_order__event=event).count()
+
+    # Additional income (user-defined sources: Bar Splits, Merch, etc.)
+    additional_income_lines = list(event.additional_income.all())
+    total_additional_income = sum(line.amount for line in additional_income_lines)
+    total_revenue = ticket_revenue + total_additional_income
 
     # Expense data
     expenses = event.expenses.filter(deleted_at__isnull=True)
@@ -1228,6 +1238,8 @@ def event_detail(request, event_id):
         'event': event,
         'upload_stats': upload_stats,
         'total_orders': total_orders,
+        'ticket_revenue': ticket_revenue,
+        'total_additional_income': total_additional_income,
         'total_revenue': total_revenue,
         'total_tickets': total_tickets,
         'total_customers': total_customers,
@@ -1237,6 +1249,8 @@ def event_detail(request, event_id):
         'expenses_by_category': expenses_by_category,
         'expenses': expenses,
         'category_labels': category_labels,
+        'additional_income_lines': additional_income_lines,
+        'income_sources': IncomeSource.objects.filter(organization=org).order_by('order', 'name'),
         'page_obj': page_obj,
         'custom_field_values_display': custom_field_values_display,
     }
@@ -1874,6 +1888,168 @@ def expense_delete(request, event_id, expense_id):
     })
 
 
+# ---------------------------------------------------------------------------
+# Income Source Management (org-level)
+# ---------------------------------------------------------------------------
+
+@login_required
+@require_org
+def income_source_list(request):
+    """List all income source types for the organization."""
+    org = get_organization(request)
+    sources = IncomeSource.objects.filter(organization=org).order_by('order', 'name')
+    context = {'sources': sources}
+    return render(request, 'tickets/income_source_list.html', context)
+
+
+@login_required
+@require_org
+@require_http_methods(["GET", "POST"])
+def income_source_create(request):
+    """Create a new income source type."""
+    org = get_organization(request)
+    if request.method == 'POST':
+        form = IncomeSourceForm(request.POST)
+        if form.is_valid():
+            obj = form.save(commit=False)
+            obj.organization = org
+            obj.save()
+            messages.success(request, f"Income source '{obj.name}' created.")
+            return redirect('tickets:income_source_list')
+    else:
+        form = IncomeSourceForm()
+    return render(request, 'tickets/income_source_form.html', {
+        'form': form,
+        'action': 'Create',
+    })
+
+
+@login_required
+@require_org
+@require_http_methods(["GET", "POST"])
+def income_source_edit(request, source_id):
+    """Edit an income source type."""
+    org = get_organization(request)
+    obj = get_object_or_404(IncomeSource.objects.filter(organization=org), id=source_id)
+    if request.method == 'POST':
+        form = IncomeSourceForm(request.POST, instance=obj)
+        if form.is_valid():
+            obj = form.save()
+            messages.success(request, f"Income source '{obj.name}' updated.")
+            return redirect('tickets:income_source_list')
+    else:
+        form = IncomeSourceForm(instance=obj)
+    return render(request, 'tickets/income_source_form.html', {
+        'form': form,
+        'source': obj,
+        'action': 'Edit',
+    })
+
+
+@login_required
+@require_org
+@require_http_methods(["GET", "POST"])
+def income_source_delete(request, source_id):
+    """Delete an income source type (only if not used by any event income)."""
+    org = get_organization(request)
+    obj = get_object_or_404(IncomeSource.objects.filter(organization=org), id=source_id)
+    if request.method == 'POST':
+        if obj.event_income_lines.filter(deleted_at__isnull=True).exists():
+            messages.error(
+                request,
+                f"Cannot delete '{obj.name}' because it is used by event income entries.",
+            )
+            return redirect('tickets:income_source_list')
+        name = obj.name
+        obj.delete()
+        messages.success(request, f"Income source '{name}' deleted.")
+        return redirect('tickets:income_source_list')
+    return render(request, 'tickets/income_source_delete.html', {'source': obj})
+
+
+# ---------------------------------------------------------------------------
+# Event Additional Income Views
+# ---------------------------------------------------------------------------
+
+@login_required
+@require_org
+@require_http_methods(["GET", "POST"])
+def event_income_create(request, event_id):
+    """Add additional income to an event."""
+    org = get_organization(request)
+    event = get_object_or_404(Event.objects.filter(organization=org), id=event_id)
+    if request.method == 'POST':
+        form = EventIncomeForm(request.POST, organization=org)
+        if form.is_valid():
+            income = form.save(commit=False)
+            income.event = event
+            income.created_by = request.user
+            income.save()
+            _invalidate_event_list_cache(org)
+            messages.success(request, f"Income '{income.income_source.name}' added.")
+            return redirect('tickets:event_detail', event_id=event.id)
+    else:
+        form = EventIncomeForm(organization=org)
+    return render(request, 'tickets/event_income_form.html', {
+        'form': form,
+        'event': event,
+        'editing': False,
+    })
+
+
+@login_required
+@require_org
+@require_http_methods(["GET", "POST"])
+def event_income_edit(request, event_id, income_id):
+    """Edit an event additional income entry."""
+    org = get_organization(request)
+    event = get_object_or_404(Event.objects.filter(organization=org), id=event_id)
+    income = get_object_or_404(
+        EventIncome.objects.filter(event=event, deleted_at__isnull=True).select_related('income_source'),
+        id=income_id,
+    )
+    if request.method == 'POST':
+        form = EventIncomeForm(request.POST, instance=income, organization=org)
+        if form.is_valid():
+            income = form.save(commit=False)
+            income.updated_by = request.user
+            income.save()
+            _invalidate_event_list_cache(org)
+            messages.success(request, f"Income '{income.income_source.name}' updated.")
+            return redirect('tickets:event_detail', event_id=event.id)
+    else:
+        form = EventIncomeForm(instance=income, organization=org)
+    return render(request, 'tickets/event_income_form.html', {
+        'form': form,
+        'event': event,
+        'income': income,
+        'editing': True,
+    })
+
+
+@login_required
+@require_org
+@require_http_methods(["GET", "POST"])
+def event_income_delete(request, event_id, income_id):
+    """Soft-delete an event additional income entry."""
+    org = get_organization(request)
+    event = get_object_or_404(Event.objects.filter(organization=org), id=event_id)
+    income = get_object_or_404(
+        EventIncome.objects.filter(event=event, deleted_at__isnull=True).select_related('income_source'),
+        id=income_id,
+    )
+    if request.method == 'POST':
+        source_name = income.income_source.name
+        income.delete()
+        _invalidate_event_list_cache(org)
+        messages.success(request, f"Income '{source_name}' deleted.")
+        return redirect('tickets:event_detail', event_id=event.id)
+    return render(request, 'tickets/event_income_delete.html', {
+        'event': event,
+        'income': income,
+    })
+
+
 @login_required
 @require_org
 def profitability_overview(request):
@@ -1883,11 +2059,21 @@ def profitability_overview(request):
     events = (
         Event.objects.filter(organization=org)
         .annotate(
-            total_revenue=Coalesce(
+            ticket_revenue=Coalesce(
                 Subquery(
                     TicketOrder.objects.filter(event=OuterRef('pk'))
                     .values('event')
                     .annotate(total=Sum('total_amount'))
+                    .values('total')[:1],
+                    output_field=models.DecimalField(max_digits=10, decimal_places=2),
+                ),
+                Decimal('0.00'),
+            ),
+            total_additional_income=Coalesce(
+                Subquery(
+                    EventIncome.objects.filter(event=OuterRef('pk'), deleted_at__isnull=True)
+                    .values('event')
+                    .annotate(total=Sum('amount'))
                     .values('total')[:1],
                     output_field=models.DecimalField(max_digits=10, decimal_places=2),
                 ),
@@ -1908,21 +2094,22 @@ def profitability_overview(request):
         .order_by('-start_date')
     )
 
-    # Summary stats
+    # Summary stats (total_revenue = ticket_revenue + additional_income)
     summary_revenue = Decimal('0.00')
     summary_expenses = Decimal('0.00')
     event_rows = []
     for e in events:
-        profit = e.total_revenue - e.total_expenses
-        margin = (profit / e.total_revenue * 100) if e.total_revenue > 0 else None
+        total_revenue = e.ticket_revenue + e.total_additional_income
+        profit = total_revenue - e.total_expenses
+        margin = (profit / total_revenue * 100) if total_revenue > 0 else None
         event_rows.append({
             'event': e,
-            'revenue': e.total_revenue,
+            'revenue': total_revenue,
             'expenses': e.total_expenses,
             'profit': profit,
             'margin': margin,
         })
-        summary_revenue += e.total_revenue
+        summary_revenue += total_revenue
         summary_expenses += e.total_expenses
 
     summary_profit = summary_revenue - summary_expenses

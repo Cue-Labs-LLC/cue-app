@@ -49,6 +49,15 @@ urlpatterns = [
     path('events/<uuid:event_id>/expenses/add/', views.expense_create, name='expense_create'),
     path('events/<uuid:event_id>/expenses/<uuid:expense_id>/edit/', views.expense_edit, name='expense_edit'),
     path('events/<uuid:event_id>/expenses/<uuid:expense_id>/delete/', views.expense_delete, name='expense_delete'),
+    path('events/<uuid:event_id>/income/add/', views.event_income_create, name='event_income_create'),
+    path('events/<uuid:event_id>/income/<uuid:income_id>/edit/', views.event_income_edit, name='event_income_edit'),
+    path('events/<uuid:event_id>/income/<uuid:income_id>/delete/', views.event_income_delete, name='event_income_delete'),
+
+    # Income Sources (org-level)
+    path('income-sources/', views.income_source_list, name='income_source_list'),
+    path('income-sources/create/', views.income_source_create, name='income_source_create'),
+    path('income-sources/<uuid:source_id>/edit/', views.income_source_edit, name='income_source_edit'),
+    path('income-sources/<uuid:source_id>/delete/', views.income_source_delete, name='income_source_delete'),
 
     # Forecast Tool
     path('forecast/', views.forecast_tool, name='forecast_tool'),

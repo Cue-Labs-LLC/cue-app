@@ -4,7 +4,7 @@ from django.forms import modelformset_factory
 from django.contrib.auth.forms import AuthenticationForm
 from crispy_forms.helper import FormHelper
 from crispy_forms.layout import Layout, Row, Column, Submit, Field
-from .models import Organization, CSVFormat, Venue, Event, EventTalent, EventExpense, CustomField
+from .models import Organization, CSVFormat, Venue, Event, EventTalent, EventExpense, CustomField, IncomeSource, EventIncome
 
 
 class OrganizationForm(forms.ModelForm):
@@ -577,6 +577,64 @@ class EventExpenseForm(forms.ModelForm):
                 Column('expense_date', css_class='form-group col-md-4 mb-0'),
             ),
             Field('description'),
+            Field('notes'),
+            Submit('submit', submit_label, css_class='btn btn-primary'),
+        )
+
+
+class IncomeSourceForm(forms.ModelForm):
+    """Form for creating/editing organization-level income source types."""
+
+    class Meta:
+        model = IncomeSource
+        fields = ['name', 'order']
+        widgets = {
+            'name': forms.TextInput(attrs={'class': 'form-control', 'placeholder': 'e.g., Bar Splits'}),
+            'order': forms.NumberInput(attrs={'class': 'form-control', 'min': '0'}),
+        }
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        submit_label = 'Update Income Source' if (self.instance and self.instance.pk) else 'Add Income Source'
+        self.helper = FormHelper()
+        self.helper.form_tag = False
+        self.helper.layout = Layout(
+            Field('name'),
+            Field('order'),
+            Submit('submit', submit_label, css_class='btn btn-primary'),
+        )
+
+
+class EventIncomeForm(forms.ModelForm):
+    """Form for adding/editing additional income on an event."""
+
+    class Meta:
+        model = EventIncome
+        fields = ['income_source', 'amount', 'income_date', 'notes']
+        widgets = {
+            'income_source': forms.Select(attrs={'class': 'form-select'}),
+            'amount': forms.NumberInput(attrs={'class': 'form-control', 'step': '0.01', 'min': '0', 'placeholder': '0.00'}),
+            'income_date': forms.DateInput(attrs={'type': 'date', 'class': 'form-control'}),
+            'notes': forms.Textarea(attrs={'rows': 2, 'class': 'form-control', 'placeholder': 'Optional notes'}),
+        }
+
+    def __init__(self, *args, organization=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields['notes'].required = False
+        self.fields['income_date'].required = False
+        if organization is not None:
+            self.fields['income_source'].queryset = IncomeSource.objects.filter(
+                organization=organization
+            ).order_by('order', 'name')
+        submit_label = 'Update Income' if (self.instance and self.instance.pk) else 'Add Income'
+        self.helper = FormHelper()
+        self.helper.form_tag = False
+        self.helper.layout = Layout(
+            Row(
+                Column('income_source', css_class='form-group col-md-6 mb-0'),
+                Column('amount', css_class='form-group col-md-3 mb-0'),
+                Column('income_date', css_class='form-group col-md-3 mb-0'),
+            ),
             Field('notes'),
             Submit('submit', submit_label, css_class='btn btn-primary'),
         )

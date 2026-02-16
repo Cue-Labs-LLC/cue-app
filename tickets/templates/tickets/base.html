@@ -111,6 +111,11 @@
                             <i class="bi bi-file-earmark-spreadsheet"></i> CSV Formats
                         </a>
                     </li>
+                    <li>
+                        <a href="{% url 'tickets:income_source_list' %}" class="sidebar-link{% if '/income-sources/' in request.path %} active{% endif %}">
+                            <i class="bi bi-cash-stack"></i> Income Sources
+                        </a>
+                    </li>
                 </ul>
             </div>
 

@@ -1,0 +1,40 @@
+{% extends 'tickets/base.html' %}
+
+{% block title %}Delete Income - {{ event.name }}{% endblock %}
+
+{% block content %}
+<nav aria-label="breadcrumb">
+    <ol class="breadcrumb">
+        <li class="breadcrumb-item"><a href="{% url 'tickets:home' %}">Dashboard</a></li>
+        <li class="breadcrumb-item"><a href="{% url 'tickets:event_list' %}">Events</a></li>
+        <li class="breadcrumb-item"><a href="{% url 'tickets:event_detail' event.id %}">{{ event.name }}</a></li>
+        <li class="breadcrumb-item active">Delete Income</li>
+    </ol>
+</nav>
+
+<div class="page-header">
+    <h1>Delete Income</h1>
+</div>
+
+<div class="row">
+    <div class="col-md-6">
+        <div class="card">
+            <div class="card-body">
+                <p>Are you sure you want to delete this income entry?</p>
+                <table class="table table-sm table-borderless mb-3">
+                    <tr><th style="width:120px">Source:</th><td>{{ income.income_source.name }}</td></tr>
+                    <tr><th>Amount:</th><td>${{ income.amount|floatformat:2 }}</td></tr>
+                    {% if income.income_date %}
+                    <tr><th>Date:</th><td>{{ income.income_date|date:"M d, Y" }}</td></tr>
+                    {% endif %}
+                </table>
+                <form method="post">
+                    {% csrf_token %}
+                    <button type="submit" class="btn btn-danger">Yes, Delete</button>
+                    <a href="{% url 'tickets:event_detail' event.id %}" class="btn btn-outline-secondary">Cancel</a>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
