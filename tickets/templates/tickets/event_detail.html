@@ -1,4 +1,5 @@
 {% extends 'tickets/base.html' %}
+{% load tickets_extras %}
 
 {% block title %}{{ event.name }} - Event Details{% endblock %}
 
@@ -70,6 +71,66 @@
     <div class="stat-card stat-card--warning">
         <div class="stat-label">Customers</div>
         <div class="stat-value">{{ total_customers }}</div>
+    </div>
+    <div class="stat-card" style="border-left: 3px solid var(--danger, #dc3545);">
+        <div class="stat-label">Total Expenses</div>
+        <div class="stat-value">${{ total_expenses|floatformat:2 }}</div>
+    </div>
+    <div class="stat-card{% if profit >= 0 %} stat-card--success{% endif %}" {% if profit < 0 %}style="border-left: 3px solid var(--danger, #dc3545);"{% endif %}>
+        <div class="stat-label">Profit / Loss</div>
+        <div class="stat-value"{% if profit < 0 %} style="color: var(--danger, #dc3545);"{% endif %}>${{ profit|floatformat:2 }}{% if margin_pct != None %} <small style="font-size:0.6em;">({{ margin_pct|floatformat:1 }}%)</small>{% endif %}</div>
+    </div>
+</div>
+
+<div class="card mb-4">
+    <div class="card-header d-flex justify-content-between align-items-center">
+        <h5>Expenses</h5>
+        <a href="{% url 'tickets:expense_create' event.id %}" class="btn btn-sm btn-primary"><i class="bi bi-plus-lg"></i> Add Expense</a>
+    </div>
+    <div class="card-body p-0">
+        {% if expenses %}
+        {% if expenses_by_category %}
+        <div class="px-3 pt-3 pb-2">
+            {% for cat in expenses_by_category %}
+            <span class="badge bg-secondary me-1 mb-1">{{ category_labels|get_item:cat.category }} &mdash; ${{ cat.total|floatformat:2 }}</span>
+            {% endfor %}
+        </div>
+        {% endif %}
+        <div class="table-responsive">
+            <table class="table table-hover mb-0">
+                <thead>
+                    <tr>
+                        <th>Category</th>
+                        <th>Description</th>
+                        <th>Amount</th>
+                        <th>Date</th>
+                        <th></th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for expense in expenses %}
+                    <tr>
+                        <td>{{ expense.get_category_display }}</td>
+                        <td>{{ expense.description }}</td>
+                        <td><strong>${{ expense.amount|floatformat:2 }}</strong></td>
+                        <td>{% if expense.expense_date %}{{ expense.expense_date|date:"M d, Y" }}{% else %}<span class="text-muted">&mdash;</span>{% endif %}</td>
+                        <td>
+                            <div class="d-flex gap-1">
+                                <a href="{% url 'tickets:expense_edit' event.id expense.id %}" class="btn btn-sm btn-outline-secondary"><i class="bi bi-pencil"></i></a>
+                                <a href="{% url 'tickets:expense_delete' event.id expense.id %}" class="btn btn-sm btn-outline-danger"><i class="bi bi-trash"></i></a>
+                            </div>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% else %}
+        <div class="empty-state" style="padding: 32px;">
+            <p class="mb-2">No expenses recorded for this event.</p>
+            <a href="{% url 'tickets:expense_create' event.id %}" class="btn btn-sm btn-outline-primary"><i class="bi bi-plus-lg"></i> Add Expense</a>
+        </div>
+        {% endif %}
     </div>
 </div>
 

@@ -23,11 +23,11 @@ import pandas as pd
 
 from .models import (
     Organization, UserProfile,
-    CSVFormat, UploadedFile, Customer, Event, EventTalent, TicketOrder, Ticket, Venue,
+    CSVFormat, UploadedFile, Customer, Event, EventExpense, EventTalent, TicketOrder, Ticket, Venue,
     CustomField, EventCustomFieldValue,
 )
 from .forms import (
-    EventCSVUploadForm, TicketPriceEntryForm, CSVFormatForm,
+    EventCSVUploadForm, EventExpenseForm, TicketPriceEntryForm, CSVFormatForm,
     VenueForm, EventForm, EventTalentFormSet, LoginForm,
 )
 from .csv_processor import CSVProcessor
@@ -993,6 +993,16 @@ def event_list(request):
             ),
             0,
         ),
+        total_expenses=Coalesce(
+            Subquery(
+                EventExpense.objects.filter(event=OuterRef('pk'), deleted_at__isnull=True)
+                .values('event')
+                .annotate(total=Sum('amount'))
+                .values('total')[:1],
+                output_field=models.DecimalField(max_digits=10, decimal_places=2),
+            ),
+            Decimal('0.00'),
+        ),
     ).select_related('venue')
 
     # Search functionality
@@ -1151,6 +1161,19 @@ def event_detail(request, event_id):
     total_customers = event_stats['total_customers']
     total_tickets = Ticket.objects.filter(ticket_order__event=event).count()
 
+    # Expense data
+    expenses = event.expenses.filter(deleted_at__isnull=True)
+    total_expenses = expenses.aggregate(
+        total=Coalesce(Sum('amount'), Decimal('0.00'))
+    )['total']
+    profit = total_revenue - total_expenses
+    margin_pct = (profit / total_revenue * 100) if total_revenue > 0 else None
+    expenses_by_category = (
+        expenses.values('category')
+        .annotate(total=Sum('amount'))
+        .order_by('-total')
+    )
+
     # Paginate orders — select_related + annotate to avoid N+1 in template
     orders_qs = event.ticket_orders.select_related(
         'customer', 'uploaded_file'
@@ -1167,6 +1190,9 @@ def event_detail(request, event_id):
         if v.custom_field.organization_id == org.id
     ]
 
+    # Map category keys to display labels
+    category_labels = dict(EventExpense.CATEGORY_CHOICES)
+
     context = {
         'event': event,
         'upload_stats': upload_stats,
@@ -1174,6 +1200,12 @@ def event_detail(request, event_id):
         'total_revenue': total_revenue,
         'total_tickets': total_tickets,
         'total_customers': total_customers,
+        'total_expenses': total_expenses,
+        'profit': profit,
+        'margin_pct': margin_pct,
+        'expenses_by_category': expenses_by_category,
+        'expenses': expenses,
+        'category_labels': category_labels,
         'page_obj': page_obj,
         'custom_field_values_display': custom_field_values_display,
     }
@@ -1721,3 +1753,165 @@ def forecast_api(request):
     response['Cache-Control'] = 'no-store, no-cache, must-revalidate'
     response['Pragma'] = 'no-cache'
     return response
+
+
+# ---------------------------------------------------------------------------
+# Event Expense Views
+# ---------------------------------------------------------------------------
+
+@login_required
+@require_org
+@require_http_methods(["GET", "POST"])
+def expense_create(request, event_id):
+    """Add a new expense to an event."""
+    org = get_organization(request)
+    event = get_object_or_404(Event.objects.filter(organization=org), id=event_id)
+
+    if request.method == 'POST':
+        form = EventExpenseForm(request.POST)
+        if form.is_valid():
+            expense = form.save(commit=False)
+            expense.event = event
+            expense.created_by = request.user
+            expense.save()
+            _invalidate_event_list_cache(org)
+            messages.success(request, f'Expense "${expense.description}" added.')
+            return redirect('tickets:event_detail', event_id=event.id)
+    else:
+        form = EventExpenseForm()
+
+    return render(request, 'tickets/expense_form.html', {
+        'form': form,
+        'event': event,
+        'editing': False,
+    })
+
+
+@login_required
+@require_org
+@require_http_methods(["GET", "POST"])
+def expense_edit(request, event_id, expense_id):
+    """Edit an existing expense."""
+    org = get_organization(request)
+    event = get_object_or_404(Event.objects.filter(organization=org), id=event_id)
+    expense = get_object_or_404(
+        EventExpense.objects.filter(event=event, deleted_at__isnull=True),
+        id=expense_id,
+    )
+
+    if request.method == 'POST':
+        form = EventExpenseForm(request.POST, instance=expense)
+        if form.is_valid():
+            expense = form.save(commit=False)
+            expense.updated_by = request.user
+            expense.save()
+            _invalidate_event_list_cache(org)
+            messages.success(request, f'Expense "{expense.description}" updated.')
+            return redirect('tickets:event_detail', event_id=event.id)
+    else:
+        form = EventExpenseForm(instance=expense)
+
+    return render(request, 'tickets/expense_form.html', {
+        'form': form,
+        'event': event,
+        'expense': expense,
+        'editing': True,
+    })
+
+
+@login_required
+@require_org
+@require_http_methods(["GET", "POST"])
+def expense_delete(request, event_id, expense_id):
+    """Soft-delete an expense."""
+    org = get_organization(request)
+    event = get_object_or_404(Event.objects.filter(organization=org), id=event_id)
+    expense = get_object_or_404(
+        EventExpense.objects.filter(event=event, deleted_at__isnull=True),
+        id=expense_id,
+    )
+
+    if request.method == 'POST':
+        expense.delete()  # soft delete
+        _invalidate_event_list_cache(org)
+        messages.success(request, f'Expense "{expense.description}" deleted.')
+        return redirect('tickets:event_detail', event_id=event.id)
+
+    return render(request, 'tickets/expense_delete.html', {
+        'event': event,
+        'expense': expense,
+    })
+
+
+@login_required
+@require_org
+def profitability_overview(request):
+    """Analytics page: org-wide P&L stats, chart, and sortable table."""
+    org = get_organization(request)
+
+    events = (
+        Event.objects.filter(organization=org)
+        .annotate(
+            total_revenue=Coalesce(
+                Subquery(
+                    TicketOrder.objects.filter(event=OuterRef('pk'))
+                    .values('event')
+                    .annotate(total=Sum('total_amount'))
+                    .values('total')[:1],
+                    output_field=models.DecimalField(max_digits=10, decimal_places=2),
+                ),
+                Decimal('0.00'),
+            ),
+            total_expenses=Coalesce(
+                Subquery(
+                    EventExpense.objects.filter(event=OuterRef('pk'), deleted_at__isnull=True)
+                    .values('event')
+                    .annotate(total=Sum('amount'))
+                    .values('total')[:1],
+                    output_field=models.DecimalField(max_digits=10, decimal_places=2),
+                ),
+                Decimal('0.00'),
+            ),
+        )
+        .select_related('venue')
+        .order_by('-start_date')
+    )
+
+    # Summary stats
+    summary_revenue = Decimal('0.00')
+    summary_expenses = Decimal('0.00')
+    event_rows = []
+    for e in events:
+        profit = e.total_revenue - e.total_expenses
+        margin = (profit / e.total_revenue * 100) if e.total_revenue > 0 else None
+        event_rows.append({
+            'event': e,
+            'revenue': e.total_revenue,
+            'expenses': e.total_expenses,
+            'profit': profit,
+            'margin': margin,
+        })
+        summary_revenue += e.total_revenue
+        summary_expenses += e.total_expenses
+
+    summary_profit = summary_revenue - summary_expenses
+    summary_margin = (summary_profit / summary_revenue * 100) if summary_revenue > 0 else None
+
+    # Chart data — only events with revenue or expenses
+    chart_events = [r for r in event_rows if r['revenue'] > 0 or r['expenses'] > 0]
+    chart_data = {
+        'labels': [r['event'].name for r in chart_events],
+        'revenue': [float(r['revenue']) for r in chart_events],
+        'expenses': [float(r['expenses']) for r in chart_events],
+        'profit': [float(r['profit']) for r in chart_events],
+    }
+
+    context = {
+        'event_rows': event_rows,
+        'summary_revenue': summary_revenue,
+        'summary_expenses': summary_expenses,
+        'summary_profit': summary_profit,
+        'summary_margin': summary_margin,
+        'chart_data_json': json.dumps(chart_data),
+    }
+    return render(request, 'tickets/profitability_overview.html', context)

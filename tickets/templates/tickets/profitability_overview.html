@@ -1,0 +1,164 @@
+{% extends 'tickets/base.html' %}
+
+{% block title %}Profitability{% endblock %}
+
+{% block extra_head %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js" defer></script>
+{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1>Profitability</h1>
+</div>
+
+<div class="stats-grid">
+    <div class="stat-card stat-card--success">
+        <div class="stat-label">Total Revenue</div>
+        <div class="stat-value">${{ summary_revenue|floatformat:2 }}</div>
+    </div>
+    <div class="stat-card" style="border-left: 3px solid var(--danger, #dc3545);">
+        <div class="stat-label">Total Expenses</div>
+        <div class="stat-value">${{ summary_expenses|floatformat:2 }}</div>
+    </div>
+    <div class="stat-card{% if summary_profit >= 0 %} stat-card--success{% endif %}" {% if summary_profit < 0 %}style="border-left: 3px solid var(--danger, #dc3545);"{% endif %}>
+        <div class="stat-label">Net Profit</div>
+        <div class="stat-value"{% if summary_profit < 0 %} style="color: var(--danger, #dc3545);"{% endif %}>${{ summary_profit|floatformat:2 }}</div>
+    </div>
+    <div class="stat-card stat-card--info">
+        <div class="stat-label">Avg Margin</div>
+        <div class="stat-value">{% if summary_margin != None %}{{ summary_margin|floatformat:1 }}%{% else %}&mdash;{% endif %}</div>
+    </div>
+</div>
+
+{% if event_rows %}
+<div class="card mb-4">
+    <div class="card-header d-flex justify-content-between align-items-center">
+        <h5 class="mb-0" id="chartTitle">Revenue vs Expenses by Event</h5>
+        <div class="btn-group btn-group-sm" role="group">
+            <button type="button" class="btn btn-outline-secondary active" id="btnRevExp">Revenue vs Expenses</button>
+            <button type="button" class="btn btn-outline-secondary" id="btnPL">Profit / Loss</button>
+        </div>
+    </div>
+    <div class="card-body">
+        <div style="position: relative; height: 350px;">
+            <canvas id="profitChart"></canvas>
+        </div>
+    </div>
+</div>
+
+<div class="card mb-4">
+    <div class="card-header"><h5>Event Profitability</h5></div>
+    <div class="card-body p-0">
+        <div class="table-responsive">
+            <table class="table table-hover mb-0">
+                <thead>
+                    <tr>
+                        <th>Event Name</th>
+                        <th>Date</th>
+                        <th>Venue</th>
+                        <th>Revenue</th>
+                        <th>Expenses</th>
+                        <th>Profit</th>
+                        <th>Margin</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for row in event_rows %}
+                    <tr>
+                        <td><a href="{% url 'tickets:event_detail' row.event.id %}"><strong>{{ row.event.name }}</strong></a></td>
+                        <td>{{ row.event.start_date|date:"M d, Y" }}</td>
+                        <td>{{ row.event.venue.name }}, {{ row.event.venue.city }}</td>
+                        <td>${{ row.revenue|floatformat:2 }}</td>
+                        <td>${{ row.expenses|floatformat:2 }}</td>
+                        <td{% if row.profit < 0 %} style="color: var(--danger, #dc3545);"{% endif %}>${{ row.profit|floatformat:2 }}</td>
+                        <td>{% if row.margin != None %}{{ row.margin|floatformat:1 }}%{% else %}&mdash;{% endif %}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+{% else %}
+<div class="card">
+    <div class="card-body">
+        <div class="empty-state">
+            <i class="bi bi-cash-stack d-block" style="font-size: 2rem;"></i>
+            <p>No events found. Create events and add expenses to track profitability.</p>
+            <a href="{% url 'tickets:event_create' %}" class="btn btn-primary"><i class="bi bi-plus-lg"></i> Create Event</a>
+        </div>
+    </div>
+</div>
+{% endif %}
+{% endblock %}
+
+{% block extra_js %}
+<script type="application/json" id="profitChartData">{{ chart_data_json|safe }}</script>
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    var dataEl = document.getElementById('profitChartData');
+    if (!dataEl) return;
+    var data = JSON.parse(dataEl.textContent);
+    if (!data.labels || data.labels.length === 0) return;
+
+    var isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+    var textColor = isDark ? '#ccc' : '#666';
+    var gridColor = isDark ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.1)';
+    var greenBg = isDark ? 'rgba(75, 192, 132, 0.7)' : 'rgba(75, 192, 132, 0.8)';
+    var redBg = isDark ? 'rgba(255, 99, 132, 0.7)' : 'rgba(255, 99, 132, 0.8)';
+
+    var scaleOpts = {
+        x: { ticks: { color: textColor }, grid: { color: gridColor } },
+        y: { ticks: { color: textColor, callback: function(v) { return '$' + v.toLocaleString(); } }, grid: { color: gridColor } }
+    };
+
+    var configs = {
+        revexp: {
+            title: 'Revenue vs Expenses by Event',
+            type: 'bar',
+            data: {
+                labels: data.labels,
+                datasets: [
+                    { label: 'Revenue', data: data.revenue, backgroundColor: greenBg, borderRadius: 4 },
+                    { label: 'Expenses', data: data.expenses, backgroundColor: redBg, borderRadius: 4 }
+                ]
+            },
+            options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { labels: { color: textColor } } }, scales: scaleOpts }
+        },
+        pl: {
+            title: 'Profit / Loss by Event',
+            type: 'bar',
+            data: {
+                labels: data.labels,
+                datasets: [{
+                    label: 'Profit / Loss',
+                    data: data.profit,
+                    backgroundColor: data.profit.map(function(v) { return v >= 0 ? greenBg : redBg; }),
+                    borderRadius: 4
+                }]
+            },
+            options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: scaleOpts }
+        }
+    };
+
+    var canvas = document.getElementById('profitChart');
+    var chart = new Chart(canvas.getContext('2d'), { type: configs.revexp.type, data: configs.revexp.data, options: configs.revexp.options });
+
+    var btnRevExp = document.getElementById('btnRevExp');
+    var btnPL = document.getElementById('btnPL');
+    var chartTitle = document.getElementById('chartTitle');
+
+    function switchChart(key) {
+        var cfg = configs[key];
+        chart.destroy();
+        chart = new Chart(canvas.getContext('2d'), { type: cfg.type, data: cfg.data, options: cfg.options });
+        chartTitle.textContent = cfg.title;
+        btnRevExp.classList.toggle('active', key === 'revexp');
+        btnPL.classList.toggle('active', key === 'pl');
+    }
+
+    btnRevExp.addEventListener('click', function() { switchChart('revexp'); });
+    btnPL.addEventListener('click', function() { switchChart('pl'); });
+});
+</script>
+{% endblock %}
