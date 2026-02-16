@@ -1052,10 +1052,23 @@ def event_list(request):
         # Replace the page's object list, preserving the paginator's sort order
         page_obj.object_list = [annotated_map[pk] for pk in page_pks]
 
+    # Show warning when current time is past the event's end date+time and upload_count is 0 (same as home)
+    now_local = django_tz.localtime(django_tz.now()).replace(tzinfo=None)
+    event_ids_show_warning = set()
+    for ev in page_obj:
+        if ev.upload_count != 0:
+            continue
+        end_date = ev.end_date or ev.start_date
+        end_time = ev.end_time or ev.start_time or time(23, 59, 59)
+        event_end = datetime.combine(end_date, end_time)
+        if now_local > event_end:
+            event_ids_show_warning.add(ev.id)
+
     context = {
         'page_obj': page_obj,
         'search_query': search_query,
         'sort_by': sort_by,
+        'event_ids_show_warning': event_ids_show_warning,
     }
     response = render(request, 'tickets/event_list.html', context)
     try:
