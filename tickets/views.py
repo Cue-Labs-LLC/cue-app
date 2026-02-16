@@ -1150,13 +1150,23 @@ def event_detail(request, event_id):
     # Get all distinct uploads associated with this event
     associated_uploads = event.get_associated_uploads().select_related('csv_format')
 
-    # Calculate statistics per upload — single query instead of 3 per upload
+    # Calculate statistics per upload — use Subquery for revenue to avoid join inflation
+    # (Count('tickets') joins Ticket and would duplicate rows, inflating Sum('total_amount'))
+    revenue_per_upload = (
+        TicketOrder.objects.filter(event=event, uploaded_file_id=OuterRef('uploaded_file'))
+        .values('uploaded_file')
+        .annotate(s=Sum('total_amount'))
+        .values('s')[:1]
+    )
     upload_agg = (
         TicketOrder.objects.filter(event=event, uploaded_file__in=associated_uploads)
         .values('uploaded_file')
         .annotate(
             orders_count=Count('id'),
-            revenue=Coalesce(Sum('total_amount'), Decimal('0.00')),
+            revenue=Coalesce(
+                Subquery(revenue_per_upload, output_field=models.DecimalField(max_digits=10, decimal_places=2)),
+                Decimal('0.00'),
+            ),
             tickets_count=Count('tickets', distinct=True),
         )
     )
