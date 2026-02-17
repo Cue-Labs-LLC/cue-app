@@ -1,0 +1,7 @@
+Eventflow - Email Verification
+
+Your verification code is: {{ otp_code }}
+
+This code expires in {{ expiry_minutes }} minutes.
+
+If you did not request this code, you can safely ignore this email.

@@ -20,3 +20,12 @@ def subtract(value, arg):
         return Decimal(str(value)) - Decimal(str(arg))
     except (TypeError, ValueError, InvalidOperation):
         return ''
+
+
+@register.filter
+def make_range(value):
+    """Return range(value) for iteration in templates."""
+    try:
+        return range(int(value))
+    except (TypeError, ValueError):
+        return range(0)

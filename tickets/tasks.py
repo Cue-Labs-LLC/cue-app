@@ -5,6 +5,93 @@ logger = get_task_logger(__name__)
 
 
 @shared_task(bind=True, max_retries=2, default_retry_delay=30)
+def send_otp_email_task(self, otp_id):
+    """Send an OTP verification email."""
+    from django.core.mail import send_mail
+    from django.template.loader import render_to_string
+    from django.conf import settings
+    from tickets.models import EmailOTP
+
+    try:
+        otp = EmailOTP.objects.get(id=otp_id)
+    except EmailOTP.DoesNotExist:
+        logger.warning("OTP %s not found, skipping email", otp_id)
+        return
+
+    if otp.is_verified or otp.is_expired():
+        return
+
+    context = {'otp_code': otp.otp_code, 'expiry_minutes': 10}
+    html_body = render_to_string('tickets/auth/otp_email.html', context)
+    text_body = render_to_string('tickets/auth/otp_email.txt', context)
+
+    try:
+        send_mail(
+            subject='Your Eventflow verification code',
+            message=text_body,
+            from_email=settings.DEFAULT_FROM_EMAIL,
+            recipient_list=[otp.email],
+            html_message=html_body,
+        )
+    except Exception as exc:
+        logger.exception("Failed to send OTP email to %s", otp.email)
+        raise self.retry(exc=exc)
+
+
+@shared_task(bind=True, max_retries=2, default_retry_delay=30)
+def send_survey_emails_task(self, event_id, organization_id):
+    """Send survey emails to all unsent invitations for an event."""
+    from django.core.mail import send_mail
+    from django.template.loader import render_to_string
+    from django.conf import settings
+    from tickets.models import SurveyInvitation, Event
+
+    try:
+        event = Event.objects.select_related('venue').get(id=event_id)
+    except Event.DoesNotExist:
+        logger.warning("Event %s not found, skipping survey emails", event_id)
+        return
+
+    invitations = SurveyInvitation.objects.filter(
+        event_id=event_id,
+        organization_id=organization_id,
+        sent_at__isnull=True,
+    )
+
+    site_url = settings.SITE_URL.rstrip('/')
+    sent_count = 0
+
+    for invitation in invitations:
+        survey_url = f"{site_url}/survey/{invitation.token}/"
+        context = {
+            'event': event,
+            'survey_url': survey_url,
+        }
+        html_body = render_to_string('tickets/survey/survey_email.html', context)
+        text_body = render_to_string('tickets/survey/survey_email.txt', context)
+
+        try:
+            send_mail(
+                subject=f"How was {event.name}? Share your feedback",
+                message=text_body,
+                from_email=settings.DEFAULT_FROM_EMAIL,
+                recipient_list=[invitation.email],
+                html_message=html_body,
+            )
+            from django.utils import timezone
+            invitation.sent_at = timezone.now()
+            invitation.save(update_fields=['sent_at'])
+            sent_count += 1
+        except Exception:
+            logger.exception(
+                "Failed to send survey email to %s for event %s",
+                invitation.email, event_id,
+            )
+
+    logger.info("Sent %d survey emails for event %s", sent_count, event_id)
+
+
+@shared_task(bind=True, max_retries=2, default_retry_delay=30)
 def recalculate_rfm_task(self, organization_id):
     from tickets.models import Organization
     from tickets.services.segmentation.rfm_calculator import RFMCalculator

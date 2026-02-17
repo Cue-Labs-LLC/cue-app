@@ -1,13 +1,15 @@
 import json
 from django.contrib import admin
 from django.utils.html import format_html
+from django.db import models
 from django.db.models import Sum, Count
 from django import forms
 from .models import (
-    Organization, UserProfile,
+    Organization, UserProfile, EmailOTP,
     CSVFormat, UploadedFile, Customer, Event, EventExpense, EventTalent, TicketOrder, Ticket, TicketTier, Venue,
     CustomField, CustomFieldOption, EventCustomFieldValue,
     IncomeSource, EventIncome,
+    SurveyQuestion, SurveyInvitation, SurveyResponse, SurveyAnswer,
 )
 
 
@@ -593,3 +595,116 @@ class UserProfileAdmin(admin.ModelAdmin):
     def user_email(self, obj):
         return obj.user.email if obj.user_id else ''
     user_email.short_description = 'Email'
+
+
+@admin.register(EmailOTP)
+class EmailOTPAdmin(admin.ModelAdmin):
+    list_display = ['email', 'purpose', 'is_verified', 'attempts', 'created_at']
+    list_filter = ['purpose', 'is_verified', 'created_at']
+    search_fields = ['email']
+    readonly_fields = ['id', 'otp_code', 'signup_data', 'created_at', 'updated_at']
+    date_hierarchy = 'created_at'
+
+    fieldsets = (
+        ('OTP Information', {
+            'fields': ('email', 'otp_code', 'purpose', 'is_verified', 'attempts')
+        }),
+        ('Signup Data', {
+            'fields': ('signup_data',),
+            'classes': ('collapse',),
+        }),
+        ('Metadata', {
+            'fields': ('id', 'created_at', 'updated_at'),
+            'classes': ('collapse',),
+        }),
+    )
+
+
+@admin.register(SurveyQuestion)
+class SurveyQuestionAdmin(admin.ModelAdmin):
+    list_display = ['question_text', 'question_type', 'position', 'is_required', 'is_active', 'event', 'organization']
+    list_filter = ['question_type', 'is_required', 'is_active', 'organization']
+    search_fields = ['question_text']
+    readonly_fields = ['id', 'created_at', 'updated_at']
+    ordering = ['position']
+
+    def get_queryset(self, request):
+        qs = super().get_queryset(request)
+        if request.user.is_superuser:
+            return qs.select_related('event', 'organization')
+        profile = getattr(request.user, 'profile', None)
+        if profile and profile.organization_id:
+            return qs.filter(
+                models.Q(organization=profile.organization) | models.Q(organization__isnull=True)
+            ).select_related('event', 'organization')
+        return qs.none()
+
+
+@admin.register(SurveyInvitation)
+class SurveyInvitationAdmin(admin.ModelAdmin):
+    list_display = ['customer', 'event', 'organization', 'email', 'sent_at', 'completed_at', 'created_at']
+    list_filter = ['organization', 'sent_at', 'completed_at']
+    search_fields = ['email', 'customer__name', 'customer__email', 'event__name']
+    readonly_fields = ['id', 'token', 'created_at', 'updated_at']
+    raw_id_fields = ['customer', 'event']
+
+    def get_queryset(self, request):
+        qs = super().get_queryset(request)
+        if request.user.is_superuser:
+            return qs.select_related('customer', 'event', 'organization')
+        profile = getattr(request.user, 'profile', None)
+        if profile and profile.organization_id:
+            return qs.filter(organization=profile.organization).select_related('customer', 'event', 'organization')
+        return qs.none()
+
+
+@admin.register(SurveyResponse)
+class SurveyResponseAdmin(admin.ModelAdmin):
+    list_display = ['customer', 'event', 'organization', 'submitted_at']
+    list_filter = ['organization', 'submitted_at']
+    search_fields = ['customer__name', 'customer__email', 'event__name']
+    readonly_fields = ['id', 'created_at', 'updated_at', 'submitted_at']
+    raw_id_fields = ['customer', 'event', 'invitation']
+
+    def get_queryset(self, request):
+        qs = super().get_queryset(request)
+        if request.user.is_superuser:
+            return qs.select_related('customer', 'event', 'organization', 'invitation')
+        profile = getattr(request.user, 'profile', None)
+        if profile and profile.organization_id:
+            return qs.filter(organization=profile.organization).select_related('customer', 'event', 'organization', 'invitation')
+        return qs.none()
+
+
+@admin.register(SurveyAnswer)
+class SurveyAnswerAdmin(admin.ModelAdmin):
+    list_display = ['get_question_text', 'star_rating', 'nps_score', 'text_answer_preview', 'get_event', 'created_at']
+    list_filter = ['question__question_type', 'response__organization']
+    search_fields = ['question__question_text', 'text_answer', 'response__customer__name']
+    readonly_fields = ['id', 'created_at', 'updated_at']
+    raw_id_fields = ['response', 'question']
+
+    def get_question_text(self, obj):
+        return obj.question.question_text[:60] if obj.question_id else ''
+    get_question_text.short_description = 'Question'
+    get_question_text.admin_order_field = 'question__question_text'
+
+    def text_answer_preview(self, obj):
+        return (obj.text_answer[:80] + '...') if len(obj.text_answer) > 80 else obj.text_answer
+    text_answer_preview.short_description = 'Text Answer'
+
+    def get_event(self, obj):
+        return obj.response.event.name if obj.response_id and obj.response.event_id else ''
+    get_event.short_description = 'Event'
+    get_event.admin_order_field = 'response__event__name'
+
+    def get_queryset(self, request):
+        qs = super().get_queryset(request)
+        if request.user.is_superuser:
+            return qs.select_related('response', 'response__event', 'response__organization', 'question')
+        profile = getattr(request.user, 'profile', None)
+        if profile and profile.organization_id:
+            return qs.filter(response__organization=profile.organization).select_related(
+                'response', 'response__event', 'response__organization', 'question'
+            )
+        return qs.none()

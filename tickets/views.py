@@ -25,11 +25,13 @@ from .models import (
     Organization, UserProfile,
     CSVFormat, UploadedFile, Customer, Event, EventExpense, EventTalent, TicketOrder, Ticket, Venue,
     CustomField, EventCustomFieldValue, IncomeSource, EventIncome,
+    SurveyQuestion, SurveyInvitation, SurveyResponse, SurveyAnswer,
 )
 from .forms import (
     EventCSVUploadForm, EventExpenseForm, TicketPriceEntryForm, CSVFormatForm,
     VenueForm, EventForm, EventTalentFormSet, LoginForm,
     IncomeSourceForm, EventIncomeForm,
+    SignUpForm, OTPVerificationForm,
 )
 from .csv_processor import CSVProcessor
 from .services.forecasting.preview import generate_forecast_preview
@@ -215,6 +217,190 @@ class PasswordResetCompleteView(auth_views.PasswordResetCompleteView):
 def password_reset_complete(request):
     """Password reset complete view wrapper."""
     return PasswordResetCompleteView.as_view()(request)
+
+
+# ---------------------------------------------------------------------------
+# Sign-Up with Email OTP Verification
+# ---------------------------------------------------------------------------
+
+@require_http_methods(["GET", "POST"])
+def signup_view(request):
+    """Step 1: Collect email, name, and password; send OTP."""
+    import random
+    from django.contrib.auth.hashers import make_password
+    from .models import EmailOTP
+    from .tasks import send_otp_email_task
+
+    if request.user.is_authenticated:
+        return redirect('tickets:home')
+
+    if request.method == 'POST':
+        form = SignUpForm(request.POST)
+        if form.is_valid():
+            email = form.cleaned_data['email'].lower()
+
+            # Rate limit: max 3 OTP sends per email per 30 minutes
+            thirty_min_ago = django_tz.now() - timedelta(minutes=30)
+            recent_count = EmailOTP.objects.filter(
+                email__iexact=email,
+                purpose=EmailOTP.Purpose.SIGNUP,
+                created_at__gte=thirty_min_ago,
+            ).count()
+            if recent_count >= 3:
+                messages.error(
+                    request,
+                    'Too many verification attempts. Please try again later.'
+                )
+                return redirect('tickets:signup')
+
+            otp_code = f'{random.randint(0, 999999):06d}'
+            otp = EmailOTP.objects.create(
+                email=email,
+                otp_code=otp_code,
+                purpose=EmailOTP.Purpose.SIGNUP,
+                signup_data={
+                    'email': email,
+                    'first_name': form.cleaned_data['first_name'],
+                    'last_name': form.cleaned_data['last_name'],
+                    'password': make_password(form.cleaned_data['password1']),
+                },
+            )
+
+            send_otp_email_task.delay(str(otp.id))
+
+            request.session['otp_id'] = str(otp.id)
+            # Always redirect to verify — same behaviour whether email exists or not
+            return redirect('tickets:verify_otp')
+    else:
+        form = SignUpForm()
+
+    return render(request, 'tickets/auth/signup.html', {'form': form})
+
+
+@require_http_methods(["GET", "POST"])
+def verify_otp_view(request):
+    """Step 2: Verify the OTP code and create the user account."""
+    from django.contrib.auth import login
+    from django.contrib.auth.models import User
+    from .models import EmailOTP
+
+    if request.user.is_authenticated:
+        return redirect('tickets:home')
+
+    otp_id = request.session.get('otp_id')
+    if not otp_id:
+        messages.error(request, 'No pending verification. Please sign up first.')
+        return redirect('tickets:signup')
+
+    try:
+        otp = EmailOTP.objects.get(id=otp_id)
+    except EmailOTP.DoesNotExist:
+        messages.error(request, 'Verification session expired. Please sign up again.')
+        return redirect('tickets:signup')
+
+    if not otp.is_usable():
+        msg = 'Code expired.' if otp.is_expired() else 'Too many attempts.'
+        messages.error(request, f'{msg} Please sign up again.')
+        request.session.pop('otp_id', None)
+        return redirect('tickets:signup')
+
+    # Mask email for display (e.g. t***@example.com)
+    email = otp.email
+    local, domain = email.split('@', 1)
+    masked_email = local[0] + '***@' + domain if len(local) > 1 else email
+
+    if request.method == 'POST':
+        form = OTPVerificationForm(request.POST)
+        if form.is_valid():
+            otp.attempts += 1
+            otp.save(update_fields=['attempts'])
+
+            if form.cleaned_data['otp_code'] != otp.otp_code:
+                remaining = 5 - otp.attempts
+                if remaining <= 0:
+                    messages.error(request, 'Too many failed attempts. Please sign up again.')
+                    request.session.pop('otp_id', None)
+                    return redirect('tickets:signup')
+                messages.error(request, f'Invalid code. {remaining} attempt(s) remaining.')
+                return render(request, 'tickets/auth/verify_otp.html', {
+                    'form': form, 'masked_email': masked_email,
+                })
+
+            # Code matches — mark verified and create user
+            otp.is_verified = True
+            otp.save(update_fields=['is_verified'])
+
+            data = otp.signup_data
+
+            # Final uniqueness check (race condition guard)
+            if User.objects.filter(email__iexact=data['email']).exists():
+                messages.info(request, 'An account with this email already exists. Please log in.')
+                request.session.pop('otp_id', None)
+                return redirect('tickets:login')
+
+            user = User.objects.create(
+                username=data['email'],
+                email=data['email'],
+                first_name=data['first_name'],
+                last_name=data['last_name'],
+                password=data['password'],  # already hashed via make_password
+            )
+            UserProfile.objects.create(user=user)
+
+            login(request, user, backend='tickets.backends.EmailBackend')
+            request.session.pop('otp_id', None)
+            messages.success(request, 'Account created! Please create or join an organization to get started.')
+            return redirect('tickets:create_organization')
+    else:
+        form = OTPVerificationForm()
+
+    return render(request, 'tickets/auth/verify_otp.html', {
+        'form': form, 'masked_email': masked_email,
+    })
+
+
+@require_http_methods(["POST"])
+def resend_otp_view(request):
+    """Resend a new OTP code for the current signup session."""
+    import random
+    from .models import EmailOTP
+    from .tasks import send_otp_email_task
+
+    if request.user.is_authenticated:
+        return redirect('tickets:home')
+
+    otp_id = request.session.get('otp_id')
+    if not otp_id:
+        return redirect('tickets:signup')
+
+    try:
+        old_otp = EmailOTP.objects.get(id=otp_id)
+    except EmailOTP.DoesNotExist:
+        return redirect('tickets:signup')
+
+    # Rate limit: max 3 per email per 30 min
+    thirty_min_ago = django_tz.now() - timedelta(minutes=30)
+    recent_count = EmailOTP.objects.filter(
+        email__iexact=old_otp.email,
+        purpose=EmailOTP.Purpose.SIGNUP,
+        created_at__gte=thirty_min_ago,
+    ).count()
+    if recent_count >= 3:
+        messages.error(request, 'Too many verification attempts. Please try again later.')
+        return redirect('tickets:verify_otp')
+
+    new_code = f'{random.randint(0, 999999):06d}'
+    new_otp = EmailOTP.objects.create(
+        email=old_otp.email,
+        otp_code=new_code,
+        purpose=EmailOTP.Purpose.SIGNUP,
+        signup_data=old_otp.signup_data,
+    )
+
+    send_otp_email_task.delay(str(new_otp.id))
+    request.session['otp_id'] = str(new_otp.id)
+    messages.success(request, 'A new verification code has been sent.')
+    return redirect('tickets:verify_otp')
 
 
 def health_check(request):
@@ -1251,6 +1437,43 @@ def event_detail(request, event_id):
     # Map category keys to display labels
     category_labels = dict(EventExpense.CATEGORY_CHOICES)
 
+    # Survey results
+    survey_invitations_count = SurveyInvitation.objects.filter(event=event).count()
+    survey_responses_count = SurveyResponse.objects.filter(event=event).count()
+
+    survey_results = None
+    if survey_responses_count > 0:
+        star_avg = SurveyAnswer.objects.filter(
+            response__event=event, star_rating__isnull=False
+        ).aggregate(avg=Avg('star_rating'))['avg']
+
+        nps_answers = SurveyAnswer.objects.filter(
+            response__event=event, nps_score__isnull=False
+        )
+        nps_total = nps_answers.count()
+        nps_score = None
+        if nps_total > 0:
+            promoters = nps_answers.filter(nps_score__gte=9).count()
+            detractors = nps_answers.filter(nps_score__lte=6).count()
+            nps_score = round((promoters - detractors) / nps_total * 100)
+
+        recent_comments = list(
+            SurveyAnswer.objects.filter(
+                response__event=event
+            ).exclude(text_answer='').order_by('-response__submitted_at').values(
+                'text_answer',
+                'response__customer__name',
+                'response__customer__email',
+            )[:5]
+        )
+
+        survey_results = {
+            'avg_star_rating': round(star_avg, 1) if star_avg else None,
+            'nps_score': nps_score,
+            'nps_total': nps_total,
+            'recent_comments': recent_comments,
+        }
+
     context = {
         'event': event,
         'upload_stats': upload_stats,
@@ -1270,6 +1493,9 @@ def event_detail(request, event_id):
         'income_sources': IncomeSource.objects.filter(organization=org).order_by('order', 'name'),
         'page_obj': page_obj,
         'custom_field_values_display': custom_field_values_display,
+        'survey_invitations_count': survey_invitations_count,
+        'survey_responses_count': survey_responses_count,
+        'survey_results': survey_results,
     }
     return render(request, 'tickets/event_detail.html', context)
 
@@ -2150,3 +2376,167 @@ def profitability_overview(request):
         'chart_data_json': json.dumps(chart_data),
     }
     return render(request, 'tickets/profitability_overview.html', context)
+
+
+# ---------------------------------------------------------------------------
+# Survey views
+# ---------------------------------------------------------------------------
+
+def _get_survey_questions_for_event(event):
+    """Return active survey questions for an event.
+
+    Priority: event-specific > org defaults > system defaults.
+    """
+    # 1. Event-specific questions
+    event_questions = SurveyQuestion.objects.filter(
+        event=event, is_active=True
+    ).order_by('position')
+    if event_questions.exists():
+        return event_questions
+
+    # 2. Organization defaults
+    org_questions = SurveyQuestion.objects.filter(
+        organization=event.organization, event__isnull=True, is_active=True
+    ).order_by('position')
+    if org_questions.exists():
+        return org_questions
+
+    # 3. System defaults (no event, no org)
+    return SurveyQuestion.objects.filter(
+        event__isnull=True, organization__isnull=True, is_active=True
+    ).order_by('position')
+
+
+@login_required
+@require_org
+def send_survey(request, event_id):
+    """Create survey invitations and dispatch email task. POST only."""
+    if request.method != 'POST':
+        return redirect('tickets:event_detail', event_id=event_id)
+
+    org = get_organization(request)
+    event = get_object_or_404(Event.objects.filter(organization=org), id=event_id)
+
+    # Get attendees who don't already have an invitation for this event
+    existing_customer_ids = SurveyInvitation.objects.filter(
+        event=event
+    ).values_list('customer_id', flat=True)
+
+    attendees = Customer.objects.filter(
+        ticket_orders__event=event, organization=org
+    ).distinct().exclude(id__in=existing_customer_ids)
+
+    if not attendees.exists():
+        messages.info(request, "All attendees have already been sent a survey for this event.")
+        return redirect('tickets:event_detail', event_id=event_id)
+
+    # Create invitations
+    invitations = []
+    for customer in attendees:
+        invitations.append(SurveyInvitation(
+            event=event,
+            customer=customer,
+            organization=org,
+            email=customer.email,
+        ))
+    SurveyInvitation.objects.bulk_create(invitations)
+
+    # Dispatch Celery task
+    from .tasks import send_survey_emails_task
+    send_survey_emails_task.delay(str(event_id), str(org.id))
+
+    messages.success(
+        request,
+        f"Survey invitations created for {len(invitations)} attendee(s). Emails are being sent."
+    )
+    return redirect('tickets:event_detail', event_id=event_id)
+
+
+def survey_form(request, token):
+    """Public survey form — no login required."""
+    invitation = get_object_or_404(
+        SurveyInvitation.objects.select_related('event', 'event__venue', 'customer'),
+        token=token,
+    )
+
+    if invitation.completed_at:
+        return redirect('tickets:survey_thank_you')
+
+    questions = _get_survey_questions_for_event(invitation.event)
+
+    if request.method == 'POST':
+        errors = {}
+
+        # Validate answers
+        answers_data = []
+        for question in questions:
+            field_name = f"question_{question.id}"
+            value = request.POST.get(field_name, '').strip()
+
+            if question.is_required and not value:
+                errors[field_name] = "This field is required."
+                continue
+
+            if not value:
+                answers_data.append({'question': question, 'star_rating': None, 'nps_score': None, 'text_answer': ''})
+                continue
+
+            if question.question_type == 'star_rating':
+                try:
+                    rating = int(value)
+                    if not (1 <= rating <= 5):
+                        raise ValueError
+                    answers_data.append({'question': question, 'star_rating': rating, 'nps_score': None, 'text_answer': ''})
+                except (ValueError, TypeError):
+                    errors[field_name] = "Please select a rating between 1 and 5."
+            elif question.question_type == 'nps':
+                try:
+                    score = int(value)
+                    if not (0 <= score <= 10):
+                        raise ValueError
+                    answers_data.append({'question': question, 'star_rating': None, 'nps_score': score, 'text_answer': ''})
+                except (ValueError, TypeError):
+                    errors[field_name] = "Please select a score between 0 and 10."
+            else:
+                answers_data.append({'question': question, 'star_rating': None, 'nps_score': None, 'text_answer': value})
+
+        if not errors:
+            with transaction.atomic():
+                response = SurveyResponse.objects.create(
+                    invitation=invitation,
+                    event=invitation.event,
+                    customer=invitation.customer,
+                    organization=invitation.organization,
+                )
+                answer_objects = []
+                for data in answers_data:
+                    answer_objects.append(SurveyAnswer(
+                        response=response,
+                        question=data['question'],
+                        star_rating=data['star_rating'],
+                        nps_score=data['nps_score'],
+                        text_answer=data['text_answer'],
+                    ))
+                SurveyAnswer.objects.bulk_create(answer_objects)
+
+                invitation.completed_at = django_tz.now()
+                invitation.save(update_fields=['completed_at'])
+
+            return redirect('tickets:survey_thank_you')
+
+        return render(request, 'tickets/survey/survey_form.html', {
+            'invitation': invitation,
+            'questions': questions,
+            'errors': errors,
+        })
+
+    return render(request, 'tickets/survey/survey_form.html', {
+        'invitation': invitation,
+        'questions': questions,
+        'errors': {},
+    })
+
+
+def survey_thank_you(request):
+    """Public thank-you page after survey submission."""
+    return render(request, 'tickets/survey/survey_thank_you.html')

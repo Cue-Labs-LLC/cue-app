@@ -30,13 +30,14 @@ class OrganizationForm(forms.ModelForm):
 
 
 class LoginForm(AuthenticationForm):
-    """Custom login form with Bootstrap styling."""
-    
-    username = forms.CharField(
-        widget=forms.TextInput(attrs={
+    """Custom login form with Bootstrap styling (email-only login)."""
+
+    username = forms.EmailField(
+        label='Email',
+        widget=forms.EmailInput(attrs={
             'class': 'form-control',
-            'placeholder': 'Username',
-            'autofocus': True
+            'placeholder': 'Email',
+            'autofocus': True,
         })
     )
     password = forms.CharField(
@@ -45,7 +46,7 @@ class LoginForm(AuthenticationForm):
             'placeholder': 'Password'
         })
     )
-    
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.helper = FormHelper()
@@ -54,6 +55,107 @@ class LoginForm(AuthenticationForm):
             Field('password'),
             Submit('submit', 'Login', css_class='btn btn-primary w-100')
         )
+
+
+class SignUpForm(forms.Form):
+    """Sign-up form collecting email, name, and password."""
+
+    email = forms.EmailField(
+        widget=forms.EmailInput(attrs={
+            'class': 'form-control',
+            'placeholder': 'Email address',
+            'autofocus': True,
+        })
+    )
+    first_name = forms.CharField(
+        max_length=150,
+        widget=forms.TextInput(attrs={
+            'class': 'form-control',
+            'placeholder': 'First name',
+        })
+    )
+    last_name = forms.CharField(
+        max_length=150,
+        widget=forms.TextInput(attrs={
+            'class': 'form-control',
+            'placeholder': 'Last name',
+        })
+    )
+    password1 = forms.CharField(
+        label='Password',
+        widget=forms.PasswordInput(attrs={
+            'class': 'form-control',
+            'placeholder': 'Password',
+        })
+    )
+    password2 = forms.CharField(
+        label='Confirm password',
+        widget=forms.PasswordInput(attrs={
+            'class': 'form-control',
+            'placeholder': 'Confirm password',
+        })
+    )
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.helper = FormHelper()
+        self.helper.layout = Layout(
+            Field('email'),
+            Row(
+                Column('first_name', css_class='form-group col-md-6 mb-0'),
+                Column('last_name', css_class='form-group col-md-6 mb-0'),
+            ),
+            Field('password1'),
+            Field('password2'),
+            Submit('submit', 'Sign Up', css_class='btn btn-primary w-100'),
+        )
+
+    def clean(self):
+        cleaned_data = super().clean()
+        p1 = cleaned_data.get('password1')
+        p2 = cleaned_data.get('password2')
+        if p1 and p2 and p1 != p2:
+            self.add_error('password2', 'Passwords do not match.')
+        return cleaned_data
+
+    def clean_password1(self):
+        from django.contrib.auth.password_validation import validate_password
+        password = self.cleaned_data.get('password1')
+        if password:
+            validate_password(password)
+        return password
+
+
+class OTPVerificationForm(forms.Form):
+    """Form for entering a 6-digit OTP code."""
+
+    otp_code = forms.CharField(
+        label='Verification code',
+        max_length=6,
+        min_length=6,
+        widget=forms.TextInput(attrs={
+            'class': 'form-control form-control-lg text-center',
+            'placeholder': '000000',
+            'inputmode': 'numeric',
+            'pattern': '[0-9]{6}',
+            'autocomplete': 'one-time-code',
+            'autofocus': True,
+        })
+    )
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.helper = FormHelper()
+        self.helper.layout = Layout(
+            Field('otp_code'),
+            Submit('submit', 'Verify', css_class='btn btn-primary w-100'),
+        )
+
+    def clean_otp_code(self):
+        code = self.cleaned_data.get('otp_code', '').strip()
+        if not code.isdigit():
+            raise forms.ValidationError('Code must be 6 digits.')
+        return code
 
 
 class PrettyJSONField(forms.JSONField):

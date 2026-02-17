@@ -15,7 +15,7 @@
                 {% if form.errors %}
                     <div class="alert alert-danger" role="alert">
                         <i class="bi bi-exclamation-triangle"></i>
-                        Your username and password didn't match. Please try again.
+                        Your email and password didn't match. Please try again.
                     </div>
                 {% endif %}
                 
@@ -46,7 +46,7 @@
         </div>
         
         <div class="text-center mt-3 text-muted">
-            <small>Don't have an account? Contact an administrator to create one.</small>
+            <small>Don't have an account? <a href="{% url 'tickets:signup' %}">Sign up</a></small>
         </div>
     </div>
 </div>

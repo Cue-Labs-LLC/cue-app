@@ -91,6 +91,32 @@ class UserProfile(models.Model):
         return f"{self.user.get_username()} ({self.organization or 'no org'})"
 
 
+class EmailOTP(BaseModel):
+    """One-time password for email verification (signup, etc.)."""
+    class Purpose(models.TextChoices):
+        SIGNUP = 'signup', 'Sign Up'
+
+    email = models.EmailField(db_index=True)
+    otp_code = models.CharField(max_length=6)
+    purpose = models.CharField(max_length=20, choices=Purpose.choices, default=Purpose.SIGNUP)
+    is_verified = models.BooleanField(default=False)
+    attempts = models.PositiveSmallIntegerField(default=0)
+    signup_data = models.JSONField(null=True, blank=True)
+
+    class Meta:
+        ordering = ['-created_at']
+        indexes = [models.Index(fields=['email', 'purpose', '-created_at'])]
+
+    def __str__(self):
+        return f"OTP {self.email} ({self.purpose}) - {'verified' if self.is_verified else 'pending'}"
+
+    def is_expired(self):
+        return timezone.now() > self.created_at + timezone.timedelta(minutes=10)
+
+    def is_usable(self):
+        return not self.is_expired() and not self.is_verified and self.attempts < 5
+
+
 class CSVFormat(AuditBaseModel):
     """Defines CSV file format configurations with column mappings."""
     organization = models.ForeignKey(
@@ -626,3 +652,147 @@ class Ticket(BaseModel):
     def __str__(self):
         tier_info = f" [{self.tier_name}]" if self.tier_name else ""
         return f"{self.ticket_type}{tier_info} - ${self.price} (Order: {self.ticket_order.order_number})"
+
+
+class SurveyQuestion(BaseModel):
+    """A question in a post-event survey."""
+    QUESTION_TYPE_CHOICES = [
+        ('star_rating', 'Star Rating (1-5)'),
+        ('nps', 'NPS Score (0-10)'),
+        ('text', 'Free Text'),
+    ]
+
+    event = models.ForeignKey(
+        Event,
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name='survey_questions',
+        help_text="Null = not event-specific (org default or system default)",
+    )
+    organization = models.ForeignKey(
+        Organization,
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name='survey_questions',
+        help_text="Null = system default question",
+    )
+    question_text = models.CharField(max_length=500)
+    question_type = models.CharField(max_length=20, choices=QUESTION_TYPE_CHOICES)
+    position = models.PositiveSmallIntegerField(default=0)
+    is_required = models.BooleanField(default=False)
+    is_active = models.BooleanField(default=True)
+
+    class Meta:
+        ordering = ['position', 'created_at']
+        indexes = [
+            models.Index(fields=['event', 'position']),
+            models.Index(fields=['organization', 'position']),
+        ]
+
+    def __str__(self):
+        scope = "System"
+        if self.event_id:
+            scope = f"Event: {self.event_id}"
+        elif self.organization_id:
+            scope = f"Org: {self.organization_id}"
+        return f"[{scope}] {self.question_text[:60]}"
+
+
+class SurveyInvitation(BaseModel):
+    """Tracks a survey invitation sent to a customer for an event."""
+    event = models.ForeignKey(
+        Event,
+        on_delete=models.CASCADE,
+        related_name='survey_invitations',
+    )
+    customer = models.ForeignKey(
+        Customer,
+        on_delete=models.CASCADE,
+        related_name='survey_invitations',
+    )
+    organization = models.ForeignKey(
+        Organization,
+        on_delete=models.CASCADE,
+        related_name='survey_invitations',
+    )
+    token = models.UUIDField(default=uuid.uuid4, unique=True, db_index=True)
+    email = models.EmailField(help_text="Denormalized from customer at send time")
+    sent_at = models.DateTimeField(null=True, blank=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        unique_together = [['event', 'customer']]
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['event', 'sent_at']),
+        ]
+
+    def __str__(self):
+        status = "completed" if self.completed_at else ("sent" if self.sent_at else "pending")
+        return f"Survey invite: {self.customer} for {self.event} ({status})"
+
+
+class SurveyResponse(BaseModel):
+    """A completed survey response from a customer."""
+    invitation = models.OneToOneField(
+        SurveyInvitation,
+        on_delete=models.CASCADE,
+        related_name='response',
+    )
+    event = models.ForeignKey(
+        Event,
+        on_delete=models.CASCADE,
+        related_name='survey_responses',
+    )
+    customer = models.ForeignKey(
+        Customer,
+        on_delete=models.CASCADE,
+        related_name='survey_responses',
+    )
+    organization = models.ForeignKey(
+        Organization,
+        on_delete=models.CASCADE,
+        related_name='survey_responses',
+    )
+    submitted_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-submitted_at']
+        indexes = [
+            models.Index(fields=['event', '-submitted_at']),
+        ]
+
+    def __str__(self):
+        return f"Response from {self.customer} for {self.event}"
+
+
+class SurveyAnswer(BaseModel):
+    """An individual answer to a survey question within a response."""
+    response = models.ForeignKey(
+        SurveyResponse,
+        on_delete=models.CASCADE,
+        related_name='answers',
+    )
+    question = models.ForeignKey(
+        SurveyQuestion,
+        on_delete=models.CASCADE,
+        related_name='answers',
+    )
+    star_rating = models.PositiveSmallIntegerField(
+        null=True, blank=True,
+        help_text="1-5 star rating",
+    )
+    nps_score = models.PositiveSmallIntegerField(
+        null=True, blank=True,
+        help_text="0-10 NPS score",
+    )
+    text_answer = models.TextField(blank=True)
+
+    class Meta:
+        unique_together = [['response', 'question']]
+        ordering = ['question__position']
+
+    def __str__(self):
+        return f"Answer to '{self.question.question_text[:40]}' by {self.response.customer}"
