@@ -37,6 +37,8 @@ services:
         sync: false
       - key: DEFAULT_FROM_EMAIL
         sync: false
+      - key: SITE_URL
+        sync: false
     healthCheckPath: /health/
 
   # Redis for Celery broker (schema requires ipAllowList)
@@ -48,7 +50,8 @@ services:
       - source: 0.0.0.0/0
         description: Allow web and worker services to connect
 
-  # Celery background worker
+  # Celery background worker (sends invite emails, OTP, surveys, etc.).
+  # Set SENDGRID_API_KEY, DEFAULT_FROM_EMAIL (must be a verified sender in SendGrid), and SITE_URL (e.g. https://your-app.onrender.com) in the Render dashboard for this service so emails are sent and links point to your deployed app.
   - type: worker
     name: ltv-updater-worker
     runtime: python
@@ -68,4 +71,8 @@ services:
           type: redis
           property: connectionString
       - key: SENDGRID_API_KEY
+        sync: false
+      - key: DEFAULT_FROM_EMAIL
+        sync: false
+      - key: SITE_URL
         sync: false
