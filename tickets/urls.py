@@ -7,6 +7,9 @@ urlpatterns = [
     # Authentication
     path('login/', views.login_view, name='login'),
     path('logout/', views.logout_view, name='logout'),
+    path('signup/', views.signup_view, name='signup'),
+    path('signup/verify/', views.verify_otp_view, name='verify_otp'),
+    path('signup/resend-otp/', views.resend_otp_view, name='resend_otp'),
     path('password-reset/', views.password_reset_request, name='password_reset'),
     path('password-reset/done/', views.password_reset_done, name='password_reset_done'),
     path('password-reset-confirm/<uidb64>/<token>/', views.password_reset_confirm, name='password_reset_confirm'),
@@ -38,6 +41,10 @@ urlpatterns = [
     path('analytics/cohort-retention/', views.cohort_retention, name='cohort_retention'),
     path('analytics/profitability/', views.profitability_overview, name='profitability_overview'),
 
+    # Surveys (public - no login required)
+    path('survey/<uuid:token>/', views.survey_form, name='survey_form'),
+    path('survey/thank-you/', views.survey_thank_you, name='survey_thank_you'),
+
     # Events
     path('events/', views.event_list, name='event_list'),
     path('events/calendar/', views.event_calendar, name='event_calendar'),
@@ -46,6 +53,7 @@ urlpatterns = [
     path('events/<uuid:event_id>/edit/', views.event_edit, name='event_edit'),
     path('events/<uuid:event_id>/upload/', views.event_upload_csv, name='event_upload_csv'),
     path('events/<uuid:event_id>/delete/', views.event_delete, name='event_delete'),
+    path('events/<uuid:event_id>/send-survey/', views.send_survey, name='send_survey'),
     path('events/<uuid:event_id>/expenses/add/', views.expense_create, name='expense_create'),
     path('events/<uuid:event_id>/expenses/<uuid:expense_id>/edit/', views.expense_edit, name='expense_edit'),
     path('events/<uuid:event_id>/expenses/<uuid:expense_id>/delete/', views.expense_delete, name='expense_delete'),

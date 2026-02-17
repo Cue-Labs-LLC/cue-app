@@ -33,6 +33,10 @@ services:
           name: ltv-updater-redis
           type: redis
           property: connectionString
+      - key: SENDGRID_API_KEY
+        sync: false
+      - key: DEFAULT_FROM_EMAIL
+        sync: false
     healthCheckPath: /health/
 
   # Redis for Celery broker (schema requires ipAllowList)
@@ -63,3 +67,5 @@ services:
           name: ltv-updater-redis
           type: redis
           property: connectionString
+      - key: SENDGRID_API_KEY
+        sync: false

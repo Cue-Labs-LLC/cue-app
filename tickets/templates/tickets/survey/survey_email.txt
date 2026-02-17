@@ -1,0 +1,10 @@
+Eventflow - Post-Event Survey
+
+How was {{ event.name }}?
+{{ event.start_date|date:"F j, Y" }}{% if event.venue %} at {{ event.venue.name }}, {{ event.venue.city }}{% endif %}
+
+We'd love to hear your thoughts. It only takes a minute!
+
+Share your feedback here: {{ survey_url }}
+
+Thank you for attending!

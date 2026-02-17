@@ -397,6 +397,12 @@ a:hover {
     width: 100%;
 }
 
+/* Auth pages (login/signup): center content when no sidebar */
+.content--auth {
+    margin-left: auto;
+    margin-right: auto;
+}
+
 /* -- Page Header ------------------------------- */
 .page-header {
     display: flex;

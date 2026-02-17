@@ -26,6 +26,11 @@
         </div>
     </div>
     <div class="page-header-actions">
+        <!-- <form method="post" action="{% url 'tickets:send_survey' event.id %}" class="d-inline"
+              onsubmit="return confirm('Send post-event survey to all attendees who haven\'t received one yet?');">
+            {% csrf_token %}
+            <button type="submit" class="btn btn-outline-primary btn-sm"><i class="bi bi-envelope"></i> Send Survey</button>
+        </form> -->
         <a href="{% url 'tickets:event_edit' event.id %}" class="btn btn-outline-secondary btn-sm"><i class="bi bi-pencil"></i> Edit</a>
         <a href="{% url 'tickets:event_delete' event.id %}" class="btn btn-outline-danger btn-sm"><i class="bi bi-trash"></i> Delete</a>
     </div>
@@ -314,6 +319,65 @@
 <div class="card mb-4">
     <div class="card-header"><h5>Description</h5></div>
     <div class="card-body"><p class="mb-0">{{ event.description }}</p></div>
+</div>
+{% endif %}
+
+{% if survey_results or survey_invitations_count > 0 %}
+<div class="card mb-4">
+    <div class="card-header d-flex justify-content-between align-items-center">
+        <h5>Survey Results</h5>
+        <span class="text-muted" style="font-size: 0.85rem;">{{ survey_responses_count }} / {{ survey_invitations_count }} responses</span>
+    </div>
+    <div class="card-body">
+        {% if survey_results %}
+        <div class="row mb-3">
+            {% if survey_results.avg_star_rating %}
+            <div class="col-md-4 mb-3 mb-md-0">
+                <div class="text-center">
+                    <div style="font-size: 2rem; font-weight: 700; color: #f5a623;">{{ survey_results.avg_star_rating }}</div>
+                    <div style="color: #f5a623; font-size: 1.2rem;">
+                        {% for i in "12345" %}
+                            {% if forloop.counter <= survey_results.avg_star_rating %}<i class="bi bi-star-fill"></i>{% else %}<i class="bi bi-star"></i>{% endif %}
+                        {% endfor %}
+                    </div>
+                    <div class="text-muted" style="font-size: 0.85rem;">Average Rating</div>
+                </div>
+            </div>
+            {% endif %}
+            {% if survey_results.nps_score != None %}
+            <div class="col-md-4 mb-3 mb-md-0">
+                <div class="text-center">
+                    <div style="font-size: 2rem; font-weight: 700; {% if survey_results.nps_score >= 50 %}color: #198754;{% elif survey_results.nps_score >= 0 %}color: #f5a623;{% else %}color: #dc3545;{% endif %}">{{ survey_results.nps_score }}</div>
+                    <div class="text-muted" style="font-size: 0.85rem;">NPS Score ({{ survey_results.nps_total }} responses)</div>
+                </div>
+            </div>
+            {% endif %}
+            <div class="col-md-4">
+                <div class="text-center">
+                    <div style="font-size: 2rem; font-weight: 700; color: #1a1a2e;">{{ survey_responses_count }}</div>
+                    <div class="text-muted" style="font-size: 0.85rem;">Total Responses</div>
+                </div>
+            </div>
+        </div>
+
+        {% if survey_results.recent_comments %}
+        <h6 class="mt-3 mb-2">Recent Comments</h6>
+        <ul class="list-unstyled mb-0">
+            {% for comment in survey_results.recent_comments %}
+            <li class="py-2 {% if not forloop.last %}border-bottom{% endif %}">
+                <i class="bi bi-chat-quote text-muted me-1"></i> {{ comment.text_answer }}
+                <div class="text-muted" style="font-size: 0.8rem;">{{ comment.response__customer__name }} ({{ comment.response__customer__email }})</div>
+            </li>
+            {% endfor %}
+        </ul>
+        {% endif %}
+
+        {% else %}
+        <div class="empty-state" style="padding: 16px;">
+            <p class="mb-0 text-muted">Surveys have been sent but no responses yet.</p>
+        </div>
+        {% endif %}
+    </div>
 </div>
 {% endif %}
 

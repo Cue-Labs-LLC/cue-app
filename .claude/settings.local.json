@@ -12,7 +12,9 @@
       "Bash(ls:*)",
       "Bash(wc:*)",
       "Bash(git stash:*)",
-      "Bash(DJANGO_SETTINGS_MODULE=ltv_updater.settings python:*)"
+      "Bash(DJANGO_SETTINGS_MODULE=ltv_updater.settings python:*)",
+      "Bash(python3:*)",
+      "Bash(pip3 install:*)"
     ]
   },
   "enabledPlugins": {
