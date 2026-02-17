@@ -14,3 +14,6 @@ google-api-python-client==2.114.0
 google-auth==2.27.0
 celery==5.4.0
 redis==5.0.1
+langchain>=0.3
+langchain-openai>=0.2
+langgraph>=0.2

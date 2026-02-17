@@ -185,6 +185,11 @@ GOOGLE_DOC_ID = os.environ.get('GOOGLE_DOC_ID', '')
 # Google Maps API (Places Autocomplete on venue forms)
 GOOGLE_MAPS_API_KEY = os.environ.get('GOOGLE_MAPS_API_KEY', '')
 
+# Chat Agent (LangChain + OpenAI)
+OPENAI_API_KEY = os.environ.get('OPENAI_API_KEY', '')
+OPENAI_MODEL = os.environ.get('OPENAI_MODEL', 'gpt-4o')
+CHAT_MAX_HISTORY = int(os.environ.get('CHAT_MAX_HISTORY', '50'))
+
 # Crispy Forms Configuration
 CRISPY_ALLOWED_TEMPLATE_PACKS = 'bootstrap5'
 CRISPY_TEMPLATE_PACK = 'bootstrap5'

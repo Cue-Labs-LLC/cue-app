@@ -654,6 +654,42 @@ class Ticket(BaseModel):
         return f"{self.ticket_type}{tier_info} - ${self.price} (Order: {self.ticket_order.order_number})"
 
 
+class ChatMessage(BaseModel):
+    """Persisted chat message for the AI chat agent."""
+    ROLE_CHOICES = [
+        ('user', 'User'),
+        ('assistant', 'Assistant'),
+        ('system', 'System'),
+        ('tool', 'Tool'),
+    ]
+
+    organization = models.ForeignKey(
+        Organization,
+        on_delete=models.CASCADE,
+        related_name='chat_messages',
+    )
+    user = models.ForeignKey(
+        'auth.User',
+        on_delete=models.CASCADE,
+        related_name='chat_messages',
+    )
+    conversation_id = models.UUIDField(db_index=True)
+    role = models.CharField(max_length=10, choices=ROLE_CHOICES)
+    content = models.TextField(blank=True)
+    tool_name = models.CharField(max_length=100, blank=True)
+    tool_call_id = models.CharField(max_length=100, blank=True)
+    token_count = models.IntegerField(default=0)
+
+    class Meta:
+        ordering = ['created_at']
+        indexes = [
+            models.Index(fields=['organization', 'user', 'conversation_id', 'created_at']),
+        ]
+
+    def __str__(self):
+        return f"[{self.role}] {self.content[:60]}"
+
+
 class SurveyQuestion(BaseModel):
     """A question in a post-event survey."""
     QUESTION_TYPE_CHOICES = [

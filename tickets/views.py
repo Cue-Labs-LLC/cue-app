@@ -2540,3 +2540,110 @@ def survey_form(request, token):
 def survey_thank_you(request):
     """Public thank-you page after survey submission."""
     return render(request, 'tickets/survey/survey_thank_you.html')
+
+
+# ---------------------------------------------------------------------------
+# Chat Agent Views
+# ---------------------------------------------------------------------------
+
+@login_required
+@require_org
+@require_http_methods(["POST"])
+def chat_stream(request):
+    """SSE endpoint — streams LLM tokens for the chat agent."""
+    import uuid as uuid_mod
+    from django.http import StreamingHttpResponse
+    from .services.chat.agent import ChatAgentService
+
+    org = get_organization(request)
+
+    try:
+        body = json.loads(request.body)
+    except (json.JSONDecodeError, ValueError):
+        return JsonResponse({'error': 'Invalid JSON body'}, status=400)
+
+    user_message = body.get('message', '').strip()
+    if not user_message:
+        return JsonResponse({'error': 'Message is required'}, status=400)
+
+    conversation_id_str = body.get('conversation_id', '')
+    try:
+        conversation_id = uuid_mod.UUID(conversation_id_str)
+    except (ValueError, AttributeError):
+        conversation_id = uuid_mod.uuid4()
+
+    agent_service = ChatAgentService(org, request.user)
+    response = StreamingHttpResponse(
+        agent_service.stream_response(user_message, conversation_id),
+        content_type='text/event-stream',
+    )
+    response['Cache-Control'] = 'no-cache'
+    response['X-Accel-Buffering'] = 'no'
+    return response
+
+
+@login_required
+@require_org
+def chat_history(request):
+    """Return messages for a conversation as JSON."""
+    import uuid as uuid_mod
+    from .models import ChatMessage
+
+    org = get_organization(request)
+    conversation_id_str = request.GET.get('conversation_id', '')
+
+    try:
+        conversation_id = uuid_mod.UUID(conversation_id_str)
+    except (ValueError, AttributeError):
+        return JsonResponse({'messages': []})
+
+    messages_qs = ChatMessage.objects.filter(
+        organization=org,
+        user=request.user,
+        conversation_id=conversation_id,
+    ).order_by('created_at').values('role', 'content', 'created_at')
+
+    result = []
+    for msg in messages_qs:
+        if msg['role'] in ('user', 'assistant'):
+            result.append({
+                'role': msg['role'],
+                'content': msg['content'],
+                'created_at': msg['created_at'].isoformat(),
+            })
+
+    return JsonResponse({'messages': result})
+
+
+@login_required
+@require_org
+def chat_conversations(request):
+    """List user's recent conversations with their first message."""
+    from django.db.models import Min, Max
+    from .models import ChatMessage
+
+    org = get_organization(request)
+
+    conversations = ChatMessage.objects.filter(
+        organization=org,
+        user=request.user,
+        role='user',
+    ).values('conversation_id').annotate(
+        first_message_at=Min('created_at'),
+        last_message_at=Max('created_at'),
+    ).order_by('-last_message_at')[:20]
+
+    result = []
+    for conv in conversations:
+        first_msg = ChatMessage.objects.filter(
+            conversation_id=conv['conversation_id'],
+            role='user',
+        ).order_by('created_at').values_list('content', flat=True).first()
+
+        result.append({
+            'conversation_id': str(conv['conversation_id']),
+            'preview': (first_msg[:80] + '...') if first_msg and len(first_msg) > 80 else (first_msg or ''),
+            'last_message_at': conv['last_message_at'].isoformat(),
+        })
+
+    return JsonResponse({'conversations': result})
