@@ -190,9 +190,250 @@
 {% if user.is_authenticated %}
         </main>
     </div>
+
+    <!-- Chat Widget -->
+    <button class="chat-toggle-btn" id="chatToggleBtn" type="button" aria-label="Open chat">
+        <i class="bi bi-chat-dots-fill" id="chatToggleIcon"></i>
+    </button>
+
+    <div class="chat-panel" id="chatPanel">
+        <div class="chat-header">
+            <span class="chat-header-title"><i class="bi bi-chat-dots"></i> Eventflow AI</span>
+            <div class="chat-header-actions">
+                <button type="button" class="chat-header-btn" id="chatNewConvo" title="New conversation">
+                    <i class="bi bi-plus-lg"></i>
+                </button>
+                <button type="button" class="chat-header-btn" id="chatCloseBtn" title="Close chat">
+                    <i class="bi bi-x-lg"></i>
+                </button>
+            </div>
+        </div>
+        <div class="chat-messages" id="chatMessages">
+            <div class="chat-empty-state">
+                <i class="bi bi-lightbulb" style="font-size: 24px; opacity: 0.5;"></i>
+                <p>Ask me about your events, customers, revenue, and more.</p>
+            </div>
+        </div>
+        <div class="chat-input-area">
+            <textarea class="chat-input" id="chatInput" placeholder="Ask a question..." rows="1"></textarea>
+            <button type="button" class="chat-send-btn" id="chatSendBtn" disabled>
+                <i class="bi bi-send-fill"></i>
+            </button>
+        </div>
+    </div>
 {% endif %}
 
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js" defer></script>
+{% if user.is_authenticated %}
+<script>
+(function() {
+    var panel = document.getElementById('chatPanel');
+    var toggleBtn = document.getElementById('chatToggleBtn');
+    var toggleIcon = document.getElementById('chatToggleIcon');
+    var closeBtn = document.getElementById('chatCloseBtn');
+    var newConvoBtn = document.getElementById('chatNewConvo');
+    var messagesEl = document.getElementById('chatMessages');
+    var inputEl = document.getElementById('chatInput');
+    var sendBtn = document.getElementById('chatSendBtn');
+    var csrfToken = '{{ csrf_token }}';
+
+    var conversationId = localStorage.getItem('ef_chat_convo_id') || generateUUID();
+    var isStreaming = false;
+
+    function generateUUID() {
+        return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+            var r = Math.random() * 16 | 0;
+            return (c === 'x' ? r : (r & 0x3 | 0x8)).toString(16);
+        });
+    }
+
+    function saveConvoId() {
+        localStorage.setItem('ef_chat_convo_id', conversationId);
+    }
+
+    function scrollToBottom() {
+        messagesEl.scrollTop = messagesEl.scrollHeight;
+    }
+
+    function addMessage(role, content) {
+        // Remove empty state if present
+        var empty = messagesEl.querySelector('.chat-empty-state');
+        if (empty) empty.remove();
+
+        var bubble = document.createElement('div');
+        bubble.className = 'chat-bubble chat-bubble--' + role;
+        bubble.textContent = content;
+        messagesEl.appendChild(bubble);
+        scrollToBottom();
+        return bubble;
+    }
+
+    function addTypingIndicator() {
+        var empty = messagesEl.querySelector('.chat-empty-state');
+        if (empty) empty.remove();
+
+        var el = document.createElement('div');
+        el.className = 'chat-typing';
+        el.id = 'chatTyping';
+        el.innerHTML = '<span></span><span></span><span></span>';
+        messagesEl.appendChild(el);
+        scrollToBottom();
+    }
+
+    function removeTypingIndicator() {
+        var el = document.getElementById('chatTyping');
+        if (el) el.remove();
+    }
+
+    function openPanel() {
+        panel.classList.add('open');
+        toggleBtn.classList.add('open');
+        toggleIcon.className = 'bi bi-x-lg';
+        inputEl.focus();
+        loadHistory();
+    }
+
+    function closePanel() {
+        panel.classList.remove('open');
+        toggleBtn.classList.remove('open');
+        toggleIcon.className = 'bi bi-chat-dots-fill';
+    }
+
+    toggleBtn.addEventListener('click', function() {
+        if (panel.classList.contains('open')) {
+            closePanel();
+        } else {
+            openPanel();
+        }
+    });
+
+    closeBtn.addEventListener('click', closePanel);
+
+    newConvoBtn.addEventListener('click', function() {
+        conversationId = generateUUID();
+        saveConvoId();
+        messagesEl.innerHTML = '<div class="chat-empty-state"><i class="bi bi-lightbulb" style="font-size: 24px; opacity: 0.5;"></i><p>Ask me about your events, customers, revenue, and more.</p></div>';
+    });
+
+    // Auto-resize input
+    inputEl.addEventListener('input', function() {
+        this.style.height = 'auto';
+        this.style.height = Math.min(this.scrollHeight, 120) + 'px';
+        sendBtn.disabled = !this.value.trim() || isStreaming;
+    });
+
+    inputEl.addEventListener('keydown', function(e) {
+        if (e.key === 'Enter' && !e.shiftKey) {
+            e.preventDefault();
+            if (!sendBtn.disabled) sendMessage();
+        }
+    });
+
+    sendBtn.addEventListener('click', sendMessage);
+
+    function sendMessage() {
+        var text = inputEl.value.trim();
+        if (!text || isStreaming) return;
+
+        isStreaming = true;
+        sendBtn.disabled = true;
+        inputEl.value = '';
+        inputEl.style.height = 'auto';
+
+        addMessage('user', text);
+        addTypingIndicator();
+        saveConvoId();
+
+        fetch('{% url "tickets:chat_stream" %}', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-CSRFToken': csrfToken,
+            },
+            body: JSON.stringify({
+                message: text,
+                conversation_id: conversationId,
+            }),
+        }).then(function(response) {
+            if (!response.ok) throw new Error('Network error');
+            var reader = response.body.getReader();
+            var decoder = new TextDecoder();
+            var assistantBubble = null;
+            var fullText = '';
+
+            function read() {
+                return reader.read().then(function(result) {
+                    if (result.done) {
+                        isStreaming = false;
+                        sendBtn.disabled = !inputEl.value.trim();
+                        return;
+                    }
+
+                    var chunk = decoder.decode(result.value, { stream: true });
+                    var lines = chunk.split('\n');
+
+                    for (var i = 0; i < lines.length; i++) {
+                        var line = lines[i].trim();
+                        if (!line.startsWith('data: ')) continue;
+                        try {
+                            var data = JSON.parse(line.slice(6));
+                            if (data.type === 'token') {
+                                removeTypingIndicator();
+                                if (!assistantBubble) {
+                                    assistantBubble = addMessage('assistant', '');
+                                }
+                                fullText += data.content;
+                                assistantBubble.textContent = fullText;
+                                scrollToBottom();
+                            } else if (data.type === 'done') {
+                                removeTypingIndicator();
+                                isStreaming = false;
+                                sendBtn.disabled = !inputEl.value.trim();
+                            } else if (data.type === 'error') {
+                                removeTypingIndicator();
+                                if (!assistantBubble) {
+                                    assistantBubble = addMessage('assistant', '');
+                                }
+                                fullText += '\n[Error: ' + data.content + ']';
+                                assistantBubble.textContent = fullText;
+                            }
+                        } catch (e) { /* skip unparseable lines */ }
+                    }
+
+                    return read();
+                });
+            }
+
+            return read();
+        }).catch(function(err) {
+            removeTypingIndicator();
+            addMessage('assistant', 'Sorry, something went wrong. Please try again.');
+            isStreaming = false;
+            sendBtn.disabled = !inputEl.value.trim();
+        });
+    }
+
+    var historyLoaded = {};
+    function loadHistory() {
+        if (historyLoaded[conversationId]) return;
+
+        fetch('{% url "tickets:chat_history" %}?conversation_id=' + encodeURIComponent(conversationId))
+            .then(function(r) { return r.json(); })
+            .then(function(data) {
+                if (data.messages && data.messages.length > 0) {
+                    messagesEl.innerHTML = '';
+                    for (var i = 0; i < data.messages.length; i++) {
+                        addMessage(data.messages[i].role, data.messages[i].content);
+                    }
+                    historyLoaded[conversationId] = true;
+                }
+            })
+            .catch(function() { /* silent */ });
+    }
+})();
+</script>
+{% endif %}
+
 <script>
 (function() {
     var toggle = document.getElementById('mobileToggle');

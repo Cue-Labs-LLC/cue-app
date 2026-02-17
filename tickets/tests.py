@@ -1,11 +1,13 @@
-from datetime import date, time
+import uuid
+from datetime import date, time, datetime
 from django.test import TestCase, Client
 from django.urls import reverse
 from django.contrib.auth.models import User
 from decimal import Decimal
 from .models import (
     UploadedFile, TicketOrder, Customer, Event,
-    Venue, CSVFormat, Ticket, TicketTier
+    Venue, CSVFormat, Ticket, TicketTier,
+    Organization, UserProfile, ChatMessage,
 )
 
 
@@ -325,3 +327,268 @@ class VenueAddressFieldsTests(TestCase):
         self.assertIn('state', form.fields)
         self.assertIn('postal_code', form.fields)
         self.assertIn('country', form.fields)
+
+
+class ChatTestMixin:
+    """Shared setup for chat tests: creates org, user, profile, venue, event, customer, order."""
+
+    def setUp(self):
+        self.client = Client()
+        self.org = Organization.objects.create(name='Test Org', slug='test-org')
+        self.user = User.objects.create_user(
+            username='chatuser', email='chat@test.com', password='testpass123'
+        )
+        UserProfile.objects.create(user=self.user, organization=self.org)
+        self.client.login(username='chat@test.com', password='testpass123')
+        # Hit any org-required view to seed the session with _org_id
+        self.client.get(reverse('tickets:home'))
+
+        self.venue = Venue.objects.create(
+            organization=self.org, name='Test Venue', city='Test City'
+        )
+        self.event = Event.objects.create(
+            organization=self.org, name='Summer Fest',
+            venue=self.venue, start_date=date(2025, 7, 15)
+        )
+        self.customer = Customer.objects.create(
+            organization=self.org, email='alice@example.com',
+            name='Alice Smith', lifetime_value=Decimal('500.00'),
+            rfm_segment='VIP',
+        )
+        self.csv_format = CSVFormat.objects.create(
+            organization=self.org, name='Chat Test Format',
+            column_mapping={'order_number': 'Order ID'},
+        )
+        self.upload = UploadedFile.objects.create(
+            organization=self.org, csv_format=self.csv_format,
+            filename='test.csv', status='completed',
+        )
+        self.order = TicketOrder.objects.create(
+            customer=self.customer, event=self.event,
+            uploaded_file=self.upload,
+            order_number='CHAT-001',
+            order_date='2025-07-10 10:00:00',
+            total_amount=Decimal('500.00'),
+        )
+        self.conversation_id = uuid.uuid4()
+
+
+class ChatMessageModelTest(ChatTestMixin, TestCase):
+    """Tests for the ChatMessage model."""
+
+    def test_create_chat_message(self):
+        msg = ChatMessage.objects.create(
+            organization=self.org,
+            user=self.user,
+            conversation_id=self.conversation_id,
+            role='user',
+            content='Hello, how many customers do I have?',
+        )
+        self.assertIsNotNone(msg.id)
+        self.assertEqual(msg.role, 'user')
+        self.assertEqual(msg.organization, self.org)
+
+    def test_ordering_by_created_at(self):
+        m1 = ChatMessage.objects.create(
+            organization=self.org, user=self.user,
+            conversation_id=self.conversation_id,
+            role='user', content='First',
+        )
+        m2 = ChatMessage.objects.create(
+            organization=self.org, user=self.user,
+            conversation_id=self.conversation_id,
+            role='assistant', content='Second',
+        )
+        msgs = list(ChatMessage.objects.filter(conversation_id=self.conversation_id))
+        self.assertEqual(msgs[0].id, m1.id)
+        self.assertEqual(msgs[1].id, m2.id)
+
+    def test_conversation_grouping(self):
+        other_convo = uuid.uuid4()
+        ChatMessage.objects.create(
+            organization=self.org, user=self.user,
+            conversation_id=self.conversation_id,
+            role='user', content='Convo 1 message',
+        )
+        ChatMessage.objects.create(
+            organization=self.org, user=self.user,
+            conversation_id=other_convo,
+            role='user', content='Convo 2 message',
+        )
+        convo1 = ChatMessage.objects.filter(conversation_id=self.conversation_id).count()
+        convo2 = ChatMessage.objects.filter(conversation_id=other_convo).count()
+        self.assertEqual(convo1, 1)
+        self.assertEqual(convo2, 1)
+
+
+class ChatToolsTest(ChatTestMixin, TestCase):
+    """Tests for the chat agent tool functions (org scoping)."""
+
+    def test_organization_summary(self):
+        from .services.chat.tools import _get_organization_summary
+        result = _get_organization_summary(self.org)
+        self.assertIn('Test Org', result)
+        self.assertIn('1', result)  # 1 customer
+        self.assertIn('$500.00', result)
+
+    def test_search_customers(self):
+        from .services.chat.tools import _search_customers
+        result = _search_customers(self.org, query='alice')
+        self.assertIn('Alice Smith', result)
+        self.assertIn('alice@example.com', result)
+
+    def test_search_customers_no_results(self):
+        from .services.chat.tools import _search_customers
+        result = _search_customers(self.org, query='nonexistent')
+        self.assertIn('No customers found', result)
+
+    def test_get_customer_detail(self):
+        from .services.chat.tools import _get_customer_detail
+        result = _get_customer_detail(self.org, email='alice@example.com')
+        self.assertIn('Alice Smith', result)
+        self.assertIn('$500.00', result)
+        self.assertIn('VIP', result)
+
+    def test_get_customer_detail_not_found(self):
+        from .services.chat.tools import _get_customer_detail
+        result = _get_customer_detail(self.org, email='nobody@test.com')
+        self.assertIn('No customer found', result)
+
+    def test_search_events(self):
+        from .services.chat.tools import _search_events
+        result = _search_events(self.org, query='Summer')
+        self.assertIn('Summer Fest', result)
+
+    def test_get_event_detail(self):
+        from .services.chat.tools import _get_event_detail
+        result = _get_event_detail(self.org, event_name='Summer')
+        self.assertIn('Summer Fest', result)
+        self.assertIn('$500.00', result)
+
+    def test_segment_distribution(self):
+        from .services.chat.tools import _get_segment_distribution
+        result = _get_segment_distribution(self.org)
+        self.assertIn('VIP', result)
+
+    def test_top_customers(self):
+        from .services.chat.tools import _get_top_customers
+        result = _get_top_customers(self.org, metric='ltv', limit=5)
+        self.assertIn('Alice Smith', result)
+
+    def test_revenue_by_venue(self):
+        from .services.chat.tools import _get_revenue_by_venue
+        result = _get_revenue_by_venue(self.org)
+        self.assertIn('Test Venue', result)
+
+    def test_upcoming_events_empty(self):
+        from .services.chat.tools import _get_upcoming_events
+        # Event is in the past (2025-07-15), so no upcoming
+        result = _get_upcoming_events(self.org)
+        self.assertIn('No upcoming events', result)
+
+    def test_org_scoping_prevents_cross_tenant(self):
+        """Tools should not return data from other organizations."""
+        from .services.chat.tools import _search_customers
+        other_org = Organization.objects.create(name='Other Org', slug='other-org')
+        Customer.objects.create(
+            organization=other_org, email='bob@other.com',
+            name='Bob Other', lifetime_value=Decimal('999.00'),
+        )
+        result = _search_customers(self.org, query='bob')
+        self.assertIn('No customers found', result)
+
+
+class ChatViewTest(ChatTestMixin, TestCase):
+    """Tests for chat view endpoints."""
+
+    def test_chat_stream_requires_auth(self):
+        self.client.logout()
+        response = self.client.post(
+            reverse('tickets:chat_stream'),
+            data='{"message":"hi","conversation_id":"' + str(self.conversation_id) + '"}',
+            content_type='application/json',
+        )
+        self.assertEqual(response.status_code, 302)
+        self.assertIn('login', response.url)
+
+    def test_chat_stream_requires_message(self):
+        response = self.client.post(
+            reverse('tickets:chat_stream'),
+            data='{"message":"","conversation_id":"' + str(self.conversation_id) + '"}',
+            content_type='application/json',
+        )
+        self.assertEqual(response.status_code, 400)
+
+    def test_chat_stream_invalid_json(self):
+        response = self.client.post(
+            reverse('tickets:chat_stream'),
+            data='not json',
+            content_type='application/json',
+        )
+        self.assertEqual(response.status_code, 400)
+
+    def test_chat_history_returns_json(self):
+        ChatMessage.objects.create(
+            organization=self.org, user=self.user,
+            conversation_id=self.conversation_id,
+            role='user', content='test question',
+        )
+        ChatMessage.objects.create(
+            organization=self.org, user=self.user,
+            conversation_id=self.conversation_id,
+            role='assistant', content='test answer',
+        )
+        response = self.client.get(
+            reverse('tickets:chat_history'),
+            {'conversation_id': str(self.conversation_id)},
+        )
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(len(data['messages']), 2)
+        self.assertEqual(data['messages'][0]['role'], 'user')
+        self.assertEqual(data['messages'][1]['role'], 'assistant')
+
+    def test_chat_history_empty_for_unknown_convo(self):
+        response = self.client.get(
+            reverse('tickets:chat_history'),
+            {'conversation_id': str(uuid.uuid4())},
+        )
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(len(data['messages']), 0)
+
+    def test_chat_conversations_returns_json(self):
+        ChatMessage.objects.create(
+            organization=self.org, user=self.user,
+            conversation_id=self.conversation_id,
+            role='user', content='my first question',
+        )
+        response = self.client.get(reverse('tickets:chat_conversations'))
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(len(data['conversations']), 1)
+        self.assertIn('my first question', data['conversations'][0]['preview'])
+
+    def test_chat_conversations_requires_auth(self):
+        self.client.logout()
+        response = self.client.get(reverse('tickets:chat_conversations'))
+        self.assertEqual(response.status_code, 302)
+
+    def test_chat_history_org_scoped(self):
+        """History endpoint should not return messages from other orgs."""
+        other_org = Organization.objects.create(name='Other Org', slug='other-org2')
+        other_user = User.objects.create_user(
+            username='otheruser', email='other@test.com', password='pass123'
+        )
+        UserProfile.objects.create(user=other_user, organization=other_org)
+        ChatMessage.objects.create(
+            organization=other_org, user=other_user,
+            conversation_id=self.conversation_id,
+            role='user', content='secret message',
+        )
+        response = self.client.get(
+            reverse('tickets:chat_history'),
+            {'conversation_id': str(self.conversation_id)},
+        )
+        data = response.json()
+        self.assertEqual(len(data['messages']), 0)

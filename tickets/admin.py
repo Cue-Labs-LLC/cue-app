@@ -10,6 +10,7 @@ from .models import (
     CustomField, CustomFieldOption, EventCustomFieldValue,
     IncomeSource, EventIncome,
     SurveyQuestion, SurveyInvitation, SurveyResponse, SurveyAnswer,
+    ChatMessage,
 )
 
 
@@ -707,4 +708,26 @@ class SurveyAnswerAdmin(admin.ModelAdmin):
             return qs.filter(response__organization=profile.organization).select_related(
                 'response', 'response__event', 'response__organization', 'question'
             )
+        return qs.none()
+
+
+@admin.register(ChatMessage)
+class ChatMessageAdmin(admin.ModelAdmin):
+    list_display = ['conversation_id', 'role', 'content_preview', 'user', 'organization', 'created_at']
+    list_filter = ['organization', 'role', 'created_at']
+    search_fields = ['content', 'user__username', 'user__email']
+    readonly_fields = ['id', 'created_at', 'updated_at']
+    date_hierarchy = 'created_at'
+
+    def content_preview(self, obj):
+        return (obj.content[:80] + '...') if len(obj.content) > 80 else obj.content
+    content_preview.short_description = 'Content'
+
+    def get_queryset(self, request):
+        qs = super().get_queryset(request)
+        if request.user.is_superuser:
+            return qs.select_related('organization', 'user')
+        profile = getattr(request.user, 'profile', None)
+        if profile and profile.organization_id:
+            return qs.filter(organization=profile.organization).select_related('organization', 'user')
         return qs.none()

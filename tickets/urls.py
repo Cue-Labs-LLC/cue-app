@@ -88,4 +88,9 @@ urlpatterns = [
     path('venues/', views.venue_list, name='venue_list'),
     path('venues/create/', views.venue_create, name='venue_create'),
     path('venues/<uuid:venue_id>/edit/', views.venue_edit, name='venue_edit'),
+
+    # Chat Agent
+    path('chat/stream/', views.chat_stream, name='chat_stream'),
+    path('chat/history/', views.chat_history, name='chat_history'),
+    path('chat/conversations/', views.chat_conversations, name='chat_conversations'),
 ]
