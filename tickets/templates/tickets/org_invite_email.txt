@@ -1,0 +1,7 @@
+Eventflow - Organization invitation
+
+You've been invited to join {{ organization_name }} on Eventflow.
+
+Accept the invitation here: {{ accept_url }}
+
+Don't have an account? Sign up first, then open the link again.

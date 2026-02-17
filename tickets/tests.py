@@ -1,13 +1,14 @@
 import uuid
-from datetime import date, time, datetime
+from datetime import date, time, datetime, timedelta
 from django.test import TestCase, Client
 from django.urls import reverse
 from django.contrib.auth.models import User
+from django.utils import timezone
 from decimal import Decimal
 from .models import (
     UploadedFile, TicketOrder, Customer, Event,
     Venue, CSVFormat, Ticket, TicketTier,
-    Organization, UserProfile, ChatMessage,
+    Organization, UserProfile, OrganizationInvitation, ChatMessage,
 )
 
 
@@ -592,3 +593,175 @@ class ChatViewTest(ChatTestMixin, TestCase):
         )
         data = response.json()
         self.assertEqual(len(data['messages']), 0)
+
+
+class MemberInviteTests(TestCase):
+    """Tests for member list, invite, and invite accept views."""
+
+    def setUp(self):
+        self.client = Client()
+        self.org = Organization.objects.create(name='Test Org', slug='test-org')
+        self.user = User.objects.create_user(
+            username='memberuser', email='member@test.com', password='testpass123',
+            first_name='Member', last_name='User',
+        )
+        UserProfile.objects.create(user=self.user, organization=self.org)
+        self.client.login(username='member@test.com', password='testpass123')
+        self.client.get(reverse('tickets:home'))
+
+    def test_member_list_authenticated_org_member_200(self):
+        response = self.client.get(reverse('tickets:member_list'))
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(self.user.email, response.content.decode())
+        self.assertIn('Invite member', response.content.decode())
+
+    def test_member_list_unauthenticated_redirect(self):
+        self.client.logout()
+        response = self.client.get(reverse('tickets:member_list'))
+        self.assertEqual(response.status_code, 302)
+        self.assertIn(reverse('tickets:login'), response.get('Location', '') or response.url)
+
+    def test_member_list_no_org_redirect(self):
+        self.user.profile.organization = None
+        self.user.profile.save()
+        # Use a new client and set session to "no org" before any request that would cache org
+        client = Client()
+        client.force_login(self.user)
+        session = client.session
+        session['_org_id'] = ''
+        session.save()
+        response = client.get(reverse('tickets:member_list'))
+        self.assertEqual(response.status_code, 302)
+        self.assertIn('org-required', response.get('Location', '') or response.url)
+
+    def test_member_invite_valid_email_creates_invitation(self):
+        response = self.client.post(
+            reverse('tickets:member_invite'),
+            {'email': 'newuser@example.com', 'csrfmiddlewaretoken': self.client.cookies.get('csrftoken', '')},
+        )
+        self.assertEqual(response.status_code, 302)
+        self.assertRedirects(response, reverse('tickets:member_list'))
+        self.assertTrue(
+            OrganizationInvitation.objects.filter(
+                organization=self.org,
+                email='newuser@example.com',
+                status=OrganizationInvitation.Status.PENDING,
+            ).exists()
+        )
+
+    def test_member_invite_duplicate_email_existing_member_error(self):
+        other = User.objects.create_user(
+            username='other@example.com', email='other@example.com', password='pass123',
+        )
+        UserProfile.objects.create(user=other, organization=self.org)
+        response = self.client.post(
+            reverse('tickets:member_invite'),
+            {'email': 'other@example.com'},
+        )
+        self.assertEqual(response.status_code, 302)
+        self.assertRedirects(response, reverse('tickets:member_list'))
+        self.assertFalse(
+            OrganizationInvitation.objects.filter(
+                organization=self.org,
+                email='other@example.com',
+            ).exists()
+        )
+
+    def test_member_invite_duplicate_pending_invite_error(self):
+        OrganizationInvitation.objects.create(
+            organization=self.org,
+            email='pending@example.com',
+            invited_by=self.user,
+            status=OrganizationInvitation.Status.PENDING,
+            expires_at=timezone.now() + timedelta(days=7),
+        )
+        response = self.client.post(
+            reverse('tickets:member_invite'),
+            {'email': 'pending@example.com'},
+        )
+        self.assertEqual(response.status_code, 302)
+        self.assertRedirects(response, reverse('tickets:member_list'))
+        self.assertEqual(
+            OrganizationInvitation.objects.filter(
+                organization=self.org,
+                email='pending@example.com',
+                status=OrganizationInvitation.Status.PENDING,
+            ).count(),
+            1,
+        )
+
+    def test_invite_accept_valid_token_matching_email_joins_org(self):
+        inv = OrganizationInvitation.objects.create(
+            organization=self.org,
+            email='invitee@test.com',
+            invited_by=self.user,
+            status=OrganizationInvitation.Status.PENDING,
+            expires_at=timezone.now() + timedelta(days=7),
+        )
+        invitee = User.objects.create_user(
+            username='invitee@test.com', email='invitee@test.com', password='pass123',
+        )
+        UserProfile.objects.create(user=invitee, organization=None)
+        self.client.logout()
+        self.client.login(username='invitee@test.com', password='pass123')
+        response = self.client.get(reverse('tickets:invite_accept', args=[inv.token]))
+        self.assertEqual(response.status_code, 302)
+        self.assertRedirects(response, reverse('tickets:home'))
+        invitee.profile.refresh_from_db()
+        self.assertEqual(invitee.profile.organization, self.org)
+        inv.refresh_from_db()
+        self.assertEqual(inv.status, OrganizationInvitation.Status.ACCEPTED)
+
+    def test_invite_accept_wrong_user_email_mismatch(self):
+        inv = OrganizationInvitation.objects.create(
+            organization=self.org,
+            email='invitee@test.com',
+            invited_by=self.user,
+            status=OrganizationInvitation.Status.PENDING,
+            expires_at=timezone.now() + timedelta(days=7),
+        )
+        wrong_user = User.objects.create_user(
+            username='wrong@test.com', email='wrong@test.com', password='pass123',
+        )
+        UserProfile.objects.create(user=wrong_user, organization=None)
+        self.client.logout()
+        self.client.login(username='wrong@test.com', password='pass123')
+        response = self.client.get(reverse('tickets:invite_accept', args=[inv.token]))
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(b'invitation was sent to', response.content)
+        wrong_user.profile.refresh_from_db()
+        self.assertIsNone(wrong_user.profile.organization)
+
+    def test_invite_accept_expired_shows_message(self):
+        inv = OrganizationInvitation.objects.create(
+            organization=self.org,
+            email='invitee@test.com',
+            invited_by=self.user,
+            status=OrganizationInvitation.Status.PENDING,
+            expires_at=timezone.now() - timedelta(days=1),
+        )
+        invitee = User.objects.create_user(
+            username='invitee@test.com', email='invitee@test.com', password='pass123',
+        )
+        UserProfile.objects.create(user=invitee, organization=None)
+        self.client.logout()
+        self.client.login(username='invitee@test.com', password='pass123')
+        response = self.client.get(reverse('tickets:invite_accept', args=[inv.token]))
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(b'expired or already been used', response.content)
+
+    def test_invite_accept_unauthenticated_redirects_to_login_with_next(self):
+        inv = OrganizationInvitation.objects.create(
+            organization=self.org,
+            email='invitee@test.com',
+            invited_by=self.user,
+            status=OrganizationInvitation.Status.PENDING,
+            expires_at=timezone.now() + timedelta(days=7),
+        )
+        self.client.logout()
+        response = self.client.get(reverse('tickets:invite_accept', args=[inv.token]))
+        self.assertEqual(response.status_code, 302)
+        location = response.get('Location', '') or response.url
+        self.assertIn('/login/', location)
+        self.assertIn('next=', location)
+        self.assertIn(str(inv.token), location)

@@ -29,6 +29,26 @@ class OrganizationForm(forms.ModelForm):
         )
 
 
+class MemberInviteForm(forms.Form):
+    """Form to invite a member to the organization by email."""
+
+    email = forms.EmailField(
+        widget=forms.EmailInput(attrs={
+            'class': 'form-control',
+            'placeholder': 'Email address',
+        })
+    )
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.helper = FormHelper()
+        self.helper.form_method = 'post'
+        self.helper.layout = Layout(
+            Field('email'),
+            Submit('submit', 'Invite member', css_class='btn btn-primary'),
+        )
+
+
 class LoginForm(AuthenticationForm):
     """Custom login form with Bootstrap styling (email-only login)."""
 

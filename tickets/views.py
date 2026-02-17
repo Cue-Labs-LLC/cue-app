@@ -22,7 +22,7 @@ from django.utils import timezone as django_tz
 import pandas as pd
 
 from .models import (
-    Organization, UserProfile,
+    Organization, UserProfile, OrganizationInvitation,
     CSVFormat, UploadedFile, Customer, Event, EventExpense, EventTalent, TicketOrder, Ticket, Venue,
     CustomField, EventCustomFieldValue, IncomeSource, EventIncome,
     SurveyQuestion, SurveyInvitation, SurveyResponse, SurveyAnswer,
@@ -31,7 +31,7 @@ from .forms import (
     EventCSVUploadForm, EventExpenseForm, TicketPriceEntryForm, CSVFormatForm,
     VenueForm, EventForm, EventTalentFormSet, LoginForm,
     IncomeSourceForm, EventIncomeForm,
-    SignUpForm, OTPVerificationForm,
+    SignUpForm, OTPVerificationForm, MemberInviteForm,
 )
 from .csv_processor import CSVProcessor
 from .services.forecasting.preview import generate_forecast_preview
@@ -234,6 +234,14 @@ def signup_view(request):
     if request.user.is_authenticated:
         return redirect('tickets:home')
 
+    # Preserve next (e.g. invite accept URL) through signup flow for redirect after verify
+    next_url = request.GET.get('next')
+    if next_url:
+        from django.utils.http import url_has_allowed_host_and_scheme
+        from django.conf import settings
+        if url_has_allowed_host_and_scheme(next_url, allowed_hosts=settings.ALLOWED_HOSTS):
+            request.session['invite_accept_next'] = next_url
+
     if request.method == 'POST':
         form = SignUpForm(request.POST)
         if form.is_valid():
@@ -349,6 +357,13 @@ def verify_otp_view(request):
 
             login(request, user, backend='tickets.backends.EmailBackend')
             request.session.pop('otp_id', None)
+            next_url = request.session.pop('invite_accept_next', None)
+            if next_url:
+                from django.utils.http import url_has_allowed_host_and_scheme
+                from django.conf import settings
+                if url_has_allowed_host_and_scheme(next_url, allowed_hosts=settings.ALLOWED_HOSTS):
+                    messages.success(request, 'Account created! Use the link below to join the organization.')
+                    return redirect(next_url)
             messages.success(request, 'Account created! Please create or join an organization to get started.')
             return redirect('tickets:create_organization')
     else:
@@ -444,6 +459,140 @@ def create_organization(request):
     else:
         form = OrganizationForm()
     return render(request, 'tickets/create_organization.html', {'form': form})
+
+
+@login_required
+@require_org
+def member_list(request):
+    """List organization members and pending invites; show invite form."""
+    org = get_organization(request)
+    members = (
+        UserProfile.objects.filter(organization=org)
+        .select_related('user')
+        .order_by('user__email')
+    )
+    now = django_tz.now()
+    pending_invites = (
+        OrganizationInvitation.objects.filter(
+            organization=org,
+            status=OrganizationInvitation.Status.PENDING,
+            expires_at__gt=now,
+        )
+        .select_related('invited_by')
+        .order_by('-created_at')
+    )
+    form = MemberInviteForm()
+    context = {
+        'members': members,
+        'pending_invites': pending_invites,
+        'invite_form': form,
+    }
+    return render(request, 'tickets/member_list.html', context)
+
+
+@login_required
+@require_org
+@require_http_methods(["POST"])
+def member_invite(request):
+    """Create an organization invitation and send email."""
+    org = get_organization(request)
+    form = MemberInviteForm(request.POST)
+    if not form.is_valid():
+        for field, errors in form.errors.items():
+            for err in errors:
+                messages.error(request, err)
+        return redirect('tickets:member_list')
+
+    email = form.cleaned_data['email'].strip().lower()
+    if UserProfile.objects.filter(
+        organization=org,
+        user__email__iexact=email,
+    ).exists():
+        messages.error(request, f'{email} is already a member of this organization.')
+        return redirect('tickets:member_list')
+
+    if OrganizationInvitation.objects.filter(
+        organization=org,
+        email__iexact=email,
+        status=OrganizationInvitation.Status.PENDING,
+        expires_at__gt=django_tz.now(),
+    ).exists():
+        messages.error(request, f'An invitation for {email} is already pending.')
+        return redirect('tickets:member_list')
+
+    expires_at = django_tz.now() + timedelta(days=7)
+    invitation = OrganizationInvitation(
+        organization=org,
+        email=email,
+        invited_by=request.user,
+        status=OrganizationInvitation.Status.PENDING,
+        expires_at=expires_at,
+    )
+    invitation.full_clean()
+    invitation.save()
+
+    from .tasks import send_org_invite_email_task
+    send_org_invite_email_task.delay(str(invitation.id))
+    messages.success(request, f'Invitation sent to {email}. They can use the link in the email to join.')
+    return redirect('tickets:member_list')
+
+
+@require_http_methods(["GET", "POST"])
+def invite_accept(request, token):
+    """Accept an organization invitation by token (requires login; redirects if not)."""
+    invitation = get_object_or_404(OrganizationInvitation, token=token)
+    if not invitation.is_usable():
+        return render(request, 'tickets/invite_accept.html', {
+            'invitation': invitation,
+            'expired_or_used': True,
+        })
+
+    if not request.user.is_authenticated:
+        from django.urls import reverse
+        from urllib.parse import urlencode
+        signup_url = reverse('tickets:signup')
+        invite_url = request.build_absolute_uri()
+        return redirect(f'{signup_url}?{urlencode({"next": invite_url})}')
+
+    if request.user.email.lower() != invitation.email.lower():
+        return render(request, 'tickets/invite_accept.html', {
+            'invitation': invitation,
+            'expired_or_used': False,
+            'email_mismatch': True,
+        })
+
+    profile, _ = UserProfile.objects.get_or_create(
+        user=request.user,
+        defaults={'organization_id': None},
+    )
+    profile.organization = invitation.organization
+    profile.save()
+    invitation.status = OrganizationInvitation.Status.ACCEPTED
+    invitation.accepted_at = django_tz.now()
+    invitation.accepted_by = request.user
+    invitation.save(update_fields=['status', 'accepted_at', 'accepted_by'])
+    clear_org_cache(request)
+    messages.success(request, f"You've joined {invitation.organization.name}. Welcome!")
+    return redirect('tickets:home')
+
+
+@login_required
+@require_org
+@require_http_methods(["POST"])
+def invite_revoke(request, token):
+    """Revoke a pending organization invitation."""
+    org = get_organization(request)
+    invitation = get_object_or_404(
+        OrganizationInvitation.objects.filter(organization=org),
+        token=token,
+    )
+    if invitation.status != OrganizationInvitation.Status.PENDING:
+        messages.info(request, 'That invitation is no longer pending.')
+        return redirect('tickets:member_list')
+    invitation.status = OrganizationInvitation.Status.REVOKED
+    invitation.save(update_fields=['status'])
+    messages.success(request, f'Invitation for {invitation.email} has been revoked.')
+    return redirect('tickets:member_list')
 
 
 @login_required

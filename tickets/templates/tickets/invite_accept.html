@@ -1,0 +1,23 @@
+{% extends 'tickets/base.html' %}
+
+{% block title %}Organization invitation{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center mt-4">
+    <div class="col-md-6">
+        <div class="card">
+            <div class="card-body p-4">
+                <h2 class="card-title mb-3">Organization invitation</h2>
+                {% if expired_or_used %}
+                <p class="text-muted">This invitation has expired or already been used.</p>
+                <a href="{% url 'tickets:home' %}" class="btn btn-primary">Go to dashboard</a>
+                {% elif email_mismatch %}
+                <p class="text-muted">This invitation was sent to <strong>{{ invitation.email }}</strong>. Please log in with that email to accept.</p>
+                <a href="{% url 'tickets:logout' %}" class="btn btn-outline-secondary">Log out</a>
+                <a href="{% url 'tickets:home' %}" class="btn btn-primary">Go to dashboard</a>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

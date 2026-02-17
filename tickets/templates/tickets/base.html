@@ -64,6 +64,11 @@
                             <i class="bi bi-geo-alt"></i> Venues
                         </a>
                     </li>
+                    <li>
+                        <a href="{% url 'tickets:member_list' %}" class="sidebar-link{% if '/members/' in request.path %} active{% endif %}">
+                            <i class="bi bi-people"></i> Members
+                        </a>
+                    </li>
                 </ul>
             </div>
 

@@ -21,7 +21,11 @@ urlpatterns = [
     # Organization (no-org flow)
     path('org-required/', views.org_required, name='org_required'),
     path('create-organization/', views.create_organization, name='create_organization'),
-    
+    path('members/', views.member_list, name='member_list'),
+    path('members/invite/', views.member_invite, name='member_invite'),
+    path('members/revoke/<uuid:token>/', views.invite_revoke, name='invite_revoke'),
+    path('invite/<uuid:token>/', views.invite_accept, name='invite_accept'),
+
     # Home/Dashboard
     path('', views.home, name='home'),
     

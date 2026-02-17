@@ -91,6 +91,76 @@ class UserProfile(models.Model):
         return f"{self.user.get_username()} ({self.organization or 'no org'})"
 
 
+class OrganizationInvitation(BaseModel):
+    """Invitation for a user to join an organization by email."""
+    class Status(models.TextChoices):
+        PENDING = 'pending', 'Pending'
+        ACCEPTED = 'accepted', 'Accepted'
+        EXPIRED = 'expired', 'Expired'
+        REVOKED = 'revoked', 'Revoked'
+
+    organization = models.ForeignKey(
+        Organization,
+        on_delete=models.CASCADE,
+        related_name='organization_invitations',
+    )
+    email = models.EmailField(db_index=True)
+    invited_by = models.ForeignKey(
+        'auth.User',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='sent_organization_invitations',
+    )
+    token = models.UUIDField(default=uuid.uuid4, unique=True, editable=False, db_index=True)
+    status = models.CharField(
+        max_length=20,
+        choices=Status.choices,
+        default=Status.PENDING,
+        db_index=True,
+    )
+    expires_at = models.DateTimeField()
+    accepted_at = models.DateTimeField(null=True, blank=True)
+    accepted_by = models.ForeignKey(
+        'auth.User',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='accepted_organization_invitations',
+    )
+
+    class Meta:
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['organization', 'status']),
+        ]
+
+    def __str__(self):
+        return f"Invite {self.email} -> {self.organization.name} ({self.status})"
+
+    def is_expired(self):
+        return timezone.now() > self.expires_at
+
+    def is_usable(self):
+        return self.status == self.Status.PENDING and not self.is_expired()
+
+    def clean(self):
+        if self.status != self.Status.PENDING or not self.organization_id:
+            return
+        qs = OrganizationInvitation.objects.filter(
+            organization_id=self.organization_id,
+            email__iexact=self.email,
+            status=self.Status.PENDING,
+            expires_at__gt=timezone.now(),
+        )
+        if self.pk:
+            qs = qs.exclude(pk=self.pk)
+        if qs.exists():
+            raise ValidationError(
+                f"An invitation for {self.email} is already pending for this organization."
+            )
+
+
 class EmailOTP(BaseModel):
     """One-time password for email verification (signup, etc.)."""
     class Purpose(models.TextChoices):

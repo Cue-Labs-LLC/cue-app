@@ -5,7 +5,7 @@ from django.db import models
 from django.db.models import Sum, Count
 from django import forms
 from .models import (
-    Organization, UserProfile, EmailOTP,
+    Organization, UserProfile, OrganizationInvitation, EmailOTP,
     CSVFormat, UploadedFile, Customer, Event, EventExpense, EventTalent, TicketOrder, Ticket, TicketTier, Venue,
     CustomField, CustomFieldOption, EventCustomFieldValue,
     IncomeSource, EventIncome,
@@ -596,6 +596,24 @@ class UserProfileAdmin(admin.ModelAdmin):
     def user_email(self, obj):
         return obj.user.email if obj.user_id else ''
     user_email.short_description = 'Email'
+
+
+@admin.register(OrganizationInvitation)
+class OrganizationInvitationAdmin(admin.ModelAdmin):
+    list_display = ['email', 'organization', 'status', 'invited_by', 'expires_at', 'created_at']
+    list_filter = ['organization', 'status', 'created_at']
+    search_fields = ['email', 'organization__name']
+    readonly_fields = ['id', 'token', 'created_at', 'updated_at', 'accepted_at', 'accepted_by']
+    raw_id_fields = ['invited_by', 'accepted_by']
+
+    def get_queryset(self, request):
+        qs = super().get_queryset(request)
+        if request.user.is_superuser:
+            return qs.select_related('organization', 'invited_by', 'accepted_by')
+        profile = getattr(request.user, 'profile', None)
+        if profile and profile.organization_id:
+            return qs.filter(organization=profile.organization).select_related('organization', 'invited_by', 'accepted_by')
+        return qs.none()
 
 
 @admin.register(EmailOTP)

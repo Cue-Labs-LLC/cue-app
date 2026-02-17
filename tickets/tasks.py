@@ -92,6 +92,45 @@ def send_survey_emails_task(self, event_id, organization_id):
 
 
 @shared_task(bind=True, max_retries=2, default_retry_delay=30)
+def send_org_invite_email_task(self, invitation_id):
+    """Send organization invitation email with accept link."""
+    from django.core.mail import send_mail
+    from django.template.loader import render_to_string
+    from django.conf import settings
+    from tickets.models import OrganizationInvitation
+
+    try:
+        invitation = OrganizationInvitation.objects.select_related('organization').get(id=invitation_id)
+    except OrganizationInvitation.DoesNotExist:
+        logger.warning("Organization invitation %s not found, skipping email", invitation_id)
+        return
+
+    if not invitation.is_usable():
+        return
+
+    site_url = settings.SITE_URL.rstrip('/')
+    accept_url = f"{site_url}/invite/{invitation.token}/"
+    context = {
+        'organization_name': invitation.organization.name,
+        'accept_url': accept_url,
+    }
+    html_body = render_to_string('tickets/org_invite_email.html', context)
+    text_body = render_to_string('tickets/org_invite_email.txt', context)
+
+    try:
+        send_mail(
+            subject=f"You're invited to join {invitation.organization.name} on Eventflow",
+            message=text_body,
+            from_email=settings.DEFAULT_FROM_EMAIL,
+            recipient_list=[invitation.email],
+            html_message=html_body,
+        )
+    except Exception as exc:
+        logger.exception("Failed to send org invite email to %s", invitation.email)
+        raise self.retry(exc=exc)
+
+
+@shared_task(bind=True, max_retries=2, default_retry_delay=30)
 def recalculate_rfm_task(self, organization_id):
     from tickets.models import Organization
     from tickets.services.segmentation.rfm_calculator import RFMCalculator
