@@ -1,6 +1,6 @@
 """Send event payloads to Pipedream webhook for Google Calendar sync."""
 import logging
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 import requests
 
@@ -71,28 +71,42 @@ def _format_location(venue):
     return parts[0] + ', ' + ' , '.join(parts[1:])
 
 
+def _format_datetime_iso(date, time):
+    """Format date and time as YYYY-MM-DDTHH:MM:SS (local time, no zone in string)."""
+    if time is None:
+        return None
+    dt = datetime.combine(date, time)
+    return dt.strftime('%Y-%m-%dT%H:%M:%S')
+
+
 def build_pipedream_payload(event):
     """
-    Build JSON payload for Pipedream webhook in the format:
+    Build JSON payload for Pipedream webhook.
 
-    {
-      "title": "Event Name",
-      "summary": "Event Name",
-      "location": "Venue, Address...",
-      "description": "Event Type: ...\\nVenue Capacity: ...\\nIndoors/Outdoors: ...",
-      "start": "YYYY-MM-DD",
-      "end": "YYYY-MM-DD",
-      "timezone": "America/Los_Angeles"
-    }
+    When the event has start_time, start and end are ISO datetimes (YYYY-MM-DDTHH:MM:SS).
+    When all-day (no start_time), start and end are date-only (YYYY-MM-DD).
+    timezone is always included for the event's timezone.
     """
     venue = event.venue
     location = _format_location(venue)
     custom_values = _get_custom_field_display_by_name(event)
     description = _build_google_calendar_description(event, custom_values)
     tz = event.timezone or 'America/Los_Angeles'
-    start = event.start_date.strftime('%Y-%m-%d')
-    end_date = event.end_date or (event.start_date + timedelta(days=1))
-    end = end_date.strftime('%Y-%m-%d')
+
+    if event.start_time is not None:
+        start = _format_datetime_iso(event.start_date, event.start_time)
+        if event.end_date and event.end_time:
+            end = _format_datetime_iso(event.end_date, event.end_time)
+        elif event.end_date and not event.end_time:
+            end = _format_datetime_iso(event.end_date, event.start_time)
+        else:
+            end_dt = datetime.combine(event.start_date, event.start_time) + timedelta(hours=3)
+            end = end_dt.strftime('%Y-%m-%dT%H:%M:%S')
+    else:
+        start = event.start_date.strftime('%Y-%m-%d')
+        end_date = event.end_date or (event.start_date + timedelta(days=1))
+        end = end_date.strftime('%Y-%m-%d')
+
     return {
         'title': event.name,
         'summary': event.name,
