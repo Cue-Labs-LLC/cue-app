@@ -85,7 +85,7 @@ _ALLOWED_SORTS = {
 
 
 def _annotate_events(queryset):
-    """Add the 5 subquery annotations (orders, uploads, revenue, tickets, expenses) to an Event queryset."""
+    """Add subquery annotations (orders, uploads, ticket_revenue, additional_income, total_revenue, tickets, expenses) to an Event queryset."""
     return queryset.annotate(
         total_orders=Coalesce(
             Subquery(
@@ -106,7 +106,7 @@ def _annotate_events(queryset):
             ),
             0,
         ),
-        total_revenue=Coalesce(
+        ticket_revenue=Coalesce(
             Subquery(
                 TicketOrder.objects.filter(event=OuterRef('pk'))
                 .values('event')
@@ -116,6 +116,17 @@ def _annotate_events(queryset):
             ),
             Decimal('0.00'),
         ),
+        total_additional_income=Coalesce(
+            Subquery(
+                EventIncome.objects.filter(event=OuterRef('pk'), deleted_at__isnull=True)
+                .values('event')
+                .annotate(total=Sum('amount'))
+                .values('total')[:1],
+                output_field=models.DecimalField(max_digits=10, decimal_places=2),
+            ),
+            Decimal('0.00'),
+        ),
+        total_revenue=F('ticket_revenue') + F('total_additional_income'),
         total_tickets=Coalesce(
             Subquery(
                 Ticket.objects.filter(ticket_order__event=OuterRef('pk'))
@@ -658,8 +669,11 @@ def home(request):
         total_orders=Count('id'),
         total_revenue=Coalesce(Sum('total_amount'), Decimal('0.00')),
     )
+    additional_agg = EventIncome.objects.filter(
+        event__organization=org, deleted_at__isnull=True
+    ).aggregate(total=Coalesce(Sum('amount'), Decimal('0.00')))
     total_orders = order_agg['total_orders']
-    total_revenue = order_agg['total_revenue']
+    total_revenue = order_agg['total_revenue'] + (additional_agg['total'] or Decimal('0.00'))
     total_tickets = Ticket.objects.filter(ticket_order__event__organization=org).count()
     
     context = {
