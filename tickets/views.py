@@ -26,6 +26,7 @@ from .models import (
     CSVFormat, UploadedFile, Customer, Event, EventExpense, EventTalent, TicketOrder, Ticket, Venue,
     CustomField, EventCustomFieldValue, IncomeSource, EventIncome,
     SurveyQuestion, SurveyInvitation, SurveyResponse, SurveyAnswer,
+    PipedreamCalendarConnection,
 )
 from .forms import (
     EventCSVUploadForm, EventExpenseForm, TicketPriceEntryForm, CSVFormatForm,
@@ -150,6 +151,25 @@ def _regenerate_event_doc_background(org):
         writer.update_document(content)
     except Exception:
         logger.exception("Failed to regenerate event doc")
+
+
+def _sync_event_to_google_calendar(event):
+    """Send event to Pipedream webhook for Google Calendar sync. Fails silently if not configured."""
+    from .services.google_calendar.sync import send_event_to_pipedream
+    try:
+        connection = PipedreamCalendarConnection.objects.filter(
+            organization=event.organization,
+        ).first()
+        if not connection or not connection.webhook_url:
+            return
+        success, google_event_id = send_event_to_pipedream(
+            connection.webhook_url, event
+        )
+        if success and google_event_id:
+            event.google_calendar_event_id = google_event_id
+            event.save(update_fields=['google_calendar_event_id'])
+    except Exception:
+        logger.exception("Failed to sync event to Google Calendar via Pipedream")
 
 
 # Authentication Views
@@ -1951,6 +1971,7 @@ def event_create(request):
             messages.success(request, f"Event '{event.name}' created successfully.")
             if event.start_date >= date.today():
                 _regenerate_event_doc_background(org)
+            _sync_event_to_google_calendar(event)
             return redirect('tickets:event_detail', event_id=event.id)
     else:
         form = EventForm(organization=org)
@@ -2116,6 +2137,54 @@ def regenerate_event_doc(request):
         messages.error(request, f"Error updating Google Doc: {e}")
 
     return redirect('tickets:home')
+
+
+@login_required
+@require_org
+def settings_google_calendar(request):
+    """Google Calendar (Pipedream) settings: set or edit webhook URL, or disconnect."""
+    from django.core.validators import URLValidator
+    from django.core.exceptions import ValidationError
+
+    org = get_organization(request)
+    connection = PipedreamCalendarConnection.objects.filter(organization=org).first()
+
+    if request.method == 'POST':
+        webhook_url = (request.POST.get('webhook_url') or '').strip()
+        if not webhook_url:
+            messages.error(request, 'Please enter a webhook URL.')
+            return redirect('tickets:settings_google_calendar')
+        try:
+            URLValidator()(webhook_url)
+        except ValidationError:
+            messages.error(request, 'Please enter a valid URL.')
+            return redirect('tickets:settings_google_calendar')
+        connection, created = PipedreamCalendarConnection.objects.get_or_create(
+            organization=org,
+            defaults={'webhook_url': webhook_url},
+        )
+        if not created:
+            connection.webhook_url = webhook_url
+            connection.save()
+        messages.success(request, 'Google Calendar (Pipedream) webhook saved. New events will be sent to this URL.')
+        return redirect('tickets:settings_google_calendar')
+
+    context = {
+        'connection': connection,
+    }
+    return render(request, 'tickets/settings_google_calendar.html', context)
+
+
+@login_required
+@require_org
+def settings_google_calendar_disconnect(request):
+    """Remove Pipedream calendar connection for the current org."""
+    if request.method != 'POST':
+        return redirect('tickets:settings_google_calendar')
+    org = get_organization(request)
+    PipedreamCalendarConnection.objects.filter(organization=org).delete()
+    messages.success(request, 'Google Calendar (Pipedream) disconnected.')
+    return redirect('tickets:settings_google_calendar')
 
 
 # Forecast Tool Views

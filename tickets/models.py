@@ -68,6 +68,23 @@ class Organization(BaseModel):
         return self.name
 
 
+class PipedreamCalendarConnection(BaseModel):
+    """Per-organization Pipedream webhook URL for Google Calendar event sync."""
+    organization = models.OneToOneField(
+        Organization,
+        on_delete=models.CASCADE,
+        related_name='pipedream_calendar_connection',
+    )
+    webhook_url = models.URLField(max_length=500)
+
+    class Meta:
+        verbose_name = 'Pipedream calendar connection'
+        verbose_name_plural = 'Pipedream calendar connections'
+
+    def __str__(self):
+        return f"Pipedream calendar: {self.organization.name}"
+
+
 class UserProfile(models.Model):
     """OneToOne profile linking a user to an organization."""
     user = models.OneToOneField(
@@ -421,6 +438,25 @@ class Event(AuditBaseModel):
         help_text="Total ticket capacity for the event (optional)"
     )
     ticket_link = models.URLField(max_length=500, blank=True)
+    timezone = models.CharField(
+        max_length=50,
+        default='America/Los_Angeles',
+        choices=[
+            ('America/Los_Angeles', 'Pacific'),
+            ('America/Denver', 'Mountain'),
+            ('America/Chicago', 'Central'),
+            ('America/New_York', 'Eastern'),
+            ('America/Anchorage', 'Alaska'),
+            ('Pacific/Honolulu', 'Hawaii'),
+        ],
+        help_text="Timezone where the event takes place",
+    )
+    google_calendar_event_id = models.CharField(
+        max_length=255,
+        blank=True,
+        null=True,
+        help_text="Google Calendar event ID after sync (create-only).",
+    )
 
     class Meta:
         unique_together = [['organization', 'name', 'start_date']]

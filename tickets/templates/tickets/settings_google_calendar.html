@@ -1,0 +1,44 @@
+{% extends 'tickets/base.html' %}
+
+{% block title %}Google Calendar (Pipedream){% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1>Google Calendar (Pipedream)</h1>
+</div>
+
+<div class="card">
+    <div class="card-body">
+        {% if connection %}
+        <p class="text-body-secondary mb-3">New events created in this organization are sent to your Pipedream workflow. Connect your Google account and choose a calendar in Pipedream.</p>
+        <p class="mb-2"><strong>Webhook URL:</strong> <code class="user-select-all">{{ connection.webhook_url }}</code></p>
+        <p class="mb-3 small text-body-secondary">To change the URL, enter a new one below and save. To stop syncing, disconnect.</p>
+        {% else %}
+        <p class="text-body-secondary mb-3">Connect Google Calendar via Pipedream so new events are created on your calendar.</p>
+        <ol class="mb-3 small">
+            <li>Go to <a href="https://pipedream.com" target="_blank" rel="noopener">Pipedream</a> and create a workflow.</li>
+            <li>Add a trigger: <strong>HTTP / Webhook</strong> (emit on request). Copy the Webhook URL.</li>
+            <li>Add a step: <strong>Google Calendar</strong> → <strong>Create Event</strong>. Connect your Google account and choose the calendar.</li>
+            <li>Map the trigger body to the action: <code>summary</code>, <code>location</code>, <code>description</code>, <code>start</code>, <code>end</code> (see Pipedream step docs).</li>
+            <li>Deploy the workflow, then paste the Webhook URL below.</li>
+        </ol>
+        {% endif %}
+
+        <form method="post" action="{% url 'tickets:settings_google_calendar' %}" class="mb-3">
+            {% csrf_token %}
+            <div class="mb-2">
+                <label for="webhook_url" class="form-label">Pipedream webhook URL</label>
+                <input type="url" name="webhook_url" id="webhook_url" class="form-control" placeholder="https://..." value="{{ connection.webhook_url|default:'' }}" required>
+            </div>
+            <button type="submit" class="btn btn-primary">Save</button>
+        </form>
+
+        {% if connection %}
+        <form method="post" action="{% url 'tickets:settings_google_calendar_disconnect' %}" class="d-inline" onsubmit="return confirm('Stop sending events to this webhook?');">
+            {% csrf_token %}
+            <button type="submit" class="btn btn-outline-danger">Disconnect</button>
+        </form>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}

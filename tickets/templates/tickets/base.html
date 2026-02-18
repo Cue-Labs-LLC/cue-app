@@ -127,6 +127,17 @@
             <div class="sidebar-divider"></div>
 
             <div class="sidebar-section">
+                <div class="sidebar-section-label">Settings</div>
+                <ul class="sidebar-nav">
+                    <li>
+                        <a href="{% url 'tickets:settings_google_calendar' %}" class="sidebar-link{% if '/settings/google-calendar/' in request.path %} active{% endif %}">
+                            <i class="bi bi-calendar-check"></i> Google Calendar
+                        </a>
+                    </li>
+                </ul>
+            </div>
+
+            <div class="sidebar-section">
                 <ul class="sidebar-nav">
                     <li>
                         <a href="{% url 'admin:index' %}" class="sidebar-link" target="_blank">
