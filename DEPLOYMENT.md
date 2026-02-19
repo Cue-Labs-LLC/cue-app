@@ -163,6 +163,41 @@ Once your service is deployed:
 3. Follow DNS configuration instructions
 4. Update `ALLOWED_HOSTS` environment variable to include your domain
 
+## Staging Environment
+
+You can run a separate staging deployment on Render so you can deploy a non-production branch (e.g. `staging` or `develop`) without affecting production.
+
+**How it works:** Use a second Blueprint from the same repo that deploys from your staging branch and uses the staging spec file. Staging gets its own web service, Redis, worker, and PostgreSQL, with separate environment variables.
+
+### Setup
+
+1. **Create a staging PostgreSQL**
+   - In Render: **New +** → **PostgreSQL**
+   - Name it (e.g. `eventflow-staging-db`), choose a plan, create the database
+   - Copy the **Internal Database URL** for use as `DATABASE_URL` in staging
+
+2. **Create the staging Blueprint**
+   - **New +** → **Blueprint**
+   - Connect the **same** Git repository
+   - **Branch:** select your staging branch (e.g. `staging` or `develop`)
+   - **Blueprint path:** set to **`render.staging.yaml`** (so Render uses the staging spec instead of `render.yaml` and creates services named `eventflow-staging`, `eventflow-staging-redis`, `eventflow-staging-worker`)
+   - Create the Blueprint; Render will create the three services from `render.staging.yaml`
+
+3. **Set staging environment variables**
+   - For the **eventflow-staging** web service and **eventflow-staging-worker** worker, go to each service’s **Environment** tab and set at least:
+     - `DATABASE_URL` = Internal Database URL from the staging PostgreSQL you created
+     - `ALLOWED_HOSTS` = your staging web URL (e.g. `eventflow-staging.onrender.com`)
+     - `SITE_URL` = full staging base URL (e.g. `https://eventflow-staging.onrender.com`)
+     - `SECRET_KEY` = a new secret (do not reuse production)
+   - Add the same optional variables as production (AWS, SendGrid, etc.) if needed; you can use a separate S3 bucket or the same one, and separate or shared SendGrid keys.
+
+### Workflow
+
+- **Production:** Pushes to `main` deploy via the production Blueprint (using `render.yaml`); production services and database are unchanged.
+- **Staging:** Pushes to your staging branch deploy via the staging Blueprint (using `render.staging.yaml`); only staging services and the staging database are used.
+
+Merging the staging branch into `main` triggers a production deploy; it does not change how staging is configured.
+
 ## Environment Variables Reference
 
 ### Required Variables
