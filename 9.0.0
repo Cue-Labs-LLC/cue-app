@@ -1,0 +1,7 @@
+Requirement already satisfied: stripe in c:\users\owen1\.pyenv\pyenv-win\versions\3.12.1\lib\site-packages (14.3.0)
+Requirement already satisfied: typing_extensions>=4.5.0 in c:\users\owen1\.pyenv\pyenv-win\versions\3.12.1\lib\site-packages (from stripe) (4.15.0)
+Requirement already satisfied: requests>=2.20 in c:\users\owen1\.pyenv\pyenv-win\versions\3.12.1\lib\site-packages (from stripe) (2.32.5)
+Requirement already satisfied: charset_normalizer<4,>=2 in c:\users\owen1\.pyenv\pyenv-win\versions\3.12.1\lib\site-packages (from requests>=2.20->stripe) (3.4.4)
+Requirement already satisfied: idna<4,>=2.5 in c:\users\owen1\.pyenv\pyenv-win\versions\3.12.1\lib\site-packages (from requests>=2.20->stripe) (3.11)
+Requirement already satisfied: urllib3<3,>=1.21.1 in c:\users\owen1\.pyenv\pyenv-win\versions\3.12.1\lib\site-packages (from requests>=2.20->stripe) (2.5.0)
+Requirement already satisfied: certifi>=2017.4.17 in c:\users\owen1\.pyenv\pyenv-win\versions\3.12.1\lib\site-packages (from requests>=2.20->stripe) (2025.11.12)

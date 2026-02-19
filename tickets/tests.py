@@ -18,29 +18,37 @@ class UploadDeleteViewTests(TestCase):
     def setUp(self):
         """Set up test data."""
         self.client = Client()
+        self.org = Organization.objects.create(name='Delete Test Org', slug='delete-test-org')
         self.user = User.objects.create_user(
             username='testuser',
             email='test@test.com',
             password='testpass123'
         )
-        self.client.login(username='testuser', password='testpass123')
+        UserProfile.objects.create(user=self.user, organization=self.org)
+        self.client.login(username='test@test.com', password='testpass123')
+        # Seed the session with _org_id so @require_org passes
+        self.client.get(reverse('tickets:home'))
 
-        # Create required related objects
+        # Create required related objects — all scoped to self.org
         self.csv_format = CSVFormat.objects.create(
+            organization=self.org,
             name='Test Format',
             column_mapping={'order_number': 'Order ID'}
         )
         self.venue = Venue.objects.create(
+            organization=self.org,
             name='Test Venue',
             city='Test City'
         )
         self.event = Event.objects.create(
+            organization=self.org,
             name='Test Event',
             venue=self.venue,
             start_date=date(2024, 6, 15),
             start_time=time(19, 0, 0)
         )
         self.upload = UploadedFile.objects.create(
+            organization=self.org,
             csv_format=self.csv_format,
             filename='test_upload.csv',
             status='completed',
@@ -48,6 +56,7 @@ class UploadDeleteViewTests(TestCase):
             processed_rows=10
         )
         self.customer = Customer.objects.create(
+            organization=self.org,
             email='customer@example.com',
             name='Test Customer',
             lifetime_value=Decimal('150.00')
@@ -199,6 +208,7 @@ class UploadDeleteViewTests(TestCase):
         """Test that customers with orders from other uploads are preserved."""
         # Create another upload with an order for the same customer
         other_upload = UploadedFile.objects.create(
+            organization=self.org,
             csv_format=self.csv_format,
             filename='other_upload.csv',
             status='completed'
@@ -283,9 +293,13 @@ class UploadDeleteViewTests(TestCase):
 class VenueAddressFieldsTests(TestCase):
     """Test venue address fields and get_display_address."""
 
+    def setUp(self):
+        self.org = Organization.objects.create(name='Venue Test Org', slug='venue-test-org')
+
     def test_venue_saves_address_fields(self):
         """Venue with all address fields saves and reads back correctly."""
         venue = Venue.objects.create(
+            organization=self.org,
             name='The Fillmore',
             city='San Francisco',
             street_address='1805 Geary Blvd',
@@ -302,6 +316,7 @@ class VenueAddressFieldsTests(TestCase):
     def test_venue_get_display_address(self):
         """get_display_address returns formatted line when address fields present."""
         venue = Venue.objects.create(
+            organization=self.org,
             name='The Fillmore',
             city='San Francisco',
             street_address='1805 Geary Blvd',
@@ -317,7 +332,9 @@ class VenueAddressFieldsTests(TestCase):
 
     def test_venue_get_display_address_empty_when_no_address(self):
         """get_display_address returns empty string when no address fields."""
-        venue = Venue.objects.create(name='No Address Venue', city='Somewhere')
+        venue = Venue.objects.create(
+            organization=self.org, name='No Address Venue', city='Somewhere'
+        )
         self.assertEqual(venue.get_display_address(), '')
 
     def test_venue_form_includes_address_fields(self):
@@ -750,7 +767,7 @@ class MemberInviteTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIn(b'expired or already been used', response.content)
 
-    def test_invite_accept_unauthenticated_redirects_to_login_with_next(self):
+    def test_invite_accept_unauthenticated_redirects_to_signup_with_next(self):
         inv = OrganizationInvitation.objects.create(
             organization=self.org,
             email='invitee@test.com',
@@ -762,6 +779,8 @@ class MemberInviteTests(TestCase):
         response = self.client.get(reverse('tickets:invite_accept', args=[inv.token]))
         self.assertEqual(response.status_code, 302)
         location = response.get('Location', '') or response.url
-        self.assertIn('/login/', location)
+        # Unauthenticated invite acceptance redirects to /signup/ (not /login/) so
+        # new users can register before accepting.
+        self.assertIn('/signup/', location)
         self.assertIn('next=', location)
         self.assertIn(str(inv.token), location)

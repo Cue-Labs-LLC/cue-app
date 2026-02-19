@@ -26,6 +26,13 @@
             {% csrf_token %}
             <div class="card">
                 <div class="card-body">
+                    <div class="mb-3">
+                        <label class="form-label fw-semibold">Ticketing Type</label>
+                        <div class="text-muted">
+                            {{ event.get_ticketing_type_display }}
+                            <small class="d-block text-muted">Cannot be changed after event creation.</small>
+                        </div>
+                    </div>
                     {% crispy form %}
                     <h6 class="mt-4">Talent Lineup (optional)</h6>
                     <p class="small text-muted">Add performers or DJs in display order. Click "Add talent" to add a row.</p>

@@ -14,7 +14,14 @@
 
 <div class="page-header">
     <div>
-        <h1>{{ event.name }}</h1>
+        <h1>
+            {{ event.name }}
+            {% if event.ticketing_type == 'direct' and direct_ticketing_enabled %}
+            <span class="badge bg-primary ms-2" style="font-size: 0.6em; vertical-align: middle;">Direct Ticketing</span>
+            {% else %}
+            <span class="badge bg-secondary ms-2" style="font-size: 0.6em; vertical-align: middle;">External Ticketing</span>
+            {% endif %}
+        </h1>
         <div class="detail-meta">
             <div class="detail-meta-item"><i class="bi bi-geo-alt"></i> {{ event.venue.name }}, {{ event.venue.city }}</div>
             <div class="detail-meta-divider"></div>
@@ -90,6 +97,145 @@
     </div>
 </div>
 
+{% if event.ticketing_type == 'direct' and direct_ticketing_enabled %}
+{% if event.flyer %}
+<div class="card mb-4">
+    <div class="card-body p-0 text-center">
+        <img src="{{ event.flyer.url }}" alt="{{ event.name }} event image" class="img-fluid" style="max-height: 400px; width: auto; object-fit: contain;">
+    </div>
+</div>
+{% endif %}
+{% if public_buy_url %}
+<div class="card mb-4">
+    <div class="card-header">
+        <h5>Public Ticket Page</h5>
+    </div>
+    <div class="card-body">
+        <p class="mb-1">Share this link with buyers:</p>
+        <div class="input-group" style="max-width: 600px;">
+            <input type="text" class="form-control font-monospace" id="public-url" value="{{ public_buy_url }}" readonly>
+            <button class="btn btn-outline-secondary" type="button" onclick="copyPublicUrl()">
+                <i class="bi bi-clipboard"></i> Copy
+            </button>
+            <a href="{{ public_buy_url }}" target="_blank" rel="noopener noreferrer" class="btn btn-outline-primary">
+                <i class="bi bi-box-arrow-up-right"></i> Open
+            </a>
+        </div>
+    </div>
+</div>
+{% endif %}
+<div class="card mb-4">
+    <div class="card-header d-flex justify-content-between align-items-center">
+        <h5>Direct Ticket Sales</h5>
+        <a href="{% url 'tickets:saleable_ticket_type_create' event.id %}" class="btn btn-sm btn-primary"><i class="bi bi-plus-lg"></i> Add Ticket Type</a>
+    </div>
+    <div class="card-body p-0">
+        {% if saleable_ticket_types %}
+        <div class="table-responsive">
+            <table class="table table-hover mb-0">
+                <thead>
+                    <tr>
+                        <th>Ticket Type</th>
+                        <th>Price</th>
+                        <th>Sold</th>
+                        <th>Limit</th>
+                        <th>Revenue</th>
+                        <th>Status</th>
+                        <th></th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for tt in saleable_ticket_types %}
+                    <tr>
+                        <td><strong>{{ tt.name }}</strong>{% if tt.description %}<br><small class="text-muted">{{ tt.description|truncatechars:60 }}</small>{% endif %}</td>
+                        <td>${{ tt.price|floatformat:2 }}</td>
+                        <td>{{ tt.quantity_sold }}</td>
+                        <td>{% if tt.quantity_limit %}{{ tt.quantity_limit }}{% else %}<span class="text-muted">&infin;</span>{% endif %}</td>
+                        <td>${{ tt.price|floatformat:2 }} &times; {{ tt.quantity_sold }}</td>
+                        <td>
+                            {% if tt.is_active %}<span class="badge bg-success">Active</span>{% else %}<span class="badge bg-secondary">Inactive</span>{% endif %}
+                            {% if tt.is_sold_out %}<span class="badge bg-warning ms-1">Sold Out</span>{% endif %}
+                        </td>
+                        <td>
+                            <div class="d-flex gap-1">
+                                <a href="{% url 'tickets:saleable_ticket_type_edit' event.id tt.id %}" class="btn btn-sm btn-outline-secondary"><i class="bi bi-pencil"></i></a>
+                                <form method="post" action="{% url 'tickets:saleable_ticket_type_toggle' event.id tt.id %}" class="d-inline">
+                                    {% csrf_token %}
+                                    <button type="submit" class="btn btn-sm btn-outline-{% if tt.is_active %}warning{% else %}success{% endif %}" title="{% if tt.is_active %}Deactivate{% else %}Activate{% endif %}">
+                                        <i class="bi bi-{% if tt.is_active %}eye-slash{% else %}eye{% endif %}"></i>
+                                    </button>
+                                </form>
+                                <a href="{% url 'tickets:saleable_ticket_type_delete' event.id tt.id %}" class="btn btn-sm btn-outline-danger"><i class="bi bi-trash"></i></a>
+                            </div>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+                <tfoot>
+                    <tr class="table-light">
+                        <td colspan="4"><strong>Total Revenue</strong></td>
+                        <td colspan="3"><strong>${{ direct_total_revenue|floatformat:2 }}</strong></td>
+                    </tr>
+                </tfoot>
+            </table>
+        </div>
+        {% else %}
+        <div class="empty-state" style="padding: 32px;">
+            <p class="mb-2">No ticket types configured. Add ticket types to sell tickets directly through Eventflow.</p>
+            <a href="{% url 'tickets:saleable_ticket_type_create' event.id %}" class="btn btn-sm btn-outline-primary"><i class="bi bi-plus-lg"></i> Add First Ticket Type</a>
+        </div>
+        {% endif %}
+    </div>
+</div>
+<div class="card mb-4">
+    <div class="card-header">
+        <h5>Recent Checkout Sessions</h5>
+    </div>
+    <div class="card-body p-0">
+        {% if dashboard_sessions %}
+        <div class="table-responsive">
+            <table class="table table-hover mb-0">
+                <thead>
+                    <tr>
+                        <th>Session ID</th>
+                        <th>Buyer</th>
+                        <th>Amount</th>
+                        <th>Status</th>
+                        <th>Order</th>
+                        <th>Date</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for s in dashboard_sessions %}
+                    <tr>
+                        <td><span class="font-monospace" style="font-size: 0.8rem;">{{ s.stripe_session_id|truncatechars:24 }}</span></td>
+                        <td>{{ s.buyer_email|default:"&mdash;" }}</td>
+                        <td>${{ s.amount_total_cents|floatformat:0|default:"0" }}</td>
+                        <td>
+                            <span class="badge bg-{% if s.status == 'completed' %}success{% elif s.status == 'pending' %}warning{% elif s.status == 'expired' or s.status == 'canceled' %}secondary{% else %}secondary{% endif %}">
+                                {{ s.get_status_display }}
+                            </span>
+                        </td>
+                        <td>
+                            {% if s.ticket_order %}
+                            <a href="{% url 'tickets:order_detail' s.ticket_order.id %}">{{ s.ticket_order.order_number|truncatechars:20 }}</a>
+                            {% else %}&mdash;{% endif %}
+                        </td>
+                        <td>{{ s.created_at|date:"M d, Y H:i" }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% else %}
+        <div class="empty-state" style="padding: 32px;">
+            <p class="mb-0 text-muted">No checkout sessions yet.</p>
+        </div>
+        {% endif %}
+    </div>
+</div>
+{% endif %}
+
 <div class="card mb-4">
     <div class="card-header d-flex justify-content-between align-items-center">
         <h5>Additional Income</h5>
@@ -131,9 +277,6 @@
         {% else %}
         <div class="empty-state" style="padding: 32px;">
             <p class="mb-2">No additional income (e.g. Bar Splits, Merch) recorded. Add income source types in <a href="{% url 'tickets:income_source_list' %}">Income Sources</a>, then add amounts here.</p>
-            {% if income_sources %}
-            <a href="{% url 'tickets:event_income_create' event.id %}" class="btn btn-sm btn-outline-primary"><i class="bi bi-plus-lg"></i> Add Income</a>
-            {% endif %}
         </div>
         {% endif %}
     </div>
@@ -185,12 +328,12 @@
         {% else %}
         <div class="empty-state" style="padding: 32px;">
             <p class="mb-2">No expenses recorded for this event.</p>
-            <a href="{% url 'tickets:expense_create' event.id %}" class="btn btn-sm btn-outline-primary"><i class="bi bi-plus-lg"></i> Add Expense</a>
         </div>
         {% endif %}
     </div>
 </div>
 
+{% if event.ticketing_type != 'direct' %}
 <div class="card mb-4">
     <div class="card-header d-flex justify-content-between align-items-center">
         <h5>Uploads</h5>
@@ -252,6 +395,7 @@
         {% endif %}
     </div>
 </div>
+{% endif %}
 
 <div class="card mb-4">
     <div class="card-header">
@@ -479,4 +623,21 @@ document.addEventListener('DOMContentLoaded', function() {
     }
 });
 </script>
+{% if event.ticketing_type == 'direct' and direct_ticketing_enabled and public_buy_url %}
+<script>
+function copyPublicUrl() {
+    const input = document.getElementById('public-url');
+    if (input) {
+        navigator.clipboard.writeText(input.value).then(function() {
+            const btn = input.nextElementSibling;
+            if (btn) {
+                const orig = btn.innerHTML;
+                btn.innerHTML = '<i class="bi bi-check"></i> Copied';
+                setTimeout(function() { btn.innerHTML = orig; }, 2000);
+            }
+        });
+    }
+}
+</script>
+{% endif %}
 {% endblock %}

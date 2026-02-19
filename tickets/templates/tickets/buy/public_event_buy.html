@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ event.name }} — Buy Tickets</title>
+    <link rel="preload" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" as="style" onload="this.rel='stylesheet'">
+    <noscript><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css"></noscript>
+    <link rel="preload" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" as="style" onload="this.rel='stylesheet'">
+    <noscript><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css"></noscript>
+    <style>
+        body { background: #f5f7fa; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
+        .buy-container { max-width: 600px; margin: 40px auto; padding: 0 16px 60px; }
+        .buy-header { text-align: center; margin-bottom: 32px; }
+        .buy-header h1 { font-size: 1.6rem; font-weight: 700; color: #1a1a2e; margin-bottom: 4px; }
+        .buy-header p { color: #666; margin: 0; }
+        .ticket-card {
+            background: #fff; border-radius: 8px; padding: 20px 24px;
+            margin-bottom: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+            display: flex; align-items: center; justify-content: space-between; gap: 16px;
+        }
+        .ticket-card.sold-out { opacity: 0.55; }
+        .ticket-info { flex: 1; }
+        .ticket-name { font-size: 1rem; font-weight: 600; color: #1a1a2e; margin-bottom: 2px; }
+        .ticket-desc { font-size: 0.85rem; color: #777; margin-bottom: 4px; }
+        .ticket-price { font-size: 1.1rem; font-weight: 700; color: #1a1a2e; }
+        .ticket-remaining { font-size: 0.78rem; color: #dc3545; margin-top: 2px; }
+        .qty-control { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+        .qty-control input[type=number] {
+            width: 70px; text-align: center; border: 1.5px solid #dee2e6;
+            border-radius: 6px; padding: 8px 4px; font-size: 1.05rem; font-weight: 600;
+        }
+        .qty-control input[type=number]:focus { border-color: #1a1a2e; outline: none; box-shadow: 0 0 0 2px rgba(26,26,46,0.15); }
+        .sold-out-badge { font-size: 0.8rem; color: #dc3545; font-weight: 600; white-space: nowrap; }
+        .field-error { color: #dc3545; font-size: 0.85rem; margin: -8px 0 8px; padding: 0 4px; }
+    </style>
+</head>
+<body>
+<div class="buy-container">
+    <div class="buy-header">
+        {% if event.flyer %}
+        <div class="mb-3">
+            <img src="{{ event.flyer.url }}" alt="{{ event.name }}" class="img-fluid rounded" style="max-height: 280px; width: auto; object-fit: contain;">
+        </div>
+        {% endif %}
+        <h1>{{ event.name }}</h1>
+        <p>{{ event.start_date|date:"F j, Y" }}{% if event.start_time %} at {{ event.start_time|time:"g:i A" }}{% endif %}</p>
+        <p>{{ event.venue.name }}, {{ event.venue.city }}</p>
+    </div>
+
+    {% if not available_types %}
+    <div class="text-center py-5">
+        <i class="bi bi-ticket-perforated" style="font-size: 3rem; color: #ccc;"></i>
+        <p class="mt-3 text-muted">No tickets are currently available for this event.</p>
+    </div>
+    {% else %}
+
+    <form method="post">
+        {% csrf_token %}
+
+        {% if form.non_field_errors %}
+        <div class="alert alert-danger mb-3">
+            {% for error in form.non_field_errors %}{{ error }}{% endfor %}
+        </div>
+        {% endif %}
+
+        {% for tt, bound_field in ticket_form_pairs %}
+        <div class="ticket-card{% if tt.is_sold_out %} sold-out{% endif %}">
+            <div class="ticket-info">
+                <div class="ticket-name">{{ tt.name }}</div>
+                {% if tt.description %}<div class="ticket-desc">{{ tt.description }}</div>{% endif %}
+                <div class="ticket-price">
+                    {% if tt.price == 0 %}Free{% else %}${{ tt.price|floatformat:2 }}{% endif %}
+                </div>
+                {% if tt.quantity_limit is not None %}
+                {% with rem=tt.remaining_quantity %}
+                {% if rem <= 10 %}
+                <div class="ticket-remaining"><i class="bi bi-exclamation-circle"></i> Only {{ rem }} left</div>
+                {% endif %}
+                {% endwith %}
+                {% endif %}
+            </div>
+            <div class="qty-control">
+                {% if tt.is_sold_out %}
+                <span class="sold-out-badge">Sold Out</span>
+                {% else %}
+                {{ bound_field }}
+                {% endif %}
+            </div>
+        </div>
+        {% if bound_field.errors %}
+        <div class="field-error">{{ bound_field.errors|join:", " }}</div>
+        {% endif %}
+        {% endfor %}
+
+        <div class="mt-4">
+            <button type="submit" class="btn btn-primary btn-lg w-100" style="background: #1a1a2e; border-color: #1a1a2e;">
+                <i class="bi bi-lock"></i> Checkout Securely
+            </button>
+            <p class="text-center mt-2" style="color: #999; font-size: 0.8rem;">
+                Powered by Stripe. Your payment info is never stored on our servers.
+            </p>
+        </div>
+    </form>
+
+    {% endif %}
+</div>
+</body>
+</html>

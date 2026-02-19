@@ -376,7 +376,7 @@ class Venue(BaseModel):
         related_name='venues',
     )
     name = models.CharField(max_length=200, db_index=True)
-    city = models.CharField(max_length=100, db_index=True)
+    city = models.CharField(max_length=100, blank=True, db_index=True)
     street_address = models.CharField(max_length=255, blank=True)
     state = models.CharField(max_length=100, blank=True)
     postal_code = models.CharField(max_length=20, blank=True)
@@ -414,6 +414,14 @@ class Venue(BaseModel):
         return f"{self.name}, {self.city}"
 
 
+TICKETING_TYPE_DIRECT = 'direct'
+TICKETING_TYPE_EXTERNAL = 'external'
+TICKETING_TYPE_CHOICES = [
+    (TICKETING_TYPE_DIRECT, 'Direct (sell tickets on this platform)'),
+    (TICKETING_TYPE_EXTERNAL, 'External (upload CSV ticket data)'),
+]
+
+
 class Event(AuditBaseModel):
     """Event information."""
     organization = models.ForeignKey(
@@ -422,6 +430,7 @@ class Event(AuditBaseModel):
         related_name='events',
     )
     name = models.CharField(max_length=200, db_index=True)
+    summary = models.CharField(max_length=500, blank=True)
     venue = models.ForeignKey(
         'Venue',
         on_delete=models.PROTECT,
@@ -432,12 +441,18 @@ class Event(AuditBaseModel):
     end_date = models.DateField(null=True, blank=True)
     end_time = models.TimeField(null=True, blank=True)
     description = models.TextField(blank=True)
+    flyer = models.ImageField(upload_to='event_flyers/', blank=True, null=True)
     capacity = models.IntegerField(
         null=True,
         blank=True,
         help_text="Total ticket capacity for the event (optional)"
     )
     ticket_link = models.URLField(max_length=500, blank=True)
+    ticketing_type = models.CharField(
+        max_length=20,
+        choices=TICKETING_TYPE_CHOICES,
+        default=TICKETING_TYPE_EXTERNAL,
+    )
     timezone = models.CharField(
         max_length=50,
         default='America/Los_Angeles',
@@ -794,6 +809,114 @@ class ChatMessage(BaseModel):
 
     def __str__(self):
         return f"[{self.role}] {self.content[:60]}"
+
+
+class SaleableTicketType(BaseModel):
+    """Organizer-configured, per-event product catalog for direct ticket selling."""
+    event = models.ForeignKey(
+        Event,
+        on_delete=models.CASCADE,
+        related_name='saleable_ticket_types',
+    )
+    name = models.CharField(max_length=200, help_text="Buyer-facing name, e.g. 'General Admission'")
+    price = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        help_text="USD price; 0.00 = free",
+    )
+    quantity_limit = models.PositiveIntegerField(
+        null=True,
+        blank=True,
+        help_text="Max tickets available; null = unlimited",
+    )
+    quantity_sold = models.PositiveIntegerField(default=0)
+    is_active = models.BooleanField(default=True, help_text="Hidden from public page when False")
+    sale_start = models.DateTimeField(null=True, blank=True)
+    sale_end = models.DateTimeField(null=True, blank=True)
+    description = models.TextField(blank=True)
+    order = models.PositiveSmallIntegerField(default=0, help_text="Display order on public page")
+
+    class Meta:
+        ordering = ['order', 'name']
+        indexes = [
+            models.Index(fields=['event', 'is_active']),
+            models.Index(fields=['event', 'order']),
+        ]
+
+    def __str__(self):
+        return f"{self.name} (${self.price})"
+
+    def is_on_sale(self):
+        """True if currently within the optional sale window (or no window set)."""
+        now = timezone.now()
+        if self.sale_start and now < self.sale_start:
+            return False
+        if self.sale_end and now > self.sale_end:
+            return False
+        return True
+
+    def remaining_quantity(self):
+        """Remaining tickets; None means unlimited."""
+        if self.quantity_limit is None:
+            return None
+        return max(0, self.quantity_limit - self.quantity_sold)
+
+    def is_sold_out(self):
+        """True only when a limit is set and fully exhausted."""
+        if self.quantity_limit is None:
+            return False
+        return self.quantity_sold >= self.quantity_limit
+
+
+class StripeCheckoutSession(BaseModel):
+    """One row per Stripe Checkout Session — idempotency anchor for webhook processing."""
+
+    class Status(models.TextChoices):
+        PENDING   = 'pending',   'Pending'
+        COMPLETED = 'completed', 'Completed'
+        EXPIRED   = 'expired',   'Expired'
+        CANCELED  = 'canceled',  'Canceled'
+
+    event = models.ForeignKey(
+        Event,
+        on_delete=models.CASCADE,
+        related_name='stripe_checkout_sessions',
+    )
+    organization = models.ForeignKey(
+        Organization,
+        on_delete=models.CASCADE,
+        related_name='stripe_checkout_sessions',
+    )
+    stripe_session_id = models.CharField(max_length=255, unique=True)
+    stripe_payment_intent_id = models.CharField(max_length=255, blank=True)
+    buyer_email = models.EmailField()
+    buyer_name = models.CharField(max_length=200, blank=True)
+    status = models.CharField(
+        max_length=20,
+        choices=Status.choices,
+        default=Status.PENDING,
+    )
+    # Written at session creation; webhook reads this to avoid extra Stripe API call.
+    # Schema: list of {saleable_ticket_type_id, name, price (str), quantity}
+    line_items_snapshot = models.JSONField(default=list)
+    amount_total_cents = models.PositiveIntegerField(default=0)
+    ticket_order = models.OneToOneField(
+        TicketOrder,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='stripe_checkout_session',
+    )
+    fulfilled_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=['organization', 'status']),
+            models.Index(fields=['event', 'status']),
+        ]
+
+    def __str__(self):
+        return f"Stripe session {self.stripe_session_id} ({self.status})"
 
 
 class SurveyQuestion(BaseModel):

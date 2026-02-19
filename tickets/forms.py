@@ -4,7 +4,7 @@ from django.forms import modelformset_factory
 from django.contrib.auth.forms import AuthenticationForm
 from crispy_forms.helper import FormHelper
 from crispy_forms.layout import Layout, Row, Column, Submit, Field
-from .models import Organization, CSVFormat, Venue, Event, EventTalent, EventExpense, CustomField, IncomeSource, EventIncome
+from .models import Organization, CSVFormat, Venue, Event, EventTalent, EventExpense, CustomField, IncomeSource, EventIncome, SaleableTicketType
 
 
 class OrganizationForm(forms.ModelForm):
@@ -791,7 +791,7 @@ class EventForm(forms.ModelForm):
     class Meta:
         model = Event
         fields = [
-            'name', 'venue', 'start_date', 'start_time', 'end_date', 'end_time',
+            'name', 'ticketing_type', 'venue', 'start_date', 'start_time', 'end_date', 'end_time',
             'description', 'capacity', 'timezone', 'ticket_link',
         ]
         widgets = {
@@ -807,7 +807,7 @@ class EventForm(forms.ModelForm):
             'ticket_link': forms.URLInput(attrs={'class': 'form-control', 'placeholder': 'https://...'}),
         }
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, ticketing_type_locked=False, hide_ticket_link=False, **kwargs):
         organization = kwargs.pop('organization', None)
         super().__init__(*args, **kwargs)
         if organization is not None:
@@ -820,6 +820,11 @@ class EventForm(forms.ModelForm):
         self.fields['capacity'].required = False
         self.fields['ticket_link'].required = False
 
+        if ticketing_type_locked:
+            self.fields['ticketing_type'].widget = forms.HiddenInput()
+        else:
+            self.fields['ticketing_type'].widget = forms.RadioSelect()
+
         # Add a ChoiceField per dropdown custom field (org-scoped)
         if organization is not None:
             dropdown_fields = CustomField.objects.filter(
@@ -829,6 +834,7 @@ class EventForm(forms.ModelForm):
             dropdown_fields = []
         layout_fields = [
             Field('name'),
+            Field('ticketing_type'),
             Row(
                 Column('venue', css_class='form-group col-md-4 mb-0'),
                 Column('start_date', css_class='form-group col-md-4 mb-0'),
@@ -841,7 +847,7 @@ class EventForm(forms.ModelForm):
                 Column('timezone', css_class='form-group col-md-3 mb-0'),
             ),
             Field('description'),
-            Field('ticket_link'),
+            *([Field('ticket_link')] if not hide_ticket_link else []),
         ]
         for cf in dropdown_fields:
             choices = [('', '---------')] + [
@@ -903,3 +909,198 @@ class EventForm(forms.ModelForm):
             self.instance.validate_unique()
         except forms.ValidationError as e:
             self._update_errors(e)
+
+
+class SaleableTicketTypeForm(forms.ModelForm):
+    """Form for organizers to create/edit a SaleableTicketType."""
+
+    class Meta:
+        model = SaleableTicketType
+        fields = ['name', 'description', 'price', 'quantity_limit', 'is_active', 'sale_start', 'sale_end', 'order']
+        widgets = {
+            'name': forms.TextInput(attrs={'class': 'form-control', 'placeholder': 'e.g. General Admission'}),
+            'description': forms.Textarea(attrs={'rows': 2, 'class': 'form-control', 'placeholder': 'Short buyer-facing copy (optional)'}),
+            'price': forms.NumberInput(attrs={'class': 'form-control', 'step': '0.01', 'min': '0', 'placeholder': '0.00'}),
+            'quantity_limit': forms.NumberInput(attrs={'class': 'form-control', 'min': '1', 'placeholder': 'Leave blank for unlimited'}),
+            'is_active': forms.CheckboxInput(attrs={'class': 'form-check-input'}),
+            'sale_start': forms.DateTimeInput(attrs={'type': 'datetime-local', 'class': 'form-control'}),
+            'sale_end': forms.DateTimeInput(attrs={'type': 'datetime-local', 'class': 'form-control'}),
+            'order': forms.NumberInput(attrs={'class': 'form-control', 'min': '0'}),
+        }
+
+    def __init__(self, *args, price_locked=False, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields['quantity_limit'].required = False
+        self.fields['description'].required = False
+        self.fields['sale_start'].required = False
+        self.fields['sale_end'].required = False
+        if price_locked:
+            self.fields['price'].widget.attrs['readonly'] = True
+            self.fields['price'].help_text = 'Price cannot be changed after tickets have been sold.'
+        submit_label = 'Update Ticket Type' if (self.instance and self.instance.pk) else 'Create Ticket Type'
+        self.helper = FormHelper()
+        self.helper.layout = Layout(
+            Field('name'),
+            Field('description'),
+            Row(
+                Column('price', css_class='form-group col-md-4 mb-0'),
+                Column('quantity_limit', css_class='form-group col-md-4 mb-0'),
+                Column('order', css_class='form-group col-md-4 mb-0'),
+            ),
+            Row(
+                Column('sale_start', css_class='form-group col-md-6 mb-0'),
+                Column('sale_end', css_class='form-group col-md-6 mb-0'),
+            ),
+            Field('is_active'),
+            Submit('submit', submit_label, css_class='btn btn-primary'),
+        )
+
+    def clean_price(self):
+        price = self.cleaned_data.get('price')
+        if price is not None and price < 0:
+            raise forms.ValidationError('Price must be 0.00 or greater.')
+        return price
+
+    def clean(self):
+        cleaned_data = super().clean()
+        sale_start = cleaned_data.get('sale_start')
+        sale_end = cleaned_data.get('sale_end')
+        if sale_start and sale_end and sale_end <= sale_start:
+            self.add_error('sale_end', 'Sale end must be after sale start.')
+        return cleaned_data
+
+
+class DirectEventForm(forms.ModelForm):
+    """Form for creating a direct-ticketing event with free-text venue fields."""
+    venue_name = forms.CharField(
+        max_length=200,
+        label='Venue Name',
+        widget=forms.TextInput(attrs={'class': 'form-control', 'placeholder': 'e.g., The Roxy Theatre'}),
+    )
+    venue_address = forms.CharField(
+        max_length=255,
+        required=False,
+        label='Location (Address)',
+        widget=forms.TextInput(attrs={'class': 'form-control', 'placeholder': 'e.g., 9009 Sunset Blvd, West Hollywood, CA'}),
+    )
+
+    class Meta:
+        model = Event
+        fields = ['name', 'summary', 'start_date', 'start_time', 'end_date', 'end_time', 'description', 'flyer']
+        widgets = {
+            'name': forms.TextInput(attrs={'class': 'form-control', 'placeholder': 'e.g., Familiar Faces'}),
+            'summary': forms.TextInput(attrs={'class': 'form-control', 'placeholder': 'Short tagline shown on the ticket page (optional)'}),
+            'start_date': forms.DateInput(attrs={'type': 'date', 'class': 'form-control'}),
+            'start_time': forms.TimeInput(attrs={'type': 'time', 'class': 'form-control'}),
+            'end_date': forms.DateInput(attrs={'type': 'date', 'class': 'form-control'}),
+            'end_time': forms.TimeInput(attrs={'type': 'time', 'class': 'form-control'}),
+            'description': forms.Textarea(attrs={'rows': 3, 'class': 'form-control', 'placeholder': 'Optional event description'}),
+            'flyer': forms.ClearableFileInput(attrs={'class': 'form-control'}),
+        }
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields['summary'].required = False
+        self.fields['description'].required = False
+        self.fields['start_time'].required = False
+        self.fields['end_date'].required = False
+        self.fields['end_time'].required = False
+        self.fields['flyer'].required = False
+        self.helper = FormHelper()
+        self.helper.form_tag = False
+        self.helper.layout = Layout(
+            Field('name'),
+            Field('summary'),
+            Row(
+                Column('start_date', css_class='form-group col-md-3 mb-0'),
+                Column('start_time', css_class='form-group col-md-3 mb-0'),
+                Column('end_date', css_class='form-group col-md-3 mb-0'),
+                Column('end_time', css_class='form-group col-md-3 mb-0'),
+            ),
+            Field('description'),
+            Row(
+                Column('venue_name', css_class='form-group col-md-6 mb-0'),
+                Column('venue_address', css_class='form-group col-md-6 mb-0'),
+            ),
+            Field('flyer'),
+        )
+
+    def clean(self):
+        cleaned_data = super().clean()
+        start_date = cleaned_data.get('start_date')
+        start_time = cleaned_data.get('start_time')
+        end_date = cleaned_data.get('end_date')
+        end_time = cleaned_data.get('end_time')
+
+        if end_time and not end_date:
+            self.add_error('end_date', 'End date is required when end time is provided.')
+
+        if end_date and start_date:
+            if end_date < start_date:
+                self.add_error('end_date', 'End date cannot be before start date.')
+            elif end_date == start_date and end_time and start_time:
+                if end_time <= start_time:
+                    self.add_error('end_time', 'End time must be after start time on the same date.')
+
+        return cleaned_data
+
+
+DirectTicketTypeFormSet = modelformset_factory(
+    SaleableTicketType,
+    fields=['name', 'description', 'price', 'quantity_limit'],
+    extra=1,
+    can_delete=True,
+    widgets={
+        'name': forms.TextInput(attrs={'class': 'form-control', 'placeholder': 'e.g. General Admission'}),
+        'description': forms.TextInput(attrs={'class': 'form-control', 'placeholder': 'Short description (optional)'}),
+        'price': forms.NumberInput(attrs={'class': 'form-control', 'step': '0.01', 'min': '0', 'placeholder': '0.00'}),
+        'quantity_limit': forms.NumberInput(attrs={'class': 'form-control', 'min': '1', 'placeholder': 'Unlimited'}),
+    },
+)
+
+
+class PublicTicketPurchaseForm(forms.Form):
+    """
+    Dynamically built per-request: one IntegerField per active SaleableTicketType.
+    Field names: qty_<uuid_hex> (no hyphens so they're valid HTML names).
+    """
+
+    def __init__(self, ticket_types, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._ticket_types = ticket_types
+        for tt in ticket_types:
+            remaining = tt.remaining_quantity()
+            max_val = 10 if remaining is None else min(10, remaining)
+            field_name = f'qty_{tt.id.hex}'
+            self.fields[field_name] = forms.IntegerField(
+                label=tt.name,
+                required=False,
+                min_value=0,
+                max_value=max_val,
+                initial=0,
+                widget=forms.NumberInput(attrs={
+                    'class': 'form-control',
+                    'min': '0',
+                    'max': str(max_val),
+                    'value': '0',
+                }),
+            )
+
+    def clean(self):
+        cleaned_data = super().clean()
+        total = sum(
+            cleaned_data.get(f'qty_{tt.id.hex}') or 0
+            for tt in self._ticket_types
+        )
+        if total < 1:
+            raise forms.ValidationError('Please select at least 1 ticket.')
+        return cleaned_data
+
+    def get_line_items(self):
+        """Return list of (SaleableTicketType, quantity) for quantities > 0."""
+        items = []
+        for tt in self._ticket_types:
+            qty = self.cleaned_data.get(f'qty_{tt.id.hex}') or 0
+            if qty > 0:
+                items.append((tt, qty))
+        return items

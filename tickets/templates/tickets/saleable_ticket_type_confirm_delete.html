@@ -1,0 +1,45 @@
+{% extends 'tickets/base.html' %}
+
+{% block title %}Delete Ticket Type — {{ event.name }}{% endblock %}
+
+{% block content %}
+<nav aria-label="breadcrumb">
+    <ol class="breadcrumb">
+        <li class="breadcrumb-item"><a href="{% url 'tickets:home' %}">Dashboard</a></li>
+        <li class="breadcrumb-item"><a href="{% url 'tickets:event_list' %}">Events</a></li>
+        <li class="breadcrumb-item"><a href="{% url 'tickets:event_detail' event.id %}">{{ event.name }}</a></li>
+        <li class="breadcrumb-item active">Delete Ticket Type</li>
+    </ol>
+</nav>
+
+<div class="page-header">
+    <h1>Delete Ticket Type</h1>
+</div>
+
+<div class="card">
+    <div class="card-body">
+        {% if ticket_type.quantity_sold > 0 %}
+        <div class="alert alert-danger">
+            <i class="bi bi-exclamation-triangle"></i>
+            <strong>Cannot delete.</strong> {{ ticket_type.quantity_sold }} ticket{% if ticket_type.quantity_sold != 1 %}s have{% else %} has{% endif %} already been sold for "{{ ticket_type.name }}".
+            Deactivate it instead to hide it from the public page.
+        </div>
+        <a href="{% url 'tickets:event_detail' event.id %}" class="btn btn-outline-secondary">
+            <i class="bi bi-arrow-left"></i> Back to Event
+        </a>
+        {% else %}
+        <p>Are you sure you want to delete ticket type <strong>{{ ticket_type.name }}</strong>?</p>
+        <p class="text-muted">No tickets have been sold for this type, so it is safe to delete.</p>
+        <div class="d-flex gap-2">
+            <form method="post">
+                {% csrf_token %}
+                <button type="submit" class="btn btn-danger">
+                    <i class="bi bi-trash"></i> Delete
+                </button>
+            </form>
+            <a href="{% url 'tickets:event_detail' event.id %}" class="btn btn-outline-secondary">Cancel</a>
+        </div>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}

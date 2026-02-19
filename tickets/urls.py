@@ -52,7 +52,8 @@ urlpatterns = [
     # Events
     path('events/', views.event_list, name='event_list'),
     path('events/calendar/', views.event_calendar, name='event_calendar'),
-    path('events/create/', views.event_create, name='event_create'),
+    path('events/create/', views.event_type_select, name='event_type_select'),
+    path('events/create/<str:ticketing_type>/', views.event_create, name='event_create'),
     path('events/<uuid:event_id>/', views.event_detail, name='event_detail'),
     path('events/<uuid:event_id>/edit/', views.event_edit, name='event_edit'),
     path('events/<uuid:event_id>/upload/', views.event_upload_csv, name='event_upload_csv'),
@@ -101,4 +102,18 @@ urlpatterns = [
     path('chat/stream/', views.chat_stream, name='chat_stream'),
     path('chat/history/', views.chat_history, name='chat_history'),
     path('chat/conversations/', views.chat_conversations, name='chat_conversations'),
+
+    # Direct Ticket Selling — Organizer
+    path('events/<uuid:event_id>/ticket-types/create/', views.saleable_ticket_type_create, name='saleable_ticket_type_create'),
+    path('events/<uuid:event_id>/ticket-types/<uuid:ticket_type_id>/edit/', views.saleable_ticket_type_edit, name='saleable_ticket_type_edit'),
+    path('events/<uuid:event_id>/ticket-types/<uuid:ticket_type_id>/toggle/', views.saleable_ticket_type_toggle, name='saleable_ticket_type_toggle'),
+    path('events/<uuid:event_id>/ticket-types/<uuid:ticket_type_id>/delete/', views.saleable_ticket_type_delete, name='saleable_ticket_type_delete'),
+
+    # Direct Ticket Selling — Public (no auth)
+    path('buy/<uuid:event_id>/', views.public_event_buy, name='public_event_buy'),
+    path('checkout/success/', views.checkout_success, name='checkout_success'),
+    path('checkout/cancel/', views.checkout_cancel, name='checkout_cancel'),
+
+    # Stripe Webhook
+    path('webhooks/stripe/', views.stripe_webhook, name='stripe_webhook'),
 ]
