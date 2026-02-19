@@ -16,6 +16,7 @@ from django.db.models.functions import Coalesce
 from django.db import models
 from django.core.paginator import Paginator
 from django.http import JsonResponse, Http404, HttpResponse
+from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
 from django.db import connection, transaction
 from django.utils import timezone as django_tz
@@ -27,12 +28,15 @@ from .models import (
     CustomField, EventCustomFieldValue, IncomeSource, EventIncome,
     SurveyQuestion, SurveyInvitation, SurveyResponse, SurveyAnswer,
     PipedreamCalendarConnection,
+    SaleableTicketType, StripeCheckoutSession,
 )
 from .forms import (
     EventCSVUploadForm, EventExpenseForm, TicketPriceEntryForm, CSVFormatForm,
     VenueForm, EventForm, EventTalentFormSet, LoginForm,
     IncomeSourceForm, EventIncomeForm,
     SignUpForm, OTPVerificationForm, MemberInviteForm,
+    SaleableTicketTypeForm, PublicTicketPurchaseForm,
+    DirectEventForm, DirectTicketTypeFormSet,
 )
 from .csv_processor import CSVProcessor
 from .services.forecasting.preview import generate_forecast_preview
@@ -996,14 +1000,13 @@ def upload_delete(request, file_id):
     uploaded_file = get_object_or_404(UploadedFile.objects.filter(organization=org), id=file_id)
     is_ajax = request.headers.get('X-Requested-With') == 'XMLHttpRequest'
 
-    # TODO: Re-enable this check after temporary bypass
     # Block deletion if status is 'processing'
-    # if uploaded_file.status == 'processing':
-    #     error_msg = "Cannot delete upload while it is processing. Please wait for processing to complete."
-    #     if is_ajax:
-    #         return JsonResponse({'success': False, 'error': error_msg}, status=400)
-    #     messages.error(request, error_msg)
-    #     return redirect('tickets:home')
+    if uploaded_file.status == 'processing':
+        error_msg = "Cannot delete upload while it is processing. Please wait for processing to complete."
+        if is_ajax:
+            return JsonResponse({'success': False, 'error': error_msg}, status=400)
+        messages.error(request, error_msg)
+        return redirect('tickets:home')
 
     try:
         with transaction.atomic():
@@ -1534,6 +1537,10 @@ def event_detail(request, event_id):
                 'additional_income',
                 EventIncome.objects.filter(deleted_at__isnull=True).select_related('income_source'),
             ),
+            Prefetch(
+                'saleable_ticket_types',
+                SaleableTicketType.objects.order_by('order', 'name'),
+            ),
         ),
         id=event_id,
     )
@@ -1679,6 +1686,7 @@ def event_detail(request, event_id):
         'survey_invitations_count': survey_invitations_count,
         'survey_responses_count': survey_responses_count,
         'survey_results': survey_results,
+        'saleable_ticket_types': list(event.saleable_ticket_types.all()),
     }
     return render(request, 'tickets/event_detail.html', context)
 
@@ -1950,11 +1958,75 @@ def venue_edit(request, venue_id):
 
 @login_required
 @require_org
-def event_create(request):
-    """Create new event."""
+def event_type_select(request):
+    """Landing page to choose Direct or External ticketing before creating an event."""
+    return render(request, 'tickets/event_type_select.html', {})
+
+
+@login_required
+@require_org
+def event_create(request, ticketing_type):
+    """Create new event (ticketing_type comes from URL, chosen on type-select page)."""
+    from .models import TICKETING_TYPE_DIRECT, TICKETING_TYPE_EXTERNAL
+    if ticketing_type not in (TICKETING_TYPE_DIRECT, TICKETING_TYPE_EXTERNAL):
+        return redirect('tickets:event_type_select')
     org = get_organization(request)
+
+    if ticketing_type == TICKETING_TYPE_DIRECT:
+        if request.method == 'POST':
+            form = DirectEventForm(request.POST, request.FILES)
+            ticket_formset = DirectTicketTypeFormSet(
+                request.POST,
+                queryset=SaleableTicketType.objects.none(),
+                prefix='ticket_type',
+            )
+            if form.is_valid() and ticket_formset.is_valid():
+                venue_name = form.cleaned_data['venue_name']
+                venue_address = form.cleaned_data.get('venue_address', '')
+                venue, _ = Venue.objects.get_or_create(
+                    organization=org,
+                    name=venue_name,
+                    city='',
+                    defaults={'street_address': venue_address},
+                )
+                event = form.save(commit=False)
+                event.organization = org
+                event.created_by = request.user
+                event.venue = venue
+                event.ticketing_type = TICKETING_TYPE_DIRECT
+                event.save()
+                instances = ticket_formset.save(commit=False)
+                for tt in instances:
+                    if tt.name and tt.name.strip():
+                        tt.event = event
+                        tt.save()
+                for tt in ticket_formset.deleted_objects:
+                    tt.delete()
+                _invalidate_event_list_cache(org)
+                messages.success(request, f"Event '{event.name}' created successfully.")
+                if event.start_date >= date.today():
+                    _sync_event_to_google_calendar(event)
+                return redirect('tickets:event_detail', event_id=event.id)
+        else:
+            form = DirectEventForm()
+            ticket_formset = DirectTicketTypeFormSet(
+                queryset=SaleableTicketType.objects.none(),
+                prefix='ticket_type',
+            )
+        context = {
+            'form': form,
+            'ticket_formset': ticket_formset,
+            'ticketing_type': ticketing_type,
+        }
+        return render(request, 'tickets/event_create.html', context)
+
+    # External ticketing path (unchanged)
     if request.method == 'POST':
-        form = EventForm(request.POST, organization=org)
+        form = EventForm(
+            request.POST, organization=org,
+            ticketing_type_locked=True,
+            hide_ticket_link=False,
+        )
         talent_formset = EventTalentFormSet(request.POST, prefix='talent')
         if form.is_valid() and talent_formset.is_valid():
             event = form.save(commit=False)
@@ -1988,7 +2060,12 @@ def event_create(request):
             _sync_event_to_google_calendar(event)
             return redirect('tickets:event_detail', event_id=event.id)
     else:
-        form = EventForm(organization=org)
+        form = EventForm(
+            organization=org,
+            ticketing_type_locked=True,
+            hide_ticket_link=False,
+            initial={'ticketing_type': ticketing_type},
+        )
         talent_formset = EventTalentFormSet(queryset=EventTalent.objects.none(), prefix='talent')
 
     venue_capacities = {
@@ -2000,6 +2077,7 @@ def event_create(request):
         'form': form,
         'talent_formset': talent_formset,
         'venue_capacities_json': json.dumps(venue_capacities),
+        'ticketing_type': ticketing_type,
     }
     return render(request, 'tickets/event_create.html', context)
 
@@ -2011,7 +2089,7 @@ def event_edit(request, event_id):
     org = get_organization(request)
     event = get_object_or_404(Event.objects.filter(organization=org), id=event_id)
     if request.method == 'POST':
-        form = EventForm(request.POST, instance=event, organization=org)
+        form = EventForm(request.POST, instance=event, organization=org, ticketing_type_locked=True)
         talent_formset = EventTalentFormSet(request.POST, prefix='talent')
         if form.is_valid() and talent_formset.is_valid():
             was_future = event.start_date >= date.today()
@@ -2044,7 +2122,7 @@ def event_edit(request, event_id):
                 _regenerate_event_doc_background(org)
             return redirect('tickets:event_detail', event_id=event.id)
     else:
-        form = EventForm(instance=event, organization=org)
+        form = EventForm(instance=event, organization=org, ticketing_type_locked=True)
         talent_formset = EventTalentFormSet(
             queryset=EventTalent.objects.filter(event=event).order_by('order', 'name'),
             prefix='talent',
@@ -2879,3 +2957,386 @@ def chat_conversations(request):
         })
 
     return JsonResponse({'conversations': result})
+
+
+# ---------------------------------------------------------------------------
+# Direct Ticket Selling — Organizer Views
+# ---------------------------------------------------------------------------
+
+@login_required
+@require_org
+@require_http_methods(["GET", "POST"])
+def saleable_ticket_type_create(request, event_id):
+    """Create a new SaleableTicketType for an event."""
+    org = get_organization(request)
+    event = get_object_or_404(Event.objects.filter(organization=org), id=event_id)
+
+    if request.method == 'POST':
+        form = SaleableTicketTypeForm(request.POST)
+        if form.is_valid():
+            tt = form.save(commit=False)
+            tt.event = event
+            tt.save()
+            _invalidate_event_list_cache(org)
+            messages.success(request, f'Ticket type "{tt.name}" created.')
+            return redirect('tickets:event_detail', event_id=event.id)
+    else:
+        form = SaleableTicketTypeForm()
+
+    return render(request, 'tickets/saleable_ticket_type_form.html', {
+        'form': form,
+        'event': event,
+        'editing': False,
+    })
+
+
+@login_required
+@require_org
+@require_http_methods(["GET", "POST"])
+def saleable_ticket_type_edit(request, event_id, ticket_type_id):
+    """Edit an existing SaleableTicketType."""
+    org = get_organization(request)
+    event = get_object_or_404(Event.objects.filter(organization=org), id=event_id)
+    tt = get_object_or_404(SaleableTicketType.objects.filter(event=event), id=ticket_type_id)
+    price_locked = tt.quantity_sold > 0
+
+    if request.method == 'POST':
+        form = SaleableTicketTypeForm(request.POST, instance=tt, price_locked=price_locked)
+        if form.is_valid():
+            if price_locked:
+                # Prevent price changes after tickets have been sold
+                form.instance.price = tt.price
+            updated = form.save()
+            _invalidate_event_list_cache(org)
+            messages.success(request, f'Ticket type "{updated.name}" updated.')
+            return redirect('tickets:event_detail', event_id=event.id)
+    else:
+        form = SaleableTicketTypeForm(instance=tt, price_locked=price_locked)
+
+    return render(request, 'tickets/saleable_ticket_type_form.html', {
+        'form': form,
+        'event': event,
+        'ticket_type': tt,
+        'editing': True,
+        'price_locked': price_locked,
+    })
+
+
+@login_required
+@require_org
+@require_http_methods(["POST"])
+def saleable_ticket_type_toggle(request, event_id, ticket_type_id):
+    """Toggle is_active on a SaleableTicketType."""
+    org = get_organization(request)
+    event = get_object_or_404(Event.objects.filter(organization=org), id=event_id)
+    tt = get_object_or_404(SaleableTicketType.objects.filter(event=event), id=ticket_type_id)
+    tt.is_active = not tt.is_active
+    tt.save(update_fields=['is_active'])
+    status = 'activated' if tt.is_active else 'deactivated'
+    messages.success(request, f'"{tt.name}" {status}.')
+    return redirect('tickets:event_detail', event_id=event.id)
+
+
+@login_required
+@require_org
+@require_http_methods(["GET", "POST"])
+def saleable_ticket_type_delete(request, event_id, ticket_type_id):
+    """Delete a SaleableTicketType (only if no tickets sold)."""
+    org = get_organization(request)
+    event = get_object_or_404(Event.objects.filter(organization=org), id=event_id)
+    tt = get_object_or_404(SaleableTicketType.objects.filter(event=event), id=ticket_type_id)
+
+    if request.method == 'POST':
+        if tt.quantity_sold > 0:
+            messages.error(request, f'Cannot delete "{tt.name}" — {tt.quantity_sold} tickets already sold.')
+            return redirect('tickets:event_detail', event_id=event.id)
+        name = tt.name
+        tt.delete()
+        _invalidate_event_list_cache(org)
+        messages.success(request, f'Ticket type "{name}" deleted.')
+        return redirect('tickets:event_detail', event_id=event.id)
+
+    return render(request, 'tickets/saleable_ticket_type_confirm_delete.html', {
+        'event': event,
+        'ticket_type': tt,
+    })
+
+
+@login_required
+@require_org
+def event_sales_dashboard(request, event_id):
+    """Per-event sales summary for organizers."""
+    org = get_organization(request)
+    event = get_object_or_404(Event.objects.filter(organization=org), id=event_id)
+    ticket_types = SaleableTicketType.objects.filter(event=event).order_by('order', 'name')
+    sessions = (
+        StripeCheckoutSession.objects.filter(event=event)
+        .select_related('ticket_order')
+        .order_by('-created_at')[:50]
+    )
+    total_revenue = sum(
+        (tt.quantity_sold * tt.price) for tt in ticket_types
+    )
+    public_url = request.build_absolute_uri(
+        f'/buy/{event.id}/'
+    )
+    return render(request, 'tickets/event_sales_dashboard.html', {
+        'event': event,
+        'ticket_types': ticket_types,
+        'sessions': sessions,
+        'total_revenue': total_revenue,
+        'public_url': public_url,
+    })
+
+
+# ---------------------------------------------------------------------------
+# Direct Ticket Selling — Public Views
+# ---------------------------------------------------------------------------
+
+def public_event_buy(request, event_id):
+    """Public ticket selector page. POST creates a Stripe Checkout session."""
+    from django.conf import settings as django_settings
+    import stripe as stripe_lib
+
+    event = get_object_or_404(
+        Event.objects.select_related('venue', 'organization'),
+        id=event_id,
+    )
+    now = django_tz.now()
+    ticket_types = SaleableTicketType.objects.filter(
+        event=event,
+        is_active=True,
+    ).order_by('order', 'name')
+    # Filter to only those currently on sale
+    available_types = [tt for tt in ticket_types if tt.is_on_sale() and not tt.is_sold_out()]
+
+    if request.method == 'POST':
+        form = PublicTicketPurchaseForm(available_types, request.POST)
+        if form.is_valid():
+            line_items = form.get_line_items()
+
+            stripe_lib.api_key = django_settings.STRIPE_SECRET_KEY
+            site_url = django_settings.SITE_URL
+
+            stripe_line_items = []
+            snapshot = []
+            for tt, qty in line_items:
+                stripe_line_items.append({
+                    'price_data': {
+                        'currency': django_settings.STRIPE_CURRENCY,
+                        'unit_amount': int(tt.price * 100),
+                        'product_data': {
+                            'name': f"{event.name} — {tt.name}",
+                        },
+                    },
+                    'quantity': qty,
+                })
+                snapshot.append({
+                    'saleable_ticket_type_id': str(tt.id),
+                    'name': tt.name,
+                    'price': str(tt.price),
+                    'quantity': qty,
+                })
+
+            try:
+                session = stripe_lib.checkout.Session.create(
+                    payment_method_types=['card'],
+                    line_items=stripe_line_items,
+                    mode='payment',
+                    success_url=f"{site_url}/checkout/success/?session_id={{CHECKOUT_SESSION_ID}}",
+                    cancel_url=f"{site_url}/checkout/cancel/?session_id={{CHECKOUT_SESSION_ID}}",
+                    metadata={'event_id': str(event.id), 'org_id': str(event.organization_id)},
+                )
+            except Exception as e:
+                logger.error("Stripe session creation failed: %s", e)
+                messages.error(request, 'Could not create checkout session. Please try again.')
+                return render(request, 'tickets/buy/public_event_buy.html', {
+                    'event': event,
+                    'form': form,
+                    'available_types': available_types,
+                })
+
+            amount_total_cents = sum(
+                int(tt.price * 100) * qty for tt, qty in line_items
+            )
+            StripeCheckoutSession.objects.create(
+                event=event,
+                organization=event.organization,
+                stripe_session_id=session.id,
+                status=StripeCheckoutSession.Status.PENDING,
+                line_items_snapshot=snapshot,
+                amount_total_cents=amount_total_cents,
+            )
+            return redirect(session.url)
+    else:
+        form = PublicTicketPurchaseForm(available_types)
+
+    # Pair each ticket type with its BoundField for clean template iteration
+    ticket_form_pairs = list(zip(available_types, form))
+
+    return render(request, 'tickets/buy/public_event_buy.html', {
+        'event': event,
+        'form': form,
+        'available_types': available_types,
+        'ticket_form_pairs': ticket_form_pairs,
+    })
+
+
+def checkout_success(request):
+    """Post-payment landing page shown after Stripe redirects back."""
+    session_id = request.GET.get('session_id', '')
+    session_obj = None
+    if session_id:
+        session_obj = StripeCheckoutSession.objects.filter(
+            stripe_session_id=session_id
+        ).select_related('ticket_order', 'event').first()
+    return render(request, 'tickets/buy/checkout_success.html', {
+        'session': session_obj,
+    })
+
+
+def checkout_cancel(request):
+    """Buyer abandoned — mark session canceled if still pending."""
+    session_id = request.GET.get('session_id', '')
+    if session_id:
+        StripeCheckoutSession.objects.filter(
+            stripe_session_id=session_id,
+            status=StripeCheckoutSession.Status.PENDING,
+        ).update(status=StripeCheckoutSession.Status.CANCELED)
+    return render(request, 'tickets/buy/checkout_cancel.html', {})
+
+
+# ---------------------------------------------------------------------------
+# Stripe Webhook
+# ---------------------------------------------------------------------------
+
+@csrf_exempt
+@require_http_methods(["POST"])
+def stripe_webhook(request):
+    """Receive and process Stripe webhook events."""
+    from django.conf import settings as django_settings
+    import stripe as stripe_lib
+
+    payload = request.body
+    sig_header = request.META.get('HTTP_STRIPE_SIGNATURE', '')
+    try:
+        event = stripe_lib.Webhook.construct_event(
+            payload, sig_header, django_settings.STRIPE_WEBHOOK_SECRET
+        )
+    except ValueError:
+        logger.warning("Stripe webhook: invalid payload")
+        return HttpResponse(status=400)
+    except stripe_lib.error.SignatureVerificationError:
+        logger.warning("Stripe webhook: invalid signature")
+        return HttpResponse(status=400)
+
+    event_type = event['type']
+    if event_type == 'checkout.session.completed':
+        _fulfill_checkout(event['data']['object'])
+    elif event_type in ('checkout.session.expired',):
+        _expire_checkout(event['data']['object'])
+
+    return HttpResponse(status=200)
+
+
+def _fulfill_checkout(stripe_session):
+    """
+    Idempotently fulfill a completed Stripe Checkout session.
+    Creates Customer, TicketOrder, and Ticket records; updates LTV.
+    """
+    session_id = stripe_session['id']
+    amount_total_cents = stripe_session.get('amount_total', 0) or 0
+    payment_intent_id = stripe_session.get('payment_intent', '') or ''
+    buyer_email = (stripe_session.get('customer_details', {}) or {}).get('email', '') or ''
+    buyer_name = (stripe_session.get('customer_details', {}) or {}).get('name', '') or ''
+
+    # Idempotency check #1: outside lock
+    session_obj = StripeCheckoutSession.objects.filter(stripe_session_id=session_id).first()
+    if session_obj and session_obj.status == StripeCheckoutSession.Status.COMPLETED:
+        logger.info("Stripe webhook: session %s already fulfilled", session_id)
+        return
+
+    if not session_obj:
+        logger.warning("Stripe webhook: no StripeCheckoutSession for %s — skipping", session_id)
+        return
+
+    with transaction.atomic():
+        # Lock the row; re-check inside the lock (idempotency check #2)
+        session_obj = StripeCheckoutSession.objects.select_for_update().get(pk=session_obj.pk)
+        if session_obj.status == StripeCheckoutSession.Status.COMPLETED:
+            return
+
+        org = session_obj.organization
+        event = session_obj.event
+
+        # Update buyer info from Stripe if not already set
+        if buyer_email and not session_obj.buyer_email:
+            session_obj.buyer_email = buyer_email.lower()
+        if buyer_name and not session_obj.buyer_name:
+            session_obj.buyer_name = buyer_name
+        if payment_intent_id:
+            session_obj.stripe_payment_intent_id = payment_intent_id
+        if amount_total_cents:
+            session_obj.amount_total_cents = amount_total_cents
+
+        email = session_obj.buyer_email or buyer_email.lower()
+        name = session_obj.buyer_name or buyer_name or email
+
+        customer, _ = Customer.objects.get_or_create(
+            email=email.lower(),
+            defaults={'organization': org, 'name': name},
+        )
+
+        order_number = f"STRIPE-{session_id}"[:100]
+        order = TicketOrder.objects.create(
+            customer=customer,
+            event=event,
+            uploaded_file=None,
+            order_number=order_number,
+            order_date=django_tz.now(),
+            total_amount=Decimal(str(amount_total_cents)) / 100,
+        )
+
+        for item in session_obj.line_items_snapshot:
+            tt_id = item.get('saleable_ticket_type_id')
+            qty = item.get('quantity', 1)
+            item_name = item.get('name', '')
+            item_price = Decimal(str(item.get('price', '0')))
+
+            # Atomic increment quantity_sold
+            SaleableTicketType.objects.filter(id=tt_id).update(
+                quantity_sold=F('quantity_sold') + qty
+            )
+
+            tickets_to_create = [
+                Ticket(
+                    ticket_order=order,
+                    ticket_type=item_name,
+                    price=item_price,
+                    tier=None,
+                )
+                for _ in range(qty)
+            ]
+            Ticket.objects.bulk_create(tickets_to_create)
+
+        customer.update_lifetime_value()
+
+        session_obj.status = StripeCheckoutSession.Status.COMPLETED
+        session_obj.ticket_order = order
+        session_obj.fulfilled_at = django_tz.now()
+        session_obj.save()
+
+        _invalidate_event_list_cache(org)
+
+    logger.info("Fulfilled Stripe session %s — order %s", session_id, order.order_number)
+
+
+def _expire_checkout(stripe_session):
+    """Mark an expired Stripe session."""
+    session_id = stripe_session.get('id', '')
+    if session_id:
+        StripeCheckoutSession.objects.filter(
+            stripe_session_id=session_id,
+            status=StripeCheckoutSession.Status.PENDING,
+        ).update(status=StripeCheckoutSession.Status.EXPIRED)
+        logger.info("Stripe session %s marked expired", session_id)

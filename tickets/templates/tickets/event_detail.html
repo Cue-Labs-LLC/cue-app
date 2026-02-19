@@ -14,7 +14,14 @@
 
 <div class="page-header">
     <div>
-        <h1>{{ event.name }}</h1>
+        <h1>
+            {{ event.name }}
+            {% if event.ticketing_type == 'direct' %}
+            <span class="badge bg-primary ms-2" style="font-size: 0.6em; vertical-align: middle;">Direct Ticketing</span>
+            {% else %}
+            <span class="badge bg-secondary ms-2" style="font-size: 0.6em; vertical-align: middle;">External Ticketing</span>
+            {% endif %}
+        </h1>
         <div class="detail-meta">
             <div class="detail-meta-item"><i class="bi bi-geo-alt"></i> {{ event.venue.name }}, {{ event.venue.city }}</div>
             <div class="detail-meta-divider"></div>
@@ -191,6 +198,66 @@
     </div>
 </div>
 
+{% if event.ticketing_type == 'direct' %}
+<div class="card mb-4">
+    <div class="card-header d-flex justify-content-between align-items-center">
+        <h5>Direct Ticket Sales</h5>
+        <div class="d-flex gap-2">
+            <a href="{% url 'tickets:event_sales_dashboard' event.id %}" class="btn btn-sm btn-outline-secondary"><i class="bi bi-bar-chart-line"></i> Sales Dashboard</a>
+            <a href="{% url 'tickets:saleable_ticket_type_create' event.id %}" class="btn btn-sm btn-primary"><i class="bi bi-plus-lg"></i> Add Ticket Type</a>
+        </div>
+    </div>
+    <div class="card-body p-0">
+        {% if saleable_ticket_types %}
+        <div class="table-responsive">
+            <table class="table table-hover mb-0">
+                <thead>
+                    <tr>
+                        <th>Ticket Type</th>
+                        <th>Price</th>
+                        <th>Sold</th>
+                        <th>Limit</th>
+                        <th>Status</th>
+                        <th></th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for tt in saleable_ticket_types %}
+                    <tr>
+                        <td><strong>{{ tt.name }}</strong></td>
+                        <td>${{ tt.price|floatformat:2 }}</td>
+                        <td>{{ tt.quantity_sold }}</td>
+                        <td>{% if tt.quantity_limit %}{{ tt.quantity_limit }}{% else %}<span class="text-muted">&infin;</span>{% endif %}</td>
+                        <td>
+                            {% if tt.is_active %}<span class="badge bg-success">Active</span>{% else %}<span class="badge bg-secondary">Inactive</span>{% endif %}
+                            {% if tt.is_sold_out %}<span class="badge bg-warning ms-1">Sold Out</span>{% endif %}
+                        </td>
+                        <td>
+                            <div class="d-flex gap-1">
+                                <a href="{% url 'tickets:saleable_ticket_type_edit' event.id tt.id %}" class="btn btn-sm btn-outline-secondary"><i class="bi bi-pencil"></i></a>
+                                <form method="post" action="{% url 'tickets:saleable_ticket_type_toggle' event.id tt.id %}" class="d-inline">
+                                    {% csrf_token %}
+                                    <button type="submit" class="btn btn-sm btn-outline-{% if tt.is_active %}warning{% else %}success{% endif %}" title="{% if tt.is_active %}Deactivate{% else %}Activate{% endif %}">
+                                        <i class="bi bi-{% if tt.is_active %}eye-slash{% else %}eye{% endif %}"></i>
+                                    </button>
+                                </form>
+                                <a href="{% url 'tickets:saleable_ticket_type_delete' event.id tt.id %}" class="btn btn-sm btn-outline-danger"><i class="bi bi-trash"></i></a>
+                            </div>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% else %}
+        <div class="empty-state" style="padding: 32px;">
+            <p class="mb-2">No ticket types configured. Add ticket types to sell tickets directly through Eventflow.</p>
+            <a href="{% url 'tickets:saleable_ticket_type_create' event.id %}" class="btn btn-sm btn-outline-primary"><i class="bi bi-plus-lg"></i> Add First Ticket Type</a>
+        </div>
+        {% endif %}
+    </div>
+</div>
+{% else %}
 <div class="card mb-4">
     <div class="card-header d-flex justify-content-between align-items-center">
         <h5>Uploads</h5>
@@ -252,6 +319,7 @@
         {% endif %}
     </div>
 </div>
+{% endif %}
 
 <div class="card mb-4">
     <div class="card-header">

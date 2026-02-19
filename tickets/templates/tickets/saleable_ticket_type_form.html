@@ -1,0 +1,40 @@
+{% extends 'tickets/base.html' %}
+{% load crispy_forms_tags %}
+
+{% block title %}{% if editing %}Edit{% else %}Create{% endif %} Ticket Type — {{ event.name }}{% endblock %}
+
+{% block content %}
+<nav aria-label="breadcrumb">
+    <ol class="breadcrumb">
+        <li class="breadcrumb-item"><a href="{% url 'tickets:home' %}">Dashboard</a></li>
+        <li class="breadcrumb-item"><a href="{% url 'tickets:event_list' %}">Events</a></li>
+        <li class="breadcrumb-item"><a href="{% url 'tickets:event_detail' event.id %}">{{ event.name }}</a></li>
+        <li class="breadcrumb-item active">{% if editing %}Edit{% else %}Create{% endif %} Ticket Type</li>
+    </ol>
+</nav>
+
+<div class="page-header">
+    <h1>{% if editing %}Edit{% else %}Create{% endif %} Ticket Type</h1>
+</div>
+
+{% if price_locked %}
+<div class="alert alert-info">
+    <i class="bi bi-info-circle"></i> Price is locked because tickets have already been sold for this type.
+</div>
+{% endif %}
+
+<div class="card">
+    <div class="card-body">
+        <form method="post">
+            {% csrf_token %}
+            {% crispy form %}
+        </form>
+    </div>
+</div>
+
+<div class="mt-3">
+    <a href="{% url 'tickets:event_detail' event.id %}" class="btn btn-outline-secondary">
+        <i class="bi bi-arrow-left"></i> Back to Event
+    </a>
+</div>
+{% endblock %}

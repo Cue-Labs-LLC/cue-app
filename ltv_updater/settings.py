@@ -212,6 +212,12 @@ AUTHENTICATION_BACKENDS = ['tickets.backends.EmailBackend']
 # Absolute URL for building links in emails (survey invitations, etc.)
 SITE_URL = os.environ.get('SITE_URL', 'http://localhost:8000')
 
+# Stripe payment integration
+STRIPE_PUBLISHABLE_KEY = os.environ.get('STRIPE_PUBLISHABLE_KEY', '')
+STRIPE_SECRET_KEY      = os.environ.get('STRIPE_SECRET_KEY', '')
+STRIPE_WEBHOOK_SECRET  = os.environ.get('STRIPE_WEBHOOK_SECRET', '')
+STRIPE_CURRENCY        = os.environ.get('STRIPE_CURRENCY', 'usd')
+
 # Email backend configuration — SendGrid SMTP for all environments
 EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
 EMAIL_HOST = 'smtp.sendgrid.net'
