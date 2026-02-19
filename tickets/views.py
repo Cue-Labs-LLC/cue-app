@@ -1664,6 +1664,8 @@ def event_detail(request, event_id):
             'recent_comments': recent_comments,
         }
 
+    # Direct ticketing: sales dashboard data inlined on event detail
+    saleable_ticket_types_list = list(event.saleable_ticket_types.all())
     context = {
         'event': event,
         'upload_stats': upload_stats,
@@ -1686,8 +1688,18 @@ def event_detail(request, event_id):
         'survey_invitations_count': survey_invitations_count,
         'survey_responses_count': survey_responses_count,
         'survey_results': survey_results,
-        'saleable_ticket_types': list(event.saleable_ticket_types.all()),
+        'saleable_ticket_types': saleable_ticket_types_list,
     }
+    if event.ticketing_type == 'direct':
+        context['dashboard_sessions'] = (
+            StripeCheckoutSession.objects.filter(event=event)
+            .select_related('ticket_order')
+            .order_by('-created_at')[:50]
+        )
+        context['direct_total_revenue'] = sum(
+            tt.quantity_sold * tt.price for tt in saleable_ticket_types_list
+        )
+        context['public_buy_url'] = request.build_absolute_uri(f'/buy/{event.id}/')
     return render(request, 'tickets/event_detail.html', context)
 
 
@@ -3059,33 +3071,6 @@ def saleable_ticket_type_delete(request, event_id, ticket_type_id):
     return render(request, 'tickets/saleable_ticket_type_confirm_delete.html', {
         'event': event,
         'ticket_type': tt,
-    })
-
-
-@login_required
-@require_org
-def event_sales_dashboard(request, event_id):
-    """Per-event sales summary for organizers."""
-    org = get_organization(request)
-    event = get_object_or_404(Event.objects.filter(organization=org), id=event_id)
-    ticket_types = SaleableTicketType.objects.filter(event=event).order_by('order', 'name')
-    sessions = (
-        StripeCheckoutSession.objects.filter(event=event)
-        .select_related('ticket_order')
-        .order_by('-created_at')[:50]
-    )
-    total_revenue = sum(
-        (tt.quantity_sold * tt.price) for tt in ticket_types
-    )
-    public_url = request.build_absolute_uri(
-        f'/buy/{event.id}/'
-    )
-    return render(request, 'tickets/event_sales_dashboard.html', {
-        'event': event,
-        'ticket_types': ticket_types,
-        'sessions': sessions,
-        'total_revenue': total_revenue,
-        'public_url': public_url,
     })
 
 

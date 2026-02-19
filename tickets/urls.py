@@ -108,7 +108,6 @@ urlpatterns = [
     path('events/<uuid:event_id>/ticket-types/<uuid:ticket_type_id>/edit/', views.saleable_ticket_type_edit, name='saleable_ticket_type_edit'),
     path('events/<uuid:event_id>/ticket-types/<uuid:ticket_type_id>/toggle/', views.saleable_ticket_type_toggle, name='saleable_ticket_type_toggle'),
     path('events/<uuid:event_id>/ticket-types/<uuid:ticket_type_id>/delete/', views.saleable_ticket_type_delete, name='saleable_ticket_type_delete'),
-    path('events/<uuid:event_id>/sales/', views.event_sales_dashboard, name='event_sales_dashboard'),
 
     # Direct Ticket Selling — Public (no auth)
     path('buy/<uuid:event_id>/', views.public_event_buy, name='public_event_buy'),
