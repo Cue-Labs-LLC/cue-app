@@ -97,108 +97,14 @@
     </div>
 </div>
 
-<div class="card mb-4">
-    <div class="card-header d-flex justify-content-between align-items-center">
-        <h5>Additional Income</h5>
-        {% if income_sources %}
-        <a href="{% url 'tickets:event_income_create' event.id %}" class="btn btn-sm btn-primary"><i class="bi bi-plus-lg"></i> Add Income</a>
-        {% else %}
-        <a href="{% url 'tickets:income_source_list' %}" class="btn btn-sm btn-outline-secondary">Define income sources first</a>
-        {% endif %}
-    </div>
-    <div class="card-body p-0">
-        {% if additional_income_lines %}
-        <div class="table-responsive">
-            <table class="table table-hover mb-0">
-                <thead>
-                    <tr>
-                        <th>Source</th>
-                        <th>Amount</th>
-                        <th>Date</th>
-                        <th></th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {% for line in additional_income_lines %}
-                    <tr>
-                        <td>{{ line.income_source.name }}</td>
-                        <td><strong>${{ line.amount|floatformat:2 }}</strong></td>
-                        <td>{% if line.income_date %}{{ line.income_date|date:"M d, Y" }}{% else %}<span class="text-muted">&mdash;</span>{% endif %}</td>
-                        <td>
-                            <div class="d-flex gap-1">
-                                <a href="{% url 'tickets:event_income_edit' event.id line.id %}" class="btn btn-sm btn-outline-secondary"><i class="bi bi-pencil"></i></a>
-                                <a href="{% url 'tickets:event_income_delete' event.id line.id %}" class="btn btn-sm btn-outline-danger"><i class="bi bi-trash"></i></a>
-                            </div>
-                        </td>
-                    </tr>
-                    {% endfor %}
-                </tbody>
-            </table>
-        </div>
-        {% else %}
-        <div class="empty-state" style="padding: 32px;">
-            <p class="mb-2">No additional income (e.g. Bar Splits, Merch) recorded. Add income source types in <a href="{% url 'tickets:income_source_list' %}">Income Sources</a>, then add amounts here.</p>
-            {% if income_sources %}
-            <a href="{% url 'tickets:event_income_create' event.id %}" class="btn btn-sm btn-outline-primary"><i class="bi bi-plus-lg"></i> Add Income</a>
-            {% endif %}
-        </div>
-        {% endif %}
-    </div>
-</div>
-
-<div class="card mb-4">
-    <div class="card-header d-flex justify-content-between align-items-center">
-        <h5>Expenses</h5>
-        <a href="{% url 'tickets:expense_create' event.id %}" class="btn btn-sm btn-primary"><i class="bi bi-plus-lg"></i> Add Expense</a>
-    </div>
-    <div class="card-body p-0">
-        {% if expenses %}
-        {% if expenses_by_category %}
-        <div class="px-3 pt-3 pb-2">
-            {% for cat in expenses_by_category %}
-            <span class="badge bg-secondary me-1 mb-1">{{ category_labels|get_item:cat.category }} &mdash; ${{ cat.total|floatformat:2 }}</span>
-            {% endfor %}
-        </div>
-        {% endif %}
-        <div class="table-responsive">
-            <table class="table table-hover mb-0">
-                <thead>
-                    <tr>
-                        <th>Category</th>
-                        <th>Description</th>
-                        <th>Amount</th>
-                        <th>Date</th>
-                        <th></th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {% for expense in expenses %}
-                    <tr>
-                        <td>{{ expense.get_category_display }}</td>
-                        <td>{{ expense.description }}</td>
-                        <td><strong>${{ expense.amount|floatformat:2 }}</strong></td>
-                        <td>{% if expense.expense_date %}{{ expense.expense_date|date:"M d, Y" }}{% else %}<span class="text-muted">&mdash;</span>{% endif %}</td>
-                        <td>
-                            <div class="d-flex gap-1">
-                                <a href="{% url 'tickets:expense_edit' event.id expense.id %}" class="btn btn-sm btn-outline-secondary"><i class="bi bi-pencil"></i></a>
-                                <a href="{% url 'tickets:expense_delete' event.id expense.id %}" class="btn btn-sm btn-outline-danger"><i class="bi bi-trash"></i></a>
-                            </div>
-                        </td>
-                    </tr>
-                    {% endfor %}
-                </tbody>
-            </table>
-        </div>
-        {% else %}
-        <div class="empty-state" style="padding: 32px;">
-            <p class="mb-2">No expenses recorded for this event.</p>
-            <a href="{% url 'tickets:expense_create' event.id %}" class="btn btn-sm btn-outline-primary"><i class="bi bi-plus-lg"></i> Add Expense</a>
-        </div>
-        {% endif %}
-    </div>
-</div>
-
 {% if event.ticketing_type == 'direct' %}
+{% if event.flyer %}
+<div class="card mb-4">
+    <div class="card-body p-0 text-center">
+        <img src="{{ event.flyer.url }}" alt="{{ event.name }} event image" class="img-fluid" style="max-height: 400px; width: auto; object-fit: contain;">
+    </div>
+</div>
+{% endif %}
 {% if public_buy_url %}
 <div class="card mb-4">
     <div class="card-header">
@@ -328,7 +234,106 @@
         {% endif %}
     </div>
 </div>
-{% else %}
+{% endif %}
+
+<div class="card mb-4">
+    <div class="card-header d-flex justify-content-between align-items-center">
+        <h5>Additional Income</h5>
+        {% if income_sources %}
+        <a href="{% url 'tickets:event_income_create' event.id %}" class="btn btn-sm btn-primary"><i class="bi bi-plus-lg"></i> Add Income</a>
+        {% else %}
+        <a href="{% url 'tickets:income_source_list' %}" class="btn btn-sm btn-outline-secondary">Define income sources first</a>
+        {% endif %}
+    </div>
+    <div class="card-body p-0">
+        {% if additional_income_lines %}
+        <div class="table-responsive">
+            <table class="table table-hover mb-0">
+                <thead>
+                    <tr>
+                        <th>Source</th>
+                        <th>Amount</th>
+                        <th>Date</th>
+                        <th></th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for line in additional_income_lines %}
+                    <tr>
+                        <td>{{ line.income_source.name }}</td>
+                        <td><strong>${{ line.amount|floatformat:2 }}</strong></td>
+                        <td>{% if line.income_date %}{{ line.income_date|date:"M d, Y" }}{% else %}<span class="text-muted">&mdash;</span>{% endif %}</td>
+                        <td>
+                            <div class="d-flex gap-1">
+                                <a href="{% url 'tickets:event_income_edit' event.id line.id %}" class="btn btn-sm btn-outline-secondary"><i class="bi bi-pencil"></i></a>
+                                <a href="{% url 'tickets:event_income_delete' event.id line.id %}" class="btn btn-sm btn-outline-danger"><i class="bi bi-trash"></i></a>
+                            </div>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% else %}
+        <div class="empty-state" style="padding: 32px;">
+            <p class="mb-2">No additional income (e.g. Bar Splits, Merch) recorded. Add income source types in <a href="{% url 'tickets:income_source_list' %}">Income Sources</a>, then add amounts here.</p>
+        </div>
+        {% endif %}
+    </div>
+</div>
+
+<div class="card mb-4">
+    <div class="card-header d-flex justify-content-between align-items-center">
+        <h5>Expenses</h5>
+        <a href="{% url 'tickets:expense_create' event.id %}" class="btn btn-sm btn-primary"><i class="bi bi-plus-lg"></i> Add Expense</a>
+    </div>
+    <div class="card-body p-0">
+        {% if expenses %}
+        {% if expenses_by_category %}
+        <div class="px-3 pt-3 pb-2">
+            {% for cat in expenses_by_category %}
+            <span class="badge bg-secondary me-1 mb-1">{{ category_labels|get_item:cat.category }} &mdash; ${{ cat.total|floatformat:2 }}</span>
+            {% endfor %}
+        </div>
+        {% endif %}
+        <div class="table-responsive">
+            <table class="table table-hover mb-0">
+                <thead>
+                    <tr>
+                        <th>Category</th>
+                        <th>Description</th>
+                        <th>Amount</th>
+                        <th>Date</th>
+                        <th></th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for expense in expenses %}
+                    <tr>
+                        <td>{{ expense.get_category_display }}</td>
+                        <td>{{ expense.description }}</td>
+                        <td><strong>${{ expense.amount|floatformat:2 }}</strong></td>
+                        <td>{% if expense.expense_date %}{{ expense.expense_date|date:"M d, Y" }}{% else %}<span class="text-muted">&mdash;</span>{% endif %}</td>
+                        <td>
+                            <div class="d-flex gap-1">
+                                <a href="{% url 'tickets:expense_edit' event.id expense.id %}" class="btn btn-sm btn-outline-secondary"><i class="bi bi-pencil"></i></a>
+                                <a href="{% url 'tickets:expense_delete' event.id expense.id %}" class="btn btn-sm btn-outline-danger"><i class="bi bi-trash"></i></a>
+                            </div>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% else %}
+        <div class="empty-state" style="padding: 32px;">
+            <p class="mb-2">No expenses recorded for this event.</p>
+        </div>
+        {% endif %}
+    </div>
+</div>
+
+{% if event.ticketing_type != 'direct' %}
 <div class="card mb-4">
     <div class="card-header d-flex justify-content-between align-items-center">
         <h5>Uploads</h5>

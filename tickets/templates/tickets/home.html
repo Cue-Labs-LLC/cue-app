@@ -48,7 +48,6 @@
                         <th>Event Name</th>
                         <th>Date</th>
                         <th>Venue</th>
-                        <th>Orders</th>
                         <th>Revenue</th>
                         <th>Uploads</th>
                         <th>Ticket Link</th>
@@ -66,7 +65,6 @@
                         </td>
                         <td>{{ event.start_date|date:"M d, Y" }}</td>
                         <td>{{ event.venue.name|default:"\u2014" }}</td>
-                        <td>{{ event.total_orders }}</td>
                         <td><span class="revenue">${{ event.total_revenue|floatformat:2 }}</span></td>
                         <td>{{ event.upload_count }}</td>
                         <td>

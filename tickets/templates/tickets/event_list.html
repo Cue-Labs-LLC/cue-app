@@ -33,8 +33,6 @@
                         <th><a href="?sort=name&search={{ search_query }}">Event Name <i class="bi bi-arrow-down-up"></i></a></th>
                         <th><a href="?sort=-start_date&search={{ search_query }}">Date <i class="bi bi-arrow-down-up"></i></a></th>
                         <th>Venue</th>
-                        <th><a href="?sort=-upload_count&search={{ search_query }}">Uploads <i class="bi bi-arrow-down-up"></i></a></th>
-                        <th>Orders</th>
                         <th><a href="?sort=-total_revenue&search={{ search_query }}">Revenue <i class="bi bi-arrow-down-up"></i></a></th>
                         <th>Profit</th>
                         <th>Tickets</th>
@@ -56,9 +54,7 @@
                             {% endif %}
                         </td>
                         <td>{{ event.start_date|date:"M d, Y" }}{% if event.start_time %} {{ event.start_time|time:"g:i A" }}{% endif %}</td>
-                        <td>{{ event.venue.name }}, {{ event.venue.city }}</td>
-                        <td><span class="badge bg-info">{{ event.upload_count|default:0 }}</span></td>
-                        <td>{{ event.total_orders|default:0 }}</td>
+                        <td>{{ event.venue.name }}</td>
                         <td><span class="revenue">${{ event.total_revenue|floatformat:2|default:"0.00" }}</span></td>
                         {% with profit=event.total_revenue|subtract:event.total_expenses %}
                         <td{% if profit < 0 %} style="color: var(--danger, #dc3545);"{% endif %}>${{ profit|floatformat:2 }}</td>

@@ -38,6 +38,11 @@
 <body>
 <div class="buy-container">
     <div class="buy-header">
+        {% if event.flyer %}
+        <div class="mb-3">
+            <img src="{{ event.flyer.url }}" alt="{{ event.name }}" class="img-fluid rounded" style="max-height: 280px; width: auto; object-fit: contain;">
+        </div>
+        {% endif %}
         <h1>{{ event.name }}</h1>
         <p>{{ event.start_date|date:"F j, Y" }}{% if event.start_time %} at {{ event.start_time|time:"g:i A" }}{% endif %}</p>
         <p>{{ event.venue.name }}, {{ event.venue.city }}</p>
