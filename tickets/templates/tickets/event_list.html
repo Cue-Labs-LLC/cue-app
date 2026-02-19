@@ -47,7 +47,7 @@
                                 <i class="bi bi-exclamation-triangle-fill text-warning me-1" title="No uploads for past event"></i>
                             {% endif %}
                             <strong>{{ event.name }}</strong>
-                            {% if event.ticketing_type == 'direct' %}
+                            {% if event.ticketing_type == 'direct' and direct_ticketing_enabled %}
                             <span class="badge bg-primary ms-1" style="font-size: 0.7em;">Direct</span>
                             {% else %}
                             <span class="badge bg-secondary ms-1" style="font-size: 0.7em;">External</span>

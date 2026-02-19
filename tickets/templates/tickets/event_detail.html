@@ -16,7 +16,7 @@
     <div>
         <h1>
             {{ event.name }}
-            {% if event.ticketing_type == 'direct' %}
+            {% if event.ticketing_type == 'direct' and direct_ticketing_enabled %}
             <span class="badge bg-primary ms-2" style="font-size: 0.6em; vertical-align: middle;">Direct Ticketing</span>
             {% else %}
             <span class="badge bg-secondary ms-2" style="font-size: 0.6em; vertical-align: middle;">External Ticketing</span>
@@ -97,7 +97,7 @@
     </div>
 </div>
 
-{% if event.ticketing_type == 'direct' %}
+{% if event.ticketing_type == 'direct' and direct_ticketing_enabled %}
 {% if event.flyer %}
 <div class="card mb-4">
     <div class="card-body p-0 text-center">
@@ -623,7 +623,7 @@ document.addEventListener('DOMContentLoaded', function() {
     }
 });
 </script>
-{% if event.ticketing_type == 'direct' and public_buy_url %}
+{% if event.ticketing_type == 'direct' and direct_ticketing_enabled and public_buy_url %}
 <script>
 function copyPublicUrl() {
     const input = document.getElementById('public-url');
