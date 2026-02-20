@@ -52,6 +52,9 @@
         <div class="text-center mt-3 text-muted">
             <small>Don't have an account? <a href="{% url 'tickets:signup' %}{% if next %}?next={{ next|urlencode }}{% endif %}">Sign up</a></small>
         </div>
+        <div class="text-center mt-2">
+            <a href="/explore/" class="text-decoration-none small">Browse upcoming events</a>
+        </div>
     </div>
 </div>
 {% endblock %}

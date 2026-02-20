@@ -34,7 +34,7 @@
             <div class="sidebar-section">
                 <ul class="sidebar-nav">
                     <li>
-                        <a href="{% url 'tickets:home' %}" class="sidebar-link{% if request.path == '/' %} active{% endif %}">
+                        <a href="{% url 'tickets:home' %}" class="sidebar-link{% if '/dashboard/' in request.path %} active{% endif %}">
                             <i class="bi bi-grid-1x2"></i> Dashboard
                         </a>
                     </li>

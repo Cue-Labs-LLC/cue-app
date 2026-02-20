@@ -472,6 +472,10 @@ class Event(AuditBaseModel):
         null=True,
         help_text="Google Calendar event ID after sync (create-only).",
     )
+    public_buy_page_views = models.PositiveIntegerField(
+        default=0,
+        help_text="Number of times the public ticket page (/buy/<id>/) was loaded.",
+    )
 
     class Meta:
         unique_together = [['organization', 'name', 'start_date']]

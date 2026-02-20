@@ -465,6 +465,32 @@ def health_check(request):
         return HttpResponse(f"Database connection failed: {str(e)}", status=503)
 
 
+def landing(request):
+    """Public landing page (no login required). Logged-in users are redirected to the dashboard."""
+    if request.user.is_authenticated:
+        return redirect('tickets:home')
+    return render(request, 'tickets/landing.html')
+
+
+def explore(request):
+    """Public page: list upcoming events with direct ticketing (no login required)."""
+    from .models import TICKETING_TYPE_DIRECT
+    today = django_tz.now().date()
+    events_qs = (
+        Event.objects.filter(
+            deleted_at__isnull=True,
+            start_date__gte=today,
+            ticketing_type=TICKETING_TYPE_DIRECT,
+        )
+        .select_related('venue')
+        .order_by('start_date', 'start_time', 'name')
+    )
+    paginator = Paginator(events_qs, 24)
+    page_number = request.GET.get('page')
+    page_obj = paginator.get_page(page_number)
+    return render(request, 'tickets/explore.html', {'page_obj': page_obj})
+
+
 @login_required
 def org_required(request):
     """Shown when user has no organization; prompt to create or join one."""
@@ -1701,6 +1727,10 @@ def event_detail(request, event_id):
             tt.quantity_sold * tt.price for tt in saleable_ticket_types_list
         )
         context['public_buy_url'] = request.build_absolute_uri(f'/buy/{event.id}/')
+        views = getattr(event, 'public_buy_page_views', 0) or 0
+        context['conversion_rate_pct'] = (
+            round(total_orders / views * 100, 1) if views > 0 else None
+        )
     return render(request, 'tickets/event_detail.html', context)
 
 
@@ -3085,6 +3115,33 @@ def saleable_ticket_type_delete(request, event_id, ticket_type_id):
     })
 
 
+@login_required
+@require_org
+@require_http_methods(["POST"])
+def event_flyer_upload(request, event_id):
+    """Upload or replace event flyer (direct ticketing only). Returns JSON."""
+    from .models import TICKETING_TYPE_DIRECT
+    if not direct_ticketing_enabled(request.user):
+        raise Http404()
+    org = get_organization(request)
+    event = get_object_or_404(Event.objects.filter(organization=org), id=event_id)
+    if event.ticketing_type != TICKETING_TYPE_DIRECT:
+        return JsonResponse({'success': False, 'error': 'Not a direct ticketing event.'}, status=400)
+    file = request.FILES.get('flyer')
+    if not file:
+        return JsonResponse({'success': False, 'error': 'No file provided.'}, status=400)
+    # Validate image (ImageField will reject invalid images on save)
+    if not file.content_type.startswith('image/'):
+        return JsonResponse({'success': False, 'error': 'File must be an image.'}, status=400)
+    try:
+        event.flyer = file
+        event.save(update_fields=['flyer'])
+    except Exception as e:
+        logger.warning("Flyer upload validation failed: %s", e)
+        return JsonResponse({'success': False, 'error': 'Invalid or unsupported image.'}, status=400)
+    return JsonResponse({'success': True, 'url': event.flyer.url})
+
+
 # ---------------------------------------------------------------------------
 # Direct Ticket Selling — Public Views
 # ---------------------------------------------------------------------------
@@ -3165,6 +3222,9 @@ def public_event_buy(request, event_id):
             )
             return redirect(session.url)
     else:
+        Event.objects.filter(pk=event.pk).update(
+            public_buy_page_views=F('public_buy_page_views') + 1
+        )
         form = PublicTicketPurchaseForm(available_types)
 
     # Pair each ticket type with its BoundField for clean template iteration

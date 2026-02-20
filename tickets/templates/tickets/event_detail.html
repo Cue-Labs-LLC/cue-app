@@ -3,6 +3,12 @@
 
 {% block title %}{{ event.name }} - Event Details{% endblock %}
 
+{% block extra_css %}
+<style>
+.flyer-drop-zone.flyer-dragover { outline: 2px dashed var(--bs-primary); outline-offset: 4px; background: rgba(var(--bs-primary-rgb), 0.05); }
+</style>
+{% endblock %}
+
 {% block content %}
 <nav aria-label="breadcrumb">
     <ol class="breadcrumb">
@@ -98,13 +104,23 @@
 </div>
 
 {% if event.ticketing_type == 'direct' and direct_ticketing_enabled %}
-{% if event.flyer %}
-<div class="card mb-4">
+<div class="card mb-4" id="event-flyer-card">
     <div class="card-body p-0 text-center">
-        <img src="{{ event.flyer.url }}" alt="{{ event.name }} event image" class="img-fluid" style="max-height: 400px; width: auto; object-fit: contain;">
+        <input type="hidden" id="flyer-csrf" value="{{ csrf_token }}">
+        <input type="file" id="flyer-file-input" accept="image/*" class="d-none" data-flyer-url="{% url 'tickets:event_flyer_upload' event.id %}">
+        <div id="flyer-drop-zone" class="flyer-drop-zone position-relative" style="min-height: 200px; cursor: pointer;">
+            {% if event.flyer %}
+            <img id="event-flyer-img" src="{{ event.flyer.url }}" alt="{{ event.name }} event image" class="img-fluid" style="max-height: 400px; width: auto; object-fit: contain;">
+            <p class="small text-muted mt-2 mb-0">Click or drag a new image to replace</p>
+            {% else %}
+            <div class="d-flex flex-column align-items-center justify-content-center py-5 text-muted">
+                <i class="bi bi-image fs-1 mb-2"></i>
+                <p class="mb-0">Click or drop an image to add a flyer</p>
+            </div>
+            {% endif %}
+        </div>
     </div>
 </div>
-{% endif %}
 {% if public_buy_url %}
 <div class="card mb-4">
     <div class="card-header">
@@ -121,6 +137,12 @@
                 <i class="bi bi-box-arrow-up-right"></i> Open
             </a>
         </div>
+        <p class="mb-0 mt-2 text-muted small">Ticket page views: {{ event.public_buy_page_views }}</p>
+        {% if conversion_rate_pct is not None %}
+        <p class="mb-0 mt-1 text-muted small">Conversion rate: {{ conversion_rate_pct }}% ({{ total_orders }} orders / {{ event.public_buy_page_views }} views)</p>
+        {% else %}
+        <p class="mb-0 mt-1 text-muted small">Conversion rate: — (no page views yet)</p>
+        {% endif %}
     </div>
 </div>
 {% endif %}
@@ -620,6 +642,47 @@ document.addEventListener('DOMContentLoaded', function() {
         div.innerHTML = message + '<button type="button" class="btn-close" data-bs-dismiss="alert"></button>';
         document.querySelector('.content').insertBefore(div, document.querySelector('.content').firstChild);
         setTimeout(() => { div.classList.remove('show'); setTimeout(() => div.remove(), 150); }, 5000);
+    }
+
+    var flyerZone = document.getElementById('flyer-drop-zone');
+    var flyerInput = document.getElementById('flyer-file-input');
+    var flyerCsrf = document.getElementById('flyer-csrf');
+    if (flyerZone && flyerInput && flyerCsrf) {
+        var flyerUrl = flyerInput.getAttribute('data-flyer-url');
+        function uploadFlyer(file) {
+            if (!file || !file.type.startsWith('image/')) {
+                showAlert('danger', 'Please choose an image file.');
+                return;
+            }
+            var formData = new FormData();
+            formData.append('flyer', file);
+            formData.append('csrfmiddlewaretoken', flyerCsrf.value);
+            fetch(flyerUrl, { method: 'POST', body: formData, headers: { 'X-Requested-With': 'XMLHttpRequest' } })
+                .then(function(r) { return r.json().then(function(data) { return { status: r.status, data: data }; }); })
+                .then(function(result) {
+                    if (result.data.success && result.data.url) {
+                        var img = document.getElementById('event-flyer-img');
+                        if (img) {
+                            img.src = result.data.url + (result.data.url.indexOf('?') === -1 ? '?' : '&') + 't=' + Date.now();
+                        } else {
+                            flyerZone.innerHTML = '<img id="event-flyer-img" src="' + result.data.url + '" alt="Event flyer" class="img-fluid" style="max-height: 400px; width: auto; object-fit: contain;"><p class="small text-muted mt-2 mb-0">Click or drag a new image to replace</p>';
+                        }
+                        showAlert('success', 'Flyer updated.');
+                    } else {
+                        showAlert('danger', result.data.error || 'Upload failed.');
+                    }
+                })
+                .catch(function() { showAlert('danger', 'Upload failed.'); });
+        }
+        flyerZone.addEventListener('click', function() { flyerInput.click(); });
+        flyerInput.addEventListener('change', function() { if (this.files && this.files[0]) uploadFlyer(this.files[0]); this.value = ''; });
+        flyerZone.addEventListener('dragover', function(e) { e.preventDefault(); flyerZone.classList.add('flyer-dragover'); });
+        flyerZone.addEventListener('dragleave', function(e) { e.preventDefault(); flyerZone.classList.remove('flyer-dragover'); });
+        flyerZone.addEventListener('drop', function(e) {
+            e.preventDefault();
+            flyerZone.classList.remove('flyer-dragover');
+            if (e.dataTransfer.files && e.dataTransfer.files[0]) uploadFlyer(e.dataTransfer.files[0]);
+        });
     }
 });
 </script>

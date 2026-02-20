@@ -17,7 +17,10 @@ urlpatterns = [
     
     # Health check endpoint
     path('health/', views.health_check, name='health_check'),
-    
+
+    # Public explore (no login)
+    path('explore/', views.explore, name='explore'),
+
     # Organization (no-org flow)
     path('org-required/', views.org_required, name='org_required'),
     path('create-organization/', views.create_organization, name='create_organization'),
@@ -26,8 +29,9 @@ urlpatterns = [
     path('members/revoke/<uuid:token>/', views.invite_revoke, name='invite_revoke'),
     path('invite/<uuid:token>/', views.invite_accept, name='invite_accept'),
 
-    # Home/Dashboard
-    path('', views.home, name='home'),
+    # Landing (public) and Dashboard
+    path('', views.landing),
+    path('dashboard/', views.home, name='home'),
     
     # CSV Upload (price entry and results used when uploading from an event)
     path('upload/price-entry/<uuid:file_id>/', views.price_entry, name='price_entry'),
@@ -56,6 +60,7 @@ urlpatterns = [
     path('events/create/<str:ticketing_type>/', views.event_create, name='event_create'),
     path('events/<uuid:event_id>/', views.event_detail, name='event_detail'),
     path('events/<uuid:event_id>/edit/', views.event_edit, name='event_edit'),
+    path('events/<uuid:event_id>/flyer/', views.event_flyer_upload, name='event_flyer_upload'),
     path('events/<uuid:event_id>/upload/', views.event_upload_csv, name='event_upload_csv'),
     path('events/<uuid:event_id>/delete/', views.event_delete, name='event_delete'),
     path('events/<uuid:event_id>/send-survey/', views.send_survey, name='send_survey'),
