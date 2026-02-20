@@ -4,7 +4,7 @@ from django.forms import modelformset_factory
 from django.contrib.auth.forms import AuthenticationForm
 from crispy_forms.helper import FormHelper
 from crispy_forms.layout import Layout, Row, Column, Submit, Field
-from .models import Organization, CSVFormat, Venue, Event, EventTalent, EventExpense, CustomField, IncomeSource, EventIncome, SaleableTicketType
+from .models import Organization, CSVFormat, Venue, Event, EventTalent, EventExpense, CustomField, IncomeSource, EventIncome, SaleableTicketType, UserProfile
 
 
 class OrganizationForm(forms.ModelForm):
@@ -38,15 +38,46 @@ class MemberInviteForm(forms.Form):
             'placeholder': 'Email address',
         })
     )
+    role = forms.ChoiceField(
+        choices=UserProfile.Role.choices,
+        initial=UserProfile.Role.ORGANIZER,
+        widget=forms.Select(attrs={'class': 'form-select'}),
+    )
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.helper = FormHelper()
         self.helper.form_method = 'post'
         self.helper.layout = Layout(
-            Field('email'),
+            Row(
+                Column('email', css_class='form-group col-md-8 mb-0'),
+                Column('role', css_class='form-group col-md-4 mb-0'),
+            ),
             Submit('submit', 'Invite member', css_class='btn btn-primary'),
         )
+
+
+class AttendeePhoneForm(forms.Form):
+    """Form for attendees to enter their phone number (signup or login)."""
+
+    phone_number = forms.CharField(
+        max_length=20,
+        widget=forms.TextInput(attrs={
+            'class': 'form-control',
+            'placeholder': '+1 (555) 000-0000',
+            'type': 'tel',
+        }),
+        help_text='Enter your phone number in international format (e.g. +15551234567)',
+    )
+
+    def clean_phone_number(self):
+        import re
+        phone = self.cleaned_data['phone_number'].strip()
+        if not re.match(r'^\+[1-9]\d{6,14}$', phone):
+            raise forms.ValidationError(
+                'Enter a valid phone number in international format (e.g. +15551234567).'
+            )
+        return phone
 
 
 class LoginForm(AuthenticationForm):

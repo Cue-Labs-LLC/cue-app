@@ -34,13 +34,20 @@
             <div class="sidebar-section">
                 <ul class="sidebar-nav">
                     <li>
+                        {% if is_organizer %}
                         <a href="{% url 'tickets:home' %}" class="sidebar-link{% if '/dashboard/' in request.path %} active{% endif %}">
                             <i class="bi bi-grid-1x2"></i> Dashboard
                         </a>
+                        {% else %}
+                        <a href="{% url 'tickets:attendee_dashboard' %}" class="sidebar-link{% if '/attendee/dashboard/' in request.path %} active{% endif %}">
+                            <i class="bi bi-grid-1x2"></i> Dashboard
+                        </a>
+                        {% endif %}
                     </li>
                 </ul>
             </div>
 
+            {% if is_organizer %}
             <div class="sidebar-section">
                 <div class="sidebar-section-label">Manage</div>
                 <ul class="sidebar-nav">
@@ -66,7 +73,7 @@
                     </li>
                     <li>
                         <a href="{% url 'tickets:member_list' %}" class="sidebar-link{% if '/members/' in request.path %} active{% endif %}">
-                            <i class="bi bi-people"></i> Members
+                            <i class="bi bi-people-fill"></i> Members
                         </a>
                     </li>
                 </ul>
@@ -146,6 +153,20 @@
                     </li>
                 </ul>
             </div>
+            {% endif %}
+
+            {% if is_attendee %}
+            <div class="sidebar-section">
+                <div class="sidebar-section-label">My Account</div>
+                <ul class="sidebar-nav">
+                    <li>
+                        <a href="{% url 'tickets:attendee_dashboard' %}" class="sidebar-link{% if '/attendee/dashboard/' in request.path %} active{% endif %}">
+                            <i class="bi bi-ticket-perforated"></i> My Tickets
+                        </a>
+                    </li>
+                </ul>
+            </div>
+            {% endif %}
 
             <div class="sidebar-footer">
                 <button type="button" class="sidebar-link" id="themeToggle" style="width:100%;border:none;background:none;cursor:pointer;text-align:left;">

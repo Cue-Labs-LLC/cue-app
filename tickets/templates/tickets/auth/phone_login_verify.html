@@ -1,0 +1,32 @@
+{% extends 'tickets/base.html' %}
+{% load crispy_forms_tags %}
+
+{% block title %}Verify Phone - Eventflow{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center">
+    <div class="col-md-5">
+        <div class="card shadow">
+            <div class="card-body p-5">
+                <h2 class="card-title text-center mb-2">
+                    <i class="bi bi-shield-lock"></i> Verify Your Phone
+                </h2>
+                <p class="text-center text-muted mb-4">
+                    We sent a 6-digit code to <strong>{{ masked_phone }}</strong>
+                </p>
+
+                <form method="post">
+                    {% csrf_token %}
+                    {% crispy form %}
+                </form>
+
+                <div class="mt-4 text-center">
+                    <a href="{% url 'tickets:phone_login' %}" class="text-decoration-none">
+                        <i class="bi bi-arrow-left"></i> Back
+                    </a>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

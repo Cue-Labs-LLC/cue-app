@@ -208,7 +208,15 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 LOGIN_URL = '/login/'
 LOGIN_REDIRECT_URL = '/dashboard/'
 LOGOUT_REDIRECT_URL = '/login/'
-AUTHENTICATION_BACKENDS = ['tickets.backends.EmailBackend']
+AUTHENTICATION_BACKENDS = [
+    'tickets.backends.EmailBackend',
+    'tickets.backends.PhoneBackend',
+]
+
+# Twilio SMS (required in prod, optional in dev)
+TWILIO_ACCOUNT_SID  = os.environ.get('TWILIO_ACCOUNT_SID', '')
+TWILIO_AUTH_TOKEN   = os.environ.get('TWILIO_AUTH_TOKEN', '')
+TWILIO_PHONE_NUMBER = os.environ.get('TWILIO_PHONE_NUMBER', '')
 
 # Absolute URL for building links in emails (survey invitations, etc.)
 SITE_URL = os.environ.get('SITE_URL', 'http://localhost:8000')

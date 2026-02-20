@@ -5,7 +5,7 @@ from django.db import models
 from django.db.models import Sum, Count
 from django import forms
 from .models import (
-    Organization, UserProfile, OrganizationInvitation, EmailOTP,
+    Organization, UserProfile, OrganizationInvitation, EmailOTP, PhoneOTP,
     CSVFormat, UploadedFile, Customer, Event, EventExpense, EventTalent, TicketOrder, Ticket, TicketTier, Venue,
     CustomField, CustomFieldOption, EventCustomFieldValue,
     IncomeSource, EventIncome,
@@ -588,9 +588,9 @@ class OrganizationAdmin(admin.ModelAdmin):
 
 @admin.register(UserProfile)
 class UserProfileAdmin(admin.ModelAdmin):
-    list_display = ['user', 'organization', 'user_email']
-    list_filter = ['organization']
-    search_fields = ['user__username', 'user__email']
+    list_display = ['user', 'organization', 'role', 'phone_number', 'user_email']
+    list_filter = ['role', 'organization']
+    search_fields = ['user__username', 'user__email', 'phone_number']
     raw_id_fields = ['user']
 
     def user_email(self, obj):
@@ -600,8 +600,8 @@ class UserProfileAdmin(admin.ModelAdmin):
 
 @admin.register(OrganizationInvitation)
 class OrganizationInvitationAdmin(admin.ModelAdmin):
-    list_display = ['email', 'organization', 'status', 'invited_by', 'expires_at', 'created_at']
-    list_filter = ['organization', 'status', 'created_at']
+    list_display = ['email', 'organization', 'role', 'status', 'invited_by', 'expires_at', 'created_at']
+    list_filter = ['organization', 'role', 'status', 'created_at']
     search_fields = ['email', 'organization__name']
     readonly_fields = ['id', 'token', 'created_at', 'updated_at', 'accepted_at', 'accepted_by']
     raw_id_fields = ['invited_by', 'accepted_by']
@@ -614,6 +614,15 @@ class OrganizationInvitationAdmin(admin.ModelAdmin):
         if profile and profile.organization_id:
             return qs.filter(organization=profile.organization).select_related('organization', 'invited_by', 'accepted_by')
         return qs.none()
+
+
+@admin.register(PhoneOTP)
+class PhoneOTPAdmin(admin.ModelAdmin):
+    list_display = ['phone_number', 'purpose', 'is_verified', 'attempts', 'created_at']
+    list_filter = ['purpose', 'is_verified', 'created_at']
+    search_fields = ['phone_number']
+    readonly_fields = ['id', 'otp_code', 'signup_data', 'created_at', 'updated_at']
+    date_hierarchy = 'created_at'
 
 
 @admin.register(EmailOTP)

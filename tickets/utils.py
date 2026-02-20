@@ -79,3 +79,24 @@ def require_org(view_func):
             return redirect('tickets:org_required')
         return view_func(request, *args, **kwargs)
     return _wrapped
+
+
+def require_organizer(view_func):
+    """
+    Decorator that requires the user to have the organizer (or 'both') role.
+    Pure attendees are redirected to their dashboard. Superusers bypass.
+    Stack after @login_required and @require_org.
+    """
+    @wraps(view_func)
+    def _wrapped(request, *args, **kwargs):
+        if request.user.is_superuser:
+            return view_func(request, *args, **kwargs)
+        from .models import UserProfile
+        try:
+            profile = request.user.profile
+        except UserProfile.DoesNotExist:
+            return redirect('tickets:attendee_dashboard')
+        if not profile.is_organizer:
+            return redirect('tickets:attendee_dashboard')
+        return view_func(request, *args, **kwargs)
+    return _wrapped

@@ -654,7 +654,7 @@ class MemberInviteTests(TestCase):
     def test_member_invite_valid_email_creates_invitation(self):
         response = self.client.post(
             reverse('tickets:member_invite'),
-            {'email': 'newuser@example.com', 'csrfmiddlewaretoken': self.client.cookies.get('csrftoken', '')},
+            {'email': 'newuser@example.com', 'role': 'organizer', 'csrfmiddlewaretoken': self.client.cookies.get('csrftoken', '')},
         )
         self.assertEqual(response.status_code, 302)
         self.assertRedirects(response, reverse('tickets:member_list'))

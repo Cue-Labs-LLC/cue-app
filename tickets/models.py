@@ -87,6 +87,12 @@ class PipedreamCalendarConnection(BaseModel):
 
 class UserProfile(models.Model):
     """OneToOne profile linking a user to an organization."""
+
+    class Role(models.TextChoices):
+        ORGANIZER = 'organizer', 'Organizer'
+        ATTENDEE  = 'attendee',  'Attendee'
+        BOTH      = 'both',      'Organizer & Attendee'
+
     user = models.OneToOneField(
         'auth.User',
         on_delete=models.CASCADE,
@@ -99,6 +105,19 @@ class UserProfile(models.Model):
         blank=True,
         related_name='members',
     )
+    role = models.CharField(
+        max_length=20,
+        choices=Role.choices,
+        default=Role.ORGANIZER,
+        db_index=True,
+    )
+    phone_number = models.CharField(
+        max_length=20,
+        blank=True,
+        null=True,
+        unique=True,
+        db_index=True,
+    )
 
     class Meta:
         verbose_name = "User profile"
@@ -106,6 +125,14 @@ class UserProfile(models.Model):
 
     def __str__(self):
         return f"{self.user.get_username()} ({self.organization or 'no org'})"
+
+    @property
+    def is_organizer(self):
+        return self.role in (self.Role.ORGANIZER, self.Role.BOTH)
+
+    @property
+    def is_attendee(self):
+        return self.role in (self.Role.ATTENDEE, self.Role.BOTH)
 
 
 class OrganizationInvitation(BaseModel):
@@ -135,6 +162,11 @@ class OrganizationInvitation(BaseModel):
         choices=Status.choices,
         default=Status.PENDING,
         db_index=True,
+    )
+    role = models.CharField(
+        max_length=20,
+        choices=UserProfile.Role.choices,
+        default=UserProfile.Role.ORGANIZER,
     )
     expires_at = models.DateTimeField()
     accepted_at = models.DateTimeField(null=True, blank=True)
@@ -196,6 +228,33 @@ class EmailOTP(BaseModel):
 
     def __str__(self):
         return f"OTP {self.email} ({self.purpose}) - {'verified' if self.is_verified else 'pending'}"
+
+    def is_expired(self):
+        return timezone.now() > self.created_at + timezone.timedelta(minutes=10)
+
+    def is_usable(self):
+        return not self.is_expired() and not self.is_verified and self.attempts < 5
+
+
+class PhoneOTP(BaseModel):
+    """One-time password for phone number verification (attendee signup/login)."""
+    class Purpose(models.TextChoices):
+        SIGNUP = 'signup', 'Signup'
+        LOGIN  = 'login',  'Login'
+
+    phone_number = models.CharField(max_length=20, db_index=True)
+    otp_code     = models.CharField(max_length=6)
+    purpose      = models.CharField(max_length=20, choices=Purpose.choices)
+    is_verified  = models.BooleanField(default=False)
+    attempts     = models.PositiveSmallIntegerField(default=0)
+    signup_data  = models.JSONField(null=True, blank=True)
+
+    class Meta:
+        ordering = ['-created_at']
+        indexes = [models.Index(fields=['phone_number', 'purpose', '-created_at'])]
+
+    def __str__(self):
+        return f"PhoneOTP {self.phone_number} ({self.purpose}) - {'verified' if self.is_verified else 'pending'}"
 
     def is_expired(self):
         return timezone.now() > self.created_at + timezone.timedelta(minutes=10)

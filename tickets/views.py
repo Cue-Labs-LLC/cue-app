@@ -1,6 +1,7 @@
 import calendar
 import os
 import json
+import random
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 from django.shortcuts import render, redirect, get_object_or_404
@@ -29,12 +30,13 @@ from .models import (
     SurveyQuestion, SurveyInvitation, SurveyResponse, SurveyAnswer,
     PipedreamCalendarConnection,
     SaleableTicketType, StripeCheckoutSession,
+    PhoneOTP,
 )
 from .forms import (
     EventCSVUploadForm, EventExpenseForm, TicketPriceEntryForm, CSVFormatForm,
     VenueForm, EventForm, EventTalentFormSet, LoginForm,
     IncomeSourceForm, EventIncomeForm,
-    SignUpForm, OTPVerificationForm, MemberInviteForm,
+    SignUpForm, OTPVerificationForm, MemberInviteForm, AttendeePhoneForm,
     SaleableTicketTypeForm, PublicTicketPurchaseForm,
     DirectEventForm, DirectTicketTypeFormSet,
 )
@@ -48,7 +50,7 @@ from .services.segmentation.segment_definitions import (
 )
 from .services.cohort_analysis.repeat_customer_calculator import RepeatCustomerCalculator
 from .services.cohort_analysis.cohort_retention_calculator import CohortRetentionCalculator
-from .utils import get_organization, require_org, clear_org_cache
+from .utils import get_organization, require_org, require_organizer, clear_org_cache
 from .feature_flags import direct_ticketing_enabled
 
 from django.core.cache import cache as django_cache
@@ -514,7 +516,8 @@ def create_organization(request):
         if form.is_valid():
             org = form.save()
             profile.organization = org
-            profile.save()
+            profile.role = UserProfile.Role.ORGANIZER
+            profile.save(update_fields=['organization', 'role'])
             clear_org_cache(request)
             messages.success(request, f"Organization '{org.name}' created. You can now use the app.")
             return redirect('tickets:home')
@@ -548,12 +551,14 @@ def member_list(request):
         'members': members,
         'pending_invites': pending_invites,
         'invite_form': form,
+        'role_choices': UserProfile.Role.choices,
     }
     return render(request, 'tickets/member_list.html', context)
 
 
 @login_required
 @require_org
+@require_organizer
 @require_http_methods(["POST"])
 def member_invite(request):
     """Create an organization invitation and send email."""
@@ -566,6 +571,7 @@ def member_invite(request):
         return redirect('tickets:member_list')
 
     email = form.cleaned_data['email'].strip().lower()
+    role = form.cleaned_data['role']
     if UserProfile.objects.filter(
         organization=org,
         user__email__iexact=email,
@@ -589,6 +595,7 @@ def member_invite(request):
         invited_by=request.user,
         status=OrganizationInvitation.Status.PENDING,
         expires_at=expires_at,
+        role=role,
     )
     invitation.full_clean()
     invitation.save()
@@ -628,18 +635,22 @@ def invite_accept(request, token):
         defaults={'organization_id': None},
     )
     profile.organization = invitation.organization
-    profile.save()
+    profile.role = invitation.role
+    profile.save(update_fields=['organization', 'role'])
     invitation.status = OrganizationInvitation.Status.ACCEPTED
     invitation.accepted_at = django_tz.now()
     invitation.accepted_by = request.user
     invitation.save(update_fields=['status', 'accepted_at', 'accepted_by'])
     clear_org_cache(request)
     messages.success(request, f"You've joined {invitation.organization.name}. Welcome!")
-    return redirect('tickets:home')
+    if profile.is_organizer:
+        return redirect('tickets:home')
+    return redirect('tickets:attendee_dashboard')
 
 
 @login_required
 @require_org
+@require_organizer
 @require_http_methods(["POST"])
 def invite_revoke(request, token):
     """Revoke a pending organization invitation."""
@@ -659,6 +670,7 @@ def invite_revoke(request, token):
 
 @login_required
 @require_org
+@require_organizer
 def home(request):
     """Home/dashboard page with overview statistics."""
     org = get_organization(request)
@@ -721,6 +733,7 @@ def home(request):
 
 @login_required
 @require_org
+@require_organizer
 @require_http_methods(["GET", "POST"])
 def price_entry(request, file_id):
     """Display form for manually entering ticket prices or tiers."""
@@ -1004,6 +1017,7 @@ def process_csv_file(request, uploaded_file, manual_prices=None, tier_definition
 
 @login_required
 @require_org
+@require_organizer
 def upload_results(request, file_id):
     """Display processing results."""
     org = get_organization(request)
@@ -1020,6 +1034,7 @@ def upload_results(request, file_id):
 
 @login_required
 @require_org
+@require_organizer
 @require_http_methods(["POST"])
 def upload_delete(request, file_id):
     """Delete an upload and all associated order data."""
@@ -1084,6 +1099,7 @@ def upload_delete(request, file_id):
 
 @login_required
 @require_org
+@require_organizer
 def customer_list(request):
     """Display list of all customers with LTV and optional segment filter."""
     org = get_organization(request)
@@ -1139,6 +1155,7 @@ def customer_list(request):
 
 @login_required
 @require_org
+@require_organizer
 def customer_ltv_by_market(request):
     """Display customer LTV metrics aggregated by city (event venue city)."""
     org = get_organization(request)
@@ -1213,6 +1230,7 @@ def _format_range(min_max):
 
 @login_required
 @require_org
+@require_organizer
 def customer_segments(request):
     """Analytics page: segment distribution (donut), avg LTV per segment (bar), table with links."""
     org = get_organization(request)
@@ -1296,6 +1314,7 @@ def customer_segments(request):
 
 @login_required
 @require_org
+@require_organizer
 @require_http_methods(["POST"])
 def recalculate_segments(request):
     """Enqueue Celery task to recalculate RFM segments; redirect with message."""
@@ -1312,6 +1331,7 @@ def recalculate_segments(request):
 
 @login_required
 @require_org
+@require_organizer
 def repeat_customers(request):
     """Analytics page: new vs returning customers per event."""
     org = get_organization(request)
@@ -1331,6 +1351,7 @@ def repeat_customers(request):
 
 @login_required
 @require_org
+@require_organizer
 def cohort_retention(request):
     """Analytics page: monthly cohort retention heatmap and line chart."""
     org = get_organization(request)
@@ -1348,6 +1369,7 @@ def cohort_retention(request):
 
 @login_required
 @require_org
+@require_organizer
 def customer_detail(request, customer_id):
     """Display detailed customer information with LTV and order history."""
     org = get_organization(request)
@@ -1397,6 +1419,7 @@ def customer_detail(request, customer_id):
 
 @login_required
 @require_org
+@require_organizer
 def event_list(request):
     """Display list of all events with associated uploads."""
     org = get_organization(request)
@@ -1479,6 +1502,7 @@ def event_list(request):
 
 @login_required
 @require_org
+@require_organizer
 def event_calendar(request):
     """Display events in a month calendar grid."""
     org = get_organization(request)
@@ -1550,6 +1574,7 @@ def event_calendar(request):
 
 @login_required
 @require_org
+@require_organizer
 def event_detail(request, event_id):
     """Display detailed event information with associated uploads."""
     org = get_organization(request)
@@ -1736,6 +1761,7 @@ def event_detail(request, event_id):
 
 @login_required
 @require_org
+@require_organizer
 @require_http_methods(["GET", "POST"])
 def event_delete(request, event_id):
     """Permanently delete an event and all its orders and tickets."""
@@ -1783,6 +1809,7 @@ def event_delete(request, event_id):
 
 @login_required
 @require_org
+@require_organizer
 def order_detail(request, order_id):
     """Display detailed order information with all tickets."""
     org = get_organization(request)
@@ -1824,6 +1851,7 @@ def order_detail(request, order_id):
 
 @login_required
 @require_org
+@require_organizer
 def format_list(request):
     """List all CSV formats."""
     org = get_organization(request)
@@ -1836,6 +1864,7 @@ def format_list(request):
 
 @login_required
 @require_org
+@require_organizer
 def format_create(request):
     """Create new CSV format."""
     org = get_organization(request)
@@ -1859,6 +1888,7 @@ def format_create(request):
 
 @login_required
 @require_org
+@require_organizer
 def format_edit(request, format_id):
     """Edit existing CSV format."""
     org = get_organization(request)
@@ -1884,6 +1914,7 @@ def format_edit(request, format_id):
 
 @login_required
 @require_org
+@require_organizer
 def format_delete(request, format_id):
     """Delete CSV format."""
     org = get_organization(request)
@@ -1911,6 +1942,7 @@ def format_delete(request, format_id):
 
 @login_required
 @require_org
+@require_organizer
 def format_set_default(request, format_id):
     """Set CSV format as default."""
     org = get_organization(request)
@@ -1931,6 +1963,7 @@ def format_set_default(request, format_id):
 
 @login_required
 @require_org
+@require_organizer
 def venue_list(request):
     """List all venues with optional search and pagination."""
     org = get_organization(request)
@@ -1955,6 +1988,7 @@ def venue_list(request):
 
 @login_required
 @require_org
+@require_organizer
 def venue_create(request):
     """Create new venue."""
     org = get_organization(request)
@@ -1978,6 +2012,7 @@ def venue_create(request):
 
 @login_required
 @require_org
+@require_organizer
 def venue_edit(request, venue_id):
     """Edit an existing venue."""
     org = get_organization(request)
@@ -2001,6 +2036,7 @@ def venue_edit(request, venue_id):
 
 @login_required
 @require_org
+@require_organizer
 def event_type_select(request):
     """Landing page to choose Direct or External ticketing before creating an event."""
     return render(request, 'tickets/event_type_select.html', {})
@@ -2008,6 +2044,7 @@ def event_type_select(request):
 
 @login_required
 @require_org
+@require_organizer
 def event_create(request, ticketing_type):
     """Create new event (ticketing_type comes from URL, chosen on type-select page)."""
     from .models import TICKETING_TYPE_DIRECT, TICKETING_TYPE_EXTERNAL
@@ -2129,6 +2166,7 @@ def event_create(request, ticketing_type):
 
 @login_required
 @require_org
+@require_organizer
 def event_edit(request, event_id):
     """Edit an existing event."""
     org = get_organization(request)
@@ -2183,6 +2221,7 @@ def event_edit(request, event_id):
 
 @login_required
 @require_org
+@require_organizer
 @require_http_methods(["GET", "POST"])
 def event_upload_csv(request, event_id):
     """Upload a CSV directly for an existing event."""
@@ -2238,6 +2277,7 @@ def event_upload_csv(request, event_id):
 
 @login_required
 @require_org
+@require_organizer
 @require_http_methods(["POST"])
 def regenerate_event_doc(request):
     """Trigger regeneration of the Upcoming Events Google Doc."""
@@ -2278,6 +2318,7 @@ def regenerate_event_doc(request):
 
 @login_required
 @require_org
+@require_organizer
 def settings_google_calendar(request):
     """Google Calendar (Pipedream) settings: set or edit webhook URL, or disconnect."""
     from django.core.validators import URLValidator
@@ -2314,6 +2355,7 @@ def settings_google_calendar(request):
 
 @login_required
 @require_org
+@require_organizer
 def settings_google_calendar_disconnect(request):
     """Remove Pipedream calendar connection for the current org."""
     if request.method != 'POST':
@@ -2328,6 +2370,7 @@ def settings_google_calendar_disconnect(request):
 
 @login_required
 @require_org
+@require_organizer
 def forecast_tool(request):
     """Display the standalone forecast tool page."""
     org = get_organization(request)
@@ -2340,6 +2383,7 @@ def forecast_tool(request):
 
 @login_required
 @require_org
+@require_organizer
 def forecast_api(request):
     """Return forecast data as JSON for the chart."""
     from datetime import datetime
@@ -2404,6 +2448,7 @@ def forecast_api(request):
 
 @login_required
 @require_org
+@require_organizer
 @require_http_methods(["GET", "POST"])
 def expense_create(request, event_id):
     """Add a new expense to an event."""
@@ -2432,6 +2477,7 @@ def expense_create(request, event_id):
 
 @login_required
 @require_org
+@require_organizer
 @require_http_methods(["GET", "POST"])
 def expense_edit(request, event_id, expense_id):
     """Edit an existing expense."""
@@ -2464,6 +2510,7 @@ def expense_edit(request, event_id, expense_id):
 
 @login_required
 @require_org
+@require_organizer
 @require_http_methods(["GET", "POST"])
 def expense_delete(request, event_id, expense_id):
     """Soft-delete an expense."""
@@ -2492,6 +2539,7 @@ def expense_delete(request, event_id, expense_id):
 
 @login_required
 @require_org
+@require_organizer
 def income_source_list(request):
     """List all income source types for the organization."""
     org = get_organization(request)
@@ -2502,6 +2550,7 @@ def income_source_list(request):
 
 @login_required
 @require_org
+@require_organizer
 @require_http_methods(["GET", "POST"])
 def income_source_create(request):
     """Create a new income source type."""
@@ -2524,6 +2573,7 @@ def income_source_create(request):
 
 @login_required
 @require_org
+@require_organizer
 @require_http_methods(["GET", "POST"])
 def income_source_edit(request, source_id):
     """Edit an income source type."""
@@ -2546,6 +2596,7 @@ def income_source_edit(request, source_id):
 
 @login_required
 @require_org
+@require_organizer
 @require_http_methods(["GET", "POST"])
 def income_source_delete(request, source_id):
     """Delete an income source type (only if not used by any event income)."""
@@ -2571,6 +2622,7 @@ def income_source_delete(request, source_id):
 
 @login_required
 @require_org
+@require_organizer
 @require_http_methods(["GET", "POST"])
 def event_income_create(request, event_id):
     """Add additional income to an event."""
@@ -2597,6 +2649,7 @@ def event_income_create(request, event_id):
 
 @login_required
 @require_org
+@require_organizer
 @require_http_methods(["GET", "POST"])
 def event_income_edit(request, event_id, income_id):
     """Edit an event additional income entry."""
@@ -2627,6 +2680,7 @@ def event_income_edit(request, event_id, income_id):
 
 @login_required
 @require_org
+@require_organizer
 @require_http_methods(["GET", "POST"])
 def event_income_delete(request, event_id, income_id):
     """Soft-delete an event additional income entry."""
@@ -2650,6 +2704,7 @@ def event_income_delete(request, event_id, income_id):
 
 @login_required
 @require_org
+@require_organizer
 def profitability_overview(request):
     """Analytics page: org-wide P&L stats, chart, and sortable table."""
     org = get_organization(request)
@@ -2764,6 +2819,7 @@ def _get_survey_questions_for_event(event):
 
 @login_required
 @require_org
+@require_organizer
 def send_survey(request, event_id):
     """Create survey invitations and dispatch email task. POST only."""
     if request.method != 'POST':
@@ -2903,6 +2959,7 @@ def survey_thank_you(request):
 
 @login_required
 @require_org
+@require_organizer
 @require_http_methods(["POST"])
 def chat_stream(request):
     """SSE endpoint — streams LLM tokens for the chat agent."""
@@ -2939,6 +2996,7 @@ def chat_stream(request):
 
 @login_required
 @require_org
+@require_organizer
 def chat_history(request):
     """Return messages for a conversation as JSON."""
     import uuid as uuid_mod
@@ -2972,6 +3030,7 @@ def chat_history(request):
 
 @login_required
 @require_org
+@require_organizer
 def chat_conversations(request):
     """List user's recent conversations with their first message."""
     from django.db.models import Min, Max
@@ -3010,6 +3069,7 @@ def chat_conversations(request):
 
 @login_required
 @require_org
+@require_organizer
 @require_http_methods(["GET", "POST"])
 def saleable_ticket_type_create(request, event_id):
     """Create a new SaleableTicketType for an event."""
@@ -3039,6 +3099,7 @@ def saleable_ticket_type_create(request, event_id):
 
 @login_required
 @require_org
+@require_organizer
 @require_http_methods(["GET", "POST"])
 def saleable_ticket_type_edit(request, event_id, ticket_type_id):
     """Edit an existing SaleableTicketType."""
@@ -3073,6 +3134,7 @@ def saleable_ticket_type_edit(request, event_id, ticket_type_id):
 
 @login_required
 @require_org
+@require_organizer
 @require_http_methods(["POST"])
 def saleable_ticket_type_toggle(request, event_id, ticket_type_id):
     """Toggle is_active on a SaleableTicketType."""
@@ -3090,6 +3152,7 @@ def saleable_ticket_type_toggle(request, event_id, ticket_type_id):
 
 @login_required
 @require_org
+@require_organizer
 @require_http_methods(["GET", "POST"])
 def saleable_ticket_type_delete(request, event_id, ticket_type_id):
     """Delete a SaleableTicketType (only if no tickets sold)."""
@@ -3117,6 +3180,7 @@ def saleable_ticket_type_delete(request, event_id, ticket_type_id):
 
 @login_required
 @require_org
+@require_organizer
 @require_http_methods(["POST"])
 def event_flyer_upload(request, event_id):
     """Upload or replace event flyer (direct ticketing only). Returns JSON."""
@@ -3396,3 +3460,205 @@ def _expire_checkout(stripe_session):
             status=StripeCheckoutSession.Status.PENDING,
         ).update(status=StripeCheckoutSession.Status.EXPIRED)
         logger.info("Stripe session %s marked expired", session_id)
+
+# ---------------------------------------------------------------------------
+# Attendee Auth Views (public — no login required)
+# ---------------------------------------------------------------------------
+
+def attendee_signup_view(request, org_slug):
+    """Public. Attendee enters phone number to get SMS OTP."""
+    org = get_object_or_404(Organization, slug=org_slug)
+    if request.method == "POST":
+        form = AttendeePhoneForm(request.POST)
+        if form.is_valid():
+            phone = form.cleaned_data["phone_number"]
+            recent_count = PhoneOTP.objects.filter(
+                phone_number=phone,
+                purpose=PhoneOTP.Purpose.SIGNUP,
+                created_at__gte=django_tz.now() - timedelta(minutes=30),
+            ).count()
+            if recent_count >= 3:
+                messages.error(request, 'Too many attempts. Please wait 30 minutes.')
+            elif UserProfile.objects.filter(phone_number=phone).exists():
+                messages.error(request, 'An account with this phone number already exists. Please log in.')
+                return redirect('tickets:phone_login')
+            else:
+                otp = PhoneOTP.objects.create(
+                    phone_number=phone,
+                    otp_code=f"{random.randint(0, 999999):06d}",
+                    purpose=PhoneOTP.Purpose.SIGNUP,
+                    signup_data={"org_id": str(org.id)},
+                )
+                from .tasks import send_phone_otp_task
+                send_phone_otp_task.delay(str(otp.id))
+                request.session["phone_otp_id"] = str(otp.id)
+                return redirect('tickets:attendee_verify_otp', org_slug=org_slug)
+    else:
+        form = AttendeePhoneForm()
+    return render(request, 'tickets/auth/attendee_signup.html', {'form': form, 'org': org})
+
+
+def attendee_verify_otp_view(request, org_slug):
+    """Verifies SMS OTP, creates User+UserProfile with attendee role."""
+    from django.contrib.auth import login as auth_login
+    from django.contrib.auth import get_user_model
+    AuthUser = get_user_model()
+
+    org = get_object_or_404(Organization, slug=org_slug)
+    otp_id = request.session.get("phone_otp_id")
+    if not otp_id:
+        return redirect('tickets:attendee_signup', org_slug=org_slug)
+    otp = get_object_or_404(PhoneOTP, id=otp_id)
+    if not otp.is_usable():
+        messages.error(request, 'Code expired or already used. Please request a new one.')
+        return redirect('tickets:attendee_signup', org_slug=org_slug)
+
+    if request.method == "POST":
+        form = OTPVerificationForm(request.POST)
+        if form.is_valid():
+            code = form.cleaned_data["otp_code"]
+            otp.attempts += 1
+            if otp.otp_code != code:
+                otp.save(update_fields=["attempts"])
+                remaining = 5 - otp.attempts
+                messages.error(request, f'Incorrect code. {remaining} attempt(s) remaining.')
+            else:
+                otp.is_verified = True
+                otp.save(update_fields=["is_verified", "attempts"])
+                phone = otp.phone_number
+                user = AuthUser.objects.create(
+                    username=phone,
+                    email='',
+                    first_name='',
+                    last_name='',
+                )
+                user.set_unusable_password()
+                user.save()
+                UserProfile.objects.create(
+                    user=user,
+                    organization=org,
+                    role=UserProfile.Role.ATTENDEE,
+                    phone_number=phone,
+                )
+                del request.session["phone_otp_id"]
+                auth_login(request, user, backend='tickets.backends.PhoneBackend')
+                messages.success(request, 'Welcome! You are now registered.')
+                return redirect('tickets:attendee_dashboard')
+    else:
+        form = OTPVerificationForm()
+    return render(request, 'tickets/auth/attendee_verify_otp.html', {
+        'form': form,
+        'org': org,
+        "masked_phone": f"***{otp.phone_number[-4:]}",
+    })
+
+
+def phone_login_view(request):
+    """Public. Existing attendee enters phone to receive SMS OTP."""
+    if request.user.is_authenticated:
+        return redirect('tickets:attendee_dashboard')
+    if request.method == "POST":
+        form = AttendeePhoneForm(request.POST)
+        if form.is_valid():
+            phone = form.cleaned_data["phone_number"]
+            if not UserProfile.objects.filter(phone_number=phone).exists():
+                messages.error(request, 'No account found with this phone number.')
+            else:
+                otp = PhoneOTP.objects.create(
+                    phone_number=phone,
+                    otp_code=f"{random.randint(0, 999999):06d}",
+                    purpose=PhoneOTP.Purpose.LOGIN,
+                )
+                from .tasks import send_phone_otp_task
+                send_phone_otp_task.delay(str(otp.id))
+                request.session["phone_otp_id"] = str(otp.id)
+                return redirect('tickets:phone_login_verify')
+    else:
+        form = AttendeePhoneForm()
+    return render(request, 'tickets/auth/phone_login.html', {'form': form})
+
+
+def phone_login_verify_view(request):
+    """Verify SMS OTP for returning attendees; log in on success."""
+    from django.contrib.auth import login as auth_login
+    from django.contrib.auth import get_user_model
+    AuthUser = get_user_model()
+
+    otp_id = request.session.get("phone_otp_id")
+    if not otp_id:
+        return redirect('tickets:phone_login')
+    otp = get_object_or_404(PhoneOTP, id=otp_id)
+    if not otp.is_usable():
+        messages.error(request, 'Code expired or already used. Please request a new one.')
+        return redirect('tickets:phone_login')
+
+    if request.method == "POST":
+        form = OTPVerificationForm(request.POST)
+        if form.is_valid():
+            code = form.cleaned_data["otp_code"]
+            otp.attempts += 1
+            if otp.otp_code != code:
+                otp.save(update_fields=["attempts"])
+                remaining = 5 - otp.attempts
+                messages.error(request, f'Incorrect code. {remaining} attempt(s) remaining.')
+            else:
+                otp.is_verified = True
+                otp.save(update_fields=["is_verified", "attempts"])
+                try:
+                    user = AuthUser.objects.get(username=otp.phone_number)
+                except AuthUser.DoesNotExist:
+                    messages.error(request, 'Account not found. Please sign up first.')
+                    del request.session["phone_otp_id"]
+                    return redirect('tickets:phone_login')
+                del request.session["phone_otp_id"]
+                auth_login(request, user, backend='tickets.backends.PhoneBackend')
+                try:
+                    profile = user.profile
+                    if profile.is_organizer:
+                        return redirect('tickets:home')
+                except UserProfile.DoesNotExist:
+                    pass
+                return redirect('tickets:attendee_dashboard')
+    else:
+        form = OTPVerificationForm()
+    return render(request, 'tickets/auth/phone_login_verify.html', {
+        'form': form,
+        "masked_phone": f"***{otp.phone_number[-4:]}",
+    })
+
+
+# ---------------------------------------------------------------------------
+# Attendee Dashboard
+# ---------------------------------------------------------------------------
+
+@login_required
+@require_org
+def attendee_dashboard(request):
+    """Attendee placeholder dashboard."""
+    return render(request, 'tickets/attendee_dashboard.html', {})
+
+
+# ---------------------------------------------------------------------------
+# Member Role Update
+# ---------------------------------------------------------------------------
+
+@login_required
+@require_org
+@require_organizer
+@require_http_methods(["POST"])
+def member_role_update(request, profile_id):
+    """Organizer updates the role of an org member."""
+    org = get_organization(request)
+    profile = get_object_or_404(
+        UserProfile.objects.select_related('user').filter(organization=org),
+        id=profile_id,
+    )
+    new_role = request.POST.get('role', '').strip()
+    valid_roles = [r[0] for r in UserProfile.Role.choices]
+    if new_role not in valid_roles:
+        messages.error(request, 'Invalid role.')
+    else:
+        profile.role = new_role
+        profile.save(update_fields=['role'])
+        messages.success(request, f"Updated role to {profile.get_role_display()}.")
+    return redirect('tickets:member_list')

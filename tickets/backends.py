@@ -22,3 +22,21 @@ class EmailBackend(ModelBackend):
         if user.check_password(password) and self.user_can_authenticate(user):
             return user
         return None
+
+
+class PhoneBackend:
+    """Authenticate attendees by phone number (stored as username on auth.User)."""
+
+    def authenticate(self, request, phone_number=None, **kwargs):
+        if not phone_number:
+            return None
+        try:
+            return User.objects.get(username=phone_number)
+        except User.DoesNotExist:
+            return None
+
+    def get_user(self, user_id):
+        try:
+            return User.objects.get(pk=user_id)
+        except User.DoesNotExist:
+            return None

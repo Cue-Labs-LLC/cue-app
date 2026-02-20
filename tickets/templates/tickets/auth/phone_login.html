@@ -1,0 +1,30 @@
+{% extends 'tickets/base.html' %}
+{% load crispy_forms_tags %}
+
+{% block title %}Phone Login - Eventflow{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center">
+    <div class="col-md-5">
+        <div class="card shadow">
+            <div class="card-body p-5">
+                <h2 class="card-title text-center mb-2">
+                    <i class="bi bi-phone"></i> Log In with Phone
+                </h2>
+                <p class="text-center text-muted mb-4">
+                    Enter your phone number to receive a verification code.
+                </p>
+
+                <form method="post">
+                    {% csrf_token %}
+                    {% crispy form %}
+                </form>
+
+                <div class="mt-4 text-center text-muted small">
+                    <a href="{% url 'tickets:login' %}">Log in with email instead</a>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

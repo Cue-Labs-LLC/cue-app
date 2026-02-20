@@ -27,7 +27,17 @@ urlpatterns = [
     path('members/', views.member_list, name='member_list'),
     path('members/invite/', views.member_invite, name='member_invite'),
     path('members/revoke/<uuid:token>/', views.invite_revoke, name='invite_revoke'),
+    path('members/<int:profile_id>/role/', views.member_role_update, name='member_role_update'),
     path('invite/<uuid:token>/', views.invite_accept, name='invite_accept'),
+
+    # Public attendee paths (no auth required)
+    path('join/<slug:org_slug>/', views.attendee_signup_view, name='attendee_signup'),
+    path('join/<slug:org_slug>/verify/', views.attendee_verify_otp_view, name='attendee_verify_otp'),
+    path('login/phone/', views.phone_login_view, name='phone_login'),
+    path('login/phone/verify/', views.phone_login_verify_view, name='phone_login_verify'),
+
+    # Authenticated attendee path
+    path('attendee/dashboard/', views.attendee_dashboard, name='attendee_dashboard'),
 
     # Landing (public) and Dashboard
     path('', views.landing),
