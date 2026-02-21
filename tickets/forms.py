@@ -70,6 +70,15 @@ class AttendeePhoneForm(forms.Form):
         help_text='Enter your phone number in international format (e.g. +15551234567)',
     )
 
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.helper = FormHelper()
+        self.helper.form_method = 'post'
+        self.helper.layout = Layout(
+            Field('phone_number'),
+            Submit('submit', 'Send code', css_class='btn btn-primary w-100'),
+        )
+
     def clean_phone_number(self):
         import re
         phone = self.cleaned_data['phone_number'].strip()
@@ -108,75 +117,6 @@ class LoginForm(AuthenticationForm):
         )
 
 
-class SignUpForm(forms.Form):
-    """Sign-up form collecting email, name, and password."""
-
-    email = forms.EmailField(
-        widget=forms.EmailInput(attrs={
-            'class': 'form-control',
-            'placeholder': 'Email address',
-            'autofocus': True,
-        })
-    )
-    first_name = forms.CharField(
-        max_length=150,
-        widget=forms.TextInput(attrs={
-            'class': 'form-control',
-            'placeholder': 'First name',
-        })
-    )
-    last_name = forms.CharField(
-        max_length=150,
-        widget=forms.TextInput(attrs={
-            'class': 'form-control',
-            'placeholder': 'Last name',
-        })
-    )
-    password1 = forms.CharField(
-        label='Password',
-        widget=forms.PasswordInput(attrs={
-            'class': 'form-control',
-            'placeholder': 'Password',
-        })
-    )
-    password2 = forms.CharField(
-        label='Confirm password',
-        widget=forms.PasswordInput(attrs={
-            'class': 'form-control',
-            'placeholder': 'Confirm password',
-        })
-    )
-
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.helper = FormHelper()
-        self.helper.layout = Layout(
-            Field('email'),
-            Row(
-                Column('first_name', css_class='form-group col-md-6 mb-0'),
-                Column('last_name', css_class='form-group col-md-6 mb-0'),
-            ),
-            Field('password1'),
-            Field('password2'),
-            Submit('submit', 'Sign Up', css_class='btn btn-primary w-100'),
-        )
-
-    def clean(self):
-        cleaned_data = super().clean()
-        p1 = cleaned_data.get('password1')
-        p2 = cleaned_data.get('password2')
-        if p1 and p2 and p1 != p2:
-            self.add_error('password2', 'Passwords do not match.')
-        return cleaned_data
-
-    def clean_password1(self):
-        from django.contrib.auth.password_validation import validate_password
-        password = self.cleaned_data.get('password1')
-        if password:
-            validate_password(password)
-        return password
-
-
 class OTPVerificationForm(forms.Form):
     """Form for entering a 6-digit OTP code."""
 
@@ -207,6 +147,49 @@ class OTPVerificationForm(forms.Form):
         if not code.isdigit():
             raise forms.ValidationError('Code must be 6 digits.')
         return code
+
+
+class ProfileCompletionForm(forms.Form):
+    """Form for new attendees to complete their profile after OTP verification."""
+
+    first_name = forms.CharField(max_length=150, widget=forms.TextInput(attrs={
+        'class': 'form-control', 'placeholder': 'First name', 'autofocus': True,
+    }))
+    last_name = forms.CharField(max_length=150, widget=forms.TextInput(attrs={
+        'class': 'form-control', 'placeholder': 'Last name',
+    }))
+    email = forms.EmailField(widget=forms.EmailInput(attrs={
+        'class': 'form-control', 'placeholder': 'Email address',
+    }))
+    gender = forms.ChoiceField(
+        choices=[('', 'Select gender'), ('male', 'Male'), ('female', 'Female'), ('other', 'Other')],
+        widget=forms.Select(attrs={'class': 'form-select'}),
+    )
+    marketing_opt_in = forms.BooleanField(
+        required=False,
+        label='I agree to receive marketing communications',
+    )
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.helper = FormHelper()
+        self.helper.layout = Layout(
+            Row(
+                Column('first_name', css_class='col-md-6'),
+                Column('last_name', css_class='col-md-6'),
+            ),
+            Field('email'),
+            Field('gender'),
+            Field('marketing_opt_in'),
+            Submit('submit', 'Complete setup', css_class='btn btn-primary w-100 mt-2'),
+        )
+
+    def clean_email(self):
+        from django.contrib.auth.models import User
+        email = self.cleaned_data['email'].strip().lower()
+        if User.objects.filter(email__iexact=email).exists():
+            raise forms.ValidationError('An account with this email already exists.')
+        return email
 
 
 class PrettyJSONField(forms.JSONField):

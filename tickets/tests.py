@@ -779,8 +779,8 @@ class MemberInviteTests(TestCase):
         response = self.client.get(reverse('tickets:invite_accept', args=[inv.token]))
         self.assertEqual(response.status_code, 302)
         location = response.get('Location', '') or response.url
-        # Unauthenticated invite acceptance redirects to /signup/ (not /login/) so
-        # new users can register before accepting.
-        self.assertIn('/signup/', location)
+        # Unauthenticated invite acceptance redirects to /login/ so users can
+        # sign in or create an account before accepting.
+        self.assertIn('/login/', location)
         self.assertIn('next=', location)
         self.assertIn(str(inv.token), location)

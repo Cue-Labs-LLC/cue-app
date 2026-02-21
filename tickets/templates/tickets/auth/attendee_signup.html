@@ -18,6 +18,11 @@
                 <form method="post">
                     {% csrf_token %}
                     {% crispy form %}
+                    <p class="text-muted small mt-2 mb-3">
+                        By tapping <strong>Send code</strong>, you agree to Eventflow sending a
+                        one-time verification code to your phone number via SMS.
+                        Message &amp; data rates may apply.
+                    </p>
                 </form>
 
                 <div class="mt-4 text-center text-muted small">

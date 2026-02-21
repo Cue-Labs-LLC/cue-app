@@ -3,7 +3,7 @@ from .feature_flags import direct_ticketing_enabled as direct_ticketing_enabled_
 
 
 def organization_context(request):
-    """Inject org_name, is_organizer, is_attendee, and user_role into every template context.
+    """Inject org_name, is_organizer, is_attendee, user_role, and view_mode into every template context.
 
     Uses the session-cached get_organization() so this adds zero DB queries
     after the first request in a session.
@@ -14,13 +14,25 @@ def organization_context(request):
         'user_role': 'organizer',
         'is_organizer': True,
         'is_attendee': False,
+        'view_mode': 'organizer',
     }
     if request.user.is_authenticated:
         try:
             profile = request.user.profile
-            ctx['user_role']    = profile.role
-            ctx['is_organizer'] = profile.is_organizer
-            ctx['is_attendee']  = profile.is_attendee
+            ctx['user_role'] = profile.role          # actual DB role — never overridden
+            if profile.is_organizer:
+                view_mode = request.session.get('_view_mode', 'organizer')
+                ctx['view_mode'] = view_mode
+                if view_mode == 'attendee':
+                    ctx['is_organizer'] = False
+                    ctx['is_attendee'] = True
+                else:
+                    ctx['is_organizer'] = True
+                    ctx['is_attendee'] = profile.is_attendee
+            else:
+                ctx['is_organizer'] = False
+                ctx['is_attendee'] = profile.is_attendee
+                ctx['view_mode'] = 'attendee'
         except Exception:
             pass
     return ctx

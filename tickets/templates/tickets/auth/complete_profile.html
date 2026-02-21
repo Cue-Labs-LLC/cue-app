@@ -1,18 +1,18 @@
 {% extends 'tickets/base.html' %}
 {% load crispy_forms_tags %}
 
-{% block title %}Sign In - Eventflow{% endblock %}
+{% block title %}Complete Your Profile - Eventflow{% endblock %}
 
 {% block content %}
 <div class="row justify-content-center">
-    <div class="col-md-5">
+    <div class="col-md-6">
         <div class="card shadow">
             <div class="card-body p-5">
                 <h2 class="card-title text-center mb-2">
-                    <i class="bi bi-phone"></i> Sign in or create an account
+                    <i class="bi bi-person-fill-add"></i> Complete your profile
                 </h2>
                 <p class="text-center text-muted mb-4">
-                    We'll send a verification code to your phone via SMS.
+                    Just a few details to get you started.
                 </p>
 
                 {% if messages %}
@@ -28,10 +28,6 @@
                     {% crispy form %}
                 </form>
             </div>
-        </div>
-
-        <div class="text-center mt-2">
-            <a href="/explore/" class="text-decoration-none small">Browse upcoming events</a>
         </div>
     </div>
 </div>

@@ -213,10 +213,15 @@ AUTHENTICATION_BACKENDS = [
     'tickets.backends.PhoneBackend',
 ]
 
-# Twilio SMS (required in prod, optional in dev)
-TWILIO_ACCOUNT_SID  = os.environ.get('TWILIO_ACCOUNT_SID', '')
-TWILIO_AUTH_TOKEN   = os.environ.get('TWILIO_AUTH_TOKEN', '')
-TWILIO_PHONE_NUMBER = os.environ.get('TWILIO_PHONE_NUMBER', '')
+# Session settings — stay logged in for 30 days; OTP only required once per session
+SESSION_COOKIE_AGE = 30 * 24 * 60 * 60  # 30 days in seconds
+SESSION_EXPIRE_AT_BROWSER_CLOSE = False   # persist across browser closes
+SESSION_SAVE_EVERY_REQUEST = True         # refresh the 30-day window on each request
+
+# Twilio (required in prod, optional in dev)
+TWILIO_ACCOUNT_SID       = os.environ.get('TWILIO_ACCOUNT_SID', '')
+TWILIO_AUTH_TOKEN        = os.environ.get('TWILIO_AUTH_TOKEN', '')
+TWILIO_VERIFY_SERVICE_SID = os.environ.get('TWILIO_VERIFY_SERVICE_SID', '')
 
 # Absolute URL for building links in emails (survey invitations, etc.)
 SITE_URL = os.environ.get('SITE_URL', 'http://localhost:8000')

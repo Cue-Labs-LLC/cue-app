@@ -38,25 +38,6 @@ def send_otp_email_task(self, otp_id):
         raise self.retry(exc=exc)
 
 
-@shared_task(bind=True, max_retries=2, default_retry_delay=30)
-def send_phone_otp_task(self, phone_otp_id: str):
-    """Send a phone OTP via SMS (Twilio)."""
-    from tickets.models import PhoneOTP
-    from tickets.sms import send_sms
-    try:
-        otp = PhoneOTP.objects.get(id=phone_otp_id)
-    except PhoneOTP.DoesNotExist:
-        logger.warning("PhoneOTP %s not found, skipping SMS", phone_otp_id)
-        return
-    if otp.is_verified or otp.is_expired():
-        return
-    message = f"Your Eventflow code is {otp.otp_code}. Valid for 10 minutes."
-    try:
-        send_sms(otp.phone_number, message)
-    except Exception as exc:
-        logger.exception("Failed to send SMS OTP to %s", otp.phone_number)
-        raise self.retry(exc=exc)
-
 
 @shared_task(bind=True, max_retries=2, default_retry_delay=30)
 def send_survey_emails_task(self, event_id, organization_id):

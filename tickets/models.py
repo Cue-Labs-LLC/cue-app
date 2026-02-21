@@ -119,6 +119,19 @@ class UserProfile(models.Model):
         db_index=True,
     )
 
+    class Gender(models.TextChoices):
+        MALE   = 'male',   'Male'
+        FEMALE = 'female', 'Female'
+        OTHER  = 'other',  'Other'
+
+    gender = models.CharField(
+        max_length=10,
+        choices=Gender.choices,
+        blank=True,
+        null=True,
+    )
+    marketing_opt_in = models.BooleanField(default=False)
+
     class Meta:
         verbose_name = "User profile"
         verbose_name_plural = "User profiles"
@@ -132,7 +145,7 @@ class UserProfile(models.Model):
 
     @property
     def is_attendee(self):
-        return self.role in (self.Role.ATTENDEE, self.Role.BOTH)
+        return True  # all users have attendee abilities; organizers are a superset
 
 
 class OrganizationInvitation(BaseModel):

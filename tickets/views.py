@@ -30,13 +30,13 @@ from .models import (
     SurveyQuestion, SurveyInvitation, SurveyResponse, SurveyAnswer,
     PipedreamCalendarConnection,
     SaleableTicketType, StripeCheckoutSession,
-    PhoneOTP,
 )
 from .forms import (
     EventCSVUploadForm, EventExpenseForm, TicketPriceEntryForm, CSVFormatForm,
     VenueForm, EventForm, EventTalentFormSet, LoginForm,
     IncomeSourceForm, EventIncomeForm,
-    SignUpForm, OTPVerificationForm, MemberInviteForm, AttendeePhoneForm,
+    OTPVerificationForm, MemberInviteForm, AttendeePhoneForm,
+    ProfileCompletionForm,
     SaleableTicketTypeForm, PublicTicketPurchaseForm,
     DirectEventForm, DirectTicketTypeFormSet,
 )
@@ -191,16 +191,134 @@ def _sync_event_to_google_calendar(event):
 
 
 # Authentication Views
-class LoginView(auth_views.LoginView):
-    """Custom login view."""
-    template_name = 'tickets/auth/login.html'
-    form_class = LoginForm
-    redirect_authenticated_user = True
+
+def unified_login_view(request):
+    """Step 1: enter phone number — handles both login and new signup."""
+    from .sms import start_phone_verification
+    if request.user.is_authenticated:
+        try:
+            if request.user.profile.is_organizer:
+                return redirect('tickets:home')
+        except UserProfile.DoesNotExist:
+            pass
+        return redirect('tickets:attendee_dashboard')
+    if request.method == 'POST':
+        form = AttendeePhoneForm(request.POST)
+        if form.is_valid():
+            phone = form.cleaned_data['phone_number']
+            is_new = not UserProfile.objects.filter(phone_number=phone).exists()
+            if not start_phone_verification(phone):
+                messages.error(request, 'Could not send a verification code. Please check the number and try again.')
+            else:
+                request.session['verify_unified'] = {'phone': phone, 'is_new': is_new}
+                return redirect('tickets:unified_verify')
+    else:
+        form = AttendeePhoneForm()
+    return render(request, 'tickets/auth/login.html', {'form': form})
 
 
-def login_view(request):
-    """Login view wrapper."""
-    return LoginView.as_view()(request)
+@require_http_methods(["GET", "POST"])
+def unified_verify_view(request):
+    """Step 2: verify OTP — log in existing user or send new user to profile completion."""
+    from django.contrib.auth import login as auth_login
+    from django.contrib.auth.models import User
+    from .sms import check_phone_verification
+    if request.user.is_authenticated:
+        return redirect('tickets:attendee_dashboard')
+    session_data = request.session.get('verify_unified')
+    if not session_data:
+        return redirect('tickets:login')
+    phone = session_data['phone']
+    is_new = session_data.get('is_new', False)
+    if request.method == 'POST':
+        form = OTPVerificationForm(request.POST)
+        if form.is_valid():
+            code = form.cleaned_data['otp_code']
+            if not check_phone_verification(phone, code):
+                messages.error(request, 'Incorrect or expired code. Please try again.')
+            else:
+                del request.session['verify_unified']
+                if not is_new:
+                    try:
+                        user = User.objects.get(username=phone)
+                    except User.DoesNotExist:
+                        messages.error(request, 'Account not found. Please sign up.')
+                        return redirect('tickets:login')
+                    auth_login(request, user, backend='tickets.backends.PhoneBackend')
+                    try:
+                        if user.profile.is_organizer:
+                            return redirect('tickets:home')
+                    except UserProfile.DoesNotExist:
+                        pass
+                    return redirect('tickets:attendee_dashboard')
+                else:
+                    request.session['pending_signup_phone'] = phone
+                    return redirect('tickets:complete_profile')
+    else:
+        form = OTPVerificationForm()
+    return render(request, 'tickets/auth/login_verify.html', {
+        'form': form,
+        'masked_phone': f"***{phone[-4:]}",
+        'is_new': is_new,
+    })
+
+
+@require_http_methods(["POST"])
+def unified_resend_view(request):
+    """Resend OTP for the unified login/signup flow."""
+    from .sms import start_phone_verification
+    if request.user.is_authenticated:
+        return redirect('tickets:attendee_dashboard')
+    session_data = request.session.get('verify_unified')
+    if not session_data:
+        return redirect('tickets:login')
+    if not start_phone_verification(session_data['phone']):
+        messages.error(request, 'Could not resend the code. Please try again.')
+    else:
+        messages.success(request, 'A new code has been sent.')
+    return redirect('tickets:unified_verify')
+
+
+@require_http_methods(["GET", "POST"])
+def complete_profile_view(request):
+    """Step 3 (new users only): collect name, email, gender, marketing opt-in."""
+    from django.contrib.auth import login as auth_login
+    from django.contrib.auth.models import User
+    if request.user.is_authenticated:
+        return redirect('tickets:attendee_dashboard')
+    phone = request.session.get('pending_signup_phone')
+    if not phone:
+        return redirect('tickets:login')
+    if request.method == 'POST':
+        form = ProfileCompletionForm(request.POST)
+        if form.is_valid():
+            cd = form.cleaned_data
+            if User.objects.filter(username=phone).exists():
+                messages.info(request, 'An account with this phone already exists. Please log in.')
+                del request.session['pending_signup_phone']
+                return redirect('tickets:login')
+            user = User.objects.create(
+                username=phone,
+                email=cd['email'],
+                first_name=cd['first_name'],
+                last_name=cd['last_name'],
+            )
+            user.set_unusable_password()
+            user.save()
+            UserProfile.objects.create(
+                user=user,
+                role=UserProfile.Role.ATTENDEE,
+                phone_number=phone,
+                gender=cd['gender'],
+                marketing_opt_in=cd['marketing_opt_in'],
+            )
+            del request.session['pending_signup_phone']
+            auth_login(request, user, backend='tickets.backends.PhoneBackend')
+            messages.success(request, 'Welcome to Eventflow!')
+            return redirect('tickets:attendee_dashboard')
+    else:
+        form = ProfileCompletionForm()
+    return render(request, 'tickets/auth/complete_profile.html', {'form': form})
 
 
 class LogoutView(auth_views.LogoutView):
@@ -257,202 +375,89 @@ def password_reset_complete(request):
     return PasswordResetCompleteView.as_view()(request)
 
 
-# ---------------------------------------------------------------------------
-# Sign-Up with Email OTP Verification
-# ---------------------------------------------------------------------------
+@login_required
+def become_organizer_view(request):
+    """Informational page for attendees who want to create an organization."""
+    try:
+        if request.user.profile.is_organizer:
+            return redirect('tickets:home')
+    except UserProfile.DoesNotExist:
+        pass
+    return render(request, 'tickets/auth/become_organizer.html')
 
-@require_http_methods(["GET", "POST"])
+
 def signup_view(request):
-    """Step 1: Collect email, name, and password; send OTP."""
-    import random
-    from django.contrib.auth.hashers import make_password
-    from .models import EmailOTP
-    from .tasks import send_otp_email_task
-
+    """Step 1: Attendee enters phone; Twilio Verify sends OTP. No org assigned."""
+    from .sms import start_phone_verification
     if request.user.is_authenticated:
-        return redirect('tickets:home')
-
-    # Preserve next (e.g. invite accept URL) through signup flow for redirect after verify
-    next_url = request.GET.get('next')
-    if next_url:
-        from django.utils.http import url_has_allowed_host_and_scheme
-        from django.conf import settings
-        if url_has_allowed_host_and_scheme(next_url, allowed_hosts=settings.ALLOWED_HOSTS):
-            request.session['invite_accept_next'] = next_url
-
-    if request.method == 'POST':
-        form = SignUpForm(request.POST)
+        return redirect('tickets:attendee_dashboard')
+    if request.method == "POST":
+        form = AttendeePhoneForm(request.POST)
         if form.is_valid():
-            email = form.cleaned_data['email'].lower()
-
-            # Rate limit: max 3 OTP sends per email per 30 minutes
-            thirty_min_ago = django_tz.now() - timedelta(minutes=30)
-            recent_count = EmailOTP.objects.filter(
-                email__iexact=email,
-                purpose=EmailOTP.Purpose.SIGNUP,
-                created_at__gte=thirty_min_ago,
-            ).count()
-            if recent_count >= 3:
-                messages.error(
-                    request,
-                    'Too many verification attempts. Please try again later.'
-                )
-                return redirect('tickets:signup')
-
-            otp_code = f'{random.randint(0, 999999):06d}'
-            otp = EmailOTP.objects.create(
-                email=email,
-                otp_code=otp_code,
-                purpose=EmailOTP.Purpose.SIGNUP,
-                signup_data={
-                    'email': email,
-                    'first_name': form.cleaned_data['first_name'],
-                    'last_name': form.cleaned_data['last_name'],
-                    'password': make_password(form.cleaned_data['password1']),
-                },
-            )
-
-            send_otp_email_task.delay(str(otp.id))
-
-            request.session['otp_id'] = str(otp.id)
-            # Always redirect to verify — same behaviour whether email exists or not
-            return redirect('tickets:verify_otp')
+            phone = form.cleaned_data["phone_number"]
+            if UserProfile.objects.filter(phone_number=phone).exists():
+                messages.error(request, 'An account with this phone number already exists. Please log in.')
+                return redirect('tickets:phone_login')
+            if not start_phone_verification(phone):
+                messages.error(request, 'Could not send a verification code. Please check the number and try again.')
+            else:
+                request.session["verify_signup"] = {"phone": phone}
+                return redirect('tickets:verify_otp')
     else:
-        form = SignUpForm()
-
+        form = AttendeePhoneForm()
     return render(request, 'tickets/auth/signup.html', {'form': form})
 
 
 @require_http_methods(["GET", "POST"])
 def verify_otp_view(request):
-    """Step 2: Verify the OTP code and create the user account."""
+    """Step 2: Verify Twilio code and create attendee account (no org)."""
     from django.contrib.auth import login
     from django.contrib.auth.models import User
-    from .models import EmailOTP
-
+    from .sms import check_phone_verification
     if request.user.is_authenticated:
-        return redirect('tickets:home')
-
-    otp_id = request.session.get('otp_id')
-    if not otp_id:
+        return redirect('tickets:attendee_dashboard')
+    session_data = request.session.get("verify_signup")
+    if not session_data:
         messages.error(request, 'No pending verification. Please sign up first.')
         return redirect('tickets:signup')
-
-    try:
-        otp = EmailOTP.objects.get(id=otp_id)
-    except EmailOTP.DoesNotExist:
-        messages.error(request, 'Verification session expired. Please sign up again.')
-        return redirect('tickets:signup')
-
-    if not otp.is_usable():
-        msg = 'Code expired.' if otp.is_expired() else 'Too many attempts.'
-        messages.error(request, f'{msg} Please sign up again.')
-        request.session.pop('otp_id', None)
-        return redirect('tickets:signup')
-
-    # Mask email for display (e.g. t***@example.com)
-    email = otp.email
-    local, domain = email.split('@', 1)
-    masked_email = local[0] + '***@' + domain if len(local) > 1 else email
-
-    if request.method == 'POST':
+    phone = session_data["phone"]
+    if request.method == "POST":
         form = OTPVerificationForm(request.POST)
         if form.is_valid():
-            otp.attempts += 1
-            otp.save(update_fields=['attempts'])
-
-            if form.cleaned_data['otp_code'] != otp.otp_code:
-                remaining = 5 - otp.attempts
-                if remaining <= 0:
-                    messages.error(request, 'Too many failed attempts. Please sign up again.')
-                    request.session.pop('otp_id', None)
-                    return redirect('tickets:signup')
-                messages.error(request, f'Invalid code. {remaining} attempt(s) remaining.')
-                return render(request, 'tickets/auth/verify_otp.html', {
-                    'form': form, 'masked_email': masked_email,
-                })
-
-            # Code matches — mark verified and create user
-            otp.is_verified = True
-            otp.save(update_fields=['is_verified'])
-
-            data = otp.signup_data
-
-            # Final uniqueness check (race condition guard)
-            if User.objects.filter(email__iexact=data['email']).exists():
-                messages.info(request, 'An account with this email already exists. Please log in.')
-                request.session.pop('otp_id', None)
-                return redirect('tickets:login')
-
-            user = User.objects.create(
-                username=data['email'],
-                email=data['email'],
-                first_name=data['first_name'],
-                last_name=data['last_name'],
-                password=data['password'],  # already hashed via make_password
-            )
-            UserProfile.objects.create(user=user)
-
-            login(request, user, backend='tickets.backends.EmailBackend')
-            request.session.pop('otp_id', None)
-            next_url = request.session.pop('invite_accept_next', None)
-            if next_url:
-                from django.utils.http import url_has_allowed_host_and_scheme
-                from django.conf import settings
-                if url_has_allowed_host_and_scheme(next_url, allowed_hosts=settings.ALLOWED_HOSTS):
-                    messages.success(request, 'Account created! Use the link below to join the organization.')
-                    return redirect(next_url)
-            messages.success(request, 'Account created! Please create or join an organization to get started.')
-            return redirect('tickets:create_organization')
+            code = form.cleaned_data["otp_code"]
+            if not check_phone_verification(phone, code):
+                messages.error(request, 'Incorrect or expired code. Please try again.')
+            else:
+                if User.objects.filter(username=phone).exists():
+                    messages.info(request, 'An account with this phone already exists. Please log in.')
+                    del request.session["verify_signup"]
+                    return redirect('tickets:phone_login')
+                user = User.objects.create(username=phone, email='', first_name='', last_name='')
+                user.set_unusable_password()
+                user.save()
+                UserProfile.objects.create(user=user, role=UserProfile.Role.ATTENDEE, phone_number=phone)
+                del request.session["verify_signup"]
+                login(request, user, backend='tickets.backends.PhoneBackend')
+                messages.success(request, 'Account created! Welcome to Eventflow.')
+                return redirect('tickets:attendee_dashboard')
     else:
         form = OTPVerificationForm()
-
-    return render(request, 'tickets/auth/verify_otp.html', {
-        'form': form, 'masked_email': masked_email,
-    })
+    return render(request, 'tickets/auth/verify_otp.html', {'form': form, 'masked_phone': f"***{phone[-4:]}"})
 
 
 @require_http_methods(["POST"])
 def resend_otp_view(request):
-    """Resend a new OTP code for the current signup session."""
-    import random
-    from .models import EmailOTP
-    from .tasks import send_otp_email_task
-
+    """Resend Twilio Verify code for the /signup/ phone flow."""
+    from .sms import start_phone_verification
     if request.user.is_authenticated:
-        return redirect('tickets:home')
-
-    otp_id = request.session.get('otp_id')
-    if not otp_id:
+        return redirect('tickets:attendee_dashboard')
+    session_data = request.session.get("verify_signup")
+    if not session_data:
         return redirect('tickets:signup')
-
-    try:
-        old_otp = EmailOTP.objects.get(id=otp_id)
-    except EmailOTP.DoesNotExist:
-        return redirect('tickets:signup')
-
-    # Rate limit: max 3 per email per 30 min
-    thirty_min_ago = django_tz.now() - timedelta(minutes=30)
-    recent_count = EmailOTP.objects.filter(
-        email__iexact=old_otp.email,
-        purpose=EmailOTP.Purpose.SIGNUP,
-        created_at__gte=thirty_min_ago,
-    ).count()
-    if recent_count >= 3:
-        messages.error(request, 'Too many verification attempts. Please try again later.')
-        return redirect('tickets:verify_otp')
-
-    new_code = f'{random.randint(0, 999999):06d}'
-    new_otp = EmailOTP.objects.create(
-        email=old_otp.email,
-        otp_code=new_code,
-        purpose=EmailOTP.Purpose.SIGNUP,
-        signup_data=old_otp.signup_data,
-    )
-
-    send_otp_email_task.delay(str(new_otp.id))
-    request.session['otp_id'] = str(new_otp.id)
-    messages.success(request, 'A new verification code has been sent.')
+    if not start_phone_verification(session_data["phone"]):
+        messages.error(request, 'Could not resend the code. Please try again.')
+    else:
+        messages.success(request, 'A new code has been sent.')
     return redirect('tickets:verify_otp')
 
 
@@ -470,6 +475,9 @@ def health_check(request):
 def landing(request):
     """Public landing page (no login required). Logged-in users are redirected to the dashboard."""
     if request.user.is_authenticated:
+        org = get_organization(request)
+        if org is None:
+            return redirect('tickets:attendee_dashboard')
         return redirect('tickets:home')
     return render(request, 'tickets/landing.html')
 
@@ -619,9 +627,9 @@ def invite_accept(request, token):
     if not request.user.is_authenticated:
         from django.urls import reverse
         from urllib.parse import urlencode
-        signup_url = reverse('tickets:signup')
+        login_url = reverse('tickets:login')
         invite_url = request.build_absolute_uri()
-        return redirect(f'{signup_url}?{urlencode({"next": invite_url})}')
+        return redirect(f'{login_url}?{urlencode({"next": invite_url})}')
 
     if request.user.email.lower() != invitation.email.lower():
         return render(request, 'tickets/invite_accept.html', {
@@ -3466,32 +3474,20 @@ def _expire_checkout(stripe_session):
 # ---------------------------------------------------------------------------
 
 def attendee_signup_view(request, org_slug):
-    """Public. Attendee enters phone number to get SMS OTP."""
+    """Public. Attendee enters phone number; Twilio Verify sends the OTP."""
+    from .sms import start_phone_verification
     org = get_object_or_404(Organization, slug=org_slug)
     if request.method == "POST":
         form = AttendeePhoneForm(request.POST)
         if form.is_valid():
             phone = form.cleaned_data["phone_number"]
-            recent_count = PhoneOTP.objects.filter(
-                phone_number=phone,
-                purpose=PhoneOTP.Purpose.SIGNUP,
-                created_at__gte=django_tz.now() - timedelta(minutes=30),
-            ).count()
-            if recent_count >= 3:
-                messages.error(request, 'Too many attempts. Please wait 30 minutes.')
-            elif UserProfile.objects.filter(phone_number=phone).exists():
+            if UserProfile.objects.filter(phone_number=phone).exists():
                 messages.error(request, 'An account with this phone number already exists. Please log in.')
                 return redirect('tickets:phone_login')
+            if not start_phone_verification(phone):
+                messages.error(request, 'Could not send a verification code. Please check the number and try again.')
             else:
-                otp = PhoneOTP.objects.create(
-                    phone_number=phone,
-                    otp_code=f"{random.randint(0, 999999):06d}",
-                    purpose=PhoneOTP.Purpose.SIGNUP,
-                    signup_data={"org_id": str(org.id)},
-                )
-                from .tasks import send_phone_otp_task
-                send_phone_otp_task.delay(str(otp.id))
-                request.session["phone_otp_id"] = str(otp.id)
+                request.session["verify_org_signup"] = {"phone": phone, "org_id": str(org.id)}
                 return redirect('tickets:attendee_verify_otp', org_slug=org_slug)
     else:
         form = AttendeePhoneForm()
@@ -3499,33 +3495,25 @@ def attendee_signup_view(request, org_slug):
 
 
 def attendee_verify_otp_view(request, org_slug):
-    """Verifies SMS OTP, creates User+UserProfile with attendee role."""
+    """Verifies Twilio Verify code, creates User+UserProfile with attendee role."""
     from django.contrib.auth import login as auth_login
     from django.contrib.auth import get_user_model
+    from .sms import check_phone_verification
     AuthUser = get_user_model()
 
     org = get_object_or_404(Organization, slug=org_slug)
-    otp_id = request.session.get("phone_otp_id")
-    if not otp_id:
+    session_data = request.session.get("verify_org_signup")
+    if not session_data:
         return redirect('tickets:attendee_signup', org_slug=org_slug)
-    otp = get_object_or_404(PhoneOTP, id=otp_id)
-    if not otp.is_usable():
-        messages.error(request, 'Code expired or already used. Please request a new one.')
-        return redirect('tickets:attendee_signup', org_slug=org_slug)
+    phone = session_data["phone"]
 
     if request.method == "POST":
         form = OTPVerificationForm(request.POST)
         if form.is_valid():
             code = form.cleaned_data["otp_code"]
-            otp.attempts += 1
-            if otp.otp_code != code:
-                otp.save(update_fields=["attempts"])
-                remaining = 5 - otp.attempts
-                messages.error(request, f'Incorrect code. {remaining} attempt(s) remaining.')
+            if not check_phone_verification(phone, code):
+                messages.error(request, 'Incorrect or expired code. Please try again.')
             else:
-                otp.is_verified = True
-                otp.save(update_fields=["is_verified", "attempts"])
-                phone = otp.phone_number
                 user = AuthUser.objects.create(
                     username=phone,
                     email='',
@@ -3540,7 +3528,7 @@ def attendee_verify_otp_view(request, org_slug):
                     role=UserProfile.Role.ATTENDEE,
                     phone_number=phone,
                 )
-                del request.session["phone_otp_id"]
+                del request.session["verify_org_signup"]
                 auth_login(request, user, backend='tickets.backends.PhoneBackend')
                 messages.success(request, 'Welcome! You are now registered.')
                 return redirect('tickets:attendee_dashboard')
@@ -3549,12 +3537,13 @@ def attendee_verify_otp_view(request, org_slug):
     return render(request, 'tickets/auth/attendee_verify_otp.html', {
         'form': form,
         'org': org,
-        "masked_phone": f"***{otp.phone_number[-4:]}",
+        "masked_phone": f"***{phone[-4:]}",
     })
 
 
 def phone_login_view(request):
-    """Public. Existing attendee enters phone to receive SMS OTP."""
+    """Public. Existing attendee enters phone; Twilio Verify sends the OTP."""
+    from .sms import start_phone_verification
     if request.user.is_authenticated:
         return redirect('tickets:attendee_dashboard')
     if request.method == "POST":
@@ -3563,15 +3552,10 @@ def phone_login_view(request):
             phone = form.cleaned_data["phone_number"]
             if not UserProfile.objects.filter(phone_number=phone).exists():
                 messages.error(request, 'No account found with this phone number.')
+            elif not start_phone_verification(phone):
+                messages.error(request, 'Could not send a verification code. Please try again.')
             else:
-                otp = PhoneOTP.objects.create(
-                    phone_number=phone,
-                    otp_code=f"{random.randint(0, 999999):06d}",
-                    purpose=PhoneOTP.Purpose.LOGIN,
-                )
-                from .tasks import send_phone_otp_task
-                send_phone_otp_task.delay(str(otp.id))
-                request.session["phone_otp_id"] = str(otp.id)
+                request.session["verify_login"] = {"phone": phone}
                 return redirect('tickets:phone_login_verify')
     else:
         form = AttendeePhoneForm()
@@ -3579,38 +3563,31 @@ def phone_login_view(request):
 
 
 def phone_login_verify_view(request):
-    """Verify SMS OTP for returning attendees; log in on success."""
+    """Verify Twilio Verify code for returning attendees; log in on success."""
     from django.contrib.auth import login as auth_login
     from django.contrib.auth import get_user_model
+    from .sms import check_phone_verification
     AuthUser = get_user_model()
 
-    otp_id = request.session.get("phone_otp_id")
-    if not otp_id:
+    session_data = request.session.get("verify_login")
+    if not session_data:
         return redirect('tickets:phone_login')
-    otp = get_object_or_404(PhoneOTP, id=otp_id)
-    if not otp.is_usable():
-        messages.error(request, 'Code expired or already used. Please request a new one.')
-        return redirect('tickets:phone_login')
+    phone = session_data["phone"]
 
     if request.method == "POST":
         form = OTPVerificationForm(request.POST)
         if form.is_valid():
             code = form.cleaned_data["otp_code"]
-            otp.attempts += 1
-            if otp.otp_code != code:
-                otp.save(update_fields=["attempts"])
-                remaining = 5 - otp.attempts
-                messages.error(request, f'Incorrect code. {remaining} attempt(s) remaining.')
+            if not check_phone_verification(phone, code):
+                messages.error(request, 'Incorrect or expired code. Please try again.')
             else:
-                otp.is_verified = True
-                otp.save(update_fields=["is_verified", "attempts"])
                 try:
-                    user = AuthUser.objects.get(username=otp.phone_number)
+                    user = AuthUser.objects.get(username=phone)
                 except AuthUser.DoesNotExist:
                     messages.error(request, 'Account not found. Please sign up first.')
-                    del request.session["phone_otp_id"]
+                    del request.session["verify_login"]
                     return redirect('tickets:phone_login')
-                del request.session["phone_otp_id"]
+                del request.session["verify_login"]
                 auth_login(request, user, backend='tickets.backends.PhoneBackend')
                 try:
                     profile = user.profile
@@ -3623,8 +3600,47 @@ def phone_login_verify_view(request):
         form = OTPVerificationForm()
     return render(request, 'tickets/auth/phone_login_verify.html', {
         'form': form,
-        "masked_phone": f"***{otp.phone_number[-4:]}",
+        "masked_phone": f"***{phone[-4:]}",
     })
+
+
+@require_http_methods(["POST"])
+def phone_login_resend_view(request):
+    """Resend Twilio Verify code for the /login/phone/ flow."""
+    from .sms import start_phone_verification
+    if request.user.is_authenticated:
+        return redirect('tickets:attendee_dashboard')
+    session_data = request.session.get("verify_login")
+    if not session_data:
+        return redirect('tickets:phone_login')
+    if not start_phone_verification(session_data["phone"]):
+        messages.error(request, 'Could not resend the code. Please try again.')
+    else:
+        messages.success(request, 'A new code has been sent.')
+    return redirect('tickets:phone_login_verify')
+
+
+# ---------------------------------------------------------------------------
+# View Mode Toggle (organizer ↔ attendee)
+# ---------------------------------------------------------------------------
+
+@login_required
+@require_http_methods(["POST"])
+def switch_view_mode(request):
+    """Let organizers toggle between organizer and attendee view."""
+    try:
+        profile = request.user.profile
+    except UserProfile.DoesNotExist:
+        return redirect('tickets:attendee_dashboard')
+    if not profile.is_organizer:
+        return redirect('tickets:attendee_dashboard')
+    mode = request.POST.get('mode', 'organizer')
+    if mode == 'attendee':
+        request.session['_view_mode'] = 'attendee'
+        return redirect('tickets:attendee_dashboard')
+    else:
+        request.session['_view_mode'] = 'organizer'
+        return redirect('tickets:home')
 
 
 # ---------------------------------------------------------------------------
@@ -3632,10 +3648,22 @@ def phone_login_verify_view(request):
 # ---------------------------------------------------------------------------
 
 @login_required
-@require_org
 def attendee_dashboard(request):
-    """Attendee placeholder dashboard."""
-    return render(request, 'tickets/attendee_dashboard.html', {})
+    """Attendee dashboard — shows upcoming purchasable events."""
+    from .models import TICKETING_TYPE_DIRECT
+    today = django_tz.now().date()
+    events_qs = (
+        Event.objects.filter(
+            deleted_at__isnull=True,
+            start_date__gte=today,
+            ticketing_type=TICKETING_TYPE_DIRECT,
+        )
+        .select_related('venue')
+        .order_by('start_date', 'start_time', 'name')
+    )
+    paginator = Paginator(events_qs, 24)
+    page_obj = paginator.get_page(request.GET.get('page'))
+    return render(request, 'tickets/attendee_dashboard.html', {'page_obj': page_obj})
 
 
 # ---------------------------------------------------------------------------

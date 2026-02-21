@@ -98,5 +98,8 @@ def require_organizer(view_func):
             return redirect('tickets:attendee_dashboard')
         if not profile.is_organizer:
             return redirect('tickets:attendee_dashboard')
+        # Respect session view mode
+        if request.session.get('_view_mode') == 'attendee':
+            return redirect('tickets:attendee_dashboard')
         return view_func(request, *args, **kwargs)
     return _wrapped

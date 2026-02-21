@@ -9,11 +9,18 @@
         <div class="card shadow">
             <div class="card-body p-5">
                 <h2 class="card-title text-center mb-2">
-                    <i class="bi bi-shield-lock"></i> Verify Your Phone
+                    <i class="bi bi-shield-lock"></i> Enter your code
                 </h2>
-                <p class="text-center text-muted mb-4">
+                <p class="text-center text-muted mb-1">
                     We sent a 6-digit code to <strong>{{ masked_phone }}</strong>
                 </p>
+                {% if is_new %}
+                <p class="text-center text-muted small mb-4">
+                    We'll set up your account after verification.
+                </p>
+                {% else %}
+                <div class="mb-4"></div>
+                {% endif %}
 
                 {% if messages %}
                     {% for message in messages %}
@@ -23,16 +30,16 @@
                     {% endfor %}
                 {% endif %}
 
-                <form method="post" action="{% url 'tickets:verify_otp' %}">
+                <form method="post">
                     {% csrf_token %}
                     {% crispy form %}
                 </form>
 
                 <div class="d-flex justify-content-between align-items-center mt-4">
-                    <a href="{% url 'tickets:signup' %}" class="text-decoration-none">
-                        <i class="bi bi-arrow-left"></i> Back to sign up
+                    <a href="{% url 'tickets:login' %}" class="text-decoration-none">
+                        <i class="bi bi-arrow-left"></i> Back
                     </a>
-                    <form method="post" action="{% url 'tickets:resend_otp' %}" class="d-inline">
+                    <form method="post" action="{% url 'tickets:unified_resend' %}" class="d-inline">
                         {% csrf_token %}
                         <button type="submit" class="btn btn-link text-decoration-none p-0">
                             <i class="bi bi-arrow-clockwise"></i> Resend code

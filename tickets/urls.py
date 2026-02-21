@@ -1,15 +1,21 @@
 from django.urls import path
+from django.views.generic import RedirectView
 from . import views
 
 app_name = 'tickets'
 
 urlpatterns = [
-    # Authentication
-    path('login/', views.login_view, name='login'),
+    # Authentication — unified phone-first entry point
+    path('login/', views.unified_login_view, name='login'),
+    path('login/verify/', views.unified_verify_view, name='unified_verify'),
+    path('login/resend/', views.unified_resend_view, name='unified_resend'),
+    path('login/complete-profile/', views.complete_profile_view, name='complete_profile'),
     path('logout/', views.logout_view, name='logout'),
-    path('signup/', views.signup_view, name='signup'),
-    path('signup/verify/', views.verify_otp_view, name='verify_otp'),
-    path('signup/resend-otp/', views.resend_otp_view, name='resend_otp'),
+    # Old attendee phone signup — redirect to unified login
+    path('signup/', RedirectView.as_view(pattern_name='tickets:login', permanent=False), name='signup'),
+    path('signup/verify/', RedirectView.as_view(pattern_name='tickets:login', permanent=False), name='verify_otp'),
+    path('signup/resend-otp/', RedirectView.as_view(pattern_name='tickets:login', permanent=False), name='resend_otp'),
+    path('become-organizer/', views.become_organizer_view, name='become_organizer'),
     path('password-reset/', views.password_reset_request, name='password_reset'),
     path('password-reset/done/', views.password_reset_done, name='password_reset_done'),
     path('password-reset-confirm/<uidb64>/<token>/', views.password_reset_confirm, name='password_reset_confirm'),
@@ -33,11 +39,14 @@ urlpatterns = [
     # Public attendee paths (no auth required)
     path('join/<slug:org_slug>/', views.attendee_signup_view, name='attendee_signup'),
     path('join/<slug:org_slug>/verify/', views.attendee_verify_otp_view, name='attendee_verify_otp'),
-    path('login/phone/', views.phone_login_view, name='phone_login'),
-    path('login/phone/verify/', views.phone_login_verify_view, name='phone_login_verify'),
+    # Old phone login — redirect to unified login
+    path('login/phone/', RedirectView.as_view(pattern_name='tickets:login', permanent=False), name='phone_login'),
+    path('login/phone/verify/', RedirectView.as_view(pattern_name='tickets:login', permanent=False), name='phone_login_verify'),
+    path('login/phone/resend/', RedirectView.as_view(pattern_name='tickets:login', permanent=False), name='phone_login_resend'),
 
     # Authenticated attendee path
     path('attendee/dashboard/', views.attendee_dashboard, name='attendee_dashboard'),
+    path('switch-view/', views.switch_view_mode, name='switch_view_mode'),
 
     # Landing (public) and Dashboard
     path('', views.landing),

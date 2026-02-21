@@ -23,11 +23,16 @@
                 <form method="post" action="{% url 'tickets:signup' %}">
                     {% csrf_token %}
                     {% crispy form %}
+                    <p class="text-muted small mt-2 mb-3">
+                        By tapping <strong>Send code</strong>, you agree to Eventflow sending a
+                        one-time verification code to your phone number via SMS.
+                        Message &amp; data rates may apply.
+                    </p>
                 </form>
 
                 <div class="text-center mt-4">
-                    <a href="{% url 'tickets:login' %}" class="text-decoration-none">
-                        <i class="bi bi-box-arrow-in-right"></i> Already have an account? Sign in
+                    <a href="{% url 'tickets:phone_login' %}" class="text-decoration-none">
+                        <i class="bi bi-box-arrow-in-right"></i> Already have an account? Log in
                     </a>
                 </div>
             </div>
