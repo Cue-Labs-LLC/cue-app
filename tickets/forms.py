@@ -12,10 +12,9 @@ class OrganizationForm(forms.ModelForm):
 
     class Meta:
         model = Organization
-        fields = ['name', 'slug']
+        fields = ['name']
         widgets = {
             'name': forms.TextInput(attrs={'class': 'form-control', 'placeholder': 'e.g., Acme Events'}),
-            'slug': forms.TextInput(attrs={'class': 'form-control', 'placeholder': 'e.g., acme-events'}),
         }
 
     def __init__(self, *args, **kwargs):
@@ -24,7 +23,6 @@ class OrganizationForm(forms.ModelForm):
         self.helper.form_method = 'post'
         self.helper.layout = Layout(
             Field('name'),
-            Field('slug'),
             Submit('submit', 'Create Organization', css_class='btn btn-primary'),
         )
 

@@ -1,0 +1,90 @@
+{% extends 'tickets/base.html' %}
+
+{% block title %}My Tickets - Eventflow{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1>My Tickets</h1>
+        <p class="page-header-subtitle">Your purchase history.</p>
+    </div>
+</div>
+
+{% if messages %}
+{% for message in messages %}
+<div class="alert alert-{{ message.tags|default:'info' }} alert-dismissible fade show mb-4" role="alert">
+    {{ message }}
+    <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+</div>
+{% endfor %}
+{% endif %}
+
+{% if page_obj %}
+<div class="card">
+    <div class="card-body p-0">
+        <div class="table-responsive">
+            <table class="table table-hover mb-0">
+                <thead>
+                    <tr>
+                        <th>Event</th>
+                        <th>Order #</th>
+                        <th>Date</th>
+                        <th>Tickets</th>
+                        <th>Total</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for order in page_obj %}
+                    <tr>
+                        <td>
+                            <div class="fw-semibold">{{ order.event.name }}</div>
+                            {% if order.event.start_date %}
+                            <div class="text-muted small">
+                                <i class="bi bi-calendar-event"></i>
+                                {{ order.event.start_date|date:"F j, Y" }}
+                                {% if order.event.venue %}
+                                &middot; {{ order.event.venue.name }}, {{ order.event.venue.city }}
+                                {% endif %}
+                            </div>
+                            {% endif %}
+                        </td>
+                        <td class="text-muted small">{{ order.order_number }}</td>
+                        <td class="text-muted small">{{ order.order_date|date:"M j, Y" }}</td>
+                        <td>{{ order.tickets.all|length }}</td>
+                        <td>
+                            {% if order.total_amount %}
+                            ${{ order.total_amount|floatformat:2 }}
+                            {% else %}
+                            Free
+                            {% endif %}
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+{% if page_obj.has_other_pages %}
+<nav class="mt-4 d-flex justify-content-center">
+    <ul class="pagination mb-0">
+        {% if page_obj.has_previous %}
+        <li class="page-item"><a class="page-link" href="?page={{ page_obj.previous_page_number }}">Previous</a></li>
+        {% endif %}
+        <li class="page-item disabled"><span class="page-link">Page {{ page_obj.number }} of {{ page_obj.paginator.num_pages }}</span></li>
+        {% if page_obj.has_next %}
+        <li class="page-item"><a class="page-link" href="?page={{ page_obj.next_page_number }}">Next</a></li>
+        {% endif %}
+    </ul>
+</nav>
+{% endif %}
+
+{% else %}
+<div class="empty-state">
+    <i class="bi bi-ticket-perforated"></i>
+    <p>You haven't purchased any tickets yet.</p>
+    <a href="{% url 'tickets:attendee_dashboard' %}" class="btn btn-primary">Browse Events</a>
+</div>
+{% endif %}
+{% endblock %}

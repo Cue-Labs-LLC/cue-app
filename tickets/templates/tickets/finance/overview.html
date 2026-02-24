@@ -1,0 +1,232 @@
+{% extends "tickets/base.html" %}
+
+{% block title %}Finance — {{ org_name }}{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1 class="page-title">Finance</h1>
+        <p class="page-subtitle text-muted">Revenue summary and payouts for {{ org_name }}</p>
+    </div>
+</div>
+
+{% if messages %}
+<div class="mb-3">
+    {% for message in messages %}
+    <div class="alert alert-{{ message.tags|default:'info' }} alert-dismissible fade show" role="alert">
+        {{ message }}
+        <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+    </div>
+    {% endfor %}
+</div>
+{% endif %}
+
+<!-- Stats row -->
+<div class="row g-3 mb-4">
+    <div class="col-6 col-lg-3">
+        <div class="stat-card">
+            <div class="stat-label">Gross Revenue</div>
+            <div class="stat-value">${{ gross_revenue|floatformat:2 }}</div>
+            <div class="stat-sub">All orders (CSV + Stripe)</div>
+        </div>
+    </div>
+    <div class="col-6 col-lg-3">
+        <div class="stat-card stat-card--accent">
+            <div class="stat-label">Online Revenue</div>
+            <div class="stat-value">${{ stripe_revenue|floatformat:2 }}</div>
+            <div class="stat-sub">Completed Stripe checkouts</div>
+        </div>
+    </div>
+    <div class="col-6 col-lg-3">
+        <div class="stat-card stat-card--info">
+            <div class="stat-label">Total Paid Out</div>
+            <div class="stat-value">${{ paid_out|floatformat:2 }}</div>
+            <div class="stat-sub">Completed payouts</div>
+        </div>
+    </div>
+    <div class="col-6 col-lg-3">
+        <div class="stat-card stat-card--success">
+            <div class="stat-label">Available Balance</div>
+            <div class="stat-value">${{ available_balance|floatformat:2 }}</div>
+            <div class="stat-sub">Ready to pay out</div>
+        </div>
+    </div>
+</div>
+
+<!-- Bank Account & Payout -->
+<div class="card mb-4">
+    <div class="card-header">
+        <h5 class="mb-0">Bank Account &amp; Payouts</h5>
+    </div>
+    <div class="card-body">
+        {% if not has_stripe_account %}
+        <div class="empty-state">
+            <i class="bi bi-bank fs-1 text-muted"></i>
+            <p class="mt-2 mb-3">Connect your bank account to receive payouts from ticket sales.</p>
+            <form method="post" action="{% url 'tickets:stripe_connect_onboard' %}">
+                {% csrf_token %}
+                <button type="submit" class="btn btn-primary">
+                    <i class="bi bi-plug"></i> Connect Bank Account
+                </button>
+            </form>
+        </div>
+
+        {% elif not onboarding_complete %}
+        <div class="alert alert-warning d-flex align-items-start gap-2">
+            <i class="bi bi-exclamation-triangle-fill flex-shrink-0 mt-1"></i>
+            <div>
+                <strong>Onboarding incomplete.</strong>
+                Your bank account is not fully verified. Please finish the Stripe onboarding to enable payouts.
+            </div>
+        </div>
+        <form method="post" action="{% url 'tickets:stripe_connect_onboard' %}">
+            {% csrf_token %}
+            <button type="submit" class="btn btn-warning">
+                <i class="bi bi-arrow-right-circle"></i> Resume Onboarding
+            </button>
+        </form>
+
+        {% else %}
+        <div class="alert alert-success d-flex align-items-start gap-2 mb-4">
+            <i class="bi bi-check-circle-fill flex-shrink-0 mt-1"></i>
+            <div>
+                <strong>Bank account connected.</strong>
+                Payouts will be transferred to your linked bank account on Stripe's schedule.
+            </div>
+        </div>
+
+        <form method="post" action="{% url 'tickets:initiate_payout' %}">
+            {% csrf_token %}
+            <div class="row g-3 align-items-end">
+                <div class="col-md-4">
+                    <label for="payout-amount" class="form-label">Payout Amount (USD)</label>
+                    <div class="input-group">
+                        <span class="input-group-text">$</span>
+                        <input type="number" id="payout-amount" name="amount"
+                               class="form-control"
+                               min="{{ min_payout }}"
+                               max="{{ available_balance|floatformat:2 }}"
+                               step="0.01"
+                               placeholder="{{ available_balance|floatformat:2 }}"
+                               required>
+                    </div>
+                    <div class="form-text">Min ${{ min_payout|floatformat:2 }} · Max ${{ available_balance|floatformat:2 }}</div>
+                </div>
+                <div class="col-md-5">
+                    <label for="payout-notes" class="form-label">Notes <span class="text-muted">(optional)</span></label>
+                    <input type="text" id="payout-notes" name="notes" class="form-control"
+                           maxlength="500" placeholder="e.g. Q1 2026 settlement">
+                </div>
+                <div class="col-md-3">
+                    <button type="submit" class="btn btn-success w-100"
+                            {% if available_balance <= 0 %}disabled{% endif %}>
+                        <i class="bi bi-send"></i> Request Payout
+                    </button>
+                </div>
+            </div>
+        </form>
+        {% endif %}
+    </div>
+</div>
+
+<!-- Recent Online Transactions -->
+<div class="card mb-4">
+    <div class="card-header d-flex justify-content-between align-items-center">
+        <h5 class="mb-0">Recent Online Transactions</h5>
+        <span class="badge bg-secondary">Last 20</span>
+    </div>
+    {% if recent_transactions %}
+    <div class="card-body p-0">
+        <div class="table-responsive">
+            <table class="table table-hover mb-0">
+                <thead>
+                    <tr>
+                        <th>Date</th>
+                        <th>Event</th>
+                        <th>Buyer</th>
+                        <th class="text-end">Amount</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for session in recent_transactions %}
+                    <tr>
+                        <td class="text-nowrap">{{ session.fulfilled_at|date:"M j, Y" }}</td>
+                        <td>{{ session.event.name }}</td>
+                        <td>{{ session.buyer_name|default:session.buyer_email }}</td>
+                        <td class="text-end">${{ session.amount_dollars|floatformat:2 }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+    {% else %}
+    <div class="card-body">
+        <div class="empty-state">
+            <i class="bi bi-receipt fs-2 text-muted"></i>
+            <p class="mt-2 mb-0 text-muted">No completed online transactions yet.</p>
+        </div>
+    </div>
+    {% endif %}
+</div>
+
+<!-- Payout History -->
+<div class="card mb-4">
+    <div class="card-header">
+        <h5 class="mb-0">Payout History</h5>
+    </div>
+    {% if payout_history %}
+    <div class="card-body p-0">
+        <div class="table-responsive">
+            <table class="table table-hover mb-0">
+                <thead>
+                    <tr>
+                        <th>Date</th>
+                        <th class="text-end">Amount</th>
+                        <th>Status</th>
+                        <th>Transfer ID</th>
+                        <th>Notes</th>
+                        <th>Initiated By</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for payout in payout_history %}
+                    <tr>
+                        <td class="text-nowrap">{{ payout.created_at|date:"M j, Y" }}</td>
+                        <td class="text-end">${{ payout.amount|floatformat:2 }}</td>
+                        <td>
+                            {% if payout.status == 'completed' %}
+                            <span class="badge bg-success">Completed</span>
+                            {% elif payout.status == 'pending' %}
+                            <span class="badge bg-warning text-dark">Pending</span>
+                            {% else %}
+                            <span class="badge bg-danger">Failed</span>
+                            {% endif %}
+                        </td>
+                        <td>
+                            {% if payout.stripe_transfer_id %}
+                            <code class="small">{{ payout.stripe_transfer_id }}</code>
+                            {% else %}
+                            <span class="text-muted">—</span>
+                            {% endif %}
+                        </td>
+                        <td class="text-muted small">{{ payout.notes|default:"—" }}</td>
+                        <td class="text-muted small">
+                            {% if payout.initiated_by %}{{ payout.initiated_by.get_full_name|default:payout.initiated_by.username }}{% else %}—{% endif %}
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+    {% else %}
+    <div class="card-body">
+        <div class="empty-state">
+            <i class="bi bi-arrow-left-right fs-2 text-muted"></i>
+            <p class="mt-2 mb-0 text-muted">No payouts yet.</p>
+        </div>
+    </div>
+    {% endif %}
+</div>
+{% endblock %}

@@ -16,19 +16,45 @@
         .success-sub { color: #666; margin-bottom: 32px; }
         .detail-card { background: #fff; border-radius: 8px; padding: 20px 24px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); text-align: left; }
         .detail-card table { width: 100%; font-size: 0.9rem; }
-        .detail-card th { color: #888; font-weight: 500; padding-right: 12px; width: 40%; }
-        .detail-card td { color: #1a1a2e; font-weight: 600; }
+        .detail-card th { color: #888; font-weight: 500; padding-right: 12px; width: 40%; vertical-align: top; padding-bottom: 8px; }
+        .detail-card td { color: #1a1a2e; font-weight: 600; padding-bottom: 8px; }
         .processing-notice { background: #fff3cd; border: 1px solid #ffc107; border-radius: 6px; padding: 14px 18px; font-size: 0.9rem; margin-top: 20px; color: #664d03; }
     </style>
 </head>
 <body>
 <div class="success-container">
-    {% if session and session.status == 'completed' %}
 
+    {% if order %}
+    {# Free ticket flow — order created synchronously #}
     <div class="success-icon"><i class="bi bi-check-circle-fill"></i></div>
     <div class="success-title">You're in!</div>
     <p class="success-sub">Your tickets have been confirmed. See you there!</p>
+    <div class="detail-card mb-3">
+        <table>
+            <tr>
+                <th>Event</th>
+                <td>{{ order.event.name }}</td>
+            </tr>
+            <tr>
+                <th>Order</th>
+                <td>{{ order.order_number }}</td>
+            </tr>
+            <tr>
+                <th>Email</th>
+                <td>{{ order.customer.email }}</td>
+            </tr>
+            <tr>
+                <th>Total</th>
+                <td>Free</td>
+            </tr>
+        </table>
+    </div>
 
+    {% elif session and session.status == 'completed' %}
+    {# Paid flow — webhook has fired and fulfilled the order #}
+    <div class="success-icon"><i class="bi bi-check-circle-fill"></i></div>
+    <div class="success-title">You're in!</div>
+    <p class="success-sub">Your tickets have been confirmed. See you there!</p>
     {% if session.ticket_order %}
     <div class="detail-card mb-3">
         <table>
@@ -53,17 +79,18 @@
         </table>
     </div>
     {% endif %}
+    <a href="{% url 'tickets:my_tickets' %}" class="btn btn-primary mt-2">View My Tickets</a>
 
     {% else %}
-
+    {# Paid flow — payment received but webhook not yet processed #}
     <div class="success-icon" style="color: #ffc107;"><i class="bi bi-hourglass-split"></i></div>
     <div class="success-title">Payment Received</div>
     <p class="success-sub">Your payment was successful. We're finalizing your order.</p>
     <div class="processing-notice">
         <i class="bi bi-info-circle"></i> Your tickets are being issued. This page will refresh automatically.
     </div>
-
     {% endif %}
+
 </div>
 
 {% if session and session.status != 'completed' %}

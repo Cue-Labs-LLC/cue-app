@@ -21,6 +21,7 @@ from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
 from django.db import connection, transaction
 from django.utils import timezone as django_tz
+from django.utils.text import slugify
 import pandas as pd
 
 from .models import (
@@ -29,7 +30,7 @@ from .models import (
     CustomField, EventCustomFieldValue, IncomeSource, EventIncome,
     SurveyQuestion, SurveyInvitation, SurveyResponse, SurveyAnswer,
     PipedreamCalendarConnection,
-    SaleableTicketType, StripeCheckoutSession,
+    SaleableTicketType, StripeCheckoutSession, Payout,
 )
 from .forms import (
     EventCSVUploadForm, EventExpenseForm, TicketPriceEntryForm, CSVFormatForm,
@@ -522,7 +523,15 @@ def create_organization(request):
     if request.method == 'POST':
         form = OrganizationForm(request.POST)
         if form.is_valid():
-            org = form.save()
+            org = form.save(commit=False)
+            base_slug = slugify(org.name)
+            slug = base_slug
+            counter = 1
+            while Organization.objects.filter(slug=slug).exists():
+                slug = f"{base_slug}-{counter}"
+                counter += 1
+            org.slug = slug
+            org.save()
             profile.organization = org
             profile.role = UserProfile.Role.ORGANIZER
             profile.save(update_fields=['organization', 'role'])
@@ -3219,15 +3228,11 @@ def event_flyer_upload(request, event_id):
 # ---------------------------------------------------------------------------
 
 def public_event_buy(request, event_id):
-    """Public ticket selector page. POST creates a Stripe Checkout session."""
-    from django.conf import settings as django_settings
-    import stripe as stripe_lib
-
+    """Public ticket selector page. POST stores cart in session and redirects to checkout."""
     event = get_object_or_404(
         Event.objects.select_related('venue', 'organization'),
         id=event_id,
     )
-    now = django_tz.now()
     ticket_types = SaleableTicketType.objects.filter(
         event=event,
         is_active=True,
@@ -3239,60 +3244,17 @@ def public_event_buy(request, event_id):
         form = PublicTicketPurchaseForm(available_types, request.POST)
         if form.is_valid():
             line_items = form.get_line_items()
-
-            stripe_lib.api_key = django_settings.STRIPE_SECRET_KEY
-            site_url = django_settings.SITE_URL
-
-            stripe_line_items = []
-            snapshot = []
-            for tt, qty in line_items:
-                stripe_line_items.append({
-                    'price_data': {
-                        'currency': django_settings.STRIPE_CURRENCY,
-                        'unit_amount': int(tt.price * 100),
-                        'product_data': {
-                            'name': f"{event.name} — {tt.name}",
-                        },
-                    },
-                    'quantity': qty,
-                })
-                snapshot.append({
+            snapshot = [
+                {
                     'saleable_ticket_type_id': str(tt.id),
                     'name': tt.name,
                     'price': str(tt.price),
                     'quantity': qty,
-                })
-
-            try:
-                session = stripe_lib.checkout.Session.create(
-                    payment_method_types=['card'],
-                    line_items=stripe_line_items,
-                    mode='payment',
-                    success_url=f"{site_url}/checkout/success/?session_id={{CHECKOUT_SESSION_ID}}",
-                    cancel_url=f"{site_url}/checkout/cancel/?session_id={{CHECKOUT_SESSION_ID}}",
-                    metadata={'event_id': str(event.id), 'org_id': str(event.organization_id)},
-                )
-            except Exception as e:
-                logger.error("Stripe session creation failed: %s", e)
-                messages.error(request, 'Could not create checkout session. Please try again.')
-                return render(request, 'tickets/buy/public_event_buy.html', {
-                    'event': event,
-                    'form': form,
-                    'available_types': available_types,
-                })
-
-            amount_total_cents = sum(
-                int(tt.price * 100) * qty for tt, qty in line_items
-            )
-            StripeCheckoutSession.objects.create(
-                event=event,
-                organization=event.organization,
-                stripe_session_id=session.id,
-                status=StripeCheckoutSession.Status.PENDING,
-                line_items_snapshot=snapshot,
-                amount_total_cents=amount_total_cents,
-            )
-            return redirect(session.url)
+                }
+                for tt, qty in line_items
+            ]
+            request.session[f'cart_{event_id}'] = snapshot
+            return redirect('tickets:checkout_payment', event_id=event_id)
     else:
         Event.objects.filter(pk=event.pk).update(
             public_buy_page_views=F('public_buy_page_views') + 1
@@ -3310,28 +3272,247 @@ def public_event_buy(request, event_id):
     })
 
 
-def checkout_success(request):
-    """Post-payment landing page shown after Stripe redirects back."""
-    session_id = request.GET.get('session_id', '')
-    session_obj = None
-    if session_id:
-        session_obj = StripeCheckoutSession.objects.filter(
-            stripe_session_id=session_id
-        ).select_related('ticket_order', 'event').first()
-    return render(request, 'tickets/buy/checkout_success.html', {
-        'session': session_obj,
+def checkout_payment(request, event_id):
+    """Custom checkout page — collects buyer info and processes payment via Stripe Elements."""
+    from django.conf import settings as django_settings
+
+    event = get_object_or_404(
+        Event.objects.select_related('venue', 'organization'),
+        id=event_id,
+    )
+
+    cart = request.session.get(f'cart_{event_id}')
+    if not cart:
+        return redirect('tickets:public_event_buy', event_id=event_id)
+
+    total_cents = sum(
+        int(Decimal(item['price']) * 100) * item['quantity']
+        for item in cart
+    )
+    is_free = total_cents == 0
+
+    total_dollars = Decimal(total_cents) / 100
+
+    if request.method == 'POST' and is_free:
+        buyer_name = request.POST.get('buyer_name', '').strip()
+        buyer_email = request.POST.get('buyer_email', '').strip().lower()
+        if not buyer_name or not buyer_email:
+            return render(request, 'tickets/buy/checkout_payment.html', {
+                'event': event,
+                'cart': cart,
+                'total_cents': total_cents,
+                'total_dollars': total_dollars,
+                'is_free': is_free,
+                'stripe_publishable_key': django_settings.STRIPE_PUBLISHABLE_KEY,
+                'error': 'Please provide your name and email.',
+            })
+
+        with transaction.atomic():
+            org = event.organization
+            customer, _ = Customer.objects.get_or_create(
+                email=buyer_email,
+                defaults={'organization': org, 'name': buyer_name},
+            )
+            order_number = f"FREE-{event.id.hex[:8].upper()}-{django_tz.now().strftime('%Y%m%d%H%M%S')}"
+            order = TicketOrder.objects.create(
+                customer=customer,
+                event=event,
+                uploaded_file=None,
+                order_number=order_number,
+                order_date=django_tz.now(),
+                total_amount=Decimal('0.00'),
+            )
+            for item in cart:
+                tt_id = item['saleable_ticket_type_id']
+                qty = item['quantity']
+                item_name = item['name']
+                SaleableTicketType.objects.filter(id=tt_id).update(
+                    quantity_sold=F('quantity_sold') + qty
+                )
+                Ticket.objects.bulk_create([
+                    Ticket(
+                        ticket_order=order,
+                        ticket_type=item_name,
+                        price=Decimal('0.00'),
+                        tier=None,
+                    )
+                    for _ in range(qty)
+                ])
+            customer.update_lifetime_value()
+            _invalidate_event_list_cache(org)
+
+        del request.session[f'cart_{event_id}']
+        return redirect(f"{reverse_lazy('tickets:checkout_success')}?order_id={order.id}")
+
+    user_name = ''
+    user_email = ''
+    saved_pm = None
+
+    if request.user.is_authenticated:
+        user = request.user
+        user_name = user.get_full_name() or user.email
+        user_email = user.email
+        try:
+            profile = user.profile
+            if profile.stripe_pm_id and profile.stripe_pm_last4:
+                saved_pm = {
+                    'id': profile.stripe_pm_id,
+                    'brand': profile.stripe_pm_brand,
+                    'last4': profile.stripe_pm_last4,
+                }
+        except UserProfile.DoesNotExist:
+            pass
+
+    return render(request, 'tickets/buy/checkout_payment.html', {
+        'event': event,
+        'cart': cart,
+        'total_cents': total_cents,
+        'total_dollars': total_dollars,
+        'is_free': is_free,
+        'stripe_publishable_key': django_settings.STRIPE_PUBLISHABLE_KEY,
+        'user_name': user_name,
+        'user_email': user_email,
+        'saved_pm': saved_pm,
+        'user_is_authenticated': request.user.is_authenticated,
     })
 
 
-def checkout_cancel(request):
-    """Buyer abandoned — mark session canceled if still pending."""
+@require_http_methods(["POST"])
+def create_payment_intent(request, event_id):
+    """JSON endpoint — creates a Stripe PaymentIntent and a StripeCheckoutSession record."""
+    from django.conf import settings as django_settings
+    import stripe as stripe_lib
+
+    event = get_object_or_404(
+        Event.objects.select_related('organization'),
+        id=event_id,
+    )
+
+    cart = request.session.get(f'cart_{event_id}')
+    if not cart:
+        return JsonResponse({'error': 'No cart found. Please start over.'}, status=400)
+
+    try:
+        data = json.loads(request.body)
+    except (ValueError, TypeError):
+        return JsonResponse({'error': 'Invalid request.'}, status=400)
+
+    buyer_name = (data.get('buyer_name') or '').strip()
+    buyer_email = (data.get('buyer_email') or '').strip().lower()
+    if not buyer_name or not buyer_email:
+        return JsonResponse({'error': 'Name and email are required.'}, status=400)
+
+    save_card    = bool(data.get('save_card', False))
+    use_saved_pm = (data.get('use_saved_pm') or '').strip()
+
+    # Re-validate availability
+    for item in cart:
+        tt_id = item['saleable_ticket_type_id']
+        qty = item['quantity']
+        try:
+            tt = SaleableTicketType.objects.get(id=tt_id, event=event, is_active=True)
+        except SaleableTicketType.DoesNotExist:
+            return JsonResponse({'error': f'Ticket type is no longer available.'}, status=400)
+        if tt.quantity_limit is not None and (tt.quantity_sold + qty) > tt.quantity_limit:
+            return JsonResponse({'error': f'Not enough tickets available for {tt.name}.'}, status=400)
+
+    total_cents = sum(
+        int(Decimal(item['price']) * 100) * item['quantity']
+        for item in cart
+    )
+    if total_cents == 0:
+        return JsonResponse({'error': 'Use the free ticket flow for $0 orders.'}, status=400)
+
+    stripe_lib.api_key = django_settings.STRIPE_SECRET_KEY
+
+    # Resolve or create a Stripe Customer for authenticated users
+    stripe_customer_id = None
+    if request.user.is_authenticated:
+        try:
+            profile = request.user.profile
+            if profile.stripe_customer_id:
+                stripe_customer_id = profile.stripe_customer_id
+            else:
+                cus = stripe_lib.Customer.create(email=buyer_email, name=buyer_name)
+                stripe_customer_id = cus.id
+                UserProfile.objects.filter(pk=profile.pk).update(stripe_customer_id=stripe_customer_id)
+        except Exception as e:
+            logger.error("Stripe Customer.create failed: %s", e)
+            # non-fatal — card saving skipped, payment proceeds
+
+    pi_kwargs = {
+        'amount': total_cents,
+        'currency': django_settings.STRIPE_CURRENCY,
+        'receipt_email': buyer_email,
+        'metadata': {
+            'event_id': str(event.id),
+            'org_id': str(event.organization_id),
+        },
+    }
+    if stripe_customer_id:
+        pi_kwargs['customer'] = stripe_customer_id
+    if save_card and stripe_customer_id:
+        pi_kwargs['setup_future_usage'] = 'off_session'
+        pi_kwargs['metadata']['user_id'] = str(request.user.pk)
+    if use_saved_pm:
+        pi_kwargs['payment_method'] = use_saved_pm
+
+    try:
+        pi = stripe_lib.PaymentIntent.create(**pi_kwargs)
+    except Exception as e:
+        logger.error("PaymentIntent creation failed: %s", e)
+        return JsonResponse({'error': 'Could not initiate payment. Please try again.'}, status=500)
+
+    session_record = StripeCheckoutSession.objects.create(
+        event=event,
+        organization=event.organization,
+        stripe_session_id=pi.id,
+        stripe_payment_intent_id=pi.id,
+        buyer_email=buyer_email,
+        buyer_name=buyer_name,
+        status=StripeCheckoutSession.Status.PENDING,
+        line_items_snapshot=cart,
+        amount_total_cents=total_cents,
+    )
+
+    return JsonResponse({
+        'client_secret': pi.client_secret,
+        'session_id': str(session_record.id),
+    })
+
+
+def checkout_success(request):
+    """Post-payment landing page — supports ?session_id=<uuid> (paid) and ?order_id=<uuid> (free)."""
+    session_obj = None
+    order_obj = None
+
     session_id = request.GET.get('session_id', '')
+    order_id = request.GET.get('order_id', '')
+
     if session_id:
-        StripeCheckoutSession.objects.filter(
-            stripe_session_id=session_id,
-            status=StripeCheckoutSession.Status.PENDING,
-        ).update(status=StripeCheckoutSession.Status.CANCELED)
-    return render(request, 'tickets/buy/checkout_cancel.html', {})
+        # Paid flow: session_id is our DB record UUID
+        session_obj = StripeCheckoutSession.objects.filter(
+            id=session_id
+        ).select_related('ticket_order', 'event').first()
+    elif order_id:
+        # Free flow: look up TicketOrder directly
+        order_obj = TicketOrder.objects.filter(
+            id=order_id
+        ).select_related('event', 'customer').first()
+
+    # Redirect authenticated users to My Tickets when the order is confirmed
+    if request.user.is_authenticated:
+        if order_obj:
+            messages.success(request, "Your tickets are confirmed!")
+            return redirect('tickets:my_tickets')
+        if session_obj and session_obj.status == StripeCheckoutSession.Status.COMPLETED:
+            messages.success(request, "Your tickets are confirmed!")
+            return redirect('tickets:my_tickets')
+
+    return render(request, 'tickets/buy/checkout_success.html', {
+        'session': session_obj,
+        'order': order_obj,
+    })
 
 
 # ---------------------------------------------------------------------------
@@ -3359,33 +3540,30 @@ def stripe_webhook(request):
         return HttpResponse(status=400)
 
     event_type = event['type']
-    if event_type == 'checkout.session.completed':
-        _fulfill_checkout(event['data']['object'])
-    elif event_type in ('checkout.session.expired',):
-        _expire_checkout(event['data']['object'])
+    if event_type == 'payment_intent.succeeded':
+        _fulfill_payment_intent(event['data']['object'])
+    elif event_type == 'payment_intent.payment_failed':
+        _fail_payment_intent(event['data']['object'])
 
     return HttpResponse(status=200)
 
 
-def _fulfill_checkout(stripe_session):
+def _fulfill_payment_intent(payment_intent):
     """
-    Idempotently fulfill a completed Stripe Checkout session.
-    Creates Customer, TicketOrder, and Ticket records; updates LTV.
+    Idempotently fulfill a succeeded PaymentIntent.
+    Buyer info is pre-populated in our DB record at PI creation time.
     """
-    session_id = stripe_session['id']
-    amount_total_cents = stripe_session.get('amount_total', 0) or 0
-    payment_intent_id = stripe_session.get('payment_intent', '') or ''
-    buyer_email = (stripe_session.get('customer_details', {}) or {}).get('email', '') or ''
-    buyer_name = (stripe_session.get('customer_details', {}) or {}).get('name', '') or ''
+    pi_id = payment_intent['id']
+    amount_total_cents = payment_intent.get('amount_received', 0) or 0
 
     # Idempotency check #1: outside lock
-    session_obj = StripeCheckoutSession.objects.filter(stripe_session_id=session_id).first()
+    session_obj = StripeCheckoutSession.objects.filter(stripe_session_id=pi_id).first()
     if session_obj and session_obj.status == StripeCheckoutSession.Status.COMPLETED:
-        logger.info("Stripe webhook: session %s already fulfilled", session_id)
+        logger.info("Stripe webhook: PaymentIntent %s already fulfilled", pi_id)
         return
 
     if not session_obj:
-        logger.warning("Stripe webhook: no StripeCheckoutSession for %s — skipping", session_id)
+        logger.warning("Stripe webhook: no StripeCheckoutSession for PaymentIntent %s — skipping", pi_id)
         return
 
     with transaction.atomic():
@@ -3397,32 +3575,25 @@ def _fulfill_checkout(stripe_session):
         org = session_obj.organization
         event = session_obj.event
 
-        # Update buyer info from Stripe if not already set
-        if buyer_email and not session_obj.buyer_email:
-            session_obj.buyer_email = buyer_email.lower()
-        if buyer_name and not session_obj.buyer_name:
-            session_obj.buyer_name = buyer_name
-        if payment_intent_id:
-            session_obj.stripe_payment_intent_id = payment_intent_id
         if amount_total_cents:
             session_obj.amount_total_cents = amount_total_cents
 
-        email = session_obj.buyer_email or buyer_email.lower()
-        name = session_obj.buyer_name or buyer_name or email
+        email = session_obj.buyer_email
+        name = session_obj.buyer_name or email
 
         customer, _ = Customer.objects.get_or_create(
             email=email.lower(),
             defaults={'organization': org, 'name': name},
         )
 
-        order_number = f"STRIPE-{session_id}"[:100]
+        order_number = f"STRIPE-{pi_id}"[:100]
         order = TicketOrder.objects.create(
             customer=customer,
             event=event,
             uploaded_file=None,
             order_number=order_number,
             order_date=django_tz.now(),
-            total_amount=Decimal(str(amount_total_cents)) / 100,
+            total_amount=Decimal(str(session_obj.amount_total_cents)) / 100,
         )
 
         for item in session_obj.line_items_snapshot:
@@ -3431,12 +3602,11 @@ def _fulfill_checkout(stripe_session):
             item_name = item.get('name', '')
             item_price = Decimal(str(item.get('price', '0')))
 
-            # Atomic increment quantity_sold
             SaleableTicketType.objects.filter(id=tt_id).update(
                 quantity_sold=F('quantity_sold') + qty
             )
 
-            tickets_to_create = [
+            Ticket.objects.bulk_create([
                 Ticket(
                     ticket_order=order,
                     ticket_type=item_name,
@@ -3444,8 +3614,7 @@ def _fulfill_checkout(stripe_session):
                     tier=None,
                 )
                 for _ in range(qty)
-            ]
-            Ticket.objects.bulk_create(tickets_to_create)
+            ])
 
         customer.update_lifetime_value()
 
@@ -3456,18 +3625,37 @@ def _fulfill_checkout(stripe_session):
 
         _invalidate_event_list_cache(org)
 
-    logger.info("Fulfilled Stripe session %s — order %s", session_id, order.order_number)
+        if payment_intent.get('setup_future_usage') == 'off_session':
+            user_id = payment_intent.get('metadata', {}).get('user_id', '')
+            pm_id   = payment_intent.get('payment_method', '')
+            if user_id and pm_id:
+                import stripe as stripe_lib_inner
+                from django.conf import settings as django_settings_inner
+                stripe_lib_inner.api_key = django_settings_inner.STRIPE_SECRET_KEY
+                try:
+                    pm   = stripe_lib_inner.PaymentMethod.retrieve(pm_id)
+                    card = pm.get('card', {})
+                    UserProfile.objects.filter(user_id=user_id).update(
+                        stripe_pm_id=pm_id,
+                        stripe_pm_brand=card.get('brand', ''),
+                        stripe_pm_last4=card.get('last4', ''),
+                    )
+                    logger.info("Saved PaymentMethod %s for user %s", pm_id, user_id)
+                except Exception as e:
+                    logger.error("Failed to save PaymentMethod %s for user %s: %s", pm_id, user_id, e)
+
+    logger.info("Fulfilled PaymentIntent %s — order %s", pi_id, order.order_number)
 
 
-def _expire_checkout(stripe_session):
-    """Mark an expired Stripe session."""
-    session_id = stripe_session.get('id', '')
-    if session_id:
+def _fail_payment_intent(payment_intent):
+    """Mark a failed PaymentIntent session as canceled."""
+    pi_id = payment_intent.get('id', '')
+    if pi_id:
         StripeCheckoutSession.objects.filter(
-            stripe_session_id=session_id,
+            stripe_session_id=pi_id,
             status=StripeCheckoutSession.Status.PENDING,
-        ).update(status=StripeCheckoutSession.Status.EXPIRED)
-        logger.info("Stripe session %s marked expired", session_id)
+        ).update(status=StripeCheckoutSession.Status.CANCELED)
+        logger.info("PaymentIntent %s marked canceled (payment failed)", pi_id)
 
 # ---------------------------------------------------------------------------
 # Attendee Auth Views (public — no login required)
@@ -3666,6 +3854,21 @@ def attendee_dashboard(request):
     return render(request, 'tickets/attendee_dashboard.html', {'page_obj': page_obj})
 
 
+@login_required
+def my_tickets(request):
+    """Attendee order history — shows all ticket orders for the logged-in user."""
+    orders = (
+        TicketOrder.objects
+        .filter(customer__email=request.user.email)
+        .select_related('event', 'event__venue', 'customer')
+        .prefetch_related('tickets')
+        .order_by('-order_date')
+    )
+    paginator = Paginator(orders, 12)
+    page_obj = paginator.get_page(request.GET.get('page'))
+    return render(request, 'tickets/my_tickets.html', {'page_obj': page_obj})
+
+
 # ---------------------------------------------------------------------------
 # Member Role Update
 # ---------------------------------------------------------------------------
@@ -3690,3 +3893,220 @@ def member_role_update(request, profile_id):
         profile.save(update_fields=['role'])
         messages.success(request, f"Updated role to {profile.get_role_display()}.")
     return redirect('tickets:member_list')
+
+
+# ---------------------------------------------------------------------------
+# Finance / Stripe Connect
+# ---------------------------------------------------------------------------
+
+_MIN_PAYOUT = Decimal('1.00')
+
+
+def _compute_available_balance(org):
+    """Return (stripe_revenue, paid_out, available_balance) for the given org."""
+    stripe_cents = StripeCheckoutSession.objects.filter(
+        organization=org, status=StripeCheckoutSession.Status.COMPLETED,
+    ).aggregate(total=Coalesce(Sum('amount_total_cents'), 0))['total']
+    stripe_revenue = Decimal(str(stripe_cents)) / 100
+
+    paid_out = Payout.objects.filter(
+        organization=org, status=Payout.Status.COMPLETED,
+    ).aggregate(total=Coalesce(Sum('amount'), Decimal('0.00')))['total']
+
+    return stripe_revenue, paid_out, stripe_revenue - paid_out
+
+
+@login_required
+@require_org
+@require_organizer
+@require_http_methods(["GET"])
+def finance_overview(request):
+    """Finance overview: revenue stats, bank account status, payout history."""
+    org = get_organization(request)
+
+    gross = TicketOrder.objects.filter(
+        customer__organization=org,
+    ).aggregate(total=Coalesce(Sum('total_amount'), Decimal('0.00')))['total']
+
+    stripe_revenue, paid_out, available_balance = _compute_available_balance(org)
+
+    recent_txns = list(
+        StripeCheckoutSession.objects
+        .filter(organization=org, status=StripeCheckoutSession.Status.COMPLETED)
+        .select_related('ticket_order', 'event')
+        .order_by('-fulfilled_at')[:20]
+    )
+    for s in recent_txns:
+        s.amount_dollars = Decimal(str(s.amount_total_cents)) / 100
+
+    payout_history = (
+        Payout.objects.filter(organization=org)
+        .select_related('initiated_by')
+    )
+
+    context = {
+        'gross_revenue': gross,
+        'stripe_revenue': stripe_revenue,
+        'paid_out': paid_out,
+        'available_balance': available_balance,
+        'recent_transactions': recent_txns,
+        'payout_history': payout_history,
+        'onboarding_complete': org.stripe_onboarding_complete,
+        'has_stripe_account': bool(org.stripe_account_id),
+        'min_payout': _MIN_PAYOUT,
+    }
+    return render(request, 'tickets/finance/overview.html', context)
+
+
+@login_required
+@require_org
+@require_organizer
+@require_http_methods(["POST"])
+def stripe_connect_onboard(request):
+    """Create (or reuse) a Stripe Express account and redirect to onboarding."""
+    import stripe as stripe_lib
+    from django.urls import reverse
+    from django.conf import settings as django_settings
+    stripe_lib.api_key = django_settings.STRIPE_SECRET_KEY
+    org = get_organization(request)
+
+    try:
+        if not org.stripe_account_id:
+            account = stripe_lib.Account.create(
+                type='express',
+                metadata={'org_id': str(org.id)},
+            )
+            org.stripe_account_id = account.id
+            org.save(update_fields=['stripe_account_id'])
+
+        account_link = stripe_lib.AccountLink.create(
+            account=org.stripe_account_id,
+            refresh_url=request.build_absolute_uri(reverse('tickets:stripe_connect_refresh')),
+            return_url=request.build_absolute_uri(reverse('tickets:stripe_connect_return')),
+            type='account_onboarding',
+        )
+        return redirect(account_link.url)
+    except stripe_lib.error.StripeError as e:
+        messages.error(request, f'Could not start Stripe onboarding: {getattr(e, "user_message", None) or str(e)}')
+        return redirect('tickets:finance_overview')
+
+
+@login_required
+@require_org
+@require_organizer
+@require_http_methods(["GET"])
+def stripe_connect_return(request):
+    """Stripe redirects here after the organizer completes (or abandons) onboarding."""
+    import stripe as stripe_lib
+    from django.conf import settings as django_settings
+    stripe_lib.api_key = django_settings.STRIPE_SECRET_KEY
+    org = get_organization(request)
+
+    if org.stripe_account_id:
+        try:
+            account = stripe_lib.Account.retrieve(org.stripe_account_id)
+            if account.details_submitted and account.charges_enabled:
+                org.stripe_onboarding_complete = True
+                org.save(update_fields=['stripe_onboarding_complete'])
+                messages.success(request, 'Bank account connected successfully. You can now request payouts.')
+            else:
+                messages.warning(request, 'Onboarding incomplete. Please finish connecting your bank account.')
+        except stripe_lib.error.StripeError as e:
+            messages.error(request, f'Could not verify Stripe account: {getattr(e, "user_message", None) or str(e)}')
+
+    return redirect('tickets:finance_overview')
+
+
+@login_required
+@require_org
+@require_organizer
+@require_http_methods(["GET"])
+def stripe_connect_refresh(request):
+    """Re-create an expired onboarding link and redirect the organizer."""
+    import stripe as stripe_lib
+    from django.urls import reverse
+    from django.conf import settings as django_settings
+    stripe_lib.api_key = django_settings.STRIPE_SECRET_KEY
+    org = get_organization(request)
+
+    if not org.stripe_account_id:
+        messages.error(request, 'No Stripe account found. Please start onboarding again.')
+        return redirect('tickets:finance_overview')
+
+    try:
+        account_link = stripe_lib.AccountLink.create(
+            account=org.stripe_account_id,
+            refresh_url=request.build_absolute_uri(reverse('tickets:stripe_connect_refresh')),
+            return_url=request.build_absolute_uri(reverse('tickets:stripe_connect_return')),
+            type='account_onboarding',
+        )
+        return redirect(account_link.url)
+    except stripe_lib.error.StripeError as e:
+        messages.error(request, f'Could not refresh onboarding link: {getattr(e, "user_message", None) or str(e)}')
+        return redirect('tickets:finance_overview')
+
+
+@login_required
+@require_org
+@require_organizer
+@require_http_methods(["POST"])
+def initiate_payout(request):
+    """Initiate a Stripe Transfer from the platform balance to the organizer's account."""
+    import stripe as stripe_lib
+    from django.conf import settings as django_settings
+    stripe_lib.api_key = django_settings.STRIPE_SECRET_KEY
+    org = get_organization(request)
+
+    if not org.stripe_onboarding_complete or not org.stripe_account_id:
+        messages.error(request, 'Please connect your bank account before requesting a payout.')
+        return redirect('tickets:finance_overview')
+
+    raw_amount = request.POST.get('amount', '').strip()
+    try:
+        amount = Decimal(raw_amount)
+    except Exception:
+        messages.error(request, 'Invalid payout amount.')
+        return redirect('tickets:finance_overview')
+
+    if amount < _MIN_PAYOUT:
+        messages.error(request, f'Minimum payout is ${_MIN_PAYOUT:.2f}.')
+        return redirect('tickets:finance_overview')
+
+    _, _, available_balance = _compute_available_balance(org)
+    if amount > available_balance:
+        messages.error(request, f'Payout amount exceeds available balance (${available_balance:.2f}).')
+        return redirect('tickets:finance_overview')
+
+    if Payout.objects.filter(organization=org, status=Payout.Status.PENDING).exists():
+        messages.error(request, 'A payout is already pending for your organization.')
+        return redirect('tickets:finance_overview')
+
+    notes = request.POST.get('notes', '').strip()[:500]
+    payout = Payout.objects.create(
+        organization=org,
+        amount=amount,
+        status=Payout.Status.PENDING,
+        initiated_by=request.user,
+        notes=notes,
+    )
+
+    try:
+        transfer = stripe_lib.Transfer.create(
+            amount=int(amount * 100),
+            currency=django_settings.STRIPE_CURRENCY,
+            destination=org.stripe_account_id,
+            description=f'Payout to {org.name}',
+            metadata={'org_id': str(org.id), 'payout_id': str(payout.id)},
+        )
+        payout.stripe_transfer_id = transfer.id
+        payout.status = Payout.Status.COMPLETED
+        payout.save(update_fields=['stripe_transfer_id', 'status'])
+        messages.success(request, f'Payout of ${amount:.2f} initiated. Transfer: {transfer.id}')
+    except stripe_lib.error.StripeError as e:
+        payout.status = Payout.Status.FAILED
+        error_note = f' [Stripe error: {str(e)[:400]}]'
+        payout.notes = (payout.notes + error_note)[:500]
+        payout.save(update_fields=['status', 'notes'])
+        messages.error(request, f'Payout failed: {getattr(e, "user_message", None) or str(e)}')
+
+    return redirect('tickets:finance_overview')

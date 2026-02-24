@@ -80,6 +80,18 @@
             </div>
 
             <div class="sidebar-section">
+                <div class="sidebar-section-label">Finance</div>
+                <ul class="sidebar-nav">
+                    <li>
+                        <a href="{% url 'tickets:finance_overview' %}"
+                           class="sidebar-link{% if '/finance/' in request.path %} active{% endif %}">
+                            <i class="bi bi-bank"></i> Finance
+                        </a>
+                    </li>
+                </ul>
+            </div>
+
+            <div class="sidebar-section">
                 <div class="sidebar-section-label">Analytics</div>
                 <ul class="sidebar-nav">
                     <li>
@@ -160,8 +172,13 @@
                 <div class="sidebar-section-label">My Account</div>
                 <ul class="sidebar-nav">
                     <li>
-                        <a href="{% url 'tickets:attendee_dashboard' %}" class="sidebar-link{% if '/attendee/dashboard/' in request.path %} active{% endif %}">
+                        <a href="{% url 'tickets:my_tickets' %}" class="sidebar-link{% if '/my-tickets/' in request.path %} active{% endif %}">
                             <i class="bi bi-ticket-perforated"></i> My Tickets
+                        </a>
+                    </li>
+                    <li>
+                        <a href="{% url 'tickets:attendee_dashboard' %}" class="sidebar-link{% if '/attendee/dashboard/' in request.path %} active{% endif %}">
+                            <i class="bi bi-calendar-event"></i> Browse Events
                         </a>
                     </li>
                     {% if user_role == 'attendee' %}

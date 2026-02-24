@@ -10,7 +10,7 @@ from .models import (
     CustomField, CustomFieldOption, EventCustomFieldValue,
     IncomeSource, EventIncome,
     SurveyQuestion, SurveyInvitation, SurveyResponse, SurveyAnswer,
-    ChatMessage,
+    ChatMessage, Payout,
 )
 
 
@@ -580,10 +580,24 @@ class EventCustomFieldValueAdmin(admin.ModelAdmin):
 
 @admin.register(Organization)
 class OrganizationAdmin(admin.ModelAdmin):
-    list_display = ['name', 'slug', 'created_at']
+    list_display = ['name', 'slug', 'stripe_onboarding_complete', 'created_at']
     search_fields = ['name', 'slug']
     readonly_fields = ['id', 'created_at', 'updated_at']
     prepopulated_fields = {'slug': ('name',)}
+    fieldsets = (
+        ('Basic', {'fields': ('name', 'slug', 'rfm_recalc_in_progress')}),
+        ('Stripe Connect', {'fields': ('stripe_account_id', 'stripe_onboarding_complete')}),
+        ('Metadata', {'fields': ('id', 'created_at', 'updated_at'), 'classes': ('collapse',)}),
+    )
+
+
+@admin.register(Payout)
+class PayoutAdmin(admin.ModelAdmin):
+    list_display = ['organization', 'amount', 'status', 'stripe_transfer_id', 'initiated_by', 'created_at']
+    list_filter = ['status', 'organization']
+    search_fields = ['organization__name', 'stripe_transfer_id']
+    readonly_fields = ['stripe_transfer_id', 'created_at', 'updated_at']
+    ordering = ['-created_at']
 
 
 @admin.register(UserProfile)

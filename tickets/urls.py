@@ -46,6 +46,7 @@ urlpatterns = [
 
     # Authenticated attendee path
     path('attendee/dashboard/', views.attendee_dashboard, name='attendee_dashboard'),
+    path('my-tickets/', views.my_tickets, name='my_tickets'),
     path('switch-view/', views.switch_view_mode, name='switch_view_mode'),
 
     # Landing (public) and Dashboard
@@ -135,9 +136,17 @@ urlpatterns = [
 
     # Direct Ticket Selling — Public (no auth)
     path('buy/<uuid:event_id>/', views.public_event_buy, name='public_event_buy'),
+    path('buy/<uuid:event_id>/checkout/', views.checkout_payment, name='checkout_payment'),
+    path('buy/<uuid:event_id>/payment-intent/', views.create_payment_intent, name='create_payment_intent'),
     path('checkout/success/', views.checkout_success, name='checkout_success'),
-    path('checkout/cancel/', views.checkout_cancel, name='checkout_cancel'),
 
     # Stripe Webhook
     path('webhooks/stripe/', views.stripe_webhook, name='stripe_webhook'),
+
+    # Finance / Stripe Connect
+    path('finance/', views.finance_overview, name='finance_overview'),
+    path('finance/stripe/onboard/', views.stripe_connect_onboard, name='stripe_connect_onboard'),
+    path('finance/stripe/return/', views.stripe_connect_return, name='stripe_connect_return'),
+    path('finance/stripe/refresh/', views.stripe_connect_refresh, name='stripe_connect_refresh'),
+    path('finance/payout/', views.initiate_payout, name='initiate_payout'),
 ]

@@ -1,6 +1,7 @@
 import uuid
 from decimal import Decimal
 from django.db import models
+from django.conf import settings
 from django.db.models import Sum, Max
 from django.utils import timezone
 from django.core.exceptions import ValidationError
@@ -60,6 +61,15 @@ class Organization(BaseModel):
     name = models.CharField(max_length=200)
     slug = models.SlugField(max_length=100, unique=True)
     rfm_recalc_in_progress = models.BooleanField(default=False)
+    stripe_account_id = models.CharField(
+        max_length=255,
+        blank=True,
+        help_text='Stripe Connect Express account ID (acct_xxx).',
+    )
+    stripe_onboarding_complete = models.BooleanField(
+        default=False,
+        help_text='True after Stripe confirms details_submitted and charges_enabled.',
+    )
 
     class Meta:
         ordering = ['name']
@@ -131,6 +141,23 @@ class UserProfile(models.Model):
         null=True,
     )
     marketing_opt_in = models.BooleanField(default=False)
+
+    stripe_customer_id = models.CharField(
+        max_length=255, blank=True, null=True, db_index=True,
+        help_text="Stripe Customer ID (cus_xxx).",
+    )
+    stripe_pm_id = models.CharField(
+        max_length=255, blank=True, null=True,
+        help_text="Saved Stripe PaymentMethod ID (pm_xxx).",
+    )
+    stripe_pm_brand = models.CharField(
+        max_length=50, blank=True,
+        help_text="Card brand, e.g. 'visa'.",
+    )
+    stripe_pm_last4 = models.CharField(
+        max_length=4, blank=True,
+        help_text="Last 4 digits of saved card.",
+    )
 
     class Meta:
         verbose_name = "User profile"
@@ -1137,3 +1164,39 @@ class SurveyAnswer(BaseModel):
 
     def __str__(self):
         return f"Answer to '{self.question.question_text[:40]}' by {self.response.customer}"
+
+
+class Payout(BaseModel):
+    """Platform-to-organizer Stripe Transfer record."""
+
+    class Status(models.TextChoices):
+        PENDING   = 'pending',   'Pending'
+        COMPLETED = 'completed', 'Completed'
+        FAILED    = 'failed',    'Failed'
+
+    organization = models.ForeignKey(
+        Organization, on_delete=models.CASCADE, related_name='payouts', db_index=True,
+    )
+    amount = models.DecimalField(max_digits=10, decimal_places=2)
+    stripe_transfer_id = models.CharField(
+        max_length=255, unique=True, null=True, blank=True,
+        help_text='Stripe Transfer ID (tr_xxx) — set after successful call.',
+    )
+    status = models.CharField(
+        max_length=20, choices=Status.choices, default=Status.PENDING, db_index=True,
+    )
+    initiated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL,
+        null=True, blank=True, related_name='initiated_payouts',
+    )
+    notes = models.CharField(max_length=500, blank=True)
+
+    class Meta:
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['organization', 'status'],    name='tickets_payout_org_stat_idx'),
+            models.Index(fields=['organization', '-created_at'], name='tickets_payout_org_date_idx'),
+        ]
+
+    def __str__(self):
+        return f"Payout ${self.amount} \u2192 {self.organization.name} ({self.status})"
