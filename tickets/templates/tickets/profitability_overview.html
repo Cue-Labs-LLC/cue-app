@@ -101,11 +101,10 @@ document.addEventListener('DOMContentLoaded', function() {
     var data = JSON.parse(dataEl.textContent);
     if (!data.labels || data.labels.length === 0) return;
 
-    var isDark = document.documentElement.getAttribute('data-theme') === 'dark';
-    var textColor = isDark ? '#ccc' : '#666';
-    var gridColor = isDark ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.1)';
-    var greenBg = isDark ? 'rgba(75, 192, 132, 0.7)' : 'rgba(75, 192, 132, 0.8)';
-    var redBg = isDark ? 'rgba(255, 99, 132, 0.7)' : 'rgba(255, 99, 132, 0.8)';
+    var textColor = '#666';
+    var gridColor = 'rgba(0,0,0,0.1)';
+    var greenBg = 'rgba(75, 192, 132, 0.8)';
+    var redBg = 'rgba(255, 99, 132, 0.8)';
 
     var scaleOpts = {
         x: { ticks: { color: textColor }, grid: { color: gridColor } },

@@ -59,85 +59,6 @@
     --shadow-lg: 0 4px 16px rgba(0, 0, 0, 0.08);
 }
 
-/* -- Dark Theme ------------------------------- */
-[data-theme="dark"] {
-    color-scheme: dark;
-
-    --bg-page: #131316;
-    --bg-surface: #1C1C21;
-    --bg-sidebar: #16161A;
-    --bg-sidebar-hover: #22222A;
-    --bg-sidebar-active: #2A2A34;
-    --bg-inset: #1C1C21;
-
-    --border: #2E2E38;
-    --border-light: #25252D;
-    --border-sidebar: #2E2E38;
-
-    --text-primary: #E8E8ED;
-    --text-secondary: #A0A0AD;
-    --text-tertiary: #6B6B78;
-    --text-inverse: #131316;
-    --text-sidebar: #8A8A98;
-    --text-sidebar-active: #E8E8ED;
-
-    --accent-muted: rgba(232, 89, 12, 0.12);
-    --accent-muted-border: rgba(232, 89, 12, 0.25);
-
-    --success-muted: rgba(22, 163, 74, 0.12);
-    --warning-muted: rgba(202, 138, 4, 0.12);
-    --danger-muted: rgba(220, 38, 38, 0.12);
-    --info-muted: rgba(124, 58, 237, 0.12);
-
-    --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.2);
-    --shadow-md: 0 2px 8px rgba(0, 0, 0, 0.3);
-    --shadow-lg: 0 4px 16px rgba(0, 0, 0, 0.4);
-}
-
-[data-theme="dark"] .topbar {
-    background: rgba(28, 28, 33, 0.85);
-}
-
-[data-theme="dark"] .alert-success { color: #4ADE80; }
-[data-theme="dark"] .alert-danger { color: #FCA5A5; }
-[data-theme="dark"] .alert-warning { color: #FDE68A; }
-[data-theme="dark"] .alert-info { color: #C4B5FD; }
-
-[data-theme="dark"] .modal-content {
-    background: var(--bg-surface);
-}
-
-[data-theme="dark"] .dropdown-menu {
-    background: var(--bg-surface);
-}
-
-[data-theme="dark"] .list-group-item {
-    background: var(--bg-surface);
-    color: var(--text-primary);
-}
-
-[data-theme="dark"] .table-striped > tbody > tr:nth-of-type(odd) > * {
-    --bs-table-bg-type: rgba(255, 255, 255, 0.02);
-}
-
-[data-theme="dark"] .btn-close {
-    filter: invert(1) grayscale(100%) brightness(200%);
-}
-
-[data-theme="dark"] .card,
-[data-theme="dark"] .card-body {
-    color: var(--text-primary);
-}
-
-[data-theme="dark"] .event-venue-address,
-[data-theme="dark"] .event-details-card .card-body {
-    color: var(--text-secondary);
-}
-
-[data-theme="dark"] .event-details-card .card-body strong {
-    color: var(--text-primary);
-}
-
 /* -- Base -------------------------------------- */
 * {
     margin: 0;
@@ -1307,25 +1228,6 @@ code {
 
 .pac-icon {
     display: none;
-}
-
-[data-theme="dark"] .pac-container {
-    background: var(--bg-surface);
-    border-color: var(--border);
-}
-
-[data-theme="dark"] .pac-item {
-    color: var(--text-primary);
-    border-top-color: var(--border-light);
-}
-
-[data-theme="dark"] .pac-item:hover,
-[data-theme="dark"] .pac-item-selected {
-    background: var(--bg-sidebar-hover);
-}
-
-[data-theme="dark"] .pac-item-query {
-    color: var(--text-primary);
 }
 
 /* -- Crispy Forms Overrides -------------------- */

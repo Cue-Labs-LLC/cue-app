@@ -110,9 +110,8 @@
     var data = JSON.parse(el.textContent);
     if (!data.length) return;
 
-    var isDark = document.documentElement.getAttribute('data-theme') === 'dark';
-    var gridColor = isDark ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.1)';
-    var textColor = isDark ? '#ccc' : '#666';
+    var gridColor = 'rgba(0,0,0,0.1)';
+    var textColor = '#666';
 
     // Show only the most recent 8 cohorts on the line chart
     var chartCohorts = data.slice(-8);

@@ -2,7 +2,6 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <script>(function(){var t=localStorage.getItem('theme')||'light';document.documentElement.setAttribute('data-theme',t);})()</script>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{% block title %}Eventflow{% endblock %}</title>
@@ -213,9 +212,6 @@
                 </form>
                 {% endif %}
                 {% endif %}
-                <button type="button" class="sidebar-link" id="themeToggle" style="width:100%;border:none;background:none;cursor:pointer;text-align:left;">
-                    <i class="bi bi-moon" id="themeIcon"></i> <span id="themeLabel">Dark mode</span>
-                </button>
                 <div class="sidebar-divider" style="margin:4px 0 8px;"></div>
                 <div class="sidebar-user" id="sidebarUserToggle">
                     <div class="sidebar-user-avatar">
@@ -541,29 +537,6 @@
         });
     }
 
-    // Theme toggle
-    var themeToggle = document.getElementById('themeToggle');
-    var themeIcon = document.getElementById('themeIcon');
-    var themeLabel = document.getElementById('themeLabel');
-
-    function applyThemeUI(theme) {
-        if (themeIcon && themeLabel) {
-            themeIcon.className = theme === 'dark' ? 'bi bi-sun' : 'bi bi-moon';
-            themeLabel.textContent = theme === 'dark' ? 'Light mode' : 'Dark mode';
-        }
-    }
-
-    applyThemeUI(document.documentElement.getAttribute('data-theme') || 'light');
-
-    if (themeToggle) {
-        themeToggle.addEventListener('click', function() {
-            var current = document.documentElement.getAttribute('data-theme') || 'light';
-            var next = current === 'dark' ? 'light' : 'dark';
-            document.documentElement.setAttribute('data-theme', next);
-            localStorage.setItem('theme', next);
-            applyThemeUI(next);
-        });
-    }
 })();
 </script>
 {% block extra_js %}{% endblock %}
