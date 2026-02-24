@@ -103,3 +103,8 @@ def require_organizer(view_func):
             return redirect('tickets:attendee_dashboard')
         return view_func(request, *args, **kwargs)
     return _wrapped
+
+
+def calculate_platform_fee_cents(subtotal_cents: int) -> int:
+    """Platform service fee: 8% of subtotal + $0.99, in cents."""
+    return round(subtotal_cents * 0.08) + 99

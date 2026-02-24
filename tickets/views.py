@@ -3363,6 +3363,10 @@ def checkout_payment(request, event_id):
         except UserProfile.DoesNotExist:
             pass
 
+    from tickets.utils import calculate_platform_fee_cents
+    fee_cents = calculate_platform_fee_cents(total_cents) if not is_free else 0
+    grand_total_cents = total_cents + fee_cents
+
     return render(request, 'tickets/buy/checkout_payment.html', {
         'event': event,
         'cart': cart,
@@ -3374,6 +3378,9 @@ def checkout_payment(request, event_id):
         'user_email': user_email,
         'saved_pm': saved_pm,
         'user_is_authenticated': request.user.is_authenticated,
+        'subtotal': Decimal(total_cents) / 100,
+        'service_fee': Decimal(fee_cents) / 100,
+        'grand_total': Decimal(grand_total_cents) / 100,
     })
 
 
@@ -3423,6 +3430,10 @@ def create_payment_intent(request, event_id):
     if total_cents == 0:
         return JsonResponse({'error': 'Use the free ticket flow for $0 orders.'}, status=400)
 
+    from tickets.utils import calculate_platform_fee_cents
+    fee_cents = calculate_platform_fee_cents(total_cents)
+    charge_cents = total_cents + fee_cents  # buyer pays subtotal + platform fee
+
     stripe_lib.api_key = django_settings.STRIPE_SECRET_KEY
 
     # Resolve or create a Stripe Customer for authenticated users
@@ -3441,7 +3452,7 @@ def create_payment_intent(request, event_id):
             # non-fatal — card saving skipped, payment proceeds
 
     pi_kwargs = {
-        'amount': total_cents,
+        'amount': charge_cents,
         'currency': django_settings.STRIPE_CURRENCY,
         'receipt_email': buyer_email,
         'metadata': {
@@ -3472,7 +3483,8 @@ def create_payment_intent(request, event_id):
         buyer_name=buyer_name,
         status=StripeCheckoutSession.Status.PENDING,
         line_items_snapshot=cart,
-        amount_total_cents=total_cents,
+        amount_total_cents=charge_cents,
+        platform_fee_cents=fee_cents,
     )
 
     return JsonResponse({
@@ -3903,17 +3915,23 @@ _MIN_PAYOUT = Decimal('1.00')
 
 
 def _compute_available_balance(org):
-    """Return (stripe_revenue, paid_out, available_balance) for the given org."""
-    stripe_cents = StripeCheckoutSession.objects.filter(
+    """Return (stripe_revenue, platform_fees, paid_out, available_balance) for the given org."""
+    completed_sessions = StripeCheckoutSession.objects.filter(
         organization=org, status=StripeCheckoutSession.Status.COMPLETED,
-    ).aggregate(total=Coalesce(Sum('amount_total_cents'), 0))['total']
-    stripe_revenue = Decimal(str(stripe_cents)) / 100
+    )
+    agg = completed_sessions.aggregate(
+        total_charged=Coalesce(Sum('amount_total_cents'), 0),
+        total_fees=Coalesce(Sum('platform_fee_cents'), 0),
+    )
+    stripe_revenue = Decimal(str(agg['total_charged'])) / 100
+    platform_fees = Decimal(str(agg['total_fees'])) / 100
 
     paid_out = Payout.objects.filter(
         organization=org, status=Payout.Status.COMPLETED,
     ).aggregate(total=Coalesce(Sum('amount'), Decimal('0.00')))['total']
 
-    return stripe_revenue, paid_out, stripe_revenue - paid_out
+    organizer_revenue = stripe_revenue - platform_fees
+    return stripe_revenue, platform_fees, paid_out, organizer_revenue - paid_out
 
 
 @login_required
@@ -3928,7 +3946,7 @@ def finance_overview(request):
         customer__organization=org,
     ).aggregate(total=Coalesce(Sum('total_amount'), Decimal('0.00')))['total']
 
-    stripe_revenue, paid_out, available_balance = _compute_available_balance(org)
+    stripe_revenue, platform_fees, paid_out, available_balance = _compute_available_balance(org)
 
     recent_txns = list(
         StripeCheckoutSession.objects
@@ -3947,6 +3965,7 @@ def finance_overview(request):
     context = {
         'gross_revenue': gross,
         'stripe_revenue': stripe_revenue,
+        'platform_fees': platform_fees,
         'paid_out': paid_out,
         'available_balance': available_balance,
         'recent_transactions': recent_txns,

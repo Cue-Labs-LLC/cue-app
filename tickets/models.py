@@ -1003,6 +1003,7 @@ class StripeCheckoutSession(BaseModel):
     # Schema: list of {saleable_ticket_type_id, name, price (str), quantity}
     line_items_snapshot = models.JSONField(default=list)
     amount_total_cents = models.PositiveIntegerField(default=0)
+    platform_fee_cents = models.PositiveIntegerField(default=0)
     ticket_order = models.OneToOneField(
         TicketOrder,
         on_delete=models.SET_NULL,

@@ -32,9 +32,9 @@
     </div>
     <div class="col-6 col-lg-3">
         <div class="stat-card stat-card--accent">
-            <div class="stat-label">Online Revenue</div>
-            <div class="stat-value">${{ stripe_revenue|floatformat:2 }}</div>
-            <div class="stat-sub">Completed Stripe checkouts</div>
+            <div class="stat-label">Platform Fees</div>
+            <div class="stat-value">${{ platform_fees|floatformat:2 }}</div>
+            <div class="stat-sub">Collected service fees</div>
         </div>
     </div>
     <div class="col-6 col-lg-3">
@@ -46,9 +46,9 @@
     </div>
     <div class="col-6 col-lg-3">
         <div class="stat-card stat-card--success">
-            <div class="stat-label">Available Balance</div>
+            <div class="stat-label">Available to Organizer</div>
             <div class="stat-value">${{ available_balance|floatformat:2 }}</div>
-            <div class="stat-sub">Ready to pay out</div>
+            <div class="stat-sub">After fees and payouts</div>
         </div>
     </div>
 </div>

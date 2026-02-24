@@ -72,6 +72,9 @@
                 <div class="ticket-price">
                     {% if tt.price == 0 %}Free{% else %}${{ tt.price|floatformat:2 }}{% endif %}
                 </div>
+                {% if tt.price != 0 %}
+                <div style="font-size: 11px; color: #999;">+ service fee at checkout</div>
+                {% endif %}
                 {% if tt.quantity_limit is not None %}
                 {% with rem=tt.remaining_quantity %}
                 {% if rem <= 10 %}
