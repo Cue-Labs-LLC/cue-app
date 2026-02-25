@@ -1740,6 +1740,28 @@ def event_detail(request, event_id):
 
     # Direct ticketing: sales dashboard data inlined on event detail
     saleable_ticket_types_list = list(event.saleable_ticket_types.all())
+
+    # Ticket type breakdown for donut chart
+    if event.ticketing_type == 'direct':
+        ticket_type_breakdown = [
+            {'label': tt.name, 'count': tt.quantity_sold}
+            for tt in saleable_ticket_types_list
+            if tt.quantity_sold > 0
+        ]
+    else:
+        _breakdown_qs = (
+            Ticket.objects.filter(ticket_order__event=event)
+            .values('ticket_type')
+            .annotate(count=Count('id'))
+            .order_by('-count')
+        )
+        ticket_type_breakdown = [
+            {'label': row['ticket_type'], 'count': row['count']}
+            for row in _breakdown_qs
+            if row['ticket_type']
+        ]
+    ticket_type_breakdown_json = json.dumps(ticket_type_breakdown)
+
     context = {
         'event': event,
         'upload_stats': upload_stats,
@@ -1763,6 +1785,8 @@ def event_detail(request, event_id):
         'survey_responses_count': survey_responses_count,
         'survey_results': survey_results,
         'saleable_ticket_types': saleable_ticket_types_list,
+        'ticket_type_breakdown': ticket_type_breakdown,
+        'ticket_type_breakdown_json': ticket_type_breakdown_json,
     }
     if event.ticketing_type == 'direct':
         sessions = list(

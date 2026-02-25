@@ -9,6 +9,12 @@
 </style>
 {% endblock %}
 
+{% block extra_head %}
+{% if ticket_type_breakdown %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js" defer></script>
+{% endif %}
+{% endblock %}
+
 {% block content %}
 <nav aria-label="breadcrumb">
     <ol class="breadcrumb">
@@ -132,6 +138,19 @@
         <div class="stat-value"{% if profit < 0 %} style="color: var(--danger, #dc3545);"{% endif %}>${{ profit|currency }}{% if margin_pct != None %} <small style="font-size:0.6em;">({{ margin_pct|floatformat:1 }}%)</small>{% endif %}</div>
     </div>
 </div>
+
+{% if ticket_type_breakdown %}
+<div class="card mb-4">
+    <div class="card-header">
+        <h5>Ticket Breakdown</h5>
+    </div>
+    <div class="card-body d-flex align-items-center justify-content-center" style="min-height: 260px;">
+        <div style="position: relative; height: 240px; width: 100%; max-width: 480px;">
+            <canvas id="ticketBreakdownChart"></canvas>
+        </div>
+    </div>
+</div>
+{% endif %}
 
 {% if event.ticketing_type == 'direct' and direct_ticketing_enabled %}
 <div class="card mb-4" id="event-flyer-card">
@@ -611,6 +630,85 @@
 {% endblock %}
 
 {% block extra_js %}
+{% if ticket_type_breakdown %}
+<script type="application/json" id="ticket-breakdown-data">{{ ticket_type_breakdown_json|safe }}</script>
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    var el = document.getElementById('ticket-breakdown-data');
+    if (!el) return;
+    var breakdown = JSON.parse(el.textContent);
+    if (!breakdown.length) return;
+
+    var isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+    var textColor = isDark ? '#e0e0e0' : '#555';
+    var borderColor = isDark ? '#1e1e2e' : '#ffffff';
+
+    var palette = [
+        'rgba(13, 110, 253, 0.75)',
+        'rgba(25, 135, 84, 0.75)',
+        'rgba(220, 53, 69, 0.75)',
+        'rgba(255, 193, 7, 0.75)',
+        'rgba(13, 202, 240, 0.75)',
+        'rgba(253, 126, 20, 0.75)',
+        'rgba(108, 117, 125, 0.75)',
+        'rgba(111, 66, 193, 0.75)',
+    ];
+    var borderPalette = palette.map(function(c) { return c.replace('0.75', '1'); });
+
+    var labels = breakdown.map(function(d) { return d.label; });
+    var counts = breakdown.map(function(d) { return d.count; });
+    var bgColors = labels.map(function(_, i) { return palette[i % palette.length]; });
+    var bdColors = labels.map(function(_, i) { return borderPalette[i % borderPalette.length]; });
+
+    new Chart(document.getElementById('ticketBreakdownChart').getContext('2d'), {
+        type: 'doughnut',
+        data: {
+            labels: labels,
+            datasets: [{ data: counts, backgroundColor: bgColors, borderColor: bdColors, borderWidth: 1 }]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+                legend: {
+                    position: 'right',
+                    labels: {
+                        color: textColor,
+                        padding: 14,
+                        font: { size: 13 },
+                        generateLabels: function(chart) {
+                            var data = chart.data;
+                            var total = data.datasets[0].data.reduce(function(a, b) { return a + b; }, 0);
+                            return data.labels.map(function(label, i) {
+                                var count = data.datasets[0].data[i];
+                                var pct = total > 0 ? Math.round(count / total * 100) : 0;
+                                return {
+                                    text: label + ' (' + count + ', ' + pct + '%)',
+                                    fillStyle: data.datasets[0].backgroundColor[i],
+                                    strokeStyle: data.datasets[0].borderColor[i],
+                                    lineWidth: 1,
+                                    hidden: false,
+                                    index: i,
+                                };
+                            });
+                        }
+                    }
+                },
+                tooltip: {
+                    callbacks: {
+                        label: function(context) {
+                            var total = context.dataset.data.reduce(function(a, b) { return a + b; }, 0);
+                            var pct = total > 0 ? Math.round(context.parsed / total * 100) : 0;
+                            return context.label + ': ' + context.parsed + ' tickets (' + pct + '%)';
+                        }
+                    }
+                }
+            }
+        }
+    });
+});
+</script>
+{% endif %}
 <script>
 document.addEventListener('DOMContentLoaded', function() {
     const deleteModal = document.getElementById('deleteUploadModal');
