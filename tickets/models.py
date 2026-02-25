@@ -520,6 +520,15 @@ TICKETING_TYPE_CHOICES = [
     (TICKETING_TYPE_EXTERNAL, 'External (upload CSV ticket data)'),
 ]
 
+EVENT_STATUS_DRAFT = 'draft'
+EVENT_STATUS_LIVE = 'live'
+EVENT_STATUS_ENDED = 'ended'
+EVENT_STATUS_CHOICES = [
+    (EVENT_STATUS_DRAFT, 'Draft'),
+    (EVENT_STATUS_LIVE, 'Live'),
+    (EVENT_STATUS_ENDED, 'Ended'),
+]
+
 
 class Event(AuditBaseModel):
     """Event information."""
@@ -552,6 +561,13 @@ class Event(AuditBaseModel):
         choices=TICKETING_TYPE_CHOICES,
         default=TICKETING_TYPE_EXTERNAL,
     )
+    status = models.CharField(
+        max_length=10,
+        choices=EVENT_STATUS_CHOICES,
+        default=EVENT_STATUS_DRAFT,
+        db_index=True,
+        help_text="Publication state; only meaningful for direct ticketing events.",
+    )
     timezone = models.CharField(
         max_length=50,
         default='America/Los_Angeles',
@@ -582,10 +598,22 @@ class Event(AuditBaseModel):
         indexes = [
             models.Index(fields=['name', 'start_date']),
             models.Index(fields=['organization', '-start_date']),
+            models.Index(fields=['ticketing_type', 'status', 'start_date']),
         ]
 
     def __str__(self):
         return f"{self.name} - {self.venue.name}, {self.venue.city} ({self.start_date})"
+
+    @property
+    def effective_status(self):
+        if self.ticketing_type != TICKETING_TYPE_DIRECT or self.status in (EVENT_STATUS_DRAFT, EVENT_STATUS_ENDED):
+            return self.status
+        # status == 'live' — check if event date has passed
+        today = timezone.now().date()
+        end = self.end_date or self.start_date
+        if end < today:
+            return EVENT_STATUS_ENDED
+        return EVENT_STATUS_LIVE
 
     def get_associated_uploads(self):
         """Get all distinct uploads associated with this event via ticket orders."""

@@ -31,6 +31,7 @@ from .models import (
     SurveyQuestion, SurveyInvitation, SurveyResponse, SurveyAnswer,
     PipedreamCalendarConnection,
     SaleableTicketType, StripeCheckoutSession, Payout,
+    EVENT_STATUS_DRAFT, EVENT_STATUS_LIVE, EVENT_STATUS_ENDED,
 )
 from .forms import (
     EventCSVUploadForm, EventExpenseForm, TicketPriceEntryForm, CSVFormatForm,
@@ -490,8 +491,12 @@ def explore(request):
     events_qs = (
         Event.objects.filter(
             deleted_at__isnull=True,
-            start_date__gte=today,
             ticketing_type=TICKETING_TYPE_DIRECT,
+            status=EVENT_STATUS_LIVE,
+        )
+        .filter(
+            Q(end_date__isnull=False, end_date__gte=today) |
+            Q(end_date__isnull=True, start_date__gte=today)
         )
         .select_related('venue')
         .order_by('start_date', 'start_time', 'name')
@@ -2134,6 +2139,7 @@ def event_create(request, ticketing_type):
             event = form.save(commit=False)
             event.organization = org
             event.created_by = request.user
+            event.status = EVENT_STATUS_LIVE
             event.save()
             instances = talent_formset.save(commit=False)
             for obj in instances:
@@ -3212,6 +3218,46 @@ def saleable_ticket_type_delete(request, event_id, ticket_type_id):
 @require_org
 @require_organizer
 @require_http_methods(["POST"])
+def event_publish(request, event_id):
+    """Transition a direct event from Draft → Live."""
+    if not direct_ticketing_enabled(request.user):
+        raise Http404()
+    org = get_organization(request)
+    event = get_object_or_404(Event.objects.filter(organization=org, deleted_at__isnull=True), id=event_id)
+    if event.status != EVENT_STATUS_DRAFT:
+        messages.error(request, 'Event is not in Draft state.')
+        return redirect('tickets:event_detail', event_id=event.id)
+    event.status = EVENT_STATUS_LIVE
+    event.save(update_fields=['status'])
+    _invalidate_event_list_cache(org)
+    messages.success(request, f'"{event.name}" is now live. The public ticket page is active.')
+    return redirect('tickets:event_detail', event_id=event.id)
+
+
+@login_required
+@require_org
+@require_organizer
+@require_http_methods(["POST"])
+def event_end_sales(request, event_id):
+    """Transition a direct event from Live → Ended (terminal, irreversible)."""
+    if not direct_ticketing_enabled(request.user):
+        raise Http404()
+    org = get_organization(request)
+    event = get_object_or_404(Event.objects.filter(organization=org, deleted_at__isnull=True), id=event_id)
+    if event.status != EVENT_STATUS_LIVE:
+        messages.error(request, 'Event is not in Live state.')
+        return redirect('tickets:event_detail', event_id=event.id)
+    event.status = EVENT_STATUS_ENDED
+    event.save(update_fields=['status'])
+    _invalidate_event_list_cache(org)
+    messages.success(request, f'Sales for "{event.name}" have ended.')
+    return redirect('tickets:event_detail', event_id=event.id)
+
+
+@login_required
+@require_org
+@require_organizer
+@require_http_methods(["POST"])
 def event_flyer_upload(request, event_id):
     """Upload or replace event flyer (direct ticketing only). Returns JSON."""
     from .models import TICKETING_TYPE_DIRECT
@@ -3245,7 +3291,14 @@ def public_event_buy(request, event_id):
     event = get_object_or_404(
         Event.objects.select_related('venue', 'organization'),
         id=event_id,
+        deleted_at__isnull=True,
     )
+    eff = event.effective_status
+    if eff == EVENT_STATUS_DRAFT:
+        raise Http404()
+    if eff == EVENT_STATUS_ENDED:
+        return render(request, 'tickets/buy/sales_ended.html', {'event': event})
+
     ticket_types = SaleableTicketType.objects.filter(
         event=event,
         is_active=True,
@@ -3293,6 +3346,10 @@ def checkout_payment(request, event_id):
         Event.objects.select_related('venue', 'organization'),
         id=event_id,
     )
+
+    if event.effective_status != EVENT_STATUS_LIVE:
+        request.session.pop(f'cart_{event_id}', None)
+        return redirect('tickets:public_event_buy', event_id=event_id)
 
     cart = request.session.get(f'cart_{event_id}')
     if not cart:
@@ -3407,6 +3464,9 @@ def create_payment_intent(request, event_id):
         Event.objects.select_related('organization'),
         id=event_id,
     )
+
+    if event.effective_status != EVENT_STATUS_LIVE:
+        return JsonResponse({'error': 'Ticket sales for this event have ended.'}, status=400)
 
     cart = request.session.get(f'cart_{event_id}')
     if not cart:

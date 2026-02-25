@@ -49,7 +49,15 @@
                             <strong>{{ event.name }}</strong>
                             {% if direct_ticketing_enabled %}
                             {% if event.ticketing_type == 'direct' %}
-                            <span class="badge bg-primary ms-1" style="font-size: 0.7em;">Direct</span>
+                                {% with eff=event.effective_status %}
+                                {% if eff == 'draft' %}
+                                <span class="badge bg-warning text-dark ms-1" style="font-size: 0.7em;">Draft</span>
+                                {% elif eff == 'live' %}
+                                <span class="badge bg-success ms-1" style="font-size: 0.7em;">Live</span>
+                                {% else %}
+                                <span class="badge bg-secondary ms-1" style="font-size: 0.7em;">Ended</span>
+                                {% endif %}
+                                {% endwith %}
                             {% else %}
                             <span class="badge bg-secondary ms-1" style="font-size: 0.7em;">External</span>
                             {% endif %}
