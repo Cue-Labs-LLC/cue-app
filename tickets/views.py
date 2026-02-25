@@ -2788,7 +2788,17 @@ def profitability_overview(request):
     # Chart data — only events with revenue or expenses
     chart_events = [r for r in event_rows if r['revenue'] > 0 or r['expenses'] > 0]
     chart_data = {
-        'labels': [r['event'].name for r in chart_events],
+        'labels': [
+            [
+                r['event'].name,
+                '{} {}, {}'.format(
+                    r['event'].start_date.strftime('%b'),
+                    r['event'].start_date.day,
+                    r['event'].start_date.year,
+                )
+            ]
+            for r in chart_events
+        ],
         'revenue': [float(r['revenue']) for r in chart_events],
         'expenses': [float(r['expenses']) for r in chart_events],
         'profit': [float(r['profit']) for r in chart_events],

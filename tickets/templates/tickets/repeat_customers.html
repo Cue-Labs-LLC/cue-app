@@ -89,10 +89,16 @@
     var gridColor = 'rgba(0,0,0,0.1)';
     var textColor = '#666';
 
+    function fmtDate(iso) {
+        var m = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+        var p = iso.split('-');
+        return m[parseInt(p[1]) - 1] + ' ' + parseInt(p[2]) + ', ' + p[0];
+    }
+
     new Chart(document.getElementById('stackedBarChart').getContext('2d'), {
         type: 'bar',
         data: {
-            labels: data.map(function(d) { return d.event_name; }),
+            labels: data.map(function(d) { return [d.event_name, fmtDate(d.event_date)]; }),
             datasets: [
                 {
                     label: 'New',
