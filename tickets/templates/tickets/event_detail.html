@@ -232,7 +232,7 @@
                     <tr>
                         <td><span class="font-monospace" style="font-size: 0.8rem;">{{ s.stripe_session_id|truncatechars:24 }}</span></td>
                         <td>{{ s.buyer_email|default:"&mdash;" }}</td>
-                        <td>${{ s.amount_total_cents|floatformat:0|default:"0" }}</td>
+                        <td>${{ s.amount_dollars|currency }}</td>
                         <td>
                             <span class="badge bg-{% if s.status == 'completed' %}success{% elif s.status == 'pending' %}warning{% elif s.status == 'expired' or s.status == 'canceled' %}secondary{% else %}secondary{% endif %}">
                                 {{ s.get_status_display }}

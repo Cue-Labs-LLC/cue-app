@@ -1760,11 +1760,14 @@ def event_detail(request, event_id):
         'saleable_ticket_types': saleable_ticket_types_list,
     }
     if event.ticketing_type == 'direct':
-        context['dashboard_sessions'] = (
+        sessions = list(
             StripeCheckoutSession.objects.filter(event=event)
             .select_related('ticket_order')
             .order_by('-created_at')[:50]
         )
+        for s in sessions:
+            s.amount_dollars = Decimal(str(s.amount_total_cents)) / 100
+        context['dashboard_sessions'] = sessions
         context['direct_total_revenue'] = sum(
             tt.quantity_sold * tt.price for tt in saleable_ticket_types_list
         )
