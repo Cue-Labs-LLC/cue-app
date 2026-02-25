@@ -57,9 +57,9 @@
                         </td>
                         <td>{{ event.start_date|date:"M d, Y" }}{% if event.start_time %} {{ event.start_time|time:"g:i A" }}{% endif %}</td>
                         <td>{{ event.venue.name }}</td>
-                        <td><span class="revenue">${{ event.total_revenue|floatformat:2|default:"0.00" }}</span></td>
+                        <td><span class="revenue">${{ event.total_revenue|currency }}</span></td>
                         {% with profit=event.total_revenue|subtract:event.total_expenses %}
-                        <td{% if profit < 0 %} style="color: var(--danger, #dc3545);"{% endif %}>${{ profit|floatformat:2 }}</td>
+                        <td{% if profit < 0 %} style="color: var(--danger, #dc3545);"{% endif %}>${{ profit|currency }}</td>
                         {% endwith %}
                         <td>{{ event.total_tickets|default:0 }}</td>
                         <td>

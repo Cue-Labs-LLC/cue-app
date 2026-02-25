@@ -60,7 +60,7 @@
                             <span class="text-muted">—</span>
                             {% endif %}
                         </td>
-                        <td><span class="revenue">${{ customer.lifetime_value|floatformat:2 }}</span></td>
+                        <td><span class="revenue">${{ customer.lifetime_value|currency }}</span></td>
                         <td>{{ customer.last_order_date|date:"M d, Y"|default:"\u2014" }}</td>
                         <td><a href="{% url 'tickets:customer_detail' customer.id %}" class="btn btn-sm btn-outline-secondary">View</a></td>
                     </tr>

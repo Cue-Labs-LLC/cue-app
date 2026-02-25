@@ -1,4 +1,5 @@
 {% extends 'tickets/base.html' %}
+{% load tickets_extras %}
 
 {% block title %}Profitability{% endblock %}
 
@@ -14,15 +15,15 @@
 <div class="stats-grid">
     <div class="stat-card stat-card--success">
         <div class="stat-label">Total Revenue</div>
-        <div class="stat-value">${{ summary_revenue|floatformat:2 }}</div>
+        <div class="stat-value">${{ summary_revenue|currency }}</div>
     </div>
     <div class="stat-card" style="border-left: 3px solid var(--danger, #dc3545);">
         <div class="stat-label">Total Expenses</div>
-        <div class="stat-value">${{ summary_expenses|floatformat:2 }}</div>
+        <div class="stat-value">${{ summary_expenses|currency }}</div>
     </div>
     <div class="stat-card{% if summary_profit >= 0 %} stat-card--success{% endif %}" {% if summary_profit < 0 %}style="border-left: 3px solid var(--danger, #dc3545);"{% endif %}>
         <div class="stat-label">Net Profit</div>
-        <div class="stat-value"{% if summary_profit < 0 %} style="color: var(--danger, #dc3545);"{% endif %}>${{ summary_profit|floatformat:2 }}</div>
+        <div class="stat-value"{% if summary_profit < 0 %} style="color: var(--danger, #dc3545);"{% endif %}>${{ summary_profit|currency }}</div>
     </div>
     <div class="stat-card stat-card--info">
         <div class="stat-label">Avg Margin</div>
@@ -68,9 +69,9 @@
                         <td><a href="{% url 'tickets:event_detail' row.event.id %}"><strong>{{ row.event.name }}</strong></a></td>
                         <td>{{ row.event.start_date|date:"M d, Y" }}</td>
                         <td>{{ row.event.venue.name }}, {{ row.event.venue.city }}</td>
-                        <td>${{ row.revenue|floatformat:2 }}</td>
-                        <td>${{ row.expenses|floatformat:2 }}</td>
-                        <td{% if row.profit < 0 %} style="color: var(--danger, #dc3545);"{% endif %}>${{ row.profit|floatformat:2 }}</td>
+                        <td>${{ row.revenue|currency }}</td>
+                        <td>${{ row.expenses|currency }}</td>
+                        <td{% if row.profit < 0 %} style="color: var(--danger, #dc3545);"{% endif %}>${{ row.profit|currency }}</td>
                         <td>{% if row.margin != None %}{{ row.margin|floatformat:1 }}%{% else %}&mdash;{% endif %}</td>
                     </tr>
                     {% endfor %}

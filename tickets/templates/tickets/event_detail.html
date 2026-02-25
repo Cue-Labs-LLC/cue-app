@@ -80,9 +80,9 @@
     </div>
     <div class="stat-card stat-card--success">
         <div class="stat-label">Total Revenue</div>
-        <div class="stat-value">${{ total_revenue|floatformat:2 }}</div>
+        <div class="stat-value">${{ total_revenue|currency }}</div>
         {% if total_additional_income > 0 %}
-        <div class="stat-detail" style="font-size: 0.75rem; margin-top: 4px;">Tickets: ${{ ticket_revenue|floatformat:2 }} + Other: ${{ total_additional_income|floatformat:2 }}</div>
+        <div class="stat-detail" style="font-size: 0.75rem; margin-top: 4px;">Tickets: ${{ ticket_revenue|currency }} + Other: ${{ total_additional_income|currency }}</div>
         {% endif %}
     </div>
     <div class="stat-card stat-card--info">
@@ -95,11 +95,11 @@
     </div>
     <div class="stat-card" style="border-left: 3px solid var(--danger, #dc3545);">
         <div class="stat-label">Total Expenses</div>
-        <div class="stat-value">${{ total_expenses|floatformat:2 }}</div>
+        <div class="stat-value">${{ total_expenses|currency }}</div>
     </div>
     <div class="stat-card{% if profit >= 0 %} stat-card--success{% endif %}" {% if profit < 0 %}style="border-left: 3px solid var(--danger, #dc3545);"{% endif %}>
         <div class="stat-label">Profit / Loss</div>
-        <div class="stat-value"{% if profit < 0 %} style="color: var(--danger, #dc3545);"{% endif %}>${{ profit|floatformat:2 }}{% if margin_pct != None %} <small style="font-size:0.6em;">({{ margin_pct|floatformat:1 }}%)</small>{% endif %}</div>
+        <div class="stat-value"{% if profit < 0 %} style="color: var(--danger, #dc3545);"{% endif %}>${{ profit|currency }}{% if margin_pct != None %} <small style="font-size:0.6em;">({{ margin_pct|floatformat:1 }}%)</small>{% endif %}</div>
     </div>
 </div>
 
@@ -170,10 +170,10 @@
                     {% for tt in saleable_ticket_types %}
                     <tr>
                         <td><strong>{{ tt.name }}</strong>{% if tt.description %}<br><small class="text-muted">{{ tt.description|truncatechars:60 }}</small>{% endif %}</td>
-                        <td>${{ tt.price|floatformat:2 }}</td>
+                        <td>${{ tt.price|currency }}</td>
                         <td>{{ tt.quantity_sold }}</td>
                         <td>{% if tt.quantity_limit %}{{ tt.quantity_limit }}{% else %}<span class="text-muted">&infin;</span>{% endif %}</td>
-                        <td>${{ tt.price|floatformat:2 }} &times; {{ tt.quantity_sold }}</td>
+                        <td>${{ tt.price|currency }} &times; {{ tt.quantity_sold }}</td>
                         <td>
                             {% if tt.is_active %}<span class="badge bg-success">Active</span>{% else %}<span class="badge bg-secondary">Inactive</span>{% endif %}
                             {% if tt.is_sold_out %}<span class="badge bg-warning ms-1">Sold Out</span>{% endif %}
@@ -196,7 +196,7 @@
                 <tfoot>
                     <tr class="table-light">
                         <td colspan="4"><strong>Total Revenue</strong></td>
-                        <td colspan="3"><strong>${{ direct_total_revenue|floatformat:2 }}</strong></td>
+                        <td colspan="3"><strong>${{ direct_total_revenue|currency }}</strong></td>
                     </tr>
                 </tfoot>
             </table>
@@ -283,7 +283,7 @@
                     {% for line in additional_income_lines %}
                     <tr>
                         <td>{{ line.income_source.name }}</td>
-                        <td><strong>${{ line.amount|floatformat:2 }}</strong></td>
+                        <td><strong>${{ line.amount|currency }}</strong></td>
                         <td>{% if line.income_date %}{{ line.income_date|date:"M d, Y" }}{% else %}<span class="text-muted">&mdash;</span>{% endif %}</td>
                         <td>
                             <div class="d-flex gap-1">
@@ -314,7 +314,7 @@
         {% if expenses_by_category %}
         <div class="px-3 pt-3 pb-2">
             {% for cat in expenses_by_category %}
-            <span class="badge bg-secondary me-1 mb-1">{{ category_labels|get_item:cat.category }} &mdash; ${{ cat.total|floatformat:2 }}</span>
+            <span class="badge bg-secondary me-1 mb-1">{{ category_labels|get_item:cat.category }} &mdash; ${{ cat.total|currency }}</span>
             {% endfor %}
         </div>
         {% endif %}
@@ -334,7 +334,7 @@
                     <tr>
                         <td>{{ expense.get_category_display }}</td>
                         <td>{{ expense.description }}</td>
-                        <td><strong>${{ expense.amount|floatformat:2 }}</strong></td>
+                        <td><strong>${{ expense.amount|currency }}</strong></td>
                         <td>{% if expense.expense_date %}{{ expense.expense_date|date:"M d, Y" }}{% else %}<span class="text-muted">&mdash;</span>{% endif %}</td>
                         <td>
                             <div class="d-flex gap-1">
@@ -389,7 +389,7 @@
                             </span>
                         </td>
                         <td>{{ stat.orders_count }}</td>
-                        <td><span class="revenue">${{ stat.revenue|floatformat:2 }}</span></td>
+                        <td><span class="revenue">${{ stat.revenue|currency }}</span></td>
                         <td>{{ stat.tickets_count }}</td>
                         <td>
                             <div class="d-flex gap-1">
@@ -398,7 +398,7 @@
                                         data-upload-id="{{ stat.upload.id }}"
                                         data-upload-filename="{{ stat.upload.filename }}"
                                         data-upload-orders="{{ stat.orders_count }}"
-                                        data-upload-revenue="{{ stat.revenue|floatformat:2 }}"
+                                        data-upload-revenue="{{ stat.revenue|currency }}"
                                         data-bs-toggle="modal"
                                         data-bs-target="#deleteUploadModal">
                                     <i class="bi bi-trash"></i>
@@ -443,7 +443,7 @@
                         <td><a href="{% url 'tickets:order_detail' order.id %}"><strong>{{ order.order_number }}</strong></a></td>
                         <td>{{ order.order_date|date:"M d, Y H:i" }}</td>
                         <td><a href="{% url 'tickets:customer_detail' order.customer.id %}">{{ order.customer.name }}</a></td>
-                        <td><strong>${{ order.total_amount|floatformat:2 }}</strong></td>
+                        <td><strong>${{ order.total_amount|currency }}</strong></td>
                         <td>{{ order.tickets_count }}</td>
                         <td>
                             {% if order.uploaded_file %}

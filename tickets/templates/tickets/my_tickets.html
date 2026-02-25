@@ -1,4 +1,5 @@
 {% extends 'tickets/base.html' %}
+{% load tickets_extras %}
 
 {% block title %}My Tickets - Eventflow{% endblock %}
 
@@ -53,7 +54,7 @@
                         <td>{{ order.tickets.all|length }}</td>
                         <td>
                             {% if order.total_amount %}
-                            ${{ order.total_amount|floatformat:2 }}
+                            ${{ order.total_amount|currency }}
                             {% else %}
                             Free
                             {% endif %}

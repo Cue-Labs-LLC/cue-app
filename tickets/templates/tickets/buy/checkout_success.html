@@ -1,3 +1,4 @@
+{% load tickets_extras %}
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -74,7 +75,7 @@
             {% endif %}
             <tr>
                 <th>Total paid</th>
-                <td>${{ session.ticket_order.total_amount|floatformat:2 }}</td>
+                <td>${{ session.ticket_order.total_amount|currency }}</td>
             </tr>
         </table>
     </div>

@@ -1,4 +1,5 @@
 {% extends "tickets/base.html" %}
+{% load tickets_extras %}
 
 {% block title %}Finance — {{ org_name }}{% endblock %}
 
@@ -26,28 +27,28 @@
     <div class="col-6 col-lg-3">
         <div class="stat-card">
             <div class="stat-label">Gross Revenue</div>
-            <div class="stat-value">${{ gross_revenue|floatformat:2 }}</div>
+            <div class="stat-value">${{ gross_revenue|currency }}</div>
             <div class="stat-sub">All orders (CSV + Stripe)</div>
         </div>
     </div>
     <div class="col-6 col-lg-3">
         <div class="stat-card stat-card--accent">
             <div class="stat-label">Platform Fees</div>
-            <div class="stat-value">${{ platform_fees|floatformat:2 }}</div>
+            <div class="stat-value">${{ platform_fees|currency }}</div>
             <div class="stat-sub">Collected service fees</div>
         </div>
     </div>
     <div class="col-6 col-lg-3">
         <div class="stat-card stat-card--info">
             <div class="stat-label">Total Paid Out</div>
-            <div class="stat-value">${{ paid_out|floatformat:2 }}</div>
+            <div class="stat-value">${{ paid_out|currency }}</div>
             <div class="stat-sub">Completed payouts</div>
         </div>
     </div>
     <div class="col-6 col-lg-3">
         <div class="stat-card stat-card--success">
             <div class="stat-label">Available to Organizer</div>
-            <div class="stat-value">${{ available_balance|floatformat:2 }}</div>
+            <div class="stat-value">${{ available_balance|currency }}</div>
             <div class="stat-sub">After fees and payouts</div>
         </div>
     </div>
@@ -110,7 +111,7 @@
                                placeholder="{{ available_balance|floatformat:2 }}"
                                required>
                     </div>
-                    <div class="form-text">Min ${{ min_payout|floatformat:2 }} · Max ${{ available_balance|floatformat:2 }}</div>
+                    <div class="form-text">Min ${{ min_payout|currency }} · Max ${{ available_balance|currency }}</div>
                 </div>
                 <div class="col-md-5">
                     <label for="payout-notes" class="form-label">Notes <span class="text-muted">(optional)</span></label>
@@ -153,7 +154,7 @@
                         <td class="text-nowrap">{{ session.fulfilled_at|date:"M j, Y" }}</td>
                         <td>{{ session.event.name }}</td>
                         <td>{{ session.buyer_name|default:session.buyer_email }}</td>
-                        <td class="text-end">${{ session.amount_dollars|floatformat:2 }}</td>
+                        <td class="text-end">${{ session.amount_dollars|currency }}</td>
                     </tr>
                     {% endfor %}
                 </tbody>
@@ -193,7 +194,7 @@
                     {% for payout in payout_history %}
                     <tr>
                         <td class="text-nowrap">{{ payout.created_at|date:"M j, Y" }}</td>
-                        <td class="text-end">${{ payout.amount|floatformat:2 }}</td>
+                        <td class="text-end">${{ payout.amount|currency }}</td>
                         <td>
                             {% if payout.status == 'completed' %}
                             <span class="badge bg-success">Completed</span>

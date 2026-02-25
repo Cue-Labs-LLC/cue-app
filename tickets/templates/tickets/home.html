@@ -1,4 +1,5 @@
 {% extends 'tickets/base.html' %}
+{% load tickets_extras %}
 
 {% block title %}Dashboard{% endblock %}
 
@@ -27,7 +28,7 @@
     </div>
     <div class="stat-card stat-card--info">
         <div class="stat-label">Total Revenue</div>
-        <div class="stat-value">${{ total_revenue|floatformat:2|default:"0.00" }}</div>
+        <div class="stat-value">${{ total_revenue|currency }}</div>
     </div>
     <div class="stat-card stat-card--warning">
         <div class="stat-label">Total Tickets</div>
@@ -65,7 +66,7 @@
                         </td>
                         <td>{{ event.start_date|date:"M d, Y" }}</td>
                         <td>{{ event.venue.name|default:"\u2014" }}</td>
-                        <td><span class="revenue">${{ event.total_revenue|floatformat:2 }}</span></td>
+                        <td><span class="revenue">${{ event.total_revenue|currency }}</span></td>
                         <td>{{ event.upload_count }}</td>
                         <td>
                             {% if event.ticket_link %}

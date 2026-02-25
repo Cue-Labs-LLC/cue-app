@@ -1,3 +1,4 @@
+{% load tickets_extras %}
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -70,7 +71,7 @@
                 {% if item.price == "0" or item.price == "0.00" %}
                     Free
                 {% else %}
-                    ${{ item.price|floatformat:2 }}
+                    ${{ item.price|currency }}
                 {% endif %}
             </span>
         </div>
@@ -78,17 +79,17 @@
         {% if not is_free %}
         <div class="line-item" style="border-top: 1px solid #f0f0f0; margin-top: 4px; padding-top: 10px;">
             <span class="line-item-name" style="color: #666;">Subtotal</span>
-            <span class="line-item-price" style="font-weight: 400; color: #666;">${{ subtotal|floatformat:2 }}</span>
+            <span class="line-item-price" style="font-weight: 400; color: #666;">${{ subtotal|currency }}</span>
         </div>
         <div class="line-item">
             <span class="line-item-name" style="color: #666;">Service fee</span>
-            <span class="line-item-price" style="font-weight: 400; color: #666;">${{ service_fee|floatformat:2 }}</span>
+            <span class="line-item-price" style="font-weight: 400; color: #666;">${{ service_fee|currency }}</span>
         </div>
         {% endif %}
         <div class="total-row">
             <span class="total-label">Total</span>
             <span class="total-amount">
-                {% if is_free %}Free{% else %}${{ grand_total|floatformat:2 }}{% endif %}
+                {% if is_free %}Free{% else %}${{ grand_total|currency }}{% endif %}
             </span>
         </div>
     </div>
@@ -158,7 +159,7 @@
         {% endif %}
 
         <button type="button" id="pay-btn" class="btn btn-primary btn-pay btn-lg w-100">
-            <i class="bi bi-lock"></i> Pay ${{ grand_total|floatformat:2 }}
+            <i class="bi bi-lock"></i> Pay ${{ grand_total|currency }}
         </button>
         <p class="secure-note"><i class="bi bi-shield-lock"></i> Payments secured by Stripe</p>
         {% endif %}
@@ -265,7 +266,7 @@ document.addEventListener('DOMContentLoaded', function () {
             if (data.error) {
                 errorEl.textContent = data.error;
                 payBtn.disabled = false;
-                payBtn.innerHTML = '<i class="bi bi-lock"></i> Pay ${{ grand_total|floatformat:2 }}';
+                payBtn.innerHTML = '<i class="bi bi-lock"></i> Pay ${{ grand_total|currency }}';
                 return;
             }
 
@@ -285,7 +286,7 @@ document.addEventListener('DOMContentLoaded', function () {
                 if (result.error) {
                     errorEl.textContent = result.error.message;
                     payBtn.disabled = false;
-                    payBtn.innerHTML = '<i class="bi bi-lock"></i> Pay ${{ grand_total|floatformat:2 }}';
+                    payBtn.innerHTML = '<i class="bi bi-lock"></i> Pay ${{ grand_total|currency }}';
                 } else {
                     window.location.href = config.successUrl + '?session_id=' + data.session_id;
                 }
@@ -294,7 +295,7 @@ document.addEventListener('DOMContentLoaded', function () {
         .catch(function () {
             errorEl.textContent = 'An unexpected error occurred. Please try again.';
             payBtn.disabled = false;
-            payBtn.innerHTML = '<i class="bi bi-lock"></i> Pay ${{ grand_total|floatformat:2 }}';
+            payBtn.innerHTML = '<i class="bi bi-lock"></i> Pay ${{ grand_total|currency }}';
         });
     });
 });

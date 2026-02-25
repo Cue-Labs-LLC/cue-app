@@ -1,4 +1,5 @@
 {% extends 'tickets/base.html' %}
+{% load tickets_extras %}
 
 {% block title %}LTV by Market{% endblock %}
 
@@ -49,10 +50,10 @@
                     {% for row in market_stats %}
                     <tr>
                         <td><strong>{{ row.city }}</strong></td>
-                        <td><span class="revenue">${{ row.total_ltv|floatformat:2 }}</span></td>
+                        <td><span class="revenue">${{ row.total_ltv|currency }}</span></td>
                         <td>{{ row.customer_count }}</td>
                         <td>{{ row.order_count }}</td>
-                        <td>${{ row.avg_ltv|floatformat:2 }}</td>
+                        <td>${{ row.avg_ltv|currency }}</td>
                     </tr>
                     {% endfor %}
                 </tbody>

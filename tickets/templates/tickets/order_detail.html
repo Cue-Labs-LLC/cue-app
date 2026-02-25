@@ -1,4 +1,5 @@
 {% extends 'tickets/base.html' %}
+{% load tickets_extras %}
 
 {% block title %}Order {{ order.order_number }}{% endblock %}
 
@@ -22,7 +23,7 @@
 <div class="stats-grid">
     <div class="stat-card stat-card--accent">
         <div class="stat-label">Total Amount</div>
-        <div class="stat-value">${{ order.total_amount|floatformat:2 }}</div>
+        <div class="stat-value">${{ order.total_amount|currency }}</div>
     </div>
     <div class="stat-card stat-card--success">
         <div class="stat-label">Total Tickets</div>
@@ -74,15 +75,15 @@
                     {% for ticket_type, stats in ticket_types.items %}
                     <tr>
                         <td><strong>{{ ticket_type }}</strong></td>
-                        <td>${{ stats.unit_price|floatformat:2 }}</td>
+                        <td>${{ stats.unit_price|currency }}</td>
                         <td>{% if stats.tier_name %}<span class="badge bg-secondary">{{ stats.tier_name }}</span>{% else %}<span class="text-muted">&mdash;</span>{% endif %}</td>
                         <td>{{ stats.count }}</td>
-                        <td><strong>${{ stats.total_price|floatformat:2 }}</strong></td>
+                        <td><strong>${{ stats.total_price|currency }}</strong></td>
                     </tr>
                     {% endfor %}
                 </tbody>
                 <tfoot>
-                    <tr class="table-primary"><th colspan="4" class="text-end">Total:</th><th>${{ order.total_amount|floatformat:2 }}</th></tr>
+                    <tr class="table-primary"><th colspan="4" class="text-end">Total:</th><th>${{ order.total_amount|currency }}</th></tr>
                 </tfoot>
             </table>
         </div>
