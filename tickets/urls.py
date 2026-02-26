@@ -105,6 +105,7 @@ urlpatterns = [
     
     # Orders
     path('orders/<uuid:order_id>/', views.order_detail, name='order_detail'),
+    path('orders/<uuid:order_id>/refund/', views.refund_order, name='refund_order'),
     
     # CSV Formats
     path('formats/', views.format_list, name='format_list'),

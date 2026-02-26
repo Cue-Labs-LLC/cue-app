@@ -15,10 +15,48 @@
 
 <div class="page-header">
     <div>
-        <h1>Order {{ order.order_number }}</h1>
-        <p class="page-header-subtitle"><i class="bi bi-clock"></i> {{ order.order_date|date:"M d, Y H:i" }}</p>
+        <h1>
+            Order {{ order.order_number }}
+            {% if order.refunded_at %}<span class="badge bg-danger ms-2">Refunded</span>{% endif %}
+        </h1>
+        <p class="page-header-subtitle">
+            <i class="bi bi-clock"></i> {{ order.order_date|date:"M d, Y H:i" }}
+            {% if order.refunded_at %}&nbsp;&middot;&nbsp;<i class="bi bi-arrow-counterclockwise"></i> Refunded {{ order.refunded_at|date:"M d, Y H:i" }}{% endif %}
+        </p>
+    </div>
+    {% if can_refund %}
+    <div>
+        <button type="button" class="btn btn-danger" data-bs-toggle="modal" data-bs-target="#refundModal">
+            <i class="bi bi-arrow-counterclockwise"></i> Refund Order
+        </button>
+    </div>
+    {% endif %}
+</div>
+
+{% if can_refund %}
+<div class="modal fade" id="refundModal" tabindex="-1" aria-labelledby="refundModalLabel" aria-hidden="true">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="refundModalLabel">Confirm Refund</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <p>Issue a full refund for order <strong>{{ order.order_number }}</strong>?</p>
+                <p class="mb-0">Amount: <strong>${{ order.total_amount }}</strong></p>
+                <p class="text-muted small mt-2">This will refund the customer via Stripe and cannot be undone.</p>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+                <form method="post" action="{% url 'tickets:refund_order' order.id %}" style="display:inline">
+                    {% csrf_token %}
+                    <button type="submit" class="btn btn-danger">Confirm Refund</button>
+                </form>
+            </div>
+        </div>
     </div>
 </div>
+{% endif %}
 
 <div class="stats-grid">
     <div class="stat-card stat-card--accent">

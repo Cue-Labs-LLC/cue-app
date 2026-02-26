@@ -13,7 +13,7 @@ from django.db.models import (
     Sum, Count, Avg, Max, Q, Subquery, OuterRef, Prefetch,
     Case, When, Value, F, CharField,
 )
-from django.db.models.functions import Coalesce
+from django.db.models.functions import Coalesce, Greatest
 from django.db import models
 from django.core.paginator import Paginator
 from django.http import JsonResponse, Http404, HttpResponse
@@ -1741,6 +1741,7 @@ def event_detail(request, event_id):
     # Direct ticketing: sales dashboard data inlined on event detail
     saleable_ticket_types_list = list(event.saleable_ticket_types.all())
 
+
     # Ticket type breakdown for donut chart
     if event.ticketing_type == 'direct':
         ticket_type_breakdown = [
@@ -1864,14 +1865,15 @@ def order_detail(request, order_id):
     org = get_organization(request)
     order = get_object_or_404(
         TicketOrder.objects.filter(event__organization=org).select_related(
-            'customer', 'event', 'event__venue', 'uploaded_file'
+            'customer', 'event', 'event__venue', 'uploaded_file',
+            'stripe_checkout_session',
         ),
         id=order_id
     )
-    
+
     # Get all tickets for this order with tier information
     tickets = order.tickets.select_related('tier').all()
-    
+
     # Calculate ticket statistics
     total_tickets = tickets.count()
     ticket_types = {}
@@ -1886,14 +1888,79 @@ def order_detail(request, order_id):
             }
         ticket_types[ticket_type]['count'] += 1
         ticket_types[ticket_type]['total_price'] += ticket.price
-    
+
+    stripe_session = getattr(order, 'stripe_checkout_session', None)
+    can_refund = (
+        stripe_session is not None
+        and stripe_session.status == StripeCheckoutSession.Status.COMPLETED
+        and order.refunded_at is None
+    )
+
     context = {
         'order': order,
         'tickets': tickets,
         'total_tickets': total_tickets,
         'ticket_types': ticket_types,
+        'stripe_session': stripe_session,
+        'can_refund': can_refund,
     }
     return render(request, 'tickets/order_detail.html', context)
+
+
+@login_required
+@require_org
+@require_organizer
+@require_http_methods(["POST"])
+def refund_order(request, order_id):
+    """Issue a full Stripe refund for a completed order."""
+    from django.conf import settings as django_settings
+    import stripe as stripe_lib
+
+    org = get_organization(request)
+    order = get_object_or_404(
+        TicketOrder.objects.filter(event__organization=org).select_related(
+            'customer', 'stripe_checkout_session',
+        ),
+        id=order_id
+    )
+
+    session = getattr(order, 'stripe_checkout_session', None)
+    if (
+        session is None
+        or session.status != StripeCheckoutSession.Status.COMPLETED
+        or order.refunded_at is not None
+    ):
+        messages.error(request, 'This order cannot be refunded.')
+        return redirect('tickets:order_detail', order_id=order_id)
+
+    stripe_lib.api_key = django_settings.STRIPE_SECRET_KEY
+    try:
+        stripe_lib.Refund.create(payment_intent=session.stripe_session_id)
+    except stripe_lib.error.StripeError as e:
+        logger.error("Stripe refund failed for order %s: %s", order_id, e)
+        messages.error(request, f'Refund failed: {e.user_message or str(e)}')
+        return redirect('tickets:order_detail', order_id=order_id)
+
+    with transaction.atomic():
+        order.refunded_at = django_tz.now()
+        order.save(update_fields=['refunded_at'])
+
+        session.status = StripeCheckoutSession.Status.REFUNDED
+        session.save(update_fields=['status'])
+
+        for item in session.line_items_snapshot:
+            tt_id = item.get('saleable_ticket_type_id')
+            qty = item.get('quantity', 0)
+            if tt_id and qty:
+                SaleableTicketType.objects.filter(id=tt_id).update(
+                    quantity_sold=Greatest(F('quantity_sold') - qty, Value(0))
+                )
+
+        order.customer.update_lifetime_value()
+        _invalidate_event_list_cache(org)
+
+    messages.success(request, f'Order {order.order_number} has been refunded.')
+    return redirect('tickets:order_detail', order_id=order_id)
 
 
 # Format Management Views

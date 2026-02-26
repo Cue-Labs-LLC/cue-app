@@ -446,8 +446,8 @@ class Customer(BaseModel):
         return self.email
 
     def calculate_lifetime_value(self):
-        """Calculate LTV from all associated ticket orders."""
-        result = self.ticket_orders.aggregate(
+        """Calculate LTV from all associated ticket orders (excludes refunded)."""
+        result = self.ticket_orders.filter(refunded_at__isnull=True).aggregate(
             total=Sum('total_amount')
         )
         return result['total'] or Decimal('0.00')
@@ -820,6 +820,7 @@ class TicketOrder(AuditBaseModel):
     order_number = models.CharField(max_length=100, unique=True, db_index=True)
     order_date = models.DateTimeField(db_index=True)
     total_amount = models.DecimalField(max_digits=10, decimal_places=2)
+    refunded_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         ordering = ['-order_date']
@@ -1007,6 +1008,7 @@ class StripeCheckoutSession(BaseModel):
         COMPLETED = 'completed', 'Completed'
         EXPIRED   = 'expired',   'Expired'
         CANCELED  = 'canceled',  'Canceled'
+        REFUNDED  = 'refunded',  'Refunded'
 
     event = models.ForeignKey(
         Event,
