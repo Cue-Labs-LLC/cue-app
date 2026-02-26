@@ -523,10 +523,12 @@ TICKETING_TYPE_CHOICES = [
 EVENT_STATUS_DRAFT = 'draft'
 EVENT_STATUS_LIVE = 'live'
 EVENT_STATUS_ENDED = 'ended'
+EVENT_STATUS_CANCELLED = 'cancelled'
 EVENT_STATUS_CHOICES = [
     (EVENT_STATUS_DRAFT, 'Draft'),
     (EVENT_STATUS_LIVE, 'Live'),
     (EVENT_STATUS_ENDED, 'Ended'),
+    (EVENT_STATUS_CANCELLED, 'Cancelled'),
 ]
 
 
@@ -562,7 +564,7 @@ class Event(AuditBaseModel):
         default=TICKETING_TYPE_EXTERNAL,
     )
     status = models.CharField(
-        max_length=10,
+        max_length=20,
         choices=EVENT_STATUS_CHOICES,
         default=EVENT_STATUS_DRAFT,
         db_index=True,
@@ -606,7 +608,9 @@ class Event(AuditBaseModel):
 
     @property
     def effective_status(self):
-        if self.ticketing_type != TICKETING_TYPE_DIRECT or self.status in (EVENT_STATUS_DRAFT, EVENT_STATUS_ENDED):
+        if self.ticketing_type != TICKETING_TYPE_DIRECT or self.status in (
+            EVENT_STATUS_DRAFT, EVENT_STATUS_ENDED, EVENT_STATUS_CANCELLED
+        ):
             return self.status
         # status == 'live' — check if event date has passed
         today = timezone.now().date()

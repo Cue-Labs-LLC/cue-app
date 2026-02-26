@@ -85,6 +85,7 @@ urlpatterns = [
     path('events/<uuid:event_id>/delete/', views.event_delete, name='event_delete'),
     path('events/<uuid:event_id>/publish/', views.event_publish, name='event_publish'),
     path('events/<uuid:event_id>/end-sales/', views.event_end_sales, name='event_end_sales'),
+    path('events/<uuid:event_id>/cancel/', views.event_cancel, name='event_cancel'),
     path('events/<uuid:event_id>/send-survey/', views.send_survey, name='send_survey'),
     path('events/<uuid:event_id>/expenses/add/', views.expense_create, name='expense_create'),
     path('events/<uuid:event_id>/expenses/<uuid:expense_id>/edit/', views.expense_edit, name='expense_edit'),

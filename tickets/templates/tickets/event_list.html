@@ -54,6 +54,8 @@
                                 <span class="badge bg-warning text-dark ms-1" style="font-size: 0.7em;">Draft</span>
                                 {% elif eff == 'live' %}
                                 <span class="badge bg-success ms-1" style="font-size: 0.7em;">Live</span>
+                                {% elif eff == 'cancelled' %}
+                                <span class="badge bg-danger ms-1" style="font-size: 0.7em;">Cancelled</span>
                                 {% else %}
                                 <span class="badge bg-secondary ms-1" style="font-size: 0.7em;">Ended</span>
                                 {% endif %}
@@ -73,7 +75,9 @@
                         <td>
                             <div class="d-flex gap-1">
                                 <a href="{% url 'tickets:event_detail' event.id %}" class="btn btn-sm btn-outline-secondary">View</a>
+                                {% if event.ticketing_type != 'direct' or not direct_ticketing_enabled %}
                                 <a href="{% url 'tickets:event_delete' event.id %}" class="btn btn-sm btn-outline-danger"><i class="bi bi-trash"></i></a>
+                                {% endif %}
                             </div>
                         </td>
                     </tr>

@@ -31,7 +31,7 @@ from .models import (
     SurveyQuestion, SurveyInvitation, SurveyResponse, SurveyAnswer,
     PipedreamCalendarConnection,
     SaleableTicketType, StripeCheckoutSession, Payout,
-    EVENT_STATUS_DRAFT, EVENT_STATUS_LIVE, EVENT_STATUS_ENDED,
+    EVENT_STATUS_DRAFT, EVENT_STATUS_LIVE, EVENT_STATUS_ENDED, EVENT_STATUS_CANCELLED,
 )
 from .forms import (
     EventCSVUploadForm, EventExpenseForm, TicketPriceEntryForm, CSVFormatForm,
@@ -1818,6 +1818,11 @@ def event_delete(request, event_id):
     org = get_organization(request)
     event = get_object_or_404(Event.objects.filter(organization=org), id=event_id)
 
+    from .models import TICKETING_TYPE_DIRECT
+    if event.ticketing_type == TICKETING_TYPE_DIRECT:
+        messages.error(request, 'Direct-ticketing events cannot be deleted. Use "Cancel Event" to stop sales and refund buyers.')
+        return redirect('tickets:event_detail', event_id=event.id)
+
     if request.method == 'POST':
         try:
             was_future = event.start_date >= date.today()
@@ -3342,6 +3347,90 @@ def event_end_sales(request, event_id):
     event.save(update_fields=['status'])
     _invalidate_event_list_cache(org)
     messages.success(request, f'Sales for "{event.name}" have ended.')
+    return redirect('tickets:event_detail', event_id=event.id)
+
+
+@login_required
+@require_org
+@require_organizer
+@require_http_methods(["POST"])
+def event_cancel(request, event_id):
+    """Cancel a live event and issue Stripe refunds for all completed orders."""
+    from django.conf import settings as django_settings
+    import stripe as stripe_lib
+
+    if not direct_ticketing_enabled(request.user):
+        raise Http404()
+
+    org = get_organization(request)
+    event = get_object_or_404(
+        Event.objects.filter(organization=org, deleted_at__isnull=True),
+        id=event_id,
+    )
+
+    if event.status != EVENT_STATUS_LIVE:
+        messages.error(request, 'Only live events can be cancelled.')
+        return redirect('tickets:event_detail', event_id=event.id)
+
+    # Immediately mark cancelled so no new purchases can complete
+    with transaction.atomic():
+        event.status = EVENT_STATUS_CANCELLED
+        event.save(update_fields=['status'])
+
+    stripe_lib.api_key = django_settings.STRIPE_SECRET_KEY
+
+    orders = list(
+        TicketOrder.objects.filter(event=event, refunded_at__isnull=True)
+        .select_related('customer', 'stripe_checkout_session')
+    )
+
+    refunded_count = 0
+    failed_count = 0
+    affected_customer_ids = set()
+
+    for order in orders:
+        session = getattr(order, 'stripe_checkout_session', None)
+        if session is None or session.status != StripeCheckoutSession.Status.COMPLETED:
+            continue
+
+        try:
+            stripe_lib.Refund.create(payment_intent=session.stripe_session_id)
+        except stripe_lib.error.StripeError as e:
+            logger.error('Stripe refund failed for order %s during event cancel: %s', order.id, e)
+            failed_count += 1
+            continue
+
+        with transaction.atomic():
+            order.refunded_at = django_tz.now()
+            order.save(update_fields=['refunded_at'])
+            session.status = StripeCheckoutSession.Status.REFUNDED
+            session.save(update_fields=['status'])
+            for item in session.line_items_snapshot:
+                tt_id = item.get('saleable_ticket_type_id')
+                qty = item.get('quantity', 0)
+                if tt_id and qty:
+                    SaleableTicketType.objects.filter(id=tt_id).update(
+                        quantity_sold=Greatest(F('quantity_sold') - qty, Value(0))
+                    )
+            affected_customer_ids.add(order.customer_id)
+            refunded_count += 1
+
+    for customer_id in affected_customer_ids:
+        try:
+            Customer.objects.get(id=customer_id).update_lifetime_value()
+        except Customer.DoesNotExist:
+            pass
+
+    _invalidate_event_list_cache(org)
+
+    if failed_count:
+        messages.warning(
+            request,
+            f'"{event.name}" cancelled. {refunded_count} order(s) refunded. '
+            f'{failed_count} refund(s) failed — please refund those orders manually.',
+        )
+    else:
+        messages.success(request, f'"{event.name}" cancelled. {refunded_count} order(s) refunded.')
     return redirect('tickets:event_detail', event_id=event.id)
 
 
