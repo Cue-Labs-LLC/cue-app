@@ -36,6 +36,11 @@ class MemberInviteForm(forms.Form):
             'placeholder': 'Email address',
         })
     )
+    org_role = forms.ChoiceField(
+        choices=UserProfile.OrgRole.choices,
+        initial=UserProfile.OrgRole.HOST,
+        widget=forms.Select(attrs={'class': 'form-select'}),
+    )
     role = forms.ChoiceField(
         choices=UserProfile.Role.choices,
         initial=UserProfile.Role.ORGANIZER,
@@ -48,8 +53,9 @@ class MemberInviteForm(forms.Form):
         self.helper.form_method = 'post'
         self.helper.layout = Layout(
             Row(
-                Column('email', css_class='form-group col-md-8 mb-0'),
-                Column('role', css_class='form-group col-md-4 mb-0'),
+                Column('email', css_class='form-group col-md-6 mb-0'),
+                Column('org_role', css_class='form-group col-md-3 mb-0'),
+                Column('role', css_class='form-group col-md-3 mb-0'),
             ),
             Submit('submit', 'Invite member', css_class='btn btn-primary'),
         )

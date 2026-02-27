@@ -101,7 +101,12 @@ class UserProfile(models.Model):
     class Role(models.TextChoices):
         ORGANIZER = 'organizer', 'Organizer'
         ATTENDEE  = 'attendee',  'Attendee'
-        BOTH      = 'both',      'Organizer & Attendee'
+
+    class OrgRole(models.TextChoices):
+        OWNER    = 'owner',    'Owner'
+        ADMIN    = 'admin',    'Admin'
+        HOST     = 'host',     'Host'
+        DOORMAN  = 'doorman',  'Doorman'
 
     user = models.OneToOneField(
         'auth.User',
@@ -119,6 +124,13 @@ class UserProfile(models.Model):
         max_length=20,
         choices=Role.choices,
         default=Role.ORGANIZER,
+        db_index=True,
+    )
+    org_role = models.CharField(
+        max_length=20,
+        choices=OrgRole.choices,
+        null=True,
+        blank=True,
         db_index=True,
     )
     phone_number = models.CharField(
@@ -168,11 +180,23 @@ class UserProfile(models.Model):
 
     @property
     def is_organizer(self):
-        return self.role in (self.Role.ORGANIZER, self.Role.BOTH)
+        return self.role == self.Role.ORGANIZER
 
     @property
     def is_attendee(self):
         return True  # all users have attendee abilities; organizers are a superset
+
+    @property
+    def is_org_owner(self):
+        return self.org_role == self.OrgRole.OWNER
+
+    @property
+    def is_org_admin(self):
+        return self.org_role in (self.OrgRole.OWNER, self.OrgRole.ADMIN)
+
+    @property
+    def is_org_host(self):
+        return self.org_role in (self.OrgRole.OWNER, self.OrgRole.ADMIN, self.OrgRole.HOST)
 
 
 class OrganizationInvitation(BaseModel):
@@ -207,6 +231,11 @@ class OrganizationInvitation(BaseModel):
         max_length=20,
         choices=UserProfile.Role.choices,
         default=UserProfile.Role.ORGANIZER,
+    )
+    org_role = models.CharField(
+        max_length=20,
+        choices=UserProfile.OrgRole.choices,
+        default=UserProfile.OrgRole.HOST,
     )
     expires_at = models.DateTimeField()
     accepted_at = models.DateTimeField(null=True, blank=True)

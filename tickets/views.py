@@ -52,7 +52,7 @@ from .services.segmentation.segment_definitions import (
 )
 from .services.cohort_analysis.repeat_customer_calculator import RepeatCustomerCalculator
 from .services.cohort_analysis.cohort_retention_calculator import CohortRetentionCalculator
-from .utils import get_organization, require_org, require_organizer, clear_org_cache
+from .utils import get_organization, require_org, require_organizer, require_host, require_admin, require_owner, clear_org_cache
 from .feature_flags import direct_ticketing_enabled
 
 from django.core.cache import cache as django_cache
@@ -539,7 +539,8 @@ def create_organization(request):
             org.save()
             profile.organization = org
             profile.role = UserProfile.Role.ORGANIZER
-            profile.save(update_fields=['organization', 'role'])
+            profile.org_role = UserProfile.OrgRole.OWNER
+            profile.save(update_fields=['organization', 'role', 'org_role'])
             clear_org_cache(request)
             messages.success(request, f"Organization '{org.name}' created. You can now use the app.")
             return redirect('tickets:home')
@@ -574,13 +575,14 @@ def member_list(request):
         'pending_invites': pending_invites,
         'invite_form': form,
         'role_choices': UserProfile.Role.choices,
+        'org_role_choices': UserProfile.OrgRole.choices,
     }
     return render(request, 'tickets/member_list.html', context)
 
 
 @login_required
 @require_org
-@require_organizer
+@require_admin
 @require_http_methods(["POST"])
 def member_invite(request):
     """Create an organization invitation and send email."""
@@ -594,6 +596,7 @@ def member_invite(request):
 
     email = form.cleaned_data['email'].strip().lower()
     role = form.cleaned_data['role']
+    org_role = form.cleaned_data['org_role']
     if UserProfile.objects.filter(
         organization=org,
         user__email__iexact=email,
@@ -618,6 +621,7 @@ def member_invite(request):
         status=OrganizationInvitation.Status.PENDING,
         expires_at=expires_at,
         role=role,
+        org_role=org_role,
     )
     invitation.full_clean()
     invitation.save()
@@ -658,7 +662,8 @@ def invite_accept(request, token):
     )
     profile.organization = invitation.organization
     profile.role = invitation.role
-    profile.save(update_fields=['organization', 'role'])
+    profile.org_role = invitation.org_role
+    profile.save(update_fields=['organization', 'role', 'org_role'])
     invitation.status = OrganizationInvitation.Status.ACCEPTED
     invitation.accepted_at = django_tz.now()
     invitation.accepted_by = request.user
@@ -672,7 +677,7 @@ def invite_accept(request, token):
 
 @login_required
 @require_org
-@require_organizer
+@require_admin
 @require_http_methods(["POST"])
 def invite_revoke(request, token):
     """Revoke a pending organization invitation."""
@@ -755,7 +760,7 @@ def home(request):
 
 @login_required
 @require_org
-@require_organizer
+@require_host
 @require_http_methods(["GET", "POST"])
 def price_entry(request, file_id):
     """Display form for manually entering ticket prices or tiers."""
@@ -1039,7 +1044,7 @@ def process_csv_file(request, uploaded_file, manual_prices=None, tier_definition
 
 @login_required
 @require_org
-@require_organizer
+@require_host
 def upload_results(request, file_id):
     """Display processing results."""
     org = get_organization(request)
@@ -1056,7 +1061,7 @@ def upload_results(request, file_id):
 
 @login_required
 @require_org
-@require_organizer
+@require_admin
 @require_http_methods(["POST"])
 def upload_delete(request, file_id):
     """Delete an upload and all associated order data."""
@@ -1121,7 +1126,7 @@ def upload_delete(request, file_id):
 
 @login_required
 @require_org
-@require_organizer
+@require_host
 def customer_list(request):
     """Display list of all customers with LTV and optional segment filter."""
     org = get_organization(request)
@@ -1177,7 +1182,7 @@ def customer_list(request):
 
 @login_required
 @require_org
-@require_organizer
+@require_host
 def customer_ltv_by_market(request):
     """Display customer LTV metrics aggregated by city (event venue city)."""
     org = get_organization(request)
@@ -1252,7 +1257,7 @@ def _format_range(min_max):
 
 @login_required
 @require_org
-@require_organizer
+@require_host
 def customer_segments(request):
     """Analytics page: segment distribution (donut), avg LTV per segment (bar), table with links."""
     org = get_organization(request)
@@ -1336,7 +1341,7 @@ def customer_segments(request):
 
 @login_required
 @require_org
-@require_organizer
+@require_host
 @require_http_methods(["POST"])
 def recalculate_segments(request):
     """Enqueue Celery task to recalculate RFM segments; redirect with message."""
@@ -1353,7 +1358,7 @@ def recalculate_segments(request):
 
 @login_required
 @require_org
-@require_organizer
+@require_host
 def repeat_customers(request):
     """Analytics page: new vs returning customers per event."""
     org = get_organization(request)
@@ -1373,7 +1378,7 @@ def repeat_customers(request):
 
 @login_required
 @require_org
-@require_organizer
+@require_host
 def cohort_retention(request):
     """Analytics page: monthly cohort retention heatmap and line chart."""
     org = get_organization(request)
@@ -1391,7 +1396,7 @@ def cohort_retention(request):
 
 @login_required
 @require_org
-@require_organizer
+@require_host
 def customer_detail(request, customer_id):
     """Display detailed customer information with LTV and order history."""
     org = get_organization(request)
@@ -1811,7 +1816,7 @@ def event_detail(request, event_id):
 
 @login_required
 @require_org
-@require_organizer
+@require_admin
 @require_http_methods(["GET", "POST"])
 def event_delete(request, event_id):
     """Permanently delete an event and all its orders and tickets."""
@@ -1864,7 +1869,7 @@ def event_delete(request, event_id):
 
 @login_required
 @require_org
-@require_organizer
+@require_host
 def order_detail(request, order_id):
     """Display detailed order information with all tickets."""
     org = get_organization(request)
@@ -1914,7 +1919,7 @@ def order_detail(request, order_id):
 
 @login_required
 @require_org
-@require_organizer
+@require_admin
 @require_http_methods(["POST"])
 def refund_order(request, order_id):
     """Issue a full Stripe refund for a completed order."""
@@ -1972,7 +1977,7 @@ def refund_order(request, order_id):
 
 @login_required
 @require_org
-@require_organizer
+@require_host
 def format_list(request):
     """List all CSV formats."""
     org = get_organization(request)
@@ -1985,7 +1990,7 @@ def format_list(request):
 
 @login_required
 @require_org
-@require_organizer
+@require_host
 def format_create(request):
     """Create new CSV format."""
     org = get_organization(request)
@@ -2009,7 +2014,7 @@ def format_create(request):
 
 @login_required
 @require_org
-@require_organizer
+@require_host
 def format_edit(request, format_id):
     """Edit existing CSV format."""
     org = get_organization(request)
@@ -2035,7 +2040,7 @@ def format_edit(request, format_id):
 
 @login_required
 @require_org
-@require_organizer
+@require_host
 def format_delete(request, format_id):
     """Delete CSV format."""
     org = get_organization(request)
@@ -2063,7 +2068,7 @@ def format_delete(request, format_id):
 
 @login_required
 @require_org
-@require_organizer
+@require_host
 def format_set_default(request, format_id):
     """Set CSV format as default."""
     org = get_organization(request)
@@ -2084,7 +2089,7 @@ def format_set_default(request, format_id):
 
 @login_required
 @require_org
-@require_organizer
+@require_host
 def venue_list(request):
     """List all venues with optional search and pagination."""
     org = get_organization(request)
@@ -2109,7 +2114,7 @@ def venue_list(request):
 
 @login_required
 @require_org
-@require_organizer
+@require_host
 def venue_create(request):
     """Create new venue."""
     org = get_organization(request)
@@ -2133,7 +2138,7 @@ def venue_create(request):
 
 @login_required
 @require_org
-@require_organizer
+@require_host
 def venue_edit(request, venue_id):
     """Edit an existing venue."""
     org = get_organization(request)
@@ -2157,7 +2162,7 @@ def venue_edit(request, venue_id):
 
 @login_required
 @require_org
-@require_organizer
+@require_host
 def event_type_select(request):
     """Landing page to choose Direct or External ticketing before creating an event."""
     return render(request, 'tickets/event_type_select.html', {})
@@ -2165,7 +2170,7 @@ def event_type_select(request):
 
 @login_required
 @require_org
-@require_organizer
+@require_host
 def event_create(request, ticketing_type):
     """Create new event (ticketing_type comes from URL, chosen on type-select page)."""
     from .models import TICKETING_TYPE_DIRECT, TICKETING_TYPE_EXTERNAL
@@ -2288,11 +2293,66 @@ def event_create(request, ticketing_type):
 
 @login_required
 @require_org
-@require_organizer
+@require_host
 def event_edit(request, event_id):
     """Edit an existing event."""
+    from .models import TICKETING_TYPE_DIRECT
     org = get_organization(request)
     event = get_object_or_404(Event.objects.filter(organization=org), id=event_id)
+
+    if event.ticketing_type == TICKETING_TYPE_DIRECT:
+        if request.method == 'POST':
+            form = DirectEventForm(request.POST, request.FILES, instance=event)
+            ticket_formset = DirectTicketTypeFormSet(
+                request.POST,
+                queryset=SaleableTicketType.objects.filter(event=event),
+                prefix='ticket_type',
+            )
+            if form.is_valid() and ticket_formset.is_valid():
+                venue_name = form.cleaned_data['venue_name']
+                venue_address = form.cleaned_data.get('venue_address', '')
+                venue, _ = Venue.objects.get_or_create(
+                    organization=org,
+                    name=venue_name,
+                    city='',
+                    defaults={'street_address': venue_address},
+                )
+                event = form.save(commit=False)
+                event.updated_by = request.user
+                event.venue = venue
+                event.save()
+                instances = ticket_formset.save(commit=False)
+                for tt in instances:
+                    if tt.name and tt.name.strip():
+                        tt.event = event
+                        tt.save()
+                for tt in ticket_formset.deleted_objects:
+                    tt.delete()
+                _invalidate_event_list_cache(org)
+                messages.success(request, f"Event '{event.name}' updated successfully.")
+                _regenerate_event_doc_background(org)
+                return redirect('tickets:event_detail', event_id=event.id)
+        else:
+            form = DirectEventForm(
+                instance=event,
+                initial={
+                    'venue_name': event.venue.name if event.venue else '',
+                    'venue_address': event.venue.street_address if event.venue else '',
+                },
+            )
+            ticket_formset = DirectTicketTypeFormSet(
+                queryset=SaleableTicketType.objects.filter(event=event).order_by('name'),
+                prefix='ticket_type',
+            )
+        context = {
+            'form': form,
+            'ticket_formset': ticket_formset,
+            'event': event,
+            'ticketing_type': event.ticketing_type,
+        }
+        return render(request, 'tickets/event_edit.html', context)
+
+    # External ticketing path
     if request.method == 'POST':
         form = EventForm(request.POST, instance=event, organization=org, ticketing_type_locked=True)
         talent_formset = EventTalentFormSet(request.POST, prefix='talent')
@@ -2337,13 +2397,14 @@ def event_edit(request, event_id):
         'form': form,
         'talent_formset': talent_formset,
         'event': event,
+        'ticketing_type': event.ticketing_type,
     }
     return render(request, 'tickets/event_edit.html', context)
 
 
 @login_required
 @require_org
-@require_organizer
+@require_host
 @require_http_methods(["GET", "POST"])
 def event_upload_csv(request, event_id):
     """Upload a CSV directly for an existing event."""
@@ -2399,7 +2460,7 @@ def event_upload_csv(request, event_id):
 
 @login_required
 @require_org
-@require_organizer
+@require_host
 @require_http_methods(["POST"])
 def regenerate_event_doc(request):
     """Trigger regeneration of the Upcoming Events Google Doc."""
@@ -2440,7 +2501,7 @@ def regenerate_event_doc(request):
 
 @login_required
 @require_org
-@require_organizer
+@require_admin
 def settings_google_calendar(request):
     """Google Calendar (Pipedream) settings: set or edit webhook URL, or disconnect."""
     from django.core.validators import URLValidator
@@ -2477,7 +2538,7 @@ def settings_google_calendar(request):
 
 @login_required
 @require_org
-@require_organizer
+@require_admin
 def settings_google_calendar_disconnect(request):
     """Remove Pipedream calendar connection for the current org."""
     if request.method != 'POST':
@@ -2492,7 +2553,7 @@ def settings_google_calendar_disconnect(request):
 
 @login_required
 @require_org
-@require_organizer
+@require_host
 def forecast_tool(request):
     """Display the standalone forecast tool page."""
     org = get_organization(request)
@@ -2505,7 +2566,7 @@ def forecast_tool(request):
 
 @login_required
 @require_org
-@require_organizer
+@require_host
 def forecast_api(request):
     """Return forecast data as JSON for the chart."""
     from datetime import datetime
@@ -2570,7 +2631,7 @@ def forecast_api(request):
 
 @login_required
 @require_org
-@require_organizer
+@require_admin
 @require_http_methods(["GET", "POST"])
 def expense_create(request, event_id):
     """Add a new expense to an event."""
@@ -2599,7 +2660,7 @@ def expense_create(request, event_id):
 
 @login_required
 @require_org
-@require_organizer
+@require_admin
 @require_http_methods(["GET", "POST"])
 def expense_edit(request, event_id, expense_id):
     """Edit an existing expense."""
@@ -2632,7 +2693,7 @@ def expense_edit(request, event_id, expense_id):
 
 @login_required
 @require_org
-@require_organizer
+@require_admin
 @require_http_methods(["GET", "POST"])
 def expense_delete(request, event_id, expense_id):
     """Soft-delete an expense."""
@@ -2661,7 +2722,7 @@ def expense_delete(request, event_id, expense_id):
 
 @login_required
 @require_org
-@require_organizer
+@require_admin
 def income_source_list(request):
     """List all income source types for the organization."""
     org = get_organization(request)
@@ -2672,7 +2733,7 @@ def income_source_list(request):
 
 @login_required
 @require_org
-@require_organizer
+@require_admin
 @require_http_methods(["GET", "POST"])
 def income_source_create(request):
     """Create a new income source type."""
@@ -2695,7 +2756,7 @@ def income_source_create(request):
 
 @login_required
 @require_org
-@require_organizer
+@require_admin
 @require_http_methods(["GET", "POST"])
 def income_source_edit(request, source_id):
     """Edit an income source type."""
@@ -2718,7 +2779,7 @@ def income_source_edit(request, source_id):
 
 @login_required
 @require_org
-@require_organizer
+@require_admin
 @require_http_methods(["GET", "POST"])
 def income_source_delete(request, source_id):
     """Delete an income source type (only if not used by any event income)."""
@@ -2744,7 +2805,7 @@ def income_source_delete(request, source_id):
 
 @login_required
 @require_org
-@require_organizer
+@require_admin
 @require_http_methods(["GET", "POST"])
 def event_income_create(request, event_id):
     """Add additional income to an event."""
@@ -2771,7 +2832,7 @@ def event_income_create(request, event_id):
 
 @login_required
 @require_org
-@require_organizer
+@require_admin
 @require_http_methods(["GET", "POST"])
 def event_income_edit(request, event_id, income_id):
     """Edit an event additional income entry."""
@@ -2802,7 +2863,7 @@ def event_income_edit(request, event_id, income_id):
 
 @login_required
 @require_org
-@require_organizer
+@require_admin
 @require_http_methods(["GET", "POST"])
 def event_income_delete(request, event_id, income_id):
     """Soft-delete an event additional income entry."""
@@ -2826,7 +2887,7 @@ def event_income_delete(request, event_id, income_id):
 
 @login_required
 @require_org
-@require_organizer
+@require_host
 def profitability_overview(request):
     """Analytics page: org-wide P&L stats, chart, and sortable table."""
     org = get_organization(request)
@@ -2951,7 +3012,7 @@ def _get_survey_questions_for_event(event):
 
 @login_required
 @require_org
-@require_organizer
+@require_host
 def send_survey(request, event_id):
     """Create survey invitations and dispatch email task. POST only."""
     if request.method != 'POST':
@@ -3091,7 +3152,7 @@ def survey_thank_you(request):
 
 @login_required
 @require_org
-@require_organizer
+@require_host
 @require_http_methods(["POST"])
 def chat_stream(request):
     """SSE endpoint — streams LLM tokens for the chat agent."""
@@ -3128,7 +3189,7 @@ def chat_stream(request):
 
 @login_required
 @require_org
-@require_organizer
+@require_host
 def chat_history(request):
     """Return messages for a conversation as JSON."""
     import uuid as uuid_mod
@@ -3162,7 +3223,7 @@ def chat_history(request):
 
 @login_required
 @require_org
-@require_organizer
+@require_host
 def chat_conversations(request):
     """List user's recent conversations with their first message."""
     from django.db.models import Min, Max
@@ -3201,7 +3262,7 @@ def chat_conversations(request):
 
 @login_required
 @require_org
-@require_organizer
+@require_host
 @require_http_methods(["GET", "POST"])
 def saleable_ticket_type_create(request, event_id):
     """Create a new SaleableTicketType for an event."""
@@ -3231,7 +3292,7 @@ def saleable_ticket_type_create(request, event_id):
 
 @login_required
 @require_org
-@require_organizer
+@require_host
 @require_http_methods(["GET", "POST"])
 def saleable_ticket_type_edit(request, event_id, ticket_type_id):
     """Edit an existing SaleableTicketType."""
@@ -3266,7 +3327,7 @@ def saleable_ticket_type_edit(request, event_id, ticket_type_id):
 
 @login_required
 @require_org
-@require_organizer
+@require_host
 @require_http_methods(["POST"])
 def saleable_ticket_type_toggle(request, event_id, ticket_type_id):
     """Toggle is_active on a SaleableTicketType."""
@@ -3284,7 +3345,7 @@ def saleable_ticket_type_toggle(request, event_id, ticket_type_id):
 
 @login_required
 @require_org
-@require_organizer
+@require_host
 @require_http_methods(["GET", "POST"])
 def saleable_ticket_type_delete(request, event_id, ticket_type_id):
     """Delete a SaleableTicketType (only if no tickets sold)."""
@@ -3312,7 +3373,7 @@ def saleable_ticket_type_delete(request, event_id, ticket_type_id):
 
 @login_required
 @require_org
-@require_organizer
+@require_host
 @require_http_methods(["POST"])
 def event_publish(request, event_id):
     """Transition a direct event from Draft → Live."""
@@ -3332,7 +3393,7 @@ def event_publish(request, event_id):
 
 @login_required
 @require_org
-@require_organizer
+@require_host
 @require_http_methods(["POST"])
 def event_end_sales(request, event_id):
     """Transition a direct event from Live → Ended (terminal, irreversible)."""
@@ -3352,7 +3413,7 @@ def event_end_sales(request, event_id):
 
 @login_required
 @require_org
-@require_organizer
+@require_admin
 @require_http_methods(["POST"])
 def event_cancel(request, event_id):
     """Cancel a live event and issue Stripe refunds for all completed orders."""
@@ -3436,7 +3497,7 @@ def event_cancel(request, event_id):
 
 @login_required
 @require_org
-@require_organizer
+@require_host
 @require_http_methods(["POST"])
 def event_flyer_upload(request, event_id):
     """Upload or replace event flyer (direct ticketing only). Returns JSON."""
@@ -4140,23 +4201,38 @@ def my_tickets(request):
 
 @login_required
 @require_org
-@require_organizer
+@require_owner
 @require_http_methods(["POST"])
 def member_role_update(request, profile_id):
-    """Organizer updates the role of an org member."""
+    """Owner updates the system role and org role of an org member."""
     org = get_organization(request)
     profile = get_object_or_404(
         UserProfile.objects.select_related('user').filter(organization=org),
         id=profile_id,
     )
+    if profile.user == request.user:
+        messages.error(request, 'You cannot change your own role.')
+        return redirect('tickets:member_list')
     new_role = request.POST.get('role', '').strip()
+    new_org_role = request.POST.get('org_role', '').strip()
     valid_roles = [r[0] for r in UserProfile.Role.choices]
-    if new_role not in valid_roles:
+    valid_org_roles = [r[0] for r in UserProfile.OrgRole.choices]
+    update_fields = []
+    if new_role and new_role not in valid_roles:
         messages.error(request, 'Invalid role.')
-    else:
+        return redirect('tickets:member_list')
+    if new_org_role and new_org_role not in valid_org_roles:
+        messages.error(request, 'Invalid org role.')
+        return redirect('tickets:member_list')
+    if new_role:
         profile.role = new_role
-        profile.save(update_fields=['role'])
-        messages.success(request, f"Updated role to {profile.get_role_display()}.")
+        update_fields.append('role')
+    if new_org_role:
+        profile.org_role = new_org_role
+        update_fields.append('org_role')
+    if update_fields:
+        profile.save(update_fields=update_fields)
+        messages.success(request, 'Member roles updated.')
     return redirect('tickets:member_list')
 
 
@@ -4189,7 +4265,7 @@ def _compute_available_balance(org):
 
 @login_required
 @require_org
-@require_organizer
+@require_admin
 @require_http_methods(["GET"])
 def finance_overview(request):
     """Finance overview: revenue stats, bank account status, payout history."""
@@ -4232,7 +4308,7 @@ def finance_overview(request):
 
 @login_required
 @require_org
-@require_organizer
+@require_admin
 @require_http_methods(["POST"])
 def stripe_connect_onboard(request):
     """Create (or reuse) a Stripe Express account and redirect to onboarding."""
@@ -4265,7 +4341,7 @@ def stripe_connect_onboard(request):
 
 @login_required
 @require_org
-@require_organizer
+@require_admin
 @require_http_methods(["GET"])
 def stripe_connect_return(request):
     """Stripe redirects here after the organizer completes (or abandons) onboarding."""
@@ -4291,7 +4367,7 @@ def stripe_connect_return(request):
 
 @login_required
 @require_org
-@require_organizer
+@require_admin
 @require_http_methods(["GET"])
 def stripe_connect_refresh(request):
     """Re-create an expired onboarding link and redirect the organizer."""
@@ -4320,7 +4396,7 @@ def stripe_connect_refresh(request):
 
 @login_required
 @require_org
-@require_organizer
+@require_owner
 @require_http_methods(["POST"])
 def initiate_payout(request):
     """Initiate a Stripe Transfer from the platform balance to the organizer's account."""

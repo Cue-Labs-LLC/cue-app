@@ -83,7 +83,7 @@ def require_org(view_func):
 
 def require_organizer(view_func):
     """
-    Decorator that requires the user to have the organizer (or 'both') role.
+    Decorator that requires the user to have the organizer role.
     Pure attendees are redirected to their dashboard. Superusers bypass.
     Stack after @login_required and @require_org.
     """
@@ -103,6 +103,44 @@ def require_organizer(view_func):
             return redirect('tickets:attendee_dashboard')
         return view_func(request, *args, **kwargs)
     return _wrapped
+
+
+def _org_role_required(min_check):
+    """Factory for org-role decorators. min_check is a lambda(profile) -> bool."""
+    def decorator(view_func):
+        @wraps(view_func)
+        def _wrapped(request, *args, **kwargs):
+            if request.user.is_superuser:
+                return view_func(request, *args, **kwargs)
+            from .models import UserProfile
+            from django.http import HttpResponseForbidden
+            try:
+                profile = request.user.profile
+            except UserProfile.DoesNotExist:
+                return HttpResponseForbidden('Access denied.')
+            # Respect session view mode
+            if request.session.get('_view_mode') == 'attendee':
+                return HttpResponseForbidden('Access denied.')
+            if not min_check(profile):
+                return HttpResponseForbidden('Access denied.')
+            return view_func(request, *args, **kwargs)
+        return _wrapped
+    return decorator
+
+
+def require_host(view_func):
+    """Require org_role of Host, Admin, or Owner (or superuser)."""
+    return _org_role_required(lambda p: p.is_org_host)(view_func)
+
+
+def require_admin(view_func):
+    """Require org_role of Admin or Owner (or superuser)."""
+    return _org_role_required(lambda p: p.is_org_admin)(view_func)
+
+
+def require_owner(view_func):
+    """Require org_role of Owner (or superuser)."""
+    return _org_role_required(lambda p: p.is_org_owner)(view_func)
 
 
 def calculate_platform_fee_cents(subtotal_cents: int) -> int:

@@ -22,6 +22,103 @@
 
 <div class="row">
     <div class="col-md-8">
+        {% if ticketing_type == 'direct' %}
+        <div class="card mb-3">
+            <div class="card-body">
+                <label class="form-label fw-semibold">Public Ticket Link</label>
+                <div class="input-group">
+                    <input type="text" class="form-control form-control-sm font-monospace"
+                           id="public-ticket-link"
+                           value="{{ request.scheme }}://{{ request.get_host }}{% url 'tickets:public_event_buy' event.id %}"
+                           readonly>
+                    <button class="btn btn-outline-secondary btn-sm" type="button" id="copy-ticket-link">
+                        <i class="bi bi-clipboard"></i> Copy
+                    </button>
+                </div>
+            </div>
+        </div>
+        <form method="post" enctype="multipart/form-data">
+            {% csrf_token %}
+            <div class="card mb-3">
+                <div class="card-body">
+                    <div class="mb-3">
+                        <label class="form-label fw-semibold">Ticketing Type</label>
+                        <div class="text-muted">
+                            {{ event.get_ticketing_type_display }}
+                            <small class="d-block text-muted">Cannot be changed after event creation.</small>
+                        </div>
+                    </div>
+                    {% if event.flyer %}
+                    <div class="mb-3">
+                        <label class="form-label fw-semibold">Current Flyer</label>
+                        <div>
+                            <img src="{{ event.flyer.url }}" alt="{{ event.name }} flyer"
+                                 class="img-fluid rounded"
+                                 style="max-height: 200px; width: auto; object-fit: contain;">
+                        </div>
+                    </div>
+                    {% endif %}
+                    {% crispy form %}
+                </div>
+            </div>
+            <div class="card mb-3">
+                <div class="card-header">
+                    <h5 class="mb-0">Ticket Types</h5>
+                </div>
+                <div class="card-body">
+                    <p class="small text-muted">Define the ticket types available for purchase. Click "Add ticket type" to add a row.</p>
+                    {{ ticket_formset.management_form }}
+                    <div class="table-responsive">
+                        <table class="table table-sm" id="ticket-type-formset-table">
+                            <thead>
+                                <tr>
+                                    <th>Ticket Name</th>
+                                    <th>Description</th>
+                                    <th>Price ($)</th>
+                                    <th>Quantity Limit</th>
+                                    <th>Remove</th>
+                                </tr>
+                            </thead>
+                            <tbody id="ticket-type-formset-tbody">
+                                {% for tt_form in ticket_formset %}
+                                <tr class="ticket-type-form-row">
+                                    <td>{{ tt_form.name }}</td>
+                                    <td>{{ tt_form.description }}</td>
+                                    <td>{{ tt_form.price }}</td>
+                                    <td>{{ tt_form.quantity_limit }}</td>
+                                    <td>
+                                        <button type="button" class="btn btn-sm btn-outline-danger ticket-type-remove" aria-label="Remove row">Remove</button>
+                                        <span class="d-none">{{ tt_form.DELETE }}</span>
+                                        {{ tt_form.id }}
+                                    </td>
+                                </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+                    <button type="button" id="ticket-type-add-row" class="btn btn-sm btn-outline-secondary mb-3">
+                        <i class="bi bi-plus-lg"></i> Add ticket type
+                    </button>
+                    <template id="ticket-type-row-template">
+                        <tr class="ticket-type-form-row">
+                            <td>{{ ticket_formset.empty_form.name }}</td>
+                            <td>{{ ticket_formset.empty_form.description }}</td>
+                            <td>{{ ticket_formset.empty_form.price }}</td>
+                            <td>{{ ticket_formset.empty_form.quantity_limit }}</td>
+                            <td>
+                                <button type="button" class="btn btn-sm btn-outline-danger ticket-type-remove" aria-label="Remove row">Remove</button>
+                                <span class="d-none">{{ ticket_formset.empty_form.DELETE }}</span>
+                                {{ ticket_formset.empty_form.id }}
+                            </td>
+                        </tr>
+                    </template>
+                </div>
+            </div>
+            <div class="mb-3">
+                <button type="submit" class="btn btn-primary">Save Changes</button>
+            </div>
+        </form>
+        {% else %}
         <form method="post">
             {% csrf_token %}
             <div class="card">
@@ -83,6 +180,7 @@
                 </div>
             </div>
         </form>
+        {% endif %}
 
         <div class="mt-3">
             <a href="{% url 'tickets:event_detail' event.id %}" class="btn btn-outline-secondary">
@@ -96,6 +194,26 @@
                 <h5 class="mb-0">Event Information</h5>
             </div>
             <div class="card-body">
+                {% if ticketing_type == 'direct' %}
+                <p class="small text-muted">
+                    <strong>Event Name:</strong> The name of the event (e.g., "Familiar Faces", "Summer Festival").
+                </p>
+                <p class="small text-muted">
+                    <strong>Summary:</strong> Short tagline shown on the public ticket page (optional).
+                </p>
+                <p class="small text-muted">
+                    <strong>Venue Name:</strong> The name of the venue. A new venue record will be created automatically if it doesn't exist yet.
+                </p>
+                <p class="small text-muted">
+                    <strong>Location (Address):</strong> Optional street address for the venue.
+                </p>
+                <p class="small text-muted">
+                    <strong>Flyer:</strong> Optional image shown on the public ticket page.
+                </p>
+                <p class="small text-muted">
+                    <strong>Ticket Types:</strong> Define one or more ticket tiers (e.g., General Admission, VIP). You can add or remove types here.
+                </p>
+                {% else %}
                 <p class="small text-muted">
                     <strong>Event Name:</strong> The name of the event (e.g., "Familiar Faces", "Summer Festival").
                 </p>
@@ -118,11 +236,9 @@
                     <strong>Ticket link:</strong> Optional URL to the ticket purchase page.
                 </p>
                 <p class="small text-muted">
-                    <strong>Parking Info:</strong> If your organization uses the Parking Info custom field, select from the dropdown (e.g. Street parking, Lot available, No parking, See venue).
-                </p>
-                <p class="small text-muted">
                     <strong>Talent lineup:</strong> Optional list of performers or DJs; use Order to set display order.
                 </p>
+                {% endif %}
                 <hr>
                 <p class="small text-muted mb-0">
                     <strong>Note:</strong> Each event must have a unique combination of name and date. You can also create events automatically by uploading a CSV file.
@@ -132,6 +248,69 @@
     </div>
 </div>
 <script>
+{% if ticketing_type == 'direct' %}
+(function() {
+    var totalFormsInput = document.querySelector('input[name="ticket_type-TOTAL_FORMS"]');
+    var tbody = document.getElementById('ticket-type-formset-tbody');
+    var template = document.getElementById('ticket-type-row-template');
+    var addBtn = document.getElementById('ticket-type-add-row');
+    if (!totalFormsInput || !tbody || !template || !addBtn) return;
+
+    function getTotalForms() {
+        return parseInt(totalFormsInput.value, 10) || 0;
+    }
+    function setTotalForms(n) {
+        totalFormsInput.value = n;
+    }
+
+    addBtn.addEventListener('click', function() {
+        var index = getTotalForms();
+        var clone = template.content.cloneNode(true);
+        clone.querySelectorAll('[name], [id], [for]').forEach(function(el) {
+            if (el.id) el.id = el.id.replace(/__prefix__/g, index);
+            if (el.name) el.name = el.name.replace(/__prefix__/g, index);
+            if (el.getAttribute('for')) el.setAttribute('for', el.getAttribute('for').replace(/__prefix__/g, index));
+        });
+        clone.querySelectorAll('input:not([type="hidden"]), select, textarea').forEach(function(el) {
+            if (el.type !== 'hidden') el.value = '';
+        });
+        tbody.appendChild(clone);
+        setTotalForms(index + 1);
+    });
+
+    tbody.addEventListener('click', function(e) {
+        var removeBtn = e.target.closest('.ticket-type-remove');
+        if (!removeBtn) return;
+        e.preventDefault();
+        var row = removeBtn.closest('tr');
+        if (!row) return;
+        var idInput = row.querySelector('input[name^="ticket_type-"][name$="-id"]');
+        var deleteInput = row.querySelector('input[name^="ticket_type-"][name$="-DELETE"]');
+        if (idInput && idInput.value) {
+            if (deleteInput) deleteInput.checked = true;
+            row.style.display = 'none';
+        } else {
+            row.remove();
+            var rows = tbody.querySelectorAll('tr.ticket-type-form-row');
+            var i, r;
+            for (i = 0; i < rows.length; i++) {
+                r = rows[i];
+                r.querySelectorAll('[name^="ticket_type-"], [id^="id_ticket_type-"]').forEach(function(el) {
+                    if (el.name) {
+                        var match = el.name.match(/^ticket_type-(\d+)-(.*)$/);
+                        if (match) el.name = 'ticket_type-' + i + '-' + match[2];
+                    }
+                    if (el.id) {
+                        var idMatch = el.id.match(/^id_ticket_type-(\d+)-(.*)$/);
+                        if (idMatch) el.id = 'id_ticket_type-' + i + '-' + idMatch[2];
+                    }
+                });
+            }
+            setTotalForms(rows.length);
+        }
+    });
+})();
+{% else %}
 (function() {
     var totalFormsInput = document.querySelector('input[name="talent-TOTAL_FORMS"]');
     var tbody = document.getElementById('talent-formset-tbody');
@@ -144,21 +323,6 @@
     }
     function setTotalForms(n) {
         totalFormsInput.value = n;
-    }
-
-    function replacePrefix(node, index) {
-        if (node.id) node.id = node.id.replace(/__prefix__/g, index);
-        if (node.name) node.name = node.name.replace(/__prefix__/g, index);
-        if (node.getAttribute('for')) node.setAttribute('for', node.getAttribute('for').replace(/__prefix__/g, index));
-        var i, children = node.children || [];
-        for (i = 0; i < children.length; i++) replacePrefix(children[i], index);
-        if (node.querySelectorAll) {
-            node.querySelectorAll('[name], [id], [for]').forEach(function(el) {
-                if (el.id) el.id = el.id.replace(/__prefix__/g, index);
-                if (el.name) el.name = el.name.replace(/__prefix__/g, index);
-                if (el.getAttribute('for')) el.setAttribute('for', el.getAttribute('for').replace(/__prefix__/g, index));
-            });
-        }
     }
 
     addBtn.addEventListener('click', function() {
@@ -209,5 +373,14 @@
         }
     });
 })();
+{% endif %}
+
+document.getElementById('copy-ticket-link')?.addEventListener('click', function () {
+    const input = document.getElementById('public-ticket-link');
+    navigator.clipboard.writeText(input.value).then(() => {
+        this.innerHTML = '<i class="bi bi-check-lg"></i> Copied';
+        setTimeout(() => { this.innerHTML = '<i class="bi bi-clipboard"></i> Copy'; }, 2000);
+    });
+});
 </script>
 {% endblock %}

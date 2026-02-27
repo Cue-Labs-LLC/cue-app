@@ -24,7 +24,7 @@ class UploadDeleteViewTests(TestCase):
             email='test@test.com',
             password='testpass123'
         )
-        UserProfile.objects.create(user=self.user, organization=self.org)
+        UserProfile.objects.create(user=self.user, organization=self.org, org_role=UserProfile.OrgRole.OWNER)
         self.client.login(username='test@test.com', password='testpass123')
         # Seed the session with _org_id so @require_org passes
         self.client.get(reverse('tickets:home'))
@@ -356,7 +356,7 @@ class ChatTestMixin:
         self.user = User.objects.create_user(
             username='chatuser', email='chat@test.com', password='testpass123'
         )
-        UserProfile.objects.create(user=self.user, organization=self.org)
+        UserProfile.objects.create(user=self.user, organization=self.org, org_role=UserProfile.OrgRole.OWNER)
         self.client.login(username='chat@test.com', password='testpass123')
         # Hit any org-required view to seed the session with _org_id
         self.client.get(reverse('tickets:home'))
@@ -622,7 +622,7 @@ class MemberInviteTests(TestCase):
             username='memberuser', email='member@test.com', password='testpass123',
             first_name='Member', last_name='User',
         )
-        UserProfile.objects.create(user=self.user, organization=self.org)
+        UserProfile.objects.create(user=self.user, organization=self.org, org_role=UserProfile.OrgRole.OWNER)
         self.client.login(username='member@test.com', password='testpass123')
         self.client.get(reverse('tickets:home'))
 
@@ -654,7 +654,7 @@ class MemberInviteTests(TestCase):
     def test_member_invite_valid_email_creates_invitation(self):
         response = self.client.post(
             reverse('tickets:member_invite'),
-            {'email': 'newuser@example.com', 'role': 'organizer', 'csrfmiddlewaretoken': self.client.cookies.get('csrftoken', '')},
+            {'email': 'newuser@example.com', 'role': 'organizer', 'org_role': 'host', 'csrfmiddlewaretoken': self.client.cookies.get('csrftoken', '')},
         )
         self.assertEqual(response.status_code, 302)
         self.assertRedirects(response, reverse('tickets:member_list'))
