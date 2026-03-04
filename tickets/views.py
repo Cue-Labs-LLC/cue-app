@@ -61,6 +61,35 @@ import logging
 logger = logging.getLogger(__name__)
 
 
+WINDOW_CHOICES = [('1M', '1m'), ('3M', '3m'), ('6M', '6m'), ('1Y', '1y'), ('All', 'all'), ('Custom', 'custom')]
+
+_WINDOW_DELTAS = {
+    '1m': timedelta(days=30),
+    '3m': timedelta(days=90),
+    '6m': timedelta(days=180),
+    '1y': timedelta(days=365),
+}
+
+
+def _parse_window(request):
+    """Return (start_date, end_date, active_window) from ?window= query params."""
+    window = request.GET.get('window', 'all')
+    today = date.today()
+    if window in _WINDOW_DELTAS:
+        return today - _WINDOW_DELTAS[window], today, window
+    if window == 'custom':
+        try:
+            start = date.fromisoformat(request.GET.get('start', ''))
+        except ValueError:
+            start = None
+        try:
+            end = date.fromisoformat(request.GET.get('end', ''))
+        except ValueError:
+            end = today
+        return start, end, 'custom'
+    return None, None, 'all'
+
+
 def _event_list_cache_key(org_id, search, sort, page):
     """Build a versioned, org-scoped cache key for the event_list response."""
     try:
@@ -1362,17 +1391,42 @@ def recalculate_segments(request):
 def repeat_customers(request):
     """Analytics page: new vs returning customers per event."""
     org = get_organization(request)
+    start_date, end_date, active_window = _parse_window(request)
     calculator = RepeatCustomerCalculator(org)
     result = calculator.calculate()
     # Chart: left to right earliest → most recent (calculator order)
     chart_events = result['events']
+
+    if start_date:
+        end = end_date or date.today()
+        chart_events = [
+            e for e in chart_events
+            if start_date <= date.fromisoformat(str(e['event_date'])[:10]) <= end
+        ]
+        total = sum(e['total'] for e in chart_events)
+        new_count = sum(e['new_count'] for e in chart_events)
+        ret_count = sum(e['returning_count'] for e in chart_events)
+        summary = {
+            'total_attendees': total,
+            'new_count': new_count,
+            'returning_count': ret_count,
+            'new_pct': round(new_count / total * 100, 1) if total else 0,
+            'returning_pct': round(ret_count / total * 100, 1) if total else 0,
+        }
+    else:
+        summary = result['summary']
+
     chart_data = json.dumps(chart_events, default=str)
     # Table: top to bottom most recent → earliest
     table_events = list(reversed(chart_events))
     return render(request, 'tickets/repeat_customers.html', {
         'events': table_events,
-        'summary': result['summary'],
+        'summary': summary,
         'chart_data_json': chart_data,
+        'active_window': active_window,
+        'window_start': start_date or '',
+        'window_end': end_date or '',
+        'window_choices': WINDOW_CHOICES,
     })
 
 
@@ -1382,15 +1436,38 @@ def repeat_customers(request):
 def cohort_retention(request):
     """Analytics page: monthly cohort retention heatmap and line chart."""
     org = get_organization(request)
+    start_date, end_date, active_window = _parse_window(request)
     calculator = CohortRetentionCalculator(org)
     result = calculator.calculate()
-    chart_data = json.dumps(result['cohorts'], default=str)
-    max_periods = max(len(c['periods']) for c in result['cohorts']) if result['cohorts'] else 0
+    cohorts = result['cohorts']
+
+    if start_date:
+        start_m = start_date.strftime('%Y-%m')
+        end_m = (end_date or date.today()).strftime('%Y-%m')
+        cohorts = [c for c in cohorts if start_m <= c['cohort'] <= end_m]
+
+    if cohorts:
+        m1_vals = [c['periods'][1]['retention_pct'] for c in cohorts if len(c['periods']) > 1]
+        m3_vals = [c['periods'][3]['retention_pct'] for c in cohorts if len(c['periods']) > 3]
+        summary = {
+            'total_cohorts': len(cohorts),
+            'avg_m1_retention': round(sum(m1_vals) / len(m1_vals), 1) if m1_vals else 0,
+            'avg_m3_retention': round(sum(m3_vals) / len(m3_vals), 1) if m3_vals else 0,
+        }
+    else:
+        summary = {'total_cohorts': 0, 'avg_m1_retention': 0, 'avg_m3_retention': 0}
+
+    chart_data = json.dumps(cohorts, default=str)
+    max_periods = max(len(c['periods']) for c in cohorts) if cohorts else 0
     return render(request, 'tickets/cohort_retention.html', {
-        'cohorts': result['cohorts'],
-        'summary': result['summary'],
+        'cohorts': cohorts,
+        'summary': summary,
         'max_periods': range(max_periods),
         'chart_data_json': chart_data,
+        'active_window': active_window,
+        'window_start': start_date or '',
+        'window_end': end_date or '',
+        'window_choices': WINDOW_CHOICES,
     })
 
 
@@ -2891,9 +2968,16 @@ def event_income_delete(request, event_id, income_id):
 def profitability_overview(request):
     """Analytics page: org-wide P&L stats, chart, and sortable table."""
     org = get_organization(request)
+    start_date, end_date, active_window = _parse_window(request)
+
+    events_qs = Event.objects.filter(organization=org)
+    if start_date:
+        events_qs = events_qs.filter(start_date__gte=start_date)
+        if end_date:
+            events_qs = events_qs.filter(start_date__lte=end_date)
 
     events = (
-        Event.objects.filter(organization=org)
+        events_qs
         .annotate(
             ticket_revenue=Coalesce(
                 Subquery(
@@ -2951,8 +3035,8 @@ def profitability_overview(request):
     summary_profit = summary_revenue - summary_expenses
     summary_margin = (summary_profit / summary_revenue * 100) if summary_revenue > 0 else None
 
-    # Chart data — only events with revenue or expenses
-    chart_events = [r for r in event_rows if r['revenue'] > 0 or r['expenses'] > 0]
+    # Chart data — only events with revenue or expenses, ordered earliest → most recent
+    chart_events = [r for r in reversed(event_rows) if r['revenue'] > 0 or r['expenses'] > 0]
     chart_data = {
         'labels': [
             [
@@ -2977,6 +3061,10 @@ def profitability_overview(request):
         'summary_profit': summary_profit,
         'summary_margin': summary_margin,
         'chart_data_json': json.dumps(chart_data),
+        'active_window': active_window,
+        'window_start': start_date or '',
+        'window_end': end_date or '',
+        'window_choices': WINDOW_CHOICES,
     }
     return render(request, 'tickets/profitability_overview.html', context)
 

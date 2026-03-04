@@ -14,6 +14,26 @@
 {% if events %}
 <script type="application/json" id="chart-data">{{ chart_data_json|safe }}</script>
 
+<div class="d-flex flex-wrap align-items-center gap-2 mb-3">
+  <div class="btn-group btn-group-sm" role="group" aria-label="Time window">
+    {% for label, key in window_choices %}
+      <a href="?window={{ key }}"
+         class="btn {% if active_window == key %}btn-primary{% else %}btn-outline-secondary{% endif %}">
+        {{ label }}
+      </a>
+    {% endfor %}
+  </div>
+  {% if active_window == 'custom' %}
+  <form class="d-flex align-items-center gap-2" method="get">
+    <input type="hidden" name="window" value="custom">
+    <input type="date" name="start" class="form-control form-control-sm" value="{{ window_start }}" style="width:auto">
+    <span class="text-muted small">to</span>
+    <input type="date" name="end" class="form-control form-control-sm" value="{{ window_end }}" style="width:auto">
+    <button type="submit" class="btn btn-sm btn-primary">Apply</button>
+  </form>
+  {% endif %}
+</div>
+
 <div class="row mb-4 g-3">
     <div class="col-md-4">
         <div class="stat-card stat-card--accent">
