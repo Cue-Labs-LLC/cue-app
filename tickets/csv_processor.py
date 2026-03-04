@@ -41,10 +41,25 @@ class CSVProcessor:
             sample = file.read(1024)
             file.seek(0)
             
-            # Check if it's readable as CSV
+            # Decode: try UTF-8 first, then UTF-8-sig (BOM)
             try:
-                csv.Sniffer().sniff(sample.decode('utf-8'))
-            except (csv.Error, UnicodeDecodeError):
+                text = sample.decode('utf-8')
+            except UnicodeDecodeError:
+                try:
+                    text = sample.decode('utf-8-sig')
+                except UnicodeDecodeError:
+                    return False, "Invalid CSV format or encoding."
+            
+            # Check if it's readable as CSV: use Sniffer if possible, else accept comma/tab-delimited
+            try:
+                csv.Sniffer().sniff(text)
+            except csv.Error:
+                # Sniffer can fail on valid CSVs (e.g. "Could not determine delimiter").
+                # Fallback: ensure first line has a delimiter (comma or tab).
+                first_line = text.split("\n")[0]
+                if "," not in first_line and "\t" not in first_line:
+                    return False, "Invalid CSV format or encoding."
+            except UnicodeDecodeError:
                 return False, "Invalid CSV format or encoding."
             
             return True, None
