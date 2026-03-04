@@ -45,6 +45,11 @@
         .back-link { display: block; text-align: center; margin-top: 14px; font-size: 0.88rem; color: #888; text-decoration: none; }
         .back-link:hover { color: #1a1a2e; }
         .secure-note { text-align: center; margin-top: 10px; font-size: 0.8rem; color: #aaa; }
+        .promo-row { display: flex; gap: 8px; margin-bottom: 10px; }
+        .promo-row input { flex: 1; }
+        .promo-success { color: #198754; font-size: 0.875rem; margin-top: 4px; }
+        .promo-error { color: #dc3545; font-size: 0.875rem; margin-top: 4px; }
+        .discount-line { color: #198754; }
     </style>
 </head>
 <body>
@@ -76,22 +81,38 @@
             </span>
         </div>
         {% endfor %}
-        {% if not is_free %}
+        {% if not is_free or discount_cents %}
         <div class="line-item" style="border-top: 1px solid #f0f0f0; margin-top: 4px; padding-top: 10px;">
             <span class="line-item-name" style="color: #666;">Subtotal</span>
-            <span class="line-item-price" style="font-weight: 400; color: #666;">${{ subtotal|currency }}</span>
+            <span class="line-item-price" style="font-weight: 400; color: #666;" id="subtotal-display">${{ subtotal|currency }}</span>
         </div>
+        {% endif %}
+        <div class="line-item discount-line" id="discount-line" {% if not discount_cents %}style="display:none;"{% endif %}>
+            <span class="line-item-name">Promo code <strong id="promo-code-label">{% if promo_applied %}{{ promo_applied.code }}{% endif %}</strong></span>
+            <span class="line-item-price" id="discount-display">{% if discount_dollars %}&minus;${{ discount_dollars|currency }}{% endif %}</span>
+        </div>
+        {% if not is_free %}
         <div class="line-item">
             <span class="line-item-name" style="color: #666;">Service fee</span>
-            <span class="line-item-price" style="font-weight: 400; color: #666;">${{ service_fee|currency }}</span>
+            <span class="line-item-price" style="font-weight: 400; color: #666;" id="fee-display">${{ service_fee|currency }}</span>
         </div>
         {% endif %}
         <div class="total-row">
             <span class="total-label">Total</span>
-            <span class="total-amount">
+            <span class="total-amount" id="grand-total-display">
                 {% if is_free %}Free{% else %}${{ grand_total|currency }}{% endif %}
             </span>
         </div>
+    </div>
+
+    <!-- Promo Code -->
+    <div class="section-card">
+        <div class="section-title">Have a promo code?</div>
+        <div class="promo-row">
+            <input type="text" id="promo-code-input" class="form-control" placeholder="Enter code" value="{% if promo_applied %}{{ promo_applied.code }}{% endif %}">
+            <button type="button" id="apply-promo-btn" class="btn btn-outline-secondary">Apply</button>
+        </div>
+        <div id="promo-message"></div>
     </div>
 
     <!-- Buyer info + payment form -->
@@ -169,6 +190,59 @@
         <i class="bi bi-arrow-left"></i> Change selection
     </a>
 </div>
+
+<script type="application/json" id="promo-config">
+{"applyPromoUrl": "{% url 'tickets:validate_promo_code' event.id %}", "checkoutUrl": "{% url 'tickets:checkout_payment' event.id %}"}
+</script>
+<script>
+document.addEventListener('DOMContentLoaded', function () {
+    function getCookie(name) {
+        var v = document.cookie.match('(^|;) ?' + name + '=([^;]*)(;|$)');
+        return v ? v[2] : null;
+    }
+
+    var promoCfg = JSON.parse(document.getElementById('promo-config').textContent);
+    var applyBtn = document.getElementById('apply-promo-btn');
+    var promoInput = document.getElementById('promo-code-input');
+    var promoMsg = document.getElementById('promo-message');
+
+    if (applyBtn && promoInput) {
+        applyBtn.addEventListener('click', function () {
+            var code = promoInput.value.trim();
+            if (!code) return;
+
+            applyBtn.disabled = true;
+            applyBtn.textContent = 'Applying...';
+            promoMsg.innerHTML = '';
+
+            fetch(promoCfg.applyPromoUrl, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-CSRFToken': getCookie('csrftoken'),
+                },
+                body: JSON.stringify({ code: code }),
+            })
+            .then(function (res) { return res.json(); })
+            .then(function (data) {
+                if (data.error) {
+                    applyBtn.disabled = false;
+                    applyBtn.textContent = 'Apply';
+                    promoMsg.innerHTML = '<div class="promo-error"><i class="bi bi-x-circle"></i> ' + data.error + '</div>';
+                } else {
+                    // Reload so the server recomputes fee and totals correctly
+                    window.location.href = promoCfg.checkoutUrl;
+                }
+            })
+            .catch(function () {
+                applyBtn.disabled = false;
+                applyBtn.textContent = 'Apply';
+                promoMsg.innerHTML = '<div class="promo-error">Could not apply promo code. Please try again.</div>';
+            });
+        });
+    }
+});
+</script>
 
 {% if not is_free %}
 <script type="application/json" id="checkout-config">

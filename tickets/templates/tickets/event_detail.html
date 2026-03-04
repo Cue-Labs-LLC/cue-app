@@ -266,6 +266,54 @@
     </div>
 </div>
 <div class="card mb-4">
+    <div class="card-header d-flex justify-content-between align-items-center">
+        <h5>Promo Codes</h5>
+        <a href="{% url 'tickets:promo_code_create' event.id %}" class="btn btn-sm btn-primary"><i class="bi bi-plus-lg"></i> Add Promo Code</a>
+    </div>
+    <div class="card-body p-0">
+        {% if promo_codes %}
+        <div class="table-responsive">
+            <table class="table table-hover mb-0">
+                <thead>
+                    <tr>
+                        <th>Code</th>
+                        <th>Type</th>
+                        <th>Value</th>
+                        <th>Uses</th>
+                        <th>Expires</th>
+                        <th>Status</th>
+                        <th></th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for promo in promo_codes %}
+                    <tr>
+                        <td><strong>{{ promo.code }}</strong></td>
+                        <td>{{ promo.get_discount_type_display }}</td>
+                        <td>{% if promo.discount_type == 'percentage' %}{{ promo.discount_value|floatformat:0 }}%{% else %}${{ promo.discount_value|floatformat:2 }}{% endif %}</td>
+                        <td>{{ promo.times_used }}{% if promo.max_uses %} / {{ promo.max_uses }}{% else %} / &infin;{% endif %}</td>
+                        <td>{% if promo.expires_at %}{{ promo.expires_at|date:"M j, Y" }}{% else %}<span class="text-muted">Never</span>{% endif %}</td>
+                        <td>{% if promo.is_active %}<span class="badge bg-success">Active</span>{% else %}<span class="badge bg-secondary">Inactive</span>{% endif %}</td>
+                        <td>
+                            <form method="post" action="{% url 'tickets:promo_code_delete' event.id promo.id %}" class="d-inline" onsubmit="return confirm('Delete promo code {{ promo.code }}?')">
+                                {% csrf_token %}
+                                <button type="submit" class="btn btn-sm btn-outline-danger"><i class="bi bi-trash"></i></button>
+                            </form>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% else %}
+        <div class="empty-state" style="padding: 32px;">
+            <p class="mb-2">No promo codes yet. Create a discount code for this event.</p>
+            <a href="{% url 'tickets:promo_code_create' event.id %}" class="btn btn-sm btn-outline-primary"><i class="bi bi-plus-lg"></i> Add First Promo Code</a>
+        </div>
+        {% endif %}
+    </div>
+</div>
+<div class="card mb-4">
     <div class="card-header">
         <h5>Recent Checkout Sessions</h5>
     </div>

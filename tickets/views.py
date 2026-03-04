@@ -30,7 +30,7 @@ from .models import (
     CustomField, EventCustomFieldValue, IncomeSource, EventIncome,
     SurveyQuestion, SurveyInvitation, SurveyResponse, SurveyAnswer,
     PipedreamCalendarConnection,
-    SaleableTicketType, StripeCheckoutSession, Payout,
+    SaleableTicketType, StripeCheckoutSession, Payout, PromoCode,
     EVENT_STATUS_DRAFT, EVENT_STATUS_LIVE, EVENT_STATUS_ENDED, EVENT_STATUS_CANCELLED,
 )
 from .forms import (
@@ -41,6 +41,7 @@ from .forms import (
     ProfileCompletionForm,
     SaleableTicketTypeForm, PublicTicketPurchaseForm,
     DirectEventForm, DirectTicketTypeFormSet,
+    PromoCodeForm,
 )
 from .csv_processor import CSVProcessor
 from .services.forecasting.preview import generate_forecast_preview
@@ -1888,6 +1889,9 @@ def event_detail(request, event_id):
         context['conversion_rate_pct'] = (
             round(total_orders / views * 100, 1) if views > 0 else None
         )
+        context['promo_codes'] = list(
+            PromoCode.objects.filter(event=event, organization=org).order_by('code')
+        )
     return render(request, 'tickets/event_detail.html', context)
 
 
@@ -2259,21 +2263,14 @@ def event_create(request, ticketing_type):
 
     if ticketing_type == TICKETING_TYPE_DIRECT:
         if request.method == 'POST':
-            form = DirectEventForm(request.POST, request.FILES)
+            form = DirectEventForm(request.POST, request.FILES, organization=org)
             ticket_formset = DirectTicketTypeFormSet(
                 request.POST,
                 queryset=SaleableTicketType.objects.none(),
                 prefix='ticket_type',
             )
             if form.is_valid() and ticket_formset.is_valid():
-                venue_name = form.cleaned_data['venue_name']
-                venue_address = form.cleaned_data.get('venue_address', '')
-                venue, _ = Venue.objects.get_or_create(
-                    organization=org,
-                    name=venue_name,
-                    city='',
-                    defaults={'street_address': venue_address},
-                )
+                venue = form.cleaned_data['venue']
                 event = form.save(commit=False)
                 event.organization = org
                 event.created_by = request.user
@@ -2293,15 +2290,17 @@ def event_create(request, ticketing_type):
                     _sync_event_to_google_calendar(event)
                 return redirect('tickets:event_detail', event_id=event.id)
         else:
-            form = DirectEventForm()
+            form = DirectEventForm(organization=org)
             ticket_formset = DirectTicketTypeFormSet(
                 queryset=SaleableTicketType.objects.none(),
                 prefix='ticket_type',
             )
+        no_venues = not Venue.objects.filter(organization=org).exists()
         context = {
             'form': form,
             'ticket_formset': ticket_formset,
             'ticketing_type': ticketing_type,
+            'no_venues': no_venues,
         }
         return render(request, 'tickets/event_create.html', context)
 
@@ -2379,21 +2378,14 @@ def event_edit(request, event_id):
 
     if event.ticketing_type == TICKETING_TYPE_DIRECT:
         if request.method == 'POST':
-            form = DirectEventForm(request.POST, request.FILES, instance=event)
+            form = DirectEventForm(request.POST, request.FILES, instance=event, organization=org)
             ticket_formset = DirectTicketTypeFormSet(
                 request.POST,
                 queryset=SaleableTicketType.objects.filter(event=event),
                 prefix='ticket_type',
             )
             if form.is_valid() and ticket_formset.is_valid():
-                venue_name = form.cleaned_data['venue_name']
-                venue_address = form.cleaned_data.get('venue_address', '')
-                venue, _ = Venue.objects.get_or_create(
-                    organization=org,
-                    name=venue_name,
-                    city='',
-                    defaults={'street_address': venue_address},
-                )
+                venue = form.cleaned_data['venue']
                 event = form.save(commit=False)
                 event.updated_by = request.user
                 event.venue = venue
@@ -2410,13 +2402,7 @@ def event_edit(request, event_id):
                 _regenerate_event_doc_background(org)
                 return redirect('tickets:event_detail', event_id=event.id)
         else:
-            form = DirectEventForm(
-                instance=event,
-                initial={
-                    'venue_name': event.venue.name if event.venue else '',
-                    'venue_address': event.venue.street_address if event.venue else '',
-                },
-            )
+            form = DirectEventForm(instance=event, organization=org)
             ticket_formset = DirectTicketTypeFormSet(
                 queryset=SaleableTicketType.objects.filter(event=event).order_by('name'),
                 prefix='ticket_type',
@@ -3667,6 +3653,101 @@ def public_event_buy(request, event_id):
     })
 
 
+@require_http_methods(["POST"])
+def validate_promo_code(request, event_id):
+    """Public AJAX endpoint — validates a promo code and stores it in the session."""
+    event = get_object_or_404(Event, id=event_id)
+
+    try:
+        data = json.loads(request.body)
+    except (ValueError, TypeError):
+        return JsonResponse({'error': 'Invalid request.'}, status=400)
+
+    code = (data.get('code') or '').strip().upper()
+    if not code:
+        return JsonResponse({'error': 'Please enter a promo code.'}, status=400)
+
+    try:
+        promo = PromoCode.objects.get(event=event, code=code, organization=event.organization)
+    except PromoCode.DoesNotExist:
+        return JsonResponse({'error': 'Promo code not found.'}, status=400)
+
+    if not promo.is_valid():
+        if not promo.is_active:
+            return JsonResponse({'error': 'This promo code is no longer active.'}, status=400)
+        from django.utils import timezone as tz
+        if promo.expires_at and tz.now() > promo.expires_at:
+            return JsonResponse({'error': 'This promo code has expired.'}, status=400)
+        return JsonResponse({'error': 'This promo code has reached its usage limit.'}, status=400)
+
+    cart = request.session.get(f'cart_{event_id}', [])
+    subtotal_cents = sum(
+        int(Decimal(item['price']) * 100) * item['quantity']
+        for item in cart
+    )
+    discount_cents = promo.calculate_discount_cents(subtotal_cents)
+
+    request.session[f'promo_{event_id}'] = {
+        'promo_code_id': str(promo.id),
+        'code': promo.code,
+        'discount_cents': discount_cents,
+    }
+    request.session.modified = True
+
+    if promo.discount_type == PromoCode.PERCENTAGE:
+        discount_label = f'{promo.discount_value.normalize()}% off'
+    else:
+        discount_label = f'${(discount_cents / 100):.2f} off'
+
+    return JsonResponse({
+        'success': True,
+        'code': promo.code,
+        'discount_cents': discount_cents,
+        'discount_label': discount_label,
+    })
+
+
+@login_required
+@require_org
+@require_organizer
+def promo_code_create(request, event_id):
+    """Organizer view to create a promo code for an event."""
+    org = get_organization(request)
+    event = get_object_or_404(Event.objects.filter(organization=org), id=event_id)
+
+    if request.method == 'POST':
+        form = PromoCodeForm(request.POST)
+        if form.is_valid():
+            promo = form.save(commit=False)
+            promo.organization = org
+            promo.event = event
+            promo.save()
+            messages.success(request, f'Promo code "{promo.code}" created.')
+            return redirect('tickets:event_detail', event_id=event_id)
+    else:
+        form = PromoCodeForm()
+
+    return render(request, 'tickets/promo_code_form.html', {
+        'form': form,
+        'event': event,
+    })
+
+
+@login_required
+@require_org
+@require_organizer
+@require_http_methods(["POST"])
+def promo_code_delete(request, event_id, promo_code_id):
+    """Organizer view to delete a promo code."""
+    org = get_organization(request)
+    event = get_object_or_404(Event.objects.filter(organization=org), id=event_id)
+    promo = get_object_or_404(PromoCode.objects.filter(organization=org, event=event), id=promo_code_id)
+    code = promo.code
+    promo.delete()
+    messages.success(request, f'Promo code "{code}" deleted.')
+    return redirect('tickets:event_detail', event_id=event_id)
+
+
 def checkout_payment(request, event_id):
     """Custom checkout page — collects buyer info and processes payment via Stripe Elements."""
     from django.conf import settings as django_settings
@@ -3688,7 +3769,11 @@ def checkout_payment(request, event_id):
         int(Decimal(item['price']) * 100) * item['quantity']
         for item in cart
     )
-    is_free = total_cents == 0
+
+    promo_session = request.session.get(f'promo_{event_id}')
+    discount_cents = promo_session['discount_cents'] if promo_session else 0
+    discounted_subtotal_cents = total_cents - discount_cents
+    is_free = discounted_subtotal_cents == 0
 
     total_dollars = Decimal(total_cents) / 100
 
@@ -3713,6 +3798,17 @@ def checkout_payment(request, event_id):
                 defaults={'organization': org, 'name': buyer_name},
             )
             order_number = f"FREE-{event.id.hex[:8].upper()}-{django_tz.now().strftime('%Y%m%d%H%M%S')}"
+
+            # Resolve promo code for free-after-discount orders
+            promo_code_obj = None
+            discount_amount_val = None
+            if promo_session:
+                try:
+                    promo_code_obj = PromoCode.objects.get(id=promo_session['promo_code_id'])
+                    discount_amount_val = Decimal(str(promo_session['discount_cents'])) / 100
+                except PromoCode.DoesNotExist:
+                    pass
+
             order = TicketOrder.objects.create(
                 customer=customer,
                 event=event,
@@ -3720,7 +3816,12 @@ def checkout_payment(request, event_id):
                 order_number=order_number,
                 order_date=django_tz.now(),
                 total_amount=Decimal('0.00'),
+                promo_code=promo_code_obj,
+                discount_amount=discount_amount_val,
             )
+            if promo_code_obj:
+                PromoCode.objects.filter(pk=promo_code_obj.pk).update(times_used=F('times_used') + 1)
+
             for item in cart:
                 tt_id = item['saleable_ticket_type_id']
                 qty = item['quantity']
@@ -3741,6 +3842,7 @@ def checkout_payment(request, event_id):
             _invalidate_event_list_cache(org)
 
         del request.session[f'cart_{event_id}']
+        request.session.pop(f'promo_{event_id}', None)
         return redirect(f"{reverse_lazy('tickets:checkout_success')}?order_id={order.id}")
 
     user_name = ''
@@ -3763,8 +3865,8 @@ def checkout_payment(request, event_id):
             pass
 
     from tickets.utils import calculate_platform_fee_cents
-    fee_cents = calculate_platform_fee_cents(total_cents) if not is_free else 0
-    grand_total_cents = total_cents + fee_cents
+    fee_cents = calculate_platform_fee_cents(discounted_subtotal_cents) if not is_free else 0
+    grand_total_cents = discounted_subtotal_cents + fee_cents
 
     return render(request, 'tickets/buy/checkout_payment.html', {
         'event': event,
@@ -3780,6 +3882,9 @@ def checkout_payment(request, event_id):
         'subtotal': Decimal(total_cents) / 100,
         'service_fee': Decimal(fee_cents) / 100,
         'grand_total': Decimal(grand_total_cents) / 100,
+        'discount_cents': discount_cents,
+        'discount_dollars': Decimal(discount_cents) / 100,
+        'promo_applied': promo_session,
     })
 
 
@@ -3832,9 +3937,24 @@ def create_payment_intent(request, event_id):
     if total_cents == 0:
         return JsonResponse({'error': 'Use the free ticket flow for $0 orders.'}, status=400)
 
+    # Re-validate and apply any promo code stored in the session
+    promo_session = request.session.get(f'promo_{event_id}')
+    discount_cents = 0
+    promo_code_id = None
+    if promo_session:
+        try:
+            promo_obj = PromoCode.objects.get(id=promo_session['promo_code_id'], event=event)
+            if promo_obj.is_valid():
+                discount_cents = promo_obj.calculate_discount_cents(total_cents)
+                promo_code_id = promo_obj.id
+        except PromoCode.DoesNotExist:
+            pass
+
+    discounted_subtotal_cents = total_cents - discount_cents
+
     from tickets.utils import calculate_platform_fee_cents
-    fee_cents = calculate_platform_fee_cents(total_cents)
-    charge_cents = total_cents + fee_cents  # buyer pays subtotal + platform fee
+    fee_cents = calculate_platform_fee_cents(discounted_subtotal_cents)
+    charge_cents = discounted_subtotal_cents + fee_cents  # buyer pays discounted subtotal + platform fee
 
     stripe_lib.api_key = django_settings.STRIPE_SECRET_KEY
 
@@ -3887,6 +4007,8 @@ def create_payment_intent(request, event_id):
         line_items_snapshot=cart,
         amount_total_cents=charge_cents,
         platform_fee_cents=fee_cents,
+        promo_code_id=promo_code_id,
+        discount_cents=discount_cents,
     )
 
     return JsonResponse({
@@ -4008,7 +4130,11 @@ def _fulfill_payment_intent(payment_intent):
             order_number=order_number,
             order_date=django_tz.now(),
             total_amount=Decimal(str(session_obj.amount_total_cents)) / 100,
+            promo_code_id=session_obj.promo_code_id,
+            discount_amount=Decimal(str(session_obj.discount_cents)) / 100 if session_obj.discount_cents else None,
         )
+        if session_obj.promo_code_id:
+            PromoCode.objects.filter(pk=session_obj.promo_code_id).update(times_used=F('times_used') + 1)
 
         for item in session_obj.line_items_snapshot:
             tt_id = item.get('saleable_ticket_type_id')

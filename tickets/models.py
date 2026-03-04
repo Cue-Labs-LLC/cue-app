@@ -877,6 +877,14 @@ class TicketOrder(AuditBaseModel):
     order_date = models.DateTimeField(db_index=True)
     total_amount = models.DecimalField(max_digits=10, decimal_places=2)
     refunded_at = models.DateTimeField(null=True, blank=True)
+    promo_code = models.ForeignKey(
+        'PromoCode',
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name='ticket_orders',
+    )
+    discount_amount = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
 
     class Meta:
         ordering = ['-order_date']
@@ -1056,6 +1064,55 @@ class SaleableTicketType(BaseModel):
         return self.quantity_sold >= self.quantity_limit
 
 
+class PromoCode(BaseModel):
+    """Organizer-created discount codes scoped to a single event."""
+    PERCENTAGE = 'percentage'
+    FIXED = 'fixed'
+    DISCOUNT_TYPE_CHOICES = [
+        (PERCENTAGE, 'Percentage off'),
+        (FIXED, 'Fixed amount off'),
+    ]
+
+    organization = models.ForeignKey(
+        Organization,
+        on_delete=models.CASCADE,
+        related_name='promo_codes',
+    )
+    event = models.ForeignKey(
+        'Event',
+        on_delete=models.CASCADE,
+        related_name='promo_codes',
+    )
+    code = models.CharField(max_length=50)  # stored uppercase
+    discount_type = models.CharField(max_length=20, choices=DISCOUNT_TYPE_CHOICES)
+    discount_value = models.DecimalField(max_digits=10, decimal_places=2)  # % or $ amount
+    max_uses = models.PositiveIntegerField(null=True, blank=True)  # None = unlimited
+    times_used = models.PositiveIntegerField(default=0)
+    expires_at = models.DateTimeField(null=True, blank=True)
+    is_active = models.BooleanField(default=True)
+
+    class Meta:
+        unique_together = [['event', 'code']]
+
+    def __str__(self):
+        return f"{self.code} ({self.get_discount_type_display()})"
+
+    def is_valid(self):
+        if not self.is_active:
+            return False
+        if self.expires_at and timezone.now() > self.expires_at:
+            return False
+        if self.max_uses is not None and self.times_used >= self.max_uses:
+            return False
+        return True
+
+    def calculate_discount_cents(self, subtotal_cents):
+        if self.discount_type == self.PERCENTAGE:
+            return round(subtotal_cents * (self.discount_value / 100))
+        else:  # FIXED
+            return min(subtotal_cents, int(self.discount_value * 100))
+
+
 class StripeCheckoutSession(BaseModel):
     """One row per Stripe Checkout Session — idempotency anchor for webhook processing."""
 
@@ -1090,6 +1147,14 @@ class StripeCheckoutSession(BaseModel):
     line_items_snapshot = models.JSONField(default=list)
     amount_total_cents = models.PositiveIntegerField(default=0)
     platform_fee_cents = models.PositiveIntegerField(default=0)
+    promo_code = models.ForeignKey(
+        PromoCode,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name='stripe_sessions',
+    )
+    discount_cents = models.PositiveIntegerField(default=0)
     ticket_order = models.OneToOneField(
         TicketOrder,
         on_delete=models.SET_NULL,

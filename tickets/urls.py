@@ -142,7 +142,12 @@ urlpatterns = [
     path('buy/<uuid:event_id>/', views.public_event_buy, name='public_event_buy'),
     path('buy/<uuid:event_id>/checkout/', views.checkout_payment, name='checkout_payment'),
     path('buy/<uuid:event_id>/payment-intent/', views.create_payment_intent, name='create_payment_intent'),
+    path('buy/<uuid:event_id>/apply-promo/', views.validate_promo_code, name='validate_promo_code'),
     path('checkout/success/', views.checkout_success, name='checkout_success'),
+
+    # Promo Codes — Organizer
+    path('events/<uuid:event_id>/promo-codes/create/', views.promo_code_create, name='promo_code_create'),
+    path('events/<uuid:event_id>/promo-codes/<uuid:promo_code_id>/delete/', views.promo_code_delete, name='promo_code_delete'),
 
     # Stripe Webhook
     path('webhooks/stripe/', views.stripe_webhook, name='stripe_webhook'),

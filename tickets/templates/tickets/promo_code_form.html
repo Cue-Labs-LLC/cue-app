@@ -1,0 +1,68 @@
+{% extends 'tickets/base.html' %}
+
+{% block title %}Add Promo Code — {{ event.name }}{% endblock %}
+
+{% block content %}
+<nav aria-label="breadcrumb">
+    <ol class="breadcrumb">
+        <li class="breadcrumb-item"><a href="{% url 'tickets:home' %}">Dashboard</a></li>
+        <li class="breadcrumb-item"><a href="{% url 'tickets:event_list' %}">Events</a></li>
+        <li class="breadcrumb-item"><a href="{% url 'tickets:event_detail' event.id %}">{{ event.name }}</a></li>
+        <li class="breadcrumb-item active">Add Promo Code</li>
+    </ol>
+</nav>
+
+<div class="page-header">
+    <h1>Add Promo Code</h1>
+    <p class="text-muted">{{ event.name }}</p>
+</div>
+
+<div class="card" style="max-width: 560px;">
+    <div class="card-body">
+        <form method="post">
+            {% csrf_token %}
+            {% if form.non_field_errors %}
+                <div class="alert alert-danger">{{ form.non_field_errors }}</div>
+            {% endif %}
+            <div class="mb-3">
+                <label for="{{ form.code.id_for_label }}" class="form-label fw-semibold">Code</label>
+                {{ form.code }}
+                {% if form.code.errors %}<div class="text-danger small mt-1">{{ form.code.errors }}</div>{% endif %}
+                <div class="form-text">Letters, numbers, and hyphens only. Will be stored uppercase.</div>
+            </div>
+            <div class="mb-3">
+                <label for="{{ form.discount_type.id_for_label }}" class="form-label fw-semibold">Discount type</label>
+                {{ form.discount_type }}
+                {% if form.discount_type.errors %}<div class="text-danger small mt-1">{{ form.discount_type.errors }}</div>{% endif %}
+            </div>
+            <div class="mb-3">
+                <label for="{{ form.discount_value.id_for_label }}" class="form-label fw-semibold">Discount value</label>
+                {{ form.discount_value }}
+                {% if form.discount_value.errors %}<div class="text-danger small mt-1">{{ form.discount_value.errors }}</div>{% endif %}
+                <div class="form-text">Enter a percentage (e.g. 20 for 20%) or a dollar amount (e.g. 5.00).</div>
+            </div>
+            <div class="mb-3">
+                <label for="{{ form.max_uses.id_for_label }}" class="form-label fw-semibold">Max uses <span class="text-muted fw-normal">(optional)</span></label>
+                {{ form.max_uses }}
+                {% if form.max_uses.errors %}<div class="text-danger small mt-1">{{ form.max_uses.errors }}</div>{% endif %}
+                <div class="form-text">Leave blank for unlimited uses.</div>
+            </div>
+            <div class="mb-3">
+                <label for="{{ form.expires_at.id_for_label }}" class="form-label fw-semibold">Expires at <span class="text-muted fw-normal">(optional)</span></label>
+                {{ form.expires_at }}
+                {% if form.expires_at.errors %}<div class="text-danger small mt-1">{{ form.expires_at.errors }}</div>{% endif %}
+            </div>
+            <div class="mb-4">
+                <div class="form-check">
+                    {{ form.is_active }}
+                    <label class="form-check-label" for="{{ form.is_active.id_for_label }}">Active</label>
+                </div>
+            </div>
+            <div class="d-flex gap-2">
+                <button type="submit" class="btn btn-primary">Create Promo Code</button>
+                <a href="{% url 'tickets:event_detail' event.id %}" class="btn btn-outline-secondary">Cancel</a>
+            </div>
+        </form>
+    </div>
+</div>
+{% endblock %}

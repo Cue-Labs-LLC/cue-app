@@ -19,6 +19,12 @@
 <div class="row">
     <div class="col-md-8">
         {% if ticketing_type == 'direct' %}
+        {% if no_venues %}
+        <div class="alert alert-warning">
+            You need to create a venue before creating an event.
+            <a href="{% url 'tickets:venue_create' %}" class="alert-link">Create a venue</a>
+        </div>
+        {% else %}
         <form method="post" enctype="multipart/form-data">
             {% csrf_token %}
             <div class="card mb-3">
@@ -86,6 +92,7 @@
                 <button type="submit" class="btn btn-primary">Create Event</button>
             </div>
         </form>
+        {% endif %}
         {% else %}
         <form method="post">
             {% csrf_token %}
@@ -161,10 +168,7 @@
                     <strong>Summary:</strong> Short tagline shown on the public ticket page (optional).
                 </p>
                 <p class="small text-muted">
-                    <strong>Venue Name:</strong> The name of the venue. A new venue record will be created automatically if it doesn't exist yet.
-                </p>
-                <p class="small text-muted">
-                    <strong>Location (Address):</strong> Optional street address for the venue.
+                    <strong>Venue:</strong> Select the venue where the event takes place. If the venue doesn't exist yet, <a href="{% url 'tickets:venue_create' %}">create one first</a>.
                 </p>
                 <p class="small text-muted">
                     <strong>Flyer:</strong> Optional image shown on the public ticket page.

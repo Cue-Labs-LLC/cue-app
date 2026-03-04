@@ -4,7 +4,7 @@ from django.forms import modelformset_factory
 from django.contrib.auth.forms import AuthenticationForm
 from crispy_forms.helper import FormHelper
 from crispy_forms.layout import Layout, Row, Column, Submit, Field
-from .models import Organization, CSVFormat, Venue, Event, EventTalent, EventExpense, CustomField, IncomeSource, EventIncome, SaleableTicketType, UserProfile
+from .models import Organization, CSVFormat, Venue, Event, EventTalent, EventExpense, CustomField, IncomeSource, EventIncome, SaleableTicketType, UserProfile, PromoCode
 
 
 class OrganizationForm(forms.ModelForm):
@@ -988,18 +988,21 @@ class SaleableTicketTypeForm(forms.ModelForm):
         return cleaned_data
 
 
+class VenueChoiceField(forms.ModelChoiceField):
+    def label_from_instance(self, obj):
+        parts = [obj.name]
+        address_parts = [p for p in [obj.street_address, obj.city, obj.state] if p]
+        if address_parts:
+            parts.append(", ".join(address_parts))
+        return " — ".join(parts)
+
+
 class DirectEventForm(forms.ModelForm):
-    """Form for creating a direct-ticketing event with free-text venue fields."""
-    venue_name = forms.CharField(
-        max_length=200,
-        label='Venue Name',
-        widget=forms.TextInput(attrs={'class': 'form-control', 'placeholder': 'e.g., The Roxy Theatre'}),
-    )
-    venue_address = forms.CharField(
-        max_length=255,
-        required=False,
-        label='Location (Address)',
-        widget=forms.TextInput(attrs={'class': 'form-control', 'placeholder': 'e.g., 9009 Sunset Blvd, West Hollywood, CA'}),
+    """Form for creating a direct-ticketing event with venue selection."""
+    venue = VenueChoiceField(
+        queryset=Venue.objects.none(),
+        empty_label="Select a venue",
+        widget=forms.Select(attrs={'class': 'form-select'}),
     )
 
     class Meta:
@@ -1016,8 +1019,12 @@ class DirectEventForm(forms.ModelForm):
             'flyer': forms.ClearableFileInput(attrs={'class': 'form-control'}),
         }
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, organization=None, **kwargs):
         super().__init__(*args, **kwargs)
+        if organization:
+            self.fields['venue'].queryset = Venue.objects.filter(
+                organization=organization
+            ).order_by('name', 'city')
         self.fields['summary'].required = False
         self.fields['description'].required = False
         self.fields['start_time'].required = False
@@ -1036,10 +1043,7 @@ class DirectEventForm(forms.ModelForm):
                 Column('end_time', css_class='form-group col-md-3 mb-0'),
             ),
             Field('description'),
-            Row(
-                Column('venue_name', css_class='form-group col-md-6 mb-0'),
-                Column('venue_address', css_class='form-group col-md-6 mb-0'),
-            ),
+            Field('venue'),
             Field('flyer'),
         )
 
@@ -1122,3 +1126,41 @@ class PublicTicketPurchaseForm(forms.Form):
             if qty > 0:
                 items.append((tt, qty))
         return items
+
+
+class PromoCodeForm(forms.ModelForm):
+    """Organizer form for creating a promo code on an event."""
+
+    class Meta:
+        model = PromoCode
+        fields = ['code', 'discount_type', 'discount_value', 'max_uses', 'expires_at', 'is_active']
+        widgets = {
+            'code': forms.TextInput(attrs={'class': 'form-control', 'placeholder': 'e.g. SAVE20'}),
+            'discount_type': forms.Select(attrs={'class': 'form-select'}),
+            'discount_value': forms.NumberInput(attrs={'class': 'form-control', 'step': '0.01', 'min': '0.01', 'placeholder': '0.00'}),
+            'max_uses': forms.NumberInput(attrs={'class': 'form-control', 'min': '1', 'placeholder': 'Unlimited'}),
+            'expires_at': forms.DateTimeInput(attrs={'class': 'form-control', 'type': 'datetime-local'}, format='%Y-%m-%dT%H:%M'),
+            'is_active': forms.CheckboxInput(attrs={'class': 'form-check-input'}),
+        }
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        if self.instance and self.instance.expires_at:
+            self.initial['expires_at'] = self.instance.expires_at.strftime('%Y-%m-%dT%H:%M')
+
+    def clean_code(self):
+        import re
+        code = self.cleaned_data.get('code', '').strip().upper()
+        if not re.match(r'^[A-Z0-9\-]+$', code):
+            raise forms.ValidationError('Code may only contain letters, numbers, and hyphens.')
+        return code
+
+    def clean(self):
+        cleaned_data = super().clean()
+        discount_type = cleaned_data.get('discount_type')
+        discount_value = cleaned_data.get('discount_value')
+        if discount_value is not None and discount_value <= 0:
+            self.add_error('discount_value', 'Discount value must be greater than 0.')
+        if discount_type == PromoCode.PERCENTAGE and discount_value is not None and discount_value > 100:
+            self.add_error('discount_value', 'Percentage discount cannot exceed 100.')
+        return cleaned_data
