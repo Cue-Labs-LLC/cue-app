@@ -86,13 +86,10 @@ window.initVenuePlacesAutocomplete = async function() {
         capacityGroup.parentNode.insertBefore(wrapper, capacityGroup);
 
         placeAutocomplete.addEventListener('gmp-select', async function(event) {
-            // #region agent log
-            var eventKeys = event ? Object.keys(event) : [];
-            var hasPlace = !!(event && event.place);
-            var hasPlacePrediction = !!(event && event.placePrediction);
-            fetch('http://127.0.0.1:7242/ingest/3ae02ef2-696c-467c-b7a4-4dc1420c6249',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'4e8626'},body:JSON.stringify({sessionId:'4e8626',location:'venue_edit.html:gmp-select',message:'gmp-select event',data:{eventKeys:eventKeys,hasPlace:hasPlace,hasPlacePrediction:hasPlacePrediction},timestamp:Date.now(),hypothesisId:'B'})}).catch(function(){});
-            // #endregion
             var place = event.place;
+            if (!place && event.placePrediction && typeof event.placePrediction.toPlace === 'function') {
+                place = event.placePrediction.toPlace();
+            }
             if (!place || !place.fetchFields) {
                 return;
             }
@@ -150,17 +147,11 @@ window.initVenuePlacesAutocomplete = async function() {
             var stateField = document.getElementById('id_state');
             var postalField = document.getElementById('id_postal_code');
             var countryField = document.getElementById('id_country');
-            // #region agent log
-            fetch('http://127.0.0.1:7242/ingest/3ae02ef2-696c-467c-b7a4-4dc1420c6249',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'4e8626'},body:JSON.stringify({sessionId:'4e8626',location:'venue_edit.html:parsed',message:'after parse',data:{componentsLength:(place.addressComponents||[]).length,formattedAddress:(place.formattedAddress||'').slice(0,80),city:city,state:state,country:country,cityFieldFound:!!cityField,stateFieldFound:!!stateField,countryFieldFound:!!countryField},timestamp:Date.now(),hypothesisId:'A-C'})}).catch(function(){});
-            // #endregion
 
             if (cityField && city) cityField.value = city;
             if (stateField && state) stateField.value = state;
             if (postalField && postalCode) postalField.value = postalCode;
             if (countryField && country) countryField.value = country;
-            // #region agent log
-            fetch('http://127.0.0.1:7242/ingest/3ae02ef2-696c-467c-b7a4-4dc1420c6249',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'4e8626'},body:JSON.stringify({sessionId:'4e8626',location:'venue_edit.html:afterSet',message:'after set fields',data:{cityValue:cityField?cityField.value:null,stateValue:stateField?stateField.value:null,countryValue:countryField?countryField.value:null},timestamp:Date.now(),hypothesisId:'E'})}).catch(function(){});
-            // #endregion
         });
     } catch (e) {
         console && console.error && console.error('Error initializing PlaceAutocompleteElement', e);
