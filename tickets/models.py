@@ -538,6 +538,29 @@ class Venue(BaseModel):
             parts.append(self.country)
         return ' | '.join(parts) if parts else ''
 
+    _ADDRESS_FIELDS = ('street_address', 'city', 'state', 'postal_code', 'country')
+
+    def save(self, *args, **kwargs):
+        from .address_utils import normalize_venue_address_fields, geocode_venue_address
+        normalize_venue_address_fields(self)
+
+        from django.conf import settings
+        api_key = getattr(settings, 'GOOGLE_MAPS_API_KEY', '')
+        if api_key and self.street_address and not self._address_fields_unchanged():
+            geocode_venue_address(self, api_key)
+
+        super().save(*args, **kwargs)
+
+    def _address_fields_unchanged(self):
+        """Return True if this is an update and no address field has changed vs DB."""
+        if self._state.adding or not self.pk:
+            return False
+        try:
+            old = Venue.objects.filter(pk=self.pk).values(*self._ADDRESS_FIELDS).first()
+            return bool(old and all(getattr(self, f) == old.get(f, '') for f in self._ADDRESS_FIELDS))
+        except Exception:
+            return False
+
     def __str__(self):
         return f"{self.name}, {self.city}"
 

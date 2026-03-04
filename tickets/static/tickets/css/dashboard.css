@@ -1188,45 +1188,34 @@ code {
 .stats-grid .stat-card:nth-child(3) { animation-delay: 0.15s; }
 .stats-grid .stat-card:nth-child(4) { animation-delay: 0.2s; }
 
-/* -- Google Places Autocomplete ---------------- */
-.pac-container {
-    font-family: var(--font-body);
-    background: var(--bg-surface);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    box-shadow: var(--shadow-md);
-    margin-top: 4px;
-    z-index: 1050;
+/* -- Venue Address Autocomplete (PlaceAutocompleteElement) --------- */
+.venue-address-autocomplete-wrapper {
+    width: 100%;
 }
 
-.pac-item {
-    padding: 8px 12px;
-    font-size: 13.5px;
+.venue-address-autocomplete-label {
+    font-size: 0.875rem;
+    font-weight: 500;
+    margin-bottom: 0.25rem;
+    color: var(--text-muted);
+}
+
+gmp-place-autocomplete#venue-address-autocomplete {
+    display: block;
+    width: 100%;
+}
+
+.venue-address-selected-display {
+    margin-top: 0.375rem;
+    padding: 0.375rem 0.5rem;
+    font-size: 0.8125rem;
     color: var(--text-primary);
-    border-top: 1px solid var(--border-light);
-    cursor: pointer;
-    line-height: 1.4;
-}
-
-.pac-item:first-child {
-    border-top: none;
-}
-
-.pac-item:hover,
-.pac-item-selected {
     background: var(--bg-sidebar-hover);
+    border-radius: var(--radius-sm);
+    overflow-wrap: break-word;
 }
 
-.pac-item-query {
-    font-size: 13.5px;
-    color: var(--text-primary);
-}
-
-.pac-matched {
-    font-weight: 600;
-}
-
-.pac-icon {
+.venue-address-selected-display:empty {
     display: none;
 }
 

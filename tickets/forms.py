@@ -665,11 +665,11 @@ class VenueForm(forms.ModelForm):
         ]
         widgets = {
             'name': forms.TextInput(attrs={'class': 'form-control', 'placeholder': 'e.g., The Fillmore'}),
-            'city': forms.TextInput(attrs={'class': 'form-control', 'placeholder': 'e.g., San Francisco'}),
-            'street_address': forms.TextInput(attrs={'class': 'form-control', 'placeholder': 'e.g., 123 Main St', 'autocomplete': 'off'}),
-            'state': forms.TextInput(attrs={'class': 'form-control', 'placeholder': 'e.g., CA'}),
-            'postal_code': forms.TextInput(attrs={'class': 'form-control', 'placeholder': 'e.g., 94102'}),
-            'country': forms.TextInput(attrs={'class': 'form-control', 'placeholder': 'e.g., USA'}),
+            'city': forms.HiddenInput(),
+            'street_address': forms.HiddenInput(),
+            'state': forms.HiddenInput(),
+            'postal_code': forms.HiddenInput(),
+            'country': forms.HiddenInput(),
             'capacity': forms.NumberInput(attrs={'class': 'form-control', 'placeholder': 'e.g., 500', 'min': '1'}),
         }
     
@@ -680,12 +680,12 @@ class VenueForm(forms.ModelForm):
         self.helper = FormHelper()
         self.helper.layout = Layout(
             Field('name'),
-            Field('city'),
+            Field('capacity'),
             Field('street_address'),
+            Field('city'),
             Field('state'),
             Field('postal_code'),
             Field('country'),
-            Field('capacity'),
             Submit('submit', submit_label, css_class='btn btn-primary')
         )
 

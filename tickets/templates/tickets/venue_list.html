@@ -30,6 +30,7 @@
                 <thead>
                     <tr>
                         <th>Name</th>
+                        <th>Street address</th>
                         <th>City</th>
                         <th>State</th>
                         <th>Country</th>
@@ -42,6 +43,7 @@
                     {% for venue in page_obj %}
                     <tr>
                         <td><strong>{{ venue.name }}</strong></td>
+                        <td>{{ venue.street_address|default:"\u2014" }}</td>
                         <td>{{ venue.city }}</td>
                         <td>{{ venue.state|default:"\u2014" }}</td>
                         <td>{{ venue.country|default:"\u2014" }}</td>
