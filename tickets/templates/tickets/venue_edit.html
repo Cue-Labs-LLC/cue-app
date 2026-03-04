@@ -42,7 +42,7 @@
             </div>
             <div class="card-body">
                 <p class="small text-muted mb-0">
-                    Each venue must have a unique combination of name and city. Changes here apply to all events at this venue.
+                    Each venue must have a unique name within your organization. Changes here apply to all events at this venue.
                 </p>
             </div>
         </div>
@@ -53,82 +53,131 @@
 {% block extra_js %}
 {% if google_maps_api_key %}
 <script>
-window.initVenuePlacesAutocomplete = function() {
-    var input = document.getElementById('id_street_address');
-    if (!input) return;
+window.initVenuePlacesAutocomplete = async function() {
+    var streetInput = document.getElementById('id_street_address');
+    if (!streetInput || !window.google || !google.maps || !google.maps.importLibrary) {
+        return;
+    }
 
-    var autocomplete = new google.maps.places.Autocomplete(input, {
-        types: ['address'],
-    });
+    try {
+        var capacityInput = document.getElementById('id_capacity');
+        var capacityGroup = capacityInput ? (capacityInput.closest('.mb-3') || capacityInput.parentNode) : null;
+        if (!capacityGroup || !capacityGroup.parentNode) {
+            return;
+        }
 
-    input.addEventListener('keydown', function(e) {
-        if (e.key === 'Enter') {
-            var pac = document.querySelector('.pac-container');
-            if (pac && pac.style.display !== 'none') {
-                e.preventDefault();
+        var wrapper = document.createElement('div');
+        wrapper.className = 'venue-address-autocomplete-wrapper mb-3';
+
+        var label = document.createElement('label');
+        label.className = 'form-label venue-address-autocomplete-label';
+        label.textContent = 'Address lookup (Google Places)';
+        wrapper.appendChild(label);
+
+        var placesLib = await google.maps.importLibrary('places');
+        var placeAutocomplete = new placesLib.PlaceAutocompleteElement({
+            types: ['address'],
+        });
+
+        placeAutocomplete.id = 'venue-address-autocomplete';
+        placeAutocomplete.className = 'form-control';
+
+        wrapper.appendChild(placeAutocomplete);
+        capacityGroup.parentNode.insertBefore(wrapper, capacityGroup);
+
+        placeAutocomplete.addEventListener('gmp-select', async function(event) {
+            // #region agent log
+            var eventKeys = event ? Object.keys(event) : [];
+            var hasPlace = !!(event && event.place);
+            var hasPlacePrediction = !!(event && event.placePrediction);
+            fetch('http://127.0.0.1:7242/ingest/3ae02ef2-696c-467c-b7a4-4dc1420c6249',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'4e8626'},body:JSON.stringify({sessionId:'4e8626',location:'venue_edit.html:gmp-select',message:'gmp-select event',data:{eventKeys:eventKeys,hasPlace:hasPlace,hasPlacePrediction:hasPlacePrediction},timestamp:Date.now(),hypothesisId:'B'})}).catch(function(){});
+            // #endregion
+            var place = event.place;
+            if (!place || !place.fetchFields) {
+                return;
             }
-        }
-    });
 
-    autocomplete.addListener('place_changed', function() {
-        var place = autocomplete.getPlace();
-        if (!place.address_components) return;
+            await place.fetchFields({
+                fields: ['addressComponents', 'formattedAddress'],
+            });
 
-        var streetNumber = '';
-        var route = '';
-        var city = '';
-        var state = '';
-        var postalCode = '';
-        var country = '';
+            var components = place.addressComponents || [];
+            var streetNumber = '';
+            var route = '';
+            var city = '';
+            var state = '';
+            var postalCode = '';
+            var country = '';
 
-        for (var i = 0; i < place.address_components.length; i++) {
-            var component = place.address_components[i];
-            var types = component.types;
+            for (var i = 0; i < components.length; i++) {
+                var component = components[i];
+                var types = component.types || [];
 
-            if (types.indexOf('street_number') !== -1) {
-                streetNumber = component.long_name;
-            } else if (types.indexOf('route') !== -1) {
-                route = component.long_name;
-            } else if (types.indexOf('locality') !== -1) {
-                city = component.long_name;
-            } else if (types.indexOf('administrative_area_level_1') !== -1) {
-                state = component.short_name;
-            } else if (types.indexOf('postal_code') !== -1) {
-                postalCode = component.long_name;
-            } else if (types.indexOf('country') !== -1) {
-                country = component.long_name;
+                if (types.indexOf('street_number') !== -1) {
+                    streetNumber = component.longText || '';
+                } else if (types.indexOf('route') !== -1) {
+                    route = component.longText || '';
+                } else if (types.indexOf('locality') !== -1) {
+                    city = component.longText || '';
+                } else if (types.indexOf('administrative_area_level_1') !== -1) {
+                    state = component.shortText || '';
+                } else if (types.indexOf('postal_code') !== -1) {
+                    postalCode = component.longText || '';
+                } else if (types.indexOf('country') !== -1) {
+                    country = component.longText || '';
+                }
             }
-        }
 
-        var street = '';
-        if (streetNumber && route) {
-            street = streetNumber + ' ' + route;
-        } else if (route) {
-            street = route;
-        } else if (streetNumber) {
-            street = streetNumber;
-        }
+            var street = '';
+            if (streetNumber && route) {
+                street = streetNumber + ' ' + route;
+            } else if (route) {
+                street = route;
+            } else if (streetNumber) {
+                street = streetNumber;
+            }
+            if (!street && place.formattedAddress) {
+                var firstComma = place.formattedAddress.indexOf(',');
+                street = firstComma !== -1
+                    ? place.formattedAddress.slice(0, firstComma).trim()
+                    : place.formattedAddress.trim();
+            }
+            if (street) {
+                streetInput.value = street;
+            }
 
-        if (street) input.value = street;
+            var cityField = document.getElementById('id_city');
+            var stateField = document.getElementById('id_state');
+            var postalField = document.getElementById('id_postal_code');
+            var countryField = document.getElementById('id_country');
+            // #region agent log
+            fetch('http://127.0.0.1:7242/ingest/3ae02ef2-696c-467c-b7a4-4dc1420c6249',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'4e8626'},body:JSON.stringify({sessionId:'4e8626',location:'venue_edit.html:parsed',message:'after parse',data:{componentsLength:(place.addressComponents||[]).length,formattedAddress:(place.formattedAddress||'').slice(0,80),city:city,state:state,country:country,cityFieldFound:!!cityField,stateFieldFound:!!stateField,countryFieldFound:!!countryField},timestamp:Date.now(),hypothesisId:'A-C'})}).catch(function(){});
+            // #endregion
 
-        var cityField = document.getElementById('id_city');
-        var stateField = document.getElementById('id_state');
-        var postalField = document.getElementById('id_postal_code');
-        var countryField = document.getElementById('id_country');
-
-        if (cityField && city) cityField.value = city;
-        if (stateField && state) stateField.value = state;
-        if (postalField && postalCode) postalField.value = postalCode;
-        if (countryField && country) countryField.value = country;
-    });
+            if (cityField && city) cityField.value = city;
+            if (stateField && state) stateField.value = state;
+            if (postalField && postalCode) postalField.value = postalCode;
+            if (countryField && country) countryField.value = country;
+            // #region agent log
+            fetch('http://127.0.0.1:7242/ingest/3ae02ef2-696c-467c-b7a4-4dc1420c6249',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'4e8626'},body:JSON.stringify({sessionId:'4e8626',location:'venue_edit.html:afterSet',message:'after set fields',data:{cityValue:cityField?cityField.value:null,stateValue:stateField?stateField.value:null,countryValue:countryField?countryField.value:null},timestamp:Date.now(),hypothesisId:'E'})}).catch(function(){});
+            // #endregion
+        });
+    } catch (e) {
+        console && console.error && console.error('Error initializing PlaceAutocompleteElement', e);
+    }
 };
 (function() {
     var key = '{{ google_maps_api_key|escapejs }}';
     if (!key) return;
     var s = document.createElement('script');
-    s.src = 'https://maps.googleapis.com/maps/api/js?key=' + key + '&libraries=places&callback=initVenuePlacesAutocomplete';
+    s.src = 'https://maps.googleapis.com/maps/api/js?key=' + key + '&libraries=places';
     s.async = true;
     s.defer = true;
+    s.onload = function() {
+        if (window.initVenuePlacesAutocomplete) {
+            window.initVenuePlacesAutocomplete();
+        }
+    };
     document.head.appendChild(s);
 })();
 </script>
