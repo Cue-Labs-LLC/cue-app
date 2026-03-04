@@ -68,7 +68,7 @@ window.initVenuePlacesAutocomplete = async function() {
 
         var label = document.createElement('label');
         label.className = 'form-label venue-address-autocomplete-label';
-        label.textContent = 'Address lookup (Google Places)';
+        label.textContent = 'Address';
         wrapper.appendChild(label);
 
         var placesLib = await google.maps.importLibrary('places');
@@ -80,7 +80,29 @@ window.initVenuePlacesAutocomplete = async function() {
         placeAutocomplete.className = 'form-control';
 
         wrapper.appendChild(placeAutocomplete);
+
+        var addressDisplay = document.createElement('div');
+        addressDisplay.id = 'venue-address-selected-display';
+        addressDisplay.className = 'venue-address-selected-display';
+        wrapper.appendChild(addressDisplay);
+
         capacityGroup.parentNode.insertBefore(wrapper, capacityGroup);
+
+        placeAutocomplete.addEventListener('focus', function() {
+            var display = document.getElementById('venue-address-selected-display');
+            if (display && display.textContent.trim() !== '') {
+                display.textContent = '';
+                if (streetInput) streetInput.value = '';
+                var cityField = document.getElementById('id_city');
+                var stateField = document.getElementById('id_state');
+                var postalField = document.getElementById('id_postal_code');
+                var countryField = document.getElementById('id_country');
+                if (cityField) cityField.value = '';
+                if (stateField) stateField.value = '';
+                if (postalField) postalField.value = '';
+                if (countryField) countryField.value = '';
+            }
+        });
 
         placeAutocomplete.addEventListener('gmp-select', async function(event) {
             var place = event.place;
@@ -149,6 +171,11 @@ window.initVenuePlacesAutocomplete = async function() {
             if (stateField && state) stateField.value = state;
             if (postalField && postalCode) postalField.value = postalCode;
             if (countryField && country) countryField.value = country;
+
+            var display = document.getElementById('venue-address-selected-display');
+            if (display) {
+                display.textContent = place.formattedAddress || '\u2014';
+            }
         });
     } catch (e) {
         console && console.error && console.error('Error initializing PlaceAutocompleteElement', e);
