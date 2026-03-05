@@ -59,7 +59,7 @@ If you use `AWS_S3_CUSTOM_DOMAIN` (e.g. `ltv-updater-app-media.s3.us-east-1.maco
 
 ## Option B: Object ACLs (public-read)
 
-The app sets `AWS_DEFAULT_ACL = 'public-read'` so django-storages sends `public-read` on each upload. For that to work:
+The app uses `AWS_DEFAULT_ACL = None` so uploads do not set object ACLs (avoids `AccessControlListNotSupported` when the bucket disallows ACLs). Public read is provided by the **bucket policy** (Option A). If you prefer object ACLs instead, set `AWS_DEFAULT_ACL = 'public-read'` in settings and ensure the bucket allows ACLs. For that to work:
 
 1. **Permissions** → **Block public access** → **Edit**.
 2. Uncheck **"Block public access to buckets and objects granted through new access control lists (ACLs)"**.

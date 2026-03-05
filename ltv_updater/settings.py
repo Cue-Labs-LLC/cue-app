@@ -167,7 +167,8 @@ if os.environ.get('AWS_STORAGE_BUCKET_NAME'):
     AWS_S3_OBJECT_PARAMETERS = {
         'CacheControl': 'max-age=86400',
     }
-    AWS_DEFAULT_ACL = 'public-read'
+    # None = do not set object ACL (required when bucket has "Block public access" for ACLs). Use bucket policy for public read.
+    AWS_DEFAULT_ACL = None
     AWS_S3_FILE_OVERWRITE = False
     AWS_QUERYSTRING_AUTH = False
     
