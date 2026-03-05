@@ -754,6 +754,7 @@ def home(request):
     # Show warning when current time is past the event's end date+time and upload_count is 0 (current page only)
     now_local = django_tz.localtime(django_tz.now()).replace(tzinfo=None)
     event_ids_show_warning = set()
+    event_ids_show_placeholder = set()
     for ev in page_obj:
         if ev.upload_count != 0:
             continue
@@ -762,6 +763,8 @@ def home(request):
         event_end = datetime.combine(end_date, end_time)
         if now_local > event_end:
             event_ids_show_warning.add(ev.id)
+        elif ev.ticketing_type == 'external':
+            event_ids_show_placeholder.add(ev.id)
 
     # Summary statistics (org-scoped via Event/Customer/UploadedFile)
     total_customers = Customer.objects.filter(organization=org).count()
@@ -779,6 +782,7 @@ def home(request):
     context = {
         'page_obj': page_obj,
         'event_ids_show_warning': event_ids_show_warning,
+        'event_ids_show_placeholder': event_ids_show_placeholder,
         'today': date.today(),
         'total_customers': total_customers,
         'total_orders': total_orders,
@@ -1582,6 +1586,7 @@ def event_list(request):
     # Show warning when current time is past the event's end date+time and upload_count is 0 (same as home)
     now_local = django_tz.localtime(django_tz.now()).replace(tzinfo=None)
     event_ids_show_warning = set()
+    event_ids_show_placeholder = set()
     for ev in page_obj:
         if ev.upload_count != 0:
             continue
@@ -1590,12 +1595,15 @@ def event_list(request):
         event_end = datetime.combine(end_date, end_time)
         if now_local > event_end:
             event_ids_show_warning.add(ev.id)
+        elif ev.ticketing_type == 'external':
+            event_ids_show_placeholder.add(ev.id)
 
     context = {
         'page_obj': page_obj,
         'search_query': search_query,
         'sort_by': sort_by,
         'event_ids_show_warning': event_ids_show_warning,
+        'event_ids_show_placeholder': event_ids_show_placeholder,
     }
     response = render(request, 'tickets/event_list.html', context)
     try:

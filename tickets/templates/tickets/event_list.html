@@ -67,11 +67,11 @@
                         </td>
                         <td>{{ event.start_date|date:"M d, Y" }}{% if event.start_time %} {{ event.start_time|time:"g:i A" }}{% endif %}</td>
                         <td>{{ event.venue.name }}</td>
-                        <td><span class="revenue">${{ event.total_revenue|currency }}</span></td>
+                        <td>{% if event.id in event_ids_show_placeholder %}—{% else %}<span class="revenue">${{ event.total_revenue|currency }}</span>{% endif %}</td>
                         {% with profit=event.total_revenue|subtract:event.total_expenses %}
-                        <td{% if profit < 0 %} style="color: var(--danger, #dc3545);"{% endif %}>${{ profit|currency }}</td>
+                        <td{% if event.id not in event_ids_show_placeholder and profit < 0 %} style="color: var(--danger, #dc3545);"{% endif %}>{% if event.id in event_ids_show_placeholder %}—{% else %}${{ profit|currency }}{% endif %}</td>
                         {% endwith %}
-                        <td>{{ event.total_tickets|default:0 }}</td>
+                        <td>{% if event.id in event_ids_show_placeholder %}—{% else %}{{ event.total_tickets|default:0 }}{% endif %}</td>
                         <td>
                             <div class="d-flex gap-1">
                                 <a href="{% url 'tickets:event_detail' event.id %}" class="btn btn-sm btn-outline-secondary">View</a>
