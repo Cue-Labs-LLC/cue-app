@@ -52,10 +52,11 @@
                     <div class="mb-3">
                         <label class="form-label fw-semibold">Current Flyer</label>
                         <div>
-                            <img src="{{ event.flyer.url }}" alt="{{ event.name }} flyer"
+                            <img src="{{ event.flyer.url }}?v={{ event.updated_at|date:'U' }}" alt="{{ event.name }} flyer"
                                  class="img-fluid rounded"
                                  style="max-height: 200px; width: auto; object-fit: contain;">
                         </div>
+                        <p class="small text-muted mb-0">To replace the flyer, use the event detail page (click the event name above).</p>
                     </div>
                     {% endif %}
                     {% crispy form %}
