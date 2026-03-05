@@ -32,6 +32,17 @@ def make_range(value):
 
 
 @register.filter
+def intcomma(value):
+    """Format an integer with comma thousands separators (e.g. 1234 -> '1,234')."""
+    if value is None or value == '':
+        return '0'
+    try:
+        return f"{int(value):,}"
+    except (TypeError, ValueError):
+        return str(value)
+
+
+@register.filter
 def currency(value):
     """Format a numeric value with comma thousands separator and 2 decimal places.
     Example: 1234567.8 → '1,234,567.80'. Returns '0.00' for None/empty."""

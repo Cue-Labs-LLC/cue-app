@@ -19,12 +19,12 @@
 <div class="stats-grid">
     <div class="stat-card stat-card--accent">
         <div class="stat-label">Total Customers</div>
-        <div class="stat-value">{{ total_customers|default:0 }}</div>
+        <div class="stat-value">{{ total_customers|default:0|intcomma }}</div>
         <a href="{% url 'tickets:customer_list' %}" class="stat-link">View all <i class="bi bi-arrow-right"></i></a>
     </div>
     <div class="stat-card stat-card--success">
         <div class="stat-label">Total Orders</div>
-        <div class="stat-value">{{ total_orders|default:0 }}</div>
+        <div class="stat-value">{{ total_orders|default:0|intcomma }}</div>
     </div>
     <div class="stat-card stat-card--info">
         <div class="stat-label">Total Revenue</div>
@@ -32,7 +32,7 @@
     </div>
     <div class="stat-card stat-card--warning">
         <div class="stat-label">Total Tickets</div>
-        <div class="stat-value">{{ total_tickets|default:0 }}</div>
+        <div class="stat-value">{{ total_tickets|default:0|intcomma }}</div>
     </div>
 </div>
 
