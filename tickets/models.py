@@ -10,9 +10,12 @@ from django.core.exceptions import ValidationError
 def _get_media_storage():
     """Resolve media storage at runtime so S3 is used when DEFAULT_FILE_STORAGE is set (avoids boot-time resolution using FileSystemStorage)."""
     if not hasattr(_get_media_storage, '_cached'):
-        from django.core.files.storage import get_storage_class
+        import importlib
         backend = getattr(settings, 'DEFAULT_FILE_STORAGE', 'django.core.files.storage.FileSystemStorage')
-        _get_media_storage._cached = get_storage_class(backend)()
+        module_path, _, class_name = backend.rpartition('.')
+        module = importlib.import_module(module_path)
+        cls = getattr(module, class_name)
+        _get_media_storage._cached = cls()
     return _get_media_storage._cached
 
 
