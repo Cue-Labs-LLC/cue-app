@@ -1180,6 +1180,8 @@ def customer_list(request):
             email__icontains=search_query
         )
 
+    customers = customers.annotate(order_count=Count('ticket_orders'))
+
     # Sorting
     sort_by = request.GET.get('sort', '-lifetime_value')
     if sort_by in ['name', 'email', 'lifetime_value', 'last_order_date']:

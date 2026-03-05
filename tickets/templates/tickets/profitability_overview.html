@@ -77,6 +77,7 @@
                         <th>Event Name</th>
                         <th>Date</th>
                         <th>Venue</th>
+                        <th>City</th>
                         <th>Revenue</th>
                         <th>Expenses</th>
                         <th>Profit</th>
@@ -88,7 +89,8 @@
                     <tr>
                         <td><a href="{% url 'tickets:event_detail' row.event.id %}"><strong>{{ row.event.name }}</strong></a></td>
                         <td>{{ row.event.start_date|date:"M d, Y" }}</td>
-                        <td>{{ row.event.venue.name }}, {{ row.event.venue.city }}</td>
+                        <td>{{ row.event.venue.name }}</td>
+                        <td>{{ row.event.venue.city }}</td>
                         <td>${{ row.revenue|currency }}</td>
                         <td>${{ row.expenses|currency }}</td>
                         <td{% if row.profit < 0 %} style="color: var(--danger, #dc3545);"{% endif %}>${{ row.profit|currency }}</td>

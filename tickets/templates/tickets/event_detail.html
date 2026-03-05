@@ -538,7 +538,6 @@
                         <th>Customer</th>
                         <th>Total Amount</th>
                         <th>Tickets</th>
-                        <th>Upload</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -549,13 +548,6 @@
                         <td><a href="{% url 'tickets:customer_detail' order.customer.id %}">{{ order.customer.name }}</a></td>
                         <td><strong>${{ order.total_amount|currency }}</strong></td>
                         <td>{{ order.tickets_count }}</td>
-                        <td>
-                            {% if order.uploaded_file %}
-                                <a href="{% url 'tickets:upload_results' order.uploaded_file.id %}"><i class="bi bi-file-earmark"></i> {{ order.uploaded_file.filename|truncatewords:3 }}</a>
-                            {% else %}
-                                <span class="text-muted">&mdash;</span>
-                            {% endif %}
-                        </td>
                     </tr>
                     {% endfor %}
                 </tbody>

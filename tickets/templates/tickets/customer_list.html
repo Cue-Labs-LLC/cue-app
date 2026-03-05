@@ -44,6 +44,7 @@
                         <th>Segment</th>
                         <th><a href="?sort=-lifetime_value&search={{ search_query }}&segment={{ segment_filter }}">Lifetime Value <i class="bi bi-arrow-down-up"></i></a></th>
                         <th><a href="?sort=-last_order_date&search={{ search_query }}&segment={{ segment_filter }}">Last Order <i class="bi bi-arrow-down-up"></i></a></th>
+                        <th>Total Orders</th>
                         <th></th>
                     </tr>
                 </thead>
@@ -62,6 +63,7 @@
                         </td>
                         <td><span class="revenue">${{ customer.lifetime_value|currency }}</span></td>
                         <td>{{ customer.last_order_date|date:"M d, Y"|default:"\u2014" }}</td>
+                        <td>{{ customer.order_count }}</td>
                         <td><a href="{% url 'tickets:customer_detail' customer.id %}" class="btn btn-sm btn-outline-secondary">View</a></td>
                     </tr>
                     {% endfor %}
