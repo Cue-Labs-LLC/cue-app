@@ -3575,6 +3575,20 @@ def event_cancel(request, event_id):
 @require_http_methods(["POST"])
 def event_flyer_upload(request, event_id):
     """Upload or replace event flyer (direct ticketing only). Returns JSON."""
+    from django.conf import settings
+    # #region agent log
+    import json as _json
+    _log_path = getattr(settings, 'BASE_DIR', None) and str(settings.BASE_DIR / 'debug-5764fb.log') or 'debug-5764fb.log'
+    def _dlog(hid, msg, **data):
+        try:
+            payload = {"sessionId": "5764fb", "hypothesisId": hid, "location": "views.py:event_flyer_upload", "message": msg, "data": data, "timestamp": int(__import__('time').time() * 1000)}
+            line = _json.dumps(payload)
+            with open(_log_path, 'a') as _f:
+                _f.write(line + '\n')
+            logger.warning("[DEBUG-5764fb] %s", line)
+        except Exception:
+            pass
+    # #endregion
     from .models import TICKETING_TYPE_DIRECT
     if not direct_ticketing_enabled(request.user):
         raise Http404()
@@ -3588,10 +3602,24 @@ def event_flyer_upload(request, event_id):
     # Validate image (ImageField will reject invalid images on save)
     if not file.content_type.startswith('image/'):
         return JsonResponse({'success': False, 'error': 'File must be an image.'}, status=400)
+    # #region agent log
+    _dlog("H1", "storage config at upload", default_file_storage=getattr(settings, 'DEFAULT_FILE_STORAGE', None), aws_bucket_env=bool(__import__('os').environ.get('AWS_STORAGE_BUCKET_NAME')), aws_bucket_value=__import__('os').environ.get('AWS_STORAGE_BUCKET_NAME', '')[:20] if __import__('os').environ.get('AWS_STORAGE_BUCKET_NAME') else None)
+    # #endregion
     try:
         event.flyer = file
+        # #region agent log
+        _st = getattr(event.flyer, 'storage', None)
+        _dlog("H4", "before save", storage_class=_st.__class__.__name__ if _st else None, bucket_name=getattr(_st, 'bucket_name', None), file_name=getattr(file, 'name', None))
+        # #endregion
         event.save(update_fields=['flyer'])
+        # #region agent log
+        _st2 = getattr(event.flyer, 'storage', None)
+        _dlog("H3", "after save success", saved_name=event.flyer.name, saved_url=event.flyer.url[:80] if event.flyer.url else None, storage_class=_st2.__class__.__name__ if _st2 else None, bucket_name=getattr(_st2, 'bucket_name', None))
+        # #endregion
     except Exception as e:
+        # #region agent log
+        _dlog("H2", "save exception", exc_type=type(e).__name__, exc_msg=str(e)[:200])
+        # #endregion
         logger.warning("Flyer upload failed: %s", e, exc_info=True)
         try:
             from botocore.exceptions import ClientError
