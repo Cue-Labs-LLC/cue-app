@@ -7,6 +7,15 @@ from django.utils import timezone
 from django.core.exceptions import ValidationError
 
 
+def _get_media_storage():
+    """Resolve media storage at runtime so S3 is used when DEFAULT_FILE_STORAGE is set (avoids boot-time resolution using FileSystemStorage)."""
+    if not hasattr(_get_media_storage, '_cached'):
+        from django.core.files.storage import get_storage_class
+        backend = getattr(settings, 'DEFAULT_FILE_STORAGE', 'django.core.files.storage.FileSystemStorage')
+        _get_media_storage._cached = get_storage_class(backend)()
+    return _get_media_storage._cached
+
+
 class BaseModel(models.Model):
     """Base model with UUID primary key and timestamps."""
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
@@ -603,7 +612,7 @@ class Event(AuditBaseModel):
     end_date = models.DateField(null=True, blank=True)
     end_time = models.TimeField(null=True, blank=True)
     description = models.TextField(blank=True)
-    flyer = models.ImageField(upload_to='event_flyers/', blank=True, null=True)
+    flyer = models.ImageField(upload_to='event_flyers/', blank=True, null=True, storage=_get_media_storage)
     capacity = models.IntegerField(
         null=True,
         blank=True,
