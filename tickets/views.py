@@ -3592,7 +3592,16 @@ def event_flyer_upload(request, event_id):
         event.flyer = file
         event.save(update_fields=['flyer'])
     except Exception as e:
-        logger.warning("Flyer upload validation failed: %s", e)
+        logger.warning("Flyer upload failed: %s", e, exc_info=True)
+        try:
+            from botocore.exceptions import ClientError
+            if isinstance(e, ClientError):
+                return JsonResponse({
+                    'success': False,
+                    'error': 'Storage upload failed. Check AWS credentials and S3 permissions (s3:PutObject, s3:PutObjectAcl).',
+                }, status=503)
+        except ImportError:
+            pass
         return JsonResponse({'success': False, 'error': 'Invalid or unsupported image.'}, status=400)
     return JsonResponse({'success': True, 'url': event.flyer.url})
 

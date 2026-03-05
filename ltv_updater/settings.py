@@ -154,8 +154,9 @@ STATIC_ROOT = BASE_DIR / 'staticfiles'
 # WhiteNoise configuration for static files
 STATICFILES_STORAGE = 'whitenoise.storage.CompressedManifestStaticFilesStorage'
 
-# Media files (uploaded CSVs)
-# Use S3 in production if configured, otherwise use local storage
+# Media files (uploaded CSVs, event flyers)
+# Use S3 in production if configured, otherwise use local storage.
+# If S3 returns Access Denied for media URLs, see docs/S3_MEDIA_SETUP.md.
 if os.environ.get('AWS_STORAGE_BUCKET_NAME'):
     # AWS S3 settings
     AWS_ACCESS_KEY_ID = os.environ.get('AWS_ACCESS_KEY_ID')
