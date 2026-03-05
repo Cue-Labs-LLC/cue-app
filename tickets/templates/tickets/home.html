@@ -62,7 +62,7 @@
                             {% if event.id in event_ids_show_warning %}
                                 <i class="bi bi-exclamation-triangle-fill text-warning me-1" title="No uploads for past event"></i>
                             {% endif %}
-                            <strong>{{ event.name }}</strong>
+                            <a href="{% url 'tickets:event_detail' event.id %}" class="text-body text-decoration-none"><strong>{{ event.name }}</strong></a>
                         </td>
                         <td>{{ event.start_date|date:"M d, Y" }}</td>
                         <td>{{ event.venue.name|default:"\u2014" }}</td>

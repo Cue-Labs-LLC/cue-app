@@ -15,7 +15,10 @@
       "Bash(DJANGO_SETTINGS_MODULE=ltv_updater.settings python:*)",
       "Bash(python3:*)",
       "Bash(pip3 install:*)",
-      "Bash(stripe listen:*)"
+      "Bash(stripe listen:*)",
+      "Bash(pip3 show django)",
+      "Bash(brew list)",
+      "Bash(.venv/bin/pip install:*)"
     ]
   },
   "enabledPlugins": {

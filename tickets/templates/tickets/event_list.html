@@ -46,7 +46,7 @@
                             {% if event.id in event_ids_show_warning %}
                                 <i class="bi bi-exclamation-triangle-fill text-warning me-1" title="No uploads for past event"></i>
                             {% endif %}
-                            <strong>{{ event.name }}</strong>
+                            <a href="{% url 'tickets:event_detail' event.id %}" class="text-body text-decoration-none"><strong>{{ event.name }}</strong></a>
                             {% if direct_ticketing_enabled %}
                             {% if event.ticketing_type == 'direct' %}
                                 {% with eff=event.effective_status %}
