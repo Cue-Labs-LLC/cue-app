@@ -920,6 +920,11 @@ class TicketOrder(AuditBaseModel):
             models.Index(fields=['event', 'total_amount']),
         ]
 
+    @property
+    def display_order_number(self):
+        """Returns external_order_number for CSV orders, order_number for direct orders."""
+        return self.external_order_number if self.external_order_number else self.order_number
+
     def __str__(self):
         return f"Order {self.order_number} - {self.customer.name}"
 

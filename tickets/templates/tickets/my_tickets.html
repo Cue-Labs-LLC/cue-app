@@ -49,7 +49,7 @@
                             </div>
                             {% endif %}
                         </td>
-                        <td class="text-muted small">{{ order.order_number }}</td>
+                        <td class="text-muted small">{{ order.display_order_number }}</td>
                         <td class="text-muted small">{{ order.order_date|date:"M j, Y" }}</td>
                         <td>{{ order.tickets.all|length }}</td>
                         <td>

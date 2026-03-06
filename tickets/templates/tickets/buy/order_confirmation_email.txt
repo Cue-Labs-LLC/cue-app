@@ -4,7 +4,7 @@ Hi {{ customer.name }},
 
 Your order for {{ event.name }} is confirmed.
 
-Order number: {{ order.order_number }}
+Order number: {{ order.display_order_number }}
 Event: {{ event.name }}{% if event.start_date %}
 Date: {{ event.start_date|date:"N j, Y" }}{% endif %}{% if event.venue %}
 Venue: {{ event.venue.name }}{% endif %}

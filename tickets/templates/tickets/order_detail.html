@@ -1,7 +1,7 @@
 {% extends 'tickets/base.html' %}
 {% load tickets_extras %}
 
-{% block title %}Order {{ order.order_number }}{% endblock %}
+{% block title %}Order {{ order.display_order_number }}{% endblock %}
 
 {% block content %}
 <nav aria-label="breadcrumb">
@@ -9,14 +9,14 @@
         <li class="breadcrumb-item"><a href="{% url 'tickets:home' %}">Dashboard</a></li>
         <li class="breadcrumb-item"><a href="{% url 'tickets:event_list' %}">Events</a></li>
         <li class="breadcrumb-item"><a href="{% url 'tickets:event_detail' order.event.id %}">{{ order.event.name }}</a></li>
-        <li class="breadcrumb-item active">Order {{ order.order_number }}</li>
+        <li class="breadcrumb-item active">Order {{ order.display_order_number }}</li>
     </ol>
 </nav>
 
 <div class="page-header">
     <div>
         <h1>
-            Order {{ order.order_number }}
+            Order {{ order.display_order_number }}
             {% if order.refunded_at %}<span class="badge bg-danger ms-2">Refunded</span>{% endif %}
         </h1>
         <p class="page-header-subtitle">
@@ -42,7 +42,7 @@
                 <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
             </div>
             <div class="modal-body">
-                <p>Issue a full refund for order <strong>{{ order.order_number }}</strong>?</p>
+                <p>Issue a full refund for order <strong>{{ order.display_order_number }}</strong>?</p>
                 <p class="mb-0">Amount: <strong>${{ order.total_amount }}</strong></p>
                 <p class="text-muted small mt-2">This will refund the customer via Stripe and cannot be undone.</p>
             </div>

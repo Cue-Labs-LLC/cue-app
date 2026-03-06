@@ -103,7 +103,7 @@
                 <tbody>
                     {% for order in page_obj %}
                     <tr>
-                        <td><strong>{{ order.order_number }}</strong></td>
+                        <td><strong>{{ order.display_order_number }}</strong></td>
                         <td>{{ order.order_date|date:"M d, Y H:i" }}</td>
                         <td>{{ order.event.name }}</td>
                         <td><strong>${{ order.total_amount|currency }}</strong></td>

@@ -344,7 +344,7 @@
                         </td>
                         <td>
                             {% if s.ticket_order %}
-                            <a href="{% url 'tickets:order_detail' s.ticket_order.id %}">{{ s.ticket_order.order_number|truncatechars:20 }}</a>
+                            <a href="{% url 'tickets:order_detail' s.ticket_order.id %}">{{ s.ticket_order.display_order_number|truncatechars:20 }}</a>
                             {% else %}&mdash;{% endif %}
                         </td>
                         <td>{{ s.created_at|date:"M d, Y H:i" }}</td>
@@ -543,7 +543,7 @@
                 <tbody>
                     {% for order in page_obj %}
                     <tr>
-                        <td><a href="{% url 'tickets:order_detail' order.id %}"><strong>{{ order.order_number }}</strong></a></td>
+                        <td><a href="{% url 'tickets:order_detail' order.id %}"><strong>{{ order.display_order_number }}</strong></a></td>
                         <td>{{ order.order_date|date:"M d, Y H:i" }}</td>
                         <td><a href="{% url 'tickets:customer_detail' order.customer.id %}">{{ order.customer.name }}</a></td>
                         <td><strong>${{ order.total_amount|currency }}</strong></td>

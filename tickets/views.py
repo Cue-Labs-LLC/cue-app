@@ -2060,7 +2060,7 @@ def refund_order(request, order_id):
         order.customer.update_lifetime_value()
         _invalidate_event_list_cache(org)
 
-    messages.success(request, f'Order {order.order_number} has been refunded.')
+    messages.success(request, f'Order {order.display_order_number} has been refunded.')
     return redirect('tickets:order_detail', order_id=order_id)
 
 
