@@ -143,6 +143,13 @@ def require_owner(view_func):
     return _org_role_required(lambda p: p.is_org_owner)(view_func)
 
 
+def next_order_number():
+    """Return the next globally-unique sequential order number string. Call inside a transaction."""
+    from .models import OrderCounter
+    seq = OrderCounter.next()
+    return f"#{seq:05d}"
+
+
 def calculate_platform_fee_cents(subtotal_cents: int) -> int:
     """Platform service fee: 8% of subtotal + $0.99, in cents."""
     return round(subtotal_cents * 0.08) + 99

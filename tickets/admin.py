@@ -10,7 +10,7 @@ from .models import (
     CustomField, CustomFieldOption, EventCustomFieldValue,
     IncomeSource, EventIncome,
     SurveyQuestion, SurveyInvitation, SurveyResponse, SurveyAnswer,
-    ChatMessage, Payout,
+    ChatMessage, Payout, StripeCheckoutSession,
 )
 
 
@@ -376,10 +376,10 @@ class EventIncomeAdmin(admin.ModelAdmin):
 
 @admin.register(TicketOrder)
 class TicketOrderAdmin(admin.ModelAdmin):
-    list_display = ['order_number', 'customer', 'event', 'get_organization', 'order_date', 'total_amount', 'ticket_count', 'uploaded_file']
+    list_display = ['order_number', 'customer', 'event', 'get_organization', 'order_date', 'total_amount', 'ticket_count', 'stripe_dashboard_link', 'uploaded_file']
     list_filter = ['event__organization', 'order_date', 'event', 'uploaded_file', 'created_at']
-    search_fields = ['order_number', 'customer__name', 'customer__email', 'event__name']
-    readonly_fields = ['id', 'created_at', 'updated_at']
+    search_fields = ['order_number', 'external_order_number', 'customer__name', 'customer__email', 'event__name']
+    readonly_fields = ['id', 'created_at', 'updated_at', 'stripe_dashboard_link']
     date_hierarchy = 'order_date'
     inlines = [TicketInline]
 
@@ -390,10 +390,14 @@ class TicketOrderAdmin(admin.ModelAdmin):
     
     fieldsets = (
         ('Order Information', {
-            'fields': ('order_number', 'order_date', 'total_amount')
+            'fields': ('order_number', 'external_order_number', 'order_date', 'total_amount')
         }),
         ('Relationships', {
             'fields': ('customer', 'event', 'uploaded_file')
+        }),
+        ('Stripe', {
+            'fields': ('stripe_dashboard_link',),
+            'classes': ('collapse',),
         }),
         ('Metadata', {
             'fields': ('id', 'created_at', 'updated_at'),
@@ -401,11 +405,23 @@ class TicketOrderAdmin(admin.ModelAdmin):
         }),
     )
     
+    def stripe_dashboard_link(self, obj):
+        try:
+            session = obj.stripe_checkout_session
+        except Exception:
+            return '-'
+        pi_id = session.stripe_payment_intent_id
+        if not pi_id:
+            return '-'
+        url = f"https://dashboard.stripe.com/payments/{pi_id}"
+        return format_html('<a href="{}" target="_blank" rel="noopener">View in Stripe</a>', url)
+    stripe_dashboard_link.short_description = 'Stripe'
+
     def ticket_count(self, obj):
         """Display number of tickets in this order."""
         return obj.tickets.count()
     ticket_count.short_description = 'Tickets'
-    
+
     def get_queryset(self, request):
         """Optimize queryset with ticket count; filter by org for non-superusers."""
         qs = super().get_queryset(request)
@@ -415,7 +431,9 @@ class TicketOrderAdmin(admin.ModelAdmin):
                 qs = qs.filter(event__organization=profile.organization)
             else:
                 qs = qs.none()
-        return qs.select_related('customer', 'event', 'uploaded_file').prefetch_related('tickets')
+        return qs.select_related(
+            'customer', 'event', 'uploaded_file', 'stripe_checkout_session'
+        ).prefetch_related('tickets')
 
 
 @admin.register(TicketTier)

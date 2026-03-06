@@ -519,24 +519,6 @@ class CSVProcessor:
                     event_key_tuple = (event.name, event.start_date)
                     existing_events[event_key_tuple] = event
         
-        # Check for existing order numbers
-        # Note: We need to check all order numbers, not just those in the current chunk,
-        # because order numbers from previous files/chunks might conflict
-        order_numbers = []
-        for row in chunk_data:
-            mapped = self.map_columns(row)
-            order_num = mapped.get('order_number')
-            if not order_num:
-                # Generate order number if missing
-                order_num = self.generate_order_number(mapped)
-            order_numbers.append(order_num)
-        
-        # Query database for ALL order numbers in this chunk (including generated ones)
-        existing_orders = set(
-            TicketOrder.objects.filter(order_number__in=order_numbers)
-            .values_list('order_number', flat=True)
-        )
-        
         # If using tiers, sort orders by order_date (earliest first) for tier assignment
         if self.uses_tiers:
             # Sort chunk_data by order_date
@@ -551,31 +533,18 @@ class CSVProcessor:
             try:
                 # Map columns
                 mapped_row = self.map_columns(row)
-                # Generate order_number if missing
-                if not mapped_row.get('order_number'):
-                    mapped_row['order_number'] = self.generate_order_number(mapped_row)
-                
+
                 # Validate
                 is_valid, error_msg = self.validate_ticket_order_data(mapped_row)
                 if not is_valid:
                     results['error_count'] += 1
                     results['errors'].append(f"Row validation error: {error_msg}")
                     continue
-                
-                # Check for duplicate order
-                order_number = mapped_row.get('order_number')
-                # Double-check database if not in existing_orders (similar to customer issue)
-                if order_number in existing_orders:
-                    results['skipped_duplicates'] += 1
-                    results['skipped_order_numbers'].append(order_number)
-                    continue
-                else:
-                    # Check database directly to catch orders from previous files/chunks
-                    if TicketOrder.objects.filter(order_number=order_number).exists():
-                        results['skipped_duplicates'] += 1
-                        results['skipped_order_numbers'].append(order_number)
-                        existing_orders.add(order_number)
-                        continue
+
+                # CSV order: assign a new internal order number; preserve original in external_order_number
+                from tickets.utils import next_order_number
+                external_order_number = mapped_row.get('order_number') or ''
+                order_number = next_order_number()
                 
                 # Customer: use placeholder for in-person rows, else get or create by email
                 if mapped_row.get('processed_in_person') and placeholder_customer is not None:
@@ -823,11 +792,12 @@ class CSVProcessor:
                     event=event,
                     uploaded_file=self.uploaded_file,
                     order_number=order_number,
+                    external_order_number=external_order_number,
                     order_date=order_date,
                     total_amount=total_amount
                 )
                 ticket_orders_to_create.append(ticket_order)
-                
+
                 # Create tickets
                 for _ in range(quantity):
                     ticket = Ticket(
@@ -838,8 +808,7 @@ class CSVProcessor:
                         tier_name=tier_name
                     )
                     tickets_to_create.append(ticket)
-                
-                existing_orders.add(order_number)
+
                 results['success_count'] += 1
                 
             except Exception as e:
@@ -892,15 +861,6 @@ class CSVProcessor:
             for key, event in created_events.items():
                 existing_events[key] = event
         
-        if ticket_orders_to_create:
-            # Final safety check: remove any orders that exist in database
-            final_order_numbers = [o.order_number for o in ticket_orders_to_create]
-            existing_orders_in_db = set(
-                TicketOrder.objects.filter(order_number__in=final_order_numbers)
-                .values_list('order_number', flat=True)
-            )
-            if existing_orders_in_db:
-                ticket_orders_to_create = [o for o in ticket_orders_to_create if o.order_number not in existing_orders_in_db]
         if ticket_orders_to_create:
             TicketOrder.objects.bulk_create(ticket_orders_to_create)
         if tickets_to_create:

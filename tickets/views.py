@@ -53,7 +53,7 @@ from .services.segmentation.segment_definitions import (
 )
 from .services.cohort_analysis.repeat_customer_calculator import RepeatCustomerCalculator
 from .services.cohort_analysis.cohort_retention_calculator import CohortRetentionCalculator
-from .utils import get_organization, require_org, require_organizer, require_host, require_admin, require_owner, clear_org_cache
+from .utils import get_organization, require_org, require_organizer, require_host, require_admin, require_owner, clear_org_cache, next_order_number
 from .feature_flags import direct_ticketing_enabled
 
 from django.core.cache import cache as django_cache
@@ -2296,8 +2296,9 @@ def event_create(request, ticketing_type):
                     tt.delete()
                 _invalidate_event_list_cache(org)
                 messages.success(request, f"Event '{event.name}' created successfully.")
-                if event.start_date >= date.today():
-                    _sync_event_to_google_calendar(event)
+                # TODO: re-enable when calendar sync is ready
+                # if event.start_date >= date.today():
+                #     _sync_event_to_google_calendar(event)
                 return redirect('tickets:event_detail', event_id=event.id)
         else:
             form = DirectEventForm(organization=org)
@@ -3844,8 +3845,6 @@ def checkout_payment(request, event_id):
                 email=buyer_email,
                 defaults={'organization': org, 'name': buyer_name},
             )
-            order_number = f"FREE-{event.id.hex[:8].upper()}-{django_tz.now().strftime('%Y%m%d%H%M%S')}"
-
             # Resolve promo code for free-after-discount orders
             promo_code_obj = None
             discount_amount_val = None
@@ -3860,7 +3859,7 @@ def checkout_payment(request, event_id):
                 customer=customer,
                 event=event,
                 uploaded_file=None,
-                order_number=order_number,
+                order_number=next_order_number(),
                 order_date=django_tz.now(),
                 total_amount=Decimal('0.00'),
                 promo_code=promo_code_obj,
@@ -3887,6 +3886,9 @@ def checkout_payment(request, event_id):
                 ])
             customer.update_lifetime_value()
             _invalidate_event_list_cache(org)
+
+        from tickets.tasks import send_order_confirmation_email_task
+        send_order_confirmation_email_task.delay(str(order.id))
 
         del request.session[f'cart_{event_id}']
         request.session.pop(f'promo_{event_id}', None)
@@ -4169,12 +4171,11 @@ def _fulfill_payment_intent(payment_intent):
             defaults={'organization': org, 'name': name},
         )
 
-        order_number = f"STRIPE-{pi_id}"[:100]
         order = TicketOrder.objects.create(
             customer=customer,
             event=event,
             uploaded_file=None,
-            order_number=order_number,
+            order_number=next_order_number(),
             order_date=django_tz.now(),
             total_amount=Decimal(str(session_obj.amount_total_cents)) / 100,
             promo_code_id=session_obj.promo_code_id,
@@ -4211,6 +4212,9 @@ def _fulfill_payment_intent(payment_intent):
         session_obj.save()
 
         _invalidate_event_list_cache(org)
+
+        from tickets.tasks import send_order_confirmation_email_task
+        send_order_confirmation_email_task.delay(str(order.id))
 
         if payment_intent.get('setup_future_usage') == 'off_session':
             user_id = payment_intent.get('metadata', {}).get('user_id', '')

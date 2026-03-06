@@ -90,6 +90,19 @@ class Organization(BaseModel):
         return self.name
 
 
+class OrderCounter(models.Model):
+    """Global atomic counter for sequential order numbers."""
+    last_number = models.PositiveIntegerField(default=0)
+
+    @classmethod
+    def next(cls):
+        """Atomically increment and return the next order number. Call inside a transaction."""
+        counter, _ = cls.objects.select_for_update().get_or_create(pk=1)
+        counter.last_number += 1
+        counter.save(update_fields=['last_number'])
+        return counter.last_number
+
+
 class PipedreamCalendarConnection(BaseModel):
     """Per-organization Pipedream webhook URL for Google Calendar event sync."""
     organization = models.OneToOneField(
@@ -886,6 +899,7 @@ class TicketOrder(AuditBaseModel):
         blank=True
     )
     order_number = models.CharField(max_length=100, unique=True, db_index=True)
+    external_order_number = models.CharField(max_length=100, blank=True, db_index=True)
     order_date = models.DateTimeField(db_index=True)
     total_amount = models.DecimalField(max_digits=10, decimal_places=2)
     refunded_at = models.DateTimeField(null=True, blank=True)

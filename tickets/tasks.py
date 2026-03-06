@@ -132,6 +132,46 @@ def send_org_invite_email_task(self, invitation_id):
 
 
 @shared_task(bind=True, max_retries=2, default_retry_delay=30)
+def send_order_confirmation_email_task(self, order_id):
+    """Send an order confirmation email to the customer."""
+    from django.core.mail import send_mail
+    from django.template.loader import render_to_string
+    from django.conf import settings
+    from tickets.models import TicketOrder
+
+    try:
+        order = TicketOrder.objects.select_related(
+            'customer', 'event', 'event__venue'
+        ).prefetch_related('tickets').get(id=order_id)
+    except TicketOrder.DoesNotExist:
+        logger.warning("TicketOrder %s not found, skipping confirmation email", order_id)
+        return
+
+    customer = order.customer
+    context = {
+        'order': order,
+        'customer': customer,
+        'event': order.event,
+        'tickets': list(order.tickets.all()),
+    }
+    html_body = render_to_string('tickets/buy/order_confirmation_email.html', context)
+    text_body = render_to_string('tickets/buy/order_confirmation_email.txt', context)
+
+    try:
+        send_mail(
+            subject=f"Your order confirmation — {order.event.name}",
+            message=text_body,
+            from_email=settings.DEFAULT_FROM_EMAIL,
+            recipient_list=[customer.email],
+            html_message=html_body,
+        )
+        logger.info("Sent order confirmation email for order %s to %s", order_id, customer.email)
+    except Exception as exc:
+        logger.exception("Failed to send order confirmation email for order %s", order_id)
+        raise self.retry(exc=exc)
+
+
+@shared_task(bind=True, max_retries=2, default_retry_delay=30)
 def recalculate_rfm_task(self, organization_id):
     from tickets.models import Organization
     from tickets.services.segmentation.rfm_calculator import RFMCalculator

@@ -437,6 +437,9 @@ enhanced-ltv-updater/
 - Progress is tracked and displayed
 - Each batch is processed in a database transaction for data integrity
 
+How to run stripe webhook
+- stripe listen --forward-to localhost:8000/webhooks/stripe/
+
 ## License
 
 This project is for personal/internal use.

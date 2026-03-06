@@ -1,0 +1,17 @@
+Eventflow - Order confirmation
+
+Hi {{ customer.name }},
+
+Your order for {{ event.name }} is confirmed.
+
+Order number: {{ order.order_number }}
+Event: {{ event.name }}{% if event.start_date %}
+Date: {{ event.start_date|date:"N j, Y" }}{% endif %}{% if event.venue %}
+Venue: {{ event.venue.name }}{% endif %}
+
+Tickets:
+{% for ticket in tickets %}  {{ ticket.ticket_type }} — {% if ticket.price %}${{ ticket.price }}{% else %}Free{% endif %}
+{% endfor %}
+Total: {% if order.total_amount %}${{ order.total_amount }}{% else %}Free{% endif %}
+
+Questions? Reply to this email and we'll be happy to help.
