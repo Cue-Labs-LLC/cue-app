@@ -21,6 +21,13 @@
             display: flex; align-items: center; justify-content: space-between; gap: 16px;
         }
         .ticket-card.sold-out { opacity: 0.55; }
+        .ticket-card--locked {
+            flex-direction: column; align-items: stretch; gap: 12px;
+        }
+        .ticket-card--locked .ticket-card__header {
+            display: flex; align-items: center; justify-content: space-between;
+        }
+        .ticket-card__unlock { width: 100%; }
         .ticket-info { flex: 1; }
         .ticket-name { font-size: 1rem; font-weight: 600; color: #1a1a2e; margin-bottom: 2px; }
         .ticket-desc { font-size: 0.85rem; color: #777; margin-bottom: 4px; }
@@ -49,7 +56,7 @@
         <p>{{ event.venue.name }}, {{ event.venue.city }}</p>
     </div>
 
-    {% if not available_types %}
+    {% if not available_pairs and not locked_pairs %}
     <div class="text-center py-5">
         <i class="bi bi-ticket-perforated" style="font-size: 3rem; color: #ccc;"></i>
         <p class="mt-3 text-muted">No tickets are currently available for this event.</p>
@@ -65,7 +72,24 @@
         </div>
         {% endif %}
 
-        {% for tt, bound_field in ticket_form_pairs %}
+        {% if locked_pairs %}
+        <div class="ticket-card ticket-card--locked" id="unlock-box">
+            <div class="ticket-info">
+                <div class="ticket-name"><i class="bi bi-lock"></i> Password required for some tickets</div>
+                <div class="ticket-desc">Enter the password to see additional ticket options.</div>
+            </div>
+            <div class="ticket-card__unlock" style="min-width:220px;">
+                <div class="input-group input-group-sm">
+                    <input type="text" id="global-unlock-input" class="form-control" placeholder="Enter password" autocomplete="off">
+                    <button type="button" id="global-unlock-btn" class="btn btn-outline-primary">Unlock</button>
+                </div>
+                <div id="global-unlock-error" class="text-danger small mt-1" style="display:none;"></div>
+                <div id="global-unlock-success" class="text-success small mt-1" style="display:none;"></div>
+            </div>
+        </div>
+        {% endif %}
+
+        {% for tt, bound_field in available_pairs %}
         <div class="ticket-card{% if tt.is_sold_out %} sold-out{% endif %}">
             <div class="ticket-info">
                 <div class="ticket-name">{{ tt.name }}</div>
@@ -97,6 +121,34 @@
         {% endif %}
         {% endfor %}
 
+        {% for tt, bound_field in locked_pairs %}
+        <div class="ticket-card" id="locked-card-{{ tt.id.hex }}"
+             data-unlock-url="{% url 'tickets:unlock_ticket_type' event.id tt.id %}"
+             style="display:none;">
+            <div class="ticket-info">
+                <div class="ticket-name">{{ tt.name }}</div>
+                {% if tt.description %}<div class="ticket-desc">{{ tt.description }}</div>{% endif %}
+                <div class="ticket-price">
+                    {% if tt.price == 0 %}Free{% else %}${{ tt.price|currency }}{% endif %}
+                </div>
+                {% if tt.price != 0 %}
+                <div style="font-size:11px;color:#999;">+ service fee at checkout</div>
+                {% endif %}
+                {% if tt.quantity_limit is not None %}
+                {% with rem=tt.remaining_quantity %}
+                {% if rem <= 10 %}
+                <div class="ticket-remaining"><i class="bi bi-exclamation-circle"></i> Only {{ rem }} left</div>
+                {% endif %}
+                {% endwith %}
+                {% endif %}
+            </div>
+            <div class="qty-control">{{ bound_field }}</div>
+        </div>
+        {% if bound_field.errors %}
+        <div class="field-error" id="err-{{ tt.id.hex }}" style="display:none;">{{ bound_field.errors|join:", " }}</div>
+        {% endif %}
+        {% endfor %}
+
         <div class="mt-4">
             <button type="submit" class="btn btn-primary btn-lg w-100" style="background: #1a1a2e; border-color: #1a1a2e;">
                 Continue to Checkout <i class="bi bi-arrow-right"></i>
@@ -106,5 +158,76 @@
 
     {% endif %}
 </div>
+<script>
+(function() {
+    var lockedCards = Array.from(document.querySelectorAll('[id^="locked-card-"]'));
+    if (!lockedCards.length) return;
+
+    var input = document.getElementById('global-unlock-input');
+    var btn   = document.getElementById('global-unlock-btn');
+    var errEl = document.getElementById('global-unlock-error');
+    var okEl  = document.getElementById('global-unlock-success');
+    var csrfToken = document.querySelector('[name=csrfmiddlewaretoken]').value;
+
+    function tryUnlock() {
+        var password = input.value.trim();
+        if (!password) return;
+        btn.disabled = true;
+        btn.textContent = 'Checking...';
+        errEl.style.display = 'none';
+        okEl.style.display = 'none';
+
+        var remaining = lockedCards.filter(function(c) { return c.style.display === 'none'; });
+        var unlocked = 0;
+        var tried = 0;
+
+        remaining.forEach(function(card) {
+            var url = card.dataset.unlockUrl;
+            var body = new URLSearchParams();
+            body.append('password', password);
+            body.append('csrfmiddlewaretoken', csrfToken);
+
+            fetch(url, { method: 'POST', body: body })
+                .then(function(r) { return r.json(); })
+                .then(function(data) {
+                    tried++;
+                    if (data.success) {
+                        card.style.display = '';
+                        unlocked++;
+                    }
+                    if (tried === remaining.length) {
+                        btn.disabled = false;
+                        btn.textContent = 'Unlock';
+                        if (unlocked > 0) {
+                            okEl.textContent = unlocked + ' ticket type' + (unlocked > 1 ? 's' : '') + ' unlocked.';
+                            okEl.style.display = '';
+                            var stillHidden = lockedCards.filter(function(c) { return c.style.display === 'none'; });
+                            if (stillHidden.length === 0) {
+                                document.getElementById('unlock-box').style.display = 'none';
+                            }
+                        } else {
+                            errEl.textContent = 'Incorrect password.';
+                            errEl.style.display = '';
+                        }
+                    }
+                })
+                .catch(function() {
+                    tried++;
+                    if (tried === remaining.length) {
+                        btn.disabled = false;
+                        btn.textContent = 'Unlock';
+                        errEl.textContent = 'Something went wrong. Please try again.';
+                        errEl.style.display = '';
+                    }
+                });
+        });
+    }
+
+    btn.addEventListener('click', tryUnlock);
+    input.addEventListener('keydown', function(e) {
+        if (e.key === 'Enter') { e.preventDefault(); tryUnlock(); }
+    });
+})();
+</script>
 </body>
 </html>

@@ -140,6 +140,7 @@ urlpatterns = [
 
     # Direct Ticket Selling — Public (no auth)
     path('buy/<uuid:event_id>/', views.public_event_buy, name='public_event_buy'),
+    path('buy/<uuid:event_id>/unlock/<uuid:ticket_type_id>/', views.unlock_ticket_type, name='unlock_ticket_type'),
     path('buy/<uuid:event_id>/checkout/', views.checkout_payment, name='checkout_payment'),
     path('buy/<uuid:event_id>/payment-intent/', views.create_payment_intent, name='create_payment_intent'),
     path('buy/<uuid:event_id>/apply-promo/', views.validate_promo_code, name='validate_promo_code'),

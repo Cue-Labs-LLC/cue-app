@@ -3412,27 +3412,21 @@ def saleable_ticket_type_edit(request, event_id, ticket_type_id):
     org = get_organization(request)
     event = get_object_or_404(Event.objects.filter(organization=org), id=event_id)
     tt = get_object_or_404(SaleableTicketType.objects.filter(event=event), id=ticket_type_id)
-    price_locked = tt.quantity_sold > 0
-
     if request.method == 'POST':
-        form = SaleableTicketTypeForm(request.POST, instance=tt, price_locked=price_locked)
+        form = SaleableTicketTypeForm(request.POST, instance=tt)
         if form.is_valid():
-            if price_locked:
-                # Prevent price changes after tickets have been sold
-                form.instance.price = tt.price
             updated = form.save()
             _invalidate_event_list_cache(org)
             messages.success(request, f'Ticket type "{updated.name}" updated.')
             return redirect('tickets:event_detail', event_id=event.id)
     else:
-        form = SaleableTicketTypeForm(instance=tt, price_locked=price_locked)
+        form = SaleableTicketTypeForm(instance=tt)
 
     return render(request, 'tickets/saleable_ticket_type_form.html', {
         'form': form,
         'event': event,
         'ticket_type': tt,
         'editing': True,
-        'price_locked': price_locked,
     })
 
 
@@ -3692,11 +3686,13 @@ def public_event_buy(request, event_id):
         event=event,
         is_active=True,
     ).order_by('order', 'name')
-    # Filter to only those currently on sale
-    available_types = [tt for tt in ticket_types if tt.is_on_sale() and not tt.is_sold_out()]
+    all_on_sale     = [tt for tt in ticket_types if tt.is_on_sale() and not tt.is_sold_out()]
+    available_types = [tt for tt in all_on_sale if not tt.is_password_protected]
+    locked_types    = [tt for tt in all_on_sale if tt.is_password_protected]
+    all_types       = available_types + locked_types
 
     if request.method == 'POST':
-        form = PublicTicketPurchaseForm(available_types, request.POST)
+        form = PublicTicketPurchaseForm(all_types, request.POST)
         if form.is_valid():
             line_items = form.get_line_items()
             snapshot = [
@@ -3714,17 +3710,35 @@ def public_event_buy(request, event_id):
         Event.objects.filter(pk=event.pk).update(
             public_buy_page_views=F('public_buy_page_views') + 1
         )
-        form = PublicTicketPurchaseForm(available_types)
+        form = PublicTicketPurchaseForm(all_types)
 
-    # Pair each ticket type with its BoundField for clean template iteration
-    ticket_form_pairs = list(zip(available_types, form))
+    all_pairs       = list(zip(all_types, form))
+    available_pairs = all_pairs[:len(available_types)]
+    locked_pairs    = all_pairs[len(available_types):]
 
     return render(request, 'tickets/buy/public_event_buy.html', {
         'event': event,
         'form': form,
-        'available_types': available_types,
-        'ticket_form_pairs': ticket_form_pairs,
+        'available_pairs': available_pairs,
+        'locked_pairs': locked_pairs,
     })
+
+
+def unlock_ticket_type(request, event_id, ticket_type_id):
+    """AJAX POST: validate password for a password-protected SaleableTicketType."""
+    if request.method != 'POST':
+        return JsonResponse({'success': False}, status=405)
+    event = get_object_or_404(
+        Event.objects.filter(deleted_at__isnull=True),
+        id=event_id,
+    )
+    tt = get_object_or_404(SaleableTicketType, id=ticket_type_id, event=event, is_active=True)
+    if not tt.is_password_protected or not tt.password:
+        return JsonResponse({'success': False, 'error': 'No password set.'}, status=400)
+    submitted = request.POST.get('password', '')
+    if submitted == tt.password:
+        return JsonResponse({'success': True})
+    return JsonResponse({'success': False, 'error': 'Incorrect password.'})
 
 
 @require_http_methods(["POST"])

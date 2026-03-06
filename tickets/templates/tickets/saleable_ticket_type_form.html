@@ -17,11 +17,7 @@
     <h1>{% if editing %}Edit{% else %}Create{% endif %} Ticket Type</h1>
 </div>
 
-{% if price_locked %}
-<div class="alert alert-info">
-    <i class="bi bi-info-circle"></i> Price is locked because tickets have already been sold for this type.
-</div>
-{% endif %}
+
 
 <div class="card">
     <div class="card-body">
@@ -37,4 +33,29 @@
         <i class="bi bi-arrow-left"></i> Back to Event
     </a>
 </div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+document.addEventListener('DOMContentLoaded', function () {
+    var checkbox = document.getElementById('id_is_password_protected');
+    var passwordField = document.getElementById('id_password');
+    if (!checkbox || !passwordField) return;
+    var passwordWrapper = passwordField.closest('.mb-3');
+
+    function togglePasswordField() {
+        if (checkbox.checked) {
+            passwordWrapper.style.display = '';
+            passwordField.required = true;
+        } else {
+            passwordWrapper.style.display = 'none';
+            passwordField.required = false;
+            passwordField.value = '';
+        }
+    }
+
+    togglePasswordField();
+    checkbox.addEventListener('change', togglePasswordField);
+});
+</script>
 {% endblock %}

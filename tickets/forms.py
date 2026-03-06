@@ -934,7 +934,7 @@ class SaleableTicketTypeForm(forms.ModelForm):
 
     class Meta:
         model = SaleableTicketType
-        fields = ['name', 'description', 'price', 'quantity_limit', 'is_active', 'sale_start', 'sale_end', 'order']
+        fields = ['name', 'description', 'price', 'quantity_limit', 'is_active', 'sale_start', 'sale_end', 'order', 'is_password_protected', 'password']
         widgets = {
             'name': forms.TextInput(attrs={'class': 'form-control', 'placeholder': 'e.g. General Admission'}),
             'description': forms.Textarea(attrs={'rows': 2, 'class': 'form-control', 'placeholder': 'Short buyer-facing copy (optional)'}),
@@ -944,17 +944,20 @@ class SaleableTicketTypeForm(forms.ModelForm):
             'sale_start': forms.DateTimeInput(attrs={'type': 'datetime-local', 'class': 'form-control'}),
             'sale_end': forms.DateTimeInput(attrs={'type': 'datetime-local', 'class': 'form-control'}),
             'order': forms.NumberInput(attrs={'class': 'form-control', 'min': '0'}),
+            'is_password_protected': forms.CheckboxInput(attrs={'class': 'form-check-input', 'id': 'id_is_password_protected'}),
+            'password': forms.TextInput(attrs={
+                'class': 'form-control',
+                'placeholder': 'Enter password here',
+                'autocomplete': 'off',
+            }),
         }
 
-    def __init__(self, *args, price_locked=False, **kwargs):
+    def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.fields['quantity_limit'].required = False
         self.fields['description'].required = False
         self.fields['sale_start'].required = False
         self.fields['sale_end'].required = False
-        if price_locked:
-            self.fields['price'].widget.attrs['readonly'] = True
-            self.fields['price'].help_text = 'Price cannot be changed after tickets have been sold.'
         submit_label = 'Update Ticket Type' if (self.instance and self.instance.pk) else 'Create Ticket Type'
         self.helper = FormHelper()
         self.helper.layout = Layout(
@@ -970,6 +973,8 @@ class SaleableTicketTypeForm(forms.ModelForm):
                 Column('sale_end', css_class='form-group col-md-6 mb-0'),
             ),
             Field('is_active'),
+            Field('is_password_protected'),
+            Field('password'),
             Submit('submit', submit_label, css_class='btn btn-primary'),
         )
 
@@ -985,6 +990,8 @@ class SaleableTicketTypeForm(forms.ModelForm):
         sale_end = cleaned_data.get('sale_end')
         if sale_start and sale_end and sale_end <= sale_start:
             self.add_error('sale_end', 'Sale end must be after sale start.')
+        if cleaned_data.get('is_password_protected') and not cleaned_data.get('password'):
+            self.add_error('password', 'A password is required when password protection is enabled.')
         return cleaned_data
 
 

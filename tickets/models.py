@@ -1068,10 +1068,19 @@ class SaleableTicketType(BaseModel):
     )
     quantity_sold = models.PositiveIntegerField(default=0)
     is_active = models.BooleanField(default=True, help_text="Hidden from public page when False")
+    is_password_protected = models.BooleanField(
+        default=False,
+        help_text="If checked, this ticket type is hidden until a customer enters the password below.",
+    )
     sale_start = models.DateTimeField(null=True, blank=True)
     sale_end = models.DateTimeField(null=True, blank=True)
     description = models.TextField(blank=True)
     order = models.PositiveSmallIntegerField(default=0, help_text="Display order on public page")
+    password = models.CharField(
+        max_length=100,
+        blank=True,
+        help_text="If set, this ticket type is hidden on the public page until a customer enters this password.",
+    )
 
     class Meta:
         ordering = ['order', 'name']
