@@ -1,5 +1,5 @@
 {% extends 'tickets/base.html' %}
-{% load tickets_extras %}
+{% load tickets_extras humanize %}
 
 {% block title %}Customer Segments{% endblock %}
 
@@ -121,7 +121,7 @@
                                 <span class="badge bg-{{ row.badge_color }}">{{ row.segment }}</span>
                             </a>
                         </td>
-                        <td>{{ row.count }}</td>
+                        <td>{{ row.count|intcomma }}</td>
                         <td>{{ row.pct }}%</td>
                         <td><span class="revenue">${{ row.avg_ltv|currency }}</span></td>
                         <td>{{ row.avg_orders }}</td>

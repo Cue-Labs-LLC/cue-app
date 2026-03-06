@@ -1,5 +1,5 @@
 {% extends 'tickets/base.html' %}
-{% load tickets_extras %}
+{% load tickets_extras humanize %}
 
 {% block title %}LTV by Market{% endblock %}
 
@@ -51,8 +51,8 @@
                     <tr>
                         <td><strong>{{ row.city }}</strong></td>
                         <td><span class="revenue">${{ row.total_ltv|currency }}</span></td>
-                        <td>{{ row.customer_count }}</td>
-                        <td>{{ row.order_count }}</td>
+                        <td>{{ row.customer_count|intcomma }}</td>
+                        <td>{{ row.order_count|intcomma }}</td>
                         <td>${{ row.avg_ltv|currency }}</td>
                     </tr>
                     {% endfor %}

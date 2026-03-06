@@ -33,7 +33,7 @@
                 <table class="table table-borderless mb-0">
                     <tr><th style="width: 140px;">Name:</th><td>{{ customer.name }}</td></tr>
                     <tr><th>Email:</th><td>{{ customer.email }}</td></tr>
-                    <tr><th>Phone:</th><td>{{ customer.phone|default:"\u2014" }}</td></tr>
+                    <tr><th>Phone:</th><td>{{ customer.phone|default:"—" }}</td></tr>
                     <tr><th>Customer Since:</th><td>{{ customer.created_at|date:"M d, Y" }}</td></tr>
                 </table>
             </div>

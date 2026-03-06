@@ -174,7 +174,7 @@ window.initVenuePlacesAutocomplete = async function() {
 
             var display = document.getElementById('venue-address-selected-display');
             if (display) {
-                display.textContent = place.formattedAddress || '\u2014';
+                display.textContent = place.formattedAddress || '—';
             }
         });
     } catch (e) {

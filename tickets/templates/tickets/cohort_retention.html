@@ -1,5 +1,6 @@
 {% extends 'tickets/base.html' %}
 
+{% load humanize %}
 {% block title %}Cohort Retention{% endblock %}
 
 {% block extra_head %}
@@ -101,7 +102,7 @@
                     {% for c in cohorts %}
                     <tr>
                         <td class="cohort-label">{{ c.cohort }}</td>
-                        <td>{{ c.size }}</td>
+                        <td>{{ c.size|intcomma }}</td>
                         {% for period in c.periods %}
                         <td class="heatmap-cell" style="background-color: rgba(25, 135, 84, {{ period.bg_opacity }});">
                             {{ period.retention_pct }}%

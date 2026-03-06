@@ -65,7 +65,7 @@
                             <a href="{% url 'tickets:event_detail' event.id %}" class="text-body text-decoration-none"><strong>{{ event.name }}</strong></a>
                         </td>
                         <td>{{ event.start_date|date:"M d, Y" }}</td>
-                        <td>{{ event.venue.name|default:"\u2014" }}</td>
+                        <td>{{ event.venue.name|default:"—" }}</td>
                         <td>{% if event.id in event_ids_show_placeholder %}—{% else %}<span class="revenue">${{ event.total_revenue|currency }}</span>{% endif %}</td>
                         <td>{% if event.id in event_ids_show_placeholder %}—{% else %}{{ event.upload_count }}{% endif %}</td>
                         <td>
