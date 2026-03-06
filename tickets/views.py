@@ -74,7 +74,7 @@ _WINDOW_DELTAS = {
 
 def _parse_window(request):
     """Return (start_date, end_date, active_window) from ?window= query params."""
-    window = request.GET.get('window', 'all')
+    window = request.GET.get('window', '1y')
     today = date.today()
     if window in _WINDOW_DELTAS:
         return today - _WINDOW_DELTAS[window], today, window
