@@ -1427,13 +1427,27 @@ def repeat_customers(request):
     else:
         summary = result['summary']
 
+    # Build market (venue city) aggregation from already-filtered events
+    markets = {}
+    for e in chart_events:
+        city = e.get('venue_city') or 'Unknown'
+        m = markets.setdefault(city, {'city': city, 'total': 0, 'new_count': 0, 'returning_count': 0})
+        m['total'] += e['total']
+        m['new_count'] += e['new_count']
+        m['returning_count'] += e['returning_count']
+    for m in markets.values():
+        m['returning_pct'] = round(m['returning_count'] / m['total'] * 100, 1) if m['total'] else 0
+    market_data = sorted(markets.values(), key=lambda x: x['total'], reverse=True)
+
     chart_data = json.dumps(chart_events, default=str)
+    market_chart_data = json.dumps(market_data, default=str)
     # Table: top to bottom most recent → earliest
     table_events = list(reversed(chart_events))
     return render(request, 'tickets/repeat_customers.html', {
         'events': table_events,
         'summary': summary,
         'chart_data_json': chart_data,
+        'market_chart_data_json': market_chart_data,
         'active_window': active_window,
         'window_start': start_date or '',
         'window_end': end_date or '',

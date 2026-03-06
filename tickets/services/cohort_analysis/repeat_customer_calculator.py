@@ -70,6 +70,7 @@ class RepeatCustomerCalculator:
                 'event_name': event.name,
                 'event_date': event.start_date.isoformat(),
                 'venue_name': event.venue.name if event.venue else '',
+                'venue_city': event.venue.city if event.venue else '',
                 'total': int(row['total']),
                 'new_count': int(row['new_count']),
                 'returning_count': int(row['returning_count']),

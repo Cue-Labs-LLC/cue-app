@@ -14,6 +14,7 @@
 
 {% if events %}
 <script type="application/json" id="chart-data">{{ chart_data_json|safe }}</script>
+<script type="application/json" id="market-chart-data">{{ market_chart_data_json|safe }}</script>
 
 <div class="d-flex flex-wrap align-items-center gap-2 mb-3">
   <div class="btn-group btn-group-sm" role="group" aria-label="Time window">
@@ -59,10 +60,29 @@
 </div>
 
 <div class="card mb-4">
-    <div class="card-header"><h5 class="mb-0">New vs Returning by Event</h5></div>
+    <div class="card-header d-flex align-items-center justify-content-between">
+        <h5 class="mb-0">New vs Returning Customers</h5>
+        <ul class="nav nav-tabs card-header-tabs" id="chartTabs" role="tablist">
+            <li class="nav-item" role="presentation">
+                <button class="nav-link active" id="tab-event" data-bs-toggle="tab" data-bs-target="#pane-event" type="button" role="tab">By Event</button>
+            </li>
+            <li class="nav-item" role="presentation">
+                <button class="nav-link" id="tab-market" data-bs-toggle="tab" data-bs-target="#pane-market" type="button" role="tab">By Market</button>
+            </li>
+        </ul>
+    </div>
     <div class="card-body">
-        <div class="chart-container" style="height: 320px;">
-            <canvas id="stackedBarChart"></canvas>
+        <div class="tab-content" id="chartTabContent">
+            <div class="tab-pane fade show active" id="pane-event" role="tabpanel">
+                <div class="chart-container" style="height: 320px;">
+                    <canvas id="stackedBarChart"></canvas>
+                </div>
+            </div>
+            <div class="tab-pane fade" id="pane-market" role="tabpanel">
+                <div class="chart-container" style="height: 320px;">
+                    <canvas id="marketChart"></canvas>
+                </div>
+            </div>
         </div>
     </div>
 </div>
@@ -102,13 +122,9 @@
 
 <script>
 (function() {
-    var el = document.getElementById('chart-data');
-    if (!el) return;
-    var data = JSON.parse(el.textContent);
-    if (!data.length) return;
-
-    var gridColor = 'rgba(0,0,0,0.1)';
-    var textColor = '#666';
+    var isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+    var gridColor = isDark ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.1)';
+    var textColor = isDark ? '#adb5bd' : '#666';
 
     function fmtDate(iso) {
         var m = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
@@ -116,58 +132,94 @@
         return m[parseInt(p[1]) - 1] + ' ' + parseInt(p[2]) + ', ' + p[0];
     }
 
-    new Chart(document.getElementById('stackedBarChart').getContext('2d'), {
-        type: 'bar',
-        data: {
-            labels: data.map(function(d) { return [d.event_name, fmtDate(d.event_date)]; }),
-            datasets: [
-                {
-                    label: 'New',
-                    data: data.map(function(d) { return d.new_count; }),
-                    backgroundColor: 'rgba(13, 110, 253, 0.7)',
-                    borderColor: 'rgb(13, 110, 253)',
-                    borderWidth: 1,
-                    borderRadius: 2,
+    function stackedBarConfig(labels, newData, retData, tooltipFn) {
+        return {
+            type: 'bar',
+            data: {
+                labels: labels,
+                datasets: [
+                    {
+                        label: 'New',
+                        data: newData,
+                        backgroundColor: 'rgba(13, 110, 253, 0.7)',
+                        borderColor: 'rgb(13, 110, 253)',
+                        borderWidth: 1,
+                        borderRadius: 2,
+                    },
+                    {
+                        label: 'Returning',
+                        data: retData,
+                        backgroundColor: 'rgba(25, 135, 84, 0.7)',
+                        borderColor: 'rgb(25, 135, 84)',
+                        borderWidth: 1,
+                        borderRadius: 2,
+                    }
+                ]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {
+                    legend: { labels: { color: textColor } },
+                    tooltip: { callbacks: { afterBody: tooltipFn } }
                 },
-                {
-                    label: 'Returning',
-                    data: data.map(function(d) { return d.returning_count; }),
-                    backgroundColor: 'rgba(25, 135, 84, 0.7)',
-                    borderColor: 'rgb(25, 135, 84)',
-                    borderWidth: 1,
-                    borderRadius: 2,
-                }
-            ]
-        },
-        options: {
-            responsive: true,
-            maintainAspectRatio: false,
-            plugins: {
-                legend: { labels: { color: textColor } },
-                tooltip: {
-                    callbacks: {
-                        afterBody: function(items) {
-                            var idx = items[0].dataIndex;
-                            return 'Total: ' + data[idx].total + ' | Returning: ' + data[idx].returning_pct + '%';
-                        }
+                scales: {
+                    x: {
+                        stacked: true,
+                        ticks: { color: textColor, maxRotation: 45 },
+                        grid: { color: gridColor }
+                    },
+                    y: {
+                        stacked: true,
+                        beginAtZero: true,
+                        title: { display: true, text: 'Customers', color: textColor },
+                        ticks: { color: textColor },
+                        grid: { color: gridColor }
                     }
                 }
-            },
-            scales: {
-                x: {
-                    stacked: true,
-                    ticks: { color: textColor, maxRotation: 45 },
-                    grid: { color: gridColor }
-                },
-                y: {
-                    stacked: true,
-                    beginAtZero: true,
-                    title: { display: true, text: 'Customers', color: textColor },
-                    ticks: { color: textColor },
-                    grid: { color: gridColor }
-                }
             }
+        };
+    }
+
+    // By Event chart
+    var eventEl = document.getElementById('chart-data');
+    if (eventEl) {
+        var eventData = JSON.parse(eventEl.textContent);
+        if (eventData.length) {
+            new Chart(document.getElementById('stackedBarChart').getContext('2d'),
+                stackedBarConfig(
+                    eventData.map(function(d) { return [d.event_name, fmtDate(d.event_date)]; }),
+                    eventData.map(function(d) { return d.new_count; }),
+                    eventData.map(function(d) { return d.returning_count; }),
+                    function(items) {
+                        var idx = items[0].dataIndex;
+                        return 'Total: ' + eventData[idx].total + ' | Returning: ' + eventData[idx].returning_pct + '%';
+                    }
+                )
+            );
         }
+    }
+
+    // By Market chart — initialize lazily on first tab show to get correct dimensions
+    var marketInitialized = false;
+    document.getElementById('tab-market').addEventListener('shown.bs.tab', function() {
+        if (marketInitialized) return;
+        marketInitialized = true;
+        var marketEl = document.getElementById('market-chart-data');
+        if (!marketEl) return;
+        var marketData = JSON.parse(marketEl.textContent);
+        if (!marketData.length) return;
+        new Chart(document.getElementById('marketChart').getContext('2d'),
+            stackedBarConfig(
+                marketData.map(function(d) { return d.city; }),
+                marketData.map(function(d) { return d.new_count; }),
+                marketData.map(function(d) { return d.returning_count; }),
+                function(items) {
+                    var idx = items[0].dataIndex;
+                    return 'Total: ' + marketData[idx].total + ' | Returning: ' + marketData[idx].returning_pct + '%';
+                }
+            )
+        );
     });
 })();
 </script>
