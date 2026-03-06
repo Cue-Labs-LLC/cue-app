@@ -19,6 +19,10 @@ def _get_media_storage():
     return _get_media_storage._cached
 
 
+def _event_flyer_upload_to(instance, filename):
+    return f"orgs/{instance.organization.slug}/event_flyers/{filename}"
+
+
 class BaseModel(models.Model):
     """Base model with UUID primary key and timestamps."""
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
@@ -628,7 +632,7 @@ class Event(AuditBaseModel):
     end_date = models.DateField(null=True, blank=True)
     end_time = models.TimeField(null=True, blank=True)
     description = models.TextField(blank=True)
-    flyer = models.ImageField(upload_to='event_flyers/', blank=True, null=True, storage=_get_media_storage)
+    flyer = models.ImageField(upload_to=_event_flyer_upload_to, blank=True, null=True, storage=_get_media_storage)
     capacity = models.IntegerField(
         null=True,
         blank=True,
