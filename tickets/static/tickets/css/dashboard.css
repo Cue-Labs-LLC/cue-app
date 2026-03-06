@@ -144,8 +144,8 @@ a:hover {
 }
 
 .sidebar-brand-icon {
-    width: 32px;
-    height: 32px;
+    width: 34px;
+    height: 34px;
     background: var(--accent);
     border-radius: var(--radius-sm);
     display: flex;
@@ -154,6 +154,7 @@ a:hover {
     color: white;
     font-size: 16px;
     flex-shrink: 0;
+    box-shadow: inset 0 -2px 0 rgba(0,0,0,0.15);
 }
 
 .sidebar-brand-text {
@@ -169,7 +170,8 @@ a:hover {
 
 .sidebar-section {
     padding: 0 12px;
-    margin-bottom: 4px;
+    margin-bottom: 2px;
+    margin-top: 4px;
 }
 
 .sidebar-section-label {
@@ -178,7 +180,7 @@ a:hover {
     text-transform: uppercase;
     letter-spacing: 0.08em;
     color: var(--text-tertiary);
-    padding: 8px 8px 4px;
+    padding: 10px 8px 4px;
     font-family: var(--font-body);
 }
 
@@ -205,11 +207,13 @@ a:hover {
 .sidebar-link:hover {
     background: var(--bg-sidebar-hover);
     color: var(--text-sidebar-active);
+    padding-left: 14px;
 }
 
 .sidebar-link.active {
-    background: var(--bg-sidebar-active);
-    color: var(--text-sidebar-active);
+    background: var(--accent-muted);
+    color: var(--accent);
+    box-shadow: inset 3px 0 0 var(--accent);
 }
 
 .sidebar-link i {
