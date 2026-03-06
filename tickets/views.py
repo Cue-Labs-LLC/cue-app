@@ -1257,12 +1257,15 @@ def customer_ltv_by_market(request):
         customer_count = row['customer_count'] or 0
         total_ltv = row['total_ltv'] or Decimal('0.00')
         avg_ltv = (total_ltv / customer_count) if customer_count else Decimal('0.00')
+        order_count = row['order_count'] or 0
+        avg_orders = round(order_count / customer_count, 1) if customer_count else 0
         market_stats.append({
             'city': city.strip() or '—',
             'total_ltv': total_ltv,
-            'order_count': row['order_count'] or 0,
+            'order_count': order_count,
             'customer_count': customer_count,
             'avg_ltv': avg_ltv,
+            'avg_orders': avg_orders,
         })
 
     chart_data = [
@@ -1270,6 +1273,7 @@ def customer_ltv_by_market(request):
             'city': row['city'],
             'total_ltv': float(row['total_ltv']),
             'avg_ltv': float(row['avg_ltv']),
+            'avg_orders': row['avg_orders'],
         }
         for row in market_stats
     ]
