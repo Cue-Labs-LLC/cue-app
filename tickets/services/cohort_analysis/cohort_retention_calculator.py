@@ -13,7 +13,8 @@ class CohortRetentionCalculator:
 
     def calculate(self, max_periods=12):
         orders_qs = TicketOrder.objects.filter(
-            customer__organization=self.organization
+            customer__organization=self.organization,
+            is_in_person=False,
         ).values('customer_id', 'event__start_date')
 
         rows = list(orders_qs)

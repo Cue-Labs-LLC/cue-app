@@ -12,7 +12,8 @@ class RepeatCustomerCalculator:
 
     def calculate(self):
         orders_qs = TicketOrder.objects.filter(
-            customer__organization=self.organization
+            customer__organization=self.organization,
+            is_in_person=False,
         ).values('customer_id', 'event_id', 'order_date')
 
         rows = list(orders_qs)

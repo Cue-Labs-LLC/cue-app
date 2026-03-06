@@ -794,7 +794,8 @@ class CSVProcessor:
                     order_number=order_number,
                     external_order_number=external_order_number,
                     order_date=order_date,
-                    total_amount=total_amount
+                    total_amount=total_amount,
+                    is_in_person=bool(mapped_row.get('processed_in_person')),
                 )
                 ticket_orders_to_create.append(ticket_order)
 

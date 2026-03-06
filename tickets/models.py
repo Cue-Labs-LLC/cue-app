@@ -911,6 +911,11 @@ class TicketOrder(AuditBaseModel):
         related_name='ticket_orders',
     )
     discount_amount = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    is_in_person = models.BooleanField(
+        default=False,
+        db_index=True,
+        help_text="Order was processed in person (no customer identity)."
+    )
 
     class Meta:
         ordering = ['-order_date']
@@ -918,6 +923,7 @@ class TicketOrder(AuditBaseModel):
             models.Index(fields=['order_date']),
             models.Index(fields=['customer', 'order_date']),
             models.Index(fields=['event', 'total_amount']),
+            models.Index(fields=['event', 'is_in_person']),
         ]
 
     @property

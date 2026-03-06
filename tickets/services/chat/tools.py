@@ -22,7 +22,7 @@ def _get_organization_summary(organization) -> str:
     """Get a high-level summary of the organization's data."""
     from tickets.models import Customer, Event, TicketOrder
 
-    customer_count = Customer.objects.filter(organization=organization).count()
+    customer_count = Customer.objects.filter(organization=organization).exclude(email__endswith='@placeholder.local').count()
     event_count = Event.objects.filter(organization=organization, deleted_at__isnull=True).count()
     order_stats = TicketOrder.objects.filter(
         customer__organization=organization,

@@ -767,7 +767,7 @@ def home(request):
             event_ids_show_placeholder.add(ev.id)
 
     # Summary statistics (org-scoped via Event/Customer/UploadedFile)
-    total_customers = Customer.objects.filter(organization=org).count()
+    total_customers = Customer.objects.filter(organization=org).exclude(email__endswith='@placeholder.local').count()
     order_agg = TicketOrder.objects.filter(event__organization=org).aggregate(
         total_orders=Count('id'),
         total_revenue=Coalesce(Sum('total_amount'), Decimal('0.00')),
@@ -1164,7 +1164,7 @@ def upload_delete(request, file_id):
 def customer_list(request):
     """Display list of all customers with LTV and optional segment filter."""
     org = get_organization(request)
-    customers = Customer.objects.filter(organization=org)
+    customers = Customer.objects.filter(organization=org).exclude(email__endswith='@placeholder.local')
 
     # Segment filter
     segment_filter = request.GET.get('segment', '').strip()
@@ -1313,7 +1313,7 @@ def customer_segments(request):
 
     # Query 1: count + total_ltv per segment (normalize null/blank to Dormant)
     seg_data = (
-        Customer.objects.filter(organization=org)
+        Customer.objects.filter(organization=org).exclude(email__endswith='@placeholder.local')
         .annotate(
             seg=Case(
                 When(rfm_segment='', then=Value('Dormant')),
@@ -1329,7 +1329,7 @@ def customer_segments(request):
 
     # Query 2: total orders per segment
     order_data = (
-        TicketOrder.objects.filter(customer__organization=org)
+        TicketOrder.objects.filter(customer__organization=org, is_in_person=False)
         .annotate(
             seg=Case(
                 When(customer__rfm_segment='', then=Value('Dormant')),

@@ -60,7 +60,7 @@ class RFMCalculator:
         self.organization = organization
 
     def _base_queryset(self):
-        return Customer.objects.filter(organization=self.organization).annotate(
+        return Customer.objects.filter(organization=self.organization).exclude(email__endswith='@placeholder.local').annotate(
             order_count=Count("ticket_orders"),
             total_spend=Sum("ticket_orders__total_amount"),
             last_order=Max("ticket_orders__order_date"),
