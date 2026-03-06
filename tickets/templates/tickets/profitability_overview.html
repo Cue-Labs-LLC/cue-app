@@ -53,11 +53,18 @@
 
 {% if event_rows %}
 <div class="card mb-4">
-    <div class="card-header d-flex justify-content-between align-items-center">
+    <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2">
         <h5 class="mb-0" id="chartTitle">Revenue vs Expenses by Event</h5>
-        <div class="btn-group btn-group-sm" role="group">
-            <button type="button" class="btn btn-outline-secondary active" id="btnRevExp">Revenue vs Expenses</button>
-            <button type="button" class="btn btn-outline-secondary" id="btnPL">Profit / Loss</button>
+        <div class="d-flex align-items-center gap-2">
+            <div class="btn-group btn-group-sm" role="group" id="marketSortGroup" style="display:none!important;">
+                <button type="button" class="btn btn-outline-secondary active" id="btnSortDesc">High &rarr; Low</button>
+                <button type="button" class="btn btn-outline-secondary" id="btnSortAsc">Low &rarr; High</button>
+            </div>
+            <div class="btn-group btn-group-sm" role="group">
+                <button type="button" class="btn btn-outline-secondary active" id="btnRevExp">Revenue vs Expenses</button>
+                <button type="button" class="btn btn-outline-secondary" id="btnPL">Profit / Loss</button>
+                <button type="button" class="btn btn-outline-secondary" id="btnMarket">Profit by Market</button>
+            </div>
         </div>
     </div>
     <div class="card-body">
@@ -117,6 +124,7 @@
 
 {% block extra_js %}
 <script type="application/json" id="profitChartData">{{ chart_data_json|safe }}</script>
+<script type="application/json" id="marketChartData">{{ market_chart_data_json|safe }}</script>
 <script>
 document.addEventListener('DOMContentLoaded', function() {
     var dataEl = document.getElementById('profitChartData');
@@ -124,10 +132,13 @@ document.addEventListener('DOMContentLoaded', function() {
     var data = JSON.parse(dataEl.textContent);
     if (!data.labels || data.labels.length === 0) return;
 
+    var mktData = JSON.parse(document.getElementById('marketChartData').textContent);
+
     var textColor = '#666';
     var gridColor = 'rgba(0,0,0,0.1)';
     var greenBg = 'rgba(75, 192, 132, 0.8)';
     var redBg = 'rgba(255, 99, 132, 0.8)';
+    var blueBg = 'rgba(54, 162, 235, 0.8)';
 
     var scaleOpts = {
         x: { ticks: { color: textColor }, grid: { color: gridColor } },
@@ -160,7 +171,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 }]
             },
             options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: scaleOpts }
-        }
+        },
     };
 
     var canvas = document.getElementById('profitChart');
@@ -168,19 +179,64 @@ document.addEventListener('DOMContentLoaded', function() {
 
     var btnRevExp = document.getElementById('btnRevExp');
     var btnPL = document.getElementById('btnPL');
+    var btnMarket = document.getElementById('btnMarket');
     var chartTitle = document.getElementById('chartTitle');
+    var marketSortGroup = document.getElementById('marketSortGroup');
+    var btnSortDesc = document.getElementById('btnSortDesc');
+    var btnSortAsc = document.getElementById('btnSortAsc');
+    var btns = [btnRevExp, btnPL, btnMarket];
+    var keys = ['revexp', 'pl', 'market'];
+    var currentKey = 'revexp';
+    var marketSortAsc = false;
+
+    var marketScaleOpts = {
+        x: { ticks: { color: textColor }, grid: { color: gridColor } },
+        y: { ticks: { color: textColor, callback: function(v) { return '$' + v.toLocaleString(); } }, grid: { color: gridColor } }
+    };
+
+    function buildMarketChartData(ascending) {
+        var pairs = mktData.labels.map(function(l, i) { return { label: l, profit: mktData.profit[i] }; });
+        pairs.sort(function(a, b) { return ascending ? a.profit - b.profit : b.profit - a.profit; });
+        var labels = pairs.map(function(p) { return p.label; });
+        var profits = pairs.map(function(p) { return p.profit; });
+        return {
+            title: 'Profit by Market',
+            type: 'bar',
+            data: {
+                labels: labels,
+                datasets: [{
+                    label: 'Profit',
+                    data: profits,
+                    backgroundColor: profits.map(function(v) { return v >= 0 ? blueBg : redBg; }),
+                    borderRadius: 4
+                }]
+            },
+            options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: marketScaleOpts }
+        };
+    }
 
     function switchChart(key) {
-        var cfg = configs[key];
+        currentKey = key;
+        var cfg = key === 'market' ? buildMarketChartData(marketSortAsc) : configs[key];
         chart.destroy();
         chart = new Chart(canvas.getContext('2d'), { type: cfg.type, data: cfg.data, options: cfg.options });
         chartTitle.textContent = cfg.title;
-        btnRevExp.classList.toggle('active', key === 'revexp');
-        btnPL.classList.toggle('active', key === 'pl');
+        btns.forEach(function(b, i) { b.classList.toggle('active', keys[i] === key); });
+        marketSortGroup.style.setProperty('display', key === 'market' ? 'flex' : 'none', 'important');
+    }
+
+    function applyMarketSort(ascending) {
+        marketSortAsc = ascending;
+        btnSortDesc.classList.toggle('active', !ascending);
+        btnSortAsc.classList.toggle('active', ascending);
+        if (currentKey === 'market') switchChart('market');
     }
 
     btnRevExp.addEventListener('click', function() { switchChart('revexp'); });
     btnPL.addEventListener('click', function() { switchChart('pl'); });
+    btnMarket.addEventListener('click', function() { switchChart('market'); });
+    btnSortDesc.addEventListener('click', function() { applyMarketSort(false); });
+    btnSortAsc.addEventListener('click', function() { applyMarketSort(true); });
 });
 </script>
 {% endblock %}

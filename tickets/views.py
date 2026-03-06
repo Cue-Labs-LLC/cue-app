@@ -3032,6 +3032,27 @@ def profitability_overview(request):
     summary_profit = summary_revenue - summary_expenses
     summary_margin = (summary_profit / summary_revenue * 100) if summary_revenue > 0 else None
 
+    # Market rollup by venue city (sorted high → low for chart)
+    markets: dict = {}
+    for row in event_rows:
+        city = (row['event'].venue.city if row['event'].venue else None) or 'Unknown'
+        m = markets.setdefault(city, {
+            'city': city, 'revenue': Decimal('0.00'),
+            'expenses': Decimal('0.00'), 'profit': Decimal('0.00'),
+            'event_count': 0,
+        })
+        m['revenue'] += row['revenue']
+        m['expenses'] += row['expenses']
+        m['profit'] += row['profit']
+        m['event_count'] += 1
+    market_rows = sorted(markets.values(), key=lambda m: m['profit'], reverse=True)
+
+    # Market chart data — sorted high → low by profit
+    market_chart_data = {
+        'labels': [m['city'] for m in market_rows],
+        'profit': [float(m['profit']) for m in market_rows],
+    }
+
     # Chart data — only events with revenue or expenses, ordered earliest → most recent
     chart_events = [r for r in reversed(event_rows) if r['revenue'] > 0 or r['expenses'] > 0]
     chart_data = {
@@ -3058,6 +3079,7 @@ def profitability_overview(request):
         'summary_profit': summary_profit,
         'summary_margin': summary_margin,
         'chart_data_json': json.dumps(chart_data),
+        'market_chart_data_json': json.dumps(market_chart_data),
         'active_window': active_window,
         'window_start': start_date or '',
         'window_end': end_date or '',
