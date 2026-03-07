@@ -1,0 +1,109 @@
+{% extends 'tickets/base.html' %}
+{% load humanize %}
+
+{% block title %}Link Events — {{ upload.filename }}{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1 class="page-title">Link Events to Survey Responses</h1>
+    <p class="page-subtitle">{{ upload.filename }} &middot; {{ upload.row_count|intcomma }} responses</p>
+</div>
+
+<div class="card">
+    <div class="card-body">
+        <p class="text-muted mb-3">
+            Assign each response to an event. All responses must be linked before you can save.
+        </p>
+        <form method="post" id="link-form">
+            {% csrf_token %}
+            <div class="table-responsive">
+                <table class="table table-hover mb-3">
+                    <thead>
+                        <tr>
+                            <th>Date</th>
+                            <th>Email</th>
+                            <th>City</th>
+                            <th>Comments</th>
+                            <th>NPS</th>
+                            <th>Link to Event</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for resp in responses %}
+                        <tr>
+                            <td class="text-muted" style="font-size: 0.85rem; white-space: nowrap;">
+                                {{ resp.responded_at|date:"M j, Y" }}
+                            </td>
+                            <td style="font-size: 0.85rem;">
+                                {% if resp.email %}{{ resp.email }}{% else %}&mdash;{% endif %}
+                            </td>
+                            <td style="font-size: 0.85rem;">
+                                {% if resp.city %}{{ resp.city }}{% else %}&mdash;{% endif %}
+                            </td>
+                            <td style="font-size: 0.85rem; max-width: 300px;">
+                                {% if resp.text_feedback %}{{ resp.text_feedback }}{% else %}&mdash;{% endif %}
+                            </td>
+                            <td>
+                                {% if resp.nps_score is not None %}
+                                    {% if resp.nps_score >= 9 %}
+                                        <span class="badge bg-success">{{ resp.nps_score }}</span>
+                                    {% elif resp.nps_score >= 7 %}
+                                        <span class="badge bg-warning text-dark">{{ resp.nps_score }}</span>
+                                    {% else %}
+                                        <span class="badge bg-danger">{{ resp.nps_score }}</span>
+                                    {% endif %}
+                                {% else %}
+                                    <span class="text-muted">&mdash;</span>
+                                {% endif %}
+                            </td>
+                            <td style="min-width: 260px;">
+                                <select name="event_{{ resp.id }}" class="form-select form-select-sm">
+                                    <option value="">— no event —</option>
+                                    {% for event in events %}
+                                    <option value="{{ event.id }}"
+                                        {% if resp.event_id and resp.event_id|stringformat:'s' == event.id|stringformat:'s' %}selected{% endif %}>
+                                        {{ event.name }}{% if event.start_date %} ({{ event.start_date|date:"M j, Y" }}){% endif %}
+                                    </option>
+                                    {% endfor %}
+                                </select>
+                            </td>
+                        </tr>
+                        {% empty %}
+                        <tr>
+                            <td colspan="6" class="text-center text-muted py-3">No responses found in this upload.</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+            {% if responses %}
+            <div id="link-error" class="alert alert-warning d-none" role="alert">
+                All responses must be linked to an event before saving.
+            </div>
+            <div class="d-flex justify-content-between">
+                <a href="{% url 'tickets:survey_upload_detail' upload.id %}" class="btn btn-outline-secondary">
+                    Back
+                </a>
+                <button type="submit" class="btn btn-primary">
+                    Save Links &amp; View Analytics
+                </button>
+            </div>
+            {% endif %}
+        </form>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+document.getElementById('link-form').addEventListener('submit', function (e) {
+    var selects = this.querySelectorAll('select');
+    var allLinked = Array.from(selects).every(function (s) { return s.value !== ''; });
+    if (!allLinked) {
+        e.preventDefault();
+        document.getElementById('link-error').classList.remove('d-none');
+        document.getElementById('link-error').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }
+});
+</script>
+{% endblock %}

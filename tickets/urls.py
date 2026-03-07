@@ -69,6 +69,13 @@ urlpatterns = [
     path('analytics/repeat-customers/', views.repeat_customers, name='repeat_customers'),
     path('analytics/cohort-retention/', views.cohort_retention, name='cohort_retention'),
     path('analytics/profitability/', views.profitability_overview, name='profitability_overview'),
+    # External Survey
+    path('analytics/surveys/', views.survey_upload_list, name='survey_upload_list'),
+    path('analytics/surveys/upload/', views.survey_upload_create, name='survey_upload_create'),
+    path('analytics/surveys/analytics/', views.survey_analytics, name='survey_analytics'),
+    path('analytics/surveys/<uuid:upload_id>/', views.survey_upload_detail, name='survey_upload_detail'),
+    path('analytics/surveys/<uuid:upload_id>/delete/', views.survey_upload_delete, name='survey_upload_delete'),
+    path('analytics/surveys/<uuid:upload_id>/link-events/', views.survey_event_link, name='survey_event_link'),
 
     # Surveys (public - no login required)
     path('survey/<uuid:token>/', views.survey_form, name='survey_form'),

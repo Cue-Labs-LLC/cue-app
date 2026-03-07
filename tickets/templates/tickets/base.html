@@ -125,6 +125,11 @@
                             <i class="bi bi-calendar2-range"></i> Cohort Retention
                         </a>
                     </li>
+                    <li>
+                        <a href="{% url 'tickets:survey_upload_list' %}" class="sidebar-link{% if '/analytics/surveys/' in request.path %} active{% endif %}">
+                            <i class="bi bi-clipboard-data"></i> Survey Insights
+                        </a>
+                    </li>
                 </ul>
             </div>
 

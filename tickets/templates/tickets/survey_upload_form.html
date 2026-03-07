@@ -1,0 +1,40 @@
+{% extends 'tickets/base.html' %}
+{% load crispy_forms_tags %}
+
+{% block title %}Upload Survey CSV{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1 class="page-title">Upload Survey CSV</h1>
+    <p class="page-subtitle">Import a Typeform or compatible post-event survey export</p>
+</div>
+
+<div class="row justify-content-center">
+    <div class="col-lg-6">
+        <div class="card">
+            <div class="card-body">
+                <form method="post" enctype="multipart/form-data">
+                    {% csrf_token %}
+                    {% crispy form %}
+                </form>
+            </div>
+        </div>
+
+        <div class="card mt-3">
+            <div class="card-body">
+                <h6 class="mb-2"><i class="bi bi-info-circle"></i> Expected format</h6>
+                <p class="small text-muted mb-1">The CSV should include at least 13 columns with headers that begin with:</p>
+                <ul class="small text-muted mb-0">
+                    <li><strong>Start Date</strong> — response timestamp</li>
+                    <li><strong>Question 1</strong> — overall rating</li>
+                    <li><strong>Question 2</strong> — NPS score (0–10)</li>
+                    <li><strong>Question 3</strong> — city</li>
+                    <li><strong>Question 4–6</strong> — multi-select (enjoyed, genres, improvements)</li>
+                    <li><strong>Question 7–12</strong> — crowd vibe, venue feel, info, how found, feedback, raffle email</li>
+                    <li><strong>Email</strong> — respondent email (optional)</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

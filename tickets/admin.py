@@ -11,6 +11,7 @@ from .models import (
     IncomeSource, EventIncome,
     SurveyQuestion, SurveyInvitation, SurveyResponse, SurveyAnswer,
     ChatMessage, Payout, StripeCheckoutSession,
+    ExternalSurveyUpload, ExternalSurveyResponse,
 )
 
 
@@ -790,3 +791,20 @@ class ChatMessageAdmin(admin.ModelAdmin):
         if profile and profile.organization_id:
             return qs.filter(organization=profile.organization).select_related('organization', 'user')
         return qs.none()
+
+
+@admin.register(ExternalSurveyUpload)
+class ExternalSurveyUploadAdmin(admin.ModelAdmin):
+    list_display = ['filename', 'organization', 'uploaded_at', 'row_count', 'status']
+    list_filter = ['organization', 'status', 'uploaded_at']
+    readonly_fields = ['id', 'uploaded_at', 'created_at', 'updated_at']
+    search_fields = ['filename', 'organization__name']
+
+
+@admin.register(ExternalSurveyResponse)
+class ExternalSurveyResponseAdmin(admin.ModelAdmin):
+    list_display = ['responded_at', 'organization', 'city', 'overall_rating', 'nps_score', 'event']
+    list_filter = ['organization', 'city', 'responded_at']
+    raw_id_fields = ['upload', 'event']
+    readonly_fields = ['id', 'created_at', 'updated_at']
+    search_fields = ['email', 'city', 'text_feedback']

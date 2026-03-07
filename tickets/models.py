@@ -1376,6 +1376,80 @@ class SurveyAnswer(BaseModel):
         return f"Answer to '{self.question.question_text[:40]}' by {self.response.customer}"
 
 
+# ---------------------------------------------------------------------------
+# External Survey (CSV upload from Typeform/similar)
+# ---------------------------------------------------------------------------
+
+class ExternalSurveyUpload(AuditBaseModel):
+    """Tracks a CSV survey export uploaded by an organizer."""
+
+    class Status(models.TextChoices):
+        PROCESSING = 'processing', 'Processing'
+        COMPLETED  = 'completed',  'Completed'
+        FAILED     = 'failed',     'Failed'
+
+    organization = models.ForeignKey(
+        Organization, on_delete=models.CASCADE, related_name='external_survey_uploads',
+    )
+    filename = models.CharField(max_length=255)
+    uploaded_at = models.DateTimeField(auto_now_add=True)
+    row_count = models.IntegerField(default=0)
+    status = models.CharField(
+        max_length=20, choices=Status.choices, default=Status.PROCESSING, db_index=True,
+    )
+    error_log = models.TextField(blank=True, help_text='JSON list of per-row parse errors')
+
+    class Meta:
+        ordering = ['-uploaded_at']
+        indexes = [
+            models.Index(fields=['organization', '-uploaded_at']),
+        ]
+
+    def __str__(self):
+        return f"{self.filename} ({self.organization})"
+
+
+class ExternalSurveyResponse(BaseModel):
+    """A single parsed row from an external survey CSV export."""
+
+    organization = models.ForeignKey(
+        Organization, on_delete=models.CASCADE, related_name='external_survey_responses', db_index=True,
+    )
+    upload = models.ForeignKey(
+        ExternalSurveyUpload, on_delete=models.CASCADE, related_name='responses',
+    )
+    event = models.ForeignKey(
+        Event, on_delete=models.SET_NULL, null=True, blank=True, related_name='external_survey_responses',
+    )
+    responded_at = models.DateTimeField(db_index=True)
+    email = models.EmailField(blank=True, db_index=True)
+    overall_rating = models.CharField(max_length=30, blank=True, db_index=True)
+    nps_score = models.PositiveSmallIntegerField(null=True, blank=True, db_index=True)
+    city = models.CharField(max_length=100, blank=True, db_index=True)
+    enjoyed = models.JSONField(default=list)
+    genres = models.JSONField(default=list)
+    improvements = models.JSONField(default=list)
+    crowd_vibe = models.CharField(max_length=80, blank=True)
+    venue_feel = models.CharField(max_length=80, blank=True)
+    pre_event_info = models.CharField(max_length=80, blank=True)
+    found_out_how = models.CharField(max_length=200, blank=True)
+    text_feedback = models.TextField(blank=True)
+    raffle_email = models.EmailField(blank=True)
+
+    class Meta:
+        ordering = ['-responded_at']
+        indexes = [
+            models.Index(fields=['organization', '-responded_at']),
+            models.Index(fields=['organization', 'city']),
+            models.Index(fields=['organization', 'nps_score']),
+            models.Index(fields=['upload', 'city']),
+            models.Index(fields=['event', '-responded_at']),
+        ]
+
+    def __str__(self):
+        return f"Survey response ({self.city or 'no city'}) at {self.responded_at:%Y-%m-%d}"
+
+
 class Payout(BaseModel):
     """Platform-to-organizer Stripe Transfer record."""
 

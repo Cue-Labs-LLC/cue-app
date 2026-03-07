@@ -31,6 +31,7 @@ from .models import (
     SurveyQuestion, SurveyInvitation, SurveyResponse, SurveyAnswer,
     PipedreamCalendarConnection,
     SaleableTicketType, StripeCheckoutSession, Payout, PromoCode,
+    ExternalSurveyUpload, ExternalSurveyResponse,
     EVENT_STATUS_DRAFT, EVENT_STATUS_LIVE, EVENT_STATUS_ENDED, EVENT_STATUS_CANCELLED,
 )
 from .forms import (
@@ -41,7 +42,7 @@ from .forms import (
     ProfileCompletionForm,
     SaleableTicketTypeForm, PublicTicketPurchaseForm,
     DirectEventForm, DirectTicketTypeFormSet,
-    PromoCodeForm,
+    PromoCodeForm, SurveyUploadForm,
 )
 from .csv_processor import CSVProcessor
 from .services.forecasting.preview import generate_forecast_preview
@@ -4894,3 +4895,171 @@ def initiate_payout(request):
         messages.error(request, f'Payout failed: {getattr(e, "user_message", None) or str(e)}')
 
     return redirect('tickets:finance_overview')
+
+
+# ---------------------------------------------------------------------------
+# External Survey views
+# ---------------------------------------------------------------------------
+
+@login_required
+@require_org
+def survey_upload_list(request):
+    org = get_organization(request)
+    uploads = ExternalSurveyUpload.objects.filter(organization=org).order_by('-uploaded_at')
+    return render(request, 'tickets/survey_upload_list.html', {'uploads': uploads})
+
+
+@login_required
+@require_org
+def survey_upload_create(request):
+    org = get_organization(request)
+    if request.method == 'POST':
+        form = SurveyUploadForm(request.POST, request.FILES)
+        if form.is_valid():
+            csv_file = form.cleaned_data['csv_file']
+            upload = ExternalSurveyUpload.objects.create(
+                organization=org,
+                filename=csv_file.name,
+                status=ExternalSurveyUpload.Status.PROCESSING,
+            )
+            try:
+                from .services.external_survey.parser import ExternalSurveyParser
+                parser = ExternalSurveyParser(organization=org, upload=upload)
+                result = parser.parse(csv_file)
+                upload.row_count = result['rows_inserted']
+                upload.status = ExternalSurveyUpload.Status.COMPLETED
+                upload.save(update_fields=['row_count', 'status', 'error_log'])
+                messages.success(
+                    request,
+                    f'Uploaded {result["rows_inserted"]} responses'
+                    + (f' ({result["rows_skipped"]} skipped).' if result['rows_skipped'] else '.'),
+                )
+                return redirect('tickets:survey_event_link', upload_id=upload.id)
+            except Exception as exc:
+                upload.status = ExternalSurveyUpload.Status.FAILED
+                upload.error_log = json.dumps([str(exc)])
+                upload.save(update_fields=['status', 'error_log'])
+                messages.error(request, f'Parse failed: {exc}')
+    else:
+        form = SurveyUploadForm()
+    return render(request, 'tickets/survey_upload_form.html', {'form': form})
+
+
+@login_required
+@require_org
+def survey_upload_detail(request, upload_id):
+    org = get_organization(request)
+    upload = get_object_or_404(ExternalSurveyUpload.objects.filter(organization=org), id=upload_id)
+    cities = (
+        ExternalSurveyResponse.objects.filter(upload=upload)
+        .values_list('city', flat=True)
+        .distinct()
+        .order_by('city')
+    )
+    return render(request, 'tickets/survey_upload_detail.html', {
+        'upload': upload,
+        'cities': cities,
+    })
+
+
+@login_required
+@require_org
+def survey_upload_delete(request, upload_id):
+    if request.method != 'POST':
+        return redirect('tickets:survey_upload_list')
+    org = get_organization(request)
+    upload = get_object_or_404(ExternalSurveyUpload.objects.filter(organization=org), id=upload_id)
+    upload.hard_delete()
+    messages.success(request, 'Survey upload deleted.')
+    return redirect('tickets:survey_upload_list')
+
+
+@login_required
+@require_org
+def survey_event_link(request, upload_id):
+    from collections import defaultdict
+    org = get_organization(request)
+    upload = get_object_or_404(ExternalSurveyUpload.objects.filter(organization=org), id=upload_id)
+
+    responses = (
+        ExternalSurveyResponse.objects.filter(upload=upload)
+        .select_related('event')
+        .order_by('-responded_at')
+    )
+    events = Event.objects.filter(organization=org).order_by('-start_date')
+
+    if request.method == 'POST':
+        mapping = {}
+        for resp in responses:
+            mapping[str(resp.id)] = request.POST.get(f'event_{resp.id}', '').strip()
+
+        valid_event_ids = set(
+            str(eid) for eid in Event.objects.filter(organization=org).values_list('id', flat=True)
+        )
+        by_event = defaultdict(list)
+        for resp_id, event_id in mapping.items():
+            by_event[event_id].append(resp_id)
+
+        for event_id, resp_ids in by_event.items():
+            if event_id and event_id in valid_event_ids:
+                ExternalSurveyResponse.objects.filter(id__in=resp_ids).update(event_id=event_id)
+            else:
+                ExternalSurveyResponse.objects.filter(id__in=resp_ids).update(event=None)
+
+        messages.success(request, 'Event links saved.')
+        return redirect(f"{reverse_lazy('tickets:survey_analytics')}?upload={upload.id}")
+
+    return render(request, 'tickets/survey_event_link.html', {
+        'upload': upload,
+        'responses': responses,
+        'events': events,
+    })
+
+
+@login_required
+@require_org
+def survey_analytics(request):
+    org = get_organization(request)
+    upload_id = request.GET.get('upload', '').strip() or None
+    city_filter = request.GET.get('city', '').strip() or None
+
+    upload = None
+    if upload_id:
+        try:
+            upload = ExternalSurveyUpload.objects.get(id=upload_id, organization=org)
+        except (ExternalSurveyUpload.DoesNotExist, Exception):
+            upload_id = None
+
+    from .services.external_survey.analytics import ExternalSurveyAnalytics
+    stats = ExternalSurveyAnalytics(organization=org).calculate(
+        upload_id=upload_id, city=city_filter
+    )
+
+    feedback_qs = ExternalSurveyResponse.objects.filter(organization=org)
+    if upload_id:
+        feedback_qs = feedback_qs.filter(upload_id=upload_id)
+    if city_filter:
+        feedback_qs = feedback_qs.filter(city='' if city_filter == '__blank__' else city_filter)
+    feedback_qs = feedback_qs.select_related('event', 'event__venue').order_by('-responded_at')
+    paginator = Paginator(feedback_qs, 25)
+    page_obj = paginator.get_page(request.GET.get('page'))
+
+    uploads = ExternalSurveyUpload.objects.filter(
+        organization=org, status=ExternalSurveyUpload.Status.COMPLETED
+    ).order_by('-uploaded_at')
+
+    cities_qs = ExternalSurveyResponse.objects.filter(organization=org)
+    if upload_id:
+        cities_qs = cities_qs.filter(upload_id=upload_id)
+    distinct_cities = sorted(set(c for c in cities_qs.values_list('city', flat=True).distinct() if c))
+
+    return render(request, 'tickets/survey_analytics.html', {
+        'stats': stats,
+        'upload': upload,
+        'uploads': uploads,
+        'city_filter': city_filter,
+        'distinct_cities': distinct_cities,
+        'page_obj': page_obj,
+        'rating_labels': json.dumps([r['overall_rating'] for r in stats['rating_breakdown']]),
+        'rating_counts': json.dumps([r['count'] for r in stats['rating_breakdown']]),
+    })
