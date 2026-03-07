@@ -214,6 +214,12 @@
                 <p class="small text-muted">
                     <strong>Ticket Types:</strong> Define one or more ticket tiers (e.g., General Admission, VIP). You can add or remove types here.
                 </p>
+                <p class="small text-muted">
+                    <strong>Start Date / Time:</strong> The date and time the event starts (both required).
+                </p>
+                <p class="small text-muted">
+                    <strong>End Date / Time:</strong> The end date and time of the event (both required).
+                </p>
                 {% else %}
                 <p class="small text-muted">
                     <strong>Event Name:</strong> The name of the event (e.g., "Familiar Faces", "Summer Festival").
@@ -222,7 +228,7 @@
                     <strong>Venue:</strong> Select the venue where the event takes place. If the venue doesn't exist yet, <a href="{% url 'tickets:venue_create' %}">create one first</a>.
                 </p>
                 <p class="small text-muted">
-                    <strong>Start Date / Time:</strong> The date (required) and time (optional) the event starts.
+                    <strong>Start Date / Time:</strong> The date and time the event starts (both required).
                 </p>
                 <p class="small text-muted">
                     <strong>End Date / Time:</strong> Optional end date and time. End date is required if end time is provided.

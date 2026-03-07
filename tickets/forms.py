@@ -837,6 +837,8 @@ class EventForm(forms.ModelForm):
         self.fields['description'].required = False
         self.fields['capacity'].required = False
         self.fields['ticket_link'].required = False
+        self.fields['start_time'].required = True
+        self.fields['end_time'].required = True
 
         if ticketing_type_locked:
             self.fields['ticketing_type'].widget = forms.HiddenInput()
@@ -1034,9 +1036,9 @@ class DirectEventForm(forms.ModelForm):
             ).order_by('name', 'city')
         self.fields['summary'].required = False
         self.fields['description'].required = False
-        self.fields['start_time'].required = False
-        self.fields['end_date'].required = False
-        self.fields['end_time'].required = False
+        self.fields['start_time'].required = True
+        self.fields['end_date'].required = True
+        self.fields['end_time'].required = True
         self.fields['flyer'].required = False
         self.helper = FormHelper()
         self.helper.form_tag = False
@@ -1060,9 +1062,6 @@ class DirectEventForm(forms.ModelForm):
         start_time = cleaned_data.get('start_time')
         end_date = cleaned_data.get('end_date')
         end_time = cleaned_data.get('end_time')
-
-        if end_time and not end_date:
-            self.add_error('end_date', 'End date is required when end time is provided.')
 
         if end_date and start_date:
             if end_date < start_date:

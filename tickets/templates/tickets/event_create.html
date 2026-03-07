@@ -191,10 +191,10 @@
                 </p>
                 {% endif %}
                 <p class="small text-muted">
-                    <strong>Start Date / Time:</strong> The date (required) and time (optional) the event starts.
+                    <strong>Start Date / Time:</strong> The date and time the event starts (both required).
                 </p>
                 <p class="small text-muted">
-                    <strong>End Date / Time:</strong> Optional end date and time. End date is required if end time is provided.
+                    {% if ticketing_type == 'direct' %}<strong>End Date / Time:</strong> The end date and time of the event (both required).{% else %}<strong>End Date / Time:</strong> Optional end date and time. End date is required if end time is provided.{% endif %}
                 </p>
                 <p class="small text-muted">
                     <strong>Description:</strong> Optional description or notes about the event.
