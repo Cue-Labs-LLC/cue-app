@@ -3771,6 +3771,8 @@ def public_event_buy(request, event_id):
         raise Http404()
     if eff == EVENT_STATUS_ENDED:
         return render(request, 'tickets/buy/sales_ended.html', {'event': event})
+    if eff == EVENT_STATUS_CANCELLED:
+        return render(request, 'tickets/buy/event_cancelled.html', {'event': event})
 
     ticket_types = SaleableTicketType.objects.filter(
         event=event,
@@ -4566,6 +4568,7 @@ def attendee_dashboard(request):
             deleted_at__isnull=True,
             start_date__gte=today,
             ticketing_type=TICKETING_TYPE_DIRECT,
+            status=EVENT_STATUS_LIVE,
         )
         .select_related('venue')
         .order_by('start_date', 'start_time', 'name')
