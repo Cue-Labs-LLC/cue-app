@@ -5020,39 +5020,20 @@ def survey_event_link(request, upload_id):
 @require_org
 def survey_analytics(request):
     org = get_organization(request)
-    upload_id = request.GET.get('upload', '').strip() or None
     city_filter = request.GET.get('city', '').strip() or None
 
-    upload = None
-    if upload_id:
-        try:
-            upload = ExternalSurveyUpload.objects.get(id=upload_id, organization=org)
-        except (ExternalSurveyUpload.DoesNotExist, Exception):
-            upload_id = None
-
     from .services.external_survey.analytics import ExternalSurveyAnalytics
-    stats = ExternalSurveyAnalytics(organization=org).calculate(
-        upload_id=upload_id, city=city_filter
-    )
+    stats = ExternalSurveyAnalytics(organization=org).calculate(city=city_filter)
 
     feedback_qs = ExternalSurveyResponse.objects.filter(organization=org)
-    if upload_id:
-        feedback_qs = feedback_qs.filter(upload_id=upload_id)
     if city_filter:
         feedback_qs = feedback_qs.filter(event__venue__city=city_filter)
     feedback_qs = feedback_qs.select_related('event', 'event__venue').order_by('-responded_at')
     paginator = Paginator(feedback_qs, 25)
     page_obj = paginator.get_page(request.GET.get('page'))
 
-    uploads = ExternalSurveyUpload.objects.filter(
-        organization=org, status=ExternalSurveyUpload.Status.COMPLETED
-    ).order_by('-uploaded_at')
-
-    cities_qs = ExternalSurveyResponse.objects.filter(organization=org)
-    if upload_id:
-        cities_qs = cities_qs.filter(upload_id=upload_id)
     distinct_cities = sorted(set(
-        c for c in cities_qs
+        c for c in ExternalSurveyResponse.objects.filter(organization=org)
         .filter(event__isnull=False, event__venue__isnull=False)
         .exclude(event__venue__city='')
         .values_list('event__venue__city', flat=True)
@@ -5062,8 +5043,6 @@ def survey_analytics(request):
 
     return render(request, 'tickets/survey_analytics.html', {
         'stats': stats,
-        'upload': upload,
-        'uploads': uploads,
         'city_filter': city_filter,
         'distinct_cities': distinct_cities,
         'page_obj': page_obj,

@@ -11,12 +11,10 @@ class ExternalSurveyAnalytics:
     def __init__(self, organization):
         self.organization = organization
 
-    def calculate(self, upload_id=None, city=None):
+    def calculate(self, city=None):
         from tickets.models import ExternalSurveyResponse
 
         qs = ExternalSurveyResponse.objects.filter(organization=self.organization)
-        if upload_id:
-            qs = qs.filter(upload_id=upload_id)
         if city:
             qs = qs.filter(event__venue__city=city)
 
@@ -53,21 +51,7 @@ class ExternalSurveyAnalytics:
         )
 
         # City NPS breakdown — one query
-        city_stats_raw = (
-            ExternalSurveyResponse.objects.filter(organization=self.organization)
-            .filter(upload_id=upload_id) if upload_id else
-            ExternalSurveyResponse.objects.filter(organization=self.organization)
-        )
-        if city:
-            city_stats_raw = city_stats_raw  # already filtered above; city breakdown still uses unfiltered for full picture
-
-        city_stats_qs = (
-            ExternalSurveyResponse.objects.filter(organization=self.organization)
-        )
-        if upload_id:
-            city_stats_qs = city_stats_qs.filter(upload_id=upload_id)
-
-        city_rows = city_stats_qs.filter(
+        city_rows = ExternalSurveyResponse.objects.filter(organization=self.organization).filter(
             event__isnull=False,
             event__venue__isnull=False,
         ).exclude(
