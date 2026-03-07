@@ -8,6 +8,40 @@
     <h1>Members</h1>
 </div>
 
+<div class="card mb-4">
+    <div class="card-header">
+        <h5 class="mb-0">Role descriptions</h5>
+    </div>
+    <div class="card-body p-0">
+        <table class="table table-sm mb-0">
+            <thead>
+                <tr>
+                    <th style="width: 120px;">Role</th>
+                    <th>Permissions</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td><span class="badge bg-danger">Owner</span></td>
+                    <td>Full control — manage members, roles, events, and org settings</td>
+                </tr>
+                <tr>
+                    <td><span class="badge bg-warning text-dark">Admin</span></td>
+                    <td>Manage events and invite members; cannot change the Owner</td>
+                </tr>
+                <tr>
+                    <td><span class="badge bg-primary">Host</span></td>
+                    <td>Create and manage events; cannot manage members or change roles</td>
+                </tr>
+                <tr>
+                    <td><span class="badge bg-secondary">Doorman</span></td>
+                    <td>Check in attendees at the door; read-only access to event details</td>
+                </tr>
+            </tbody>
+        </table>
+    </div>
+</div>
+
 {% if is_org_admin %}
 <div class="card mb-4">
     <div class="card-header">
@@ -34,7 +68,6 @@
                 <thead>
                     <tr>
                         <th>Email</th>
-                        <th>System Role</th>
                         <th>Org Role</th>
                         <th>Invited by</th>
                         <th>Expires</th>
@@ -45,7 +78,6 @@
                     {% for inv in pending_invites %}
                     <tr>
                         <td>{{ inv.email }}</td>
-                        <td><span class="badge bg-secondary">{{ inv.get_role_display }}</span></td>
                         <td><span class="badge bg-primary">{{ inv.get_org_role_display }}</span></td>
                         <td>{% if inv.invited_by %}{{ inv.invited_by.get_full_name|default:inv.invited_by.email }}{% else %}—{% endif %}</td>
                         <td>{{ inv.expires_at|date:"M d, Y" }}</td>
@@ -83,7 +115,6 @@
                     <tr>
                         <th>Name</th>
                         <th>Email</th>
-                        <th>System Role</th>
                         <th>Org Role</th>
                         <th></th>
                     </tr>
@@ -93,20 +124,6 @@
                     <tr>
                         <td>{{ profile.user.get_full_name|default:"—" }}</td>
                         <td>{{ profile.user.email }}</td>
-                        <td>
-                            {% if is_org_owner and profile.user != request.user %}
-                            <form method="post" action="{% url 'tickets:member_role_update' profile.id %}" class="d-flex align-items-center gap-2">
-                                {% csrf_token %}
-                                <select name="role" class="form-select form-select-sm" style="width: auto;" onchange="this.form.submit()">
-                                    {% for value, label in role_choices %}
-                                    <option value="{{ value }}"{% if profile.role == value %} selected{% endif %}>{{ label }}</option>
-                                    {% endfor %}
-                                </select>
-                            </form>
-                            {% else %}
-                            <span class="badge bg-secondary">{{ profile.get_role_display }}</span>
-                            {% endif %}
-                        </td>
                         <td>
                             {% if is_org_owner and profile.user != request.user %}
                             <form method="post" action="{% url 'tickets:member_role_update' profile.id %}" class="d-flex align-items-center gap-2">

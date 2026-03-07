@@ -636,7 +636,6 @@ def member_list(request):
         'members': members,
         'pending_invites': pending_invites,
         'invite_form': form,
-        'role_choices': UserProfile.Role.choices,
         'org_role_choices': UserProfile.OrgRole.choices,
     }
     return render(request, 'tickets/member_list.html', context)
@@ -657,7 +656,7 @@ def member_invite(request):
         return redirect('tickets:member_list')
 
     email = form.cleaned_data['email'].strip().lower()
-    role = form.cleaned_data['role']
+    role = UserProfile.Role.ORGANIZER
     org_role = form.cleaned_data['org_role']
     if UserProfile.objects.filter(
         organization=org,
