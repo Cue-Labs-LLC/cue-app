@@ -920,6 +920,14 @@ class TicketOrder(AuditBaseModel):
         db_index=True,
         help_text="Order was processed in person (no customer identity)."
     )
+    checked_in_at = models.DateTimeField(null=True, blank=True, db_index=True)
+    checked_in_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name='checkins',
+    )
 
     class Meta:
         ordering = ['-order_date']

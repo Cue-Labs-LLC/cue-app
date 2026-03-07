@@ -50,6 +50,12 @@
             </tr>
         </table>
     </div>
+    {% if qr_code %}
+    <div class="text-center my-3">
+        <img src="data:image/png;base64,{{ qr_code }}" alt="Ticket QR Code" width="200" height="200">
+        <p class="text-muted small mt-1">Present this code at the door</p>
+    </div>
+    {% endif %}
 
     {% elif session and session.status == 'completed' %}
     {# Paid flow — webhook has fired and fulfilled the order #}
@@ -78,6 +84,12 @@
                 <td>${{ session.ticket_order.total_amount|currency }}</td>
             </tr>
         </table>
+    </div>
+    {% endif %}
+    {% if qr_code %}
+    <div class="text-center my-3">
+        <img src="data:image/png;base64,{{ qr_code }}" alt="Ticket QR Code" width="200" height="200">
+        <p class="text-muted small mt-1">Present this code at the door</p>
     </div>
     {% endif %}
     <a href="{% url 'tickets:my_tickets' %}" class="btn btn-primary mt-2">View My Tickets</a>

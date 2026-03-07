@@ -58,8 +58,22 @@ from .feature_flags import direct_ticketing_enabled
 
 from django.core.cache import cache as django_cache
 
+import io
+import base64
 import logging
 logger = logging.getLogger(__name__)
+
+
+def generate_qr_b64(data: str) -> str:
+    """Return a base64-encoded PNG QR code for the given data string."""
+    try:
+        import qrcode
+        img = qrcode.make(data)
+        buf = io.BytesIO()
+        img.save(buf, format='PNG')
+        return base64.b64encode(buf.getvalue()).decode()
+    except ImportError:
+        return ''
 
 
 WINDOW_CHOICES = [
@@ -4225,9 +4239,16 @@ def checkout_success(request):
             messages.success(request, "Your tickets are confirmed!")
             return redirect('tickets:my_tickets')
 
+    qr_code = ''
+    if order_obj and not order_obj.refunded_at:
+        qr_code = generate_qr_b64(order_obj.order_number)
+    elif session_obj and session_obj.ticket_order and not session_obj.ticket_order.refunded_at:
+        qr_code = generate_qr_b64(session_obj.ticket_order.order_number)
+
     return render(request, 'tickets/buy/checkout_success.html', {
         'session': session_obj,
         'order': order_obj,
+        'qr_code': qr_code,
     })
 
 
@@ -4590,6 +4611,23 @@ def my_tickets(request):
     paginator = Paginator(orders, 12)
     page_obj = paginator.get_page(request.GET.get('page'))
     return render(request, 'tickets/my_tickets.html', {'page_obj': page_obj})
+
+
+@login_required
+def my_ticket_detail(request, order_id):
+    """Ticket detail page for a single order — shows QR code and full order info."""
+    order = get_object_or_404(
+        TicketOrder.objects
+        .select_related('event', 'event__venue', 'customer')
+        .prefetch_related('tickets'),
+        id=order_id,
+        customer__email=request.user.email,
+    )
+    qr_code = generate_qr_b64(order.order_number) if not order.refunded_at else ''
+    return render(request, 'tickets/ticket_detail.html', {
+        'order': order,
+        'qr_code': qr_code,
+    })
 
 
 # ---------------------------------------------------------------------------

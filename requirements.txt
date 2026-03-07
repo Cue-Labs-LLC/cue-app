@@ -20,4 +20,6 @@ langchain-openai>=0.2
 langgraph>=0.2
 stripe>=9.0.0
 Pillow>=10.0.0
+djangorestframework>=3.14.0
+qrcode[pil]>=8.0
 twilio>=9.0.0

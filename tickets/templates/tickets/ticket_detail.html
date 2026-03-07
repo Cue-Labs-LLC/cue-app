@@ -1,0 +1,124 @@
+{% extends 'tickets/base.html' %}
+{% load tickets_extras %}
+
+{% block title %}Ticket Detail — {{ order.event.name }}{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div>
+        <a href="{% url 'tickets:my_tickets' %}" class="btn btn-sm btn-outline-secondary mb-2">
+            <i class="bi bi-arrow-left"></i> My Tickets
+        </a>
+        <h1>{{ order.event.name }}</h1>
+        {% if order.event.start_date %}
+        <p class="page-header-subtitle">
+            <i class="bi bi-calendar-event"></i>
+            {{ order.event.start_date|date:"F j, Y" }}
+            {% if order.event.venue %}
+            &middot; {{ order.event.venue.name }}, {{ order.event.venue.city }}
+            {% endif %}
+        </p>
+        {% endif %}
+    </div>
+    {% if order.refunded_at %}
+    <span class="badge bg-danger fs-6 align-self-start mt-1">Refunded</span>
+    {% elif order.checked_in_at %}
+    <span class="badge bg-success fs-6 align-self-start mt-1"><i class="bi bi-check-circle"></i> Checked In</span>
+    {% endif %}
+</div>
+
+<div class="row g-4">
+    {% if qr_code %}
+    <div class="col-12 col-md-5 col-lg-4">
+        <div class="card text-center">
+            <div class="card-body py-4">
+                <img src="data:image/png;base64,{{ qr_code }}" alt="Ticket QR Code" width="240" height="240" class="img-fluid">
+                <p class="text-muted small mt-2 mb-0">Present this code at the door</p>
+            </div>
+        </div>
+    </div>
+    {% endif %}
+
+    <div class="col-12 {% if qr_code %}col-md-7 col-lg-8{% endif %}">
+        <div class="card mb-4">
+            <div class="card-header">
+                <h5 class="mb-0">Order Details</h5>
+            </div>
+            <div class="card-body">
+                <table class="table table-sm mb-0">
+                    <tbody>
+                        <tr>
+                            <th class="text-muted fw-normal" style="width:40%">Order #</th>
+                            <td class="fw-semibold">{{ order.display_order_number }}</td>
+                        </tr>
+                        <tr>
+                            <th class="text-muted fw-normal">Purchase Date</th>
+                            <td>{{ order.order_date|date:"F j, Y" }}</td>
+                        </tr>
+                        <tr>
+                            <th class="text-muted fw-normal">Total</th>
+                            <td>
+                                {% if order.total_amount %}
+                                ${{ order.total_amount|currency }}
+                                {% else %}
+                                Free
+                                {% endif %}
+                            </td>
+                        </tr>
+                        <tr>
+                            <th class="text-muted fw-normal">Check-in</th>
+                            <td>
+                                {% if order.checked_in_at %}
+                                <span class="text-success"><i class="bi bi-check-circle-fill"></i> {{ order.checked_in_at|date:"F j, Y g:i A" }}</span>
+                                {% else %}
+                                <span class="text-muted">Not yet checked in</span>
+                                {% endif %}
+                            </td>
+                        </tr>
+                        {% if order.refunded_at %}
+                        <tr>
+                            <th class="text-muted fw-normal">Refunded</th>
+                            <td class="text-danger">{{ order.refunded_at|date:"F j, Y" }}</td>
+                        </tr>
+                        {% endif %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        {% if order.tickets.all %}
+        <div class="card">
+            <div class="card-header">
+                <h5 class="mb-0">Tickets</h5>
+            </div>
+            <div class="card-body p-0">
+                <div class="table-responsive">
+                    <table class="table table-sm mb-0">
+                        <thead>
+                            <tr>
+                                <th>Type</th>
+                                <th class="text-end">Price</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for ticket in order.tickets.all %}
+                            <tr>
+                                <td>{{ ticket.ticket_type }}</td>
+                                <td class="text-end">
+                                    {% if ticket.price %}
+                                    ${{ ticket.price|currency }}
+                                    {% else %}
+                                    Free
+                                    {% endif %}
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}

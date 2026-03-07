@@ -47,6 +47,7 @@ urlpatterns = [
     # Authenticated attendee path
     path('attendee/dashboard/', views.attendee_dashboard, name='attendee_dashboard'),
     path('my-tickets/', views.my_tickets, name='my_tickets'),
+    path('my-tickets/<uuid:order_id>/', views.my_ticket_detail, name='my_ticket_detail'),
     path('switch-view/', views.switch_view_mode, name='switch_view_mode'),
 
     # Landing (public) and Dashboard

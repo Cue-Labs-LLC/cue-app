@@ -1,14 +1,17 @@
 import uuid
 from datetime import date, time, datetime, timedelta
+from unittest.mock import patch, MagicMock
 from django.test import TestCase, Client
 from django.urls import reverse
 from django.contrib.auth.models import User
 from django.utils import timezone
 from decimal import Decimal
+from rest_framework.authtoken.models import Token
 from .models import (
     UploadedFile, TicketOrder, Customer, Event,
     Venue, CSVFormat, Ticket, TicketTier,
     Organization, UserProfile, OrganizationInvitation, ChatMessage,
+    SaleableTicketType,
 )
 
 
@@ -784,3 +787,187 @@ class MemberInviteTests(TestCase):
         self.assertIn('/login/', location)
         self.assertIn('next=', location)
         self.assertIn(str(inv.token), location)
+
+
+class MobileAPITests(TestCase):
+    """Test cases for the mobile API endpoints."""
+
+    def setUp(self):
+        self.client = Client()
+        self.org = Organization.objects.create(name='API Test Org', slug='api-test-org')
+        self.user = User.objects.create_user(
+            username='apiuser',
+            email='api@example.com',
+            password='apipass123',
+        )
+        UserProfile.objects.create(
+            user=self.user,
+            organization=self.org,
+            org_role=UserProfile.OrgRole.OWNER,
+            role=UserProfile.Role.ORGANIZER,
+        )
+        self.token = Token.objects.create(user=self.user)
+        self.auth_header = {'HTTP_AUTHORIZATION': f'Token {self.token.key}'}
+
+        self.venue = Venue.objects.create(
+            organization=self.org, name='Test Venue', city='Portland'
+        )
+        self.event = Event.objects.create(
+            organization=self.org,
+            name='Test Event',
+            venue=self.venue,
+            start_date=date.today() + timedelta(days=7),
+        )
+        self.customer = Customer.objects.create(
+            organization=self.org,
+            email='buyer@example.com',
+            name='Test Buyer',
+        )
+        self.order = TicketOrder.objects.create(
+            customer=self.customer,
+            event=self.event,
+            order_number='TEST-001',
+            order_date=timezone.now(),
+            total_amount=Decimal('25.00'),
+        )
+        Ticket.objects.create(
+            ticket_order=self.order,
+            ticket_type='General Admission',
+            price=Decimal('25.00'),
+        )
+
+    def test_login_success(self):
+        response = self.client.post(
+            '/api/auth/login/',
+            data={'email': 'api@example.com', 'password': 'apipass123'},
+            content_type='application/json',
+        )
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertIn('token', data)
+        self.assertEqual(data['user_type'], UserProfile.Role.ORGANIZER)
+
+    def test_login_invalid(self):
+        response = self.client.post(
+            '/api/auth/login/',
+            data={'email': 'api@example.com', 'password': 'wrongpass'},
+            content_type='application/json',
+        )
+        self.assertEqual(response.status_code, 400)
+
+    def test_checkin_valid_order(self):
+        response = self.client.post(
+            '/api/organizer/checkin/',
+            data={'order_number': 'TEST-001', 'event_id': str(self.event.pk)},
+            content_type='application/json',
+            **self.auth_header,
+        )
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data['status'], 'checked_in')
+        self.order.refresh_from_db()
+        self.assertIsNotNone(self.order.checked_in_at)
+
+    def test_checkin_already_scanned(self):
+        # First check-in
+        self.client.post(
+            '/api/organizer/checkin/',
+            data={'order_number': 'TEST-001', 'event_id': str(self.event.pk)},
+            content_type='application/json',
+            **self.auth_header,
+        )
+        # Second check-in
+        response = self.client.post(
+            '/api/organizer/checkin/',
+            data={'order_number': 'TEST-001', 'event_id': str(self.event.pk)},
+            content_type='application/json',
+            **self.auth_header,
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()['status'], 'already_checked_in')
+
+    def test_checkin_wrong_org(self):
+        other_org = Organization.objects.create(name='Other Org', slug='other-org')
+        other_customer = Customer.objects.create(
+            organization=other_org, email='other@example.com', name='Other'
+        )
+        other_venue = Venue.objects.create(
+            organization=other_org, name='Other Venue', city='Seattle'
+        )
+        other_event = Event.objects.create(
+            organization=other_org,
+            name='Other Event',
+            venue=other_venue,
+            start_date=date.today() + timedelta(days=3),
+        )
+        other_order = TicketOrder.objects.create(
+            customer=other_customer,
+            event=other_event,
+            order_number='OTHER-001',
+            order_date=timezone.now(),
+            total_amount=Decimal('10.00'),
+        )
+        response = self.client.post(
+            '/api/organizer/checkin/',
+            data={'order_number': 'OTHER-001', 'event_id': str(other_event.pk)},
+            content_type='application/json',
+            **self.auth_header,
+        )
+        self.assertEqual(response.status_code, 404)
+
+    def test_checkin_refunded(self):
+        self.order.refunded_at = timezone.now()
+        self.order.save(update_fields=['refunded_at'])
+        response = self.client.post(
+            '/api/organizer/checkin/',
+            data={'order_number': 'TEST-001', 'event_id': str(self.event.pk)},
+            content_type='application/json',
+            **self.auth_header,
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()['status'], 'refunded')
+
+    @patch('stripe.PaymentIntent.retrieve')
+    def test_sell_creates_order(self, mock_retrieve):
+        mock_pi = MagicMock()
+        mock_pi.status = 'succeeded'
+        mock_retrieve.return_value = mock_pi
+
+        tt = SaleableTicketType.objects.create(
+            event=self.event,
+            name='VIP',
+            price=Decimal('50.00'),
+        )
+
+        response = self.client.post(
+            '/api/organizer/sell/',
+            data={
+                'event_id': str(self.event.pk),
+                'payment_intent_id': 'pi_test_123',
+                'buyer_email': 'newbuyer@example.com',
+                'buyer_name': 'New Buyer',
+                'line_items': [
+                    {
+                        'ticket_type_id': str(tt.pk),
+                        'quantity': 2,
+                        'name': 'VIP',
+                        'price': '50.00',
+                    }
+                ],
+            },
+            content_type='application/json',
+            **self.auth_header,
+        )
+        self.assertEqual(response.status_code, 201)
+        data = response.json()
+        self.assertIn('order_number', data)
+        self.assertEqual(data['ticket_count'], 2)
+        # Verify DB
+        new_order = TicketOrder.objects.get(order_number=data['order_number'])
+        self.assertTrue(new_order.is_in_person)
+        self.assertIsNotNone(new_order.checked_in_at)
+        self.assertEqual(new_order.tickets.count(), 2)
+
+    def test_token_auth_required(self):
+        response = self.client.get('/api/organizer/events/')
+        self.assertEqual(response.status_code, 401)
