@@ -1485,12 +1485,33 @@ def repeat_customers(request):
 
     monthly_chart_data_json = json.dumps(monthly_chart, default=str)
     market_chart_data = json.dumps(market_data, default=str)
+
+    # Per-event chart data for By Event toggle
+    event_chart_data = []
+    for e in chart_events:
+        event_date_str = str(e['event_date'])[:10]
+        try:
+            ed = date.fromisoformat(event_date_str)
+            date_label = ed.strftime('%b %d')
+        except Exception:
+            date_label = event_date_str
+        total = e['total']
+        event_chart_data.append({
+            'label': '{} ({})'.format(e['event_name'], date_label),
+            'new_count': e['new_count'],
+            'returning_count': e['returning_count'],
+            'total': total,
+            'returning_pct': round(e['returning_count'] / total * 100, 1) if total else 0,
+        })
+    event_chart_data_json = json.dumps(event_chart_data, default=str)
+
     # Table: top to bottom most recent → earliest
     table_events = list(reversed(chart_events))
     return render(request, 'tickets/repeat_customers.html', {
         'events': table_events,
         'summary': summary,
         'monthly_chart_data_json': monthly_chart_data_json,
+        'event_chart_data_json': event_chart_data_json,
         'market_chart_data_json': market_chart_data,
         'active_window': active_window,
         'window_start': start_date or '',
@@ -3132,6 +3153,18 @@ def profitability_overview(request):
         'profit': [m['profit'] for m in monthly_profit_chart],
     }
 
+    # Per-event chart data — ordered earliest → most recent
+    event_chart_events = [r for r in reversed(event_rows) if r['revenue'] > 0 or r['expenses'] > 0]
+    event_chart_data = {
+        'labels': [
+            '{} ({})'.format(r['event'].name, r['event'].start_date.strftime('%b %d'))
+            for r in event_chart_events
+        ],
+        'revenue': [float(r['revenue']) for r in event_chart_events],
+        'expenses': [float(r['expenses']) for r in event_chart_events],
+        'profit': [float(r['profit']) for r in event_chart_events],
+    }
+
     context = {
         'event_rows': event_rows,
         'summary_revenue': summary_revenue,
@@ -3139,6 +3172,7 @@ def profitability_overview(request):
         'summary_profit': summary_profit,
         'summary_margin': summary_margin,
         'chart_data_json': json.dumps(chart_data),
+        'event_chart_data_json': json.dumps(event_chart_data),
         'market_chart_data_json': json.dumps(market_chart_data),
         'active_window': active_window,
         'window_start': start_date or '',

@@ -56,6 +56,10 @@
     <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2">
         <h5 class="mb-0" id="chartTitle">Revenue vs Expenses by Month</h5>
         <div class="d-flex align-items-center gap-2">
+            <div class="btn-group btn-group-sm me-1" role="group" id="granularityGroup">
+                <button type="button" class="btn btn-outline-secondary active" id="btnByMonth">By Month</button>
+                <button type="button" class="btn btn-outline-secondary" id="btnByEvent">By Event</button>
+            </div>
             <div class="btn-group btn-group-sm" role="group" id="marketSortGroup" style="display:none!important;">
                 <button type="button" class="btn btn-outline-secondary active" id="btnSortDesc">High &rarr; Low</button>
                 <button type="button" class="btn btn-outline-secondary" id="btnSortAsc">Low &rarr; High</button>
@@ -124,15 +128,19 @@
 
 {% block extra_js %}
 <script type="application/json" id="profitChartData">{{ chart_data_json|safe }}</script>
+<script type="application/json" id="eventChartData">{{ event_chart_data_json|safe }}</script>
 <script type="application/json" id="marketChartData">{{ market_chart_data_json|safe }}</script>
 <script>
 document.addEventListener('DOMContentLoaded', function() {
     var dataEl = document.getElementById('profitChartData');
     if (!dataEl) return;
     var data = JSON.parse(dataEl.textContent);
-    if (!data.labels || data.labels.length === 0) return;
-
+    var eventData = JSON.parse(document.getElementById('eventChartData').textContent);
     var mktData = JSON.parse(document.getElementById('marketChartData').textContent);
+
+    var hasMonthData = data.labels && data.labels.length > 0;
+    var hasEventData = eventData.labels && eventData.labels.length > 0;
+    if (!hasMonthData && !hasEventData) return;
 
     var isDark = document.documentElement.getAttribute('data-theme') === 'dark';
     var textColor = isDark ? '#adb5bd' : '#666';
@@ -147,56 +155,69 @@ document.addEventListener('DOMContentLoaded', function() {
         return months[parseInt(p[1]) - 1] + " '" + p[0].slice(2);
     }
 
-    var monthLabels = data.labels.map(fmtMonth);
-
-    var scaleOpts = {
-        x: { ticks: { color: textColor }, grid: { color: gridColor } },
-        y: { ticks: { color: textColor, callback: function(v) { return '$' + v.toLocaleString(); } }, grid: { color: gridColor } }
-    };
-
-    var configs = {
-        revexp: {
-            title: 'Revenue vs Expenses by Month',
-            type: 'bar',
-            data: {
-                labels: monthLabels,
-                datasets: [
-                    { label: 'Revenue', data: data.revenue, backgroundColor: greenBg, borderRadius: 4 },
-                    { label: 'Expenses', data: data.expenses, backgroundColor: redBg, borderRadius: 4 }
-                ]
-            },
-            options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { labels: { color: textColor } } }, scales: scaleOpts }
-        },
-        pl: {
-            title: 'Profit / Loss by Month',
-            type: 'bar',
-            data: {
-                labels: monthLabels,
-                datasets: [{
-                    label: 'Profit / Loss',
-                    data: data.profit,
-                    backgroundColor: data.profit.map(function(v) { return v >= 0 ? greenBg : redBg; }),
-                    borderRadius: 4
-                }]
-            },
-            options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: scaleOpts }
-        },
-    };
+    var currentKey = 'revexp';
+    var currentGranularity = 'month';
+    var marketSortAsc = false;
 
     var canvas = document.getElementById('profitChart');
-    var chart = new Chart(canvas.getContext('2d'), { type: configs.revexp.type, data: configs.revexp.data, options: configs.revexp.options });
+    var chart = null;
 
     var btnRevExp = document.getElementById('btnRevExp');
     var btnPL = document.getElementById('btnPL');
     var btnMarket = document.getElementById('btnMarket');
     var chartTitle = document.getElementById('chartTitle');
     var marketSortGroup = document.getElementById('marketSortGroup');
+    var granularityGroup = document.getElementById('granularityGroup');
+    var btnByMonth = document.getElementById('btnByMonth');
+    var btnByEvent = document.getElementById('btnByEvent');
     var btnSortDesc = document.getElementById('btnSortDesc');
     var btnSortAsc = document.getElementById('btnSortAsc');
     var btns = [btnRevExp, btnPL, btnMarket];
     var keys = ['revexp', 'pl', 'market'];
-    var currentKey = 'revexp';
-    var marketSortAsc = false;
+
+    function makeScaleOpts(rotateX) {
+        var xOpts = { ticks: { color: textColor }, grid: { color: gridColor } };
+        if (rotateX) { xOpts.ticks.maxRotation = 45; xOpts.ticks.minRotation = 20; }
+        return {
+            x: xOpts,
+            y: { ticks: { color: textColor, callback: function(v) { return '$' + v.toLocaleString(); } }, grid: { color: gridColor } }
+        };
+    }
+
+    function buildConfigs(granularity) {
+        var d = granularity === 'event' ? eventData : data;
+        var labels = granularity === 'event' ? d.labels : d.labels.map(fmtMonth);
+        var suffix = granularity === 'event' ? 'by Event' : 'by Month';
+        var scaleOpts = makeScaleOpts(granularity === 'event');
+        return {
+            revexp: {
+                title: 'Revenue vs Expenses ' + suffix,
+                type: 'bar',
+                data: {
+                    labels: labels,
+                    datasets: [
+                        { label: 'Revenue', data: d.revenue, backgroundColor: greenBg, borderRadius: 4 },
+                        { label: 'Expenses', data: d.expenses, backgroundColor: redBg, borderRadius: 4 }
+                    ]
+                },
+                options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { labels: { color: textColor } } }, scales: scaleOpts }
+            },
+            pl: {
+                title: 'Profit / Loss ' + suffix,
+                type: 'bar',
+                data: {
+                    labels: labels,
+                    datasets: [{
+                        label: 'Profit / Loss',
+                        data: d.profit,
+                        backgroundColor: d.profit.map(function(v) { return v >= 0 ? greenBg : redBg; }),
+                        borderRadius: 4
+                    }]
+                },
+                options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: scaleOpts }
+            }
+        };
+    }
 
     var marketScaleOpts = {
         x: { ticks: { color: textColor }, grid: { color: gridColor } },
@@ -224,26 +245,45 @@ document.addEventListener('DOMContentLoaded', function() {
         };
     }
 
-    function switchChart(key) {
-        currentKey = key;
+    function renderChart(key, granularity) {
+        var configs = buildConfigs(granularity);
         var cfg = key === 'market' ? buildMarketChartData(marketSortAsc) : configs[key];
-        chart.destroy();
+        if (chart) { chart.destroy(); }
         chart = new Chart(canvas.getContext('2d'), { type: cfg.type, data: cfg.data, options: cfg.options });
         chartTitle.textContent = cfg.title;
         btns.forEach(function(b, i) { b.classList.toggle('active', keys[i] === key); });
-        marketSortGroup.style.setProperty('display', key === 'market' ? 'flex' : 'none', 'important');
+        var isMarket = key === 'market';
+        marketSortGroup.style.setProperty('display', isMarket ? 'flex' : 'none', 'important');
+        granularityGroup.style.setProperty('display', isMarket ? 'none' : 'flex', 'important');
+    }
+
+    function switchChart(key) {
+        currentKey = key;
+        renderChart(key, currentGranularity);
+    }
+
+    function switchGranularity(granularity) {
+        currentGranularity = granularity;
+        btnByMonth.classList.toggle('active', granularity === 'month');
+        btnByEvent.classList.toggle('active', granularity === 'event');
+        renderChart(currentKey, granularity);
     }
 
     function applyMarketSort(ascending) {
         marketSortAsc = ascending;
         btnSortDesc.classList.toggle('active', !ascending);
         btnSortAsc.classList.toggle('active', ascending);
-        if (currentKey === 'market') switchChart('market');
+        if (currentKey === 'market') renderChart('market', currentGranularity);
     }
+
+    // Initial render
+    renderChart('revexp', 'month');
 
     btnRevExp.addEventListener('click', function() { switchChart('revexp'); });
     btnPL.addEventListener('click', function() { switchChart('pl'); });
     btnMarket.addEventListener('click', function() { switchChart('market'); });
+    btnByMonth.addEventListener('click', function() { switchGranularity('month'); });
+    btnByEvent.addEventListener('click', function() { switchGranularity('event'); });
     btnSortDesc.addEventListener('click', function() { applyMarketSort(false); });
     btnSortAsc.addEventListener('click', function() { applyMarketSort(true); });
 });

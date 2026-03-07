@@ -34,6 +34,7 @@
 
 {% if events %}
 <script type="application/json" id="monthly-chart-data">{{ monthly_chart_data_json|safe }}</script>
+<script type="application/json" id="event-chart-data">{{ event_chart_data_json|safe }}</script>
 <script type="application/json" id="market-chart-data">{{ market_chart_data_json|safe }}</script>
 
 <div class="row mb-4 g-3">
@@ -74,6 +75,12 @@
     <div class="card-body">
         <div class="tab-content" id="chartTabContent">
             <div class="tab-pane fade show active" id="pane-event" role="tabpanel">
+                <div class="d-flex justify-content-end mb-2">
+                    <div class="btn-group btn-group-sm" role="group" id="stackedGranularity">
+                        <button type="button" class="btn btn-outline-secondary active" id="btnStackMonth">By Month</button>
+                        <button type="button" class="btn btn-outline-secondary" id="btnStackEvent">By Event</button>
+                    </div>
+                </div>
                 <div class="chart-container" style="height: 320px;">
                     <canvas id="stackedBarChart"></canvas>
                 </div>
@@ -181,12 +188,33 @@
         };
     }
 
-    // By Month chart
+    // Stacked bar chart (By Month / By Event toggle)
     var monthEl = document.getElementById('monthly-chart-data');
-    if (monthEl) {
-        var monthData = JSON.parse(monthEl.textContent);
-        if (monthData.length) {
-            new Chart(document.getElementById('stackedBarChart').getContext('2d'),
+    var eventEl = document.getElementById('event-chart-data');
+    var monthData = monthEl ? JSON.parse(monthEl.textContent) : [];
+    var eventData = eventEl ? JSON.parse(eventEl.textContent) : [];
+    var stackedChart = null;
+
+    function renderByGranularity(granularity) {
+        if (stackedChart) { stackedChart.destroy(); stackedChart = null; }
+        var canvasEl = document.getElementById('stackedBarChart');
+        if (!canvasEl) return;
+        if (granularity === 'event') {
+            if (!eventData.length) return;
+            stackedChart = new Chart(canvasEl.getContext('2d'),
+                stackedBarConfig(
+                    eventData.map(function(d) { return d.label; }),
+                    eventData.map(function(d) { return d.new_count; }),
+                    eventData.map(function(d) { return d.returning_count; }),
+                    function(items) {
+                        var idx = items[0].dataIndex;
+                        return 'Total: ' + eventData[idx].total + ' | Returning: ' + eventData[idx].returning_pct + '%';
+                    }
+                )
+            );
+        } else {
+            if (!monthData.length) return;
+            stackedChart = new Chart(canvasEl.getContext('2d'),
                 stackedBarConfig(
                     monthData.map(function(d) { return fmtMonth(d.month); }),
                     monthData.map(function(d) { return d.new_count; }),
@@ -198,6 +226,25 @@
                 )
             );
         }
+    }
+
+    renderByGranularity('month');
+
+    var btnStackMonth = document.getElementById('btnStackMonth');
+    var btnStackEvent = document.getElementById('btnStackEvent');
+    if (btnStackMonth) {
+        btnStackMonth.addEventListener('click', function() {
+            btnStackMonth.classList.add('active');
+            btnStackEvent.classList.remove('active');
+            renderByGranularity('month');
+        });
+    }
+    if (btnStackEvent) {
+        btnStackEvent.addEventListener('click', function() {
+            btnStackEvent.classList.add('active');
+            btnStackMonth.classList.remove('active');
+            renderByGranularity('event');
+        });
     }
 
     // By Market chart — initialize lazily on first tab show to get correct dimensions

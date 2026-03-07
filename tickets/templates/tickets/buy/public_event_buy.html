@@ -90,7 +90,7 @@
         {% endif %}
 
         {% for tt, bound_field in available_pairs %}
-        <div class="ticket-card{% if tt.is_sold_out %} sold-out{% endif %}">
+        <div class="ticket-card{% if tt.is_sold_out %} sold-out{% endif %}" data-price="{{ tt.price }}">
             <div class="ticket-info">
                 <div class="ticket-name">{{ tt.name }}</div>
                 {% if tt.description %}<div class="ticket-desc">{{ tt.description }}</div>{% endif %}
@@ -98,7 +98,7 @@
                     {% if tt.price == 0 %}Free{% else %}${{ tt.price|currency }}{% endif %}
                 </div>
                 {% if tt.price != 0 %}
-                <div style="font-size: 11px; color: #999;">+ service fee at checkout</div>
+                <div class="ticket-fee-preview" style="font-size:11px;color:#999;display:none;"></div>
                 {% endif %}
                 {% if tt.quantity_limit is not None %}
                 {% with rem=tt.remaining_quantity %}
@@ -124,6 +124,7 @@
         {% for tt, bound_field in locked_pairs %}
         <div class="ticket-card" id="locked-card-{{ tt.id.hex }}"
              data-unlock-url="{% url 'tickets:unlock_ticket_type' event.id tt.id %}"
+             data-price="{{ tt.price }}"
              style="display:none;">
             <div class="ticket-info">
                 <div class="ticket-name">{{ tt.name }}</div>
@@ -132,7 +133,7 @@
                     {% if tt.price == 0 %}Free{% else %}${{ tt.price|currency }}{% endif %}
                 </div>
                 {% if tt.price != 0 %}
-                <div style="font-size:11px;color:#999;">+ service fee at checkout</div>
+                <div class="ticket-fee-preview" style="font-size:11px;color:#999;display:none;"></div>
                 {% endif %}
                 {% if tt.quantity_limit is not None %}
                 {% with rem=tt.remaining_quantity %}
@@ -149,6 +150,18 @@
         {% endif %}
         {% endfor %}
 
+        <div id="order-summary" class="ticket-card" style="display:none;flex-direction:column;gap:6px;padding:16px 24px;">
+            <div style="display:flex;justify-content:space-between;font-size:0.9rem;color:#666;">
+                <span>Subtotal</span><span id="os-subtotal">$0.00</span>
+            </div>
+            <div style="display:flex;justify-content:space-between;font-size:0.9rem;color:#666;">
+                <span>Service fee</span><span id="os-fee">$0.00</span>
+            </div>
+            <div style="display:flex;justify-content:space-between;font-size:1rem;font-weight:700;border-top:1.5px solid #1a1a2e;padding-top:8px;margin-top:4px;">
+                <span>Estimated total</span><span id="os-total">$0.00</span>
+            </div>
+        </div>
+
         <div class="mt-4">
             <button type="submit" class="btn btn-primary btn-lg w-100" style="background: #1a1a2e; border-color: #1a1a2e;">
                 Continue to Checkout <i class="bi bi-arrow-right"></i>
@@ -159,6 +172,57 @@
     {% endif %}
 </div>
 <script>
+(function() {
+    var FEE_RATE = 0.08;
+    var FEE_FIXED_CENTS = 99;
+
+    function calcFeeCents(subtotalCents) {
+        return Math.round(subtotalCents * FEE_RATE) + FEE_FIXED_CENTS;
+    }
+
+    function fmt(cents) {
+        return '$' + (cents / 100).toFixed(2);
+    }
+
+    // Per-ticket fee injection on page load
+    document.querySelectorAll('.ticket-card[data-price]').forEach(function(card) {
+        var price = parseFloat(card.dataset.price) || 0;
+        if (price <= 0) return;
+        var subtotalCents = Math.round(price * 100);
+        var feeCents = calcFeeCents(subtotalCents);
+        var totalCents = subtotalCents + feeCents;
+        var el = card.querySelector('.ticket-fee-preview');
+        if (el) {
+            el.innerHTML = '+ ' + fmt(feeCents) + ' service fee &nbsp;&rarr;&nbsp; <strong>' + fmt(totalCents) + ' total</strong>';
+            el.style.display = '';
+        }
+    });
+
+    // Live order summary
+    function updateOrderSummary() {
+        var subtotalCents = 0;
+        document.querySelectorAll('.ticket-card[data-price]').forEach(function(card) {
+            var price = parseFloat(card.dataset.price) || 0;
+            var qtyInput = card.querySelector('input[type=number]');
+            var qty = qtyInput ? (parseInt(qtyInput.value, 10) || 0) : 0;
+            subtotalCents += Math.round(price * 100) * qty;
+        });
+        var summary = document.getElementById('order-summary');
+        if (!summary) return;
+        if (subtotalCents <= 0) { summary.style.display = 'none'; return; }
+        var feeCents = calcFeeCents(subtotalCents);
+        document.getElementById('os-subtotal').textContent = fmt(subtotalCents);
+        document.getElementById('os-fee').textContent = fmt(feeCents);
+        document.getElementById('os-total').textContent = fmt(subtotalCents + feeCents);
+        summary.style.display = '';
+    }
+
+    document.querySelectorAll('input[type=number]').forEach(function(inp) {
+        inp.addEventListener('input', updateOrderSummary);
+    });
+    updateOrderSummary();
+})();
+
 (function() {
     var lockedCards = Array.from(document.querySelectorAll('[id^="locked-card-"]'));
     if (!lockedCards.length) return;
