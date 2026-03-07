@@ -129,7 +129,9 @@
             <div class="card-header"><strong>Overall Rating Breakdown</strong></div>
             <div class="card-body">
                 {% if stats.rating_breakdown %}
-                <canvas id="ratingBar" style="max-height: 260px;"></canvas>
+                <div style="height: 260px; position: relative;">
+                    <canvas id="ratingBar"></canvas>
+                </div>
                 {% else %}
                 <div class="empty-state py-3">
                     <p>No rating data</p>
@@ -210,7 +212,7 @@
                     {% for resp in page_obj %}
                     <tr>
                         <td class="text-nowrap">{{ resp.responded_at|date:"M j, Y" }}</td>
-                        <td>{{ resp.city|default:"—" }}</td>
+                        <td>{{ resp.event.venue.city|default:"—" }}</td>
                         <td>{{ resp.overall_rating|default:"—" }}</td>
                         <td>
                             {% if resp.nps_score is not None %}
@@ -253,8 +255,8 @@
     {% endif %}
 </div>
 
-<script type="application/json" id="ratingLabels">{{ rating_labels }}</script>
-<script type="application/json" id="ratingCounts">{{ rating_counts }}</script>
+{{ rating_labels|json_script:"ratingLabels" }}
+{{ rating_counts|json_script:"ratingCounts" }}
 {% endblock %}
 
 {% block extra_js %}

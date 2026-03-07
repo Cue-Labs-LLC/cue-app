@@ -5067,6 +5067,6 @@ def survey_analytics(request):
         'city_filter': city_filter,
         'distinct_cities': distinct_cities,
         'page_obj': page_obj,
-        'rating_labels': json.dumps([r['overall_rating'] for r in stats['rating_breakdown']]),
-        'rating_counts': json.dumps([r['count'] for r in stats['rating_breakdown']]),
+        'rating_labels': [r['overall_rating'] for r in stats['rating_breakdown']],
+        'rating_counts': [r['count'] for r in stats['rating_breakdown']],
     })
