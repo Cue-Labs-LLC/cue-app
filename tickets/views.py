@@ -5039,7 +5039,7 @@ def survey_analytics(request):
     if upload_id:
         feedback_qs = feedback_qs.filter(upload_id=upload_id)
     if city_filter:
-        feedback_qs = feedback_qs.filter(city='' if city_filter == '__blank__' else city_filter)
+        feedback_qs = feedback_qs.filter(event__venue__city=city_filter)
     feedback_qs = feedback_qs.select_related('event', 'event__venue').order_by('-responded_at')
     paginator = Paginator(feedback_qs, 25)
     page_obj = paginator.get_page(request.GET.get('page'))
@@ -5051,7 +5051,14 @@ def survey_analytics(request):
     cities_qs = ExternalSurveyResponse.objects.filter(organization=org)
     if upload_id:
         cities_qs = cities_qs.filter(upload_id=upload_id)
-    distinct_cities = sorted(set(c for c in cities_qs.values_list('city', flat=True).distinct() if c))
+    distinct_cities = sorted(set(
+        c for c in cities_qs
+        .filter(event__isnull=False, event__venue__isnull=False)
+        .exclude(event__venue__city='')
+        .values_list('event__venue__city', flat=True)
+        .distinct()
+        if c
+    ))
 
     return render(request, 'tickets/survey_analytics.html', {
         'stats': stats,

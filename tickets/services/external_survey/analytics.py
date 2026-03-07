@@ -18,10 +18,7 @@ class ExternalSurveyAnalytics:
         if upload_id:
             qs = qs.filter(upload_id=upload_id)
         if city:
-            if city == '__blank__':
-                qs = qs.filter(city='')
-            else:
-                qs = qs.filter(city=city)
+            qs = qs.filter(event__venue__city=city)
 
         total = qs.count()
 
@@ -70,7 +67,12 @@ class ExternalSurveyAnalytics:
         if upload_id:
             city_stats_qs = city_stats_qs.filter(upload_id=upload_id)
 
-        city_rows = city_stats_qs.values('city').annotate(
+        city_rows = city_stats_qs.filter(
+            event__isnull=False,
+            event__venue__isnull=False,
+        ).exclude(
+            event__venue__city=''
+        ).values('event__venue__city').annotate(
             total=Count('id'),
             nps_n=Count('id', filter=Q(nps_score__isnull=False)),
             promoters=Count('id', filter=Q(nps_score__gte=9)),
@@ -80,13 +82,14 @@ class ExternalSurveyAnalytics:
 
         city_breakdown = []
         for row in city_rows:
+            city_val = row['event__venue__city']
             n = row['nps_n']
             score = None
             if n > 0:
                 score = round((row['promoters'] - row['detractors']) / n * 100)
             city_breakdown.append({
-                'city': row['city'] or '(no city)',
-                'city_raw': row['city'],
+                'city': city_val,
+                'city_raw': city_val,
                 'total': row['total'],
                 'nps_n': n,
                 'nps_score': score,
