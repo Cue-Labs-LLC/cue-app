@@ -12,10 +12,6 @@
     <h1>Repeat Customers</h1>
 </div>
 
-{% if events %}
-<script type="application/json" id="chart-data">{{ chart_data_json|safe }}</script>
-<script type="application/json" id="market-chart-data">{{ market_chart_data_json|safe }}</script>
-
 <div class="d-flex flex-wrap align-items-center gap-2 mb-3">
   <div class="btn-group btn-group-sm" role="group" aria-label="Time window">
     {% for label, key in window_choices %}
@@ -35,6 +31,10 @@
   </form>
   {% endif %}
 </div>
+
+{% if events %}
+<script type="application/json" id="monthly-chart-data">{{ monthly_chart_data_json|safe }}</script>
+<script type="application/json" id="market-chart-data">{{ market_chart_data_json|safe }}</script>
 
 <div class="row mb-4 g-3">
     <div class="col-md-4">
@@ -64,7 +64,7 @@
         <h5 class="mb-0">New vs Returning Customers</h5>
         <ul class="nav nav-tabs card-header-tabs" id="chartTabs" role="tablist">
             <li class="nav-item" role="presentation">
-                <button class="nav-link active" id="tab-event" data-bs-toggle="tab" data-bs-target="#pane-event" type="button" role="tab">By Event</button>
+                <button class="nav-link active" id="tab-event" data-bs-toggle="tab" data-bs-target="#pane-event" type="button" role="tab">By Month</button>
             </li>
             <li class="nav-item" role="presentation">
                 <button class="nav-link" id="tab-market" data-bs-toggle="tab" data-bs-target="#pane-market" type="button" role="tab">By Market</button>
@@ -126,10 +126,10 @@
     var gridColor = isDark ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.1)';
     var textColor = isDark ? '#adb5bd' : '#666';
 
-    function fmtDate(iso) {
-        var m = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-        var p = iso.split('-');
-        return m[parseInt(p[1]) - 1] + ' ' + parseInt(p[2]) + ', ' + p[0];
+    function fmtMonth(yyyymm) {
+        var months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+        var p = yyyymm.split('-');
+        return months[parseInt(p[1]) - 1] + " '" + p[0].slice(2);
     }
 
     function stackedBarConfig(labels, newData, retData, tooltipFn) {
@@ -181,19 +181,19 @@
         };
     }
 
-    // By Event chart
-    var eventEl = document.getElementById('chart-data');
-    if (eventEl) {
-        var eventData = JSON.parse(eventEl.textContent);
-        if (eventData.length) {
+    // By Month chart
+    var monthEl = document.getElementById('monthly-chart-data');
+    if (monthEl) {
+        var monthData = JSON.parse(monthEl.textContent);
+        if (monthData.length) {
             new Chart(document.getElementById('stackedBarChart').getContext('2d'),
                 stackedBarConfig(
-                    eventData.map(function(d) { return [d.event_name, fmtDate(d.event_date)]; }),
-                    eventData.map(function(d) { return d.new_count; }),
-                    eventData.map(function(d) { return d.returning_count; }),
+                    monthData.map(function(d) { return fmtMonth(d.month); }),
+                    monthData.map(function(d) { return d.new_count; }),
+                    monthData.map(function(d) { return d.returning_count; }),
                     function(items) {
                         var idx = items[0].dataIndex;
-                        return 'Total: ' + eventData[idx].total + ' | Returning: ' + eventData[idx].returning_pct + '%';
+                        return 'Total: ' + monthData[idx].total + ' | Returning: ' + monthData[idx].returning_pct + '%';
                     }
                 )
             );

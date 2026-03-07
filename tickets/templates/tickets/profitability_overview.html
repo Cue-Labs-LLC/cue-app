@@ -54,7 +54,7 @@
 {% if event_rows %}
 <div class="card mb-4">
     <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2">
-        <h5 class="mb-0" id="chartTitle">Revenue vs Expenses by Event</h5>
+        <h5 class="mb-0" id="chartTitle">Revenue vs Expenses by Month</h5>
         <div class="d-flex align-items-center gap-2">
             <div class="btn-group btn-group-sm" role="group" id="marketSortGroup" style="display:none!important;">
                 <button type="button" class="btn btn-outline-secondary active" id="btnSortDesc">High &rarr; Low</button>
@@ -134,11 +134,20 @@ document.addEventListener('DOMContentLoaded', function() {
 
     var mktData = JSON.parse(document.getElementById('marketChartData').textContent);
 
-    var textColor = '#666';
-    var gridColor = 'rgba(0,0,0,0.1)';
+    var isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+    var textColor = isDark ? '#adb5bd' : '#666';
+    var gridColor = isDark ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.1)';
     var greenBg = 'rgba(75, 192, 132, 0.8)';
     var redBg = 'rgba(255, 99, 132, 0.8)';
     var blueBg = 'rgba(54, 162, 235, 0.8)';
+
+    function fmtMonth(yyyymm) {
+        var months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+        var p = yyyymm.split('-');
+        return months[parseInt(p[1]) - 1] + " '" + p[0].slice(2);
+    }
+
+    var monthLabels = data.labels.map(fmtMonth);
 
     var scaleOpts = {
         x: { ticks: { color: textColor }, grid: { color: gridColor } },
@@ -147,10 +156,10 @@ document.addEventListener('DOMContentLoaded', function() {
 
     var configs = {
         revexp: {
-            title: 'Revenue vs Expenses by Event',
+            title: 'Revenue vs Expenses by Month',
             type: 'bar',
             data: {
-                labels: data.labels,
+                labels: monthLabels,
                 datasets: [
                     { label: 'Revenue', data: data.revenue, backgroundColor: greenBg, borderRadius: 4 },
                     { label: 'Expenses', data: data.expenses, backgroundColor: redBg, borderRadius: 4 }
@@ -159,10 +168,10 @@ document.addEventListener('DOMContentLoaded', function() {
             options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { labels: { color: textColor } } }, scales: scaleOpts }
         },
         pl: {
-            title: 'Profit / Loss by Event',
+            title: 'Profit / Loss by Month',
             type: 'bar',
             data: {
-                labels: data.labels,
+                labels: monthLabels,
                 datasets: [{
                     label: 'Profit / Loss',
                     data: data.profit,

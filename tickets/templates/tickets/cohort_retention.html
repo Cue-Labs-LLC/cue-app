@@ -31,9 +31,6 @@
     <h1>Cohort Retention</h1>
 </div>
 
-{% if cohorts %}
-<script type="application/json" id="chart-data">{{ chart_data_json|safe }}</script>
-
 <div class="d-flex flex-wrap align-items-center gap-2 mb-3">
   <div class="btn-group btn-group-sm" role="group" aria-label="Time window">
     {% for label, key in window_choices %}
@@ -53,6 +50,9 @@
   </form>
   {% endif %}
 </div>
+
+{% if cohorts %}
+<script type="application/json" id="chart-data">{{ chart_data_json|safe }}</script>
 
 <div class="row mb-4 g-3">
     <div class="col-md-4">

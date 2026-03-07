@@ -62,22 +62,54 @@ import logging
 logger = logging.getLogger(__name__)
 
 
-WINDOW_CHOICES = [('1M', '1m'), ('3M', '3m'), ('6M', '6m'), ('1Y', '1y'), ('All', 'all'), ('Custom', 'custom')]
+WINDOW_CHOICES = [
+    ('This Month',   'this_month'),
+    ('Last Month',   'last_month'),
+    ('This Quarter', 'this_quarter'),
+    ('Last Quarter', 'last_quarter'),
+    ('This Year',    'this_year'),
+    ('Last Year',    'last_year'),
+    ('All',          'all'),
+    ('Custom',       'custom'),
+]
 
-_WINDOW_DELTAS = {
-    '1m': timedelta(days=30),
-    '3m': timedelta(days=90),
-    '6m': timedelta(days=180),
-    '1y': timedelta(days=365),
-}
+
+def _quarter_bounds(year, q):
+    """Return (first_day, last_day) for the given quarter (1–4)."""
+    start_month = (q - 1) * 3 + 1
+    start = date(year, start_month, 1)
+    end_month = start_month + 2
+    if end_month == 12:
+        end = date(year, 12, 31)
+    else:
+        end = date(year, end_month + 1, 1) - timedelta(days=1)
+    return start, end
 
 
 def _parse_window(request):
     """Return (start_date, end_date, active_window) from ?window= query params."""
-    window = request.GET.get('window', '1y')
     today = date.today()
-    if window in _WINDOW_DELTAS:
-        return today - _WINDOW_DELTAS[window], today, window
+    window = request.GET.get('window', 'this_year')
+    if window == 'this_month':
+        return date(today.year, today.month, 1), today, window
+    if window == 'last_month':
+        first_this = date(today.year, today.month, 1)
+        last_prev = first_this - timedelta(days=1)
+        return date(last_prev.year, last_prev.month, 1), last_prev, window
+    if window == 'this_year':
+        return date(today.year, 1, 1), today, window
+    if window == 'last_year':
+        return date(today.year - 1, 1, 1), date(today.year - 1, 12, 31), window
+    if window == 'this_quarter':
+        q = (today.month - 1) // 3 + 1
+        start, _ = _quarter_bounds(today.year, q)
+        return start, today, window
+    if window == 'last_quarter':
+        q = (today.month - 1) // 3 + 1
+        prev_q = q - 1 if q > 1 else 4
+        prev_year = today.year if q > 1 else today.year - 1
+        start, end = _quarter_bounds(prev_year, prev_q)
+        return start, end, window
     if window == 'custom':
         try:
             start = date.fromisoformat(request.GET.get('start', ''))
@@ -1439,14 +1471,26 @@ def repeat_customers(request):
         m['returning_pct'] = round(m['returning_count'] / m['total'] * 100, 1) if m['total'] else 0
     market_data = sorted(markets.values(), key=lambda x: x['total'], reverse=True)
 
-    chart_data = json.dumps(chart_events, default=str)
+    # Monthly aggregation for chart (bucket events by calendar month)
+    month_buckets = {}
+    for e in chart_events:
+        key = str(e['event_date'])[:7]   # "YYYY-MM"
+        m = month_buckets.setdefault(key, {'month': key, 'new_count': 0, 'returning_count': 0, 'total': 0})
+        m['new_count'] += e['new_count']
+        m['returning_count'] += e['returning_count']
+        m['total'] += e['total']
+    for m in month_buckets.values():
+        m['returning_pct'] = round(m['returning_count'] / m['total'] * 100, 1) if m['total'] else 0
+    monthly_chart = sorted(month_buckets.values(), key=lambda x: x['month'])
+
+    monthly_chart_data_json = json.dumps(monthly_chart, default=str)
     market_chart_data = json.dumps(market_data, default=str)
     # Table: top to bottom most recent → earliest
     table_events = list(reversed(chart_events))
     return render(request, 'tickets/repeat_customers.html', {
         'events': table_events,
         'summary': summary,
-        'chart_data_json': chart_data,
+        'monthly_chart_data_json': monthly_chart_data_json,
         'market_chart_data_json': market_chart_data,
         'active_window': active_window,
         'window_start': start_date or '',
@@ -3071,23 +3115,21 @@ def profitability_overview(request):
         'profit': [float(m['profit']) for m in market_rows],
     }
 
-    # Chart data — only events with revenue or expenses, ordered earliest → most recent
+    # Monthly aggregation for chart — bucket events by calendar month, ordered earliest → most recent
     chart_events = [r for r in reversed(event_rows) if r['revenue'] > 0 or r['expenses'] > 0]
+    month_buckets_profit = {}
+    for r in chart_events:
+        key = r['event'].start_date.strftime('%Y-%m')
+        m = month_buckets_profit.setdefault(key, {'month': key, 'revenue': 0.0, 'expenses': 0.0, 'profit': 0.0})
+        m['revenue'] += float(r['revenue'])
+        m['expenses'] += float(r['expenses'])
+        m['profit'] += float(r['profit'])
+    monthly_profit_chart = sorted(month_buckets_profit.values(), key=lambda x: x['month'])
     chart_data = {
-        'labels': [
-            [
-                r['event'].name,
-                '{} {}, {}'.format(
-                    r['event'].start_date.strftime('%b'),
-                    r['event'].start_date.day,
-                    r['event'].start_date.year,
-                )
-            ]
-            for r in chart_events
-        ],
-        'revenue': [float(r['revenue']) for r in chart_events],
-        'expenses': [float(r['expenses']) for r in chart_events],
-        'profit': [float(r['profit']) for r in chart_events],
+        'labels': [m['month'] for m in monthly_profit_chart],
+        'revenue': [m['revenue'] for m in monthly_profit_chart],
+        'expenses': [m['expenses'] for m in monthly_profit_chart],
+        'profit': [m['profit'] for m in monthly_profit_chart],
     }
 
     context = {
