@@ -166,11 +166,6 @@
                             <i class="bi bi-ticket-perforated"></i> My Tickets
                         </a>
                     </li>
-                    <li>
-                        <a href="{% url 'tickets:attendee_dashboard' %}" class="sidebar-link{% if '/attendee/dashboard/' in request.path %} active{% endif %}">
-                            <i class="bi bi-calendar-event"></i> Browse Events
-                        </a>
-                    </li>
                     {% if user_role == 'attendee' %}
                     <li>
                         <a href="{% url 'tickets:become_organizer' %}" class="sidebar-link{% if '/become-organizer/' in request.path %} active{% endif %}">
@@ -211,9 +206,9 @@
                 <div class="sidebar-divider" style="margin:4px 0 8px;"></div>
                 <div class="sidebar-user" id="sidebarUserToggle">
                     <div class="sidebar-user-avatar">
-                        {{ user.get_username|make_list|first|upper }}
+                        {{ user.first_name|make_list|first|upper|default:user.get_username|make_list|first|upper }}
                     </div>
-                    <span>{{ user.get_username }}</span>
+                    <span>{{ user.get_full_name|default:user.get_username }}</span>
                     <i class="bi bi-chevron-expand ms-auto" style="font-size: 12px;"></i>
                 </div>
                 <div class="sidebar-user-menu" id="sidebarUserMenu" style="display: none;">
@@ -223,12 +218,14 @@
                             <i class="bi bi-box-arrow-right"></i> Sign out
                         </button>
                     </form>
+                    {% if not is_attendee and request.user.email == 'owen@familiarfaces.la' %}
                     <form method="post" action="{% url 'tickets:regenerate_event_doc' %}" class="d-inline">
                         {% csrf_token %}
                         <button type="submit" class="sidebar-link" style="width: 100%; border: none; background: none; cursor: pointer; text-align: left;">
                             <i class="bi bi-file-earmark-text"></i> Regen Event Doc
                         </button>
                     </form>
+                    {% endif %}
                 </div>
             </div>
         </aside>
