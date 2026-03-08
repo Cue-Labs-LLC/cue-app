@@ -147,25 +147,22 @@
                             <i class="bi bi-cash-stack"></i> Income Sources
                         </a>
                     </li>
+                    {% if request.user.is_superuser %}
                     <li>
                         <a href="{% url 'tickets:settings_google_calendar' %}" class="sidebar-link{% if '/settings/google-calendar/' in request.path %} active{% endif %}">
                             <i class="bi bi-calendar-check"></i> Google Calendar
                         </a>
                     </li>
                     {% endif %}
+                    {% endif %}
                 </ul>
             </div>
             {% endif %}
 
-            {% if is_attendee %}
+            {% if is_attendee and not is_organizer %}
             <div class="sidebar-section">
                 <div class="sidebar-section-label">My Account</div>
                 <ul class="sidebar-nav">
-                    <li>
-                        <a href="{% url 'tickets:my_tickets' %}" class="sidebar-link{% if '/my-tickets/' in request.path %} active{% endif %}">
-                            <i class="bi bi-ticket-perforated"></i> My Tickets
-                        </a>
-                    </li>
                     {% if user_role == 'attendee' %}
                     <li>
                         <a href="{% url 'tickets:become_organizer' %}" class="sidebar-link{% if '/become-organizer/' in request.path %} active{% endif %}">
@@ -178,7 +175,7 @@
             {% endif %}
 
             <div class="sidebar-footer">
-                {% if is_organizer %}
+                {% if request.user.is_superuser %}
                 <a href="{% url 'admin:index' %}" class="sidebar-link" target="_blank" style="margin-bottom: 2px;">
                     <i class="bi bi-shield-lock"></i> Admin Panel
                 </a>
@@ -218,7 +215,7 @@
                             <i class="bi bi-box-arrow-right"></i> Sign out
                         </button>
                     </form>
-                    {% if not is_attendee and request.user.email == 'owen@familiarfaces.la' %}
+                    {% if request.user.is_superuser %}
                     <form method="post" action="{% url 'tickets:regenerate_event_doc' %}" class="d-inline">
                         {% csrf_token %}
                         <button type="submit" class="sidebar-link" style="width: 100%; border: none; background: none; cursor: pointer; text-align: left;">
