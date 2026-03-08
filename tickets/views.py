@@ -4232,10 +4232,12 @@ def checkout_success(request):
     elif session_obj and session_obj.ticket_order and not session_obj.ticket_order.refunded_at:
         qr_code = generate_qr_b64(session_obj.ticket_order.order_number)
 
+    _event_for_pixel = order_obj.event if order_obj else (session_obj.event if session_obj else None)
     return render(request, 'tickets/buy/checkout_success.html', {
         'session': session_obj,
         'order': order_obj,
         'qr_code': qr_code,
+        'pixel_id': _event_for_pixel.facebook_pixel_id if _event_for_pixel else '',
     })
 
 

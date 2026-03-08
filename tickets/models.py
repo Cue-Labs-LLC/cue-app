@@ -670,6 +670,12 @@ class Event(AuditBaseModel):
         null=True,
         help_text="Google Calendar event ID after sync (create-only).",
     )
+    facebook_pixel_id = models.CharField(
+        max_length=20,
+        blank=True,
+        default='',
+        help_text="Facebook Pixel ID for conversion tracking on the public ticketing flow.",
+    )
     public_buy_page_views = models.PositiveIntegerField(
         default=0,
         help_text="Number of times the public ticket page (/buy/<id>/) was loaded.",

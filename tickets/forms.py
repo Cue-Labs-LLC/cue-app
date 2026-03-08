@@ -1010,7 +1010,7 @@ class DirectEventForm(forms.ModelForm):
 
     class Meta:
         model = Event
-        fields = ['name', 'summary', 'start_date', 'start_time', 'end_date', 'end_time', 'description', 'flyer']
+        fields = ['name', 'summary', 'start_date', 'start_time', 'end_date', 'end_time', 'description', 'flyer', 'facebook_pixel_id']
         widgets = {
             'name': forms.TextInput(attrs={'class': 'form-control', 'placeholder': 'e.g., Familiar Faces'}),
             'summary': forms.TextInput(attrs={'class': 'form-control', 'placeholder': 'Short tagline shown on the ticket page (optional)'}),
@@ -1020,6 +1020,7 @@ class DirectEventForm(forms.ModelForm):
             'end_time': forms.TimeInput(attrs={'type': 'time', 'class': 'form-control'}),
             'description': forms.Textarea(attrs={'rows': 3, 'class': 'form-control', 'placeholder': 'Optional event description'}),
             'flyer': forms.ClearableFileInput(attrs={'class': 'form-control'}),
+            'facebook_pixel_id': forms.TextInput(attrs={'class': 'form-control', 'placeholder': 'e.g., 1234567890123456'}),
         }
 
     def __init__(self, *args, organization=None, **kwargs):
@@ -1034,6 +1035,7 @@ class DirectEventForm(forms.ModelForm):
         self.fields['end_date'].required = True
         self.fields['end_time'].required = True
         self.fields['flyer'].required = False
+        self.fields['facebook_pixel_id'].required = False
         self.helper = FormHelper()
         self.helper.form_tag = False
         self.helper.layout = Layout(
@@ -1048,7 +1050,15 @@ class DirectEventForm(forms.ModelForm):
             Field('description'),
             Field('venue'),
             Field('flyer'),
+            Field('facebook_pixel_id'),
         )
+
+    def clean_facebook_pixel_id(self):
+        import re
+        pixel_id = self.cleaned_data.get('facebook_pixel_id', '').strip()
+        if pixel_id and not re.fullmatch(r'\d{10,20}', pixel_id):
+            raise forms.ValidationError('Facebook Pixel ID must be 10–20 digits.')
+        return pixel_id
 
     def clean(self):
         cleaned_data = super().clean()

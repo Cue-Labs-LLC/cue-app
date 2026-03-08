@@ -21,6 +21,25 @@
         .detail-card td { color: #1a1a2e; font-weight: 600; padding-bottom: 8px; }
         .processing-notice { background: #fff3cd; border: 1px solid #ffc107; border-radius: 6px; padding: 14px 18px; font-size: 0.9rem; margin-top: 20px; color: #664d03; }
     </style>
+    {% if pixel_id %}
+    <!-- Facebook Pixel Code -->
+    <script>
+    !function(f,b,e,v,n,t,s)
+    {if(f.fbq)return;n=f.fbq=function(){n.callMethod?
+    n.callMethod.apply(n,arguments):n.queue.push(arguments)};
+    if(!f._fbq)f._fbq=n;n.push=n;n.loaded=!0;n.version='2.0';
+    n.queue=[];t=b.createElement(e);t.async=!0;
+    t.src=v;s=b.getElementsByTagName(e)[0];
+    s.parentNode.insertBefore(t,s)}(window, document,'script',
+    'https://connect.facebook.net/en_US/fbevents.js');
+    fbq('init', '{{ pixel_id }}');
+    fbq('track', 'PageView');
+    </script>
+    <noscript><img height="1" width="1" style="display:none"
+      src="https://www.facebook.com/tr?id={{ pixel_id }}&ev=PageView&noscript=1"
+    /></noscript>
+    <!-- End Facebook Pixel Code -->
+    {% endif %}
 </head>
 <body>
 <div class="success-container">
@@ -110,6 +129,28 @@
 <script>
     setTimeout(function() { location.reload(); }, 5000);
 </script>
+{% endif %}
+
+{% if pixel_id %}
+{% if order %}
+<script>
+fbq('track', 'Purchase', {
+    value: 0.00,
+    currency: 'USD',
+    content_type: 'product',
+    content_ids: ['{{ order.event_id }}']
+});
+</script>
+{% elif session and session.status == 'completed' %}
+<script>
+fbq('track', 'Purchase', {
+    value: {{ session.ticket_order.total_amount|default:"0.00" }},
+    currency: 'USD',
+    content_type: 'product',
+    content_ids: ['{{ session.event_id }}']
+});
+</script>
+{% endif %}
 {% endif %}
 </body>
 </html>

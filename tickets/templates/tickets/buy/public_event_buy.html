@@ -42,6 +42,18 @@
         .sold-out-badge { font-size: 0.8rem; color: #dc3545; font-weight: 600; white-space: nowrap; }
         .field-error { color: #dc3545; font-size: 0.85rem; margin: -8px 0 8px; padding: 0 4px; }
     </style>
+    {% include 'tickets/buy/_facebook_pixel.html' %}
+    {% if event.facebook_pixel_id %}
+    <script>
+    document.addEventListener('DOMContentLoaded', function() {
+        fbq('track', 'ViewContent', {
+            content_name: '{{ event.name|escapejs }}',
+            content_ids: ['{{ event.id }}'],
+            content_type: 'product'
+        });
+    });
+    </script>
+    {% endif %}
 </head>
 <body>
 <div class="buy-container">

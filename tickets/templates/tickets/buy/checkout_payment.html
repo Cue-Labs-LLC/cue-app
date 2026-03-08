@@ -51,6 +51,20 @@
         .promo-error { color: #dc3545; font-size: 0.875rem; margin-top: 4px; }
         .discount-line { color: #198754; }
     </style>
+    {% include 'tickets/buy/_facebook_pixel.html' %}
+    {% if event.facebook_pixel_id %}
+    <script>
+    document.addEventListener('DOMContentLoaded', function() {
+        fbq('track', 'AddToCart', {
+            content_ids: [{% for item in cart %}'{{ item.saleable_ticket_type_id }}'{% if not forloop.last %}, {% endif %}{% endfor %}],
+            contents: [{% for item in cart %}{'id': '{{ item.saleable_ticket_type_id }}', 'quantity': {{ item.quantity }}, 'item_price': {{ item.price }}}{% if not forloop.last %}, {% endif %}{% endfor %}],
+            value: {{ total_dollars }},
+            currency: 'USD',
+            content_type: 'product'
+        });
+    });
+    </script>
+    {% endif %}
 </head>
 <body>
 <div class="checkout-container">
