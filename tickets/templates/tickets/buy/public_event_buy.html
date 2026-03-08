@@ -44,12 +44,39 @@
     </style>
     {% include 'tickets/buy/_facebook_pixel.html' %}
     {% if event.facebook_pixel_id %}
+    <noscript><img height="1" width="1" style="display:none"
+      src="https://www.facebook.com/tr?id={{ event.facebook_pixel_id }}&ev=PageView&noscript=1"
+    /></noscript>
     <script>
     document.addEventListener('DOMContentLoaded', function() {
+        fbq('track', 'PageView');
         fbq('track', 'ViewContent', {
             content_name: '{{ event.name|escapejs }}',
             content_ids: ['{{ event.id }}'],
             content_type: 'product'
+        });
+
+        var prevValues = {};
+        document.querySelectorAll('input[type=number]').forEach(function(inp) {
+            prevValues[inp.name] = parseInt(inp.value, 10) || 0;
+            inp.addEventListener('input', function() {
+                var newVal = parseInt(inp.value, 10) || 0;
+                var prevVal = prevValues[inp.name] || 0;
+                if (newVal > prevVal) {
+                    var card = inp.closest('.ticket-card');
+                    var ticketId = card ? card.dataset.ticketId : '';
+                    var price = card ? (parseFloat(card.dataset.price) || 0) : 0;
+                    var added = newVal - prevVal;
+                    fbq('track', 'AddToCart', {
+                        content_ids: [ticketId],
+                        contents: [{'id': ticketId, 'quantity': added, 'item_price': price}],
+                        value: price * added,
+                        currency: 'USD',
+                        content_type: 'product'
+                    });
+                }
+                prevValues[inp.name] = newVal;
+            });
         });
     });
     </script>
@@ -102,7 +129,7 @@
         {% endif %}
 
         {% for tt, bound_field in available_pairs %}
-        <div class="ticket-card{% if tt.is_sold_out %} sold-out{% endif %}" data-price="{{ tt.price }}">
+        <div class="ticket-card{% if tt.is_sold_out %} sold-out{% endif %}" data-price="{{ tt.price }}" data-ticket-id="{{ tt.id }}">
             <div class="ticket-info">
                 <div class="ticket-name">{{ tt.name }}</div>
                 {% if tt.description %}<div class="ticket-desc">{{ tt.description }}</div>{% endif %}
@@ -137,6 +164,7 @@
         <div class="ticket-card" id="locked-card-{{ tt.id.hex }}"
              data-unlock-url="{% url 'tickets:unlock_ticket_type' event.id tt.id %}"
              data-price="{{ tt.price }}"
+             data-ticket-id="{{ tt.id }}"
              style="display:none;">
             <div class="ticket-info">
                 <div class="ticket-name">{{ tt.name }}</div>

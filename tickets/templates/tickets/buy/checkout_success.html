@@ -138,7 +138,7 @@ fbq('track', 'Purchase', {
     value: 0.00,
     currency: 'USD',
     content_type: 'product',
-    content_ids: ['{{ order.event_id }}']
+    content_ids: [{% for id in pixel_content_ids %}'{{ id }}'{% if not forloop.last %}, {% endif %}{% endfor %}]
 });
 </script>
 {% elif session and session.status == 'completed' %}
@@ -147,7 +147,7 @@ fbq('track', 'Purchase', {
     value: {{ session.ticket_order.total_amount|default:"0.00" }},
     currency: 'USD',
     content_type: 'product',
-    content_ids: ['{{ session.event_id }}']
+    content_ids: [{% for id in pixel_content_ids %}'{{ id }}'{% if not forloop.last %}, {% endif %}{% endfor %}]
 });
 </script>
 {% endif %}

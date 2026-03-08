@@ -4233,11 +4233,24 @@ def checkout_success(request):
         qr_code = generate_qr_b64(session_obj.ticket_order.order_number)
 
     _event_for_pixel = order_obj.event if order_obj else (session_obj.event if session_obj else None)
+
+    pixel_content_ids = []
+    if order_obj:
+        ticket_names = list(order_obj.tickets.values_list('ticket_type', flat=True).distinct())
+        pixel_content_ids = [
+            str(i) for i in SaleableTicketType.objects.filter(
+                event=order_obj.event, name__in=ticket_names
+            ).values_list('id', flat=True)
+        ]
+    elif session_obj and session_obj.line_items_snapshot:
+        pixel_content_ids = [item['saleable_ticket_type_id'] for item in session_obj.line_items_snapshot]
+
     return render(request, 'tickets/buy/checkout_success.html', {
         'session': session_obj,
         'order': order_obj,
         'qr_code': qr_code,
         'pixel_id': _event_for_pixel.facebook_pixel_id if _event_for_pixel else '',
+        'pixel_content_ids': pixel_content_ids,
     })
 
 

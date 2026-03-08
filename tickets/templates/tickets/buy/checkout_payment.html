@@ -55,11 +55,12 @@
     {% if event.facebook_pixel_id %}
     <script>
     document.addEventListener('DOMContentLoaded', function() {
-        fbq('track', 'AddToCart', {
+        fbq('track', 'InitiateCheckout', {
             content_ids: [{% for item in cart %}'{{ item.saleable_ticket_type_id }}'{% if not forloop.last %}, {% endif %}{% endfor %}],
             contents: [{% for item in cart %}{'id': '{{ item.saleable_ticket_type_id }}', 'quantity': {{ item.quantity }}, 'item_price': {{ item.price }}}{% if not forloop.last %}, {% endif %}{% endfor %}],
             value: {{ total_dollars }},
             currency: 'USD',
+            num_items: {% for item in cart %}{{ item.quantity }}{% if not forloop.last %} + {% endif %}{% endfor %},
             content_type: 'product'
         });
     });
@@ -327,6 +328,13 @@ document.addEventListener('DOMContentLoaded', function () {
         payBtn.disabled = true;
         payBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-2" role="status"></span>Processing...';
 
+        if (window.fbq) {
+            fbq('trackCustom', 'PurchaseInitiated', {
+                value: {{ grand_total }},
+                currency: 'USD'
+            });
+        }
+
         function getCookie(name) {
             var v = document.cookie.match('(^|;) ?' + name + '=([^;]*)(;|$)');
             return v ? v[2] : null;
@@ -375,6 +383,11 @@ document.addEventListener('DOMContentLoaded', function () {
                     errorEl.textContent = result.error.message;
                     payBtn.disabled = false;
                     payBtn.innerHTML = '<i class="bi bi-lock"></i> Pay ${{ grand_total|currency }}';
+                    if (window.fbq) {
+                        fbq('trackCustom', 'PurchaseFailed', {
+                            error_message: result.error.message
+                        });
+                    }
                 } else {
                     window.location.href = config.successUrl + '?session_id=' + data.session_id;
                 }
@@ -384,8 +397,31 @@ document.addEventListener('DOMContentLoaded', function () {
             errorEl.textContent = 'An unexpected error occurred. Please try again.';
             payBtn.disabled = false;
             payBtn.innerHTML = '<i class="bi bi-lock"></i> Pay ${{ grand_total|currency }}';
+            if (window.fbq) {
+                fbq('trackCustom', 'PurchaseFailed', {
+                    error_message: 'Unexpected error'
+                });
+            }
         });
     });
+});
+</script>
+{% endif %}
+
+{% if event.facebook_pixel_id %}
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    var form = document.getElementById('checkout-form');
+    if (form) {
+        form.addEventListener('submit', function() {
+            if (window.fbq) {
+                fbq('trackCustom', 'PurchaseInitiated', {
+                    value: 0.00,
+                    currency: 'USD'
+                });
+            }
+        });
+    }
 });
 </script>
 {% endif %}
