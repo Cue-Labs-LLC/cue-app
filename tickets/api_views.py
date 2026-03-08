@@ -9,7 +9,7 @@ from decimal import Decimal, InvalidOperation
 from django.contrib.auth import authenticate
 from django.core.cache import cache as django_cache
 from django.db import transaction
-from django.db.models import Count, F, IntegerField, OuterRef, Subquery
+from django.db.models import Count, DecimalField, F, IntegerField, OuterRef, Q, Subquery, Sum
 from django.db.models.functions import Coalesce
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
@@ -133,12 +133,21 @@ def organizer_events(request):
         .values('c')
     )
 
+    revenue_sq = (
+        TicketOrder.objects
+        .filter(event=OuterRef('pk'), refunded_at__isnull=True)
+        .values('event')
+        .annotate(r=Sum('total_amount'))
+        .values('r')
+    )
+
     events = (
         Event.objects
         .filter(organization=org, start_date__gte=today)
         .annotate(
             checked_in_count=Coalesce(Subquery(checked_in_sq, output_field=IntegerField()), 0),
             total_tickets=Coalesce(Subquery(total_tickets_sq, output_field=IntegerField()), 0),
+            total_revenue=Coalesce(Subquery(revenue_sq, output_field=DecimalField()), Decimal('0.00')),
         )
         .order_by('start_date')
     )
@@ -153,6 +162,7 @@ def organizer_events(request):
             'city': event.venue.city if event.venue else None,
             'checked_in_count': event.checked_in_count,
             'total_tickets': event.total_tickets,
+            'total_revenue': str(event.total_revenue),
         }
         for event in events
     ]
@@ -191,6 +201,78 @@ def organizer_ticket_types(request, event_id):
             'remaining': tt.remaining_quantity(),  # None = unlimited
         }
         for tt in on_sale
+    ]
+    return Response(data)
+
+
+# ---------------------------------------------------------------------------
+# Organizer — Check-in Stats
+# ---------------------------------------------------------------------------
+
+@api_view(['GET'])
+def organizer_checkin_stats(request, event_id):
+    """
+    GET /api/organizer/events/<uuid:event_id>/checkin-stats/
+    Returns per-ticket-type check-in counts for the event.
+    """
+    org = _get_org_from_user(request.user)
+    if org is None:
+        return Response({'error': 'No organization found for this user'}, status=403)
+
+    stats = (
+        Ticket.objects
+        .filter(
+            ticket_order__event_id=event_id,
+            ticket_order__event__organization=org,
+        )
+        .values('ticket_type')
+        .annotate(
+            total=Count('id'),
+            checked_in=Count('id', filter=Q(ticket_order__checked_in_at__isnull=False)),
+        )
+        .order_by('ticket_type')
+    )
+
+    return Response(
+        [{'ticket_type_name': s['ticket_type'], 'total': s['total'], 'checked_in': s['checked_in']}
+         for s in stats],
+    )
+
+
+# ---------------------------------------------------------------------------
+# Organizer — Event Orders
+# ---------------------------------------------------------------------------
+
+@api_view(['GET'])
+def organizer_event_orders(request, event_id):
+    """
+    GET /api/organizer/events/<uuid:event_id>/orders/
+    Returns all ticket orders for the event, newest first.
+    """
+    org = _get_org_from_user(request.user)
+    if org is None:
+        return Response({'error': 'No organization found for this user'}, status=403)
+
+    orders = (
+        TicketOrder.objects
+        .filter(event_id=event_id, event__organization=org)
+        .select_related('customer')
+        .prefetch_related('tickets')
+        .order_by('-order_date')
+    )
+
+    data = [
+        {
+            'order_number': o.display_order_number,
+            'customer_name': o.customer.name,
+            'customer_email': o.customer.email,
+            'total_amount': str(o.total_amount),
+            'order_date': o.order_date.isoformat(),
+            'checked_in_at': o.checked_in_at.isoformat() if o.checked_in_at else None,
+            'refunded_at': o.refunded_at.isoformat() if o.refunded_at else None,
+            'ticket_types': [t.ticket_type for t in o.tickets.all()],
+        }
+        for o in orders
     ]
     return Response(data)
 
