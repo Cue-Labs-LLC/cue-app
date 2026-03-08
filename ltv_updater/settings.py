@@ -31,12 +31,16 @@ SECRET_KEY = os.environ.get('SECRET_KEY', 'django-insecure-099e&9k@*#s!*=_@u02!i
 DEBUG = os.environ.get('DEBUG', 'True') == 'True' and not IS_RENDER
 
 # Parse ALLOWED_HOSTS from environment variable (comma-separated)
-ALLOWED_HOSTS = os.environ.get('ALLOWED_HOSTS', '').split(',') if os.environ.get('ALLOWED_HOSTS') else []
+_allowed_hosts_raw = os.environ.get('ALLOWED_HOSTS', '')
+ALLOWED_HOSTS = [h.strip() for h in _allowed_hosts_raw.split(',') if h.strip()] if _allowed_hosts_raw else []
 if IS_RENDER:
     # On Render, add the service URL
     RENDER_EXTERNAL_HOSTNAME = os.environ.get('RENDER_EXTERNAL_HOSTNAME')
     if RENDER_EXTERNAL_HOSTNAME:
         ALLOWED_HOSTS.append(RENDER_EXTERNAL_HOSTNAME)
+# In local dev, allow any host (e.g. Mac LAN IP when testing from a physical phone)
+if DEBUG and '*' not in ALLOWED_HOSTS:
+    ALLOWED_HOSTS.append('*')
 
 
 # Application definition
