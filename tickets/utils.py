@@ -25,6 +25,19 @@ def generate_qr_png_bytes(data: str) -> bytes | None:
         return None
 
 
+def generate_username(first_name, last_name):
+    """Generate a unique slugified username from first + last name."""
+    from django.utils.text import slugify
+    from django.contrib.auth.models import User
+    base = slugify(f"{first_name}{last_name}") or 'user'
+    username = base
+    counter = 1
+    while User.objects.filter(username=username).exists():
+        username = f"{base}{counter}"
+        counter += 1
+    return username
+
+
 def get_organization(request):
     """
     Return the current user's organization, or None if not authenticated or no org.

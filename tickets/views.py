@@ -309,8 +309,9 @@ def unified_verify_view(request):
                 del request.session['verify_unified']
                 if not is_new:
                     try:
-                        user = User.objects.get(username=phone)
-                    except User.DoesNotExist:
+                        profile = UserProfile.objects.select_related('user').get(phone_number=phone)
+                        user = profile.user
+                    except UserProfile.DoesNotExist:
                         messages.error(request, 'Account not found. Please sign up.')
                         return redirect('tickets:login')
                     auth_login(request, user, backend='tickets.backends.PhoneBackend')
@@ -366,12 +367,13 @@ def complete_profile_view(request):
         form = ProfileCompletionForm(request.POST)
         if form.is_valid():
             cd = form.cleaned_data
-            if User.objects.filter(username=phone).exists():
+            if UserProfile.objects.filter(phone_number=phone).exists():
                 messages.info(request, 'An account with this phone already exists. Please log in.')
                 del request.session['pending_signup_phone']
                 return redirect('tickets:login')
+            from .utils import generate_username
             user = User.objects.create(
-                username=phone,
+                username=generate_username(cd['first_name'], cd['last_name']),
                 email=cd['email'],
                 first_name=cd['first_name'],
                 last_name=cd['last_name'],
@@ -514,8 +516,9 @@ def email_complete_profile_view(request):
                 messages.info(request, 'An account with this email already exists. Please log in.')
                 del request.session['pending_signup_email']
                 return redirect('tickets:email_login')
+            from .utils import generate_username
             user = User.objects.create(
-                username=email,
+                username=generate_username(cd['first_name'], cd['last_name']),
                 email=email,
                 first_name=cd['first_name'],
                 last_name=cd['last_name'],
@@ -581,8 +584,9 @@ def modal_auth_verify(request):
         return JsonResponse({'error': 'Incorrect or expired code. Please try again.'}, status=400)
     if not is_new:
         try:
-            user = User.objects.get(username=phone)
-        except User.DoesNotExist:
+            profile = UserProfile.objects.select_related('user').get(phone_number=phone)
+            user = profile.user
+        except UserProfile.DoesNotExist:
             return JsonResponse({'error': 'Account not found. Please try signing up.'}, status=400)
         del request.session['modal_auth']
         auth_login(request, user, backend='tickets.backends.PhoneBackend')
@@ -611,10 +615,11 @@ def modal_auth_complete(request):
     email = (body.get('email') or '').strip()
     if not first_name or not email:
         return JsonResponse({'error': 'First name and email are required.'}, status=400)
-    if User.objects.filter(username=phone).exists():
+    if UserProfile.objects.filter(phone_number=phone).exists():
         return JsonResponse({'error': 'An account with this phone already exists. Please log in.'}, status=400)
+    from .utils import generate_username
     user = User.objects.create(
-        username=phone,
+        username=generate_username(first_name, last_name),
         email=email,
         first_name=first_name,
         last_name=last_name,
@@ -739,11 +744,12 @@ def verify_otp_view(request):
             if not check_phone_verification(phone, code):
                 messages.error(request, 'Incorrect or expired code. Please try again.')
             else:
-                if User.objects.filter(username=phone).exists():
+                if UserProfile.objects.filter(phone_number=phone).exists():
                     messages.info(request, 'An account with this phone already exists. Please log in.')
                     del request.session["verify_signup"]
                     return redirect('tickets:phone_login')
-                user = User.objects.create(username=phone, email='', first_name='', last_name='')
+                from .utils import generate_username
+                user = User.objects.create(username=generate_username('user', phone[-4:]), email='', first_name='', last_name='')
                 user.set_unusable_password()
                 user.save()
                 UserProfile.objects.create(user=user, role=UserProfile.Role.ATTENDEE, phone_number=phone)
@@ -4687,8 +4693,9 @@ def attendee_verify_otp_view(request, org_slug):
             if not check_phone_verification(phone, code):
                 messages.error(request, 'Incorrect or expired code. Please try again.')
             else:
+                from .utils import generate_username
                 user = AuthUser.objects.create(
-                    username=phone,
+                    username=generate_username('user', phone[-4:]),
                     email='',
                     first_name='',
                     last_name='',
@@ -4755,8 +4762,9 @@ def phone_login_verify_view(request):
                 messages.error(request, 'Incorrect or expired code. Please try again.')
             else:
                 try:
-                    user = AuthUser.objects.get(username=phone)
-                except AuthUser.DoesNotExist:
+                    profile = UserProfile.objects.select_related('user').get(phone_number=phone)
+                    user = profile.user
+                except UserProfile.DoesNotExist:
                     messages.error(request, 'Account not found. Please sign up first.')
                     del request.session["verify_login"]
                     return redirect('tickets:phone_login')

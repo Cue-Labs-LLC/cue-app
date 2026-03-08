@@ -621,14 +621,14 @@ class PayoutAdmin(admin.ModelAdmin):
 
 @admin.register(UserProfile)
 class UserProfileAdmin(admin.ModelAdmin):
-    list_display = ['user', 'organization', 'role', 'phone_number', 'user_email']
+    list_display = ['user', 'organization', 'role', 'phone_number', 'user_full_name']
     list_filter = ['role', 'organization']
-    search_fields = ['user__username', 'user__email', 'phone_number']
+    search_fields = ['user__username', 'user__first_name', 'user__last_name', 'user__email', 'phone_number']
     raw_id_fields = ['user']
 
-    def user_email(self, obj):
-        return obj.user.email if obj.user_id else ''
-    user_email.short_description = 'Email'
+    def user_full_name(self, obj):
+        return obj.user.get_full_name() if obj.user_id else ''
+    user_full_name.short_description = 'Full Name'
 
 
 @admin.register(OrganizationInvitation)

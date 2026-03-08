@@ -25,14 +25,16 @@ class EmailBackend(ModelBackend):
 
 
 class PhoneBackend:
-    """Authenticate attendees by phone number (stored as username on auth.User)."""
+    """Authenticate attendees by phone number stored in UserProfile."""
 
     def authenticate(self, request, phone_number=None, **kwargs):
         if not phone_number:
             return None
+        from .models import UserProfile
         try:
-            return User.objects.get(username=phone_number)
-        except User.DoesNotExist:
+            profile = UserProfile.objects.select_related('user').get(phone_number=phone_number)
+            return profile.user
+        except UserProfile.DoesNotExist:
             return None
 
     def get_user(self, user_id):
