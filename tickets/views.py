@@ -1,4 +1,5 @@
 import calendar
+import io
 import os
 import json
 import random
@@ -16,6 +17,7 @@ from django.db.models import (
 from django.db.models.functions import Coalesce, Greatest
 from django.db import models
 from django.core.paginator import Paginator
+from django.core.files.uploadedfile import InMemoryUploadedFile
 from django.http import JsonResponse, Http404, HttpResponse
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
@@ -3942,6 +3944,23 @@ def event_cancel(request, event_id):
     return redirect('tickets:event_detail', event_id=event.id)
 
 
+_HEIC_CONTENT_TYPES = {'image/heic', 'image/heif', 'image/heic-sequence', 'image/heif-sequence'}
+
+
+def _convert_heic_to_jpeg(upload_file):
+    """Convert a HEIC/HEIF InMemoryUploadedFile to JPEG. Returns a new InMemoryUploadedFile."""
+    from pillow_heif import register_heif_opener
+    register_heif_opener()
+    from PIL import Image
+    img = Image.open(upload_file)
+    img = img.convert('RGB')
+    buf = io.BytesIO()
+    img.save(buf, format='JPEG', quality=90)
+    buf.seek(0)
+    name = upload_file.name.rsplit('.', 1)[0] + '.jpg'
+    return InMemoryUploadedFile(buf, 'flyer', name, 'image/jpeg', buf.getbuffer().nbytes, None)
+
+
 @login_required
 @require_org
 @require_host
@@ -3975,6 +3994,14 @@ def event_flyer_upload(request, event_id):
     # Validate image (ImageField will reject invalid images on save)
     if not file.content_type.startswith('image/'):
         return JsonResponse({'success': False, 'error': 'File must be an image.'}, status=400)
+    # Convert HEIC/HEIF → JPEG for browser compatibility
+    if (file.content_type in _HEIC_CONTENT_TYPES
+            or file.name.lower().endswith(('.heic', '.heif'))):
+        try:
+            file = _convert_heic_to_jpeg(file)
+        except Exception as e:
+            logger.warning("HEIC conversion failed: %s", e)
+            return JsonResponse({'success': False, 'error': 'Could not process HEIC image.'}, status=400)
     # #region agent log
     _dlog("H1", "storage config at upload", default_file_storage=getattr(settings, 'DEFAULT_FILE_STORAGE', None), aws_bucket_env=bool(__import__('os').environ.get('AWS_STORAGE_BUCKET_NAME')), aws_bucket_value=__import__('os').environ.get('AWS_STORAGE_BUCKET_NAME', '')[:20] if __import__('os').environ.get('AWS_STORAGE_BUCKET_NAME') else None)
     # #endregion

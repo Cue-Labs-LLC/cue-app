@@ -163,7 +163,7 @@
 <div class="card mb-4" id="event-flyer-card">
     <div class="card-body p-0 text-center">
         <input type="hidden" id="flyer-csrf" value="{{ csrf_token }}">
-        <input type="file" id="flyer-file-input" accept="image/*" class="d-none" data-flyer-url="{% url 'tickets:event_flyer_upload' event.id %}">
+        <input type="file" id="flyer-file-input" accept="image/*,.heic,.heif" class="d-none" data-flyer-url="{% url 'tickets:event_flyer_upload' event.id %}">
         <div id="flyer-drop-zone" class="flyer-drop-zone position-relative" style="min-height: 200px; cursor: pointer;">
             {% if event.flyer %}
             <img id="event-flyer-img" src="{{ event.flyer.url }}" alt="{{ event.name }} event image" class="img-fluid" style="max-height: 400px; width: auto; object-fit: contain;">
@@ -785,8 +785,10 @@ document.addEventListener('DOMContentLoaded', function() {
     var flyerCsrf = document.getElementById('flyer-csrf');
     if (flyerZone && flyerInput && flyerCsrf) {
         var flyerUrl = flyerInput.getAttribute('data-flyer-url');
+        var ALLOWED_IMAGE_TYPES = /^image\//;
+        var HEIC_EXTS = /\.(heic|heif)$/i;
         function uploadFlyer(file) {
-            if (!file || !file.type.startsWith('image/')) {
+            if (!file || (!ALLOWED_IMAGE_TYPES.test(file.type) && !HEIC_EXTS.test(file.name))) {
                 showAlert('danger', 'Please choose an image file.');
                 return;
             }

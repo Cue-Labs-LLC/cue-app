@@ -163,6 +163,11 @@
             <div class="sidebar-section">
                 <div class="sidebar-section-label">My Account</div>
                 <ul class="sidebar-nav">
+                    <li>
+                        <a href="{% url 'tickets:my_tickets' %}" class="sidebar-link{% if '/my-tickets/' in request.path %} active{% endif %}">
+                            <i class="bi bi-ticket-perforated"></i> My Tickets
+                        </a>
+                    </li>
                     {% if user_role == 'attendee' %}
                     <li>
                         <a href="{% url 'tickets:become_organizer' %}" class="sidebar-link{% if '/become-organizer/' in request.path %} active{% endif %}">
