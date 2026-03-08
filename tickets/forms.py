@@ -1309,3 +1309,49 @@ class SurveyUploadForm(forms.Form):
         finally:
             f.seek(0)
         return f
+
+
+class UserProfileForm(forms.Form):
+    first_name = forms.CharField(max_length=150, required=False, label='First name')
+    last_name  = forms.CharField(max_length=150, required=False, label='Last name')
+    phone_number = forms.CharField(
+        max_length=20, required=False,
+        help_text='International format, e.g. +1 5551234567',
+    )
+    gender = forms.ChoiceField(
+        choices=[('', '— select —')] + list(UserProfile.Gender.choices),
+        required=False,
+    )
+    marketing_opt_in = forms.BooleanField(required=False, label='Marketing emails')
+
+    def __init__(self, *args, user=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.user = user
+        self.helper = FormHelper()
+        self.helper.form_tag = False
+
+    def clean_phone_number(self):
+        import re
+        phone = self.cleaned_data.get('phone_number', '').strip()
+        if phone:
+            if not re.match(r'^\+[1-9]\d{6,14}$', phone):
+                raise forms.ValidationError(
+                    'Enter a valid international phone number, e.g. +1 5551234567'
+                )
+            qs = UserProfile.objects.filter(phone_number=phone)
+            if self.user:
+                qs = qs.exclude(user=self.user)
+            if qs.exists():
+                raise forms.ValidationError('This phone number is already in use.')
+        return phone or None
+
+    def save(self):
+        data = self.cleaned_data
+        self.user.first_name = data.get('first_name', '')
+        self.user.last_name  = data.get('last_name', '')
+        self.user.save(update_fields=['first_name', 'last_name'])
+        profile = self.user.profile
+        profile.phone_number     = data.get('phone_number') or None
+        profile.gender           = data.get('gender') or ''
+        profile.marketing_opt_in = data.get('marketing_opt_in', False)
+        profile.save(update_fields=['phone_number', 'gender', 'marketing_opt_in'])

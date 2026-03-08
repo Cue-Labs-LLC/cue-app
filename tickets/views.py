@@ -45,7 +45,7 @@ from .forms import (
     ProfileCompletionForm, EmailLoginForm, EmailProfileCompletionForm,
     SaleableTicketTypeForm, PublicTicketPurchaseForm,
     DirectEventForm, DirectTicketTypeFormSet,
-    PromoCodeForm, SurveyUploadForm,
+    PromoCodeForm, SurveyUploadForm, UserProfileForm,
 )
 from .csv_processor import CSVProcessor
 from .services.forecasting.preview import generate_forecast_preview
@@ -4906,6 +4906,30 @@ def my_ticket_detail(request, order_id):
     return render(request, 'tickets/ticket_detail.html', {
         'order': order,
         'qr_code': qr_code,
+    })
+
+
+@login_required
+def user_profile(request):
+    """View and edit the logged-in user's profile information."""
+    profile = request.user.profile
+    if request.method == 'POST':
+        form = UserProfileForm(request.POST, user=request.user)
+        if form.is_valid():
+            form.save()
+            messages.success(request, 'Profile updated.')
+            return redirect('tickets:user_profile')
+    else:
+        form = UserProfileForm(user=request.user, initial={
+            'first_name':       request.user.first_name,
+            'last_name':        request.user.last_name,
+            'phone_number':     profile.phone_number or '',
+            'gender':           profile.gender or '',
+            'marketing_opt_in': profile.marketing_opt_in,
+        })
+    return render(request, 'tickets/account_profile.html', {
+        'form':    form,
+        'profile': profile,
     })
 
 

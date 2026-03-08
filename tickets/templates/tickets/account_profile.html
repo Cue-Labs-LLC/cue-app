@@ -1,0 +1,179 @@
+{% extends "tickets/base.html" %}
+{% load crispy_forms_tags %}
+
+{% block title %}My Profile{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1 class="page-title">My Profile</h1>
+        <p class="page-subtitle">View and update your personal information</p>
+    </div>
+</div>
+
+<div class="row g-4">
+    <!-- Left: Identity card -->
+    <div class="col-lg-4">
+        <div class="card h-100">
+            <div class="card-body d-flex flex-column align-items-center text-center pt-4">
+                <div class="profile-avatar mb-3">
+                    {% with first=request.user.first_name|make_list|first|upper last=request.user.last_name|make_list|first|upper %}
+                        {% if first %}{{ first }}{% if last %}{{ last }}{% endif %}{% else %}{{ request.user.get_username|make_list|first|upper }}{% endif %}
+                    {% endwith %}
+                </div>
+                <h5 class="mb-1 fw-semibold">{{ request.user.get_full_name|default:request.user.get_username }}</h5>
+                <p class="text-muted small mb-3">{{ request.user.email }}</p>
+
+                <div class="d-flex gap-2 flex-wrap justify-content-center mb-3">
+                    <span class="badge {% if profile.role == 'organizer' %}bg-primary{% else %}bg-success{% endif %}">
+                        {{ profile.get_role_display }}
+                    </span>
+                    {% if profile.org_role %}
+                    <span class="badge bg-secondary">{{ profile.get_org_role_display }}</span>
+                    {% endif %}
+                </div>
+
+                <hr class="w-100">
+
+                <dl class="w-100 text-start small">
+                    {% if profile.phone_number %}
+                    <div class="d-flex justify-content-between mb-2">
+                        <dt class="fw-normal text-muted">Phone</dt>
+                        <dd class="mb-0">{{ profile.phone_number }}</dd>
+                    </div>
+                    {% endif %}
+                    {% if profile.gender %}
+                    <div class="d-flex justify-content-between mb-2">
+                        <dt class="fw-normal text-muted">Gender</dt>
+                        <dd class="mb-0">{{ profile.get_gender_display }}</dd>
+                    </div>
+                    {% endif %}
+                    {% if profile.created_at %}
+                    <div class="d-flex justify-content-between">
+                        <dt class="fw-normal text-muted">Member since</dt>
+                        <dd class="mb-0">{{ profile.created_at|date:"F Y" }}</dd>
+                    </div>
+                    {% endif %}
+                </dl>
+            </div>
+        </div>
+    </div>
+
+    <!-- Right: Edit form -->
+    <div class="col-lg-8">
+        <div class="card">
+            <div class="card-header">
+                <h6 class="mb-0 fw-semibold">Edit Profile</h6>
+            </div>
+            <div class="card-body">
+                <form method="post" novalidate>
+                    {% csrf_token %}
+
+                    <div class="row g-3 mb-3">
+                        <div class="col-sm-6">
+                            <label class="form-label" for="id_first_name">First name</label>
+                            <input
+                                type="text"
+                                name="first_name"
+                                id="id_first_name"
+                                maxlength="150"
+                                value="{{ form.first_name.value|default:'' }}"
+                                class="form-control{% if form.first_name.errors %} is-invalid{% endif %}"
+                            >
+                            {% for error in form.first_name.errors %}
+                            <div class="invalid-feedback">{{ error }}</div>
+                            {% endfor %}
+                        </div>
+                        <div class="col-sm-6">
+                            <label class="form-label" for="id_last_name">Last name</label>
+                            <input
+                                type="text"
+                                name="last_name"
+                                id="id_last_name"
+                                maxlength="150"
+                                value="{{ form.last_name.value|default:'' }}"
+                                class="form-control{% if form.last_name.errors %} is-invalid{% endif %}"
+                            >
+                            {% for error in form.last_name.errors %}
+                            <div class="invalid-feedback">{{ error }}</div>
+                            {% endfor %}
+                        </div>
+                    </div>
+
+                    <div class="mb-3">
+                        <label class="form-label">Email address</label>
+                        <input type="email" value="{{ request.user.email }}" class="form-control" disabled>
+                        <div class="form-text">To change your email, contact support.</div>
+                    </div>
+
+                    <div class="mb-3">
+                        <label class="form-label" for="id_phone_number">Phone number</label>
+                        <input
+                            type="text"
+                            name="phone_number"
+                            id="id_phone_number"
+                            maxlength="20"
+                            value="{{ form.phone_number.value|default:'' }}"
+                            class="form-control{% if form.phone_number.errors %} is-invalid{% endif %}"
+                            placeholder="+1 5551234567"
+                        >
+                        {% for error in form.phone_number.errors %}
+                        <div class="invalid-feedback">{{ error }}</div>
+                        {% endfor %}
+                        <div class="form-text">{{ form.phone_number.help_text }}</div>
+                    </div>
+
+                    <div class="mb-3">
+                        <label class="form-label" for="id_gender">Gender</label>
+                        <select name="gender" id="id_gender" class="form-select{% if form.gender.errors %} is-invalid{% endif %}">
+                            {% for value, label in form.fields.gender.choices %}
+                            <option value="{{ value }}" {% if form.gender.value == value %}selected{% endif %}>{{ label }}</option>
+                            {% endfor %}
+                        </select>
+                        {% for error in form.gender.errors %}
+                        <div class="invalid-feedback">{{ error }}</div>
+                        {% endfor %}
+                    </div>
+
+                    <div class="mb-4">
+                        <div class="form-check">
+                            <input
+                                type="checkbox"
+                                name="marketing_opt_in"
+                                id="id_marketing_opt_in"
+                                class="form-check-input"
+                                {% if form.marketing_opt_in.value %}checked{% endif %}
+                            >
+                            <label class="form-check-label" for="id_marketing_opt_in">
+                                Receive marketing emails
+                            </label>
+                        </div>
+                    </div>
+
+                    <button type="submit" class="btn btn-primary">Save changes</button>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_head %}
+<style>
+.profile-avatar {
+    width: 80px;
+    height: 80px;
+    border-radius: 50%;
+    background: var(--accent-primary, #4f46e5);
+    color: #fff;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 28px;
+    font-weight: 700;
+    font-family: var(--font-display, sans-serif);
+    letter-spacing: -0.5px;
+    flex-shrink: 0;
+}
+</style>
+{% endblock %}

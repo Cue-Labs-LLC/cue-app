@@ -214,6 +214,9 @@
                     <i class="bi bi-chevron-expand ms-auto" style="font-size: 12px;"></i>
                 </div>
                 <div class="sidebar-user-menu" id="sidebarUserMenu" style="display: none;">
+                    <a href="{% url 'tickets:user_profile' %}" class="sidebar-link{% if '/account/profile/' in request.path %} active{% endif %}">
+                        <i class="bi bi-person-circle"></i> My Profile
+                    </a>
                     <form method="post" action="{% url 'tickets:logout' %}">
                         {% csrf_token %}
                         <button type="submit" class="sidebar-link" style="width: 100%; border: none; background: none; cursor: pointer; text-align: left; margin-top: 4px;">
