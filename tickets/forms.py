@@ -190,6 +190,93 @@ class ProfileCompletionForm(forms.Form):
         return email
 
 
+class EmailLoginForm(forms.Form):
+    """Form for users to enter their email address for OTP login/signup."""
+
+    email = forms.EmailField(
+        widget=forms.EmailInput(attrs={
+            'class': 'form-control',
+            'placeholder': 'you@example.com',
+            'autofocus': True,
+        })
+    )
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.helper = FormHelper()
+        self.helper.form_method = 'post'
+        self.helper.layout = Layout(
+            Field('email'),
+            Submit('submit', 'Send code', css_class='btn btn-primary w-100'),
+        )
+
+    def clean_email(self):
+        return self.cleaned_data['email'].strip().lower()
+
+
+class EmailProfileCompletionForm(forms.Form):
+    """Form for new email-signup attendees to complete their profile."""
+
+    first_name = forms.CharField(max_length=150, widget=forms.TextInput(attrs={
+        'class': 'form-control', 'placeholder': 'First name', 'autofocus': True,
+    }))
+    last_name = forms.CharField(max_length=150, widget=forms.TextInput(attrs={
+        'class': 'form-control', 'placeholder': 'Last name',
+    }))
+    phone_number = forms.CharField(
+        max_length=20,
+        widget=forms.TextInput(attrs={
+            'class': 'form-control',
+            'placeholder': '+1 (555) 000-0000',
+            'type': 'tel',
+        }),
+        help_text='Enter your phone number in international format (e.g. +15551234567)',
+        required=False,
+    )
+    email_display = forms.CharField(
+        label='Email address',
+        disabled=True,
+        widget=forms.TextInput(attrs={'class': 'form-control'}),
+    )
+    gender = forms.ChoiceField(
+        choices=[('', 'Select gender'), ('male', 'Male'), ('female', 'Female'), ('other', 'Other')],
+        widget=forms.Select(attrs={'class': 'form-select'}),
+    )
+    marketing_opt_in = forms.BooleanField(
+        required=False,
+        label='I agree to receive marketing communications',
+    )
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.helper = FormHelper()
+        self.helper.layout = Layout(
+            Row(
+                Column('first_name', css_class='col-md-6'),
+                Column('last_name', css_class='col-md-6'),
+            ),
+            Field('phone_number'),
+            Field('email_display'),
+            Field('gender'),
+            Field('marketing_opt_in'),
+            Submit('submit', 'Complete setup', css_class='btn btn-primary w-100 mt-2'),
+        )
+
+    def clean_phone_number(self):
+        import re
+        from .models import UserProfile
+        phone = self.cleaned_data.get('phone_number', '').strip()
+        if not phone:
+            return phone
+        if not re.match(r'^\+[1-9]\d{6,14}$', phone):
+            raise forms.ValidationError(
+                'Enter a valid phone number in international format (e.g. +15551234567).'
+            )
+        if UserProfile.objects.filter(phone_number=phone).exists():
+            raise forms.ValidationError('An account with this phone number already exists.')
+        return phone
+
+
 class PrettyJSONField(forms.JSONField):
     """Custom JSONField that formats JSON with indentation for display."""
     def prepare_value(self, value):

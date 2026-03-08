@@ -1,7 +1,7 @@
 {% extends 'tickets/base.html' %}
 {% load crispy_forms_tags %}
 
-{% block title %}Sign In - Eventflow{% endblock %}
+{% block title %}Sign In with Email - Eventflow{% endblock %}
 
 {% block content %}
 <div class="row justify-content-center">
@@ -9,10 +9,10 @@
         <div class="card shadow">
             <div class="card-body p-5">
                 <h2 class="card-title text-center mb-2">
-                    <i class="bi bi-phone"></i> Sign in or create an account
+                    <i class="bi bi-envelope"></i> Sign in with email
                 </h2>
                 <p class="text-center text-muted mb-4">
-                    We'll send a verification code to your phone via SMS.
+                    We'll send a verification code to your email address.
                 </p>
 
                 {% if messages %}
@@ -31,8 +31,8 @@
         </div>
 
         <div class="text-center mt-3">
-            <a href="{% url 'tickets:email_login' %}" class="text-decoration-none small">
-                <i class="bi bi-envelope"></i> Sign in with email instead
+            <a href="{% url 'tickets:login' %}" class="text-decoration-none small">
+                <i class="bi bi-phone"></i> Sign in with phone number instead
             </a>
         </div>
         <div class="text-center mt-2">

@@ -10,7 +10,15 @@ urlpatterns = [
     path('login/verify/', views.unified_verify_view, name='unified_verify'),
     path('login/resend/', views.unified_resend_view, name='unified_resend'),
     path('login/complete-profile/', views.complete_profile_view, name='complete_profile'),
+    path('login/email/', views.email_login_view, name='email_login'),
+    path('login/email/verify/', views.email_verify_view, name='email_verify'),
+    path('login/email/resend/', views.email_resend_view, name='email_resend'),
+    path('login/email/complete-profile/', views.email_complete_profile_view, name='email_complete_profile'),
     path('logout/', views.logout_view, name='logout'),
+    # Inline modal auth (JSON endpoints for checkout flow)
+    path('auth/modal/start/', views.modal_auth_start, name='modal_auth_start'),
+    path('auth/modal/verify/', views.modal_auth_verify, name='modal_auth_verify'),
+    path('auth/modal/complete/', views.modal_auth_complete, name='modal_auth_complete'),
     # Old attendee phone signup — redirect to unified login
     path('signup/', RedirectView.as_view(pattern_name='tickets:login', permanent=False), name='signup'),
     path('signup/verify/', RedirectView.as_view(pattern_name='tickets:login', permanent=False), name='verify_otp'),

@@ -32,3 +32,32 @@ def check_phone_verification(phone: str, code: str) -> bool:
     except Exception as exc:
         logger.error("Verify check failed for %s: %s", phone, exc)
         return False
+
+
+def start_email_verification(email: str) -> bool:
+    """Start a Twilio Verify verification for the given email address.
+
+    Returns True on success, False on failure.
+    """
+    try:
+        from twilio.rest import Client
+        client = Client(settings.TWILIO_ACCOUNT_SID, settings.TWILIO_AUTH_TOKEN)
+        client.verify.v2.services(settings.TWILIO_VERIFY_SERVICE_SID) \
+            .verifications.create(to=email, channel='email')
+        return True
+    except Exception as exc:
+        logger.error("Email verify start failed for %s: %s", email, exc)
+        return False
+
+
+def check_email_verification(email: str, code: str) -> bool:
+    """Check a Twilio Verify email code. Returns True if the code is approved."""
+    try:
+        from twilio.rest import Client
+        client = Client(settings.TWILIO_ACCOUNT_SID, settings.TWILIO_AUTH_TOKEN)
+        result = client.verify.v2.services(settings.TWILIO_VERIFY_SERVICE_SID) \
+            .verification_checks.create(to=email, code=code)
+        return result.status == 'approved'
+    except Exception as exc:
+        logger.error("Email verify check failed for %s: %s", email, exc)
+        return False

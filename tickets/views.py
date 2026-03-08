@@ -21,6 +21,7 @@ from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
 from django.db import connection, transaction
 from django.utils import timezone as django_tz
+from django.utils.http import url_has_allowed_host_and_scheme
 from django.utils.text import slugify
 import pandas as pd
 
@@ -39,7 +40,7 @@ from .forms import (
     VenueForm, EventForm, EventTalentFormSet, LoginForm,
     IncomeSourceForm, EventIncomeForm,
     OTPVerificationForm, MemberInviteForm, AttendeePhoneForm,
-    ProfileCompletionForm,
+    ProfileCompletionForm, EmailLoginForm, EmailProfileCompletionForm,
     SaleableTicketTypeForm, PublicTicketPurchaseForm,
     DirectEventForm, DirectTicketTypeFormSet,
     PromoCodeForm, SurveyUploadForm,
@@ -279,6 +280,9 @@ def unified_login_view(request):
                 return redirect('tickets:unified_verify')
     else:
         form = AttendeePhoneForm()
+        next_url = request.GET.get('next', '')
+        if next_url:
+            request.session['auth_next'] = next_url
     return render(request, 'tickets/auth/login.html', {'form': form})
 
 
@@ -312,9 +316,13 @@ def unified_verify_view(request):
                     auth_login(request, user, backend='tickets.backends.PhoneBackend')
                     try:
                         if user.profile.is_organizer:
+                            request.session.pop('auth_next', None)
                             return redirect('tickets:home')
                     except UserProfile.DoesNotExist:
                         pass
+                    next_url = request.session.pop('auth_next', None)
+                    if next_url and url_has_allowed_host_and_scheme(next_url, allowed_hosts={request.get_host()}):
+                        return redirect(next_url)
                     return redirect('tickets:attendee_dashboard')
                 else:
                     request.session['pending_signup_phone'] = phone
@@ -380,10 +388,248 @@ def complete_profile_view(request):
             del request.session['pending_signup_phone']
             auth_login(request, user, backend='tickets.backends.PhoneBackend')
             messages.success(request, 'Welcome to Eventflow!')
+            next_url = request.session.pop('auth_next', None)
+            if next_url and url_has_allowed_host_and_scheme(next_url, allowed_hosts={request.get_host()}):
+                return redirect(next_url)
             return redirect('tickets:attendee_dashboard')
     else:
         form = ProfileCompletionForm()
     return render(request, 'tickets/auth/complete_profile.html', {'form': form})
+
+
+@require_http_methods(["GET", "POST"])
+def email_login_view(request):
+    """Step 1 (email path): enter email address — handles both login and new signup."""
+    from .sms import start_email_verification
+    if request.user.is_authenticated:
+        try:
+            if request.user.profile.is_organizer:
+                return redirect('tickets:home')
+        except UserProfile.DoesNotExist:
+            pass
+        return redirect('tickets:attendee_dashboard')
+    if request.method == 'POST':
+        form = EmailLoginForm(request.POST)
+        if form.is_valid():
+            email = form.cleaned_data['email']
+            from django.contrib.auth.models import User
+            is_new = not User.objects.filter(email__iexact=email).exists()
+            if not start_email_verification(email):
+                messages.error(request, 'Could not send a verification code. Please check the address and try again.')
+            else:
+                request.session['verify_email'] = {'email': email, 'is_new': is_new}
+                return redirect('tickets:email_verify')
+    else:
+        form = EmailLoginForm()
+        next_url = request.GET.get('next', '')
+        if next_url:
+            request.session['auth_next'] = next_url
+    return render(request, 'tickets/auth/login_email.html', {'form': form})
+
+
+@require_http_methods(["GET", "POST"])
+def email_verify_view(request):
+    """Step 2 (email path): verify OTP — log in existing user or send new user to profile completion."""
+    from django.contrib.auth import login as auth_login
+    from django.contrib.auth.models import User
+    from .sms import check_email_verification
+    if request.user.is_authenticated:
+        return redirect('tickets:attendee_dashboard')
+    session_data = request.session.get('verify_email')
+    if not session_data:
+        return redirect('tickets:email_login')
+    email = session_data['email']
+    is_new = session_data.get('is_new', False)
+    # Mask the email: show first 2 chars then *** @ domain
+    at_index = email.index('@')
+    masked_email = email[:2] + '***' + email[at_index:]
+    if request.method == 'POST':
+        form = OTPVerificationForm(request.POST)
+        if form.is_valid():
+            code = form.cleaned_data['otp_code']
+            if not check_email_verification(email, code):
+                messages.error(request, 'Incorrect or expired code. Please try again.')
+            else:
+                del request.session['verify_email']
+                if not is_new:
+                    try:
+                        user = User.objects.get(email__iexact=email)
+                    except User.DoesNotExist:
+                        messages.error(request, 'Account not found. Please sign up.')
+                        return redirect('tickets:email_login')
+                    auth_login(request, user, backend='tickets.backends.EmailOTPBackend')
+                    try:
+                        if user.profile.is_organizer:
+                            request.session.pop('auth_next', None)
+                            return redirect('tickets:home')
+                    except UserProfile.DoesNotExist:
+                        pass
+                    next_url = request.session.pop('auth_next', None)
+                    if next_url and url_has_allowed_host_and_scheme(next_url, allowed_hosts={request.get_host()}):
+                        return redirect(next_url)
+                    return redirect('tickets:attendee_dashboard')
+                else:
+                    request.session['pending_signup_email'] = email
+                    return redirect('tickets:email_complete_profile')
+    else:
+        form = OTPVerificationForm()
+    return render(request, 'tickets/auth/login_email_verify.html', {
+        'form': form,
+        'masked_email': masked_email,
+        'is_new': is_new,
+    })
+
+
+@require_http_methods(["POST"])
+def email_resend_view(request):
+    """Resend OTP for the email login/signup flow."""
+    from .sms import start_email_verification
+    if request.user.is_authenticated:
+        return redirect('tickets:attendee_dashboard')
+    session_data = request.session.get('verify_email')
+    if not session_data:
+        return redirect('tickets:email_login')
+    if not start_email_verification(session_data['email']):
+        messages.error(request, 'Could not resend the code. Please try again.')
+    else:
+        messages.success(request, 'A new code has been sent.')
+    return redirect('tickets:email_verify')
+
+
+@require_http_methods(["GET", "POST"])
+def email_complete_profile_view(request):
+    """Step 3 (email path, new users only): collect name, phone, gender, marketing opt-in."""
+    from django.contrib.auth import login as auth_login
+    from django.contrib.auth.models import User
+    if request.user.is_authenticated:
+        return redirect('tickets:attendee_dashboard')
+    email = request.session.get('pending_signup_email')
+    if not email:
+        return redirect('tickets:email_login')
+    if request.method == 'POST':
+        form = EmailProfileCompletionForm(request.POST, initial={'email_display': email})
+        if form.is_valid():
+            cd = form.cleaned_data
+            if User.objects.filter(email__iexact=email).exists():
+                messages.info(request, 'An account with this email already exists. Please log in.')
+                del request.session['pending_signup_email']
+                return redirect('tickets:email_login')
+            user = User.objects.create(
+                username=email,
+                email=email,
+                first_name=cd['first_name'],
+                last_name=cd['last_name'],
+            )
+            user.set_unusable_password()
+            user.save()
+            UserProfile.objects.create(
+                user=user,
+                role=UserProfile.Role.ATTENDEE,
+                phone_number=cd['phone_number'] or None,
+                gender=cd['gender'],
+                marketing_opt_in=cd['marketing_opt_in'],
+            )
+            del request.session['pending_signup_email']
+            auth_login(request, user, backend='tickets.backends.EmailOTPBackend')
+            messages.success(request, 'Welcome to Eventflow!')
+            next_url = request.session.pop('auth_next', None)
+            if next_url and url_has_allowed_host_and_scheme(next_url, allowed_hosts={request.get_host()}):
+                return redirect(next_url)
+            return redirect('tickets:attendee_dashboard')
+    else:
+        form = EmailProfileCompletionForm(initial={'email_display': email})
+    return render(request, 'tickets/auth/complete_profile.html', {'form': form})
+
+
+@require_http_methods(["POST"])
+def modal_auth_start(request):
+    """JSON endpoint: send OTP to phone for inline modal auth flow."""
+    import json as _json
+    from .sms import start_phone_verification
+    try:
+        body = _json.loads(request.body)
+    except (ValueError, KeyError):
+        return JsonResponse({'error': 'Invalid request.'}, status=400)
+    phone = (body.get('phone') or '').strip()
+    if not phone:
+        return JsonResponse({'error': 'Phone number is required.'}, status=400)
+    is_new = not UserProfile.objects.filter(phone_number=phone).exists()
+    if not start_phone_verification(phone):
+        return JsonResponse({'error': 'Could not send a verification code. Please check the number and try again.'}, status=400)
+    request.session['modal_auth'] = {'phone': phone, 'is_new': is_new}
+    return JsonResponse({'ok': True, 'is_new': is_new})
+
+
+@require_http_methods(["POST"])
+def modal_auth_verify(request):
+    """JSON endpoint: verify OTP for inline modal auth flow."""
+    import json as _json
+    from django.contrib.auth import login as auth_login
+    from django.contrib.auth.models import User
+    from .sms import check_phone_verification
+    try:
+        body = _json.loads(request.body)
+    except (ValueError, KeyError):
+        return JsonResponse({'error': 'Invalid request.'}, status=400)
+    code = (body.get('code') or '').strip()
+    session_data = request.session.get('modal_auth')
+    if not session_data or not code:
+        return JsonResponse({'error': 'Session expired. Please start over.'}, status=400)
+    phone = session_data['phone']
+    is_new = session_data.get('is_new', False)
+    if not check_phone_verification(phone, code):
+        return JsonResponse({'error': 'Incorrect or expired code. Please try again.'}, status=400)
+    if not is_new:
+        try:
+            user = User.objects.get(username=phone)
+        except User.DoesNotExist:
+            return JsonResponse({'error': 'Account not found. Please try signing up.'}, status=400)
+        del request.session['modal_auth']
+        auth_login(request, user, backend='tickets.backends.PhoneBackend')
+        return JsonResponse({'status': 'logged_in'})
+    # New user — keep session data, signal profile step needed
+    request.session['modal_auth']['verified'] = True
+    return JsonResponse({'status': 'new_user'})
+
+
+@require_http_methods(["POST"])
+def modal_auth_complete(request):
+    """JSON endpoint: create account for new users in inline modal auth flow."""
+    import json as _json
+    from django.contrib.auth import login as auth_login
+    from django.contrib.auth.models import User
+    try:
+        body = _json.loads(request.body)
+    except (ValueError, KeyError):
+        return JsonResponse({'error': 'Invalid request.'}, status=400)
+    session_data = request.session.get('modal_auth')
+    if not session_data or not session_data.get('verified'):
+        return JsonResponse({'error': 'Session expired. Please start over.'}, status=400)
+    phone = session_data['phone']
+    first_name = (body.get('first_name') or '').strip()
+    last_name = (body.get('last_name') or '').strip()
+    email = (body.get('email') or '').strip()
+    if not first_name or not email:
+        return JsonResponse({'error': 'First name and email are required.'}, status=400)
+    if User.objects.filter(username=phone).exists():
+        return JsonResponse({'error': 'An account with this phone already exists. Please log in.'}, status=400)
+    user = User.objects.create(
+        username=phone,
+        email=email,
+        first_name=first_name,
+        last_name=last_name,
+    )
+    user.set_unusable_password()
+    user.save()
+    UserProfile.objects.create(
+        user=user,
+        role=UserProfile.Role.ATTENDEE,
+        phone_number=phone,
+    )
+    del request.session['modal_auth']
+    from django.contrib.auth import login as auth_login
+    auth_login(request, user, backend='tickets.backends.PhoneBackend')
+    return JsonResponse({'status': 'logged_in'})
 
 
 class LogoutView(auth_views.LogoutView):
@@ -3958,8 +4204,8 @@ def checkout_payment(request, event_id):
     total_dollars = Decimal(total_cents) / 100
 
     if request.method == 'POST' and is_free:
-        buyer_name = request.POST.get('buyer_name', '').strip()
-        buyer_email = request.POST.get('buyer_email', '').strip().lower()
+        buyer_name = request.user.get_full_name() or request.user.email
+        buyer_email = request.user.email.strip().lower()
         if not buyer_name or not buyer_email:
             return render(request, 'tickets/buy/checkout_payment.html', {
                 'event': event,
@@ -3968,7 +4214,7 @@ def checkout_payment(request, event_id):
                 'total_dollars': total_dollars,
                 'is_free': is_free,
                 'stripe_publishable_key': django_settings.STRIPE_PUBLISHABLE_KEY,
-                'error': 'Please provide your name and email.',
+                'error': 'Could not retrieve your account details. Please log in and try again.',
             })
 
         with transaction.atomic():
@@ -4026,14 +4272,10 @@ def checkout_payment(request, event_id):
         request.session.pop(f'promo_{event_id}', None)
         return redirect(f"{reverse_lazy('tickets:checkout_success')}?order_id={order.id}")
 
-    user_name = ''
-    user_email = ''
     saved_pm = None
 
     if request.user.is_authenticated:
         user = request.user
-        user_name = user.get_full_name() or user.email
-        user_email = user.email
         try:
             profile = user.profile
             if profile.stripe_pm_id and profile.stripe_pm_last4:
@@ -4056,8 +4298,6 @@ def checkout_payment(request, event_id):
         'total_dollars': total_dollars,
         'is_free': is_free,
         'stripe_publishable_key': django_settings.STRIPE_PUBLISHABLE_KEY,
-        'user_name': user_name,
-        'user_email': user_email,
         'saved_pm': saved_pm,
         'user_is_authenticated': request.user.is_authenticated,
         'subtotal': Decimal(total_cents) / 100,
@@ -4092,10 +4332,10 @@ def create_payment_intent(request, event_id):
     except (ValueError, TypeError):
         return JsonResponse({'error': 'Invalid request.'}, status=400)
 
-    buyer_name = (data.get('buyer_name') or '').strip()
-    buyer_email = (data.get('buyer_email') or '').strip().lower()
+    buyer_name = request.user.get_full_name() or request.user.email
+    buyer_email = request.user.email.strip().lower()
     if not buyer_name or not buyer_email:
-        return JsonResponse({'error': 'Name and email are required.'}, status=400)
+        return JsonResponse({'error': 'Could not retrieve your account details. Please log in and try again.'}, status=400)
 
     save_card    = bool(data.get('save_card', False))
     use_saved_pm = (data.get('use_saved_pm') or '').strip()

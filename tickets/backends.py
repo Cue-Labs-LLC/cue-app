@@ -40,3 +40,21 @@ class PhoneBackend:
             return User.objects.get(pk=user_id)
         except User.DoesNotExist:
             return None
+
+
+class EmailOTPBackend:
+    """Authenticate users by email address after Twilio has already verified the OTP."""
+
+    def authenticate(self, request, email=None, **kwargs):
+        if not email:
+            return None
+        try:
+            return User.objects.get(email__iexact=email)
+        except User.DoesNotExist:
+            return None
+
+    def get_user(self, user_id):
+        try:
+            return User.objects.get(pk=user_id)
+        except User.DoesNotExist:
+            return None

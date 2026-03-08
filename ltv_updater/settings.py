@@ -229,6 +229,7 @@ LOGOUT_REDIRECT_URL = '/login/'
 AUTHENTICATION_BACKENDS = [
     'tickets.backends.EmailBackend',
     'tickets.backends.PhoneBackend',
+    'tickets.backends.EmailOTPBackend',
 ]
 
 # Session settings — stay logged in for 30 days; OTP only required once per session
