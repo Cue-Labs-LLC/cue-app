@@ -60,7 +60,13 @@
                             Free
                             {% endif %}
                         </td>
-                        <td><i class="bi bi-chevron-right text-muted"></i></td>
+                        <td>
+                            {% if order.qr_code %}
+                            <img src="data:image/png;base64,{{ order.qr_code }}" alt="Ticket QR Code" width="60" height="60">
+                            {% else %}
+                            <i class="bi bi-chevron-right text-muted"></i>
+                            {% endif %}
+                        </td>
                     </tr>
                     {% endfor %}
                 </tbody>

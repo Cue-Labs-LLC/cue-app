@@ -57,6 +57,14 @@
         </div>
         {% endif %}
 
+        {% if show_qr_code %}
+        <div style="margin: 0 0 24px; text-align: center;">
+            <p style="margin: 0 0 12px; font-size: 13px; color: #999; text-transform: uppercase; letter-spacing: 0.05em;">Ticket QR code</p>
+            <img src="cid:qrcode" alt="Ticket QR Code" width="180" height="180" style="display: block; margin: 0 auto;">
+            <p style="color: #555; font-size: 13px; margin: 12px 0 0;">Show this QR code at the door for check-in.</p>
+        </div>
+        {% endif %}
+
         <p style="color: #999; font-size: 13px; margin: 32px 0 0; text-align: center;">
             Questions? Reply to this email and we'll be happy to help.
         </p>

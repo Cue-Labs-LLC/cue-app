@@ -134,10 +134,13 @@ def send_org_invite_email_task(self, invitation_id):
 @shared_task(bind=True, max_retries=2, default_retry_delay=30)
 def send_order_confirmation_email_task(self, order_id):
     """Send an order confirmation email to the customer."""
-    from django.core.mail import send_mail
+    from email.mime.image import MIMEImage
+
+    from django.core.mail import EmailMultiAlternatives
     from django.template.loader import render_to_string
     from django.conf import settings
     from tickets.models import TicketOrder
+    from tickets.utils import generate_qr_png_bytes
 
     try:
         order = TicketOrder.objects.select_related(
@@ -148,23 +151,33 @@ def send_order_confirmation_email_task(self, order_id):
         return
 
     customer = order.customer
+    qr_png_bytes = generate_qr_png_bytes(order.order_number)
     context = {
         'order': order,
         'customer': customer,
         'event': order.event,
         'tickets': list(order.tickets.all()),
+        'show_qr_code': bool(qr_png_bytes),
     }
     html_body = render_to_string('tickets/buy/order_confirmation_email.html', context)
     text_body = render_to_string('tickets/buy/order_confirmation_email.txt', context)
 
+    subject = f"Your order confirmation — {order.event.name}"
+    msg = EmailMultiAlternatives(
+        subject=subject,
+        body=text_body,
+        from_email=settings.DEFAULT_FROM_EMAIL,
+        to=[customer.email],
+    )
+    msg.attach_alternative(html_body, 'text/html')
+    if qr_png_bytes:
+        qr_attachment = MIMEImage(qr_png_bytes)
+        qr_attachment.add_header('Content-ID', '<qrcode>')
+        qr_attachment.add_header('Content-Disposition', 'inline', filename='qrcode.png')
+        msg.attach(qr_attachment)
+
     try:
-        send_mail(
-            subject=f"Your order confirmation — {order.event.name}",
-            message=text_body,
-            from_email=settings.DEFAULT_FROM_EMAIL,
-            recipient_list=[customer.email],
-            html_message=html_body,
-        )
+        msg.send()
         logger.info("Sent order confirmation email for order %s to %s", order_id, customer.email)
     except Exception as exc:
         logger.exception("Failed to send order confirmation email for order %s", order_id)

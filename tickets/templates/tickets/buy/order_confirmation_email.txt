@@ -14,4 +14,6 @@ Tickets:
 {% endfor %}
 Total: {% if order.total_amount %}${{ order.total_amount }}{% else %}Free{% endif %}
 
+Your ticket QR code is in the HTML version of this email.
+
 Questions? Reply to this email and we'll be happy to help.

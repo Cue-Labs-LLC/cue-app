@@ -1,8 +1,28 @@
 """Organization helpers for scoping data by current user's organization."""
 
+import base64
+import io
 from functools import wraps
 
 from django.shortcuts import redirect
+
+
+def generate_qr_b64(data: str) -> str:
+    """Return a base64-encoded PNG QR code for the given data string."""
+    png_bytes = generate_qr_png_bytes(data)
+    return base64.b64encode(png_bytes).decode() if png_bytes else ''
+
+
+def generate_qr_png_bytes(data: str) -> bytes | None:
+    """Return PNG bytes for a QR code of the given data, or None if qrcode is unavailable."""
+    try:
+        import qrcode
+        img = qrcode.make(data)
+        buf = io.BytesIO()
+        img.save(buf, format='PNG')
+        return buf.getvalue()
+    except ImportError:
+        return None
 
 
 def get_organization(request):
