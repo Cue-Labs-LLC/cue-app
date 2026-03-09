@@ -507,6 +507,10 @@ a:hover {
     padding: 6px 12px;
 }
 
+.table-responsive {
+    min-width: 0;
+}
+
 .table tfoot th,
 .table tfoot td {
     border-top: 2px solid var(--border);
@@ -1149,6 +1153,11 @@ code {
 
     .content {
         padding: 20px 16px;
+        min-width: 0; /* allow shrink so table-responsive can scroll */
+    }
+
+    .content .card {
+        min-width: 0; /* ensure Events list and dashboard Events table can scroll on /events and /dashboard */
     }
 
     .stats-grid {
