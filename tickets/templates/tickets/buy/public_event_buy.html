@@ -54,7 +54,7 @@
             content_name: '{{ event.name|escapejs }}',
             content_ids: ['{{ event.id }}'],
             content_type: 'product'
-        });
+        }, { eventID: '{{ view_event_id }}' });
 
         var prevValues = {};
         document.querySelectorAll('input[type=number]').forEach(function(inp) {

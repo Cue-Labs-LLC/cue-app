@@ -63,7 +63,7 @@
             currency: 'USD',
             num_items: {% for item in cart %}{{ item.quantity }}{% if not forloop.last %} + {% endif %}{% endfor %},
             content_type: 'product'
-        });
+        }, { eventID: '{{ initcheckout_event_id }}' });
     });
     </script>
     {% endif %}
@@ -317,8 +317,12 @@ document.addEventListener('DOMContentLoaded', function () {
             return v ? v[2] : null;
         }
 
+        var fbp = getCookie('_fbp') || '';
+        var fbc = getCookie('_fbc') || '';
         var body = {
             save_card: saveCardCheckbox ? saveCardCheckbox.checked : false,
+            fbp: fbp,
+            fbc: fbc,
         };
         if (usingSavedPm && config.savedPmId) {
             body.use_saved_pm = config.savedPmId;

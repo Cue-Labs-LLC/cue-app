@@ -86,6 +86,10 @@ class Organization(BaseModel):
         default=False,
         help_text='True after Stripe confirms details_submitted and charges_enabled.',
     )
+    meta_capi_access_token = models.CharField(
+        max_length=255, blank=True, default='',
+        help_text='Meta Conversions API access token for server-side event reporting.',
+    )
 
     class Meta:
         ordering = ['name']
@@ -1227,6 +1231,10 @@ class StripeCheckoutSession(BaseModel):
         related_name='stripe_checkout_session',
     )
     fulfilled_at = models.DateTimeField(null=True, blank=True)
+    fb_browser_data = models.JSONField(
+        default=dict, blank=True,
+        help_text='Stores _fbp, _fbc, client IP, user agent for CAPI Purchase call on webhook.',
+    )
 
     class Meta:
         indexes = [

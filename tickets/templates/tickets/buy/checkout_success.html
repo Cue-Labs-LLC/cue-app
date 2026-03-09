@@ -139,7 +139,7 @@ fbq('track', 'Purchase', {
     currency: 'USD',
     content_type: 'product',
     content_ids: [{% for id in pixel_content_ids %}'{{ id }}'{% if not forloop.last %}, {% endif %}{% endfor %}]
-});
+}, { eventID: '{{ purchase_event_id }}' });
 </script>
 {% elif session and session.status == 'completed' %}
 <script>
@@ -148,7 +148,7 @@ fbq('track', 'Purchase', {
     currency: 'USD',
     content_type: 'product',
     content_ids: [{% for id in pixel_content_ids %}'{{ id }}'{% if not forloop.last %}, {% endif %}{% endfor %}]
-});
+}, { eventID: '{{ purchase_event_id }}' });
 </script>
 {% endif %}
 {% endif %}

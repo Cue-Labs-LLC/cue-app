@@ -3,6 +3,7 @@ import io
 import os
 import json
 import random
+import uuid as _uuid
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 from django.shortcuts import render, redirect, get_object_or_404
@@ -4087,11 +4088,29 @@ def public_event_buy(request, event_id):
     available_pairs = all_pairs[:len(available_types)]
     locked_pairs    = all_pairs[len(available_types):]
 
+    view_event_id = str(_uuid.uuid4())
+    pixel_id = event.facebook_pixel_id
+    capi_token = event.organization.meta_capi_access_token
+    if pixel_id and capi_token:
+        from tickets.services.facebook_capi import send_capi_event
+        _client_ip = request.META.get('HTTP_X_FORWARDED_FOR', request.META.get('REMOTE_ADDR', '')).split(',')[0].strip()
+        send_capi_event(
+            pixel_id, capi_token, 'ViewContent',
+            content_ids=[str(tt.id) for tt in all_types],
+            client_ip=_client_ip,
+            client_user_agent=request.META.get('HTTP_USER_AGENT', ''),
+            fbp=request.COOKIES.get('_fbp'),
+            fbc=request.COOKIES.get('_fbc'),
+            event_id=view_event_id,
+            event_source_url=request.build_absolute_uri(),
+        )
+
     return render(request, 'tickets/buy/public_event_buy.html', {
         'event': event,
         'form': form,
         'available_pairs': available_pairs,
         'locked_pairs': locked_pairs,
+        'view_event_id': view_event_id,
     })
 
 
@@ -4324,6 +4343,25 @@ def checkout_payment(request, event_id):
     fee_cents = calculate_platform_fee_cents(discounted_subtotal_cents) if not is_free else 0
     grand_total_cents = discounted_subtotal_cents + fee_cents
 
+    initcheckout_event_id = str(_uuid.uuid4())
+    request.session[f'initcheckout_eid_{event_id}'] = initcheckout_event_id
+    pixel_id = event.facebook_pixel_id
+    capi_token = event.organization.meta_capi_access_token
+    if pixel_id and capi_token:
+        from tickets.services.facebook_capi import send_capi_event
+        _client_ip = request.META.get('HTTP_X_FORWARDED_FOR', request.META.get('REMOTE_ADDR', '')).split(',')[0].strip()
+        send_capi_event(
+            pixel_id, capi_token, 'InitiateCheckout',
+            value=total_dollars,
+            content_ids=[item['saleable_ticket_type_id'] for item in cart],
+            client_ip=_client_ip,
+            client_user_agent=request.META.get('HTTP_USER_AGENT', ''),
+            fbp=request.COOKIES.get('_fbp'),
+            fbc=request.COOKIES.get('_fbc'),
+            event_id=initcheckout_event_id,
+            event_source_url=request.build_absolute_uri(),
+        )
+
     return render(request, 'tickets/buy/checkout_payment.html', {
         'event': event,
         'cart': cart,
@@ -4339,6 +4377,7 @@ def checkout_payment(request, event_id):
         'discount_cents': discount_cents,
         'discount_dollars': Decimal(discount_cents) / 100,
         'promo_applied': promo_session,
+        'initcheckout_event_id': initcheckout_event_id,
     })
 
 
@@ -4372,6 +4411,16 @@ def create_payment_intent(request, event_id):
 
     save_card    = bool(data.get('save_card', False))
     use_saved_pm = (data.get('use_saved_pm') or '').strip()
+    _capi_client_ip = request.META.get('HTTP_X_FORWARDED_FOR', request.META.get('REMOTE_ADDR', '')).split(',')[0].strip()
+    fb_browser_data = {
+        'fbp': data.get('fbp', ''),
+        'fbc': data.get('fbc', ''),
+        'client_ip': _capi_client_ip,
+        'client_user_agent': request.META.get('HTTP_USER_AGENT', ''),
+        'event_source_url': request.build_absolute_uri(
+            f'/buy/{event_id}/success/'
+        ),
+    }
 
     # Re-validate availability
     for item in cart:
@@ -4463,6 +4512,7 @@ def create_payment_intent(request, event_id):
         platform_fee_cents=fee_cents,
         promo_code_id=promo_code_id,
         discount_cents=discount_cents,
+        fb_browser_data=fb_browser_data,
     )
 
     return JsonResponse({
@@ -4518,12 +4568,39 @@ def checkout_success(request):
     elif session_obj and session_obj.line_items_snapshot:
         pixel_content_ids = [item['saleable_ticket_type_id'] for item in session_obj.line_items_snapshot]
 
+    purchase_event_id = ''
+    if order_obj:
+        purchase_event_id = f'purchase_{order_obj.order_number}'
+        pixel_id_for_capi = _event_for_pixel.facebook_pixel_id if _event_for_pixel else ''
+        capi_token = _event_for_pixel.organization.meta_capi_access_token if _event_for_pixel else ''
+        if pixel_id_for_capi and capi_token:
+            from tickets.services.facebook_capi import send_capi_event
+            _client_ip = request.META.get('HTTP_X_FORWARDED_FOR', request.META.get('REMOTE_ADDR', '')).split(',')[0].strip()
+            name_parts = (order_obj.customer.name or '').split()
+            send_capi_event(
+                pixel_id_for_capi, capi_token, 'Purchase',
+                value=order_obj.total_amount,
+                content_ids=pixel_content_ids,
+                email=order_obj.customer.email,
+                first_name=name_parts[0] if name_parts else '',
+                last_name=' '.join(name_parts[1:]) if len(name_parts) > 1 else '',
+                client_ip=_client_ip,
+                client_user_agent=request.META.get('HTTP_USER_AGENT', ''),
+                fbp=request.COOKIES.get('_fbp'),
+                fbc=request.COOKIES.get('_fbc'),
+                event_id=purchase_event_id,
+                event_source_url=request.build_absolute_uri(),
+            )
+    elif session_obj and session_obj.ticket_order:
+        purchase_event_id = f'purchase_{session_obj.ticket_order.order_number}'
+
     return render(request, 'tickets/buy/checkout_success.html', {
         'session': session_obj,
         'order': order_obj,
         'qr_code': qr_code,
         'pixel_id': _event_for_pixel.facebook_pixel_id if _event_for_pixel else '',
         'pixel_content_ids': pixel_content_ids,
+        'purchase_event_id': purchase_event_id,
     })
 
 
@@ -4642,6 +4719,28 @@ def _fulfill_payment_intent(payment_intent):
 
         from tickets.tasks import send_order_confirmation_email_task
         send_order_confirmation_email_task.delay(str(order.id))
+
+        pixel_id = event.facebook_pixel_id
+        capi_token = getattr(org, 'meta_capi_access_token', '')
+        fb = session_obj.fb_browser_data or {}
+        if pixel_id and capi_token:
+            from tickets.services.facebook_capi import send_capi_event
+            content_ids = [item['saleable_ticket_type_id'] for item in session_obj.line_items_snapshot]
+            name_parts = (customer.name or '').split()
+            send_capi_event(
+                pixel_id, capi_token, 'Purchase',
+                value=order.total_amount,
+                content_ids=content_ids,
+                email=customer.email,
+                first_name=name_parts[0] if name_parts else '',
+                last_name=' '.join(name_parts[1:]) if len(name_parts) > 1 else '',
+                client_ip=fb.get('client_ip', ''),
+                client_user_agent=fb.get('client_user_agent', ''),
+                fbp=fb.get('fbp', ''),
+                fbc=fb.get('fbc', ''),
+                event_id=f'purchase_{order.order_number}',
+                event_source_url=fb.get('event_source_url', ''),
+            )
 
         if payment_intent.get('setup_future_usage') == 'off_session':
             user_id = payment_intent.get('metadata', {}).get('user_id', '')
