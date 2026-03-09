@@ -81,10 +81,15 @@
                         {% endwith %}
                         <td>{% if event.id in event_ids_show_placeholder %}—{% else %}{{ event.total_tickets|default:0 }}{% endif %}</td>
                         <td>
-                            <div class="d-flex gap-1">
-                                <a href="{% url 'tickets:event_detail' event.id %}" class="btn btn-sm btn-outline-secondary">View</a>
+                            <div class="btn-group" role="group" aria-label="Event actions">
+                                {% if event.ticketing_type == 'direct' and direct_ticketing_enabled %}
+                                <a href="{% url 'tickets:public_event_buy' event.id %}" class="btn btn-sm btn-outline-secondary btn-icon" title="View ticket page" target="_blank" rel="noopener noreferrer"><i class="bi bi-box-arrow-up-right"></i></a>
+                                {% elif event.ticket_link %}
+                                <a href="{{ event.ticket_link }}" class="btn btn-sm btn-outline-secondary btn-icon" title="View ticket link" target="_blank" rel="noopener noreferrer"><i class="bi bi-box-arrow-up-right"></i></a>
+                                {% endif %}
+                                <a href="{% url 'tickets:event_edit' event.id %}" class="btn btn-sm btn-outline-secondary btn-icon" title="Edit event"><i class="bi bi-pencil"></i></a>
                                 {% if event.ticketing_type != 'direct' or not direct_ticketing_enabled or event.effective_status == 'draft' %}
-                                <a href="{% url 'tickets:event_delete' event.id %}" class="btn btn-sm btn-outline-danger"><i class="bi bi-trash"></i></a>
+                                <a href="{% url 'tickets:event_delete' event.id %}" class="btn btn-sm btn-outline-danger btn-icon" title="Delete event"><i class="bi bi-trash"></i></a>
                                 {% endif %}
                             </div>
                         </td>

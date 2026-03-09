@@ -50,14 +50,12 @@
                         <th>Date</th>
                         <th>Venue</th>
                         <th>Revenue</th>
-                        <th>Uploads</th>
-                        <th>Ticket Link</th>
-                        <th></th>
+                        <th>View Event</th>
                     </tr>
                 </thead>
                 <tbody>
                     {% for event in page_obj %}
-                    <tr>
+                    <tr style="cursor:pointer" onclick="window.location='{% url 'tickets:event_detail' event.id %}'">
                         <td>
                             {% if event.id in event_ids_show_warning %}
                                 <i class="bi bi-exclamation-triangle-fill text-warning me-1" title="No uploads for past event"></i>
@@ -67,16 +65,12 @@
                         <td>{{ event.start_date|date:"M d, Y" }}</td>
                         <td>{{ event.venue.name|default:"—" }}</td>
                         <td>{% if event.id in event_ids_show_placeholder %}—{% else %}<span class="revenue">${{ event.total_revenue|currency }}</span>{% endif %}</td>
-                        <td>{% if event.id in event_ids_show_placeholder %}—{% else %}{{ event.upload_count }}{% endif %}</td>
-                        <td>
+                        <td onclick="event.stopPropagation()">
                             {% if event.ticket_link %}
                                 <a href="{{ event.ticket_link }}" target="_blank" rel="noopener noreferrer" title="Buy tickets"><i class="bi bi-link-45deg"></i></a>
                             {% else %}
                                 —
                             {% endif %}
-                        </td>
-                        <td>
-                            <a href="{% url 'tickets:event_detail' event.id %}" class="btn btn-sm btn-outline-secondary">View</a>
                         </td>
                     </tr>
                     {% endfor %}

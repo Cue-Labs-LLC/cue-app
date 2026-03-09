@@ -1515,6 +1515,30 @@ gmp-place-autocomplete#venue-address-autocomplete {
    Target: 390px (iPhone 16) minimum
    ============================================= */
 
+/* -- Icon-only Button (table actions) ---------- */
+.btn-icon {
+    width: 30px;
+    height: 30px;
+    padding: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    line-height: 1;
+    flex-shrink: 0;
+}
+
+/* Mute table action icons at rest, reveal on row hover */
+.table tbody tr .btn-icon {
+    opacity: 0.45;
+    transition: opacity 0.15s ease, background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+
+.table tbody tr:hover .btn-icon,
+.table tbody tr .btn-icon:hover,
+.table tbody tr .btn-icon:focus {
+    opacity: 1;
+}
+
 /* -- Block 1: Chart Container Override -------- */
 @media (max-width: 575px) {
     .chart-container {
