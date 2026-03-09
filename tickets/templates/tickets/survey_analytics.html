@@ -195,6 +195,7 @@
                         <th>Rating</th>
                         <th>NPS <i class="bi bi-info-circle" data-bs-toggle="tooltip" title="NPS score given by the respondent (0–10). 9–10 = Promoter, 7–8 = Passive, 0–6 = Detractor." style="cursor:help;"></i></th>
                         <th>Event</th>
+                        <th>Event Date</th>
                         <th>Feedback</th>
                     </tr>
                 </thead>
@@ -212,6 +213,7 @@
                             {% else %}—{% endif %}
                         </td>
                         <td>{{ resp.event.name|default:"—" }}</td>
+                        <td class="text-nowrap">{{ resp.event.start_date|date:"M j, Y"|default:"—" }}</td>
                         <td style="max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"
                             title="{{ resp.text_feedback }}">
                             {{ resp.text_feedback|default:"—" }}
@@ -219,7 +221,7 @@
                     </tr>
                     {% empty %}
                     <tr>
-                        <td colspan="6" class="text-center text-muted py-3">No responses found.</td>
+                        <td colspan="7" class="text-center text-muted py-3">No responses found.</td>
                     </tr>
                     {% endfor %}
                 </tbody>
