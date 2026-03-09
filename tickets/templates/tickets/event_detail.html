@@ -166,7 +166,9 @@
         <input type="file" id="flyer-file-input" accept="image/*,.heic,.heif" class="d-none" data-flyer-url="{% url 'tickets:event_flyer_upload' event.id %}">
         <div id="flyer-drop-zone" class="flyer-drop-zone position-relative" style="min-height: 200px; cursor: pointer;">
             {% if event.flyer %}
-            <img id="event-flyer-img" src="{{ event.flyer.url }}" alt="{{ event.name }} event image" class="img-fluid" style="max-height: 400px; width: auto; object-fit: contain;">
+            <div class="flyer-4-5 mx-auto" style="max-width: 320px;">
+                <img id="event-flyer-img" src="{{ event.flyer.url }}" alt="{{ event.name }} event image">
+            </div>
             <p class="small text-muted mt-2 mb-0">Click or drag a new image to replace</p>
             {% else %}
             <div class="d-flex flex-column align-items-center justify-content-center py-5 text-muted">
@@ -803,7 +805,7 @@ document.addEventListener('DOMContentLoaded', function() {
                         if (img) {
                             img.src = result.data.url + (result.data.url.indexOf('?') === -1 ? '?' : '&') + 't=' + Date.now();
                         } else {
-                            flyerZone.innerHTML = '<img id="event-flyer-img" src="' + result.data.url + '" alt="Event flyer" class="img-fluid" style="max-height: 400px; width: auto; object-fit: contain;"><p class="small text-muted mt-2 mb-0">Click or drag a new image to replace</p>';
+                            flyerZone.innerHTML = '<div class="flyer-4-5 mx-auto" style="max-width: 320px;"><img id="event-flyer-img" src="' + result.data.url + '" alt="Event flyer"></div><p class="small text-muted mt-2 mb-0">Click or drag a new image to replace</p>';
                         }
                         showAlert('success', 'Flyer updated.');
                     } else {

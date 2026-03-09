@@ -51,10 +51,8 @@
                     {% if event.flyer %}
                     <div class="mb-3">
                         <label class="form-label fw-semibold">Current Flyer</label>
-                        <div>
-                            <img src="{{ event.flyer.url }}?v={{ event.updated_at|date:'U' }}" alt="{{ event.name }} flyer"
-                                 class="img-fluid rounded"
-                                 style="max-height: 200px; width: auto; object-fit: contain;">
+                        <div class="flyer-4-5 rounded" style="max-width: 160px;">
+                            <img src="{{ event.flyer.url }}?v={{ event.updated_at|date:'U' }}" alt="{{ event.name }} flyer" class="rounded">
                         </div>
                         <p class="small text-muted mb-0">To replace the flyer, use the event detail page (click the event name above).</p>
                     </div>

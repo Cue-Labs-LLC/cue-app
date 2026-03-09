@@ -1497,3 +1497,15 @@ gmp-place-autocomplete#venue-address-autocomplete {
         bottom: 16px;
     }
 }
+
+/* Event flyer 4:5 aspect ratio with crop */
+.flyer-4-5 {
+    aspect-ratio: 4/5;
+    overflow: hidden;
+}
+.flyer-4-5 img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+}
