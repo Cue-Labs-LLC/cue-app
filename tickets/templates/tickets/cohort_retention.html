@@ -41,7 +41,7 @@
     {% endfor %}
   </div>
   {% if active_window == 'custom' %}
-  <form class="d-flex align-items-center gap-2" method="get">
+  <form class="d-flex flex-wrap align-items-center gap-2" method="get">
     <input type="hidden" name="window" value="custom">
     <input type="date" name="start" class="form-control form-control-sm" value="{{ window_start }}" style="width:auto">
     <span class="text-muted small">to</span>

@@ -6,6 +6,7 @@
 {% block extra_css %}
 <style>
 .flyer-drop-zone.flyer-dragover { outline: 2px dashed var(--bs-primary); outline-offset: 4px; background: rgba(var(--bs-primary-rgb), 0.05); }
+@media (max-width: 575px) { .page-header-actions .btn { font-size: 12px; padding: 5px 10px; } }
 </style>
 {% endblock %}
 
@@ -26,7 +27,7 @@
 
 <div class="page-header">
     <div>
-        <h1>
+        <h1 class="d-flex flex-wrap align-items-center gap-1" style="line-height: 1.4;">
             {{ event.name }}
             {% if event.ticketing_type == 'direct' and direct_ticketing_enabled %}
                 {% with eff=event.effective_status %}
@@ -218,9 +219,9 @@
                         <th>Ticket Type</th>
                         <th>Price</th>
                         <th>Sold</th>
-                        <th>Limit</th>
+                        <th class="d-none d-md-table-cell">Limit</th>
                         <th>Revenue</th>
-                        <th>Status</th>
+                        <th class="d-none d-md-table-cell">Status</th>
                         <th></th>
                     </tr>
                 </thead>
@@ -230,9 +231,9 @@
                         <td><strong>{{ tt.name }}</strong>{% if tt.description %}<br><small class="text-muted">{{ tt.description|truncatechars:60 }}</small>{% endif %}</td>
                         <td>${{ tt.price|currency }}</td>
                         <td>{{ tt.quantity_sold }}</td>
-                        <td>{% if tt.quantity_limit %}{{ tt.quantity_limit }}{% else %}<span class="text-muted">&infin;</span>{% endif %}</td>
+                        <td class="d-none d-md-table-cell">{% if tt.quantity_limit %}{{ tt.quantity_limit }}{% else %}<span class="text-muted">&infin;</span>{% endif %}</td>
                         <td>${{ tt.price|currency }} &times; {{ tt.quantity_sold }}</td>
-                        <td>
+                        <td class="d-none d-md-table-cell">
                             {% if tt.is_active %}<span class="badge bg-success">Active</span>{% else %}<span class="badge bg-secondary">Inactive</span>{% endif %}
                             {% if tt.is_sold_out %}<span class="badge bg-warning ms-1">Sold Out</span>{% endif %}
                         </td>
@@ -279,10 +280,10 @@
                 <thead>
                     <tr>
                         <th>Code</th>
-                        <th>Type</th>
+                        <th class="d-none d-md-table-cell">Type</th>
                         <th>Value</th>
                         <th>Uses</th>
-                        <th>Expires</th>
+                        <th class="d-none d-md-table-cell">Expires</th>
                         <th>Status</th>
                         <th></th>
                     </tr>
@@ -291,10 +292,10 @@
                     {% for promo in promo_codes %}
                     <tr>
                         <td><strong>{{ promo.code }}</strong></td>
-                        <td>{{ promo.get_discount_type_display }}</td>
+                        <td class="d-none d-md-table-cell">{{ promo.get_discount_type_display }}</td>
                         <td>{% if promo.discount_type == 'percentage' %}{{ promo.discount_value|floatformat:0 }}%{% else %}${{ promo.discount_value|floatformat:2 }}{% endif %}</td>
                         <td>{{ promo.times_used }}{% if promo.max_uses %} / {{ promo.max_uses }}{% else %} / &infin;{% endif %}</td>
-                        <td>{% if promo.expires_at %}{{ promo.expires_at|date:"M j, Y" }}{% else %}<span class="text-muted">Never</span>{% endif %}</td>
+                        <td class="d-none d-md-table-cell">{% if promo.expires_at %}{{ promo.expires_at|date:"M j, Y" }}{% else %}<span class="text-muted">Never</span>{% endif %}</td>
                         <td>{% if promo.is_active %}<span class="badge bg-success">Active</span>{% else %}<span class="badge bg-secondary">Inactive</span>{% endif %}</td>
                         <td>
                             <form method="post" action="{% url 'tickets:promo_code_delete' event.id promo.id %}" class="d-inline" onsubmit="return confirm('Delete promo code {{ promo.code }}?')">
@@ -427,12 +428,12 @@
                 <thead>
                     <tr>
                         <th>Filename</th>
-                        <th>Format</th>
-                        <th>Upload Date</th>
+                        <th class="d-none d-md-table-cell">Format</th>
+                        <th class="d-none d-md-table-cell">Upload Date</th>
                         <th>Status</th>
                         <th>Orders</th>
                         <th>Revenue</th>
-                        <th>Tickets</th>
+                        <th class="d-none d-md-table-cell">Tickets</th>
                         <th></th>
                     </tr>
                 </thead>
@@ -440,8 +441,8 @@
                     {% for stat in upload_stats %}
                     <tr>
                         <td><strong>{{ stat.upload.filename }}</strong></td>
-                        <td>{{ stat.upload.csv_format.name }}</td>
-                        <td>{{ stat.upload.uploaded_at|date:"M d, Y H:i" }}</td>
+                        <td class="d-none d-md-table-cell">{{ stat.upload.csv_format.name }}</td>
+                        <td class="d-none d-md-table-cell">{{ stat.upload.uploaded_at|date:"M d, Y H:i" }}</td>
                         <td>
                             <span class="badge bg-{% if stat.upload.status == 'completed' %}success{% elif stat.upload.status == 'failed' %}danger{% elif stat.upload.status == 'processing' %}warning{% else %}secondary{% endif %}">
                                 {{ stat.upload.get_status_display }}
@@ -449,7 +450,7 @@
                         </td>
                         <td>{{ stat.orders_count }}</td>
                         <td><span class="revenue">${{ stat.revenue|currency }}</span></td>
-                        <td>{{ stat.tickets_count }}</td>
+                        <td class="d-none d-md-table-cell">{{ stat.tickets_count }}</td>
                         <td>
                             <div class="d-flex gap-1">
                                 <a href="{% url 'tickets:upload_results' stat.upload.id %}" class="btn btn-sm btn-outline-secondary">Results</a>

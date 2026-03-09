@@ -22,7 +22,7 @@
     {% endfor %}
   </div>
   {% if active_window == 'custom' %}
-  <form class="d-flex align-items-center gap-2" method="get">
+  <form class="d-flex flex-wrap align-items-center gap-2" method="get">
     <input type="hidden" name="window" value="custom">
     <input type="date" name="start" class="form-control form-control-sm" value="{{ window_start }}" style="width:auto">
     <span class="text-muted small">to</span>
@@ -101,8 +101,8 @@
                 <thead>
                     <tr>
                         <th>Event</th>
-                        <th>Date</th>
-                        <th>Venue</th>
+                        <th class="d-none d-sm-table-cell">Date</th>
+                        <th class="d-none d-md-table-cell">Venue</th>
                         <th>Total</th>
                         <th>New</th>
                         <th>Returning</th>
@@ -113,8 +113,8 @@
                     {% for e in events %}
                     <tr>
                         <td><a href="{% url 'tickets:event_detail' e.event_id %}">{{ e.event_name }}</a></td>
-                        <td>{{ e.event_date }}</td>
-                        <td>{{ e.venue_name }}</td>
+                        <td class="d-none d-sm-table-cell">{{ e.event_date }}</td>
+                        <td class="d-none d-md-table-cell">{{ e.venue_name }}</td>
                         <td>{{ e.total|intcomma }}</td>
                         <td>{{ e.new_count|intcomma }}</td>
                         <td>{{ e.returning_count|intcomma }}</td>

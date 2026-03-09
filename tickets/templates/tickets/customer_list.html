@@ -40,11 +40,11 @@
                     <tr>
                         <th><a href="?sort=name&search={{ search_query }}&segment={{ segment_filter }}">Name <i class="bi bi-arrow-down-up"></i></a></th>
                         <th><a href="?sort=email&search={{ search_query }}&segment={{ segment_filter }}">Email <i class="bi bi-arrow-down-up"></i></a></th>
-                        <th>Phone</th>
+                        <th class="d-none d-sm-table-cell">Phone</th>
                         <th>Segment</th>
                         <th><a href="?sort=-lifetime_value&search={{ search_query }}&segment={{ segment_filter }}">Lifetime Value <i class="bi bi-arrow-down-up"></i></a></th>
-                        <th><a href="?sort=-last_order_date&search={{ search_query }}&segment={{ segment_filter }}">Last Order <i class="bi bi-arrow-down-up"></i></a></th>
-                        <th>Total Orders</th>
+                        <th class="d-none d-sm-table-cell"><a href="?sort=-last_order_date&search={{ search_query }}&segment={{ segment_filter }}">Last Order <i class="bi bi-arrow-down-up"></i></a></th>
+                        <th class="d-none d-sm-table-cell">Total Orders</th>
                         <th></th>
                     </tr>
                 </thead>
@@ -53,7 +53,7 @@
                     <tr>
                         <td><strong>{{ customer.name }}</strong></td>
                         <td>{{ customer.email }}</td>
-                        <td>{{ customer.phone|default:"—" }}</td>
+                        <td class="d-none d-sm-table-cell">{{ customer.phone|default:"—" }}</td>
                         <td>
                             {% if customer.rfm_segment %}
                             <span class="badge bg-{{ segment_badge_colors|get_item:customer.rfm_segment }}">{{ customer.rfm_segment }}</span>
@@ -62,8 +62,8 @@
                             {% endif %}
                         </td>
                         <td><span class="revenue">${{ customer.lifetime_value|currency }}</span></td>
-                        <td>{{ customer.last_order_date|date:"M d, Y"|default:"—" }}</td>
-                        <td>{{ customer.order_count }}</td>
+                        <td class="d-none d-sm-table-cell">{{ customer.last_order_date|date:"M d, Y"|default:"—" }}</td>
+                        <td class="d-none d-sm-table-cell">{{ customer.order_count }}</td>
                         <td><a href="{% url 'tickets:customer_detail' customer.id %}" class="btn btn-sm btn-outline-secondary">View</a></td>
                     </tr>
                     {% endfor %}

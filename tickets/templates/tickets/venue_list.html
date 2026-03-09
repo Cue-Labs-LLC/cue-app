@@ -13,7 +13,7 @@
 </div>
 
 <div class="search-bar">
-    <form method="get" class="d-flex gap-2 w-100">
+    <form method="get" class="d-flex flex-wrap gap-2 w-100">
         <input type="text" name="search" class="form-control" placeholder="Search by name, city, state, or country..." value="{{ search_query }}">
         <button type="submit" class="btn btn-outline-secondary"><i class="bi bi-search"></i></button>
         {% if search_query %}
@@ -30,11 +30,11 @@
                 <thead>
                     <tr>
                         <th>Name</th>
-                        <th>Street address</th>
+                        <th class="d-none d-md-table-cell">Street address</th>
                         <th>City</th>
-                        <th>State</th>
-                        <th>Country</th>
-                        <th>Capacity</th>
+                        <th class="d-none d-sm-table-cell">State</th>
+                        <th class="d-none d-sm-table-cell">Country</th>
+                        <th class="d-none d-md-table-cell">Capacity</th>
                         <th>Events</th>
                         <th></th>
                     </tr>
@@ -43,11 +43,11 @@
                     {% for venue in page_obj %}
                     <tr>
                         <td><strong>{{ venue.name }}</strong></td>
-                        <td>{{ venue.street_address|default:"—" }}</td>
+                        <td class="d-none d-md-table-cell">{{ venue.street_address|default:"—" }}</td>
                         <td>{{ venue.city }}</td>
-                        <td>{{ venue.state|default:"—" }}</td>
-                        <td>{{ venue.country|default:"—" }}</td>
-                        <td>{{ venue.capacity|default:"—" }}</td>
+                        <td class="d-none d-sm-table-cell">{{ venue.state|default:"—" }}</td>
+                        <td class="d-none d-sm-table-cell">{{ venue.country|default:"—" }}</td>
+                        <td class="d-none d-md-table-cell">{{ venue.capacity|default:"—" }}</td>
                         <td>{{ venue.event_count|default:0 }}</td>
                         <td><a href="{% url 'tickets:venue_edit' venue.id %}" class="btn btn-sm btn-outline-secondary"><i class="bi bi-pencil"></i> Edit</a></td>
                     </tr>

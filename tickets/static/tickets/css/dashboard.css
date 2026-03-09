@@ -1509,3 +1509,117 @@ gmp-place-autocomplete#venue-address-autocomplete {
     object-fit: cover;
     display: block;
 }
+
+/* =============================================
+   MOBILE RESPONSIVENESS
+   Target: 390px (iPhone 16) minimum
+   ============================================= */
+
+/* -- Block 1: Chart Container Override -------- */
+@media (max-width: 575px) {
+    .chart-container {
+        height: 260px;
+    }
+}
+
+/* -- Block 2: Page Header Actions Flex-Wrap --- */
+@media (max-width: 575px) {
+    .page-header-actions {
+        flex-wrap: wrap;
+    }
+}
+
+/* -- Block 3: Search Bar Flex-Wrap ------------ */
+@media (max-width: 575px) {
+    .search-bar {
+        flex-wrap: wrap;
+    }
+
+    .search-bar .form-control {
+        min-width: 0;
+        width: 100%;
+        flex-basis: 100%;
+    }
+}
+
+/* -- Block 4: Nav Tabs Horizontal Scroll ------ */
+@media (max-width: 767px) {
+    .nav-tabs {
+        flex-wrap: nowrap;
+        overflow-x: auto;
+        overflow-y: hidden;
+        -webkit-overflow-scrolling: touch;
+        scrollbar-width: none;
+    }
+
+    .nav-tabs::-webkit-scrollbar {
+        display: none;
+    }
+
+    .nav-tabs .nav-link {
+        white-space: nowrap;
+        flex-shrink: 0;
+    }
+}
+
+/* -- Block 5: Detail Meta Divider Hide -------- */
+@media (max-width: 575px) {
+    .detail-meta-divider {
+        display: none;
+    }
+}
+
+/* -- Block 6: Card Header Flex-Wrap ----------- */
+@media (max-width: 575px) {
+    .card-header.d-flex {
+        flex-wrap: wrap;
+        gap: 8px;
+    }
+}
+
+/* -- Block 7: Controls Bar Flex-Wrap ---------- */
+@media (max-width: 575px) {
+    .d-flex.align-items-center.gap-3 {
+        flex-wrap: wrap;
+        gap: 8px !important;
+    }
+}
+
+/* -- Block 8: Auth Card Mobile Padding -------- */
+@media (max-width: 575px) {
+    .auth-card {
+        padding: 24px 20px;
+    }
+}
+
+/* -- Block 9: Inline Chart Height Overrides --- */
+/* Targets inline style="height: NNNpx" chart wrappers */
+@media (max-width: 575px) {
+    .card-body [style*="height: 320px"] {
+        height: 220px !important;
+    }
+
+    .card-body [style*="height: 350px"] {
+        height: 220px !important;
+    }
+
+    .card-body [style*="height: 260px"] {
+        height: 200px !important;
+    }
+}
+
+/* -- Block 10: Date Range Input Full-Width ----- */
+@media (max-width: 575px) {
+    .d-flex.align-items-center.gap-2 .form-control-sm[type="date"] {
+        width: 100% !important;
+        flex: 1 1 auto;
+        min-width: 120px;
+    }
+}
+
+/* -- Block 11: Table Cell Padding Reduction ---- */
+@media (max-width: 575px) {
+    .table > :not(caption) > * > * {
+        padding: 8px 10px;
+    }
+}
