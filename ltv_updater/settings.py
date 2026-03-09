@@ -272,6 +272,20 @@ if IS_RENDER or not DEBUG:
     SECURE_HSTS_SECONDS = 31536000  # 1 year
     SECURE_HSTS_INCLUDE_SUBDOMAINS = True
     SECURE_HSTS_PRELOAD = True
+    # Tell Django to trust Render's SSL-terminating proxy so it correctly
+    # identifies requests as HTTPS (required for accurate CSRF origin matching).
+    SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+    # Explicitly list trusted origins so mobile browsers (which always send the
+    # Origin header) are not rejected by the CSRF middleware due to a scheme
+    # mismatch when Django infers http:// behind the proxy.
+    _csrf_origins = []
+    if RENDER_EXTERNAL_HOSTNAME:
+        _csrf_origins.append(f'https://{RENDER_EXTERNAL_HOSTNAME}')
+    _extra = os.environ.get('CSRF_TRUSTED_ORIGINS', '')
+    if _extra:
+        _csrf_origins.extend([o.strip() for o in _extra.split(',') if o.strip()])
+    if _csrf_origins:
+        CSRF_TRUSTED_ORIGINS = _csrf_origins
 
 # Celery configuration
 _CELERY_BROKER_URL = os.environ.get('CELERY_BROKER_URL')
