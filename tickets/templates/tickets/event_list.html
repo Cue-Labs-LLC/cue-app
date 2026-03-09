@@ -83,7 +83,7 @@
                         <td>
                             <div class="d-flex gap-1">
                                 <a href="{% url 'tickets:event_detail' event.id %}" class="btn btn-sm btn-outline-secondary">View</a>
-                                {% if event.ticketing_type != 'direct' or not direct_ticketing_enabled %}
+                                {% if event.ticketing_type != 'direct' or not direct_ticketing_enabled or event.effective_status == 'draft' %}
                                 <a href="{% url 'tickets:event_delete' event.id %}" class="btn btn-sm btn-outline-danger"><i class="bi bi-trash"></i></a>
                                 {% endif %}
                             </div>

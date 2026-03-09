@@ -2274,7 +2274,7 @@ def event_delete(request, event_id):
     event = get_object_or_404(Event.objects.filter(organization=org), id=event_id)
 
     from .models import TICKETING_TYPE_DIRECT
-    if event.ticketing_type == TICKETING_TYPE_DIRECT:
+    if event.ticketing_type == TICKETING_TYPE_DIRECT and event.status != EVENT_STATUS_DRAFT:
         messages.error(request, 'Direct-ticketing events cannot be deleted. Use "Cancel Event" to stop sales and refund buyers.')
         return redirect('tickets:event_detail', event_id=event.id)
 
