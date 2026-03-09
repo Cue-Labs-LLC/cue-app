@@ -66,6 +66,10 @@
     box-sizing: border-box;
 }
 
+html {
+    overflow-x: hidden;
+}
+
 body {
     font-family: var(--font-body);
     font-size: 14px;
@@ -74,6 +78,7 @@ body {
     background: var(--bg-page);
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
+    overflow-x: hidden;
 }
 
 h1, h2, h3, h4, h5, h6 {
@@ -104,6 +109,7 @@ a:hover {
 .app-layout {
     display: flex;
     min-height: 100vh;
+    overflow-x: hidden;
 }
 
 /* -- Sidebar ----------------------------------- */
@@ -283,6 +289,7 @@ a:hover {
 /* -- Main Wrapper ------------------------------ */
 .main-wrapper {
     flex: 1;
+    min-width: 0;
     margin-left: var(--sidebar-width);
     min-height: 100vh;
     display: flex;
@@ -317,9 +324,14 @@ a:hover {
 /* -- Content Area ------------------------------ */
 .content {
     flex: 1;
+    min-width: 0;         /* prevents flex child from overflowing at any viewport */
     padding: 32px;
     max-width: var(--content-max);
     width: 100%;
+}
+
+.content .card {
+    min-width: 0;         /* ensures cards containing tables can shrink */
 }
 
 /* Auth pages (login/signup): center content when no sidebar */
