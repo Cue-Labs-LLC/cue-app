@@ -4976,10 +4976,14 @@ def attendee_dashboard(request):
 
 @login_required
 def my_tickets(request):
-    """Attendee order history — shows all ticket orders for the logged-in user."""
+    """Attendee order history — shows ticket orders for direct ticketing events only."""
+    from .models import TICKETING_TYPE_DIRECT
     orders = (
         TicketOrder.objects
-        .filter(customer__email=request.user.email)
+        .filter(
+            customer__email=request.user.email,
+            event__ticketing_type=TICKETING_TYPE_DIRECT,
+        )
         .select_related('event', 'event__venue', 'customer')
         .prefetch_related('tickets')
         .order_by('-order_date')
