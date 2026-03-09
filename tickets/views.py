@@ -4958,7 +4958,7 @@ def switch_view_mode(request):
 def attendee_dashboard(request):
     """Attendee dashboard — shows upcoming purchasable events."""
     from .models import TICKETING_TYPE_DIRECT
-    today = django_tz.now().date()
+    today = django_tz.localtime(django_tz.now()).date()
     events_qs = (
         Event.objects.filter(
             deleted_at__isnull=True,
