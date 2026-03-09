@@ -7,7 +7,8 @@ Your order for {{ event.name }} is confirmed.
 Order number: {{ order.display_order_number }}
 Event: {{ event.name }}{% if event.start_date %}
 Date: {{ event.start_date|date:"N j, Y" }}{% endif %}{% if event.venue %}
-Venue: {{ event.venue.name }}{% endif %}
+Venue: {{ event.venue.name }}{% if event.venue.get_display_address %}
+Address: {{ event.venue.get_display_address }}{% endif %}{% endif %}
 
 Tickets:
 {% for ticket in tickets %}  {{ ticket.ticket_type }} — {% if ticket.price %}${{ ticket.price }}{% else %}Free{% endif %}

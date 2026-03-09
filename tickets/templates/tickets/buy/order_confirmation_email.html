@@ -33,6 +33,12 @@
                     <td style="padding: 4px 0; color: #555; font-size: 14px;">Venue</td>
                     <td style="padding: 4px 0; color: #1a1a2e; font-size: 14px; text-align: right;">{{ event.venue.name }}</td>
                 </tr>
+                {% if event.venue.get_display_address %}
+                <tr>
+                    <td style="padding: 4px 0; color: #555; font-size: 14px;"></td>
+                    <td style="padding: 4px 0; color: #666; font-size: 13px; text-align: right;">{{ event.venue.get_display_address }}</td>
+                </tr>
+                {% endif %}
                 {% endif %}
             </table>
         </div>
