@@ -4999,7 +4999,8 @@ def attendee_dashboard(request):
 def my_tickets(request):
     """Attendee order history — shows ticket orders for direct ticketing events only."""
     from .models import TICKETING_TYPE_DIRECT
-    orders = (
+    today = django_tz.localdate()  # Use app timezone so Upcoming/Past match where events are held
+    base_qs = (
         TicketOrder.objects
         .filter(
             customer__email=request.user.email,
@@ -5009,11 +5010,25 @@ def my_tickets(request):
         .prefetch_related('tickets')
         .order_by('-order_date')
     )
+    tab = (request.GET.get('tab') or 'upcoming').lower()
+    if tab == 'past':
+        # Event has ended: end_date < today, or no end_date and start_date < today
+        orders = base_qs.filter(
+            Q(event__end_date__lt=today)
+            | (Q(event__end_date__isnull=True) & Q(event__start_date__lt=today))
+        )
+    else:
+        # Upcoming: default; event end date (or start if no end) >= today
+        tab = 'upcoming'
+        orders = base_qs.filter(
+            Q(event__end_date__gte=today)
+            | (Q(event__end_date__isnull=True) & Q(event__start_date__gte=today))
+        )
     paginator = Paginator(orders, 12)
     page_obj = paginator.get_page(request.GET.get('page'))
     for order in page_obj:
         order.qr_code = generate_qr_b64(order.order_number) if not order.refunded_at else ''
-    return render(request, 'tickets/my_tickets.html', {'page_obj': page_obj})
+    return render(request, 'tickets/my_tickets.html', {'page_obj': page_obj, 'active_tab': tab})
 
 
 @login_required
