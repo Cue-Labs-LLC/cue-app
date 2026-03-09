@@ -128,13 +128,13 @@ def _parse_window(request):
     return None, None, 'all'
 
 
-def _event_list_cache_key(org_id, search, sort, page):
+def _event_list_cache_key(org_id, search, sort, page, status_filter):
     """Build a versioned, org-scoped cache key for the event_list response."""
     try:
         version = django_cache.get(f'event_list_ver:{org_id}', 0)
     except Exception:
         version = 0
-    return f'event_list:{version}:{org_id}:{search}:{sort}:{page}'
+    return f'event_list:{version}:{org_id}:{search}:{sort}:{page}:{status_filter}'
 
 
 def _invalidate_event_list_cache(org):
@@ -1876,13 +1876,16 @@ def event_list(request):
     search_query = request.GET.get('search', '')
     sort_by = request.GET.get('sort', '-start_date')
     page_number = request.GET.get('page', '1')
+    status_filter = request.GET.get('status', 'all')
+    if status_filter not in ('all', 'live', 'ended'):
+        status_filter = 'all'
 
     # Validate sort parameter
     if sort_by not in _ALLOWED_SORTS:
         sort_by = '-start_date'
 
     # Check cache first (skip gracefully when Redis is unavailable)
-    cache_key = _event_list_cache_key(org.pk, search_query, sort_by, page_number)
+    cache_key = _event_list_cache_key(org.pk, search_query, sort_by, page_number, status_filter)
     try:
         cached = django_cache.get(cache_key)
     except Exception:
@@ -1898,6 +1901,23 @@ def event_list(request):
             Q(name__icontains=search_query) |
             Q(venue__name__icontains=search_query) |
             Q(venue__city__icontains=search_query)
+        )
+
+    # Status filter: All / Live / Ended (matches effective_status logic)
+    today = django_tz.now().date()
+    if status_filter == 'live':
+        base_qs = base_qs.annotate(
+            effective_end_date=Coalesce(F('end_date'), F('start_date'))
+        ).filter(
+            Q(ticketing_type='direct', status=EVENT_STATUS_LIVE) & Q(effective_end_date__gte=today)
+        )
+    elif status_filter == 'ended':
+        base_qs = base_qs.annotate(
+            effective_end_date=Coalesce(F('end_date'), F('start_date'))
+        ).filter(
+            Q(status__in=[EVENT_STATUS_ENDED, EVENT_STATUS_CANCELLED]) |
+            (Q(ticketing_type='direct', status=EVENT_STATUS_LIVE) & Q(effective_end_date__lt=today)) |
+            (Q(ticketing_type='external') & Q(effective_end_date__lt=today))
         )
 
     if sort_by in _ANNOTATED_SORT_FIELDS:
@@ -1942,6 +1962,7 @@ def event_list(request):
         'page_obj': page_obj,
         'search_query': search_query,
         'sort_by': sort_by,
+        'status_filter': status_filter,
         'event_ids_show_warning': event_ids_show_warning,
         'event_ids_show_placeholder': event_ids_show_placeholder,
     }
