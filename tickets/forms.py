@@ -1097,7 +1097,7 @@ class DirectEventForm(forms.ModelForm):
 
     class Meta:
         model = Event
-        fields = ['name', 'summary', 'start_date', 'start_time', 'end_date', 'end_time', 'description', 'flyer', 'facebook_pixel_id']
+        fields = ['name', 'summary', 'start_date', 'start_time', 'end_date', 'end_time', 'description', 'flyer', 'facebook_pixel_id', 'venue']
         widgets = {
             'name': forms.TextInput(attrs={'class': 'form-control', 'placeholder': 'e.g., Familiar Faces'}),
             'summary': forms.TextInput(attrs={'class': 'form-control', 'placeholder': 'Short tagline shown on the ticket page (optional)'}),
