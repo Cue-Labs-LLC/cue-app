@@ -50,7 +50,7 @@
                         <th>Date</th>
                         <th>Venue</th>
                         <th>Revenue</th>
-                        <th>View Event</th>
+                        <th></th>
                     </tr>
                 </thead>
                 <tbody>
@@ -66,11 +66,17 @@
                         <td>{{ event.venue.name|default:"—" }}</td>
                         <td>{% if event.id in event_ids_show_placeholder %}—{% else %}<span class="revenue">${{ event.total_revenue|currency }}</span>{% endif %}</td>
                         <td onclick="event.stopPropagation()">
-                            {% if event.ticket_link %}
-                                <a href="{{ event.ticket_link }}" target="_blank" rel="noopener noreferrer" title="Buy tickets"><i class="bi bi-link-45deg"></i></a>
-                            {% else %}
-                                —
-                            {% endif %}
+                            <div class="btn-group" role="group" aria-label="Event actions">
+                                {% if event.ticketing_type == 'direct' %}
+                                <a href="{% url 'tickets:public_event_buy' event.id %}" class="btn btn-sm btn-outline-secondary btn-icon" title="View ticket page" target="_blank" rel="noopener noreferrer"><i class="bi bi-box-arrow-up-right"></i></a>
+                                {% elif event.ticket_link %}
+                                <a href="{{ event.ticket_link }}" class="btn btn-sm btn-outline-secondary btn-icon" title="View ticket link" target="_blank" rel="noopener noreferrer"><i class="bi bi-box-arrow-up-right"></i></a>
+                                {% endif %}
+                                <a href="{% url 'tickets:event_edit' event.id %}" class="btn btn-sm btn-outline-secondary btn-icon" title="Edit event"><i class="bi bi-pencil"></i></a>
+                                {% if event.ticketing_type != 'direct' or event.effective_status == 'draft' %}
+                                <a href="{% url 'tickets:event_delete' event.id %}" class="btn btn-sm btn-outline-danger btn-icon" title="Delete event"><i class="bi bi-trash"></i></a>
+                                {% endif %}
+                            </div>
                         </td>
                     </tr>
                     {% endfor %}
