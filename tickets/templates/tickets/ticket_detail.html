@@ -3,6 +3,28 @@
 
 {% block title %}Ticket Detail — {{ order.event.name }}{% endblock %}
 
+{% block extra_head %}
+<style>
+.venue-map-link {
+    color: var(--bs-secondary-color, #6c757d);
+    transition: color 0.15s ease;
+}
+.venue-map-link:hover {
+    color: var(--bs-primary, #0d6efd);
+    text-decoration: underline !important;
+}
+.venue-map-link .bi {
+    margin-top: 1px;
+    flex-shrink: 0;
+    opacity: 0.6;
+    transition: opacity 0.15s ease;
+}
+.venue-map-link:hover .bi {
+    opacity: 1;
+}
+</style>
+{% endblock %}
+
 {% block content %}
 <div class="page-header">
     <div>
@@ -85,6 +107,43 @@
                 </table>
             </div>
         </div>
+
+        {% if order.event.venue %}
+        <div class="card mb-4">
+            <div class="card-header">
+                <h5 class="mb-0">Venue</h5>
+            </div>
+            <div class="card-body">
+                <div class="fw-semibold">{{ order.event.venue.name }}</div>
+                {% with addr=order.event.venue %}
+                {% if addr.street_address or addr.city %}
+                <a id="venue-map-link" href="#" target="_blank" rel="noopener" class="small text-decoration-none d-inline-flex align-items-start gap-1 venue-map-link">
+                    <i class="bi bi-geo-alt"></i>
+                    <div>
+                    {% if addr.street_address %}<div>{{ addr.street_address }}</div>{% endif %}
+                    {% if addr.city %}
+                    <div>
+                        {{ addr.city }}{% if addr.state %}, {{ addr.state }}{% endif %}{% if addr.postal_code %} {{ addr.postal_code }}{% endif %}
+                    </div>
+                    {% endif %}
+                    </div>
+                </a>
+                <script>
+                (function() {
+                    var q = "{% if addr.street_address %}{{ addr.street_address|addslashes }} {% endif %}{% if addr.city %}{{ addr.city|addslashes }}{% if addr.state %}, {{ addr.state|addslashes }}{% endif %}{% if addr.postal_code %} {{ addr.postal_code|addslashes }}{% endif %}{% endif %}".trim();
+                    var encoded = encodeURIComponent(q);
+                    var isApple = /iPhone|iPad|iPod|Macintosh/.test(navigator.userAgent);
+                    var url = isApple
+                        ? "maps://maps.apple.com/?q=" + encoded
+                        : "https://maps.google.com/?q=" + encoded;
+                    document.getElementById('venue-map-link').href = url;
+                })();
+                </script>
+                {% endif %}
+                {% endwith %}
+            </div>
+        </div>
+        {% endif %}
 
         {% if order.tickets.all %}
         <div class="card">
