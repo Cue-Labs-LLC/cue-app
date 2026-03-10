@@ -21,7 +21,7 @@
 </div>
 
 <div class="row">
-    <div class="col-md-8">
+    <div class="col-12">
         {% if ticketing_type == 'direct' %}
         <div class="card mb-3">
             <div class="card-body">
@@ -185,70 +185,6 @@
             <a href="{% url 'tickets:event_detail' event.id %}" class="btn btn-outline-secondary">
                 <i class="bi bi-arrow-left"></i> Back to Event
             </a>
-        </div>
-    </div>
-    <div class="col-md-4">
-        <div class="card">
-            <div class="card-header">
-                <h5 class="mb-0">Event Information</h5>
-            </div>
-            <div class="card-body">
-                {% if ticketing_type == 'direct' %}
-                <p class="small text-muted">
-                    <strong>Event Name:</strong> The name of the event (e.g., "Familiar Faces", "Summer Festival").
-                </p>
-                <p class="small text-muted">
-                    <strong>Summary:</strong> Short tagline shown on the public ticket page (optional).
-                </p>
-                <p class="small text-muted">
-                    <strong>Venue Name:</strong> The name of the venue. A new venue record will be created automatically if it doesn't exist yet.
-                </p>
-                <p class="small text-muted">
-                    <strong>Location (Address):</strong> Optional street address for the venue.
-                </p>
-                <p class="small text-muted">
-                    <strong>Flyer:</strong> Optional image shown on the public ticket page.
-                </p>
-                <p class="small text-muted">
-                    <strong>Ticket Types:</strong> Define one or more ticket tiers (e.g., General Admission, VIP). You can add or remove types here.
-                </p>
-                <p class="small text-muted">
-                    <strong>Start Date / Time:</strong> The date and time the event starts (both required).
-                </p>
-                <p class="small text-muted">
-                    <strong>End Date / Time:</strong> The end date and time of the event (both required).
-                </p>
-                {% else %}
-                <p class="small text-muted">
-                    <strong>Event Name:</strong> The name of the event (e.g., "Familiar Faces", "Summer Festival").
-                </p>
-                <p class="small text-muted">
-                    <strong>Venue:</strong> Select the venue where the event takes place. If the venue doesn't exist yet, <a href="{% url 'tickets:venue_create' %}">create one first</a>.
-                </p>
-                <p class="small text-muted">
-                    <strong>Start Date / Time:</strong> The date and time the event starts (both required).
-                </p>
-                <p class="small text-muted">
-                    <strong>End Date / Time:</strong> Optional end date and time. End date is required if end time is provided.
-                </p>
-                <p class="small text-muted">
-                    <strong>Description:</strong> Optional description or notes about the event.
-                </p>
-                <p class="small text-muted">
-                    <strong>Capacity:</strong> Optional total ticket capacity for the event.
-                </p>
-                <p class="small text-muted">
-                    <strong>Ticket link:</strong> Optional URL to the ticket purchase page.
-                </p>
-                <p class="small text-muted">
-                    <strong>Talent lineup:</strong> Optional list of performers or DJs; use Order to set display order.
-                </p>
-                {% endif %}
-                <hr>
-                <p class="small text-muted mb-0">
-                    <strong>Note:</strong> Each event must have a unique combination of name and date. You can also create events automatically by uploading a CSV file.
-                </p>
-            </div>
         </div>
     </div>
 </div>
