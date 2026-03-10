@@ -1075,6 +1075,7 @@ def home(request):
         'total_orders': total_orders,
         'total_revenue': total_revenue,
         'total_tickets': total_tickets,
+        'direct_ticketing_enabled': direct_ticketing_enabled(request.user),
     }
     return render(request, 'tickets/home.html', context)
 

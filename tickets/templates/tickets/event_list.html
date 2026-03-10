@@ -40,6 +40,7 @@
                     <tr>
                         <th><a href="?sort=name&search={{ search_query }}&status={{ status_filter }}">Event Name <i class="bi bi-arrow-down-up"></i></a></th>
                         <th><a href="?sort=-start_date&search={{ search_query }}&status={{ status_filter }}">Date <i class="bi bi-arrow-down-up"></i></a></th>
+                        <th class="d-none d-md-table-cell">Venue</th>
                         <th><a href="?sort=-total_revenue&search={{ search_query }}&status={{ status_filter }}">Revenue <i class="bi bi-arrow-down-up"></i></a></th>
                         <th class="d-none d-md-table-cell">Profit</th>
                         <th>Tickets</th>
@@ -56,27 +57,27 @@
                                         <i class="bi bi-exclamation-triangle-fill text-warning me-1" title="No uploads for past event"></i>
                                     {% endif %}
                                     <a href="{% url 'tickets:event_detail' event.id %}" class="text-body text-decoration-none"><strong>{{ event.name }}</strong></a>
-                                </div>
-                                <span class="event-card-venue">{{ event.venue.name }}</span>
-                                {% if direct_ticketing_enabled %}
-                                <div class="event-card-badges">
-                                    {% if event.ticketing_type == 'direct' %}
-                                        {% with eff=event.effective_status %}
-                                        {% if eff == 'draft' %}
-                                        <span class="badge bg-warning text-dark" style="font-size: 0.7em;">Draft</span>
-                                        {% elif eff == 'live' %}
-                                        <span class="badge bg-success" style="font-size: 0.7em;">Live</span>
-                                        {% elif eff == 'cancelled' %}
-                                        <span class="badge bg-danger" style="font-size: 0.7em;">Cancelled</span>
+                                    {% if direct_ticketing_enabled %}
+                                    <div class="event-card-badges">
+                                        {% if event.ticketing_type == 'direct' %}
+                                            {% with eff=event.effective_status %}
+                                            {% if eff == 'draft' %}
+                                            <span class="badge bg-warning text-dark" style="font-size: 0.7em;">Draft</span>
+                                            {% elif eff == 'live' %}
+                                            <span class="badge bg-success" style="font-size: 0.7em;">Live</span>
+                                            {% elif eff == 'cancelled' %}
+                                            <span class="badge bg-danger" style="font-size: 0.7em;">Cancelled</span>
+                                            {% else %}
+                                            <span class="badge bg-secondary" style="font-size: 0.7em;">Ended</span>
+                                            {% endif %}
+                                            {% endwith %}
                                         {% else %}
-                                        <span class="badge bg-secondary" style="font-size: 0.7em;">Ended</span>
+                                        <span class="badge bg-secondary" style="font-size: 0.7em;">External</span>
                                         {% endif %}
-                                        {% endwith %}
-                                    {% else %}
-                                    <span class="badge bg-secondary" style="font-size: 0.7em;">External</span>
+                                    </div>
                                     {% endif %}
                                 </div>
-                                {% endif %}
+                                <span class="event-card-venue">{{ event.venue.name }}</span>
                                 <!-- Mobile-only metadata strip -->
                                 <div class="event-card-meta">
                                     <span class="event-card-meta-date">{{ event.start_date|date:"M d, Y" }}{% if event.start_time %} · {{ event.start_time|time:"g:i A" }}{% endif %}</span>
@@ -96,13 +97,38 @@
                             </div>
                         </td>
                         <td>{{ event.start_date|date:"M d, Y" }}{% if event.start_time %} {{ event.start_time|time:"g:i A" }}{% endif %}</td>
+                        <td class="d-none d-md-table-cell">{{ event.venue.name|default:"—" }}</td>
                         <td>{% if event.id in event_ids_show_placeholder %}—{% else %}<span class="revenue">${{ event.total_revenue|currency }}</span>{% endif %}</td>
                         {% with profit=event.total_revenue|subtract:event.total_expenses %}
                         <td class="d-none d-md-table-cell"{% if event.id not in event_ids_show_placeholder and profit < 0 %} style="color: var(--danger, #dc3545);"{% endif %}>{% if event.id in event_ids_show_placeholder %}—{% else %}${{ profit|currency }}{% endif %}</td>
                         {% endwith %}
                         <td>{% if event.id in event_ids_show_placeholder %}—{% else %}{{ event.total_tickets|default:0 }}{% endif %}</td>
-                        <td>
-                            <div class="btn-group" role="group" aria-label="Event actions">
+                        <td class="event-actions-cell">
+                            <!-- Desktop: dots dropdown -->
+                            <div class="d-none d-sm-block">
+                                <div class="dropdown">
+                                    <button class="event-row-dots-btn dropdown-toggle" data-bs-toggle="dropdown" aria-expanded="false" aria-label="Event actions">
+                                        <i class="bi bi-three-dots-vertical"></i>
+                                    </button>
+                                    <ul class="dropdown-menu dropdown-menu-end">
+                                        <li><a class="dropdown-item" href="{% url 'tickets:event_detail' event.id %}"><i class="bi bi-bar-chart-line me-2"></i>Analytics</a></li>
+                                        <li><a class="dropdown-item" href="{% url 'tickets:event_edit' event.id %}"><i class="bi bi-pencil me-2"></i>Edit</a></li>
+                                        {% if event.ticketing_type != 'direct' or not direct_ticketing_enabled or event.effective_status == 'draft' %}
+                                        <li><hr class="dropdown-divider"></li>
+                                        <li><a class="dropdown-item text-danger" href="{% url 'tickets:event_delete' event.id %}"><i class="bi bi-trash me-2"></i>Delete</a></li>
+                                        {% endif %}
+                                        {% if event.ticketing_type == 'direct' and direct_ticketing_enabled %}
+                                        <li><hr class="dropdown-divider"></li>
+                                        <li><a class="dropdown-item" href="{% url 'tickets:public_event_buy' event.id %}" target="_blank" rel="noopener noreferrer"><i class="bi bi-box-arrow-up-right me-2"></i>View Ticket Page</a></li>
+                                        {% elif event.ticket_link %}
+                                        <li><hr class="dropdown-divider"></li>
+                                        <li><a class="dropdown-item" href="{{ event.ticket_link }}" target="_blank" rel="noopener noreferrer"><i class="bi bi-box-arrow-up-right me-2"></i>View Ticket Page</a></li>
+                                        {% endif %}
+                                    </ul>
+                                </div>
+                            </div>
+                            <!-- Mobile: full-width btn-group -->
+                            <div class="btn-group d-sm-none" role="group" aria-label="Event actions">
                                 <a href="{% url 'tickets:event_detail' event.id %}" class="btn btn-sm btn-outline-secondary btn-icon" title="Event analytics"><i class="bi bi-bar-chart-line"></i></a>
                                 <a href="{% url 'tickets:event_edit' event.id %}" class="btn btn-sm btn-outline-secondary btn-icon" title="Edit event"><i class="bi bi-pencil"></i></a>
                                 {% if event.ticketing_type != 'direct' or not direct_ticketing_enabled or event.effective_status == 'draft' %}

@@ -345,15 +345,27 @@ a:hover {
 }
 
 /* Event card name area sub-elements — base styles applied at all breakpoints */
+
+/* Venue shown in its own column on desktop; shown as sub-line in mobile card */
 .event-card-venue {
-    display: block;
+    display: none;
     font-size: 12px;
     color: var(--text-tertiary);
     margin-top: 1px;
 }
 
+/* Name line is flex on desktop so badges sit inline with the event name */
+.event-card-name-line {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+}
+
 .event-card-badges {
-    margin-top: 3px;
+    display: flex;
+    align-items: center;
+    gap: 4px;
 }
 
 /* Auth pages (login/signup): center content when no sidebar */
@@ -917,6 +929,33 @@ a:hover {
 .dropdown-divider {
     border-color: var(--border-light);
     margin: 4px 0;
+}
+
+/* -- Event Row Dots Menu ----------------------- */
+.event-row-dots-btn {
+    background: none;
+    border: 1px solid transparent;
+    border-radius: var(--radius-sm);
+    color: var(--text-tertiary);
+    padding: 3px 7px;
+    line-height: 1;
+    cursor: pointer;
+    transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+.event-row-dots-btn:hover,
+.event-row-dots-btn:focus,
+.event-row-dots-btn[aria-expanded="true"] {
+    background: var(--bg-inset);
+    color: var(--text-primary);
+    border-color: var(--border);
+    outline: none;
+    box-shadow: none;
+}
+.event-row-dots-btn::after {
+    display: none; /* suppress Bootstrap caret */
+}
+.event-row-dots-btn i {
+    font-size: 15px;
 }
 
 /* -- Button Group Toggle ----------------------- */
@@ -1737,6 +1776,7 @@ gmp-place-autocomplete#venue-address-autocomplete {
     }
 
     .event-card-name-line {
+        display: block;
         line-height: 1.25;
     }
 
@@ -1747,6 +1787,7 @@ gmp-place-autocomplete#venue-address-autocomplete {
     }
 
     .event-card-venue {
+        display: block;
         font-size: 11.5px;
         overflow: hidden;
         text-overflow: ellipsis;
@@ -1808,22 +1849,22 @@ gmp-place-autocomplete#venue-address-autocomplete {
         font-size: 18px;
     }
 
-    /* Cell 6: Actions footer */
-    .event-list-table tbody td:nth-child(6) {
+    /* Actions footer — class-based so column count doesn't matter */
+    .event-list-table tbody td.event-actions-cell {
         display: block;
         padding: 8px 12px;
         border-top: 1px solid var(--border-light);
         background: var(--bg-inset);
     }
 
-    .event-list-table tbody td:nth-child(6) .btn-group {
+    .event-list-table tbody td.event-actions-cell .btn-group {
         display: flex;
         width: 100%;
         gap: 6px;
         border: none;
     }
 
-    .event-list-table tbody td:nth-child(6) .btn-group .btn {
+    .event-list-table tbody td.event-actions-cell .btn-group .btn {
         flex: 1;
         border-radius: var(--radius-sm) !important;
         min-height: 34px;
