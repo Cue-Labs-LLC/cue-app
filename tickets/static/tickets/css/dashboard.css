@@ -334,6 +334,28 @@ a:hover {
     min-width: 0;         /* ensures cards containing tables can shrink */
 }
 
+/* Event list flyer — hidden on desktop, revealed in Block 12 mobile media query */
+.event-card-flyer {
+    display: none;
+}
+
+/* Mobile-only metadata strip — hidden on desktop */
+.event-card-meta {
+    display: none;
+}
+
+/* Event card name area sub-elements — base styles applied at all breakpoints */
+.event-card-venue {
+    display: block;
+    font-size: 12px;
+    color: var(--text-tertiary);
+    margin-top: 1px;
+}
+
+.event-card-badges {
+    margin-top: 3px;
+}
+
 /* Auth pages (login/signup): center content when no sidebar */
 .content--auth {
     margin-left: auto;
@@ -1666,5 +1688,145 @@ gmp-place-autocomplete#venue-address-autocomplete {
 @media (max-width: 575px) {
     .table > :not(caption) > * > * {
         padding: 8px 10px;
+    }
+}
+
+/* -- Block 12: Event List Mobile Card Transform --- */
+@media (max-width: 575px) {
+    .event-list-table thead {
+        display: none;
+    }
+
+    .event-list-table tbody tr {
+        display: block;
+        background: var(--bg-surface);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        margin-bottom: 10px;
+        padding: 0;
+        overflow: hidden;
+        transition: box-shadow 0.18s ease, border-color 0.18s ease;
+    }
+
+    .event-list-table tbody tr:hover {
+        box-shadow: 0 3px 12px rgba(0, 0, 0, 0.08);
+        border-color: #d0d0cc;
+    }
+
+    .event-list-table tbody td {
+        display: none;
+        border: none !important;
+        padding: 0;
+    }
+
+    /* Cell 1: flex row — name area left, flyer right */
+    .event-list-table tbody td:nth-child(1) {
+        display: flex;
+        flex-direction: row;
+        align-items: flex-start;
+        padding: 0;
+    }
+
+    .event-card-name-area {
+        flex: 1;
+        min-width: 0;
+        padding: 13px 10px 13px 14px;
+        display: flex;
+        flex-direction: column;
+        gap: 3px;
+    }
+
+    .event-card-name-line {
+        line-height: 1.25;
+    }
+
+    .event-card-name-line a strong {
+        font-size: 14px;
+        font-weight: 700;
+        letter-spacing: -0.015em;
+    }
+
+    .event-card-venue {
+        font-size: 11.5px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+
+    /* Mobile metadata strip */
+    .event-card-meta {
+        display: flex;
+        flex-direction: column;
+        gap: 1px;
+        margin-top: 7px;
+        padding-top: 7px;
+        border-top: 1px solid var(--border-light);
+    }
+
+    .event-card-meta-date {
+        font-size: 11.5px;
+        color: var(--text-secondary);
+        letter-spacing: 0.01em;
+    }
+
+    .event-card-meta-stats {
+        font-size: 12.5px;
+        font-weight: 700;
+        letter-spacing: -0.01em;
+        color: var(--text-primary);
+    }
+
+    /* Flyer: fixed 4:5 column, no cropping */
+    .event-card-flyer {
+        display: block;
+        flex-shrink: 0;
+        width: 90px;
+        aspect-ratio: 4 / 5;
+        overflow: hidden;
+        margin-top: 13px;
+        margin-right: 10px;
+        border-radius: var(--radius-sm);
+    }
+
+    .event-card-flyer-img {
+        width: 100%;
+        height: 100%;
+        object-fit: contain;
+        object-position: center center;
+        display: block;
+        border-radius: var(--radius-sm);
+    }
+
+    .event-card-flyer-placeholder {
+        width: 100%;
+        height: 100%;
+        background: linear-gradient(180deg, var(--bg-inset) 0%, #e4e4de 100%);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        color: var(--text-tertiary);
+        font-size: 18px;
+    }
+
+    /* Cell 6: Actions footer */
+    .event-list-table tbody td:nth-child(6) {
+        display: block;
+        padding: 8px 12px;
+        border-top: 1px solid var(--border-light);
+        background: var(--bg-inset);
+    }
+
+    .event-list-table tbody td:nth-child(6) .btn-group {
+        display: flex;
+        width: 100%;
+        gap: 6px;
+        border: none;
+    }
+
+    .event-list-table tbody td:nth-child(6) .btn-group .btn {
+        flex: 1;
+        border-radius: var(--radius-sm) !important;
+        min-height: 34px;
+        font-size: 13px;
     }
 }
