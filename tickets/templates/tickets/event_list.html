@@ -15,6 +15,7 @@
 
 <nav class="nav nav-tabs mb-3 overflow-auto" style="flex-wrap: nowrap;" aria-label="Event status filter">
     <a class="nav-link{% if status_filter == 'all' %} active{% endif %}" href="?status=all&search={{ search_query }}&sort={{ sort_by }}">All</a>
+    <a class="nav-link{% if status_filter == 'upcoming' %} active{% endif %}" href="?status=upcoming&search={{ search_query }}">Upcoming</a>
     <a class="nav-link{% if status_filter == 'live' %} active{% endif %}" href="?status=live&search={{ search_query }}&sort={{ sort_by }}">Live</a>
     <a class="nav-link{% if status_filter == 'ended' %} active{% endif %}" href="?status=ended&search={{ search_query }}&sort={{ sort_by }}">Ended</a>
 </nav>
@@ -104,14 +105,14 @@
                         {% endwith %}
                         <td>{% if event.id in event_ids_show_placeholder %}—{% else %}{{ event.total_tickets|default:0 }}{% endif %}</td>
                         <td class="event-actions-cell">
-                            <!-- Desktop: dots dropdown -->
-                            <div class="d-none d-sm-block">
+                            <!-- Desktop: View button + dots dropdown for secondary actions -->
+                            <div class="d-none d-sm-flex align-items-center gap-2">
+                                <a href="{% url 'tickets:event_detail' event.id %}" class="btn btn-sm btn-outline-secondary">View</a>
                                 <div class="dropdown">
                                     <button class="event-row-dots-btn dropdown-toggle" data-bs-toggle="dropdown" aria-expanded="false" aria-label="Event actions">
                                         <i class="bi bi-three-dots-vertical"></i>
                                     </button>
                                     <ul class="dropdown-menu dropdown-menu-end">
-                                        <li><a class="dropdown-item" href="{% url 'tickets:event_detail' event.id %}"><i class="bi bi-bar-chart-line me-2"></i>Analytics</a></li>
                                         <li><a class="dropdown-item" href="{% url 'tickets:event_edit' event.id %}"><i class="bi bi-pencil me-2"></i>Edit</a></li>
                                         {% if event.ticketing_type != 'direct' or not direct_ticketing_enabled or event.effective_status == 'draft' %}
                                         <li><hr class="dropdown-divider"></li>

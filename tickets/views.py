@@ -1878,8 +1878,12 @@ def event_list(request):
     sort_by = request.GET.get('sort', '-start_date')
     page_number = request.GET.get('page', '1')
     status_filter = request.GET.get('status', 'all')
-    if status_filter not in ('all', 'live', 'ended'):
+    if status_filter not in ('all', 'live', 'ended', 'upcoming'):
         status_filter = 'all'
+
+    # Default upcoming tab to ascending date (nearest first)
+    if status_filter == 'upcoming' and 'sort' not in request.GET:
+        sort_by = 'start_date'
 
     # Validate sort parameter
     if sort_by not in _ALLOWED_SORTS:
@@ -1920,6 +1924,8 @@ def event_list(request):
             (Q(ticketing_type='direct', status=EVENT_STATUS_LIVE) & Q(effective_end_date__lt=today)) |
             (Q(ticketing_type='external') & Q(effective_end_date__lt=today))
         )
+    elif status_filter == 'upcoming':
+        base_qs = base_qs.filter(start_date__gte=today)
 
     if sort_by in _ANNOTATED_SORT_FIELDS:
         # Slow path: must annotate all rows before sorting by a computed field.
