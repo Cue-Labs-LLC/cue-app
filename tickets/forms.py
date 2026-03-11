@@ -1140,6 +1140,28 @@ class DirectEventForm(forms.ModelForm):
             Field('facebook_pixel_id'),
         )
 
+    def clean_flyer(self):
+        file = self.cleaned_data.get('flyer')
+        if not file or not hasattr(file, 'name'):
+            return file
+        heic_types = {'image/heic', 'image/heif', 'image/heic-sequence', 'image/heif-sequence'}
+        is_heic = (
+            getattr(file, 'content_type', '') in heic_types
+            or file.name.lower().endswith(('.heic', '.heif'))
+        )
+        if is_heic:
+            import io
+            from PIL import Image
+            from django.core.files.uploadedfile import InMemoryUploadedFile
+            img = Image.open(file)
+            img = img.convert('RGB')
+            buf = io.BytesIO()
+            img.save(buf, format='JPEG', quality=90)
+            buf.seek(0)
+            name = file.name.rsplit('.', 1)[0] + '.jpg'
+            file = InMemoryUploadedFile(buf, 'flyer', name, 'image/jpeg', buf.getbuffer().nbytes, None)
+        return file
+
     def clean_facebook_pixel_id(self):
         import re
         pixel_id = self.cleaned_data.get('facebook_pixel_id', '').strip()

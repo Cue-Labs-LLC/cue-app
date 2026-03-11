@@ -4722,9 +4722,20 @@ def _fulfill_payment_intent(payment_intent):
             item_name = item.get('name', '')
             item_price = Decimal(str(item.get('price', '0')))
 
-            SaleableTicketType.objects.filter(id=tt_id).update(
-                quantity_sold=F('quantity_sold') + qty
-            )
+            try:
+                tt_locked = SaleableTicketType.objects.select_for_update().get(id=tt_id)
+            except SaleableTicketType.DoesNotExist:
+                logger.warning("Stripe webhook: SaleableTicketType %s not found, skipping inventory update", tt_id)
+            else:
+                if tt_locked.quantity_limit is not None and (tt_locked.quantity_sold + qty) > tt_locked.quantity_limit:
+                    logger.error(
+                        "Stripe webhook: oversell detected for SaleableTicketType %s "
+                        "(limit=%s, sold=%s, adding=%s) — fulfilling anyway",
+                        tt_id, tt_locked.quantity_limit, tt_locked.quantity_sold, qty,
+                    )
+                SaleableTicketType.objects.filter(id=tt_id).update(
+                    quantity_sold=F('quantity_sold') + qty
+                )
 
             Ticket.objects.bulk_create([
                 Ticket(
