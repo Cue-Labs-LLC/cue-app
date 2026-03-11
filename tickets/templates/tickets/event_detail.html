@@ -5,7 +5,6 @@
 
 {% block extra_css %}
 <style>
-.flyer-drop-zone.flyer-dragover { outline: 2px dashed var(--bs-primary); outline-offset: 4px; background: rgba(var(--bs-primary-rgb), 0.05); }
 @media (max-width: 575px) { .page-header-actions .btn { font-size: 12px; padding: 5px 10px; } }
 </style>
 {% endblock %}
@@ -161,25 +160,6 @@
 {% endif %}
 
 {% if event.ticketing_type == 'direct' and direct_ticketing_enabled %}
-<div class="card mb-4" id="event-flyer-card">
-    <div class="card-body p-0 text-center">
-        <input type="hidden" id="flyer-csrf" value="{{ csrf_token }}">
-        <input type="file" id="flyer-file-input" accept="image/*,.heic,.heif" class="d-none" data-flyer-url="{% url 'tickets:event_flyer_upload' event.id %}">
-        <div id="flyer-drop-zone" class="flyer-drop-zone position-relative" style="min-height: 200px; cursor: pointer;">
-            {% if event.flyer %}
-            <div class="flyer-4-5 mx-auto" style="max-width: 320px;">
-                <img id="event-flyer-img" src="{{ event.flyer.url }}" alt="{{ event.name }} event image">
-            </div>
-            <p class="small text-muted mt-2 mb-0">Click or drag a new image to replace</p>
-            {% else %}
-            <div class="d-flex flex-column align-items-center justify-content-center py-5 text-muted">
-                <i class="bi bi-image fs-1 mb-2"></i>
-                <p class="mb-0">Click or drop an image to add a flyer</p>
-            </div>
-            {% endif %}
-        </div>
-    </div>
-</div>
 {% if public_buy_url and event.effective_status == 'live' %}
 <div class="card mb-4">
     <div class="card-header">
@@ -205,117 +185,6 @@
     </div>
 </div>
 {% endif %}
-<div class="card mb-4">
-    <div class="card-header d-flex justify-content-between align-items-center">
-        <h5>Direct Ticket Sales</h5>
-        <a href="{% url 'tickets:saleable_ticket_type_create' event.id %}" class="btn btn-sm btn-primary"><i class="bi bi-plus-lg"></i> Add Ticket Type</a>
-    </div>
-    <div class="card-body p-0">
-        {% if saleable_ticket_types %}
-        <div class="table-responsive">
-            <table class="table table-hover mb-0">
-                <thead>
-                    <tr>
-                        <th>Ticket Type</th>
-                        <th>Price</th>
-                        <th>Sold</th>
-                        <th class="d-none d-md-table-cell">Limit</th>
-                        <th>Revenue</th>
-                        <th class="d-none d-md-table-cell">Status</th>
-                        <th></th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {% for tt in saleable_ticket_types %}
-                    <tr>
-                        <td><strong>{{ tt.name }}</strong>{% if tt.description %}<br><small class="text-muted">{{ tt.description|truncatechars:60 }}</small>{% endif %}</td>
-                        <td>${{ tt.price|currency }}</td>
-                        <td>{{ tt.quantity_sold }}</td>
-                        <td class="d-none d-md-table-cell">{% if tt.quantity_limit %}{{ tt.quantity_limit }}{% else %}<span class="text-muted">&infin;</span>{% endif %}</td>
-                        <td>${{ tt.price|currency }} &times; {{ tt.quantity_sold }}</td>
-                        <td class="d-none d-md-table-cell">
-                            {% if tt.is_active %}<span class="badge bg-success">Active</span>{% else %}<span class="badge bg-secondary">Inactive</span>{% endif %}
-                            {% if tt.is_sold_out %}<span class="badge bg-warning ms-1">Sold Out</span>{% endif %}
-                        </td>
-                        <td>
-                            <div class="d-flex gap-1">
-                                <a href="{% url 'tickets:saleable_ticket_type_edit' event.id tt.id %}" class="btn btn-sm btn-outline-secondary"><i class="bi bi-pencil"></i></a>
-                                <form method="post" action="{% url 'tickets:saleable_ticket_type_toggle' event.id tt.id %}" class="d-inline">
-                                    {% csrf_token %}
-                                    <button type="submit" class="btn btn-sm btn-outline-{% if tt.is_active %}warning{% else %}success{% endif %}" title="{% if tt.is_active %}Deactivate{% else %}Activate{% endif %}">
-                                        <i class="bi bi-{% if tt.is_active %}eye-slash{% else %}eye{% endif %}"></i>
-                                    </button>
-                                </form>
-                                <a href="{% url 'tickets:saleable_ticket_type_delete' event.id tt.id %}" class="btn btn-sm btn-outline-danger"><i class="bi bi-trash"></i></a>
-                            </div>
-                        </td>
-                    </tr>
-                    {% endfor %}
-                </tbody>
-                <tfoot>
-                    <tr class="table-light">
-                        <td colspan="4"><strong>Total Revenue</strong></td>
-                        <td colspan="3"><strong>${{ direct_total_revenue|currency }}</strong></td>
-                    </tr>
-                </tfoot>
-            </table>
-        </div>
-        {% else %}
-        <div class="empty-state" style="padding: 32px;">
-            <p class="mb-2">No ticket types configured. Add ticket types to sell tickets directly through Eventflow.</p>
-            <a href="{% url 'tickets:saleable_ticket_type_create' event.id %}" class="btn btn-sm btn-outline-primary"><i class="bi bi-plus-lg"></i> Add First Ticket Type</a>
-        </div>
-        {% endif %}
-    </div>
-</div>
-<div class="card mb-4">
-    <div class="card-header d-flex justify-content-between align-items-center">
-        <h5>Promo Codes</h5>
-        <a href="{% url 'tickets:promo_code_create' event.id %}" class="btn btn-sm btn-primary"><i class="bi bi-plus-lg"></i> Add Promo Code</a>
-    </div>
-    <div class="card-body p-0">
-        {% if promo_codes %}
-        <div class="table-responsive">
-            <table class="table table-hover mb-0">
-                <thead>
-                    <tr>
-                        <th>Code</th>
-                        <th class="d-none d-md-table-cell">Type</th>
-                        <th>Value</th>
-                        <th>Uses</th>
-                        <th class="d-none d-md-table-cell">Expires</th>
-                        <th>Status</th>
-                        <th></th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {% for promo in promo_codes %}
-                    <tr>
-                        <td><strong>{{ promo.code }}</strong></td>
-                        <td class="d-none d-md-table-cell">{{ promo.get_discount_type_display }}</td>
-                        <td>{% if promo.discount_type == 'percentage' %}{{ promo.discount_value|floatformat:0 }}%{% else %}${{ promo.discount_value|floatformat:2 }}{% endif %}</td>
-                        <td>{{ promo.times_used }}{% if promo.max_uses %} / {{ promo.max_uses }}{% else %} / &infin;{% endif %}</td>
-                        <td class="d-none d-md-table-cell">{% if promo.expires_at %}{{ promo.expires_at|date:"M j, Y" }}{% else %}<span class="text-muted">Never</span>{% endif %}</td>
-                        <td>{% if promo.is_active %}<span class="badge bg-success">Active</span>{% else %}<span class="badge bg-secondary">Inactive</span>{% endif %}</td>
-                        <td>
-                            <form method="post" action="{% url 'tickets:promo_code_delete' event.id promo.id %}" class="d-inline" onsubmit="return confirm('Delete promo code {{ promo.code }}?')">
-                                {% csrf_token %}
-                                <button type="submit" class="btn btn-sm btn-outline-danger"><i class="bi bi-trash"></i></button>
-                            </form>
-                        </td>
-                    </tr>
-                    {% endfor %}
-                </tbody>
-            </table>
-        </div>
-        {% else %}
-        <div class="empty-state" style="padding: 32px;">
-            <p class="mb-2">No promo codes yet. Create a discount code for this event.</p>
-            <a href="{% url 'tickets:promo_code_create' event.id %}" class="btn btn-sm btn-outline-primary"><i class="bi bi-plus-lg"></i> Add First Promo Code</a>
-        </div>
-        {% endif %}
-    </div>
-</div>
 {% endif %}
 
 <div class="card mb-4">
@@ -638,6 +507,7 @@
         </div>
     </div>
 </div>
+
 {% endblock %}
 
 {% block extra_js %}
@@ -783,48 +653,6 @@ document.addEventListener('DOMContentLoaded', function() {
         setTimeout(() => { div.classList.remove('show'); setTimeout(() => div.remove(), 150); }, 5000);
     }
 
-    var flyerZone = document.getElementById('flyer-drop-zone');
-    var flyerInput = document.getElementById('flyer-file-input');
-    var flyerCsrf = document.getElementById('flyer-csrf');
-    if (flyerZone && flyerInput && flyerCsrf) {
-        var flyerUrl = flyerInput.getAttribute('data-flyer-url');
-        var ALLOWED_IMAGE_TYPES = /^image\//;
-        var HEIC_EXTS = /\.(heic|heif)$/i;
-        function uploadFlyer(file) {
-            if (!file || (!ALLOWED_IMAGE_TYPES.test(file.type) && !HEIC_EXTS.test(file.name))) {
-                showAlert('danger', 'Please choose an image file.');
-                return;
-            }
-            var formData = new FormData();
-            formData.append('flyer', file);
-            formData.append('csrfmiddlewaretoken', flyerCsrf.value);
-            fetch(flyerUrl, { method: 'POST', body: formData, headers: { 'X-Requested-With': 'XMLHttpRequest' } })
-                .then(function(r) { return r.json().then(function(data) { return { status: r.status, data: data }; }); })
-                .then(function(result) {
-                    if (result.data.success && result.data.url) {
-                        var img = document.getElementById('event-flyer-img');
-                        if (img) {
-                            img.src = result.data.url + (result.data.url.indexOf('?') === -1 ? '?' : '&') + 't=' + Date.now();
-                        } else {
-                            flyerZone.innerHTML = '<div class="flyer-4-5 mx-auto" style="max-width: 320px;"><img id="event-flyer-img" src="' + result.data.url + '" alt="Event flyer"></div><p class="small text-muted mt-2 mb-0">Click or drag a new image to replace</p>';
-                        }
-                        showAlert('success', 'Flyer updated.');
-                    } else {
-                        showAlert('danger', result.data.error || 'Upload failed.');
-                    }
-                })
-                .catch(function() { showAlert('danger', 'Upload failed.'); });
-        }
-        flyerZone.addEventListener('click', function() { flyerInput.click(); });
-        flyerInput.addEventListener('change', function() { if (this.files && this.files[0]) uploadFlyer(this.files[0]); this.value = ''; });
-        flyerZone.addEventListener('dragover', function(e) { e.preventDefault(); flyerZone.classList.add('flyer-dragover'); });
-        flyerZone.addEventListener('dragleave', function(e) { e.preventDefault(); flyerZone.classList.remove('flyer-dragover'); });
-        flyerZone.addEventListener('drop', function(e) {
-            e.preventDefault();
-            flyerZone.classList.remove('flyer-dragover');
-            if (e.dataTransfer.files && e.dataTransfer.files[0]) uploadFlyer(e.dataTransfer.files[0]);
-        });
-    }
 });
 </script>
 {% if event.ticketing_type == 'direct' and direct_ticketing_enabled and public_buy_url %}

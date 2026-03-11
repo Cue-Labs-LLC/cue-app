@@ -34,7 +34,7 @@ from .models import (
     CustomField, EventCustomFieldValue, IncomeSource, EventIncome,
     SurveyQuestion, SurveyInvitation, SurveyResponse, SurveyAnswer,
     PipedreamCalendarConnection,
-    SaleableTicketType, StripeCheckoutSession, Payout, PromoCode,
+    SaleableTicketType, SaleableTicketTypeTier, StripeCheckoutSession, Payout, PromoCode,
     ExternalSurveyUpload, ExternalSurveyResponse,
     EVENT_STATUS_DRAFT, EVENT_STATUS_LIVE, EVENT_STATUS_ENDED, EVENT_STATUS_CANCELLED,
 )
@@ -44,7 +44,7 @@ from .forms import (
     IncomeSourceForm, EventIncomeForm,
     OTPVerificationForm, MemberInviteForm, AttendeePhoneForm,
     ProfileCompletionForm, EmailLoginForm, EmailProfileCompletionForm,
-    SaleableTicketTypeForm, PublicTicketPurchaseForm,
+    SaleableTicketTypeForm, SaleableTicketTypeTierFormSet, PublicTicketPurchaseForm,
     DirectEventForm, DirectTicketTypeFormSet,
     PromoCodeForm, SurveyUploadForm, UserProfileForm,
 )
@@ -2072,7 +2072,7 @@ def event_detail(request, event_id):
             ),
             Prefetch(
                 'saleable_ticket_types',
-                SaleableTicketType.objects.order_by('order', 'name'),
+                SaleableTicketType.objects.prefetch_related('tiers').order_by('order', 'name'),
             ),
         ),
         id=event_id,
@@ -2244,7 +2244,6 @@ def event_detail(request, event_id):
         'survey_invitations_count': survey_invitations_count,
         'survey_responses_count': survey_responses_count,
         'survey_results': survey_results,
-        'saleable_ticket_types': saleable_ticket_types_list,
         'ticket_type_breakdown': ticket_type_breakdown,
         'ticket_type_breakdown_json': ticket_type_breakdown_json,
     }
@@ -2257,16 +2256,10 @@ def event_detail(request, event_id):
         for s in sessions:
             s.amount_dollars = Decimal(str(s.amount_total_cents)) / 100
         context['dashboard_sessions'] = sessions
-        context['direct_total_revenue'] = sum(
-            tt.quantity_sold * tt.price for tt in saleable_ticket_types_list
-        )
         context['public_buy_url'] = request.build_absolute_uri(f'/buy/{event.id}/')
         views = getattr(event, 'public_buy_page_views', 0) or 0
         context['conversion_rate_pct'] = (
             round(total_orders / views * 100, 1) if views > 0 else None
-        )
-        context['promo_codes'] = list(
-            PromoCode.objects.filter(event=event, organization=org).order_by('code')
         )
     return render(request, 'tickets/event_detail.html', context)
 
@@ -2645,6 +2638,11 @@ def event_create(request, ticketing_type):
                 queryset=SaleableTicketType.objects.none(),
                 prefix='ticket_type',
             )
+            for form_item in ticket_formset.forms:
+                form_item.fields['unlocks_after'].queryset = SaleableTicketType.objects.none()
+                form_item.fields['unlocks_after'].empty_label = '— None —'
+            ticket_formset.empty_form.fields['unlocks_after'].queryset = SaleableTicketType.objects.none()
+            ticket_formset.empty_form.fields['unlocks_after'].empty_label = '— None —'
             if form.is_valid() and ticket_formset.is_valid():
                 venue = form.cleaned_data['venue']
                 event = form.save(commit=False)
@@ -2672,6 +2670,11 @@ def event_create(request, ticketing_type):
                 queryset=SaleableTicketType.objects.none(),
                 prefix='ticket_type',
             )
+            for form_item in ticket_formset.forms:
+                form_item.fields['unlocks_after'].queryset = SaleableTicketType.objects.none()
+                form_item.fields['unlocks_after'].empty_label = '— None —'
+            ticket_formset.empty_form.fields['unlocks_after'].queryset = SaleableTicketType.objects.none()
+            ticket_formset.empty_form.fields['unlocks_after'].empty_label = '— None —'
         no_venues = not Venue.objects.filter(organization=org).exists()
         context = {
             'form': form,
@@ -2756,39 +2759,30 @@ def event_edit(request, event_id):
     if event.ticketing_type == TICKETING_TYPE_DIRECT:
         if request.method == 'POST':
             form = DirectEventForm(request.POST, request.FILES, instance=event, organization=org)
-            ticket_formset = DirectTicketTypeFormSet(
-                request.POST,
-                queryset=SaleableTicketType.objects.filter(event=event),
-                prefix='ticket_type',
-            )
-            if form.is_valid() and ticket_formset.is_valid():
+            if form.is_valid():
                 venue = form.cleaned_data['venue']
                 event = form.save(commit=False)
                 event.updated_by = request.user
                 event.venue = venue
                 event.save()
-                instances = ticket_formset.save(commit=False)
-                for tt in instances:
-                    if tt.name and tt.name.strip():
-                        tt.event = event
-                        tt.save()
-                for tt in ticket_formset.deleted_objects:
-                    tt.delete()
                 _invalidate_event_list_cache(org)
                 messages.success(request, f"Event '{event.name}' updated successfully.")
                 _regenerate_event_doc_background(org)
                 return redirect('tickets:event_detail', event_id=event.id)
         else:
             form = DirectEventForm(instance=event, organization=org)
-            ticket_formset = DirectTicketTypeFormSet(
-                queryset=SaleableTicketType.objects.filter(event=event).order_by('name'),
-                prefix='ticket_type',
-            )
+        saleable_tts = list(
+            SaleableTicketType.objects.filter(event=event)
+            .prefetch_related('tiers')
+            .order_by('order', 'name')
+        )
         context = {
             'form': form,
-            'ticket_formset': ticket_formset,
             'event': event,
             'ticketing_type': event.ticketing_type,
+            'saleable_ticket_types': saleable_tts,
+            'direct_total_revenue': sum(tt.quantity_sold * tt.price for tt in saleable_tts),
+            'promo_codes': list(PromoCode.objects.filter(event=event, organization=org).order_by('code')),
         }
         return render(request, 'tickets/event_edit.html', context)
 
@@ -3757,18 +3751,35 @@ def saleable_ticket_type_create(request, event_id):
 
     if request.method == 'POST':
         form = SaleableTicketTypeForm(request.POST)
-        if form.is_valid():
+        form.fields['unlocks_after'].queryset = SaleableTicketType.objects.filter(event=event)
+        form.fields['unlocks_after'].empty_label = '— None —'
+        tier_formset = SaleableTicketTypeTierFormSet(request.POST)
+        if form.is_valid() and tier_formset.is_valid():
             tt = form.save(commit=False)
             tt.event = event
             tt.save()
+            tier_formset.instance = tt
+            tier_formset.save()
             _invalidate_event_list_cache(org)
             messages.success(request, f'Ticket type "{tt.name}" created.')
-            return redirect('tickets:event_detail', event_id=event.id)
+            from django.urls import reverse
+            redirect_url = reverse('tickets:event_edit', kwargs={'event_id': event.id})
+            if request.headers.get('X-Requested-With') == 'XMLHttpRequest':
+                return JsonResponse({'success': True, 'redirect': redirect_url})
+            return redirect(redirect_url)
+        else:
+            if request.headers.get('X-Requested-With') == 'XMLHttpRequest':
+                errors = {field: [str(e) for e in errs] for field, errs in form.errors.items()}
+                return JsonResponse({'success': False, 'errors': errors}, status=400)
     else:
         form = SaleableTicketTypeForm()
+        form.fields['unlocks_after'].queryset = SaleableTicketType.objects.filter(event=event)
+        form.fields['unlocks_after'].empty_label = '— None —'
+        tier_formset = SaleableTicketTypeTierFormSet()
 
     return render(request, 'tickets/saleable_ticket_type_form.html', {
         'form': form,
+        'tier_formset': tier_formset,
         'event': event,
         'editing': False,
     })
@@ -3787,19 +3798,68 @@ def saleable_ticket_type_edit(request, event_id, ticket_type_id):
     tt = get_object_or_404(SaleableTicketType.objects.filter(event=event), id=ticket_type_id)
     if request.method == 'POST':
         form = SaleableTicketTypeForm(request.POST, instance=tt)
-        if form.is_valid():
+        form.fields['unlocks_after'].queryset = SaleableTicketType.objects.filter(event=event).exclude(pk=tt.pk)
+        form.fields['unlocks_after'].empty_label = '— None —'
+        tier_formset = SaleableTicketTypeTierFormSet(request.POST, instance=tt)
+        if form.is_valid() and tier_formset.is_valid():
             updated = form.save()
+            tier_formset.save()
             _invalidate_event_list_cache(org)
             messages.success(request, f'Ticket type "{updated.name}" updated.')
-            return redirect('tickets:event_detail', event_id=event.id)
+            from django.urls import reverse
+            redirect_url = reverse('tickets:event_edit', kwargs={'event_id': event.id})
+            if request.headers.get('X-Requested-With') == 'XMLHttpRequest':
+                return JsonResponse({'success': True, 'redirect': redirect_url})
+            return redirect(redirect_url)
+        else:
+            if request.headers.get('X-Requested-With') == 'XMLHttpRequest':
+                errors = {field: [str(e) for e in errs] for field, errs in form.errors.items()}
+                return JsonResponse({'success': False, 'errors': errors}, status=400)
     else:
         form = SaleableTicketTypeForm(instance=tt)
+        form.fields['unlocks_after'].queryset = SaleableTicketType.objects.filter(event=event).exclude(pk=tt.pk)
+        form.fields['unlocks_after'].empty_label = '— None —'
+        tier_formset = SaleableTicketTypeTierFormSet(instance=tt)
 
     return render(request, 'tickets/saleable_ticket_type_form.html', {
         'form': form,
+        'tier_formset': tier_formset,
         'event': event,
         'ticket_type': tt,
         'editing': True,
+    })
+
+
+@login_required
+@require_org
+@require_host
+@require_http_methods(["GET"])
+def saleable_ticket_type_data(request, event_id, ticket_type_id):
+    """Return JSON field values for a SaleableTicketType (used to populate the edit modal)."""
+    if not direct_ticketing_enabled(request.user):
+        raise Http404()
+    org = get_organization(request)
+    event = get_object_or_404(Event.objects.filter(organization=org), id=event_id)
+    tt = get_object_or_404(SaleableTicketType.objects.filter(event=event), id=ticket_type_id)
+
+    def fmt_dt(dt):
+        if dt is None:
+            return ''
+        # datetime-local inputs expect YYYY-MM-DDTHH:MM
+        return dt.strftime('%Y-%m-%dT%H:%M')
+
+    return JsonResponse({
+        'name': tt.name,
+        'description': tt.description or '',
+        'price': str(tt.price),
+        'quantity_limit': tt.quantity_limit if tt.quantity_limit is not None else '',
+        'order': tt.order,
+        'sale_start': fmt_dt(tt.sale_start),
+        'sale_end': fmt_dt(tt.sale_end),
+        'is_active': tt.is_active,
+        'is_password_protected': tt.is_password_protected,
+        'password': tt.password or '',
+        'unlocks_after_id': str(tt.unlocks_after_id) if tt.unlocks_after_id else '',
     })
 
 
@@ -3818,7 +3878,7 @@ def saleable_ticket_type_toggle(request, event_id, ticket_type_id):
     tt.save(update_fields=['is_active'])
     status = 'activated' if tt.is_active else 'deactivated'
     messages.success(request, f'"{tt.name}" {status}.')
-    return redirect('tickets:event_detail', event_id=event.id)
+    return redirect('tickets:event_edit', event_id=event.id)
 
 
 @login_required
@@ -3836,12 +3896,12 @@ def saleable_ticket_type_delete(request, event_id, ticket_type_id):
     if request.method == 'POST':
         if tt.quantity_sold > 0:
             messages.error(request, f'Cannot delete "{tt.name}" — {tt.quantity_sold} tickets already sold.')
-            return redirect('tickets:event_detail', event_id=event.id)
+            return redirect('tickets:event_edit', event_id=event.id)
         name = tt.name
         tt.delete()
         _invalidate_event_list_cache(org)
         messages.success(request, f'Ticket type "{name}" deleted.')
-        return redirect('tickets:event_detail', event_id=event.id)
+        return redirect('tickets:event_edit', event_id=event.id)
 
     return render(request, 'tickets/saleable_ticket_type_confirm_delete.html', {
         'event': event,
@@ -4085,25 +4145,40 @@ def public_event_buy(request, event_id):
     ticket_types = SaleableTicketType.objects.filter(
         event=event,
         is_active=True,
-    ).order_by('order', 'name')
-    all_on_sale     = [tt for tt in ticket_types if tt.is_on_sale() and not tt.is_sold_out()]
-    available_types = [tt for tt in all_on_sale if not tt.is_password_protected]
-    locked_types    = [tt for tt in all_on_sale if tt.is_password_protected]
-    all_types       = available_types + locked_types
+    ).select_related('unlocks_after').prefetch_related('tiers', 'unlocks_after__tiers').order_by('order', 'name')
+
+    # Purchasable: on sale, not sold out, not pw-protected, prerequisite sold out (or none)
+    available_types   = [tt for tt in ticket_types
+                         if tt.is_on_sale() and not tt.is_sold_out()
+                         and not tt.is_password_protected and tt.is_unlocked()]
+
+    # Coming soon: on sale, not sold out, not pw-protected, but prerequisite NOT yet sold out
+    coming_soon_types = [tt for tt in ticket_types
+                         if tt.is_on_sale() and not tt.is_sold_out()
+                         and not tt.is_password_protected and not tt.is_unlocked()]
+
+    # Password-protected and unlocked (existing behavior)
+    locked_types      = [tt for tt in ticket_types
+                         if tt.is_on_sale() and not tt.is_sold_out()
+                         and tt.is_password_protected and tt.is_unlocked()]
+
+    all_types = available_types + locked_types
 
     if request.method == 'POST':
         form = PublicTicketPurchaseForm(all_types, request.POST)
         if form.is_valid():
             line_items = form.get_line_items()
-            snapshot = [
-                {
+            snapshot = []
+            for tt, qty in line_items:
+                active_tier = tt.get_active_tier()
+                snapshot.append({
                     'saleable_ticket_type_id': str(tt.id),
                     'name': tt.name,
-                    'price': str(tt.price),
+                    'price': str(active_tier.price if active_tier else tt.price),
                     'quantity': qty,
-                }
-                for tt, qty in line_items
-            ]
+                    'tier_id': str(active_tier.id) if active_tier else None,
+                    'tier_name': active_tier.name if active_tier else None,
+                })
             request.session[f'cart_{event_id}'] = snapshot
             return redirect('tickets:checkout_payment', event_id=event_id)
     else:
@@ -4138,6 +4213,7 @@ def public_event_buy(request, event_id):
         'form': form,
         'available_pairs': available_pairs,
         'locked_pairs': locked_pairs,
+        'coming_soon_types': coming_soon_types,
         'view_event_id': view_event_id,
     })
 
@@ -4229,7 +4305,7 @@ def promo_code_create(request, event_id):
             promo.event = event
             promo.save()
             messages.success(request, f'Promo code "{promo.code}" created.')
-            return redirect('tickets:event_detail', event_id=event_id)
+            return redirect('tickets:event_edit', event_id=event_id)
     else:
         form = PromoCodeForm()
 
@@ -4251,7 +4327,7 @@ def promo_code_delete(request, event_id, promo_code_id):
     code = promo.code
     promo.delete()
     messages.success(request, f'Promo code "{code}" deleted.')
-    return redirect('tickets:event_detail', event_id=event_id)
+    return redirect('tickets:event_edit', event_id=event_id)
 
 
 def checkout_payment(request, event_id):
@@ -4330,15 +4406,25 @@ def checkout_payment(request, event_id):
                 tt_id = item['saleable_ticket_type_id']
                 qty = item['quantity']
                 item_name = item['name']
+                item_tier_id = item.get('tier_id')
+                item_tier_name = item.get('tier_name') or ''
                 SaleableTicketType.objects.filter(id=tt_id).update(
                     quantity_sold=F('quantity_sold') + qty
                 )
+                if item_tier_id:
+                    try:
+                        SaleableTicketTypeTier.objects.filter(id=item_tier_id).update(
+                            quantity_sold=F('quantity_sold') + qty
+                        )
+                    except Exception:
+                        logger.warning("checkout_payment: failed to update tier %s", item_tier_id)
                 Ticket.objects.bulk_create([
                     Ticket(
                         ticket_order=order,
                         ticket_type=item_name,
                         price=Decimal('0.00'),
                         tier=None,
+                        tier_name=item_tier_name or None,
                     )
                     for _ in range(qty)
                 ])
@@ -4460,6 +4546,14 @@ def create_payment_intent(request, event_id):
             return JsonResponse({'error': f'Ticket type is no longer available.'}, status=400)
         if tt.quantity_limit is not None and (tt.quantity_sold + qty) > tt.quantity_limit:
             return JsonResponse({'error': f'Not enough tickets available for {tt.name}.'}, status=400)
+        tier_id = item.get('tier_id')
+        if tier_id:
+            try:
+                tier = SaleableTicketTypeTier.objects.get(id=tier_id)
+            except SaleableTicketTypeTier.DoesNotExist:
+                return JsonResponse({'error': f'Selected tier for {tt.name} is no longer available.'}, status=400)
+            if (tier.quantity_sold + qty) > tier.allotment:
+                return JsonResponse({'error': f'Not enough tickets in the selected tier for {tt.name}.'}, status=400)
 
     total_cents = sum(
         int(Decimal(item['price']) * 100) * item['quantity']
@@ -4721,6 +4815,8 @@ def _fulfill_payment_intent(payment_intent):
             qty = item.get('quantity', 1)
             item_name = item.get('name', '')
             item_price = Decimal(str(item.get('price', '0')))
+            tier_id = item.get('tier_id')
+            tier_name = item.get('tier_name') or ''
 
             try:
                 tt_locked = SaleableTicketType.objects.select_for_update().get(id=tt_id)
@@ -4737,12 +4833,25 @@ def _fulfill_payment_intent(payment_intent):
                     quantity_sold=F('quantity_sold') + qty
                 )
 
+            if tier_id:
+                try:
+                    tier_locked = SaleableTicketTypeTier.objects.select_for_update().get(id=tier_id)
+                except SaleableTicketTypeTier.DoesNotExist:
+                    logger.warning("Stripe webhook: SaleableTicketTypeTier %s not found", tier_id)
+                else:
+                    if (tier_locked.quantity_sold + qty) > tier_locked.allotment:
+                        logger.error("Stripe webhook: tier oversell for %s — fulfilling anyway", tier_id)
+                    SaleableTicketTypeTier.objects.filter(id=tier_id).update(
+                        quantity_sold=F('quantity_sold') + qty
+                    )
+
             Ticket.objects.bulk_create([
                 Ticket(
                     ticket_order=order,
                     ticket_type=item_name,
                     price=item_price,
                     tier=None,
+                    tier_name=tier_name or None,
                 )
                 for _ in range(qty)
             ])

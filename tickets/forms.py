@@ -4,7 +4,8 @@ from django.forms import modelformset_factory
 from django.contrib.auth.forms import AuthenticationForm
 from crispy_forms.helper import FormHelper
 from crispy_forms.layout import Layout, Row, Column, Submit, Field
-from .models import Organization, CSVFormat, Venue, Event, EventTalent, EventExpense, CustomField, IncomeSource, EventIncome, SaleableTicketType, UserProfile, PromoCode
+from django.forms import inlineformset_factory
+from .models import Organization, CSVFormat, Venue, Event, EventTalent, EventExpense, CustomField, IncomeSource, EventIncome, SaleableTicketType, SaleableTicketTypeTier, UserProfile, PromoCode
 
 
 class OrganizationForm(forms.ModelForm):
@@ -1017,7 +1018,7 @@ class SaleableTicketTypeForm(forms.ModelForm):
 
     class Meta:
         model = SaleableTicketType
-        fields = ['name', 'description', 'price', 'quantity_limit', 'is_active', 'sale_start', 'sale_end', 'order', 'is_password_protected', 'password']
+        fields = ['name', 'description', 'price', 'quantity_limit', 'is_active', 'sale_start', 'sale_end', 'order', 'is_password_protected', 'password', 'unlocks_after']
         widgets = {
             'name': forms.TextInput(attrs={'class': 'form-control', 'placeholder': 'e.g. General Admission'}),
             'description': forms.Textarea(attrs={'rows': 2, 'class': 'form-control', 'placeholder': 'Short buyer-facing copy (optional)'}),
@@ -1033,6 +1034,7 @@ class SaleableTicketTypeForm(forms.ModelForm):
                 'placeholder': 'Enter password here',
                 'autocomplete': 'off',
             }),
+            'unlocks_after': forms.Select(attrs={'class': 'form-select'}),
         }
 
     def __init__(self, *args, **kwargs):
@@ -1041,6 +1043,8 @@ class SaleableTicketTypeForm(forms.ModelForm):
         self.fields['description'].required = False
         self.fields['sale_start'].required = False
         self.fields['sale_end'].required = False
+        self.fields['unlocks_after'].required = False
+        self.fields['price'].help_text = 'Fallback price when no tiers are configured.'
         submit_label = 'Update Ticket Type' if (self.instance and self.instance.pk) else 'Create Ticket Type'
         self.helper = FormHelper()
         self.helper.layout = Layout(
@@ -1078,6 +1082,28 @@ class SaleableTicketTypeForm(forms.ModelForm):
         return cleaned_data
 
 
+class SaleableTicketTypeTierForm(forms.ModelForm):
+    class Meta:
+        model = SaleableTicketTypeTier
+        fields = ['name', 'price', 'allotment', 'order']
+        widgets = {
+            'name': forms.TextInput(attrs={'class': 'form-control', 'placeholder': 'e.g. Early Bird'}),
+            'price': forms.NumberInput(attrs={'class': 'form-control', 'step': '0.01', 'min': '0'}),
+            'allotment': forms.NumberInput(attrs={'class': 'form-control', 'min': '1'}),
+            'order': forms.NumberInput(attrs={'class': 'form-control', 'min': '0'}),
+        }
+
+
+SaleableTicketTypeTierFormSet = inlineformset_factory(
+    SaleableTicketType,
+    SaleableTicketTypeTier,
+    form=SaleableTicketTypeTierForm,
+    fields=['name', 'price', 'allotment', 'order'],
+    extra=1,
+    can_delete=True,
+)
+
+
 class VenueChoiceField(forms.ModelChoiceField):
     def label_from_instance(self, obj):
         parts = [obj.name]
@@ -1106,8 +1132,7 @@ class DirectEventForm(forms.ModelForm):
             'end_date': forms.DateInput(attrs={'type': 'date', 'class': 'form-control'}),
             'end_time': forms.TimeInput(attrs={'type': 'time', 'class': 'form-control'}),
             'description': forms.Textarea(attrs={'rows': 3, 'class': 'form-control', 'placeholder': 'Optional event description'}),
-            'flyer': forms.ClearableFileInput(attrs={'class': 'form-control'}),
-            'facebook_pixel_id': forms.TextInput(attrs={'class': 'form-control', 'placeholder': 'e.g., 1234567890123456'}),
+'facebook_pixel_id': forms.TextInput(attrs={'class': 'form-control', 'placeholder': 'e.g., 1234567890123456'}),
         }
 
     def __init__(self, *args, organization=None, **kwargs):
@@ -1136,7 +1161,6 @@ class DirectEventForm(forms.ModelForm):
             ),
             Field('description'),
             Field('venue'),
-            Field('flyer'),
             Field('facebook_pixel_id'),
         )
 
@@ -1186,17 +1210,25 @@ class DirectEventForm(forms.ModelForm):
         return cleaned_data
 
 
+class SaleableTicketTypeInlineForm(forms.ModelForm):
+    class Meta:
+        model = SaleableTicketType
+        fields = ['name', 'description', 'price', 'quantity_limit', 'order', 'unlocks_after']
+        widgets = {
+            'name':           forms.TextInput(attrs={'class': 'form-control', 'placeholder': 'e.g. General Admission'}),
+            'description':    forms.TextInput(attrs={'class': 'form-control', 'placeholder': 'Short description (optional)'}),
+            'price':          forms.NumberInput(attrs={'class': 'form-control', 'step': '0.01', 'min': '0', 'placeholder': '0.00'}),
+            'quantity_limit': forms.NumberInput(attrs={'class': 'form-control', 'min': '1', 'placeholder': 'Unlimited'}),
+            'order':          forms.NumberInput(attrs={'class': 'form-control', 'min': '0', 'style': 'width:65px;'}),
+            'unlocks_after':  forms.Select(attrs={'class': 'form-select form-select-sm'}),
+        }
+
+
 DirectTicketTypeFormSet = modelformset_factory(
     SaleableTicketType,
-    fields=['name', 'description', 'price', 'quantity_limit'],
-    extra=1,
+    form=SaleableTicketTypeInlineForm,
+    extra=0,
     can_delete=True,
-    widgets={
-        'name': forms.TextInput(attrs={'class': 'form-control', 'placeholder': 'e.g. General Admission'}),
-        'description': forms.TextInput(attrs={'class': 'form-control', 'placeholder': 'Short description (optional)'}),
-        'price': forms.NumberInput(attrs={'class': 'form-control', 'step': '0.01', 'min': '0', 'placeholder': '0.00'}),
-        'quantity_limit': forms.NumberInput(attrs={'class': 'form-control', 'min': '1', 'placeholder': 'Unlimited'}),
-    },
 )
 
 
@@ -1210,7 +1242,8 @@ class PublicTicketPurchaseForm(forms.Form):
         super().__init__(*args, **kwargs)
         self._ticket_types = ticket_types
         for tt in ticket_types:
-            remaining = tt.remaining_quantity()
+            active_tier = tt.get_active_tier()  # tiers already prefetched by caller
+            remaining = active_tier.remaining_capacity() if active_tier else tt.remaining_quantity()
             max_val = 10 if remaining is None else min(10, remaining)
             field_name = f'qty_{tt.id.hex}'
             self.fields[field_name] = forms.IntegerField(

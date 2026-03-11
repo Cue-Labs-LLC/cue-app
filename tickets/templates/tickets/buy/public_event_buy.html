@@ -95,7 +95,7 @@
         <p>{{ event.venue.name }}, {{ event.venue.city }}</p>
     </div>
 
-    {% if not available_pairs and not locked_pairs %}
+    {% if not available_pairs and not locked_pairs and not coming_soon_types %}
     <div class="text-center py-5">
         <i class="bi bi-ticket-perforated" style="font-size: 3rem; color: #ccc;"></i>
         <p class="mt-3 text-muted">No tickets are currently available for this event.</p>
@@ -129,17 +129,22 @@
         {% endif %}
 
         {% for tt, bound_field in available_pairs %}
-        <div class="ticket-card{% if tt.is_sold_out %} sold-out{% endif %}" data-price="{{ tt.price }}" data-ticket-id="{{ tt.id }}">
+        {% with at=tt.get_active_tier ep=tt.effective_price %}
+        <div class="ticket-card{% if tt.is_sold_out %} sold-out{% endif %}" data-price="{{ ep }}" data-ticket-id="{{ tt.id }}">
             <div class="ticket-info">
-                <div class="ticket-name">{{ tt.name }}</div>
+                <div class="ticket-name">{{ tt.name }}{% if at %} <span class="badge bg-primary ms-1" style="font-size:0.72rem;">{{ at.name }}</span>{% endif %}</div>
                 {% if tt.description %}<div class="ticket-desc">{{ tt.description }}</div>{% endif %}
                 <div class="ticket-price">
-                    {% if tt.price == 0 %}Free{% else %}${{ tt.price|currency }}{% endif %}
+                    {% if ep == 0 %}Free{% else %}${{ ep|currency }}{% endif %}
                 </div>
-                {% if tt.price != 0 %}
+                {% if ep != 0 %}
                 <div class="ticket-fee-preview" style="font-size:11px;color:#999;display:none;"></div>
                 {% endif %}
-                {% if tt.quantity_limit is not None %}
+                {% if at %}
+                {% if at.remaining_capacity <= 10 %}
+                <div class="ticket-remaining"><i class="bi bi-exclamation-circle"></i> Only {{ at.remaining_capacity }} left</div>
+                {% endif %}
+                {% elif tt.quantity_limit is not None %}
                 {% with rem=tt.remaining_quantity %}
                 {% if rem <= 10 %}
                 <div class="ticket-remaining"><i class="bi bi-exclamation-circle"></i> Only {{ rem }} left</div>
@@ -155,27 +160,58 @@
                 {% endif %}
             </div>
         </div>
+        {% endwith %}
         {% if bound_field.errors %}
         <div class="field-error">{{ bound_field.errors|join:", " }}</div>
         {% endif %}
         {% endfor %}
 
-        {% for tt, bound_field in locked_pairs %}
-        <div class="ticket-card" id="locked-card-{{ tt.id.hex }}"
-             data-unlock-url="{% url 'tickets:unlock_ticket_type' event.id tt.id %}"
-             data-price="{{ tt.price }}"
-             data-ticket-id="{{ tt.id }}"
-             style="display:none;">
+        {% for tt in coming_soon_types %}
+        {% with ep=tt.effective_price %}
+        <div class="ticket-card" style="opacity:0.5;cursor:default;">
             <div class="ticket-info">
                 <div class="ticket-name">{{ tt.name }}</div>
                 {% if tt.description %}<div class="ticket-desc">{{ tt.description }}</div>{% endif %}
                 <div class="ticket-price">
-                    {% if tt.price == 0 %}Free{% else %}${{ tt.price|currency }}{% endif %}
+                    {% if ep == 0 %}Free{% else %}${{ ep|currency }}{% endif %}
                 </div>
-                {% if tt.price != 0 %}
+                {% if tt.unlocks_after %}
+                <div class="ticket-desc" style="margin-top:4px;">
+                    <i class="bi bi-hourglass-split"></i>
+                    Available after <strong>{{ tt.unlocks_after.name }}</strong> sells out
+                </div>
+                {% endif %}
+            </div>
+            <div class="qty-control">
+                <span style="font-size:0.82rem;color:#999;font-weight:600;white-space:nowrap;">
+                    Available soon
+                </span>
+            </div>
+        </div>
+        {% endwith %}
+        {% endfor %}
+
+        {% for tt, bound_field in locked_pairs %}
+        {% with at=tt.get_active_tier ep=tt.effective_price %}
+        <div class="ticket-card" id="locked-card-{{ tt.id.hex }}"
+             data-unlock-url="{% url 'tickets:unlock_ticket_type' event.id tt.id %}"
+             data-price="{{ ep }}"
+             data-ticket-id="{{ tt.id }}"
+             style="display:none;">
+            <div class="ticket-info">
+                <div class="ticket-name">{{ tt.name }}{% if at %} <span class="badge bg-primary ms-1" style="font-size:0.72rem;">{{ at.name }}</span>{% endif %}</div>
+                {% if tt.description %}<div class="ticket-desc">{{ tt.description }}</div>{% endif %}
+                <div class="ticket-price">
+                    {% if ep == 0 %}Free{% else %}${{ ep|currency }}{% endif %}
+                </div>
+                {% if ep != 0 %}
                 <div class="ticket-fee-preview" style="font-size:11px;color:#999;display:none;"></div>
                 {% endif %}
-                {% if tt.quantity_limit is not None %}
+                {% if at %}
+                {% if at.remaining_capacity <= 10 %}
+                <div class="ticket-remaining"><i class="bi bi-exclamation-circle"></i> Only {{ at.remaining_capacity }} left</div>
+                {% endif %}
+                {% elif tt.quantity_limit is not None %}
                 {% with rem=tt.remaining_quantity %}
                 {% if rem <= 10 %}
                 <div class="ticket-remaining"><i class="bi bi-exclamation-circle"></i> Only {{ rem }} left</div>
@@ -185,6 +221,7 @@
             </div>
             <div class="qty-control">{{ bound_field }}</div>
         </div>
+        {% endwith %}
         {% if bound_field.errors %}
         <div class="field-error" id="err-{{ tt.id.hex }}" style="display:none;">{{ bound_field.errors|join:", " }}</div>
         {% endif %}

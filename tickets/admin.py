@@ -12,6 +12,7 @@ from .models import (
     SurveyQuestion, SurveyInvitation, SurveyResponse, SurveyAnswer,
     ChatMessage, Payout, StripeCheckoutSession,
     ExternalSurveyUpload, ExternalSurveyResponse,
+    SaleableTicketType, SaleableTicketTypeTier,
 )
 
 
@@ -808,3 +809,28 @@ class ExternalSurveyResponseAdmin(admin.ModelAdmin):
     raw_id_fields = ['upload', 'event']
     readonly_fields = ['id', 'created_at', 'updated_at']
     search_fields = ['email', 'city', 'text_feedback']
+
+
+class SaleableTicketTypeTierInline(admin.TabularInline):
+    model = SaleableTicketTypeTier
+    extra = 0
+    readonly_fields = ['quantity_sold']
+    fields = ['name', 'price', 'allotment', 'quantity_sold', 'order']
+
+
+@admin.register(SaleableTicketType)
+class SaleableTicketTypeAdmin(admin.ModelAdmin):
+    list_display = ['name', 'event', 'price', 'quantity_sold', 'quantity_limit', 'is_active', 'order']
+    list_filter = ['event__organization', 'is_active']
+    search_fields = ['name', 'event__name']
+    readonly_fields = ['id', 'created_at', 'updated_at', 'quantity_sold']
+    inlines = [SaleableTicketTypeTierInline]
+
+    def get_queryset(self, request):
+        qs = super().get_queryset(request)
+        if request.user.is_superuser:
+            return qs.select_related('event')
+        profile = getattr(request.user, 'profile', None)
+        if profile and profile.organization_id:
+            return qs.filter(event__organization=profile.organization).select_related('event')
+        return qs.none()

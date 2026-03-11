@@ -17,16 +17,24 @@
     <h1>{% if editing %}Edit{% else %}Create{% endif %} Ticket Type</h1>
 </div>
 
+<form method="post">
+    {% csrf_token %}
 
+    {{ tier_formset.management_form }}
 
-<div class="card">
-    <div class="card-body">
-        <form method="post">
-            {% csrf_token %}
+    <div class="card">
+        <div class="card-body">
             {% crispy form %}
-        </form>
+        </div>
     </div>
-</div>
+
+    <div class="mt-3 d-flex gap-2">
+        <button type="submit" class="btn btn-primary">{% if editing %}Update Ticket Type{% else %}Create Ticket Type{% endif %}</button>
+        <a href="{% url 'tickets:event_detail' event.id %}" class="btn btn-outline-secondary">
+            <i class="bi bi-arrow-left"></i> Back to Event
+        </a>
+    </div>
+</form>
 
 <div class="card mt-3" id="fee-preview-card" style="display:none;">
     <div class="card-body">
@@ -43,12 +51,6 @@
         <p class="mb-0" style="font-size:0.78rem;color:#aaa;">Service fee: 8% of ticket price + $0.99</p>
     </div>
 </div>
-
-<div class="mt-3">
-    <a href="{% url 'tickets:event_detail' event.id %}" class="btn btn-outline-secondary">
-        <i class="bi bi-arrow-left"></i> Back to Event
-    </a>
-</div>
 {% endblock %}
 
 {% block extra_js %}
@@ -56,22 +58,21 @@
 document.addEventListener('DOMContentLoaded', function () {
     var checkbox = document.getElementById('id_is_password_protected');
     var passwordField = document.getElementById('id_password');
-    if (!checkbox || !passwordField) return;
-    var passwordWrapper = passwordField.closest('.mb-3');
-
-    function togglePasswordField() {
-        if (checkbox.checked) {
-            passwordWrapper.style.display = '';
-            passwordField.required = true;
-        } else {
-            passwordWrapper.style.display = 'none';
-            passwordField.required = false;
-            passwordField.value = '';
+    if (checkbox && passwordField) {
+        var passwordWrapper = passwordField.closest('.mb-3');
+        function togglePasswordField() {
+            if (checkbox.checked) {
+                passwordWrapper.style.display = '';
+                passwordField.required = true;
+            } else {
+                passwordWrapper.style.display = 'none';
+                passwordField.required = false;
+                passwordField.value = '';
+            }
         }
+        togglePasswordField();
+        checkbox.addEventListener('change', togglePasswordField);
     }
-
-    togglePasswordField();
-    checkbox.addEventListener('change', togglePasswordField);
 
     var priceInput = document.getElementById('id_price');
     var feeCard = document.getElementById('fee-preview-card');
@@ -96,6 +97,7 @@ document.addEventListener('DOMContentLoaded', function () {
         priceInput.addEventListener('input', updateFeePreview);
         updateFeePreview();
     }
+
 });
 </script>
 {% endblock %}

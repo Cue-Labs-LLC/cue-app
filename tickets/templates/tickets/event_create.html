@@ -3,6 +3,12 @@
 
 {% block title %}Create Event{% endblock %}
 
+{% block extra_css %}
+<style>
+.flyer-drop-zone.flyer-dragover { outline: 2px dashed var(--bs-primary); outline-offset: 4px; background: rgba(var(--bs-primary-rgb), 0.05); }
+</style>
+{% endblock %}
+
 {% block content %}
 <div class="page-header">
     <div>
@@ -27,6 +33,25 @@
         {% else %}
         <form method="post" enctype="multipart/form-data">
             {% csrf_token %}
+            {# Flyer drag-and-drop card #}
+            <div class="card mb-4" id="event-flyer-card">
+                <div class="card-header"><h5 class="mb-0">Event Flyer</h5></div>
+                <div class="card-body p-0 text-center">
+                    <input type="file" id="flyer-file-input" name="flyer" accept="image/*,.heic,.heif" class="d-none">
+                    <div id="flyer-drop-zone" class="flyer-drop-zone position-relative" style="min-height: 200px; cursor: pointer;">
+                        <div class="d-flex flex-column align-items-center justify-content-center py-5 text-muted" id="flyer-placeholder">
+                            <i class="bi bi-image fs-1 mb-2"></i>
+                            <p class="mb-0">Click or drop an image to add a flyer</p>
+                        </div>
+                        <div id="flyer-preview" class="d-none">
+                            <div class="flyer-4-5 mx-auto" style="max-width: 320px;">
+                                <img id="flyer-preview-img" src="" alt="Event flyer preview">
+                            </div>
+                            <p class="small text-muted mt-2 mb-0">Click or drag a new image to replace</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
             <div class="card mb-3">
                 <div class="card-header">
                     <h5 class="mb-0">Event Details</h5>
@@ -40,7 +65,11 @@
                     <h5 class="mb-0">Ticket Types</h5>
                 </div>
                 <div class="card-body">
-                    <p class="small text-muted">Define the ticket types available for purchase. Click "Add ticket type" to add a row.</p>
+                    <p class="small text-muted">
+                        Use <strong>Unlocks After</strong> to sequence ticket tiers: a ticket type set to
+                        "Unlocks After" another will appear disabled on the buy page until that ticket sells out.
+                        Leave blank to make a ticket type always purchasable.
+                    </p>
                     {{ ticket_formset.management_form }}
                     <div class="table-responsive">
                         <table class="table table-sm" id="ticket-type-formset-table">
@@ -50,16 +79,20 @@
                                     <th>Description</th>
                                     <th>Price ($)</th>
                                     <th>Quantity Limit</th>
+                                    <th style="width:70px;">Order</th>
+                                    <th>Unlocks After</th>
                                     <th>Remove</th>
                                 </tr>
                             </thead>
                             <tbody id="ticket-type-formset-tbody">
                             {% for tt_form in ticket_formset %}
-                            <tr class="ticket-type-form-row">
+                            <tr class="ticket-type-form-row" data-tt-idx="{{ forloop.counter0 }}">
                                 <td>{{ tt_form.name }}</td>
                                 <td>{{ tt_form.description }}</td>
                                 <td>{{ tt_form.price }}</td>
                                 <td>{{ tt_form.quantity_limit }}</td>
+                                <td>{{ tt_form.order }}</td>
+                                <td>{{ tt_form.unlocks_after }}</td>
                                 <td>
                                     <button type="button" class="btn btn-sm btn-outline-danger ticket-type-remove" aria-label="Remove row">Remove</button>
                                     <span class="d-none">{{ tt_form.DELETE }}</span>
@@ -74,11 +107,13 @@
                         <i class="bi bi-plus-lg"></i> Add ticket type
                     </button>
                     <template id="ticket-type-row-template">
-                        <tr class="ticket-type-form-row">
+                        <tr class="ticket-type-form-row" data-tt-idx="__prefix__">
                             <td>{{ ticket_formset.empty_form.name }}</td>
                             <td>{{ ticket_formset.empty_form.description }}</td>
                             <td>{{ ticket_formset.empty_form.price }}</td>
                             <td>{{ ticket_formset.empty_form.quantity_limit }}</td>
+                            <td>{{ ticket_formset.empty_form.order }}</td>
+                            <td>{{ ticket_formset.empty_form.unlocks_after }}</td>
                             <td>
                                 <button type="button" class="btn btn-sm btn-outline-danger ticket-type-remove" aria-label="Remove row">Remove</button>
                                 <span class="d-none">{{ ticket_formset.empty_form.DELETE }}</span>
@@ -148,6 +183,36 @@
 </div>
 <script>
 {% if ticketing_type == 'direct' %}
+document.addEventListener('DOMContentLoaded', function() {
+    var flyerZone = document.getElementById('flyer-drop-zone');
+    var flyerInput = document.getElementById('flyer-file-input');
+    var flyerPlaceholder = document.getElementById('flyer-placeholder');
+    var flyerPreview = document.getElementById('flyer-preview');
+    var flyerPreviewImg = document.getElementById('flyer-preview-img');
+    if (flyerZone && flyerInput) {
+        function showPreview(file) {
+            if (!file || !file.type.startsWith('image/') && !/\.(heic|heif)$/i.test(file.name)) return;
+            var reader = new FileReader();
+            reader.onload = function(e) {
+                flyerPreviewImg.src = e.target.result;
+                flyerPlaceholder.classList.add('d-none');
+                flyerPreview.classList.remove('d-none');
+            };
+            reader.readAsDataURL(file);
+        }
+        flyerZone.addEventListener('click', function() { flyerInput.click(); });
+        flyerInput.addEventListener('change', function() { if (this.files && this.files[0]) showPreview(this.files[0]); });
+        flyerZone.addEventListener('dragover', function(e) { e.preventDefault(); flyerZone.classList.add('flyer-dragover'); });
+        flyerZone.addEventListener('dragleave', function(e) { e.preventDefault(); flyerZone.classList.remove('flyer-dragover'); });
+        flyerZone.addEventListener('drop', function(e) {
+            e.preventDefault();
+            flyerZone.classList.remove('flyer-dragover');
+            var file = e.dataTransfer.files && e.dataTransfer.files[0];
+            if (file) { flyerInput.files = e.dataTransfer.files; showPreview(file); }
+        });
+    }
+});
+
 (function() {
     var totalFormsInput = document.querySelector('input[name="ticket_type-TOTAL_FORMS"]');
     var tbody = document.getElementById('ticket-type-formset-tbody');
@@ -155,12 +220,8 @@
     var addBtn = document.getElementById('ticket-type-add-row');
     if (!totalFormsInput || !tbody || !template || !addBtn) return;
 
-    function getTotalForms() {
-        return parseInt(totalFormsInput.value, 10) || 0;
-    }
-    function setTotalForms(n) {
-        totalFormsInput.value = n;
-    }
+    function getTotalForms() { return parseInt(totalFormsInput.value, 10) || 0; }
+    function setTotalForms(n) { totalFormsInput.value = n; }
 
     addBtn.addEventListener('click', function() {
         var index = getTotalForms();
@@ -173,6 +234,8 @@
         clone.querySelectorAll('input:not([type="hidden"]), select, textarea').forEach(function(el) {
             if (el.type !== 'hidden') el.value = '';
         });
+        var mainRow = clone.querySelector('tr.ticket-type-form-row');
+        if (mainRow) mainRow.dataset.ttIdx = String(index);
         tbody.appendChild(clone);
         setTotalForms(index + 1);
     });
@@ -204,6 +267,7 @@
                         if (idMatch) el.id = 'id_ticket_type-' + i + '-' + idMatch[2];
                     }
                 });
+                r.dataset.ttIdx = String(i);
             }
             setTotalForms(rows.length);
         }

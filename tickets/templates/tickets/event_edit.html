@@ -1,7 +1,14 @@
 {% extends 'tickets/base.html' %}
 {% load crispy_forms_tags %}
+{% load tickets_extras %}
 
 {% block title %}Edit Event - {{ event.name }}{% endblock %}
+
+{% block extra_css %}
+<style>
+.flyer-drop-zone.flyer-dragover { outline: 2px dashed var(--bs-primary); outline-offset: 4px; background: rgba(var(--bs-primary-rgb), 0.05); }
+</style>
+{% endblock %}
 
 {% block content %}
 <nav aria-label="breadcrumb">
@@ -23,20 +30,31 @@
 <div class="row">
     <div class="col-12">
         {% if ticketing_type == 'direct' %}
-        <div class="card mb-3">
-            <div class="card-body">
-                <label class="form-label fw-semibold">Public Ticket Link</label>
-                <div class="input-group">
-                    <input type="text" class="form-control form-control-sm font-monospace"
-                           id="public-ticket-link"
-                           value="{{ request.scheme }}://{{ request.get_host }}{% url 'tickets:public_event_buy' event.id %}"
-                           readonly>
-                    <button class="btn btn-outline-secondary btn-sm" type="button" id="copy-ticket-link">
-                        <i class="bi bi-clipboard"></i> Copy
-                    </button>
+{% if direct_ticketing_enabled %}
+        {# Flyer drag-and-drop card #}
+        <div class="card mb-4" id="event-flyer-card">
+            <div class="card-header"><h5 class="mb-0">Event Flyer</h5></div>
+            <div class="card-body p-0 text-center">
+                <input type="hidden" id="flyer-csrf" value="{{ csrf_token }}">
+                <input type="file" id="flyer-file-input" accept="image/*,.heic,.heif" class="d-none"
+                       data-flyer-url="{% url 'tickets:event_flyer_upload' event.id %}">
+                <div id="flyer-drop-zone" class="flyer-drop-zone position-relative" style="min-height: 200px; cursor: pointer;">
+                    {% if event.flyer %}
+                    <div class="flyer-4-5 mx-auto" style="max-width: 320px;">
+                        <img id="event-flyer-img" src="{{ event.flyer.url }}" alt="{{ event.name }} event image">
+                    </div>
+                    <p class="small text-muted mt-2 mb-0">Click or drag a new image to replace</p>
+                    {% else %}
+                    <div class="d-flex flex-column align-items-center justify-content-center py-5 text-muted">
+                        <i class="bi bi-image fs-1 mb-2"></i>
+                        <p class="mb-0">Click or drop an image to add a flyer</p>
+                    </div>
+                    {% endif %}
                 </div>
             </div>
         </div>
+        {% endif %}
+
         <form method="post" enctype="multipart/form-data">
             {% csrf_token %}
             <div class="card mb-3">
@@ -48,75 +66,140 @@
                             <small class="d-block text-muted">Cannot be changed after event creation.</small>
                         </div>
                     </div>
-                    {% if event.flyer %}
-                    <div class="mb-3">
-                        <label class="form-label fw-semibold">Current Flyer</label>
-                        <div class="flyer-4-5 rounded" style="max-width: 160px;">
-                            <img src="{{ event.flyer.url }}?v={{ event.updated_at|date:'U' }}" alt="{{ event.name }} flyer" class="rounded">
-                        </div>
-                        <p class="small text-muted mb-0">To replace the flyer, use the event detail page (click the event name above).</p>
-                    </div>
-                    {% endif %}
                     {% crispy form %}
-                </div>
-            </div>
-            <div class="card mb-3">
-                <div class="card-header">
-                    <h5 class="mb-0">Ticket Types</h5>
-                </div>
-                <div class="card-body">
-                    <p class="small text-muted">Define the ticket types available for purchase. Click "Add ticket type" to add a row.</p>
-                    {{ ticket_formset.management_form }}
-                    <div class="table-responsive">
-                        <table class="table table-sm" id="ticket-type-formset-table">
-                            <thead>
-                                <tr>
-                                    <th>Ticket Name</th>
-                                    <th>Description</th>
-                                    <th>Price ($)</th>
-                                    <th>Quantity Limit</th>
-                                    <th>Remove</th>
-                                </tr>
-                            </thead>
-                            <tbody id="ticket-type-formset-tbody">
-                                {% for tt_form in ticket_formset %}
-                                <tr class="ticket-type-form-row">
-                                    <td>{{ tt_form.name }}</td>
-                                    <td>{{ tt_form.description }}</td>
-                                    <td>{{ tt_form.price }}</td>
-                                    <td>{{ tt_form.quantity_limit }}</td>
-                                    <td>
-                                        <button type="button" class="btn btn-sm btn-outline-danger ticket-type-remove" aria-label="Remove row">Remove</button>
-                                        <span class="d-none">{{ tt_form.DELETE }}</span>
-                                        {{ tt_form.id }}
-                                    </td>
-                                </tr>
-                                {% endfor %}
-                            </tbody>
-                        </table>
-                    </div>
-                    <button type="button" id="ticket-type-add-row" class="btn btn-sm btn-outline-secondary mb-3">
-                        <i class="bi bi-plus-lg"></i> Add ticket type
-                    </button>
-                    <template id="ticket-type-row-template">
-                        <tr class="ticket-type-form-row">
-                            <td>{{ ticket_formset.empty_form.name }}</td>
-                            <td>{{ ticket_formset.empty_form.description }}</td>
-                            <td>{{ ticket_formset.empty_form.price }}</td>
-                            <td>{{ ticket_formset.empty_form.quantity_limit }}</td>
-                            <td>
-                                <button type="button" class="btn btn-sm btn-outline-danger ticket-type-remove" aria-label="Remove row">Remove</button>
-                                <span class="d-none">{{ ticket_formset.empty_form.DELETE }}</span>
-                                {{ ticket_formset.empty_form.id }}
-                            </td>
-                        </tr>
-                    </template>
                 </div>
             </div>
             <div class="mb-3">
                 <button type="submit" class="btn btn-primary">Save Changes</button>
             </div>
         </form>
+
+        {% if direct_ticketing_enabled %}
+        {# Ticket Types card #}
+        <div class="card mb-4">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <h5>Ticket Types</h5>
+                <button type="button" class="btn btn-sm btn-primary" data-bs-toggle="modal" data-bs-target="#addTicketTypeModal">
+                    <i class="bi bi-plus-lg"></i> Add Ticket Type
+                </button>
+            </div>
+            <div class="card-body p-0">
+                {% if saleable_ticket_types %}
+                <div class="table-responsive">
+                    <table class="table table-hover mb-0">
+                        <thead>
+                            <tr>
+                                <th>Ticket Type</th><th>Price</th><th>Sold</th>
+                                <th class="d-none d-md-table-cell">Limit</th><th>Revenue</th>
+                                <th class="d-none d-md-table-cell">Unlocks After</th>
+                                <th class="d-none d-md-table-cell">Status</th><th></th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for tt in saleable_ticket_types %}
+                            <tr>
+                                <td><strong>{{ tt.name }}</strong>{% if tt.description %}<br><small class="text-muted">{{ tt.description|truncatechars:60 }}</small>{% endif %}</td>
+                                <td>{% with at=tt.get_active_tier %}{% if at %}${{ at.price|currency }}<br><small class="text-muted">{{ at.name }}</small>{% else %}${{ tt.price|currency }}{% endif %}{% endwith %}</td>
+                                <td>{{ tt.quantity_sold }}</td>
+                                <td class="d-none d-md-table-cell">{% if tt.quantity_limit %}{{ tt.quantity_limit }}{% else %}<span class="text-muted">&infin;</span>{% endif %}</td>
+                                <td>${{ tt.effective_price|currency }} &times; {{ tt.quantity_sold }}</td>
+                                <td class="d-none d-md-table-cell">
+                                    {% if tt.unlocks_after %}<span class="text-muted small">{{ tt.unlocks_after.name }}</span>{% else %}<span class="text-muted">—</span>{% endif %}
+                                </td>
+                                <td class="d-none d-md-table-cell">
+                                    {% if tt.is_active %}<span class="badge bg-success">Active</span>{% else %}<span class="badge bg-secondary">Inactive</span>{% endif %}
+                                    {% if tt.is_sold_out %}<span class="badge bg-warning ms-1">Sold Out</span>{% endif %}
+                                </td>
+                                <td>
+                                    <div class="d-flex gap-1">
+                                        <button type="button" class="btn btn-sm btn-outline-secondary edit-ticket-type-btn"
+                                            data-tt-id="{{ tt.id }}"
+                                            data-edit-url="{% url 'tickets:saleable_ticket_type_edit' event.id tt.id %}"
+                                            data-data-url="{% url 'tickets:saleable_ticket_type_data' event.id tt.id %}"
+                                            data-bs-toggle="modal" data-bs-target="#editTicketTypeModal">
+                                            <i class="bi bi-pencil"></i>
+                                        </button>
+                                        <form method="post" action="{% url 'tickets:saleable_ticket_type_toggle' event.id tt.id %}" class="d-inline">
+                                            {% csrf_token %}
+                                            <button type="submit" class="btn btn-sm btn-outline-{% if tt.is_active %}warning{% else %}success{% endif %}">
+                                                <i class="bi bi-{% if tt.is_active %}eye-slash{% else %}eye{% endif %}"></i>
+                                            </button>
+                                        </form>
+                                        <a href="{% url 'tickets:saleable_ticket_type_delete' event.id tt.id %}" class="btn btn-sm btn-outline-danger"><i class="bi bi-trash"></i></a>
+                                    </div>
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                        <tfoot>
+                            <tr class="table-light">
+                                <td colspan="4"><strong>Total Revenue</strong></td>
+                                <td colspan="4"><strong>${{ direct_total_revenue|currency }}</strong></td>
+                            </tr>
+                        </tfoot>
+                    </table>
+                </div>
+                {% else %}
+                <div class="empty-state" style="padding: 32px;">
+                    <p class="mb-2">No ticket types configured. Add ticket types to sell tickets directly through Eventflow.</p>
+                    <button type="button" class="btn btn-sm btn-outline-primary" data-bs-toggle="modal" data-bs-target="#addTicketTypeModal">
+                        <i class="bi bi-plus-lg"></i> Add First Ticket Type
+                    </button>
+                </div>
+                {% endif %}
+            </div>
+        </div>
+        {# Promo Codes card #}
+        <div class="card mb-4">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <h5>Promo Codes</h5>
+                <a href="{% url 'tickets:promo_code_create' event.id %}" class="btn btn-sm btn-primary"><i class="bi bi-plus-lg"></i> Add Promo Code</a>
+            </div>
+            <div class="card-body p-0">
+                {% if promo_codes %}
+                <div class="table-responsive">
+                    <table class="table table-hover mb-0">
+                        <thead>
+                            <tr>
+                                <th>Code</th>
+                                <th class="d-none d-md-table-cell">Type</th>
+                                <th>Value</th>
+                                <th>Uses</th>
+                                <th class="d-none d-md-table-cell">Expires</th>
+                                <th>Status</th>
+                                <th></th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for promo in promo_codes %}
+                            <tr>
+                                <td><strong>{{ promo.code }}</strong></td>
+                                <td class="d-none d-md-table-cell">{{ promo.get_discount_type_display }}</td>
+                                <td>{% if promo.discount_type == 'percentage' %}{{ promo.discount_value|floatformat:0 }}%{% else %}${{ promo.discount_value|floatformat:2 }}{% endif %}</td>
+                                <td>{{ promo.times_used }}{% if promo.max_uses %} / {{ promo.max_uses }}{% else %} / &infin;{% endif %}</td>
+                                <td class="d-none d-md-table-cell">{% if promo.expires_at %}{{ promo.expires_at|date:"M j, Y" }}{% else %}<span class="text-muted">Never</span>{% endif %}</td>
+                                <td>{% if promo.is_active %}<span class="badge bg-success">Active</span>{% else %}<span class="badge bg-secondary">Inactive</span>{% endif %}</td>
+                                <td>
+                                    <form method="post" action="{% url 'tickets:promo_code_delete' event.id promo.id %}" class="d-inline" onsubmit="return confirm('Delete promo code {{ promo.code }}?')">
+                                        {% csrf_token %}
+                                        <button type="submit" class="btn btn-sm btn-outline-danger"><i class="bi bi-trash"></i></button>
+                                    </form>
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+                {% else %}
+                <div class="empty-state" style="padding: 32px;">
+                    <p class="mb-2">No promo codes yet. Create a discount code for this event.</p>
+                    <a href="{% url 'tickets:promo_code_create' event.id %}" class="btn btn-sm btn-outline-primary"><i class="bi bi-plus-lg"></i> Add First Promo Code</a>
+                </div>
+                {% endif %}
+            </div>
+        </div>
+        {% endif %}{# /direct_ticketing_enabled #}
+
         {% else %}
         <form method="post">
             {% csrf_token %}
@@ -181,6 +264,7 @@
         </form>
         {% endif %}
 
+
         <div class="mt-3">
             <a href="{% url 'tickets:event_detail' event.id %}" class="btn btn-outline-secondary">
                 <i class="bi bi-arrow-left"></i> Back to Event
@@ -189,69 +273,7 @@
     </div>
 </div>
 <script>
-{% if ticketing_type == 'direct' %}
-(function() {
-    var totalFormsInput = document.querySelector('input[name="ticket_type-TOTAL_FORMS"]');
-    var tbody = document.getElementById('ticket-type-formset-tbody');
-    var template = document.getElementById('ticket-type-row-template');
-    var addBtn = document.getElementById('ticket-type-add-row');
-    if (!totalFormsInput || !tbody || !template || !addBtn) return;
-
-    function getTotalForms() {
-        return parseInt(totalFormsInput.value, 10) || 0;
-    }
-    function setTotalForms(n) {
-        totalFormsInput.value = n;
-    }
-
-    addBtn.addEventListener('click', function() {
-        var index = getTotalForms();
-        var clone = template.content.cloneNode(true);
-        clone.querySelectorAll('[name], [id], [for]').forEach(function(el) {
-            if (el.id) el.id = el.id.replace(/__prefix__/g, index);
-            if (el.name) el.name = el.name.replace(/__prefix__/g, index);
-            if (el.getAttribute('for')) el.setAttribute('for', el.getAttribute('for').replace(/__prefix__/g, index));
-        });
-        clone.querySelectorAll('input:not([type="hidden"]), select, textarea').forEach(function(el) {
-            if (el.type !== 'hidden') el.value = '';
-        });
-        tbody.appendChild(clone);
-        setTotalForms(index + 1);
-    });
-
-    tbody.addEventListener('click', function(e) {
-        var removeBtn = e.target.closest('.ticket-type-remove');
-        if (!removeBtn) return;
-        e.preventDefault();
-        var row = removeBtn.closest('tr');
-        if (!row) return;
-        var idInput = row.querySelector('input[name^="ticket_type-"][name$="-id"]');
-        var deleteInput = row.querySelector('input[name^="ticket_type-"][name$="-DELETE"]');
-        if (idInput && idInput.value) {
-            if (deleteInput) deleteInput.checked = true;
-            row.style.display = 'none';
-        } else {
-            row.remove();
-            var rows = tbody.querySelectorAll('tr.ticket-type-form-row');
-            var i, r;
-            for (i = 0; i < rows.length; i++) {
-                r = rows[i];
-                r.querySelectorAll('[name^="ticket_type-"], [id^="id_ticket_type-"]').forEach(function(el) {
-                    if (el.name) {
-                        var match = el.name.match(/^ticket_type-(\d+)-(.*)$/);
-                        if (match) el.name = 'ticket_type-' + i + '-' + match[2];
-                    }
-                    if (el.id) {
-                        var idMatch = el.id.match(/^id_ticket_type-(\d+)-(.*)$/);
-                        if (idMatch) el.id = 'id_ticket_type-' + i + '-' + idMatch[2];
-                    }
-                });
-            }
-            setTotalForms(rows.length);
-        }
-    });
-})();
-{% else %}
+{% if ticketing_type != 'direct' %}
 (function() {
     var totalFormsInput = document.querySelector('input[name="talent-TOTAL_FORMS"]');
     var tbody = document.getElementById('talent-formset-tbody');
@@ -316,12 +338,431 @@
 })();
 {% endif %}
 
-document.getElementById('copy-ticket-link')?.addEventListener('click', function () {
-    const input = document.getElementById('public-ticket-link');
-    navigator.clipboard.writeText(input.value).then(() => {
-        this.innerHTML = '<i class="bi bi-check-lg"></i> Copied';
-        setTimeout(() => { this.innerHTML = '<i class="bi bi-clipboard"></i> Copy'; }, 2000);
-    });
+
+{% if ticketing_type == 'direct' and direct_ticketing_enabled %}
+document.addEventListener('DOMContentLoaded', function() {
+    function showAlert(type, message) {
+        var div = document.createElement('div');
+        div.className = 'alert alert-' + type + ' alert-dismissible fade show';
+        div.innerHTML = message + '<button type="button" class="btn-close" data-bs-dismiss="alert"></button>';
+        var content = document.querySelector('.content');
+        if (content) content.insertBefore(div, content.firstChild);
+        setTimeout(function() { div.classList.remove('show'); setTimeout(function() { div.remove(); }, 150); }, 5000);
+    }
+
+    var flyerZone = document.getElementById('flyer-drop-zone');
+    var flyerInput = document.getElementById('flyer-file-input');
+    var flyerCsrf = document.getElementById('flyer-csrf');
+    if (flyerZone && flyerInput && flyerCsrf) {
+        var flyerUrl = flyerInput.getAttribute('data-flyer-url');
+        var ALLOWED_IMAGE_TYPES = /^image\//;
+        var HEIC_EXTS = /\.(heic|heif)$/i;
+        function uploadFlyer(file) {
+            if (!file || (!ALLOWED_IMAGE_TYPES.test(file.type) && !HEIC_EXTS.test(file.name))) {
+                showAlert('danger', 'Please choose an image file.');
+                return;
+            }
+            var formData = new FormData();
+            formData.append('flyer', file);
+            formData.append('csrfmiddlewaretoken', flyerCsrf.value);
+            fetch(flyerUrl, { method: 'POST', body: formData, headers: { 'X-Requested-With': 'XMLHttpRequest' } })
+                .then(function(r) { return r.json().then(function(data) { return { status: r.status, data: data }; }); })
+                .then(function(result) {
+                    if (result.data.success && result.data.url) {
+                        var img = document.getElementById('event-flyer-img');
+                        if (img) {
+                            img.src = result.data.url + (result.data.url.indexOf('?') === -1 ? '?' : '&') + 't=' + Date.now();
+                        } else {
+                            flyerZone.innerHTML = '<div class="flyer-4-5 mx-auto" style="max-width: 320px;"><img id="event-flyer-img" src="' + result.data.url + '" alt="Event flyer"></div><p class="small text-muted mt-2 mb-0">Click or drag a new image to replace</p>';
+                        }
+                        showAlert('success', 'Flyer updated.');
+                    } else {
+                        showAlert('danger', result.data.error || 'Upload failed.');
+                    }
+                })
+                .catch(function() { showAlert('danger', 'Upload failed.'); });
+        }
+        flyerZone.addEventListener('click', function() { flyerInput.click(); });
+        flyerInput.addEventListener('change', function() { if (this.files && this.files[0]) uploadFlyer(this.files[0]); this.value = ''; });
+        flyerZone.addEventListener('dragover', function(e) { e.preventDefault(); flyerZone.classList.add('flyer-dragover'); });
+        flyerZone.addEventListener('dragleave', function(e) { e.preventDefault(); flyerZone.classList.remove('flyer-dragover'); });
+        flyerZone.addEventListener('drop', function(e) {
+            e.preventDefault();
+            flyerZone.classList.remove('flyer-dragover');
+            if (e.dataTransfer.files && e.dataTransfer.files[0]) uploadFlyer(e.dataTransfer.files[0]);
+        });
+    }
 });
+
+document.addEventListener('DOMContentLoaded', function () {
+(function () {
+  var form = document.getElementById('add-ticket-type-form');
+  if (!form) return;
+
+  var pwCheck = document.getElementById('modal_is_pw');
+  var pwField = document.getElementById('modal-pw-field');
+  pwCheck.addEventListener('change', function () {
+    pwField.classList.toggle('d-none', !pwCheck.checked);
+  });
+
+  var modal = document.getElementById('addTicketTypeModal');
+  modal.addEventListener('hidden.bs.modal', function () {
+    form.reset();
+    pwField.classList.add('d-none');
+    document.getElementById('add-tt-global-error').classList.add('d-none');
+    form.querySelectorAll('.is-invalid').forEach(function (el) { el.classList.remove('is-invalid'); });
+    form.querySelectorAll('.invalid-feedback').forEach(function (el) { el.textContent = ''; });
+    document.getElementById('add_unlocks_after').value = '';
+  });
+
+  form.addEventListener('submit', function (e) {
+    e.preventDefault();
+    var btn = document.getElementById('add-tt-submit');
+    btn.disabled = true;
+    btn.textContent = 'Saving\u2026';
+
+    fetch(form.action, {
+      method: 'POST',
+      headers: { 'X-Requested-With': 'XMLHttpRequest' },
+      body: new FormData(form),
+    })
+      .then(function (r) { return r.json().then(function (d) { return { ok: r.ok, data: d }; }); })
+      .then(function (res) {
+        if (res.ok && res.data.success) {
+          window.location.href = res.data.redirect;
+        } else {
+          form.querySelectorAll('.is-invalid').forEach(function (el) { el.classList.remove('is-invalid'); });
+          form.querySelectorAll('.invalid-feedback').forEach(function (el) { el.textContent = ''; });
+
+          var errors = res.data.errors || {};
+          var hasFieldErrors = false;
+          Object.keys(errors).forEach(function (field) {
+            var input = form.querySelector('[name=' + field + ']');
+            var errDiv = document.getElementById('err-' + field);
+            if (input) { input.classList.add('is-invalid'); hasFieldErrors = true; }
+            if (errDiv) errDiv.textContent = errors[field].join(' ');
+          });
+          if (!hasFieldErrors) {
+            var globalErr = document.getElementById('add-tt-global-error');
+            globalErr.textContent = 'Please correct the errors below.';
+            globalErr.classList.remove('d-none');
+          }
+          btn.disabled = false;
+          btn.textContent = 'Create Ticket Type';
+        }
+      })
+      .catch(function () {
+        btn.disabled = false;
+        btn.textContent = 'Create Ticket Type';
+        var globalErr = document.getElementById('add-tt-global-error');
+        globalErr.textContent = 'Something went wrong. Please try again.';
+        globalErr.classList.remove('d-none');
+      });
+  });
+})();
+
+(function () {
+  var editForm = document.getElementById('edit-ticket-type-form');
+  if (!editForm) return;
+
+  var editPwCheck = document.getElementById('edit_is_pw');
+  var editPwField = document.getElementById('edit-pw-field');
+  editPwCheck.addEventListener('change', function () {
+    editPwField.classList.toggle('d-none', !editPwCheck.checked);
+  });
+
+  document.querySelectorAll('.edit-ticket-type-btn').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      var dataUrl = btn.getAttribute('data-data-url');
+      var editUrl = btn.getAttribute('data-edit-url');
+      editForm.action = editUrl;
+      editForm.setAttribute('data-current-tt-id', btn.getAttribute('data-tt-id'));
+
+      document.getElementById('edit-tt-loading').classList.remove('d-none');
+      document.getElementById('edit-tt-fields').classList.add('d-none');
+      document.getElementById('edit-tt-global-error').classList.add('d-none');
+      editForm.querySelectorAll('.is-invalid').forEach(function (el) { el.classList.remove('is-invalid'); });
+      editForm.querySelectorAll('.invalid-feedback').forEach(function (el) { el.textContent = ''; });
+
+      fetch(dataUrl, { headers: { 'X-Requested-With': 'XMLHttpRequest' } })
+        .then(function (r) { return r.json(); })
+        .then(function (d) {
+          document.getElementById('edit_name').value = d.name;
+          document.getElementById('edit_description').value = d.description;
+          document.getElementById('edit_price').value = d.price;
+          document.getElementById('edit_quantity_limit').value = d.quantity_limit;
+          document.getElementById('edit_order').value = d.order;
+          document.getElementById('edit_sale_start').value = d.sale_start;
+          document.getElementById('edit_sale_end').value = d.sale_end;
+          document.getElementById('edit_is_active').checked = d.is_active;
+          document.getElementById('edit_is_pw').checked = d.is_password_protected;
+          document.getElementById('edit_password').value = d.password;
+          editPwField.classList.toggle('d-none', !d.is_password_protected);
+          var unlocksSelect = document.getElementById('edit_unlocks_after');
+          if (unlocksSelect) {
+            var currentId = editForm.getAttribute('data-current-tt-id');
+            Array.from(unlocksSelect.options).forEach(function(opt) {
+              opt.disabled = !!(opt.value && opt.value === currentId);
+            });
+            unlocksSelect.value = d.unlocks_after_id || '';
+          }
+
+          document.getElementById('edit-tt-loading').classList.add('d-none');
+          document.getElementById('edit-tt-fields').classList.remove('d-none');
+        })
+        .catch(function () {
+          document.getElementById('edit-tt-loading').classList.add('d-none');
+          var globalErr = document.getElementById('edit-tt-global-error');
+          globalErr.textContent = 'Failed to load ticket type data. Please try again.';
+          globalErr.classList.remove('d-none');
+        });
+    });
+  });
+
+  document.getElementById('editTicketTypeModal').addEventListener('hidden.bs.modal', function () {
+    editForm.reset();
+    editPwField.classList.add('d-none');
+    document.getElementById('edit-tt-loading').classList.remove('d-none');
+    document.getElementById('edit-tt-fields').classList.add('d-none');
+    document.getElementById('edit-tt-global-error').classList.add('d-none');
+    editForm.querySelectorAll('.is-invalid').forEach(function (el) { el.classList.remove('is-invalid'); });
+    editForm.querySelectorAll('.invalid-feedback').forEach(function (el) { el.textContent = ''; });
+    var unlocksSelect = document.getElementById('edit_unlocks_after');
+    if (unlocksSelect) unlocksSelect.value = '';
+  });
+
+  editForm.addEventListener('submit', function (e) {
+    e.preventDefault();
+    var btn = document.getElementById('edit-tt-submit');
+    btn.disabled = true;
+    btn.textContent = 'Saving\u2026';
+
+    fetch(editForm.action, {
+      method: 'POST',
+      headers: { 'X-Requested-With': 'XMLHttpRequest' },
+      body: new FormData(editForm),
+    })
+      .then(function (r) { return r.json().then(function (d) { return { ok: r.ok, data: d }; }); })
+      .then(function (res) {
+        if (res.ok && res.data.success) {
+          window.location.href = res.data.redirect;
+        } else {
+          editForm.querySelectorAll('.is-invalid').forEach(function (el) { el.classList.remove('is-invalid'); });
+          editForm.querySelectorAll('.invalid-feedback').forEach(function (el) { el.textContent = ''; });
+
+          var errors = res.data.errors || {};
+          var hasFieldErrors = false;
+          Object.keys(errors).forEach(function (field) {
+            var input = editForm.querySelector('[name=' + field + ']');
+            var errDiv = document.getElementById('edit-err-' + field);
+            if (input) { input.classList.add('is-invalid'); hasFieldErrors = true; }
+            if (errDiv) errDiv.textContent = errors[field].join(' ');
+          });
+          if (!hasFieldErrors) {
+            var globalErr = document.getElementById('edit-tt-global-error');
+            globalErr.textContent = 'Please correct the errors below.';
+            globalErr.classList.remove('d-none');
+          }
+          btn.disabled = false;
+          btn.textContent = 'Save Changes';
+        }
+      })
+      .catch(function () {
+        btn.disabled = false;
+        btn.textContent = 'Save Changes';
+        var globalErr = document.getElementById('edit-tt-global-error');
+        globalErr.textContent = 'Something went wrong. Please try again.';
+        globalErr.classList.remove('d-none');
+      });
+  });
+})();
+}); {# /DOMContentLoaded #}
+{% endif %}{# /ticketing_type direct #}
 </script>
+{% endblock %}
+
+{% block modals %}
+{% if ticketing_type == 'direct' and direct_ticketing_enabled %}
+{# Add Ticket Type Modal #}
+<div class="modal fade" id="addTicketTypeModal" tabindex="-1" aria-labelledby="addTicketTypeModalLabel" aria-hidden="true">
+  <div class="modal-dialog modal-lg">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="addTicketTypeModalLabel">Add Ticket Type</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <form id="add-ticket-type-form" method="post" action="{% url 'tickets:saleable_ticket_type_create' event.id %}">
+        {% csrf_token %}
+        <input type="hidden" name="tiers-TOTAL_FORMS" value="0">
+        <input type="hidden" name="tiers-INITIAL_FORMS" value="0">
+        <input type="hidden" name="tiers-MIN_NUM_FORMS" value="0">
+        <input type="hidden" name="tiers-MAX_NUM_FORMS" value="1000">
+        <div class="modal-body">
+          <div id="add-tt-global-error" class="alert alert-danger d-none"></div>
+          <div class="row g-3">
+            <div class="col-12">
+              <label class="form-label fw-semibold">Name <span class="text-danger">*</span></label>
+              <input type="text" name="name" class="form-control" placeholder="e.g. General Admission" required>
+              <div class="invalid-feedback" id="err-name"></div>
+            </div>
+            <div class="col-12">
+              <label class="form-label fw-semibold">Description</label>
+              <textarea name="description" class="form-control" rows="2" placeholder="Short buyer-facing copy (optional)"></textarea>
+              <div class="invalid-feedback" id="err-description"></div>
+            </div>
+            <div class="col-md-4">
+              <label class="form-label fw-semibold">Price ($) <span class="text-danger">*</span></label>
+              <input type="number" name="price" class="form-control" step="0.01" min="0" placeholder="0.00" required>
+              <div class="invalid-feedback" id="err-price"></div>
+            </div>
+            <div class="col-md-4">
+              <label class="form-label fw-semibold">Quantity Limit</label>
+              <input type="number" name="quantity_limit" class="form-control" min="1" placeholder="Unlimited">
+              <div class="invalid-feedback" id="err-quantity_limit"></div>
+            </div>
+            <div class="col-md-4">
+              <label class="form-label fw-semibold">Order</label>
+              <input type="number" name="order" class="form-control" min="0" value="0">
+              <div class="invalid-feedback" id="err-order"></div>
+            </div>
+            <div class="col-12">
+              <label class="form-label fw-semibold">Unlocks After</label>
+              <select name="unlocks_after" class="form-select" id="add_unlocks_after">
+                <option value="">— None —</option>
+                {% for tt in saleable_ticket_types %}
+                <option value="{{ tt.id }}">{{ tt.name }}</option>
+                {% endfor %}
+              </select>
+              <div class="form-text text-muted">This ticket type becomes available only after the selected type sells out.</div>
+            </div>
+            <div class="col-md-6">
+              <label class="form-label fw-semibold">Sale Start</label>
+              <input type="datetime-local" name="sale_start" class="form-control">
+              <div class="invalid-feedback" id="err-sale_start"></div>
+            </div>
+            <div class="col-md-6">
+              <label class="form-label fw-semibold">Sale End</label>
+              <input type="datetime-local" name="sale_end" class="form-control">
+              <div class="invalid-feedback" id="err-sale_end"></div>
+            </div>
+            <div class="col-12">
+              <div class="form-check">
+                <input class="form-check-input" type="checkbox" name="is_active" id="modal_is_active" checked>
+                <label class="form-check-label" for="modal_is_active">Active (visible on buy page)</label>
+              </div>
+            </div>
+            <div class="col-12">
+              <div class="form-check">
+                <input class="form-check-input" type="checkbox" name="is_password_protected" id="modal_is_pw">
+                <label class="form-check-label" for="modal_is_pw">Password protected</label>
+              </div>
+            </div>
+            <div class="col-12 d-none" id="modal-pw-field">
+              <label class="form-label fw-semibold">Password</label>
+              <input type="text" name="password" class="form-control" placeholder="Enter password" autocomplete="off">
+              <div class="invalid-feedback" id="err-password"></div>
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+          <button type="submit" class="btn btn-primary" id="add-tt-submit">Create Ticket Type</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+
+{# Edit Ticket Type Modal #}
+<div class="modal fade" id="editTicketTypeModal" tabindex="-1" aria-labelledby="editTicketTypeModalLabel" aria-hidden="true">
+  <div class="modal-dialog modal-lg">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="editTicketTypeModalLabel">Edit Ticket Type</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <form id="edit-ticket-type-form" method="post" action="">
+        {% csrf_token %}
+        <input type="hidden" name="tiers-TOTAL_FORMS" value="0">
+        <input type="hidden" name="tiers-INITIAL_FORMS" value="0">
+        <input type="hidden" name="tiers-MIN_NUM_FORMS" value="0">
+        <input type="hidden" name="tiers-MAX_NUM_FORMS" value="1000">
+        <div class="modal-body">
+          <div id="edit-tt-global-error" class="alert alert-danger d-none"></div>
+          <div id="edit-tt-loading" class="text-center py-4">
+            <span class="spinner-border spinner-border-sm"></span> Loading&hellip;
+          </div>
+          <div id="edit-tt-fields" class="row g-3 d-none">
+            <div class="col-12">
+              <label class="form-label fw-semibold">Name <span class="text-danger">*</span></label>
+              <input type="text" name="name" id="edit_name" class="form-control" required>
+              <div class="invalid-feedback" id="edit-err-name"></div>
+            </div>
+            <div class="col-12">
+              <label class="form-label fw-semibold">Description</label>
+              <textarea name="description" id="edit_description" class="form-control" rows="2"></textarea>
+              <div class="invalid-feedback" id="edit-err-description"></div>
+            </div>
+            <div class="col-md-4">
+              <label class="form-label fw-semibold">Price ($) <span class="text-danger">*</span></label>
+              <input type="number" name="price" id="edit_price" class="form-control" step="0.01" min="0" required>
+              <div class="invalid-feedback" id="edit-err-price"></div>
+            </div>
+            <div class="col-md-4">
+              <label class="form-label fw-semibold">Quantity Limit</label>
+              <input type="number" name="quantity_limit" id="edit_quantity_limit" class="form-control" min="1" placeholder="Unlimited">
+              <div class="invalid-feedback" id="edit-err-quantity_limit"></div>
+            </div>
+            <div class="col-md-4">
+              <label class="form-label fw-semibold">Order</label>
+              <input type="number" name="order" id="edit_order" class="form-control" min="0">
+              <div class="invalid-feedback" id="edit-err-order"></div>
+            </div>
+            <div class="col-12">
+              <label class="form-label fw-semibold">Unlocks After</label>
+              <select name="unlocks_after" class="form-select" id="edit_unlocks_after">
+                <option value="">— None —</option>
+                {% for tt in saleable_ticket_types %}
+                <option value="{{ tt.id }}">{{ tt.name }}</option>
+                {% endfor %}
+              </select>
+            </div>
+            <div class="col-md-6">
+              <label class="form-label fw-semibold">Sale Start</label>
+              <input type="datetime-local" name="sale_start" id="edit_sale_start" class="form-control">
+              <div class="invalid-feedback" id="edit-err-sale_start"></div>
+            </div>
+            <div class="col-md-6">
+              <label class="form-label fw-semibold">Sale End</label>
+              <input type="datetime-local" name="sale_end" id="edit_sale_end" class="form-control">
+              <div class="invalid-feedback" id="edit-err-sale_end"></div>
+            </div>
+            <div class="col-12">
+              <div class="form-check">
+                <input class="form-check-input" type="checkbox" name="is_active" id="edit_is_active">
+                <label class="form-check-label" for="edit_is_active">Active (visible on buy page)</label>
+              </div>
+            </div>
+            <div class="col-12">
+              <div class="form-check">
+                <input class="form-check-input" type="checkbox" name="is_password_protected" id="edit_is_pw">
+                <label class="form-check-label" for="edit_is_pw">Password protected</label>
+              </div>
+            </div>
+            <div class="col-12 d-none" id="edit-pw-field">
+              <label class="form-label fw-semibold">Password</label>
+              <input type="text" name="password" id="edit_password" class="form-control" placeholder="Enter password" autocomplete="off">
+              <div class="invalid-feedback" id="edit-err-password"></div>
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+          <button type="submit" class="btn btn-primary" id="edit-tt-submit">Save Changes</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+{% endif %}{# /ticketing_type direct #}
 {% endblock %}

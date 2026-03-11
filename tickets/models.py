@@ -1099,6 +1099,14 @@ class SaleableTicketType(BaseModel):
         blank=True,
         help_text="If set, this ticket type is hidden on the public page until a customer enters this password.",
     )
+    unlocks_after = models.ForeignKey(
+        'self',
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name='unlocked_by',
+        help_text='This ticket type will be shown but disabled until the selected ticket type sells out.',
+    )
 
     class Meta:
         ordering = ['order', 'name']
@@ -1125,11 +1133,57 @@ class SaleableTicketType(BaseModel):
             return None
         return max(0, self.quantity_limit - self.quantity_sold)
 
+    def get_active_tier(self):
+        """First available tier by order. Uses prefetch cache — no extra query."""
+        for tier in self.tiers.all():
+            if tier.is_available():
+                return tier
+        return None
+
+    def effective_price(self):
+        active = self.get_active_tier()
+        return active.price if active else self.price
+
     def is_sold_out(self):
         """True only when a limit is set and fully exhausted."""
+        tiers = list(self.tiers.all())  # prefetch-safe
+        if tiers:
+            return not any(t.is_available() for t in tiers)
         if self.quantity_limit is None:
             return False
         return self.quantity_sold >= self.quantity_limit
+
+    def is_unlocked(self):
+        """True if no prerequisite, or the prerequisite ticket type is sold out."""
+        if self.unlocks_after_id is None:
+            return True
+        return self.unlocks_after.is_sold_out()
+
+
+class SaleableTicketTypeTier(BaseModel):
+    """Tiered pricing for a SaleableTicketType (Early Bird, Regular, etc.)."""
+    ticket_type = models.ForeignKey(
+        SaleableTicketType, on_delete=models.CASCADE, related_name='tiers'
+    )
+    name = models.CharField(max_length=100)
+    price = models.DecimalField(max_digits=10, decimal_places=2)
+    allotment = models.PositiveIntegerField()
+    quantity_sold = models.PositiveIntegerField(default=0)
+    order = models.PositiveSmallIntegerField(default=0)
+
+    class Meta:
+        ordering = ['order']
+        unique_together = [['ticket_type', 'order']]
+        indexes = [models.Index(fields=['ticket_type', 'order'])]
+
+    def __str__(self):
+        return f"{self.name} (${self.price})"
+
+    def is_available(self):
+        return self.quantity_sold < self.allotment
+
+    def remaining_capacity(self):
+        return max(0, self.allotment - self.quantity_sold)
 
 
 class PromoCode(BaseModel):
