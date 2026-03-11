@@ -12,14 +12,17 @@
     <h1>Repeat Customers</h1>
 </div>
 
-<div class="d-flex flex-wrap align-items-center gap-2 mb-3">
-  <div class="btn-group btn-group-sm" role="group" aria-label="Time window">
-    {% for label, key in window_choices %}
-      <a href="?window={{ key }}"
-         class="btn {% if active_window == key %}btn-primary{% else %}btn-outline-secondary{% endif %}">
-        {{ label }}
-      </a>
-    {% endfor %}
+<div class="window-selector mb-3">
+  <div class="dropdown">
+    <button class="window-selector-btn dropdown-toggle" type="button" data-bs-toggle="dropdown" aria-expanded="false">
+      <i class="bi bi-calendar3"></i>
+      {% for label, key in window_choices %}{% if key == active_window %}{{ label }}{% endif %}{% endfor %}
+    </button>
+    <ul class="dropdown-menu">
+      {% for label, key in window_choices %}
+      <li><a class="dropdown-item{% if active_window == key %} active{% endif %}" href="?window={{ key }}">{{ label }}</a></li>
+      {% endfor %}
+    </ul>
   </div>
   {% if active_window == 'custom' %}
   <form class="d-flex flex-wrap align-items-center gap-2" method="get">
@@ -76,9 +79,9 @@
         <div class="tab-content" id="chartTabContent">
             <div class="tab-pane fade show active" id="pane-event" role="tabpanel">
                 <div class="d-flex justify-content-end mb-2">
-                    <div class="btn-group btn-group-sm" role="group" id="stackedGranularity">
-                        <button type="button" class="btn btn-outline-secondary active" id="btnStackMonth">By Month</button>
-                        <button type="button" class="btn btn-outline-secondary" id="btnStackEvent">By Event</button>
+                    <div class="chart-control-group" id="stackedGranularity">
+                        <button type="button" class="chart-control-btn active" id="btnStackMonth">By Month</button>
+                        <button type="button" class="chart-control-btn" id="btnStackEvent">By Event</button>
                     </div>
                 </div>
                 <div class="chart-container" style="height: 320px;">

@@ -19,17 +19,19 @@
 <script type="application/json" id="market-stats-data">{{ market_stats_json|safe }}</script>
 <div class="card mb-4">
     <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2">
-        <div class="btn-group" role="group">
-            <input type="radio" class="btn-check" name="chartMetric" id="metricTotal" value="total" checked>
-            <label class="btn btn-outline-primary" for="metricTotal">Total LTV</label>
-            <input type="radio" class="btn-check" name="chartMetric" id="metricAvg" value="avg">
-            <label class="btn btn-outline-primary" for="metricAvg">Average LTV</label>
-            <input type="radio" class="btn-check" name="chartMetric" id="metricOrders" value="orders">
-            <label class="btn btn-outline-primary" for="metricOrders">Avg Orders / Customer</label>
+        <div class="d-flex align-items-center gap-2 flex-wrap">
+            <input type="radio" class="d-none" name="chartMetric" id="metricTotal" value="total" checked>
+            <input type="radio" class="d-none" name="chartMetric" id="metricAvg" value="avg">
+            <input type="radio" class="d-none" name="chartMetric" id="metricOrders" value="orders">
+            <div class="chart-control-group" id="metricGroup">
+                <button type="button" class="chart-control-btn active" data-metric="total">Total LTV</button>
+                <button type="button" class="chart-control-btn" data-metric="avg">Average LTV</button>
+                <button type="button" class="chart-control-btn" data-metric="orders">Avg Orders / Customer</button>
+            </div>
         </div>
-        <div class="btn-group btn-group-sm" role="group">
-            <button class="btn btn-outline-secondary active" id="btnChartDesc">High &rarr; Low</button>
-            <button class="btn btn-outline-secondary" id="btnChartAsc">Low &rarr; High</button>
+        <div class="chart-control-group">
+            <button class="chart-control-btn active" id="btnChartDesc">High &rarr; Low</button>
+            <button class="chart-control-btn" id="btnChartAsc">Low &rarr; High</button>
         </div>
     </div>
     <div class="card-body">
@@ -131,8 +133,14 @@
         document.getElementById('btnChartDesc').classList.remove('active');
         update();
     });
-    document.querySelectorAll('input[name="chartMetric"]').forEach(function(r) {
-        r.addEventListener('change', update);
+    document.querySelectorAll('#metricGroup .chart-control-btn').forEach(function(btn) {
+        btn.addEventListener('click', function() {
+            document.querySelectorAll('#metricGroup .chart-control-btn').forEach(function(b) { b.classList.remove('active'); });
+            btn.classList.add('active');
+            var radio = document.querySelector('input[name="chartMetric"][value="' + btn.dataset.metric + '"]');
+            if (radio) { radio.checked = true; }
+            update();
+        });
     });
 })();
 </script>

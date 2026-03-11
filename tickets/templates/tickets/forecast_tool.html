@@ -47,11 +47,11 @@
 </div>
 
 <div class="d-flex flex-wrap align-items-center gap-2 gap-md-3 mb-3">
-    <div class="btn-group" role="group">
-        <input type="radio" class="btn-check" name="chartView" id="viewTickets" value="tickets" checked>
-        <label class="btn btn-outline-primary" for="viewTickets">Tickets</label>
-        <input type="radio" class="btn-check" name="chartView" id="viewPercent" value="percent">
-        <label class="btn btn-outline-primary" for="viewPercent">Percentage</label>
+    <input type="radio" class="d-none" name="chartView" id="viewTickets" value="tickets" checked>
+    <input type="radio" class="d-none" name="chartView" id="viewPercent" value="percent">
+    <div class="chart-control-group" id="chartViewGroup">
+        <button type="button" class="chart-control-btn active" data-view="tickets">Tickets</button>
+        <button type="button" class="chart-control-btn" data-view="percent">Percentage</button>
     </div>
     <div class="form-check">
         <input class="form-check-input" type="checkbox" id="showTrendline">
@@ -226,7 +226,15 @@
     capacityInput.addEventListener('input',debouncedFetch);
     startingTicketsInput.addEventListener('input',debouncedFetch);
     startingTicketsInput.addEventListener('change',debouncedFetch);
-    viewToggle.forEach(r=>r.addEventListener('change',updateChartData));
+    document.querySelectorAll('#chartViewGroup .chart-control-btn').forEach(function(btn) {
+        btn.addEventListener('click', function() {
+            document.querySelectorAll('#chartViewGroup .chart-control-btn').forEach(function(b) { b.classList.remove('active'); });
+            btn.classList.add('active');
+            var radio = document.querySelector('input[name="chartView"][value="' + btn.dataset.view + '"]');
+            if (radio) { radio.checked = true; }
+            updateChartData();
+        });
+    });
     if(showTrendlineCheckbox)showTrendlineCheckbox.addEventListener('change',updateChartData);
     const defaultDate=new Date();defaultDate.setDate(defaultDate.getDate()+30);
     eventDateInput.value=defaultDate.toISOString().split('T')[0];

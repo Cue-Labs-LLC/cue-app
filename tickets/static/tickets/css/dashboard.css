@@ -1871,3 +1871,76 @@ gmp-place-autocomplete#venue-address-autocomplete {
         font-size: 13px;
     }
 }
+
+/* --- Window Selector Dropdown --- */
+.window-selector {
+    display: inline-flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    position: relative;
+    z-index: 10;
+}
+
+.window-selector-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 5px 11px;
+    font-size: 13px;
+    font-weight: 500;
+    background: var(--bg-surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    color: var(--text-secondary);
+    cursor: pointer;
+    transition: border-color 0.15s, color 0.15s;
+    white-space: nowrap;
+}
+
+.window-selector-btn:hover,
+.window-selector-btn:focus {
+    border-color: var(--accent);
+    color: var(--accent);
+    outline: none;
+}
+
+.window-selector-btn .bi-calendar3 {
+    font-size: 13px;
+}
+
+.window-selector .dropdown-menu {
+    z-index: 1050;
+}
+
+/* --- Pill Segment Chart Controls --- */
+.chart-control-group {
+    display: inline-flex;
+    background: var(--bg-inset);
+    border-radius: var(--radius-sm);
+    padding: 2px;
+    gap: 2px;
+}
+
+.chart-control-btn {
+    padding: 4px 11px;
+    font-size: 12px;
+    font-weight: 500;
+    border: none;
+    border-radius: 4px;
+    background: transparent;
+    color: var(--text-secondary);
+    cursor: pointer;
+    transition: background 0.12s, color 0.12s, box-shadow 0.12s;
+    white-space: nowrap;
+}
+
+.chart-control-btn:hover {
+    color: var(--text-primary);
+}
+
+.chart-control-btn.active {
+    background: var(--bg-surface);
+    color: var(--text-primary);
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+}

@@ -31,14 +31,17 @@
     </div>
 </div>
 
-<div class="d-flex flex-wrap align-items-center gap-2 mb-3">
-  <div class="btn-group btn-group-sm" role="group" aria-label="Time window">
-    {% for label, key in window_choices %}
-      <a href="?window={{ key }}"
-         class="btn {% if active_window == key %}btn-primary{% else %}btn-outline-secondary{% endif %}">
-        {{ label }}
-      </a>
-    {% endfor %}
+<div class="window-selector mb-3">
+  <div class="dropdown">
+    <button class="window-selector-btn dropdown-toggle" type="button" data-bs-toggle="dropdown" aria-expanded="false">
+      <i class="bi bi-calendar3"></i>
+      {% for label, key in window_choices %}{% if key == active_window %}{{ label }}{% endif %}{% endfor %}
+    </button>
+    <ul class="dropdown-menu">
+      {% for label, key in window_choices %}
+      <li><a class="dropdown-item{% if active_window == key %} active{% endif %}" href="?window={{ key }}">{{ label }}</a></li>
+      {% endfor %}
+    </ul>
   </div>
   {% if active_window == 'custom' %}
   <form class="d-flex flex-wrap align-items-center gap-2" method="get">
@@ -56,18 +59,18 @@
     <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2">
         <h5 class="mb-0" id="chartTitle">Revenue vs Expenses by Month</h5>
         <div class="d-flex flex-wrap align-items-center gap-2">
-            <div class="btn-group btn-group-sm me-1" role="group" id="granularityGroup">
-                <button type="button" class="btn btn-outline-secondary active" id="btnByMonth">By Month</button>
-                <button type="button" class="btn btn-outline-secondary" id="btnByEvent">By Event</button>
+            <div class="chart-control-group" id="granularityGroup">
+                <button type="button" class="chart-control-btn active" id="btnByMonth">By Month</button>
+                <button type="button" class="chart-control-btn" id="btnByEvent">By Event</button>
             </div>
-            <div class="btn-group btn-group-sm" role="group" id="marketSortGroup" style="display:none!important;">
-                <button type="button" class="btn btn-outline-secondary active" id="btnSortDesc">High &rarr; Low</button>
-                <button type="button" class="btn btn-outline-secondary" id="btnSortAsc">Low &rarr; High</button>
+            <div class="chart-control-group" id="marketSortGroup" style="display:none!important;">
+                <button type="button" class="chart-control-btn active" id="btnSortDesc">High &rarr; Low</button>
+                <button type="button" class="chart-control-btn" id="btnSortAsc">Low &rarr; High</button>
             </div>
-            <div class="btn-group btn-group-sm" role="group">
-                <button type="button" class="btn btn-outline-secondary active" id="btnRevExp">Revenue vs Expenses</button>
-                <button type="button" class="btn btn-outline-secondary" id="btnPL">Profit / Loss</button>
-                <button type="button" class="btn btn-outline-secondary" id="btnMarket">Profit by Market</button>
+            <div class="chart-control-group">
+                <button type="button" class="chart-control-btn active" id="btnRevExp">Revenue vs Expenses</button>
+                <button type="button" class="chart-control-btn" id="btnPL">Profit / Loss</button>
+                <button type="button" class="chart-control-btn" id="btnMarket">Profit by Market</button>
             </div>
         </div>
     </div>
