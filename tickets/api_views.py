@@ -25,6 +25,7 @@ from .models import (
     SaleableTicketType,
     Ticket,
     TicketOrder,
+    TICKETING_TYPE_DIRECT,
     UserProfile,
 )
 from .utils import next_order_number
@@ -143,7 +144,7 @@ def organizer_events(request):
 
     events = (
         Event.objects
-        .filter(organization=org, start_date__gte=today)
+        .filter(organization=org, start_date__gte=today, ticketing_type=TICKETING_TYPE_DIRECT)
         .annotate(
             checked_in_count=Coalesce(Subquery(checked_in_sq, output_field=IntegerField()), 0),
             total_tickets=Coalesce(Subquery(total_tickets_sq, output_field=IntegerField()), 0),
@@ -323,17 +324,29 @@ def organizer_checkin(request):
             }, status=200)
 
         if order.checked_in_at is not None:
+            checked_in_count = TicketOrder.objects.filter(
+                event_id=event_id,
+                customer__organization=org,
+                checked_in_at__isnull=False,
+            ).count()
             return Response({
                 'status': 'already_checked_in',
                 'order_number': order.order_number,
                 'customer_name': order.customer.name,
                 'checked_in_at': order.checked_in_at.isoformat(),
                 'ticket_types': [t.ticket_type for t in order.tickets.all()],
+                'checked_in_count': checked_in_count,
             }, status=200)
 
         order.checked_in_at = timezone.now()
         order.checked_in_by = request.user
         order.save(update_fields=['checked_in_at', 'checked_in_by'])
+
+    checked_in_count = TicketOrder.objects.filter(
+        event_id=event_id,
+        customer__organization=org,
+        checked_in_at__isnull=False,
+    ).count()
 
     return Response({
         'status': 'checked_in',
@@ -341,6 +354,7 @@ def organizer_checkin(request):
         'customer_name': order.customer.name,
         'checked_in_at': order.checked_in_at.isoformat(),
         'ticket_types': [t.ticket_type for t in order.tickets.all()],
+        'checked_in_count': checked_in_count,
     }, status=200)
 
 
