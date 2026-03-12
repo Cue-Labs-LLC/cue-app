@@ -15,7 +15,7 @@ from django.db.models import (
     Sum, Count, Avg, Max, Q, Subquery, OuterRef, Prefetch,
     Case, When, Value, F, CharField,
 )
-from django.db.models.functions import Coalesce, Greatest
+from django.db.models.functions import Coalesce, Greatest, TruncDate
 from django.db import models
 from django.core.paginator import Paginator
 from django.core.files.uploadedfile import InMemoryUploadedFile
@@ -2222,6 +2222,22 @@ def event_detail(request, event_id):
         ]
     ticket_type_breakdown_json = json.dumps(ticket_type_breakdown)
 
+    sales_over_time_qs = (
+        event.ticket_orders
+        .annotate(date=TruncDate('order_date'))
+        .values('date')
+        .annotate(count=Count('id'), revenue=Sum('total_amount'))
+        .order_by('date')
+    )
+    sales_over_time_json = json.dumps([
+        {
+            'date': row['date'].isoformat(),
+            'count': row['count'],
+            'revenue': float(row['revenue'] or 0),
+        }
+        for row in sales_over_time_qs
+    ])
+
     context = {
         'event': event,
         'upload_stats': upload_stats,
@@ -2246,6 +2262,7 @@ def event_detail(request, event_id):
         'survey_results': survey_results,
         'ticket_type_breakdown': ticket_type_breakdown,
         'ticket_type_breakdown_json': ticket_type_breakdown_json,
+        'sales_over_time_json': sales_over_time_json,
     }
     if event.ticketing_type == 'direct':
         sessions = list(
