@@ -251,15 +251,6 @@
             </div>
 {% endif %}
             <div class="content{% if not user.is_authenticated %} content--auth{% endif %}">
-                {% if messages %}
-                    {% for message in messages %}
-                        <div class="alert alert-{{ message.tags }} alert-dismissible fade show" role="alert"{% if not user.is_authenticated %} style="position: fixed; top: 16px; left: 50%; transform: translateX(-50%); z-index: 1000; max-width: 400px;"{% endif %}>
-                            {{ message }}
-                            <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
-                        </div>
-                    {% endfor %}
-                {% endif %}
-
                 {% block content %}{% endblock %}
             </div>
 {% if user.is_authenticated %}
@@ -539,5 +530,26 @@
 </script>
 {% block extra_js %}{% endblock %}
 {% block modals %}{% endblock %}
+{% if messages %}
+<div class="toast-container position-fixed top-0 end-0 p-3" style="z-index:1080;">
+  {% for message in messages %}
+  <div class="toast align-items-center border-0 mb-2 text-bg-{% if 'error' in message.tags %}danger{% else %}{{ message.tags }}{% endif %}"
+       role="alert" aria-live="assertive" aria-atomic="true"
+       data-bs-delay="{% if 'error' in message.tags or 'warning' in message.tags %}7000{% else %}4500{% endif %}">
+    <div class="d-flex">
+      <div class="toast-body fw-semibold">{{ message }}</div>
+      <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast" aria-label="Close"></button>
+    </div>
+  </div>
+  {% endfor %}
+</div>
+<script>
+document.addEventListener('DOMContentLoaded', function () {
+  document.querySelectorAll('.toast').forEach(function (el) {
+    bootstrap.Toast.getOrCreateInstance(el).show();
+  });
+});
+</script>
+{% endif %}
 </body>
 </html>
