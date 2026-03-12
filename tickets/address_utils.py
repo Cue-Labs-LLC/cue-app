@@ -1,10 +1,22 @@
 """Address normalization and geocoding utilities for Venue records."""
 
 import logging
+import re
 
 import requests
 
 logger = logging.getLogger(__name__)
+
+
+def _title_case_with_ordinals(s):
+    """Title-case a string but keep ordinal suffixes (1st, 2nd, 3rd, 4th, 11th, etc.) lowercase.
+
+    Python's str.title() turns "11th" into "11Th"; this fixes that and similar ordinals.
+    """
+    s = s.strip().title()
+    # Fix ordinal suffixes: 11Th -> 11th, 5Th -> 5th, 1St -> 1st, 2Nd -> 2nd, 3Rd -> 3rd
+    s = re.sub(r'(\d+)(St|Nd|Rd|Th)\b', lambda m: m.group(1) + m.group(2).lower(), s)
+    return s
 
 _ADDRESS_COMPONENT_TYPES = {
     'street_number': None,
@@ -19,16 +31,16 @@ _ADDRESS_COMPONENT_TYPES = {
 def normalize_venue_address_fields(venue):
     """Apply Python-only normalization to address fields in-place. No I/O."""
     if venue.street_address:
-        venue.street_address = venue.street_address.strip().title()
+        venue.street_address = _title_case_with_ordinals(venue.street_address)
     if venue.city:
-        venue.city = venue.city.strip().title()
+        venue.city = _title_case_with_ordinals(venue.city)
     if venue.state:
         s = venue.state.strip()
-        venue.state = s.upper() if len(s) <= 2 else s.title()
+        venue.state = s.upper() if len(s) <= 2 else _title_case_with_ordinals(s)
     if venue.postal_code:
         venue.postal_code = venue.postal_code.strip().upper()
     if venue.country:
-        venue.country = venue.country.strip().title()
+        venue.country = _title_case_with_ordinals(venue.country)
 
 
 def geocode_venue_address(venue, api_key, timeout=5):

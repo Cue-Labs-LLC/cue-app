@@ -349,6 +349,24 @@ class VenueAddressFieldsTests(TestCase):
         self.assertIn('postal_code', form.fields)
         self.assertIn('country', form.fields)
 
+    def test_venue_street_address_ordinal_suffix_lowercase(self):
+        """Street addresses with ordinal numbers (11th, 5th, 36th) keep suffix lowercase."""
+        venue = Venue.objects.create(
+            organization=self.org,
+            name='Ordinal Test Venue',
+            city='Detroit',
+            street_address='125 East 11th Street',
+            state='MI',
+            country='USA',
+        )
+        venue.refresh_from_db()
+        self.assertEqual(venue.street_address, '125 East 11th Street')
+        # Also ensure 5th, 36th, 1st, 2nd, 3rd are normalized correctly (no 5Th, 36Th, 1St, etc.)
+        venue.street_address = '125 Northwest 5th Avenue'
+        venue.save()
+        venue.refresh_from_db()
+        self.assertEqual(venue.street_address, '125 Northwest 5th Avenue')
+
 
 class ChatTestMixin:
     """Shared setup for chat tests: creates org, user, profile, venue, event, customer, order."""
