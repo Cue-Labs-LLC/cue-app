@@ -41,6 +41,46 @@
         .qty-control input[type=number]:focus { border-color: #1a1a2e; outline: none; box-shadow: 0 0 0 2px rgba(26,26,46,0.15); }
         .sold-out-badge { font-size: 0.8rem; color: #dc3545; font-weight: 600; white-space: nowrap; }
         .field-error { color: #dc3545; font-size: 0.85rem; margin: -8px 0 8px; padding: 0 4px; }
+        .event-summary { font-size: 1.05rem; color: #555; margin-bottom: 4px; }
+        .event-description { text-align: left; color: #444; font-size: 0.95rem; line-height: 1.6; margin-top: 12px; }
+        .event-description p { margin-bottom: 0.5rem; }
+        .event-description ul, .event-description ol { padding-left: 1.5rem; margin-bottom: 0.5rem; }
+        .event-description-wrap { position: relative; }
+        .event-description-wrap.collapsed .event-description {
+            max-height: 460px; overflow: hidden;
+        }
+        .event-description-wrap.collapsed .event-description-fade {
+            display: block;
+        }
+        .event-description-fade {
+            display: none; position: absolute; bottom: 0; left: 0; right: 0; height: 40px;
+            background: linear-gradient(to bottom, transparent, #f5f7fa);
+        }
+        .btn-view-more {
+            background: none; border: none; padding: 6px 0 0; font-size: 0.88rem;
+            color: #1a1a2e; font-weight: 600; cursor: pointer; text-decoration: underline;
+        }
+        .btn-view-more:hover { opacity: 0.7; }
+        .buy-container { padding-bottom: 90px; }
+        .sticky-buy-bar {
+            position: fixed; bottom: 0; left: 0; right: 0; z-index: 1040;
+            background: #1a1a2e; padding: 14px 20px;
+            display: flex; align-items: center; justify-content: center;
+            box-shadow: 0 -2px 12px rgba(0,0,0,0.18);
+        }
+        .sticky-buy-bar .btn-buy {
+            background: #fff; color: #1a1a2e; font-weight: 700; font-size: 1rem;
+            border: none; border-radius: 8px; padding: 12px 40px; width: 100%; max-width: 400px;
+            cursor: pointer;
+        }
+        .sticky-buy-bar .btn-buy:hover { background: #f0f0f0; }
+        .venue-map { margin-top: 20px; border-radius: 10px; overflow: hidden; }
+        .venue-map iframe { display: block; width: 100%; height: 200px; border: none; }
+        .venue-map-caption {
+            font-size: 0.82rem; color: #666; margin-top: 6px;
+            display: flex; align-items: center; justify-content: center; gap: 6px; flex-wrap: wrap;
+        }
+        .venue-map-caption a { color: #1a1a2e; font-weight: 600; }
     </style>
     {% include 'tickets/buy/_facebook_pixel.html' %}
     {% if event.facebook_pixel_id %}
@@ -93,162 +133,222 @@
         <h1>{{ event.name }}</h1>
         <p>{{ event.start_date|date:"F j, Y" }}{% if event.start_time %} at {{ event.start_time|time:"g:i A" }}{% endif %}</p>
         <p>{{ event.venue.name }}, {{ event.venue.city }}</p>
+        {% if event.summary %}
+        <p class="event-summary">{{ event.summary }}</p>
+        {% endif %}
+        {% if event.description %}
+        <div class="event-description-wrap collapsed" id="desc-wrap">
+            <div class="event-description">{{ event.description|safe }}</div>
+            <div class="event-description-fade"></div>
+        </div>
+        <button type="button" class="btn-view-more" id="desc-toggle" style="display:none;">View more</button>
+        {% endif %}
+        {% if event.venue.street_address %}
+        {% with addr=event.venue.street_address|add:", "|add:event.venue.city|add:", "|add:event.venue.state|add:" "|add:event.venue.postal_code %}
+        <div class="venue-map">
+            <iframe
+                src="https://maps.google.com/maps?q={{ addr|urlencode }}&output=embed"
+                loading="lazy"
+                referrerpolicy="no-referrer-when-downgrade"
+                title="Venue map">
+            </iframe>
+        </div>
+        <div class="venue-map-caption">
+            <i class="bi bi-geo-alt-fill" style="color:#dc3545;"></i>
+            <span>{{ event.venue.name }} &middot; {{ addr }}</span>
+            <a href="https://maps.google.com/maps?q={{ addr|urlencode }}" target="_blank" rel="noopener">Get directions</a>
+        </div>
+        {% endwith %}
+        {% endif %}
     </div>
 
-    {% if not available_pairs and not locked_pairs and not coming_soon_types %}
+    {% if not available_pairs and not locked_pairs and not coming_soon_types and not all_sold_out %}
     <div class="text-center py-5">
         <i class="bi bi-ticket-perforated" style="font-size: 3rem; color: #ccc;"></i>
         <p class="mt-3 text-muted">No tickets are currently available for this event.</p>
     </div>
+    {% endif %}{# /not empty state #}
+</div>
+
+{% if available_pairs or locked_pairs or coming_soon_types or all_sold_out %}
+<div class="sticky-buy-bar">
+    {% if all_sold_out %}
+    <button type="button" class="btn-buy" disabled style="opacity:0.5;cursor:not-allowed;">
+        Sold Out
+    </button>
     {% else %}
-
-    <form method="post">
-        {% csrf_token %}
-
-        {% if form.non_field_errors %}
-        <div class="alert alert-danger mb-3">
-            {% for error in form.non_field_errors %}{{ error }}{% endfor %}
-        </div>
-        {% endif %}
-
-        {% if locked_pairs %}
-        <div class="ticket-card ticket-card--locked" id="unlock-box">
-            <div class="ticket-info">
-                <div class="ticket-name"><i class="bi bi-lock"></i> Password required for some tickets</div>
-                <div class="ticket-desc">Enter the password to see additional ticket options.</div>
-            </div>
-            <div class="ticket-card__unlock" style="min-width:220px;">
-                <div class="input-group input-group-sm">
-                    <input type="text" id="global-unlock-input" class="form-control" placeholder="Enter password" autocomplete="off">
-                    <button type="button" id="global-unlock-btn" class="btn btn-outline-primary">Unlock</button>
-                </div>
-                <div id="global-unlock-error" class="text-danger small mt-1" style="display:none;"></div>
-                <div id="global-unlock-success" class="text-success small mt-1" style="display:none;"></div>
-            </div>
-        </div>
-        {% endif %}
-
-        {% for tt, bound_field in available_pairs %}
-        {% with at=tt.get_active_tier ep=tt.effective_price %}
-        <div class="ticket-card{% if tt.is_sold_out %} sold-out{% endif %}" data-price="{{ ep }}" data-ticket-id="{{ tt.id }}">
-            <div class="ticket-info">
-                <div class="ticket-name">{{ tt.name }}{% if at %} <span class="badge bg-primary ms-1" style="font-size:0.72rem;">{{ at.name }}</span>{% endif %}</div>
-                {% if tt.description %}<div class="ticket-desc">{{ tt.description }}</div>{% endif %}
-                <div class="ticket-price">
-                    {% if ep == 0 %}Free{% else %}${{ ep|currency }}{% endif %}
-                </div>
-                {% if ep != 0 %}
-                <div class="ticket-fee-preview" style="font-size:11px;color:#999;display:none;"></div>
-                {% endif %}
-                {% if at %}
-                {% if at.remaining_capacity <= 10 %}
-                <div class="ticket-remaining"><i class="bi bi-exclamation-circle"></i> Only {{ at.remaining_capacity }} left</div>
-                {% endif %}
-                {% elif tt.quantity_limit is not None %}
-                {% with rem=tt.remaining_quantity %}
-                {% if rem <= 10 %}
-                <div class="ticket-remaining"><i class="bi bi-exclamation-circle"></i> Only {{ rem }} left</div>
-                {% endif %}
-                {% endwith %}
-                {% endif %}
-            </div>
-            <div class="qty-control">
-                {% if tt.is_sold_out %}
-                <span class="sold-out-badge">Sold Out</span>
-                {% else %}
-                {{ bound_field }}
-                {% endif %}
-            </div>
-        </div>
-        {% endwith %}
-        {% if bound_field.errors %}
-        <div class="field-error">{{ bound_field.errors|join:", " }}</div>
-        {% endif %}
-        {% endfor %}
-
-        {% for tt in coming_soon_types %}
-        {% with ep=tt.effective_price %}
-        <div class="ticket-card" style="opacity:0.5;cursor:default;">
-            <div class="ticket-info">
-                <div class="ticket-name">{{ tt.name }}</div>
-                {% if tt.description %}<div class="ticket-desc">{{ tt.description }}</div>{% endif %}
-                <div class="ticket-price">
-                    {% if ep == 0 %}Free{% else %}${{ ep|currency }}{% endif %}
-                </div>
-                {% if tt.unlocks_after %}
-                <div class="ticket-desc" style="margin-top:4px;">
-                    <i class="bi bi-hourglass-split"></i>
-                    Available after <strong>{{ tt.unlocks_after.name }}</strong> sells out
-                </div>
-                {% endif %}
-            </div>
-            <div class="qty-control">
-                <span style="font-size:0.82rem;color:#999;font-weight:600;white-space:nowrap;">
-                    Available soon
-                </span>
-            </div>
-        </div>
-        {% endwith %}
-        {% endfor %}
-
-        {% for tt, bound_field in locked_pairs %}
-        {% with at=tt.get_active_tier ep=tt.effective_price %}
-        <div class="ticket-card" id="locked-card-{{ tt.id.hex }}"
-             data-unlock-url="{% url 'tickets:unlock_ticket_type' event.id tt.id %}"
-             data-price="{{ ep }}"
-             data-ticket-id="{{ tt.id }}"
-             style="display:none;">
-            <div class="ticket-info">
-                <div class="ticket-name">{{ tt.name }}{% if at %} <span class="badge bg-primary ms-1" style="font-size:0.72rem;">{{ at.name }}</span>{% endif %}</div>
-                {% if tt.description %}<div class="ticket-desc">{{ tt.description }}</div>{% endif %}
-                <div class="ticket-price">
-                    {% if ep == 0 %}Free{% else %}${{ ep|currency }}{% endif %}
-                </div>
-                {% if ep != 0 %}
-                <div class="ticket-fee-preview" style="font-size:11px;color:#999;display:none;"></div>
-                {% endif %}
-                {% if at %}
-                {% if at.remaining_capacity <= 10 %}
-                <div class="ticket-remaining"><i class="bi bi-exclamation-circle"></i> Only {{ at.remaining_capacity }} left</div>
-                {% endif %}
-                {% elif tt.quantity_limit is not None %}
-                {% with rem=tt.remaining_quantity %}
-                {% if rem <= 10 %}
-                <div class="ticket-remaining"><i class="bi bi-exclamation-circle"></i> Only {{ rem }} left</div>
-                {% endif %}
-                {% endwith %}
-                {% endif %}
-            </div>
-            <div class="qty-control">{{ bound_field }}</div>
-        </div>
-        {% endwith %}
-        {% if bound_field.errors %}
-        <div class="field-error" id="err-{{ tt.id.hex }}" style="display:none;">{{ bound_field.errors|join:", " }}</div>
-        {% endif %}
-        {% endfor %}
-
-        <div id="order-summary" class="ticket-card" style="display:none;flex-direction:column;gap:6px;padding:16px 24px;">
-            <div style="display:flex;justify-content:space-between;font-size:0.9rem;color:#666;">
-                <span>Subtotal</span><span id="os-subtotal">$0.00</span>
-            </div>
-            <div style="display:flex;justify-content:space-between;font-size:0.9rem;color:#666;">
-                <span>Service fee</span><span id="os-fee">$0.00</span>
-            </div>
-            <div style="display:flex;justify-content:space-between;font-size:1rem;font-weight:700;border-top:1.5px solid #1a1a2e;padding-top:8px;margin-top:4px;">
-                <span>Estimated total</span><span id="os-total">$0.00</span>
-            </div>
-        </div>
-
-        <div class="mt-4">
-            <button type="submit" class="btn btn-primary btn-lg w-100" style="background: #1a1a2e; border-color: #1a1a2e;">
-                Continue to Checkout <i class="bi bi-arrow-right"></i>
-            </button>
-        </div>
-    </form>
-
+    <button type="button" class="btn-buy" data-bs-toggle="modal" data-bs-target="#buyModal">
+        Buy Tickets{% if min_ticket_price %} From {% if min_ticket_price == 0 %}Free{% else %}${{ min_ticket_price|currency }}{% endif %}{% endif %}
+    </button>
     {% endif %}
 </div>
+
+<div class="modal fade" id="buyModal" tabindex="-1" aria-labelledby="buyModalLabel" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-scrollable" style="max-width:560px;">
+    <div class="modal-content">
+      <div class="modal-header" style="border-bottom:1px solid #e9ecef;">
+        <h5 class="modal-title" id="buyModalLabel">Select Tickets</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body" style="padding:20px;">
+
+        <form method="post">
+          {% csrf_token %}
+
+          {% if form.non_field_errors %}
+          <div class="alert alert-danger mb-3">
+              {% for error in form.non_field_errors %}{{ error }}{% endfor %}
+          </div>
+          {% endif %}
+
+          {% if locked_pairs %}
+          <div class="ticket-card ticket-card--locked" id="unlock-box">
+              <div class="ticket-info">
+                  <div class="ticket-name"><i class="bi bi-lock"></i> Password required for some tickets</div>
+                  <div class="ticket-desc">Enter the password to see additional ticket options.</div>
+              </div>
+              <div class="ticket-card__unlock" style="min-width:220px;">
+                  <div class="input-group input-group-sm">
+                      <input type="text" id="global-unlock-input" class="form-control" placeholder="Enter password" autocomplete="off">
+                      <button type="button" id="global-unlock-btn" class="btn btn-outline-primary">Unlock</button>
+                  </div>
+                  <div id="global-unlock-error" class="text-danger small mt-1" style="display:none;"></div>
+                  <div id="global-unlock-success" class="text-success small mt-1" style="display:none;"></div>
+              </div>
+          </div>
+          {% endif %}
+
+          {% for tt, bound_field in available_pairs %}
+          {% with at=tt.get_active_tier ep=tt.effective_price %}
+          <div class="ticket-card{% if tt.is_sold_out %} sold-out{% endif %}" data-price="{{ ep }}" data-ticket-id="{{ tt.id }}">
+              <div class="ticket-info">
+                  <div class="ticket-name">{{ tt.name }}{% if at %} <span class="badge bg-primary ms-1" style="font-size:0.72rem;">{{ at.name }}</span>{% endif %}</div>
+                  {% if tt.description %}<div class="ticket-desc">{{ tt.description }}</div>{% endif %}
+                  <div class="ticket-price">
+                      {% if ep == 0 %}Free{% else %}${{ ep|currency }}{% endif %}
+                  </div>
+                  {% if ep != 0 %}
+                  <div class="ticket-fee-preview" style="font-size:11px;color:#999;display:none;"></div>
+                  {% endif %}
+                  {% if at %}
+                  {% if at.remaining_capacity <= 10 %}
+                  <div class="ticket-remaining"><i class="bi bi-exclamation-circle"></i> Only {{ at.remaining_capacity }} left</div>
+                  {% endif %}
+                  {% elif tt.quantity_limit is not None %}
+                  {% with rem=tt.remaining_quantity %}
+                  {% if rem <= 10 %}
+                  <div class="ticket-remaining"><i class="bi bi-exclamation-circle"></i> Only {{ rem }} left</div>
+                  {% endif %}
+                  {% endwith %}
+                  {% endif %}
+              </div>
+              <div class="qty-control">
+                  {% if tt.is_sold_out %}
+                  <span class="sold-out-badge">Sold Out</span>
+                  {% else %}
+                  {{ bound_field }}
+                  {% endif %}
+              </div>
+          </div>
+          {% endwith %}
+          {% if bound_field.errors %}
+          <div class="field-error">{{ bound_field.errors|join:", " }}</div>
+          {% endif %}
+          {% endfor %}
+
+          {% for tt in coming_soon_types %}
+          {% with ep=tt.effective_price %}
+          <div class="ticket-card" style="opacity:0.5;cursor:default;">
+              <div class="ticket-info">
+                  <div class="ticket-name">{{ tt.name }}</div>
+                  {% if tt.description %}<div class="ticket-desc">{{ tt.description }}</div>{% endif %}
+                  <div class="ticket-price">
+                      {% if ep == 0 %}Free{% else %}${{ ep|currency }}{% endif %}
+                  </div>
+                  {% if tt.unlocks_after %}
+                  <div class="ticket-desc" style="margin-top:4px;">
+                      <i class="bi bi-hourglass-split"></i>
+                      Available after <strong>{{ tt.unlocks_after.name }}</strong> sells out
+                  </div>
+                  {% endif %}
+              </div>
+              <div class="qty-control">
+                  <span style="font-size:0.82rem;color:#999;font-weight:600;white-space:nowrap;">Available soon</span>
+              </div>
+          </div>
+          {% endwith %}
+          {% endfor %}
+
+          {% for tt, bound_field in locked_pairs %}
+          {% with at=tt.get_active_tier ep=tt.effective_price %}
+          <div class="ticket-card" id="locked-card-{{ tt.id.hex }}"
+               data-unlock-url="{% url 'tickets:unlock_ticket_type' event.id tt.id %}"
+               data-price="{{ ep }}"
+               data-ticket-id="{{ tt.id }}"
+               style="display:none;">
+              <div class="ticket-info">
+                  <div class="ticket-name">{{ tt.name }}{% if at %} <span class="badge bg-primary ms-1" style="font-size:0.72rem;">{{ at.name }}</span>{% endif %}</div>
+                  {% if tt.description %}<div class="ticket-desc">{{ tt.description }}</div>{% endif %}
+                  <div class="ticket-price">
+                      {% if ep == 0 %}Free{% else %}${{ ep|currency }}{% endif %}
+                  </div>
+                  {% if ep != 0 %}
+                  <div class="ticket-fee-preview" style="font-size:11px;color:#999;display:none;"></div>
+                  {% endif %}
+                  {% if at %}
+                  {% if at.remaining_capacity <= 10 %}
+                  <div class="ticket-remaining"><i class="bi bi-exclamation-circle"></i> Only {{ at.remaining_capacity }} left</div>
+                  {% endif %}
+                  {% elif tt.quantity_limit is not None %}
+                  {% with rem=tt.remaining_quantity %}
+                  {% if rem <= 10 %}
+                  <div class="ticket-remaining"><i class="bi bi-exclamation-circle"></i> Only {{ rem }} left</div>
+                  {% endif %}
+                  {% endwith %}
+                  {% endif %}
+              </div>
+              <div class="qty-control">{{ bound_field }}</div>
+          </div>
+          {% endwith %}
+          {% if bound_field.errors %}
+          <div class="field-error" id="err-{{ tt.id.hex }}" style="display:none;">{{ bound_field.errors|join:", " }}</div>
+          {% endif %}
+          {% endfor %}
+
+          <div id="order-summary" class="ticket-card" style="display:none;flex-direction:column;gap:6px;padding:16px 24px;">
+              <div style="display:flex;justify-content:space-between;font-size:0.9rem;color:#666;">
+                  <span>Subtotal</span><span id="os-subtotal">$0.00</span>
+              </div>
+              <div style="display:flex;justify-content:space-between;font-size:0.9rem;color:#666;">
+                  <span>Service fee</span><span id="os-fee">$0.00</span>
+              </div>
+              <div style="display:flex;justify-content:space-between;font-size:1rem;font-weight:700;border-top:1.5px solid #1a1a2e;padding-top:8px;margin-top:4px;">
+                  <span>Estimated total</span><span id="os-total">$0.00</span>
+              </div>
+          </div>
+
+          <div class="mt-3">
+              <button type="submit" class="btn btn-primary btn-lg w-100" style="background:#1a1a2e;border-color:#1a1a2e;">
+                  Continue to Checkout <i class="bi bi-arrow-right"></i>
+              </button>
+          </div>
+        </form>
+
+      </div>
+      <div class="modal-footer" style="border-top:1px solid #e9ecef;">
+        <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+      </div>
+    </div>
+  </div>
+</div>
+{% endif %}
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js" defer></script>
 <script>
+{% if form.errors %}
+document.addEventListener('DOMContentLoaded', function() {
+    bootstrap.Modal.getOrCreateInstance(document.getElementById('buyModal')).show();
+});
+{% endif %}
 (function() {
     var FEE_RATE = 0.08;
     var FEE_FIXED_CENTS = 99;
@@ -367,6 +467,30 @@
     btn.addEventListener('click', tryUnlock);
     input.addEventListener('keydown', function(e) {
         if (e.key === 'Enter') { e.preventDefault(); tryUnlock(); }
+    });
+})();
+
+(function() {
+    var wrap = document.getElementById('desc-wrap');
+    var toggle = document.getElementById('desc-toggle');
+    if (!wrap || !toggle) return;
+
+    var desc = wrap.querySelector('.event-description');
+    // Only show the button if content is actually taller than the collapsed height
+    if (desc.scrollHeight <= 460) {
+        wrap.classList.remove('collapsed');
+        return;
+    }
+
+    toggle.style.display = '';
+    toggle.addEventListener('click', function() {
+        if (wrap.classList.contains('collapsed')) {
+            wrap.classList.remove('collapsed');
+            toggle.textContent = 'View less';
+        } else {
+            wrap.classList.add('collapsed');
+            toggle.textContent = 'View more';
+        }
     });
 })();
 </script>

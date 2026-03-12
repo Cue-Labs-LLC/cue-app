@@ -4266,12 +4266,17 @@ def public_event_buy(request, event_id):
             event_source_url=request.build_absolute_uri(),
         )
 
+    all_sold_out = ticket_types.exists() and not all_types and not coming_soon_types
+    min_ticket_price = min((tt.effective_price for tt in all_types), default=None)
+
     return render(request, 'tickets/buy/public_event_buy.html', {
         'event': event,
         'form': form,
         'available_pairs': available_pairs,
         'locked_pairs': locked_pairs,
         'coming_soon_types': coming_soon_types,
+        'all_sold_out': all_sold_out,
+        'min_ticket_price': min_ticket_price,
         'view_event_id': view_event_id,
     })
 
