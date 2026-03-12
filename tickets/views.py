@@ -1,4 +1,5 @@
 import calendar
+import csv
 import io
 import os
 import json
@@ -2279,6 +2280,46 @@ def event_detail(request, event_id):
             round(total_orders / views * 100, 1) if views > 0 else None
         )
     return render(request, 'tickets/event_detail.html', context)
+
+
+@login_required
+@require_org
+def event_export_csv(request, event_id):
+    org = get_organization(request)
+    event = get_object_or_404(Event.objects.filter(organization=org), id=event_id)
+
+    orders = (
+        event.ticket_orders
+        .select_related('customer', 'promo_code')
+        .annotate(ticket_count=Count('tickets'))
+        .order_by('order_date')
+    )
+
+    filename = f"{event.name} - Orders.csv".replace('/', '-')
+    response = HttpResponse(content_type='text/csv')
+    response['Content-Disposition'] = f'attachment; filename="{filename}"'
+
+    writer = csv.writer(response)
+    writer.writerow([
+        'Order Number', 'Order Date', 'Customer Name', 'Customer Email',
+        'Customer Phone', 'Tickets', 'Total Amount', 'Promo Code',
+        'Discount Amount', 'Refunded', 'Checked In',
+    ])
+    for order in orders:
+        writer.writerow([
+            order.order_number,
+            order.order_date.strftime('%Y-%m-%d %H:%M'),
+            order.customer.name,
+            order.customer.email,
+            order.customer.phone,
+            order.ticket_count,
+            order.total_amount,
+            order.promo_code.code if order.promo_code else '',
+            order.discount_amount or '',
+            'Yes' if order.refunded_at else 'No',
+            'Yes' if order.checked_in_at else 'No',
+        ])
+    return response
 
 
 @login_required

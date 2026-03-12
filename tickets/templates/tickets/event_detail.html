@@ -79,6 +79,7 @@
             {% endif %}
             {% endwith %}
         {% endif %}
+        <a href="{% url 'tickets:event_export_csv' event.id %}" class="btn btn-outline-secondary btn-sm"><i class="bi bi-download"></i> Export CSV</a>
         <a href="{% url 'tickets:event_edit' event.id %}" class="btn btn-outline-secondary btn-sm"><i class="bi bi-pencil"></i> Edit</a>
         {% if event.ticketing_type != 'direct' or not direct_ticketing_enabled or event.effective_status == 'draft' %}
         <a href="{% url 'tickets:event_delete' event.id %}" class="btn btn-outline-danger btn-sm"><i class="bi bi-trash"></i> Delete</a>
