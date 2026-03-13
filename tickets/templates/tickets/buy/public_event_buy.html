@@ -76,7 +76,7 @@
 
         /* ── HERO ── */
         .event-hero {
-            padding: 28px 0 36px;
+            padding: 28px 0 0;
             animation: fadeUp 0.5s 0.08s ease both;
         }
 
@@ -130,7 +130,7 @@
         .page-divider {
             border: none;
             border-top: 1px solid var(--border);
-            margin: 24px 0;
+            margin: 14px 0;
         }
 
         /* ── DESCRIPTION ── */
@@ -303,19 +303,21 @@
         .qty-control {
             display: flex;
             align-items: center;
-            gap: 8px;
+            gap: 0;
             flex-shrink: 0;
         }
 
         .qty-control input[type=number] {
-            width: 58px;
+            width: 40px;
             text-align: center;
             background: var(--surface-2);
             border: 1px solid var(--border-mid);
-            border-radius: var(--radius);
-            padding: 8px 4px;
+            border-left: none;
+            border-right: none;
+            border-radius: 0;
+            padding: 8px 2px;
             font-family: var(--font-mono);
-            font-size: 16px;
+            font-size: 15px;
             font-weight: 500;
             color: var(--text);
             -moz-appearance: textfield;
@@ -331,6 +333,29 @@
             border-color: var(--border-strong);
             background: var(--surface-3);
         }
+
+        .qty-btn {
+            width: 34px;
+            height: 38px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: var(--surface-2);
+            border: 1px solid var(--border-mid);
+            color: var(--text-2);
+            font-size: 17px;
+            line-height: 1;
+            cursor: pointer;
+            transition: background 0.12s, color 0.12s;
+            user-select: none;
+            flex-shrink: 0;
+        }
+
+        .qty-btn:first-child { border-radius: var(--radius) 0 0 var(--radius); }
+        .qty-btn:last-child  { border-radius: 0 var(--radius) var(--radius) 0; }
+
+        .qty-btn:hover { background: var(--surface-3); color: var(--text); }
+        .qty-btn:active { background: var(--border-mid); }
 
         /* ── ORDER SUMMARY ── */
         #order-summary {
@@ -565,6 +590,200 @@
         ::-webkit-scrollbar { width: 3px; }
         ::-webkit-scrollbar-track { background: var(--bg); }
         ::-webkit-scrollbar-thumb { background: var(--border-mid); }
+
+        /* ── NAV ── */
+        .attendee-nav {
+            position: sticky;
+            top: 0;
+            z-index: 100;
+            background: rgba(15, 14, 13, 0.88);
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+            border-bottom: 1px solid var(--border);
+            padding: 0 24px;
+            height: 52px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 16px;
+        }
+        .nav-brand {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            text-decoration: none;
+            flex-shrink: 0;
+        }
+        .nav-brand-icon {
+            width: 26px;
+            height: 26px;
+            background: var(--cta);
+            border-radius: 5px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: var(--bg);
+            font-size: 13px;
+        }
+        .nav-brand-text {
+            font-family: var(--font-display);
+            font-weight: 800;
+            font-size: 0.95rem;
+            letter-spacing: -0.02em;
+            color: var(--text);
+        }
+        .nav-links {
+            display: flex;
+            align-items: center;
+            gap: 2px;
+            flex: 1;
+            padding-left: 24px;
+        }
+        .nav-link {
+            font-family: var(--font-mono);
+            font-size: 0.72rem;
+            letter-spacing: 0.06em;
+            text-transform: uppercase;
+            color: var(--text-3);
+            text-decoration: none;
+            padding: 6px 10px;
+            border-radius: var(--radius);
+            transition: color 0.15s, background 0.15s;
+            white-space: nowrap;
+        }
+        .nav-link:hover { color: var(--text-2); background: rgba(255,255,255,0.04); }
+        .nav-link.active { color: var(--text); background: rgba(255,255,255,0.06); }
+        .nav-right {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            flex-shrink: 0;
+        }
+        .nav-user-btn {
+            display: flex;
+            align-items: center;
+            gap: 7px;
+            background: none;
+            border: 1px solid var(--border-mid);
+            border-radius: var(--radius);
+            padding: 5px 10px 5px 7px;
+            cursor: pointer;
+            color: var(--text-2);
+            font-family: var(--font-mono);
+            font-size: 0.72rem;
+            letter-spacing: 0.05em;
+            text-transform: uppercase;
+            transition: border-color 0.15s, color 0.15s;
+        }
+        .nav-user-btn:hover { border-color: var(--border-strong); color: var(--text); }
+        .nav-user-avatar {
+            width: 22px;
+            height: 22px;
+            border-radius: 50%;
+            background: var(--surface-3);
+            border: 1px solid var(--border-mid);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 10px;
+            font-weight: 500;
+            color: var(--text-2);
+            flex-shrink: 0;
+        }
+        .nav-dropdown { position: relative; }
+        .nav-dropdown-menu {
+            position: absolute;
+            top: calc(100% + 8px);
+            right: 0;
+            background: var(--surface);
+            border: 1px solid var(--border-mid);
+            border-radius: calc(var(--radius) + 2px);
+            min-width: 180px;
+            padding: 6px;
+            display: none;
+            z-index: 200;
+            box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+        }
+        .nav-dropdown-menu.open { display: block; }
+        .nav-dropdown-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 10px;
+            border-radius: var(--radius);
+            font-size: 0.83rem;
+            color: var(--text-2);
+            text-decoration: none;
+            cursor: pointer;
+            transition: background 0.12s, color 0.12s;
+            width: 100%;
+            background: none;
+            border: none;
+            font-family: var(--font-body);
+            text-align: left;
+        }
+        .nav-dropdown-item:hover { background: rgba(255,255,255,0.05); color: var(--text); }
+        .nav-dropdown-divider { height: 1px; background: var(--border); margin: 4px 0; }
+        .nav-dropdown-label {
+            padding: 6px 10px 4px;
+            font-family: var(--font-mono);
+            font-size: 0.65rem;
+            letter-spacing: 0.1em;
+            text-transform: uppercase;
+            color: var(--text-3);
+        }
+
+        /* ── SOCIAL PROOF ── */
+        .social-proof {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-top: 18px;
+            animation: fadeUp 0.5s 0.12s ease both;
+        }
+
+        .avatar-stack {
+            display: flex;
+            flex-direction: row-reverse;
+        }
+
+        .avatar-stack .avatar {
+            width: 30px;
+            height: 30px;
+            border-radius: 50%;
+            border: 2px solid var(--bg);
+            font-family: var(--font-display);
+            font-size: 10px;
+            font-weight: 700;
+            letter-spacing: 0.01em;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin-left: -8px;
+            flex-shrink: 0;
+        }
+
+        .avatar-stack .avatar:last-child { margin-left: 0; }
+
+        .avatar--a { background: #3D5A7A; color: #A8C4E0; }
+        .avatar--b { background: #5A3D7A; color: #C4A8E0; }
+        .avatar--c { background: #3D7A5A; color: #A8E0C4; }
+        .avatar--d { background: #7A5A3D; color: #E0C4A8; }
+        .avatar--e { background: #7A3D5A; color: #E0A8C4; }
+        .avatar--f { background: #3D6A7A; color: #A8D8E0; }
+
+        .social-proof-text {
+            font-family: var(--font-mono);
+            font-size: 10.5px;
+            color: var(--text-3);
+            letter-spacing: 0.03em;
+            line-height: 1.4;
+        }
+
+        .social-proof-text strong {
+            color: var(--text-2);
+            font-weight: 500;
+        }
     </style>
 
     {% include 'tickets/buy/_facebook_pixel.html' %}
@@ -609,6 +828,62 @@
 </head>
 <body>
 
+<nav class="attendee-nav">
+    <a href="{% url 'tickets:attendee_dashboard' %}" class="nav-brand">
+        <div class="nav-brand-icon"><i class="bi bi-lightning-charge-fill"></i></div>
+        <span class="nav-brand-text">{{ org_name }}</span>
+    </a>
+    <div class="nav-links">
+        <a href="{% url 'tickets:attendee_dashboard' %}" class="nav-link">
+            <i class="bi bi-calendar-event"></i> Events
+        </a>
+        {% if user.is_authenticated %}
+        <a href="{% url 'tickets:my_tickets' %}" class="nav-link">
+            <i class="bi bi-ticket-perforated"></i> My Tickets
+        </a>
+        {% endif %}
+    </div>
+    <div class="nav-right">
+        {% if user.is_authenticated %}
+        <div class="nav-dropdown" id="navDropdown">
+            <button class="nav-user-btn" id="navUserBtn" type="button">
+                <div class="nav-user-avatar">
+                    {{ user.first_name|make_list|first|upper|default:user.get_username|make_list|first|upper }}
+                </div>
+                {{ user.get_full_name|default:user.get_username }}
+                <i class="bi bi-chevron-down" style="font-size:10px;margin-left:2px;"></i>
+            </button>
+            <div class="nav-dropdown-menu" id="navDropdownMenu">
+                <div class="nav-dropdown-label">{{ user.get_full_name|default:user.get_username }}</div>
+                <div class="nav-dropdown-divider"></div>
+                <a href="{% url 'tickets:user_profile' %}" class="nav-dropdown-item">
+                    <i class="bi bi-person-circle"></i> My Profile
+                </a>
+                {% if user_role != 'attendee' %}
+                <div class="nav-dropdown-divider"></div>
+                <form method="post" action="{% url 'tickets:switch_view_mode' %}">
+                    {% csrf_token %}
+                    <input type="hidden" name="mode" value="organizer">
+                    <button type="submit" class="nav-dropdown-item">
+                        <i class="bi bi-grid-1x2"></i> Switch to Organizer View
+                    </button>
+                </form>
+                {% endif %}
+                <div class="nav-dropdown-divider"></div>
+                <form method="post" action="{% url 'tickets:logout' %}">
+                    {% csrf_token %}
+                    <button type="submit" class="nav-dropdown-item">
+                        <i class="bi bi-box-arrow-right"></i> Sign out
+                    </button>
+                </form>
+            </div>
+        </div>
+        {% else %}
+        <a href="{% url 'tickets:login' %}" style="font-family:var(--font-mono);font-size:0.72rem;letter-spacing:0.06em;text-transform:uppercase;color:var(--text-3);text-decoration:none;padding:6px 10px;border:1px solid var(--border-mid);border-radius:var(--radius);transition:color 0.15s,border-color 0.15s;" onmouseover="this.style.color='var(--text)';this.style.borderColor='var(--border-strong)'" onmouseout="this.style.color='var(--text-3)';this.style.borderColor='var(--border-mid)'">Sign in</a>
+        {% endif %}
+    </div>
+</nav>
+
 <div class="page-wrap">
 
     {% if event.flyer %}
@@ -630,6 +905,26 @@
                 {{ event.venue.name }}, {{ event.venue.city }}
             </div>
         </div>
+        {% if attendee_count >= 3 %}
+        <div class="social-proof">
+            <div class="avatar-stack">
+                {% for attendee in attendee_preview|slice:":5" %}
+                <div class="avatar avatar--{% cycle 'a' 'b' 'c' 'd' 'e' 'f' %}">{{ attendee.initials }}</div>
+                {% endfor %}
+            </div>
+            <span class="social-proof-text">
+                {% if attendee_count == 1 %}
+                    <strong>{{ attendee_preview.0.first_name }}</strong> is going
+                {% elif attendee_count == 2 %}
+                    <strong>{{ attendee_preview.0.first_name }}</strong> &amp; <strong>{{ attendee_preview.1.first_name }}</strong> are going
+                {% elif attendee_count <= 6 %}
+                    <strong>{{ attendee_preview.0.first_name }}</strong>, <strong>{{ attendee_preview.1.first_name }}</strong>{% if attendee_count > 2 %} + {{ attendee_count|add:"-2" }} others{% endif %} are going
+                {% else %}
+                    <strong>{{ attendee_count }}</strong> people are going
+                {% endif %}
+            </span>
+        </div>
+        {% endif %}
         {% if event.summary %}
         <p class="event-hero__summary">{{ event.summary }}</p>
         {% endif %}
@@ -746,7 +1041,9 @@
                   {% if tt.is_sold_out %}
                   <span class="sold-out-badge">Sold Out</span>
                   {% else %}
+                  <button type="button" class="qty-btn qty-btn--minus" aria-label="Decrease quantity">&minus;</button>
                   {{ bound_field }}
+                  <button type="button" class="qty-btn qty-btn--plus" aria-label="Increase quantity">+</button>
                   {% endif %}
               </div>
           </div>
@@ -800,7 +1097,11 @@
                       {% endwith %}
                   {% endif %}
               </div>
-              <div class="qty-control">{{ bound_field }}</div>
+              <div class="qty-control">
+                  <button type="button" class="qty-btn qty-btn--minus" aria-label="Decrease quantity">&minus;</button>
+                  {{ bound_field }}
+                  <button type="button" class="qty-btn qty-btn--plus" aria-label="Increase quantity">+</button>
+              </div>
           </div>
           {% endwith %}
           {% if bound_field.errors %}
@@ -885,6 +1186,22 @@ document.addEventListener('DOMContentLoaded', function() {
         inp.addEventListener('input', updateOrderSummary);
     });
     updateOrderSummary();
+
+    document.querySelectorAll('.qty-btn').forEach(function(btn) {
+        btn.addEventListener('click', function() {
+            var inp = btn.parentElement.querySelector('input[type=number]');
+            if (!inp) return;
+            var current = parseInt(inp.value, 10) || 0;
+            var min = parseInt(inp.min, 10) || 0;
+            var max = inp.max !== '' ? parseInt(inp.max, 10) : Infinity;
+            var next = btn.classList.contains('qty-btn--plus')
+                ? Math.min(current + 1, max)
+                : Math.max(current - 1, min);
+            if (next === current) return;
+            inp.value = next;
+            inp.dispatchEvent(new Event('input', { bubbles: true }));
+        });
+    });
 })();
 
 (function() {
@@ -975,6 +1292,16 @@ document.addEventListener('DOMContentLoaded', function() {
             toggle.textContent = 'View more';
         }
     });
+})();
+</script>
+
+<script>
+(function() {
+    var btn = document.getElementById('navUserBtn');
+    var menu = document.getElementById('navDropdownMenu');
+    if (!btn || !menu) return;
+    btn.addEventListener('click', function(e) { e.stopPropagation(); menu.classList.toggle('open'); });
+    document.addEventListener('click', function() { menu.classList.remove('open'); });
 })();
 </script>
 </body>

@@ -4269,6 +4269,37 @@ def public_event_buy(request, event_id):
     all_sold_out = ticket_types.exists() and not all_types and not coming_soon_types
     min_ticket_price = min((tt.effective_price for tt in all_types), default=None)
 
+    # Social proof: up to 6 distinct confirmed attendees + total count
+    _preview_orders = (
+        TicketOrder.objects
+        .filter(event=event, refunded_at__isnull=True, is_in_person=False)
+        .select_related('customer')
+        .order_by('-order_date')
+    )
+    _seen = set()
+    attendee_preview = []
+    for _order in _preview_orders[:50]:
+        if _order.customer_id not in _seen:
+            _seen.add(_order.customer_id)
+            _name = _order.customer.name or ''
+            _parts = _name.split()
+            if len(_parts) >= 2:
+                _initials = (_parts[0][0] + _parts[-1][0]).upper()
+            elif _parts:
+                _initials = _parts[0][:2].upper()
+            else:
+                _initials = '?'
+            attendee_preview.append({
+                'initials': _initials,
+                'first_name': _parts[0] if _parts else '',
+            })
+            if len(attendee_preview) >= 6:
+                break
+
+    attendee_count = TicketOrder.objects.filter(
+        event=event, refunded_at__isnull=True, is_in_person=False
+    ).values('customer_id').distinct().count()
+
     return render(request, 'tickets/buy/public_event_buy.html', {
         'event': event,
         'form': form,
@@ -4278,6 +4309,8 @@ def public_event_buy(request, event_id):
         'all_sold_out': all_sold_out,
         'min_ticket_price': min_ticket_price,
         'view_event_id': view_event_id,
+        'attendee_preview': attendee_preview,
+        'attendee_count': attendee_count,
     })
 
 
