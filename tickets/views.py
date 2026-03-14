@@ -37,7 +37,7 @@ from .models import (
     PipedreamCalendarConnection,
     SaleableTicketType, SaleableTicketTypeTier, StripeCheckoutSession, Payout, PromoCode,
     ExternalSurveyUpload, ExternalSurveyResponse,
-    WaitlistEntry,
+    WaitlistEntry, OrganizerWaitlist,
     EVENT_STATUS_DRAFT, EVENT_STATUS_LIVE, EVENT_STATUS_ENDED, EVENT_STATUS_CANCELLED,
 )
 from .forms import (
@@ -49,7 +49,7 @@ from .forms import (
     SaleableTicketTypeForm, SaleableTicketTypeTierFormSet, PublicTicketPurchaseForm,
     DirectEventForm, DirectTicketTypeFormSet,
     PromoCodeForm, SurveyUploadForm, UserProfileForm,
-    WaitlistJoinForm,
+    WaitlistJoinForm, OrganizerWaitlistForm,
 )
 from .csv_processor import CSVProcessor
 from .services.forecasting.preview import generate_forecast_preview
@@ -711,15 +711,47 @@ def password_reset_complete(request):
     return PasswordResetCompleteView.as_view()(request)
 
 
-@login_required
 def become_organizer_view(request):
-    """Informational page for attendees who want to create an organization."""
-    try:
-        if request.user.profile.is_organizer:
-            return redirect('tickets:home')
-    except UserProfile.DoesNotExist:
-        pass
-    return render(request, 'tickets/auth/become_organizer.html')
+    """Beta waitlist for prospective organizers."""
+    if request.user.is_authenticated:
+        try:
+            if request.user.profile.is_organizer:
+                return redirect('tickets:home')
+        except UserProfile.DoesNotExist:
+            pass
+        # Approved users skip the form and go straight to org creation
+        if OrganizerWaitlist.objects.filter(
+            email=request.user.email,
+            status=OrganizerWaitlist.Status.APPROVED,
+        ).exists():
+            return redirect('tickets:create_organization')
+
+    if request.method == 'POST':
+        form = OrganizerWaitlistForm(request.POST)
+        # Treat duplicate email as idempotent — redirect to success rather than error
+        submitted_email = request.POST.get('email', '').strip()
+        if submitted_email and OrganizerWaitlist.objects.filter(email=submitted_email).exists():
+            return redirect('tickets:waitlist_success')
+        if form.is_valid():
+            OrganizerWaitlist.objects.create(
+                name=form.cleaned_data['name'],
+                email=form.cleaned_data['email'],
+                organization_name=form.cleaned_data['organization_name'],
+                instagram_handle=form.cleaned_data.get('instagram_handle', ''),
+            )
+            return redirect('tickets:waitlist_success')
+    else:
+        initial = {}
+        if request.user.is_authenticated:
+            initial['email'] = request.user.email
+            initial['name'] = request.user.get_full_name() or ''
+        form = OrganizerWaitlistForm(initial=initial)
+    return render(request, 'tickets/auth/become_organizer.html', {'form': form})
+
+
+def waitlist_success_view(request):
+    """Confirmation page after joining the organizer waitlist."""
+    return render(request, 'tickets/auth/waitlist_success.html')
 
 
 def signup_view(request):
@@ -853,6 +885,15 @@ def org_required(request):
 def create_organization(request):
     """Create a new organization and assign the current user to it."""
     from .forms import OrganizationForm
+    if not request.user.is_superuser:
+        approved = OrganizerWaitlist.objects.filter(
+            email=request.user.email,
+            status=OrganizerWaitlist.Status.APPROVED,
+        ).exists()
+        if not approved:
+            messages.info(request, 'Organization creation is currently by invite only. Join the waitlist for early access.')
+            return redirect('tickets:become_organizer')
+
     profile, _ = UserProfile.objects.get_or_create(
         user=request.user,
         defaults={'organization_id': None},

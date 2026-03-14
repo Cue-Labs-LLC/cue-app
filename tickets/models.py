@@ -1589,3 +1589,39 @@ class Payout(BaseModel):
 
     def __str__(self):
         return f"Payout ${self.amount} \u2192 {self.organization.name} ({self.status})"
+
+
+class OrganizerWaitlist(BaseModel):
+    """Beta-gate waitlist for prospective organizers."""
+
+    class Status(models.TextChoices):
+        PENDING  = 'pending',  'Pending'
+        APPROVED = 'approved', 'Approved'
+        REJECTED = 'rejected', 'Rejected'
+
+    name              = models.CharField(max_length=200)
+    email             = models.EmailField(unique=True, db_index=True)
+    organization_name = models.CharField(max_length=200)
+    instagram_handle  = models.CharField(max_length=100, blank=True)
+    status            = models.CharField(
+        max_length=20,
+        choices=Status.choices,
+        default=Status.PENDING,
+        db_index=True,
+    )
+    approved_at = models.DateTimeField(null=True, blank=True)
+    approved_by = models.ForeignKey(
+        'auth.User',
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name='approved_waitlist_entries',
+    )
+
+    class Meta:
+        ordering = ['-created_at']
+        verbose_name = 'Organizer Waitlist Entry'
+        verbose_name_plural = 'Organizer Waitlist'
+
+    def __str__(self):
+        return f"{self.name} <{self.email}> ({self.status})"

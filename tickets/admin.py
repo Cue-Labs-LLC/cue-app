@@ -13,6 +13,7 @@ from .models import (
     ChatMessage, Payout, StripeCheckoutSession,
     ExternalSurveyUpload, ExternalSurveyResponse,
     SaleableTicketType, SaleableTicketTypeTier,
+    OrganizerWaitlist,
 )
 
 
@@ -834,3 +835,22 @@ class SaleableTicketTypeAdmin(admin.ModelAdmin):
         if profile and profile.organization_id:
             return qs.filter(event__organization=profile.organization).select_related('event')
         return qs.none()
+
+
+@admin.register(OrganizerWaitlist)
+class OrganizerWaitlistAdmin(admin.ModelAdmin):
+    list_display = ['name', 'email', 'organization_name', 'instagram_handle', 'status', 'created_at']
+    list_filter = ['status', 'created_at']
+    search_fields = ['name', 'email', 'organization_name', 'instagram_handle']
+    readonly_fields = ['id', 'created_at', 'updated_at', 'approved_at', 'approved_by']
+    actions = ['approve_selected']
+
+    @admin.action(description='Approve selected entries')
+    def approve_selected(self, request, queryset):
+        from django.utils import timezone
+        updated = queryset.update(
+            status=OrganizerWaitlist.Status.APPROVED,
+            approved_at=timezone.now(),
+            approved_by=request.user,
+        )
+        self.message_user(request, f'{updated} entr{"y" if updated == 1 else "ies"} approved.')

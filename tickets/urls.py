@@ -24,6 +24,7 @@ urlpatterns = [
     path('signup/verify/', RedirectView.as_view(pattern_name='tickets:login', permanent=False), name='verify_otp'),
     path('signup/resend-otp/', RedirectView.as_view(pattern_name='tickets:login', permanent=False), name='resend_otp'),
     path('become-organizer/', views.become_organizer_view, name='become_organizer'),
+    path('become-organizer/thanks/', views.waitlist_success_view, name='waitlist_success'),
     path('password-reset/', views.password_reset_request, name='password_reset'),
     path('password-reset/done/', views.password_reset_done, name='password_reset_done'),
     path('password-reset-confirm/<uidb64>/<token>/', views.password_reset_confirm, name='password_reset_confirm'),
