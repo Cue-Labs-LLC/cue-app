@@ -37,6 +37,7 @@ from .models import (
     PipedreamCalendarConnection,
     SaleableTicketType, SaleableTicketTypeTier, StripeCheckoutSession, Payout, PromoCode,
     ExternalSurveyUpload, ExternalSurveyResponse,
+    WaitlistEntry,
     EVENT_STATUS_DRAFT, EVENT_STATUS_LIVE, EVENT_STATUS_ENDED, EVENT_STATUS_CANCELLED,
 )
 from .forms import (
@@ -48,6 +49,7 @@ from .forms import (
     SaleableTicketTypeForm, SaleableTicketTypeTierFormSet, PublicTicketPurchaseForm,
     DirectEventForm, DirectTicketTypeFormSet,
     PromoCodeForm, SurveyUploadForm, UserProfileForm,
+    WaitlistJoinForm,
 )
 from .csv_processor import CSVProcessor
 from .services.forecasting.preview import generate_forecast_preview
@@ -150,6 +152,20 @@ def _invalidate_event_list_cache(org):
             pass
     except Exception:
         pass
+
+
+def _clear_waitlist_hold(request, event_id):
+    """Mark a waitlist hold as purchased and release the hold counter."""
+    wl_hold = request.session.pop(f'waitlist_hold_{event_id}', None)
+    if not wl_hold:
+        return
+    from django.utils import timezone as tz
+    WaitlistEntry.objects.filter(
+        id=wl_hold['entry_id'], purchased_at__isnull=True
+    ).update(purchased_at=tz.now())
+    SaleableTicketType.objects.filter(id=wl_hold['ticket_type_id']).update(
+        quantity_held=Greatest(F('quantity_held') - 1, Value(0))
+    )
 
 
 _ANNOTATED_SORT_FIELDS = {
@@ -2073,7 +2089,12 @@ def event_detail(request, event_id):
             ),
             Prefetch(
                 'saleable_ticket_types',
-                SaleableTicketType.objects.prefetch_related('tiers').order_by('order', 'name'),
+                SaleableTicketType.objects.prefetch_related('tiers').annotate(
+                    waitlist_count=Count('waitlist_entries', filter=Q(
+                        waitlist_entries__purchased_at__isnull=True,
+                        waitlist_entries__expired=False,
+                    ))
+                ).order_by('order', 'name'),
             ),
         ),
         id=event_id,
@@ -2477,6 +2498,16 @@ def refund_order(request, order_id):
         order.customer.update_lifetime_value()
         _invalidate_event_list_cache(org)
 
+    # Trigger waitlist notifications for any ticket types that opened up
+    from tickets.tasks import notify_next_waitlist_entry
+    for item in session.line_items_snapshot:
+        tt_id = item.get('saleable_ticket_type_id')
+        qty = item.get('quantity', 0)
+        if tt_id and qty:
+            tt = SaleableTicketType.objects.filter(id=tt_id, waitlist_enabled=True).first()
+            if tt:
+                notify_next_waitlist_entry.delay(tt_id)
+
     messages.success(request, f'Order {order.display_order_number} has been refunded.')
     return redirect('tickets:order_detail', order_id=order_id)
 
@@ -2832,6 +2863,12 @@ def event_edit(request, event_id):
         saleable_tts = list(
             SaleableTicketType.objects.filter(event=event)
             .prefetch_related('tiers')
+            .annotate(
+                waitlist_count=Count('waitlist_entries', filter=Q(
+                    waitlist_entries__purchased_at__isnull=True,
+                    waitlist_entries__expired=False,
+                ))
+            )
             .order_by('order', 'name')
         )
         context = {
@@ -3855,6 +3892,7 @@ def saleable_ticket_type_edit(request, event_id, ticket_type_id):
     event = get_object_or_404(Event.objects.filter(organization=org), id=event_id)
     tt = get_object_or_404(SaleableTicketType.objects.filter(event=event), id=ticket_type_id)
     if request.method == 'POST':
+        old_quantity_limit = tt.quantity_limit
         form = SaleableTicketTypeForm(request.POST, instance=tt)
         form.fields['unlocks_after'].queryset = SaleableTicketType.objects.filter(event=event).exclude(pk=tt.pk)
         form.fields['unlocks_after'].empty_label = '— None —'
@@ -3863,6 +3901,17 @@ def saleable_ticket_type_edit(request, event_id, ticket_type_id):
             updated = form.save()
             tier_formset.save()
             _invalidate_event_list_cache(org)
+            # If quantity limit increased (or unlimited added) and waitlist is enabled, notify next person
+            new_quantity_limit = updated.quantity_limit
+            if updated.waitlist_enabled and (
+                new_quantity_limit is not None and (
+                    old_quantity_limit is None or new_quantity_limit > old_quantity_limit
+                )
+            ) and WaitlistEntry.objects.filter(
+                ticket_type=updated, notified_at__isnull=True, expired=False, purchased_at__isnull=True
+            ).exists():
+                from tickets.tasks import notify_next_waitlist_entry
+                notify_next_waitlist_entry.delay(str(updated.id))
             messages.success(request, f'Ticket type "{updated.name}" updated.')
             from django.urls import reverse
             redirect_url = reverse('tickets:event_edit', kwargs={'event_id': event.id})
@@ -3918,6 +3967,7 @@ def saleable_ticket_type_data(request, event_id, ticket_type_id):
         'is_password_protected': tt.is_password_protected,
         'password': tt.password or '',
         'unlocks_after_id': str(tt.unlocks_after_id) if tt.unlocks_after_id else '',
+        'waitlist_enabled': tt.waitlist_enabled,
     })
 
 
@@ -4200,15 +4250,28 @@ def public_event_buy(request, event_id):
     if eff == EVENT_STATUS_CANCELLED:
         return render(request, 'tickets/buy/event_cancelled.html', {'event': event})
 
-    ticket_types = SaleableTicketType.objects.filter(
-        event=event,
-        is_active=True,
-    ).select_related('unlocks_after').prefetch_related('tiers', 'unlocks_after__tiers').order_by('order', 'name')
+    wl_feature_on = event.organization.waitlist_feature_enabled
+    if wl_feature_on:
+        ticket_types = SaleableTicketType.objects.filter(
+            event=event, is_active=True,
+        ).select_related('unlocks_after').prefetch_related('tiers', 'unlocks_after__tiers').annotate(
+            waitlist_count=Count('waitlist_entries', filter=Q(
+                waitlist_entries__purchased_at__isnull=True,
+                waitlist_entries__expired=False,
+            ))
+        ).order_by('order', 'name')
+        wl_hold = request.session.get(f'waitlist_hold_{event_id}')
+        wl_held_tt_id = wl_hold.get('ticket_type_id') if wl_hold else None
+    else:
+        ticket_types = SaleableTicketType.objects.filter(
+            event=event, is_active=True,
+        ).select_related('unlocks_after').prefetch_related('tiers', 'unlocks_after__tiers').order_by('order', 'name')
+        wl_held_tt_id = None
 
-    # Purchasable: on sale, not sold out, not pw-protected, prerequisite sold out (or none)
+    # Purchasable: on sale, not sold out (or held for this session), not pw-protected, prerequisite sold out (or none)
     available_types   = [tt for tt in ticket_types
-                         if tt.is_on_sale() and not tt.is_sold_out()
-                         and not tt.is_password_protected and tt.is_unlocked()]
+                         if tt.is_on_sale() and not tt.is_password_protected and tt.is_unlocked()
+                         and (not tt.is_sold_out() or str(tt.id) == wl_held_tt_id)]
 
     # Coming soon: on sale, not sold out, not pw-protected, but prerequisite NOT yet sold out
     coming_soon_types = [tt for tt in ticket_types
@@ -4219,6 +4282,16 @@ def public_event_buy(request, event_id):
     locked_types      = [tt for tt in ticket_types
                          if tt.is_on_sale() and not tt.is_sold_out()
                          and tt.is_password_protected and tt.is_unlocked()]
+
+    # Build waitlist join forms for sold-out + waitlist-enabled types (excluding held)
+    if wl_feature_on:
+        waitlist_join_forms = {
+            str(tt.id): WaitlistJoinForm(prefix=f'wl_{tt.id.hex}')
+            for tt in ticket_types
+            if tt.is_sold_out() and tt.waitlist_enabled and str(tt.id) != wl_held_tt_id
+        }
+    else:
+        waitlist_join_forms = {}
 
     all_types = available_types + locked_types
 
@@ -4300,17 +4373,42 @@ def public_event_buy(request, event_id):
         event=event, refunded_at__isnull=True, is_in_person=False
     ).values('customer_id').distinct().count()
 
+    # Sold-out ticket types that have waitlist enabled (for the "sold out" section)
+    if wl_feature_on:
+        waitlisted_sold_out_types = [
+            tt for tt in ticket_types
+            if tt.is_sold_out() and tt.waitlist_enabled and str(tt.id) != wl_held_tt_id
+        ]
+        # Set of ticket type IDs the current user has already joined the waitlist for
+        already_on_waitlist = set()
+        if request.user.is_authenticated and waitlisted_sold_out_types:
+            already_on_waitlist = set(
+                WaitlistEntry.objects.filter(
+                    ticket_type__in=waitlisted_sold_out_types,
+                    email=request.user.email.lower(),
+                    purchased_at__isnull=True,
+                    expired=False,
+                ).values_list('ticket_type_id', flat=True)
+            )
+    else:
+        waitlisted_sold_out_types = []
+        already_on_waitlist = set()
+
     return render(request, 'tickets/buy/public_event_buy.html', {
         'event': event,
         'form': form,
         'available_pairs': available_pairs,
         'locked_pairs': locked_pairs,
         'coming_soon_types': coming_soon_types,
+        'waitlisted_sold_out_types': waitlisted_sold_out_types,
+        'waitlist_join_forms': waitlist_join_forms,
+        'already_on_waitlist': already_on_waitlist,
         'all_sold_out': all_sold_out,
         'min_ticket_price': min_ticket_price,
         'view_event_id': view_event_id,
         'attendee_preview': attendee_preview,
         'attendee_count': attendee_count,
+        'wl_held_tt_id': wl_held_tt_id,
     })
 
 
@@ -4329,6 +4427,63 @@ def unlock_ticket_type(request, event_id, ticket_type_id):
     if submitted == tt.password:
         return JsonResponse({'success': True})
     return JsonResponse({'success': False, 'error': 'Incorrect password.'})
+
+
+@require_http_methods(["POST"])
+def join_waitlist(request, event_id, ticket_type_id):
+    """Public AJAX endpoint — adds the buyer to the waitlist for a sold-out ticket type."""
+    if not request.user.is_authenticated:
+        return JsonResponse({'success': False, 'error': 'Login required.'}, status=401)
+
+    event = get_object_or_404(Event.objects.select_related('organization'), id=event_id, deleted_at__isnull=True)
+    if not event.organization.waitlist_feature_enabled:
+        raise Http404()
+    tt = get_object_or_404(
+        SaleableTicketType,
+        id=ticket_type_id, event=event, is_active=True, waitlist_enabled=True,
+    )
+
+    email = request.user.email.strip().lower()
+    name = request.user.get_full_name() or ''
+
+    if WaitlistEntry.objects.filter(
+        ticket_type=tt, email=email, purchased_at__isnull=True, expired=False
+    ).exists():
+        return JsonResponse(
+            {'success': False, 'error': 'You are already on the waitlist for this ticket.'}, status=400
+        )
+    from django.db.models import Max as _Max
+    position = (WaitlistEntry.objects.filter(ticket_type=tt).aggregate(
+        max_pos=_Max('position')
+    )['max_pos'] or 0) + 1
+    WaitlistEntry.objects.create(
+        ticket_type=tt,
+        email=email,
+        name=name,
+        position=position,
+    )
+    return JsonResponse({'success': True})
+
+
+def activate_waitlist_hold(request, event_id, hold_token):
+    """Public endpoint — validates a waitlist hold token and sets a session flag."""
+    from django.utils import timezone as tz
+    entry = get_object_or_404(
+        WaitlistEntry, hold_token=hold_token, purchased_at__isnull=True, expired=False
+    )
+    tt = entry.ticket_type
+    event = get_object_or_404(Event.objects.select_related('organization'), id=event_id)
+    if not event.organization.waitlist_feature_enabled:
+        raise Http404()
+    if str(tt.event_id) != str(event.id):
+        raise Http404()
+    if entry.hold_expires_at and tz.now() > entry.hold_expires_at:
+        return render(request, 'tickets/buy/waitlist_expired.html', {'event': event})
+    request.session[f'waitlist_hold_{event_id}'] = {
+        'ticket_type_id': str(tt.id),
+        'entry_id': str(entry.id),
+    }
+    return redirect('tickets:public_event_buy', event_id=event_id)
 
 
 @require_http_methods(["POST"])
@@ -4530,6 +4685,7 @@ def checkout_payment(request, event_id):
         from tickets.tasks import send_order_confirmation_email_task
         send_order_confirmation_email_task.delay(str(order.id))
 
+        _clear_waitlist_hold(request, event_id)
         del request.session[f'cart_{event_id}']
         request.session.pop(f'promo_{event_id}', None)
         return redirect(f"{reverse_lazy('tickets:checkout_success')}?order_id={order.id}")
@@ -4752,6 +4908,9 @@ def checkout_success(request):
         session_obj = StripeCheckoutSession.objects.filter(
             id=session_id
         ).select_related('ticket_order', 'event').first()
+        # Clear waitlist hold if this was a waitlist-hold purchase
+        if session_obj and session_obj.status == StripeCheckoutSession.Status.COMPLETED:
+            _clear_waitlist_hold(request, str(session_obj.event_id))
     elif order_id:
         # Free flow: look up TicketOrder directly
         order_obj = TicketOrder.objects.filter(
@@ -4958,6 +5117,22 @@ def _fulfill_payment_intent(payment_intent):
         session_obj.ticket_order = order
         session_obj.fulfilled_at = django_tz.now()
         session_obj.save()
+
+        # Clear any active waitlist holds for this buyer (no request object available in webhook).
+        for item in session_obj.line_items_snapshot:
+            tt_id = item.get('saleable_ticket_type_id')
+            if not tt_id:
+                continue
+            updated = WaitlistEntry.objects.filter(
+                ticket_type_id=tt_id,
+                email=email.lower(),
+                purchased_at__isnull=True,
+                expired=False,
+            ).update(purchased_at=django_tz.now())
+            if updated:
+                SaleableTicketType.objects.filter(id=tt_id).update(
+                    quantity_held=Greatest(F('quantity_held') - 1, Value(0))
+                )
 
         _invalidate_event_list_cache(org)
 

@@ -288,6 +288,70 @@
             white-space: nowrap;
         }
 
+        {% if waitlist_feature_enabled %}
+        /* ── WAITLIST ── */
+        .waitlist-section {
+            display: flex;
+            flex-direction: column;
+            gap: 7px;
+            align-items: flex-end;
+            min-width: 160px;
+        }
+        .waitlist-count {
+            font-family: var(--font-mono);
+            font-size: 10px;
+            color: var(--text-3);
+            letter-spacing: 0.04em;
+        }
+        .waitlist-form {
+            display: flex;
+            flex-direction: column;
+            gap: 5px;
+            align-items: stretch;
+            width: 100%;
+        }
+        .waitlist-form input {
+            background: var(--surface-2);
+            border: 1px solid var(--border-mid);
+            border-radius: var(--radius);
+            padding: 6px 10px;
+            color: var(--text);
+            font-family: var(--font-mono);
+            font-size: 11px;
+            width: 100%;
+            outline: none;
+            transition: border-color 0.15s;
+        }
+        .waitlist-form input:focus { border-color: var(--border-strong); }
+        .btn-join-waitlist {
+            font-family: var(--font-mono);
+            font-size: 11px;
+            letter-spacing: 0.04em;
+            padding: 7px 12px;
+            background: transparent;
+            border: 1px solid var(--border-mid);
+            border-radius: var(--radius);
+            color: var(--text-2);
+            cursor: pointer;
+            transition: border-color 0.15s, color 0.15s;
+            width: 100%;
+        }
+        .btn-join-waitlist:hover { border-color: var(--border-strong); color: var(--text); }
+        .btn-join-waitlist:disabled { opacity: 0.5; cursor: not-allowed; }
+        .waitlist-success {
+            font-family: var(--font-mono);
+            font-size: 11px;
+            color: var(--success);
+            text-align: right;
+        }
+        .waitlist-error {
+            font-family: var(--font-mono);
+            font-size: 11px;
+            color: var(--danger);
+            text-align: right;
+        }
+        {% endif %}
+
         .badge.bg-primary {
             background: rgba(255,255,255,0.06) !important;
             color: var(--text-2) !important;
@@ -956,7 +1020,7 @@
     {% endwith %}
     {% endif %}
 
-    {% if not available_pairs and not locked_pairs and not coming_soon_types and not all_sold_out %}
+    {% if not available_pairs and not locked_pairs and not coming_soon_types and not all_sold_out and not waitlisted_sold_out_types %}
     <div class="empty-state">
         <div style="font-size:2rem;margin-bottom:14px;opacity:0.2;">&#9711;</div>
         No tickets available
@@ -965,10 +1029,14 @@
 
 </div>
 
-{% if available_pairs or locked_pairs or coming_soon_types or all_sold_out %}
+{% if available_pairs or locked_pairs or coming_soon_types or all_sold_out or waitlisted_sold_out_types %}
 <div class="sticky-buy-bar">
-    {% if all_sold_out %}
+    {% if all_sold_out and not waitlisted_sold_out_types %}
     <button type="button" class="btn-buy" disabled>Sold Out</button>
+    {% elif all_sold_out and waitlisted_sold_out_types and waitlist_feature_enabled %}
+    <button type="button" class="btn-buy" data-bs-toggle="modal" data-bs-target="#buyModal">
+        Join Waitlist
+    </button>
     {% else %}
     <button type="button" class="btn-buy" data-bs-toggle="modal" data-bs-target="#buyModal">
         Get Tickets{% if min_ticket_price %} &mdash; From {% if min_ticket_price == 0 %}Free{% else %}${{ min_ticket_price|currency }}{% endif %}{% endif %}
@@ -988,7 +1056,7 @@
         <form method="post">
           {% csrf_token %}
 
-          {% if form.non_field_errors %}
+          {% if form.non_field_errors and available_pairs or form.non_field_errors and locked_pairs %}
           <div class="alert alert-danger mb-3">
               {% for error in form.non_field_errors %}{{ error }}{% endfor %}
           </div>
@@ -1017,7 +1085,7 @@
 
           {% for tt, bound_field in available_pairs %}
           {% with at=tt.get_active_tier ep=tt.effective_price %}
-          <div class="ticket-card{% if tt.is_sold_out %} sold-out{% endif %}" data-price="{{ ep }}" data-ticket-id="{{ tt.id }}">
+          <div class="ticket-card{% if tt.is_sold_out and tt.id|stringformat:"s" != wl_held_tt_id %} sold-out{% endif %}" data-price="{{ ep }}" data-ticket-id="{{ tt.id }}">
               <div class="ticket-info">
                   <div class="ticket-name">
                       {{ tt.name }}{% if at %} <span class="badge bg-primary ms-1">{{ at.name }}</span>{% endif %}
@@ -1038,7 +1106,7 @@
                   {% endif %}
               </div>
               <div class="qty-control">
-                  {% if tt.is_sold_out %}
+                  {% if tt.is_sold_out and tt.id|stringformat:"s" != wl_held_tt_id %}
                   <span class="sold-out-badge">Sold Out</span>
                   {% else %}
                   <button type="button" class="qty-btn qty-btn--minus" aria-label="Decrease quantity">&minus;</button>
@@ -1115,10 +1183,55 @@
               <div class="os-total-row"><span>Total</span><span id="os-total">$0.00</span></div>
           </div>
 
+          {% if available_pairs or locked_pairs %}
           <div class="mt-4">
               <button type="submit" class="btn btn-primary btn-lg w-100">Continue</button>
           </div>
+          {% endif %}
         </form>
+
+        {% if waitlist_feature_enabled %}
+        {% for tt in waitlisted_sold_out_types %}
+        {% with ep=tt.effective_price %}
+        <div class="ticket-card sold-out" style="opacity:0.85;margin-top:6px;" id="wl-card-{{ tt.id.hex }}">
+            <div class="ticket-info">
+                <div class="ticket-name">{{ tt.name }}</div>
+                {% if tt.description %}<div class="ticket-desc">{{ tt.description }}</div>{% endif %}
+                <div class="ticket-price">{% if ep == 0 %}Free{% else %}${{ ep|currency }}{% endif %}</div>
+            </div>
+            <div class="qty-control" style="align-items:flex-end;">
+                <div class="waitlist-section" id="wl-section-{{ tt.id.hex }}">
+                    {% if tt.waitlist_count > 0 %}
+                    <div class="waitlist-count">{{ tt.waitlist_count }} on waitlist</div>
+                    {% endif %}
+                    <div class="waitlist-form" id="wl-form-{{ tt.id.hex }}">
+                        {% if not user.is_authenticated %}
+                        <a href="{% url 'tickets:login' %}?next={{ request.get_full_path }}" class="btn-join-waitlist">
+                            Log in to join the waitlist
+                        </a>
+                        {% elif tt.id in already_on_waitlist %}
+                        <button type="button" class="btn-join-waitlist" disabled>
+                            On Waitlist
+                        </button>
+                        {% else %}
+                        <button type="button" class="btn-join-waitlist"
+                                data-url="{% url 'tickets:join_waitlist' event.id tt.id %}"
+                                data-tt="{{ tt.id.hex }}"
+                                data-authed="true">
+                            Join Waitlist
+                        </button>
+                        {% endif %}
+                        <div class="waitlist-error" id="wl-err-{{ tt.id.hex }}" style="display:none;"></div>
+                    </div>
+                    <div class="waitlist-success" id="wl-ok-{{ tt.id.hex }}" style="display:none;">
+                        You're on the list.
+                    </div>
+                </div>
+            </div>
+        </div>
+        {% endwith %}
+        {% endfor %}
+        {% endif %}
 
       </div>
       <div class="modal-footer">
@@ -1133,7 +1246,8 @@
 <script>
 document.addEventListener('DOMContentLoaded', function() {
     var hasErrors = document.querySelector('.alert-danger');
-    if (hasErrors) {
+    var hasPurchasable = document.querySelector('.ticket-card[data-ticket-id]');
+    if (hasErrors && hasPurchasable) {
         var modal = document.getElementById('buyModal');
         if (modal) bootstrap.Modal.getOrCreateInstance(modal).show();
     }
@@ -1304,5 +1418,64 @@ document.addEventListener('DOMContentLoaded', function() {
     document.addEventListener('click', function() { menu.classList.remove('open'); });
 })();
 </script>
+
+{% if waitlist_feature_enabled %}
+<script>
+// Waitlist join form handling
+document.querySelectorAll('.btn-join-waitlist').forEach(function(btn) {
+    btn.addEventListener('click', function() {
+        var ttHex = btn.dataset.tt;
+        var url = btn.dataset.url;
+        var authed = btn.dataset.authed === 'true';
+        var form = document.getElementById('wl-form-' + ttHex);
+        var errEl = document.getElementById('wl-err-' + ttHex);
+        var okEl = document.getElementById('wl-ok-' + ttHex);
+
+        var body = new URLSearchParams();
+
+        if (!authed) {
+            var nameInput = form.querySelector('input[name="wl_' + ttHex + '-name"]');
+            var emailInput = form.querySelector('input[name="wl_' + ttHex + '-email"]');
+            if (!emailInput.value.trim()) {
+                errEl.textContent = 'Please enter your email.';
+                errEl.style.display = '';
+                return;
+            }
+            body.append('wl_' + ttHex + '-name', nameInput ? nameInput.value.trim() : '');
+            body.append('wl_' + ttHex + '-email', emailInput.value.trim());
+        }
+
+        fetch(url, {
+            method: 'POST',
+            headers: {
+                'X-CSRFToken': '{{ csrf_token }}',
+                'Content-Type': 'application/x-www-form-urlencoded',
+            },
+            body: body.toString(),
+        })
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            if (data.success) {
+                form.style.display = 'none';
+                okEl.style.display = '';
+                btn.textContent = 'On Waitlist';
+                btn.disabled = true;
+                btn.style.display = '';
+            } else {
+                var msg = data.error || 'Something went wrong. Please try again.';
+                errEl.textContent = msg;
+                errEl.style.display = '';
+                btn.disabled = false;
+            }
+        })
+        .catch(function() {
+            errEl.textContent = 'Network error. Please try again.';
+            errEl.style.display = '';
+            btn.disabled = false;
+        });
+    });
+});
+</script>
+{% endif %}
 </body>
 </html>

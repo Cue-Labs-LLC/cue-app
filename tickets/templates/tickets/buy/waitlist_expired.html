@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Link Expired — {{ event.name }}</title>
+    <link rel="preload" href="https://fonts.googleapis.com/css2?family=Syne:wght@400;700;800&family=DM+Sans:wght@300;400;500&display=swap" as="style" onload="this.rel='stylesheet'">
+    <noscript><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Syne:wght@400;700;800&family=DM+Sans:wght@300;400;500&display=swap"></noscript>
+    <style>
+        :root { --bg: #0F0E0D; --surface: #191817; --text: #EDE8E3; --text-2: #7A7672; --text-3: #4A4846; --border: rgba(255,255,255,0.07); --danger: #D97060; --font-display: 'Syne', system-ui, sans-serif; --font-body: 'DM Sans', system-ui, sans-serif; }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { background: var(--bg); color: var(--text); font-family: var(--font-body); min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 40px 20px; }
+        .card { background: var(--surface); border: 1px solid var(--border); border-radius: 4px; padding: 48px 40px; max-width: 440px; width: 100%; text-align: center; }
+        .icon { font-size: 2.5rem; margin-bottom: 20px; opacity: 0.4; }
+        h1 { font-family: var(--font-display); font-size: 1.5rem; font-weight: 800; margin-bottom: 12px; }
+        p { color: var(--text-2); font-size: 14px; line-height: 1.6; margin-bottom: 8px; }
+        .event-name { color: var(--text); font-weight: 500; }
+        .btn { display: inline-block; margin-top: 28px; padding: 12px 24px; background: transparent; border: 1px solid rgba(255,255,255,0.16); border-radius: 3px; color: var(--text); text-decoration: none; font-size: 13px; letter-spacing: 0.03em; }
+        .btn:hover { background: rgba(255,255,255,0.04); }
+    </style>
+</head>
+<body>
+<div class="card">
+    <div class="icon">&#9719;</div>
+    <h1>This link has expired</h1>
+    <p>Your 10-minute hold for <span class="event-name">{{ event.name }}</span> has passed.</p>
+    <p>If spots are still available, you may have been re-queued and will receive a new notification.</p>
+    <a href="{% url 'tickets:public_event_buy' event.id %}" class="btn">View Event &rarr;</a>
+</div>
+</body>
+</html>

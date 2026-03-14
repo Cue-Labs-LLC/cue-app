@@ -1018,7 +1018,7 @@ class SaleableTicketTypeForm(forms.ModelForm):
 
     class Meta:
         model = SaleableTicketType
-        fields = ['name', 'description', 'price', 'quantity_limit', 'is_active', 'sale_start', 'sale_end', 'order', 'is_password_protected', 'password', 'unlocks_after']
+        fields = ['name', 'description', 'price', 'quantity_limit', 'is_active', 'sale_start', 'sale_end', 'order', 'is_password_protected', 'password', 'unlocks_after', 'waitlist_enabled']
         widgets = {
             'name': forms.TextInput(attrs={'class': 'form-control', 'placeholder': 'e.g. General Admission'}),
             'description': forms.Textarea(attrs={'rows': 2, 'class': 'form-control', 'placeholder': 'Short buyer-facing copy (optional)'}),
@@ -1035,6 +1035,7 @@ class SaleableTicketTypeForm(forms.ModelForm):
                 'autocomplete': 'off',
             }),
             'unlocks_after': forms.Select(attrs={'class': 'form-select'}),
+            'waitlist_enabled': forms.CheckboxInput(attrs={'class': 'form-check-input'}),
         }
 
     def __init__(self, *args, **kwargs):
@@ -1410,3 +1411,14 @@ class UserProfileForm(forms.Form):
         profile.gender           = data.get('gender') or ''
         profile.marketing_opt_in = data.get('marketing_opt_in', False)
         profile.save(update_fields=['phone_number', 'gender', 'marketing_opt_in'])
+
+
+class WaitlistJoinForm(forms.Form):
+    name = forms.CharField(
+        max_length=200,
+        required=False,
+        widget=forms.TextInput(attrs={'placeholder': 'Your name (optional)'}),
+    )
+    email = forms.EmailField(
+        widget=forms.EmailInput(attrs={'placeholder': 'your@email.com'}),
+    )

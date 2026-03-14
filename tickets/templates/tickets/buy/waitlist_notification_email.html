@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Your spot is ready</title>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #f5f5f5; margin: 0; padding: 0; }
+        .wrapper { max-width: 520px; margin: 40px auto; background: #fff; border-radius: 4px; overflow: hidden; }
+        .header { background: #0F0E0D; padding: 32px 40px; }
+        .header h1 { color: #EDE8E3; font-size: 18px; font-weight: 600; margin: 0; letter-spacing: -0.01em; }
+        .body { padding: 32px 40px; }
+        .body p { color: #3d3d3d; font-size: 15px; line-height: 1.6; margin: 0 0 16px; }
+        .event-name { font-weight: 600; color: #111; }
+        .ticket-name { font-weight: 600; color: #111; }
+        .timer-note { background: #fafafa; border: 1px solid #e5e5e5; border-radius: 4px; padding: 16px 20px; margin: 24px 0; font-size: 14px; color: #555; }
+        .timer-note strong { color: #111; }
+        .cta-btn { display: inline-block; background: #0F0E0D; color: #EDE8E3 !important; text-decoration: none; padding: 14px 28px; border-radius: 3px; font-size: 14px; font-weight: 600; letter-spacing: 0.02em; margin: 8px 0 24px; }
+        .footer { padding: 24px 40px; border-top: 1px solid #f0f0f0; font-size: 12px; color: #999; line-height: 1.5; }
+        .link-fallback { word-break: break-all; color: #666; font-size: 12px; }
+    </style>
+</head>
+<body>
+<div class="wrapper">
+    <div class="header">
+        <h1>A spot just opened up</h1>
+    </div>
+    <div class="body">
+        {% if entry.name %}<p>Hi {{ entry.name }},</p>{% else %}<p>Hi there,</p>{% endif %}
+        <p>Good news — a spot just opened up for <span class="ticket-name">{{ ticket_type.name }}</span> at <span class="event-name">{{ event.name }}</span>.</p>
+        <div class="timer-note">
+            <strong>You have 10 minutes</strong> to claim your spot before it is offered to the next person on the list.
+        </div>
+        <a href="{{ activate_url }}" class="cta-btn">Claim My Spot &rarr;</a>
+        <p style="font-size:13px;color:#888;">If the button doesn't work, copy and paste this link into your browser:</p>
+        <p class="link-fallback">{{ activate_url }}</p>
+    </div>
+    <div class="footer">
+        <p>You received this email because you joined the waitlist for {{ event.name }}. If you no longer need a ticket, simply ignore this email and your spot will be passed to the next person.</p>
+    </div>
+</div>
+</body>
+</html>

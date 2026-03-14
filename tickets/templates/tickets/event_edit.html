@@ -94,6 +94,7 @@
                                 <th>Ticket Type</th><th>Price</th><th>Sold</th>
                                 <th class="d-none d-md-table-cell">Limit</th><th>Revenue</th>
                                 <th class="d-none d-md-table-cell">Unlocks After</th>
+                                <th class="d-none d-md-table-cell">Waitlist</th>
                                 <th class="d-none d-md-table-cell">Status</th><th></th>
                             </tr>
                         </thead>
@@ -107,6 +108,21 @@
                                 <td>${{ tt.effective_price|currency }} &times; {{ tt.quantity_sold }}</td>
                                 <td class="d-none d-md-table-cell">
                                     {% if tt.unlocks_after %}<span class="text-muted small">{{ tt.unlocks_after.name }}</span>{% else %}<span class="text-muted">—</span>{% endif %}
+                                </td>
+                                <td class="d-none d-md-table-cell">
+                                    {% if waitlist_feature_enabled %}
+                                        {% if tt.waitlist_enabled %}
+                                            {% if tt.waitlist_count %}
+                                                <span class="badge bg-secondary">{{ tt.waitlist_count }} waiting</span>
+                                            {% else %}
+                                                <span class="badge bg-secondary">0 waiting</span>
+                                            {% endif %}
+                                        {% else %}
+                                            <span class="text-muted">—</span>
+                                        {% endif %}
+                                    {% else %}
+                                        <span class="text-muted">—</span>
+                                    {% endif %}
                                 </td>
                                 <td class="d-none d-md-table-cell">
                                     {% if tt.is_active %}<span class="badge bg-success">Active</span>{% else %}<span class="badge bg-secondary">Inactive</span>{% endif %}
@@ -136,7 +152,7 @@
                         <tfoot>
                             <tr class="table-light">
                                 <td colspan="4"><strong>Total Revenue</strong></td>
-                                <td colspan="4"><strong>${{ direct_total_revenue|currency }}</strong></td>
+                                <td colspan="5"><strong>${{ direct_total_revenue|currency }}</strong></td>
                             </tr>
                         </tfoot>
                     </table>
@@ -525,6 +541,7 @@ document.addEventListener('DOMContentLoaded', function () {
           document.getElementById('edit_is_pw').checked = d.is_password_protected;
           document.getElementById('edit_password').value = d.password;
           editPwField.classList.toggle('d-none', !d.is_password_protected);
+          if (document.getElementById('edit_waitlist_enabled')) { document.getElementById('edit_waitlist_enabled').checked = d.waitlist_enabled; }
           var unlocksSelect = document.getElementById('edit_unlocks_after');
           if (unlocksSelect) {
             var currentId = editForm.getAttribute('data-current-tt-id');
@@ -689,6 +706,15 @@ document.addEventListener('DOMContentLoaded', function () {
               <input type="text" name="password" class="form-control" placeholder="Enter password" autocomplete="off">
               <div class="invalid-feedback" id="err-password"></div>
             </div>
+            {% if waitlist_feature_enabled %}
+            <div class="col-12">
+              <div class="form-check">
+                <input class="form-check-input" type="checkbox" name="waitlist_enabled" id="modal_waitlist_enabled">
+                <label class="form-check-label" for="modal_waitlist_enabled">Enable waitlist when sold out</label>
+              </div>
+              <div class="form-text text-muted">When checked, buyers can join a waitlist when this ticket type sells out. They'll receive an email if a spot opens up.</div>
+            </div>
+            {% endif %}
           </div>
         </div>
         <div class="modal-footer">
@@ -781,6 +807,15 @@ document.addEventListener('DOMContentLoaded', function () {
               <input type="text" name="password" id="edit_password" class="form-control" placeholder="Enter password" autocomplete="off">
               <div class="invalid-feedback" id="edit-err-password"></div>
             </div>
+            {% if waitlist_feature_enabled %}
+            <div class="col-12">
+              <div class="form-check">
+                <input class="form-check-input" type="checkbox" name="waitlist_enabled" id="edit_waitlist_enabled">
+                <label class="form-check-label" for="edit_waitlist_enabled">Enable waitlist when sold out</label>
+              </div>
+              <div class="form-text text-muted">When checked, buyers can join a waitlist when this ticket type sells out.</div>
+            </div>
+            {% endif %}
           </div>
         </div>
         <div class="modal-footer">
