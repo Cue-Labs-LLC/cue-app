@@ -1,35 +1,500 @@
-{% extends 'tickets/base.html' %}
+{% load static %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Cue — Sell tickets. Know your crowd.</title>
+    <meta name="description" content="Event ticketing and customer analytics for independent organizers. RFM segmentation, cohort retention, and revenue intelligence — all in one place.">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link rel="preload" href="https://fonts.googleapis.com/css2?family=Syne:wght@700;800&family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;1,9..40,300&family=DM+Mono:ital,wght@0,300;0,400;0,500;1,300;1,400&display=swap" as="style" onload="this.rel='stylesheet'">
+    <noscript><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Syne:wght@700;800&family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;1,9..40,300&family=DM+Mono:ital,wght@0,300;0,400;0,500;1,300;1,400&display=swap"></noscript>
+    <link rel="preload" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" as="style" onload="this.rel='stylesheet'">
+    <noscript><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css"></noscript>
+    <style>
+        :root {
+            --bg:            #0F0E0D;
+            --surface:       #191817;
+            --surface-2:     #232220;
+            --surface-3:     #2D2C2A;
+            --cta:           #EDE8E3;
+            --text:          #EDE8E3;
+            --text-2:        #7A7672;
+            --text-3:        #4A4846;
+            --accent:        #C8A97E;
+            --danger:        #D97060;
+            --success:       #6A9E7F;
+            --border:        rgba(255,255,255,0.07);
+            --border-mid:    rgba(255,255,255,0.11);
+            --border-strong: rgba(255,255,255,0.16);
+            --font-display:  'Syne', system-ui, sans-serif;
+            --font-body:     'DM Sans', system-ui, sans-serif;
+            --font-mono:     'DM Mono', 'Courier New', monospace;
+            --radius:        3px;
+            --nav-h:         56px;
+        }
 
-{% block title %}Eventflow – Event ticketing and customer analytics{% endblock %}
+        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+        html { scroll-behavior: smooth; }
 
-{% block content %}
-<div class="page-header">
-    <div>
-        <h1>Eventflow</h1>
-        <p class="page-header-subtitle">Event ticketing and customer analytics for organizers.</p>
+        body {
+            background: var(--bg);
+            color: var(--text);
+            font-family: var(--font-body);
+            font-weight: 300;
+            line-height: 1.6;
+            min-height: 100vh;
+            -webkit-font-smoothing: antialiased;
+        }
+
+        /* ── NAV ── */
+        .site-nav {
+            position: sticky;
+            top: 0;
+            z-index: 100;
+            height: var(--nav-h);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0 clamp(20px, 5vw, 64px);
+            background: rgba(15, 14, 13, 0.82);
+            backdrop-filter: blur(14px);
+            -webkit-backdrop-filter: blur(14px);
+            border-bottom: 1px solid transparent;
+            transition: border-color 0.2s;
+        }
+        .site-nav.scrolled {
+            border-bottom-color: var(--border);
+        }
+
+        .nav-brand {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            text-decoration: none;
+            color: var(--text);
+        }
+        .nav-brand-icon {
+            width: 28px;
+            height: 28px;
+            background: var(--cta);
+            border-radius: 6px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: var(--bg);
+            font-size: 14px;
+        }
+        .nav-brand-name {
+            font-family: var(--font-display);
+            font-weight: 800;
+            font-size: 1.1rem;
+            letter-spacing: -0.02em;
+        }
+
+        .nav-actions {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        /* ── BUTTONS ── */
+        .btn {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 8px 18px;
+            border-radius: var(--radius);
+            font-family: var(--font-body);
+            font-size: 0.875rem;
+            font-weight: 400;
+            text-decoration: none;
+            cursor: pointer;
+            border: 1px solid transparent;
+            transition: background 0.15s, color 0.15s, border-color 0.15s, transform 0.1s;
+            white-space: nowrap;
+        }
+        .btn:active { transform: scale(0.98); }
+
+        .btn-ghost {
+            color: var(--text-2);
+            border-color: var(--border-mid);
+            background: transparent;
+        }
+        .btn-ghost:hover {
+            color: var(--text);
+            border-color: var(--border-strong);
+            background: var(--surface);
+        }
+
+        .btn-primary {
+            background: var(--cta);
+            color: var(--bg);
+            border-color: var(--cta);
+            font-weight: 500;
+        }
+        .btn-primary:hover {
+            background: #d8d3ce;
+            border-color: #d8d3ce;
+        }
+
+        .btn-lg {
+            padding: 12px 28px;
+            font-size: 0.95rem;
+        }
+
+        .btn-outline {
+            color: var(--text);
+            border-color: var(--border-mid);
+            background: transparent;
+        }
+        .btn-outline:hover {
+            border-color: var(--border-strong);
+            background: var(--surface);
+        }
+
+        .link-muted {
+            color: var(--text-2);
+            text-decoration: none;
+            font-size: 0.875rem;
+            transition: color 0.15s;
+        }
+        .link-muted:hover { color: var(--text); }
+
+        /* ── SECTIONS ── */
+        .section {
+            padding: clamp(72px, 10vw, 120px) clamp(20px, 5vw, 64px);
+            max-width: 1100px;
+            margin: 0 auto;
+        }
+
+        /* ── HERO ── */
+        .hero {
+            padding-top: clamp(80px, 14vw, 140px);
+            padding-bottom: clamp(64px, 10vw, 100px);
+            max-width: 1100px;
+            margin: 0 auto;
+            padding-left: clamp(20px, 5vw, 64px);
+            padding-right: clamp(20px, 5vw, 64px);
+        }
+
+        .hero-eyebrow {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            font-family: var(--font-mono);
+            font-size: 0.72rem;
+            letter-spacing: 0.12em;
+            text-transform: uppercase;
+            color: var(--accent);
+            border: 1px solid rgba(200, 169, 126, 0.25);
+            background: rgba(200, 169, 126, 0.07);
+            padding: 5px 12px;
+            border-radius: 2px;
+            margin-bottom: 28px;
+            opacity: 0;
+            animation: fadeUp 0.5s ease forwards;
+        }
+        .hero-eyebrow::before {
+            content: '';
+            width: 6px;
+            height: 6px;
+            border-radius: 50%;
+            background: var(--accent);
+            flex-shrink: 0;
+        }
+
+        .hero-headline {
+            font-family: var(--font-display);
+            font-weight: 800;
+            font-size: clamp(2.4rem, 5.5vw, 3.8rem);
+            line-height: 1.08;
+            letter-spacing: -0.03em;
+            color: var(--text);
+            max-width: 720px;
+            margin-bottom: 22px;
+            opacity: 0;
+            animation: fadeUp 0.5s ease 0.1s forwards;
+        }
+
+        .hero-sub {
+            font-size: clamp(1rem, 1.5vw, 1.1rem);
+            font-weight: 300;
+            color: var(--text-2);
+            max-width: 520px;
+            line-height: 1.65;
+            margin-bottom: 40px;
+            opacity: 0;
+            animation: fadeUp 0.5s ease 0.2s forwards;
+        }
+
+        .hero-actions {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 14px;
+            opacity: 0;
+            animation: fadeUp 0.5s ease 0.3s forwards;
+        }
+
+        /* ── FEATURES ── */
+        .features-label {
+            font-family: var(--font-mono);
+            font-size: 0.7rem;
+            letter-spacing: 0.1em;
+            text-transform: uppercase;
+            color: var(--text-3);
+            margin-bottom: 40px;
+        }
+
+        .features-grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 1px;
+            background: var(--border);
+            border: 1px solid var(--border);
+            border-radius: calc(var(--radius) + 2px);
+            overflow: hidden;
+        }
+
+        @media (max-width: 700px) {
+            .features-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        .feature-card {
+            background: var(--surface);
+            padding: 32px 28px;
+            transition: background 0.2s, transform 0.2s;
+        }
+        .feature-card:hover {
+            background: var(--surface-2);
+            transform: translateY(-2px);
+        }
+
+        .feature-icon {
+            width: 36px;
+            height: 36px;
+            background: var(--surface-3);
+            border: 1px solid var(--border-mid);
+            border-radius: var(--radius);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 16px;
+            color: var(--text-2);
+            margin-bottom: 20px;
+        }
+
+        .feature-title {
+            font-family: var(--font-display);
+            font-weight: 700;
+            font-size: 1rem;
+            letter-spacing: -0.01em;
+            margin-bottom: 10px;
+        }
+
+        .feature-desc {
+            font-size: 0.875rem;
+            color: var(--text-2);
+            line-height: 1.6;
+        }
+
+        /* ── ATTENDEE STRIP ── */
+        .attendee-strip {
+            background: var(--surface);
+            border-top: 1px solid var(--border);
+            border-bottom: 1px solid var(--border);
+        }
+        .attendee-strip-inner {
+            max-width: 1100px;
+            margin: 0 auto;
+            padding: 28px clamp(20px, 5vw, 64px);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 24px;
+            flex-wrap: wrap;
+        }
+        .attendee-strip-text {
+            font-size: 0.9rem;
+            color: var(--text-2);
+        }
+        .attendee-strip-text strong {
+            color: var(--text);
+            font-weight: 400;
+        }
+
+        /* ── CTA BANNER ── */
+        .cta-banner {
+            text-align: center;
+        }
+        .cta-banner-card {
+            background: var(--surface);
+            border: 1px solid var(--border-mid);
+            border-radius: calc(var(--radius) + 4px);
+            padding: clamp(48px, 8vw, 80px) clamp(24px, 6vw, 80px);
+        }
+        .cta-banner-headline {
+            font-family: var(--font-display);
+            font-weight: 800;
+            font-size: clamp(1.6rem, 3.5vw, 2.6rem);
+            letter-spacing: -0.03em;
+            margin-bottom: 14px;
+        }
+        .cta-banner-sub {
+            font-size: 0.95rem;
+            color: var(--text-2);
+            margin-bottom: 36px;
+        }
+        .cta-banner-actions {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex-wrap: wrap;
+            gap: 16px;
+        }
+
+        /* ── FOOTER ── */
+        .site-footer {
+            border-top: 1px solid var(--border);
+            padding: 28px clamp(20px, 5vw, 64px);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            flex-wrap: wrap;
+            gap: 12px;
+            max-width: 100%;
+        }
+        .footer-brand {
+            font-family: var(--font-display);
+            font-weight: 800;
+            font-size: 0.9rem;
+            color: var(--text-3);
+            letter-spacing: -0.01em;
+        }
+        .footer-copy {
+            font-size: 0.78rem;
+            color: var(--text-3);
+            font-family: var(--font-mono);
+        }
+
+        /* ── DIVIDER ── */
+        .section-divider {
+            border: none;
+            border-top: 1px solid var(--border);
+            margin: 0;
+        }
+
+        /* ── ANIMATIONS ── */
+        @keyframes fadeUp {
+            from {
+                opacity: 0;
+                transform: translateY(16px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+    </style>
+</head>
+<body>
+
+    <!-- NAV -->
+    <nav class="site-nav" id="siteNav">
+        <a href="/" class="nav-brand">
+            <span class="nav-brand-icon">
+                <i class="bi bi-lightning-charge-fill"></i>
+            </span>
+            <span class="nav-brand-name">Cue</span>
+        </a>
+        <div class="nav-actions">
+            <a href="{% url 'tickets:login' %}" class="btn btn-ghost">Sign in</a>
+            <a href="{% url 'tickets:signup' %}" class="btn btn-primary">Get started</a>
+        </div>
+    </nav>
+
+    <!-- HERO -->
+    <section class="hero">
+        <div class="hero-eyebrow">Private Beta</div>
+        <h1 class="hero-headline">Sell tickets.<br>Know your crowd.</h1>
+        <p class="hero-sub">Built for independent organizers who want more than a checkout link — real analytics, customer intelligence, and revenue visibility across every event.</p>
+        <div class="hero-actions">
+            <a href="{% url 'tickets:signup' %}" class="btn btn-primary btn-lg">Start for free &rarr;</a>
+            <a href="{% url 'tickets:explore' %}" class="link-muted">Browse upcoming events</a>
+        </div>
+    </section>
+
+    <hr class="section-divider">
+
+    <!-- FEATURES -->
+    <section class="section">
+        <p class="features-label">Built for organizers</p>
+        <div class="features-grid">
+            <div class="feature-card">
+                <div class="feature-icon">
+                    <i class="bi bi-calendar-check"></i>
+                </div>
+                <h3 class="feature-title">Event Management</h3>
+                <p class="feature-desc">Create events with direct ticketing on Cue, or import order history from Eventbrite, TIXR, or any CSV export. Your data, your way.</p>
+            </div>
+            <div class="feature-card">
+                <div class="feature-icon">
+                    <i class="bi bi-person-lines-fill"></i>
+                </div>
+                <h3 class="feature-title">Customer Analytics</h3>
+                <p class="feature-desc">RFM segmentation surfaces your VIPs, loyalists, and at-risk buyers. Cohort retention shows who comes back — and when they stop.</p>
+            </div>
+            <div class="feature-card">
+                <div class="feature-icon">
+                    <i class="bi bi-graph-up-arrow"></i>
+                </div>
+                <h3 class="feature-title">Revenue Intelligence</h3>
+                <p class="feature-desc">Per-event P&amp;L, income tracking, and sales curve forecasting. Know how you did and what to expect from your next show.</p>
+            </div>
+        </div>
+    </section>
+
+    <!-- ATTENDEE STRIP -->
+    <div class="attendee-strip">
+        <div class="attendee-strip-inner">
+            <p class="attendee-strip-text">
+                <strong>Looking for tickets?</strong> Browse upcoming events on Cue.
+            </p>
+            <a href="{% url 'tickets:explore' %}" class="btn btn-outline">
+                <i class="bi bi-compass"></i> Explore events
+            </a>
+        </div>
     </div>
-    <div class="page-header-actions">
-        <a href="{% url 'tickets:login' %}" class="btn btn-outline-secondary">Log in</a>
-        <a href="{% url 'tickets:signup' %}" class="btn btn-primary">Sign up</a>
-    </div>
-</div>
 
-<div class="card mb-4">
-    <div class="card-body p-4">
-        <p class="lead mb-3">Eventflow helps you manage events, sell tickets, and understand your customers.</p>
-        <ul class="mb-0">
-            <li>Create events with direct ticketing (sell on the platform) or import orders from external platforms (Eventbrite, TIXR, etc.).</li>
-            <li>Track revenue, expenses, and profitability per event.</li>
-            <li>Segment customers with RFM analysis and see repeat behavior and cohort retention.</li>
-        </ul>
-    </div>
-</div>
+    <!-- CTA BANNER -->
+    <section class="section cta-banner">
+        <div class="cta-banner-card">
+            <h2 class="cta-banner-headline">Ready to understand your audience?</h2>
+            <p class="cta-banner-sub">Join organizers already using Cue to grow smarter.</p>
+            <div class="cta-banner-actions">
+                <a href="{% url 'tickets:signup' %}" class="btn btn-primary btn-lg">Create your account</a>
+                <a href="{% url 'tickets:login' %}" class="link-muted">Already have an account? Sign in</a>
+            </div>
+        </div>
+    </section>
 
-<div class="d-flex flex-wrap gap-2">
-    <a href="/explore/" class="btn btn-primary">
-        <i class="bi bi-calendar-event"></i> Browse upcoming events
-    </a>
-    <a href="{% url 'tickets:login' %}" class="btn btn-outline-secondary">Log in</a>
-    <a href="{% url 'tickets:signup' %}" class="btn btn-outline-secondary">Sign up</a>
-</div>
-{% endblock %}
+    <!-- FOOTER -->
+    <footer class="site-footer">
+        <span class="footer-brand">Cue &mdash; cueup.co</span>
+        <span class="footer-copy">&copy; {% now "Y" %} Cue Up, Inc.</span>
+    </footer>
+
+    <script>
+        // Sticky nav border on scroll
+        const nav = document.getElementById('siteNav');
+        const onScroll = () => nav.classList.toggle('scrolled', window.scrollY > 8);
+        window.addEventListener('scroll', onScroll, { passive: true });
+        onScroll();
+    </script>
+
+</body>
+</html>

@@ -1,95 +1,85 @@
-{% extends 'tickets/base.html' %}
+{% extends 'tickets/attendee_base.html' %}
 {% load tickets_extras %}
 
-{% block title %}My Tickets - Eventflow{% endblock %}
+{% block title %}My Tickets — Eventflow{% endblock %}
 
 {% block content %}
-<div class="page-header">
-    <div>
-        <h1>My Tickets</h1>
-        <p class="page-header-subtitle">Your purchase history.</p>
-    </div>
+<div style="animation: fadeUp 0.4s ease both;">
+    <h1 class="page-title">My Tickets</h1>
+    <p class="page-subtitle">Your purchase history.</p>
 </div>
 
-<ul class="nav nav-tabs mb-4">
-    <li class="nav-item">
-        <a class="nav-link{% if active_tab == 'upcoming' %} active{% endif %}" href="{% url 'tickets:my_tickets' %}?tab=upcoming">Upcoming</a>
-    </li>
-    <li class="nav-item">
-        <a class="nav-link{% if active_tab == 'past' %} active{% endif %}" href="{% url 'tickets:my_tickets' %}?tab=past">Past</a>
-    </li>
-</ul>
+<div class="a-tabs">
+    <a href="{% url 'tickets:my_tickets' %}?tab=upcoming" class="a-tab{% if active_tab == 'upcoming' %} active{% endif %}">Upcoming</a>
+    <a href="{% url 'tickets:my_tickets' %}?tab=past" class="a-tab{% if active_tab == 'past' %} active{% endif %}">Past</a>
+</div>
 
 {% if page_obj %}
-<div class="card">
-    <div class="card-body p-0">
-        <div class="table-responsive">
-            <table class="table table-hover mb-0">
-                <thead>
-                    <tr>
-                        <th>Event</th>
-                        <th>Order #</th>
-                        <th>Tickets</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {% for order in page_obj %}
-                    <tr style="cursor:pointer" onclick="window.location='{% url 'tickets:my_ticket_detail' order.id %}'">
-                        <td>
-                            <div class="d-flex align-items-center gap-3">
-                                {% if order.event.flyer %}
-                                <img src="{{ order.event.flyer.url }}" alt="{{ order.event.name }}"
-                                     style="width:48px;height:60px;object-fit:cover;border-radius:6px;flex-shrink:0;">
-                                {% else %}
-                                <div style="width:48px;height:60px;border-radius:6px;flex-shrink:0;background:var(--bs-secondary-bg);display:flex;align-items:center;justify-content:center;">
-                                    <i class="bi bi-image text-muted"></i>
+<div class="a-card" style="animation: fadeUp 0.4s 0.05s ease both;">
+    <div class="a-card-body-flush">
+        <table class="a-table">
+            <thead>
+                <tr>
+                    <th>Event</th>
+                    <th>Order #</th>
+                    <th>Tickets</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for order in page_obj %}
+                <tr onclick="window.location='{% url 'tickets:my_ticket_detail' order.id %}'">
+                    <td>
+                        <div style="display:flex;align-items:center;gap:12px;">
+                            {% if order.event.flyer %}
+                            <img src="{{ order.event.flyer.url }}" alt="{{ order.event.name }}"
+                                 style="width:40px;height:50px;object-fit:cover;border-radius:2px;flex-shrink:0;border:1px solid var(--border);">
+                            {% else %}
+                            <div style="width:40px;height:50px;border-radius:2px;flex-shrink:0;background:var(--surface-2);border:1px solid var(--border);display:flex;align-items:center;justify-content:center;">
+                                <i class="bi bi-image" style="color:var(--text-3);font-size:14px;"></i>
+                            </div>
+                            {% endif %}
+                            <div>
+                                <div style="color:var(--text);font-size:0.9rem;font-weight:400;">{{ order.event.name }}</div>
+                                {% if order.event.start_date %}
+                                <div style="font-family:var(--font-mono);font-size:0.68rem;letter-spacing:0.04em;color:var(--text-3);margin-top:3px;">
+                                    {{ order.event.start_date|date:"F j, Y" }}{% if order.event.start_time %} &middot; {{ order.event.start_time|time:"g:i A" }}{% endif %}
                                 </div>
                                 {% endif %}
-                                <div>
-                                    <div class="fw-semibold">{{ order.event.name }}</div>
-                                    {% if order.event.start_date %}
-                                    <div class="text-muted small">
-                                        {{ order.event.start_date|date:"F j, Y" }}{% if order.event.start_time %} &middot; {{ order.event.start_time|time:"g:i A" }}{% endif %}
-                                    </div>
-                                    {% endif %}
-                                </div>
                             </div>
-                        </td>
-                        <td class="text-muted small">{{ order.display_order_number }}</td>
-                        <td>{{ order.tickets.all|length }}</td>
-                    </tr>
-                    {% empty %}
-                    <tr>
-                        <td colspan="3" class="text-center text-muted py-4">
-                            {% if active_tab == 'upcoming' %}No upcoming events.{% else %}No past events.{% endif %}
-                        </td>
-                    </tr>
-                    {% endfor %}
-                </tbody>
-            </table>
-        </div>
+                        </div>
+                    </td>
+                    <td style="font-family:var(--font-mono);font-size:0.75rem;letter-spacing:0.04em;">{{ order.display_order_number }}</td>
+                    <td style="font-family:var(--font-mono);font-size:0.8rem;">{{ order.tickets.all|length }}</td>
+                </tr>
+                {% empty %}
+                <tr style="cursor:default;">
+                    <td colspan="3" style="text-align:center;padding:40px 16px;color:var(--text-3);font-size:0.85rem;cursor:default;">
+                        {% if active_tab == 'upcoming' %}No upcoming events.{% else %}No past events.{% endif %}
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
     </div>
 </div>
 
 {% if page_obj.has_other_pages %}
-<nav class="mt-4 d-flex justify-content-center">
-    <ul class="pagination mb-0">
-        {% if page_obj.has_previous %}
-        <li class="page-item"><a class="page-link" href="?tab={{ active_tab }}&page={{ page_obj.previous_page_number }}">Previous</a></li>
-        {% endif %}
-        <li class="page-item disabled"><span class="page-link">Page {{ page_obj.number }} of {{ page_obj.paginator.num_pages }}</span></li>
-        {% if page_obj.has_next %}
-        <li class="page-item"><a class="page-link" href="?tab={{ active_tab }}&page={{ page_obj.next_page_number }}">Next</a></li>
-        {% endif %}
-    </ul>
-</nav>
+<div class="a-pagination">
+    {% if page_obj.has_previous %}
+    <a href="?tab={{ active_tab }}&page={{ page_obj.previous_page_number }}" class="a-page-btn"><i class="bi bi-arrow-left"></i> Prev</a>
+    {% endif %}
+    <span class="a-page-info">{{ page_obj.number }} / {{ page_obj.paginator.num_pages }}</span>
+    {% if page_obj.has_next %}
+    <a href="?tab={{ active_tab }}&page={{ page_obj.next_page_number }}" class="a-page-btn">Next <i class="bi bi-arrow-right"></i></a>
+    {% endif %}
+</div>
 {% endif %}
 
 {% else %}
 <div class="empty-state">
     <i class="bi bi-ticket-perforated"></i>
     <p>You haven't purchased any tickets yet.</p>
-    <a href="{% url 'tickets:attendee_dashboard' %}" class="btn btn-primary">Browse Events</a>
+    <a href="{% url 'tickets:attendee_dashboard' %}" class="btn-primary-dark">Browse Events</a>
 </div>
 {% endif %}
 {% endblock %}

@@ -1,0 +1,13 @@
+A spot just opened up for {{ ticket_type.name }} at {{ event.name }}.
+
+{% if entry.name %}Hi {{ entry.name }},{% else %}Hi there,{% endif %}
+
+Good news — a spot just opened up for {{ ticket_type.name }} at {{ event.name }}.
+
+You have 10 minutes to claim your spot before it is offered to the next person on the waitlist.
+
+Claim your spot here:
+{{ activate_url }}
+
+---
+You received this email because you joined the waitlist for {{ event.name }}. If you no longer need a ticket, simply ignore this email and your spot will be passed to the next person.

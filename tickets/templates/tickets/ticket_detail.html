@@ -1,39 +1,18 @@
-{% extends 'tickets/base.html' %}
+{% extends 'tickets/attendee_base.html' %}
 {% load tickets_extras %}
 
-{% block title %}Ticket Detail — {{ order.event.name }}{% endblock %}
-
-{% block extra_head %}
-<style>
-.venue-map-link {
-    color: var(--bs-secondary-color, #6c757d);
-    transition: color 0.15s ease;
-}
-.venue-map-link:hover {
-    color: var(--bs-primary, #0d6efd);
-    text-decoration: underline !important;
-}
-.venue-map-link .bi {
-    margin-top: 1px;
-    flex-shrink: 0;
-    opacity: 0.6;
-    transition: opacity 0.15s ease;
-}
-.venue-map-link:hover .bi {
-    opacity: 1;
-}
-</style>
-{% endblock %}
+{% block title %}{{ order.event.name }} — My Tickets{% endblock %}
 
 {% block content %}
-<div class="page-header">
+<a href="{% url 'tickets:my_tickets' %}" class="back-link">
+    <i class="bi bi-arrow-left"></i> My Tickets
+</a>
+
+<div style="display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin-bottom:28px;animation:fadeUp 0.4s ease both;">
     <div>
-        <a href="{% url 'tickets:my_tickets' %}" class="btn btn-sm btn-outline-secondary mb-2">
-            <i class="bi bi-arrow-left"></i> My Tickets
-        </a>
-        <h1>{{ order.event.name }}</h1>
+        <h1 class="page-title">{{ order.event.name }}</h1>
         {% if order.event.start_date %}
-        <p class="page-header-subtitle">
+        <p class="page-subtitle" style="margin-bottom:0;">
             <i class="bi bi-calendar-event"></i>
             {{ order.event.start_date|date:"F j, Y" }}
             {% if order.event.venue %}
@@ -43,89 +22,75 @@
         {% endif %}
     </div>
     {% if order.refunded_at %}
-    <span class="badge bg-danger fs-6 align-self-start mt-1">Refunded</span>
+    <span class="a-badge a-badge--danger" style="flex-shrink:0;margin-top:6px;">Refunded</span>
     {% elif order.checked_in_at %}
-    <span class="badge bg-success fs-6 align-self-start mt-1"><i class="bi bi-check-circle"></i> Checked In</span>
+    <span class="a-badge a-badge--success" style="flex-shrink:0;margin-top:6px;"><i class="bi bi-check-circle"></i> Checked In</span>
     {% endif %}
 </div>
 
-<div class="row g-4">
+<div style="display:grid;grid-template-columns:{% if qr_code %}auto 1fr{% else %}1fr{% endif %};gap:16px;align-items:start;">
+
     {% if qr_code %}
-    <div class="col-12 col-md-5 col-lg-4">
-        <div class="card text-center">
-            <div class="card-body py-4">
-                <img src="data:image/png;base64,{{ qr_code }}" alt="Ticket QR Code" width="240" height="240" class="img-fluid">
-                <p class="text-muted small mt-2 mb-0">Present this code at the door</p>
-            </div>
-        </div>
+    <div class="qr-card" style="animation:fadeUp 0.4s 0.05s ease both;">
+        <img src="data:image/png;base64,{{ qr_code }}" alt="Ticket QR Code">
+        <p class="qr-note"><i class="bi bi-qr-code"></i> Present at the door</p>
     </div>
     {% endif %}
 
-    <div class="col-12 {% if qr_code %}col-md-7 col-lg-8{% endif %}">
-        <div class="card mb-4">
-            <div class="card-header">
-                <h5 class="mb-0">Order Details</h5>
-            </div>
-            <div class="card-body">
-                <table class="table table-sm mb-0">
-                    <tbody>
-                        <tr>
-                            <th class="text-muted fw-normal" style="width:40%">Order #</th>
-                            <td class="fw-semibold">{{ order.display_order_number }}</td>
-                        </tr>
-                        <tr>
-                            <th class="text-muted fw-normal">Purchase Date</th>
-                            <td>{{ order.order_date|date:"F j, Y" }}</td>
-                        </tr>
-                        <tr>
-                            <th class="text-muted fw-normal">Total</th>
-                            <td>
-                                {% if order.total_amount %}
-                                ${{ order.total_amount|currency }}
-                                {% else %}
-                                Free
-                                {% endif %}
-                            </td>
-                        </tr>
-                        <tr>
-                            <th class="text-muted fw-normal">Check-in</th>
-                            <td>
-                                {% if order.checked_in_at %}
-                                <span class="text-success"><i class="bi bi-check-circle-fill"></i> {{ order.checked_in_at|date:"F j, Y g:i A" }}</span>
-                                {% else %}
-                                <span class="text-muted">Not yet checked in</span>
-                                {% endif %}
-                            </td>
-                        </tr>
-                        {% if order.refunded_at %}
-                        <tr>
-                            <th class="text-muted fw-normal">Refunded</th>
-                            <td class="text-danger">{{ order.refunded_at|date:"F j, Y" }}</td>
-                        </tr>
+    <div style="display:flex;flex-direction:column;gap:12px;">
+
+        <!-- Order Details -->
+        <div class="a-card" style="animation:fadeUp 0.4s 0.1s ease both;">
+            <div class="a-card-header">Order Details</div>
+            <div class="a-card-body">
+                <div class="detail-row">
+                    <span class="detail-label">Order #</span>
+                    <span class="detail-value" style="font-family:var(--font-mono);color:var(--text);">{{ order.display_order_number }}</span>
+                </div>
+                <div class="detail-row">
+                    <span class="detail-label">Purchase Date</span>
+                    <span class="detail-value">{{ order.order_date|date:"F j, Y" }}</span>
+                </div>
+                <div class="detail-row">
+                    <span class="detail-label">Total</span>
+                    <span class="detail-value" style="font-family:var(--font-mono);">
+                        {% if order.total_amount %}${{ order.total_amount|currency }}{% else %}Free{% endif %}
+                    </span>
+                </div>
+                <div class="detail-row">
+                    <span class="detail-label">Check-in</span>
+                    <span class="detail-value">
+                        {% if order.checked_in_at %}
+                        <span style="color:var(--success);"><i class="bi bi-check-circle-fill"></i> {{ order.checked_in_at|date:"F j, Y g:i A" }}</span>
+                        {% else %}
+                        <span style="color:var(--text-3);">Not yet checked in</span>
                         {% endif %}
-                    </tbody>
-                </table>
+                    </span>
+                </div>
+                {% if order.refunded_at %}
+                <div class="detail-row">
+                    <span class="detail-label">Refunded</span>
+                    <span class="detail-value" style="color:var(--danger);">{{ order.refunded_at|date:"F j, Y" }}</span>
+                </div>
+                {% endif %}
             </div>
         </div>
 
         {% if order.event.venue %}
-        <div class="card mb-4">
-            <div class="card-header">
-                <h5 class="mb-0">Venue</h5>
-            </div>
-            <div class="card-body">
-                <div class="fw-semibold">{{ order.event.venue.name }}</div>
+        <!-- Venue -->
+        <div class="a-card" style="animation:fadeUp 0.4s 0.15s ease both;">
+            <div class="a-card-header">Venue</div>
+            <div class="a-card-body">
+                <div style="font-size:0.9rem;color:var(--text);margin-bottom:6px;">{{ order.event.venue.name }}</div>
                 {% with addr=order.event.venue %}
                 {% if addr.street_address or addr.city %}
-                <a id="venue-map-link" href="#" target="_blank" rel="noopener" class="small text-decoration-none d-inline-flex align-items-start gap-1 venue-map-link">
+                <a id="venue-map-link" href="#" target="_blank" rel="noopener" class="venue-map-link">
                     <i class="bi bi-geo-alt"></i>
                     <div>
-                    {% if addr.street_address %}<div>{{ addr.street_address }}</div>{% endif %}
-                    {% if addr.city %}
-                    <div>
-                        {{ addr.city }}{% if addr.state %}, {{ addr.state }}{% endif %}{% if addr.postal_code %} {{ addr.postal_code }}{% endif %}
-                    </div>
-                    {% endif %}
+                        {% if addr.street_address %}<div>{{ addr.street_address }}</div>{% endif %}
+                        {% if addr.city %}
+                        <div>{{ addr.city }}{% if addr.state %}, {{ addr.state }}{% endif %}{% if addr.postal_code %} {{ addr.postal_code }}{% endif %}</div>
+                        {% endif %}
                     </div>
                 </a>
                 <script>
@@ -133,9 +98,7 @@
                     var q = "{% if addr.street_address %}{{ addr.street_address|addslashes }} {% endif %}{% if addr.city %}{{ addr.city|addslashes }}{% if addr.state %}, {{ addr.state|addslashes }}{% endif %}{% if addr.postal_code %} {{ addr.postal_code|addslashes }}{% endif %}{% endif %}".trim();
                     var encoded = encodeURIComponent(q);
                     var isApple = /iPhone|iPad|iPod|Macintosh/.test(navigator.userAgent);
-                    var url = isApple
-                        ? "maps://maps.apple.com/?q=" + encoded
-                        : "https://maps.google.com/?q=" + encoded;
+                    var url = isApple ? "maps://maps.apple.com/?q=" + encoded : "https://maps.google.com/?q=" + encoded;
                     document.getElementById('venue-map-link').href = url;
                 })();
                 </script>
@@ -146,38 +109,32 @@
         {% endif %}
 
         {% if order.tickets.all %}
-        <div class="card">
-            <div class="card-header">
-                <h5 class="mb-0">Tickets</h5>
-            </div>
-            <div class="card-body p-0">
-                <div class="table-responsive">
-                    <table class="table table-sm mb-0">
-                        <thead>
-                            <tr>
-                                <th>Type</th>
-                                <th class="text-end">Price</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            {% for ticket in order.tickets.all %}
-                            <tr>
-                                <td>{{ ticket.ticket_type }}</td>
-                                <td class="text-end">
-                                    {% if ticket.price %}
-                                    ${{ ticket.price|currency }}
-                                    {% else %}
-                                    Free
-                                    {% endif %}
-                                </td>
-                            </tr>
-                            {% endfor %}
-                        </tbody>
-                    </table>
-                </div>
+        <!-- Tickets -->
+        <div class="a-card" style="animation:fadeUp 0.4s 0.2s ease both;">
+            <div class="a-card-header">Tickets</div>
+            <div class="a-card-body-flush">
+                <table class="a-table">
+                    <thead>
+                        <tr>
+                            <th>Type</th>
+                            <th style="text-align:right;">Price</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for ticket in order.tickets.all %}
+                        <tr style="cursor:default;">
+                            <td style="color:var(--text);">{{ ticket.ticket_type }}</td>
+                            <td style="text-align:right;font-family:var(--font-mono);font-size:0.8rem;">
+                                {% if ticket.price %}${{ ticket.price|currency }}{% else %}Free{% endif %}
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
             </div>
         </div>
         {% endif %}
+
     </div>
 </div>
 {% endblock %}

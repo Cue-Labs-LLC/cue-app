@@ -5,8 +5,10 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{{ event.name }} — Checkout</title>
-    <link rel="preload" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" as="style" onload="this.rel='stylesheet'">
-    <noscript><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css"></noscript>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link rel="preload" href="https://fonts.googleapis.com/css2?family=Syne:wght@700;800&family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;1,9..40,300&family=DM+Mono:ital,wght@0,300;0,400;0,500;1,300;1,400&display=swap" as="style" onload="this.rel='stylesheet'">
+    <noscript><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Syne:wght@700;800&family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;1,9..40,300&family=DM+Mono:ital,wght@0,300;0,400;0,500;1,300;1,400&display=swap"></noscript>
     <link rel="preload" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" as="style" onload="this.rel='stylesheet'">
     <noscript><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css"></noscript>
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js" defer></script>
@@ -14,43 +16,550 @@
     <script src="https://js.stripe.com/v3/" defer></script>
     {% endif %}
     <style>
-        body { background: #f5f7fa; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
-        .checkout-container { max-width: 560px; margin: 40px auto; padding: 0 16px 60px; }
-        .checkout-header { text-align: center; margin-bottom: 28px; }
-        .checkout-header h1 { font-size: 1.5rem; font-weight: 700; color: #1a1a2e; margin-bottom: 4px; }
-        .checkout-header p { color: #666; margin: 0; }
-        .section-card { background: #fff; border-radius: 8px; padding: 20px 24px; margin-bottom: 16px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); }
-        .section-title { font-size: 0.78rem; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: #888; margin-bottom: 14px; }
-        .line-item { display: flex; justify-content: space-between; align-items: baseline; padding: 6px 0; font-size: 0.95rem; }
-        .line-item:not(:last-child) { border-bottom: 1px solid #f0f0f0; }
-        .line-item-name { color: #1a1a2e; }
-        .line-item-qty { color: #999; font-size: 0.85rem; margin-left: 6px; }
-        .line-item-price { font-weight: 600; color: #1a1a2e; }
-        .total-row { display: flex; justify-content: space-between; align-items: baseline; padding-top: 12px; margin-top: 8px; border-top: 2px solid #1a1a2e; }
-        .total-label { font-weight: 700; color: #1a1a2e; }
-        .total-amount { font-size: 1.2rem; font-weight: 700; color: #1a1a2e; }
-        .form-label { font-size: 0.88rem; font-weight: 600; color: #444; margin-bottom: 5px; }
-        .form-control { border: 1.5px solid #dee2e6; border-radius: 6px; padding: 10px 12px; font-size: 0.95rem; }
-        .form-control:focus { border-color: #1a1a2e; outline: none; box-shadow: 0 0 0 2px rgba(26,26,46,0.12); }
-        #card-element {
-            border: 1.5px solid #dee2e6; border-radius: 6px; padding: 12px;
-            background: #fff; transition: border-color 0.15s;
+        :root {
+            --bg:            #0F0E0D;
+            --surface:       #191817;
+            --surface-2:     #232220;
+            --surface-3:     #2D2C2A;
+            --cta:           #EDE8E3;
+            --text:          #EDE8E3;
+            --text-2:        #7A7672;
+            --text-3:        #4A4846;
+            --danger:        #D97060;
+            --success:       #6A9E7F;
+            --border:        rgba(255,255,255,0.07);
+            --border-mid:    rgba(255,255,255,0.11);
+            --border-strong: rgba(255,255,255,0.16);
+            --font-display:  'Syne', system-ui, sans-serif;
+            --font-body:     'DM Sans', system-ui, sans-serif;
+            --font-mono:     'DM Mono', 'Courier New', monospace;
+            --radius:        3px;
         }
-        #card-element.StripeElement--focus { border-color: #1a1a2e; box-shadow: 0 0 0 2px rgba(26,26,46,0.12); }
-        #card-element.StripeElement--invalid { border-color: #dc3545; }
-        #card-errors { color: #dc3545; font-size: 0.875rem; margin-top: 8px; min-height: 20px; }
-        .alert-custom { background: #fff3cd; border: 1px solid #ffc107; border-radius: 6px; padding: 10px 14px; font-size: 0.88rem; color: #664d03; margin-bottom: 16px; }
-        .btn-pay { background: #1a1a2e; border-color: #1a1a2e; font-weight: 600; letter-spacing: 0.02em; }
-        .btn-pay:hover { background: #2d2d4a; border-color: #2d2d4a; }
-        .btn-pay:disabled { opacity: 0.6; cursor: not-allowed; }
-        .back-link { display: block; text-align: center; margin-top: 14px; font-size: 0.88rem; color: #888; text-decoration: none; }
-        .back-link:hover { color: #1a1a2e; }
-        .secure-note { text-align: center; margin-top: 10px; font-size: 0.8rem; color: #aaa; }
-        .promo-row { display: flex; gap: 8px; margin-bottom: 10px; }
+
+        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+        body {
+            background: var(--bg);
+            color: var(--text);
+            font-family: var(--font-body);
+            font-weight: 300;
+            min-height: 100vh;
+            -webkit-font-smoothing: antialiased;
+        }
+
+        .checkout-wrap {
+            max-width: 520px;
+            margin: 0 auto;
+            padding: 40px 20px 80px;
+        }
+
+        /* Header */
+        .checkout-header {
+            margin-bottom: 32px;
+            animation: fadeUp 0.4s ease both;
+        }
+        .back-link {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 0.78rem;
+            font-family: var(--font-mono);
+            letter-spacing: 0.06em;
+            color: var(--text-2);
+            text-decoration: none;
+            text-transform: uppercase;
+            margin-bottom: 20px;
+            transition: color 0.15s;
+        }
+        .back-link:hover { color: var(--text); }
+
+        .event-title {
+            font-family: var(--font-display);
+            font-weight: 800;
+            font-size: 1.5rem;
+            letter-spacing: -0.02em;
+            line-height: 1.1;
+            color: var(--text);
+        }
+        .event-date {
+            font-family: var(--font-mono);
+            font-size: 0.78rem;
+            color: var(--text-2);
+            margin-top: 6px;
+            letter-spacing: 0.04em;
+        }
+
+        /* Divider */
+        .rule {
+            height: 1px;
+            background: var(--border);
+            margin: 28px 0;
+        }
+
+        /* Section label */
+        .section-label {
+            font-family: var(--font-mono);
+            font-size: 0.68rem;
+            font-weight: 500;
+            letter-spacing: 0.12em;
+            text-transform: uppercase;
+            color: var(--text-3);
+            margin-bottom: 14px;
+        }
+
+        /* Section cards */
+        .section-card {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            padding: 20px;
+            margin-bottom: 10px;
+            animation: fadeUp 0.4s ease both;
+        }
+        .section-card:nth-child(2) { animation-delay: 0.05s; }
+        .section-card:nth-child(3) { animation-delay: 0.10s; }
+        .section-card:nth-child(4) { animation-delay: 0.15s; }
+
+        /* Order summary / receipt */
+        .line-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: baseline;
+            padding: 8px 0;
+            border-bottom: 1px solid var(--border);
+            font-size: 0.9rem;
+        }
+        .line-item:last-child { border-bottom: none; }
+        .line-item-name { color: var(--text); }
+        .line-item-qty {
+            font-family: var(--font-mono);
+            font-size: 0.75rem;
+            color: var(--text-3);
+            margin-left: 5px;
+        }
+        .line-item-price {
+            font-family: var(--font-mono);
+            font-size: 0.88rem;
+            color: var(--text-2);
+        }
+        .line-item-muted .line-item-name { color: var(--text-2); font-size: 0.85rem; }
+        .line-item-muted .line-item-price { color: var(--text-3); }
+        .line-item-discount .line-item-name { color: var(--success); }
+        .line-item-discount .line-item-price {
+            font-family: var(--font-mono);
+            color: var(--success);
+        }
+        .total-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: baseline;
+            padding-top: 14px;
+            margin-top: 6px;
+            border-top: 1px solid var(--border-strong);
+        }
+        .total-label {
+            font-family: var(--font-mono);
+            font-size: 0.75rem;
+            letter-spacing: 0.1em;
+            text-transform: uppercase;
+            color: var(--text-2);
+        }
+        .total-amount {
+            font-family: var(--font-mono);
+            font-size: 1.25rem;
+            font-weight: 500;
+            color: var(--text);
+        }
+
+        /* Promo */
+        .promo-row {
+            display: flex;
+            gap: 8px;
+        }
         .promo-row input { flex: 1; }
-        .promo-success { color: #198754; font-size: 0.875rem; margin-top: 4px; }
-        .promo-error { color: #dc3545; font-size: 0.875rem; margin-top: 4px; }
-        .discount-line { color: #198754; }
+        .promo-success { font-family: var(--font-mono); color: var(--success); font-size: 0.78rem; margin-top: 8px; letter-spacing: 0.04em; }
+        .promo-error   { font-family: var(--font-mono); color: var(--danger);  font-size: 0.78rem; margin-top: 8px; letter-spacing: 0.04em; }
+
+        /* Form inputs */
+        .form-label {
+            display: block;
+            font-family: var(--font-mono);
+            font-size: 0.7rem;
+            letter-spacing: 0.1em;
+            text-transform: uppercase;
+            color: var(--text-3);
+            margin-bottom: 7px;
+        }
+        .form-control {
+            width: 100%;
+            background: var(--surface-2);
+            border: 1px solid var(--border-mid);
+            border-radius: var(--radius);
+            padding: 11px 13px;
+            font-family: var(--font-body);
+            font-size: 0.9rem;
+            color: var(--text);
+            outline: none;
+            transition: border-color 0.15s;
+        }
+        .form-control::placeholder { color: var(--text-3); }
+        .form-control:focus { border-color: var(--border-strong); background: var(--surface-3); }
+
+        /* Stripe card element */
+        #card-element {
+            background: var(--surface-2);
+            border: 1px solid var(--border-mid);
+            border-radius: var(--radius);
+            padding: 13px;
+            transition: border-color 0.15s;
+        }
+        #card-element.StripeElement--focus { border-color: var(--border-strong); }
+        #card-element.StripeElement--invalid { border-color: var(--danger); }
+        #card-errors {
+            font-family: var(--font-mono);
+            color: var(--danger);
+            font-size: 0.78rem;
+            margin-top: 8px;
+            min-height: 18px;
+            letter-spacing: 0.02em;
+        }
+
+        /* Saved payment method pill */
+        .saved-card-pill {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            background: var(--surface-2);
+            border: 1px solid var(--border-mid);
+            border-radius: var(--radius);
+            padding: 12px 14px;
+        }
+        .saved-card-pill .card-info {
+            font-family: var(--font-mono);
+            font-size: 0.85rem;
+            color: var(--text-2);
+        }
+
+        /* Save card checkbox */
+        .checkbox-row {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-top: 14px;
+        }
+        .checkbox-row input[type=checkbox] {
+            width: 16px;
+            height: 16px;
+            accent-color: var(--cta);
+            cursor: pointer;
+        }
+        .checkbox-row label {
+            font-size: 0.83rem;
+            color: var(--text-2);
+            cursor: pointer;
+            user-select: none;
+        }
+
+        /* Buttons */
+        .btn-pay {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            width: 100%;
+            background: var(--cta);
+            color: var(--bg);
+            border: none;
+            border-radius: var(--radius);
+            padding: 15px 24px;
+            font-family: var(--font-mono);
+            font-size: 0.85rem;
+            font-weight: 500;
+            letter-spacing: 0.1em;
+            text-transform: uppercase;
+            cursor: pointer;
+            transition: opacity 0.15s, transform 0.1s;
+            margin-top: 18px;
+        }
+        .btn-pay:hover { opacity: 0.9; }
+        .btn-pay:active { transform: scale(0.99); }
+        .btn-pay:disabled { opacity: 0.45; cursor: not-allowed; transform: none; }
+
+        .btn-ghost {
+            background: transparent;
+            border: 1px solid var(--border-mid);
+            border-radius: var(--radius);
+            padding: 7px 13px;
+            font-family: var(--font-mono);
+            font-size: 0.72rem;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+            color: var(--text-2);
+            cursor: pointer;
+            transition: border-color 0.15s, color 0.15s;
+            white-space: nowrap;
+        }
+        .btn-ghost:hover { border-color: var(--border-strong); color: var(--text); }
+
+        .btn-apply {
+            background: var(--surface-3);
+            border: 1px solid var(--border-mid);
+            border-radius: var(--radius);
+            padding: 11px 16px;
+            font-family: var(--font-mono);
+            font-size: 0.72rem;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+            color: var(--text-2);
+            cursor: pointer;
+            transition: border-color 0.15s, color 0.15s;
+            white-space: nowrap;
+        }
+        .btn-apply:hover { border-color: var(--border-strong); color: var(--text); }
+        .btn-apply:disabled { opacity: 0.5; cursor: not-allowed; }
+
+        /* Secure note */
+        .secure-note {
+            text-align: center;
+            font-family: var(--font-mono);
+            font-size: 0.68rem;
+            letter-spacing: 0.06em;
+            color: var(--text-3);
+            margin-top: 12px;
+        }
+
+        /* Error alert */
+        .alert-custom {
+            background: rgba(217, 112, 96, 0.1);
+            border: 1px solid rgba(217, 112, 96, 0.3);
+            border-radius: var(--radius);
+            padding: 11px 14px;
+            font-size: 0.85rem;
+            color: var(--danger);
+            margin-bottom: 16px;
+        }
+
+        /* Modal */
+        .modal-content {
+            background: var(--surface);
+            border: 1px solid var(--border-mid);
+            border-radius: calc(var(--radius) + 2px);
+            color: var(--text);
+        }
+        .modal-body { padding: 32px 28px; }
+        .modal-icon {
+            font-size: 1.75rem;
+            color: var(--text-2);
+            margin-bottom: 16px;
+        }
+        .modal-title-text {
+            font-family: var(--font-display);
+            font-weight: 700;
+            font-size: 1.2rem;
+            text-align: center;
+            color: var(--text);
+            margin-bottom: 6px;
+        }
+        .modal-subtitle {
+            text-align: center;
+            font-size: 0.85rem;
+            color: var(--text-2);
+            margin-bottom: 24px;
+            line-height: 1.5;
+        }
+        .modal-error {
+            background: rgba(217, 112, 96, 0.1);
+            border: 1px solid rgba(217, 112, 96, 0.3);
+            border-radius: var(--radius);
+            padding: 9px 12px;
+            font-size: 0.82rem;
+            color: var(--danger);
+            margin-bottom: 14px;
+            display: none;
+        }
+        .modal-field { margin-bottom: 14px; }
+        .modal-otp-input {
+            text-align: center;
+            letter-spacing: 0.35em;
+            font-family: var(--font-mono);
+            font-size: 1.2rem;
+        }
+        .modal-link {
+            background: none;
+            border: none;
+            padding: 0;
+            font-family: var(--font-mono);
+            font-size: 0.72rem;
+            letter-spacing: 0.06em;
+            text-transform: uppercase;
+            color: var(--text-2);
+            cursor: pointer;
+            text-decoration: none;
+            display: inline-flex;
+            align-items: center;
+            gap: 5px;
+        }
+        .modal-link:hover { color: var(--text); }
+        .modal-row-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+
+        /* Spinner */
+        .spinner-border {
+            width: 14px; height: 14px;
+            border: 2px solid transparent;
+            border-top-color: currentColor;
+            border-radius: 50%;
+            display: inline-block;
+            animation: spin 0.65s linear infinite;
+        }
+
+        @keyframes fadeUp {
+            from { opacity: 0; transform: translateY(12px); }
+            to   { opacity: 1; transform: translateY(0); }
+        }
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        /* ── NAV ── */
+        .attendee-nav {
+            position: sticky;
+            top: 0;
+            z-index: 100;
+            background: rgba(15, 14, 13, 0.88);
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+            border-bottom: 1px solid var(--border);
+            padding: 0 24px;
+            height: 52px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 16px;
+        }
+        .nav-brand {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            text-decoration: none;
+            flex-shrink: 0;
+        }
+        .nav-brand-icon {
+            width: 26px;
+            height: 26px;
+            background: var(--cta);
+            border-radius: 5px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: var(--bg);
+            font-size: 13px;
+        }
+        .nav-brand-text {
+            font-family: var(--font-display);
+            font-weight: 800;
+            font-size: 0.95rem;
+            letter-spacing: -0.02em;
+            color: var(--text);
+        }
+        .nav-links {
+            display: flex;
+            align-items: center;
+            gap: 2px;
+            flex: 1;
+            padding-left: 24px;
+        }
+        .nav-link {
+            font-family: var(--font-mono);
+            font-size: 0.72rem;
+            letter-spacing: 0.06em;
+            text-transform: uppercase;
+            color: var(--text-3);
+            text-decoration: none;
+            padding: 6px 10px;
+            border-radius: var(--radius);
+            transition: color 0.15s, background 0.15s;
+            white-space: nowrap;
+        }
+        .nav-link:hover { color: var(--text-2); background: rgba(255,255,255,0.04); }
+        .nav-right {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            flex-shrink: 0;
+        }
+        .nav-user-btn {
+            display: flex;
+            align-items: center;
+            gap: 7px;
+            background: none;
+            border: 1px solid var(--border-mid);
+            border-radius: var(--radius);
+            padding: 5px 10px 5px 7px;
+            cursor: pointer;
+            color: var(--text-2);
+            font-family: var(--font-mono);
+            font-size: 0.72rem;
+            letter-spacing: 0.05em;
+            text-transform: uppercase;
+            transition: border-color 0.15s, color 0.15s;
+        }
+        .nav-user-btn:hover { border-color: var(--border-strong); color: var(--text); }
+        .nav-user-avatar {
+            width: 22px;
+            height: 22px;
+            border-radius: 50%;
+            background: var(--surface-3);
+            border: 1px solid var(--border-mid);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 10px;
+            font-weight: 500;
+            color: var(--text-2);
+            flex-shrink: 0;
+        }
+        .nav-dropdown { position: relative; }
+        .nav-dropdown-menu {
+            position: absolute;
+            top: calc(100% + 8px);
+            right: 0;
+            background: var(--surface);
+            border: 1px solid var(--border-mid);
+            border-radius: calc(var(--radius) + 2px);
+            min-width: 180px;
+            padding: 6px;
+            display: none;
+            z-index: 200;
+            box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+        }
+        .nav-dropdown-menu.open { display: block; }
+        .nav-dropdown-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 10px;
+            border-radius: var(--radius);
+            font-size: 0.83rem;
+            color: var(--text-2);
+            text-decoration: none;
+            cursor: pointer;
+            transition: background 0.12s, color 0.12s;
+            width: 100%;
+            background: none;
+            border: none;
+            font-family: var(--font-body);
+            text-align: left;
+        }
+        .nav-dropdown-item:hover { background: rgba(255,255,255,0.05); color: var(--text); }
+        .nav-dropdown-divider { height: 1px; background: var(--border); margin: 4px 0; }
+        .nav-dropdown-label {
+            padding: 6px 10px 4px;
+            font-family: var(--font-mono);
+            font-size: 0.65rem;
+            letter-spacing: 0.1em;
+            text-transform: uppercase;
+            color: var(--text-3);
+        }
     </style>
     {% include 'tickets/buy/_facebook_pixel.html' %}
     {% if event.facebook_pixel_id %}
@@ -69,11 +578,71 @@
     {% endif %}
 </head>
 <body>
-<div class="checkout-container">
+
+<nav class="attendee-nav">
+    <a href="{% url 'tickets:attendee_dashboard' %}" class="nav-brand">
+        <div class="nav-brand-icon"><i class="bi bi-lightning-charge-fill"></i></div>
+        <span class="nav-brand-text">{{ org_name }}</span>
+    </a>
+    <div class="nav-links">
+        <a href="{% url 'tickets:attendee_dashboard' %}" class="nav-link">
+            <i class="bi bi-calendar-event"></i> Events
+        </a>
+        {% if user.is_authenticated %}
+        <a href="{% url 'tickets:my_tickets' %}" class="nav-link">
+            <i class="bi bi-ticket-perforated"></i> My Tickets
+        </a>
+        {% endif %}
+    </div>
+    <div class="nav-right">
+        {% if user.is_authenticated %}
+        <div class="nav-dropdown" id="navDropdown">
+            <button class="nav-user-btn" id="navUserBtn" type="button">
+                <div class="nav-user-avatar">
+                    {{ user.first_name|make_list|first|upper|default:user.get_username|make_list|first|upper }}
+                </div>
+                {{ user.get_full_name|default:user.get_username }}
+                <i class="bi bi-chevron-down" style="font-size:10px;margin-left:2px;"></i>
+            </button>
+            <div class="nav-dropdown-menu" id="navDropdownMenu">
+                <div class="nav-dropdown-label">{{ user.get_full_name|default:user.get_username }}</div>
+                <div class="nav-dropdown-divider"></div>
+                <a href="{% url 'tickets:user_profile' %}" class="nav-dropdown-item">
+                    <i class="bi bi-person-circle"></i> My Profile
+                </a>
+                {% if user_role != 'attendee' %}
+                <div class="nav-dropdown-divider"></div>
+                <form method="post" action="{% url 'tickets:switch_view_mode' %}">
+                    {% csrf_token %}
+                    <input type="hidden" name="mode" value="organizer">
+                    <button type="submit" class="nav-dropdown-item">
+                        <i class="bi bi-grid-1x2"></i> Switch to Organizer View
+                    </button>
+                </form>
+                {% endif %}
+                <div class="nav-dropdown-divider"></div>
+                <form method="post" action="{% url 'tickets:logout' %}">
+                    {% csrf_token %}
+                    <button type="submit" class="nav-dropdown-item">
+                        <i class="bi bi-box-arrow-right"></i> Sign out
+                    </button>
+                </form>
+            </div>
+        </div>
+        {% else %}
+        <a href="{% url 'tickets:login' %}" style="font-family:var(--font-mono);font-size:0.72rem;letter-spacing:0.06em;text-transform:uppercase;color:var(--text-3);text-decoration:none;padding:6px 10px;border:1px solid var(--border-mid);border-radius:var(--radius);">Sign in</a>
+        {% endif %}
+    </div>
+</nav>
+
+<div class="checkout-wrap">
 
     <div class="checkout-header">
-        <h1>{{ event.name }}</h1>
-        <p>{{ event.start_date|date:"F j, Y" }}{% if event.start_time %} at {{ event.start_time|time:"g:i A" }}{% endif %}</p>
+        <a href="{% url 'tickets:public_event_buy' event.id %}" class="back-link">
+            <i class="bi bi-arrow-left"></i> Change selection
+        </a>
+        <h1 class="event-title">{{ event.name }}</h1>
+        <p class="event-date">{{ event.start_date|date:"F j, Y" }}{% if event.start_time %} &mdash; {{ event.start_time|time:"g:i A" }}{% endif %}</p>
     </div>
 
     {% if error %}
@@ -82,35 +651,31 @@
 
     <!-- Order summary -->
     <div class="section-card">
-        <div class="section-title">Order Summary</div>
+        <div class="section-label">Order Summary</div>
         {% for item in cart %}
         <div class="line-item">
             <span class="line-item-name">
-                {{ item.name }}<span class="line-item-qty">&times; {{ item.quantity }}</span>
+                {{ item.name }}<span class="line-item-qty">&times;{{ item.quantity }}</span>
             </span>
             <span class="line-item-price">
-                {% if item.price == "0" or item.price == "0.00" %}
-                    Free
-                {% else %}
-                    ${{ item.price|currency }}
-                {% endif %}
+                {% if item.price == "0" or item.price == "0.00" %}Free{% else %}${{ item.price|currency }}{% endif %}
             </span>
         </div>
         {% endfor %}
         {% if not is_free or discount_cents %}
-        <div class="line-item" style="border-top: 1px solid #f0f0f0; margin-top: 4px; padding-top: 10px;">
-            <span class="line-item-name" style="color: #666;">Subtotal</span>
-            <span class="line-item-price" style="font-weight: 400; color: #666;" id="subtotal-display">${{ subtotal|currency }}</span>
+        <div class="line-item line-item-muted">
+            <span class="line-item-name">Subtotal</span>
+            <span class="line-item-price" id="subtotal-display">${{ subtotal|currency }}</span>
         </div>
         {% endif %}
-        <div class="line-item discount-line" id="discount-line" {% if not discount_cents %}style="display:none;"{% endif %}>
-            <span class="line-item-name">Promo code <strong id="promo-code-label">{% if promo_applied %}{{ promo_applied.code }}{% endif %}</strong></span>
+        <div class="line-item line-item-discount" id="discount-line" {% if not discount_cents %}style="display:none;"{% endif %}>
+            <span class="line-item-name">Promo <strong id="promo-code-label">{% if promo_applied %}{{ promo_applied.code }}{% endif %}</strong></span>
             <span class="line-item-price" id="discount-display">{% if discount_dollars %}&minus;${{ discount_dollars|currency }}{% endif %}</span>
         </div>
         {% if not is_free %}
-        <div class="line-item">
-            <span class="line-item-name" style="color: #666;">Service fee</span>
-            <span class="line-item-price" style="font-weight: 400; color: #666;" id="fee-display">${{ service_fee|currency }}</span>
+        <div class="line-item line-item-muted">
+            <span class="line-item-name">Service fee</span>
+            <span class="line-item-price" id="fee-display">${{ service_fee|currency }}</span>
         </div>
         {% endif %}
         <div class="total-row">
@@ -123,45 +688,42 @@
 
     <!-- Promo Code -->
     <div class="section-card">
-        <div class="section-title">Have a promo code?</div>
+        <div class="section-label">Promo Code</div>
         <div class="promo-row">
             <input type="text" id="promo-code-input" class="form-control" placeholder="Enter code" value="{% if promo_applied %}{{ promo_applied.code }}{% endif %}">
-            <button type="button" id="apply-promo-btn" class="btn btn-outline-secondary">Apply</button>
+            <button type="button" id="apply-promo-btn" class="btn-apply">Apply</button>
         </div>
         <div id="promo-message"></div>
     </div>
 
     <!-- Buyer info + payment form -->
     <div class="section-card">
-        <div class="section-title">Your Details</div>
+        <div class="section-label">Payment</div>
 
         {% if is_free %}
         <form method="post" id="checkout-form">
             {% csrf_token %}
-            <button type="submit" class="btn btn-primary btn-pay btn-lg w-100">
+            <button type="submit" class="btn-pay">
                 <i class="bi bi-ticket-perforated"></i> Get Tickets
             </button>
         </form>
         {% else %}
 
         {% if saved_pm %}
-        <div id="saved-card-section" class="mb-3">
-            <label class="form-label">Payment Method</label>
-            <div class="d-flex align-items-center justify-content-between p-3"
-                 style="border:1.5px solid #dee2e6; border-radius:6px; background:#f8f9fa;">
-                <span><i class="bi bi-credit-card"></i> {{ saved_pm.brand|capfirst }} ending in {{ saved_pm.last4 }}</span>
-                <button type="button" id="use-new-card-btn" class="btn btn-sm btn-outline-secondary">
-                    Use a different card
-                </button>
+        <div id="saved-card-section" style="margin-bottom:14px;">
+            <label class="form-label">Saved Card</label>
+            <div class="saved-card-pill">
+                <span class="card-info"><i class="bi bi-credit-card"></i>&nbsp; {{ saved_pm.brand|capfirst }} &middot;&middot;&middot;&middot; {{ saved_pm.last4 }}</span>
+                <button type="button" id="use-new-card-btn" class="btn-ghost">Use different card</button>
             </div>
         </div>
-        <div id="new-card-section" class="mb-3" style="display:none;">
-            <label class="form-label">New Card Details</label>
+        <div id="new-card-section" style="display:none; margin-bottom:14px;">
+            <label class="form-label">New Card</label>
             <div id="card-element"></div>
             <div id="card-errors" role="alert"></div>
         </div>
         {% else %}
-        <div id="new-card-section" class="mb-3">
+        <div id="new-card-section" style="margin-bottom:14px;">
             <label class="form-label">Card Details</label>
             <div id="card-element"></div>
             <div id="card-errors" role="alert"></div>
@@ -169,26 +731,21 @@
         {% endif %}
 
         {% if user_is_authenticated %}
-        <div id="save-card-checkbox-wrapper" class="mb-3{% if saved_pm %} d-none{% endif %}">
-            <div class="form-check">
+        <div id="save-card-checkbox-wrapper"{% if saved_pm %} style="display:none;"{% endif %}>
+            <div class="checkbox-row">
                 <input class="form-check-input" type="checkbox" id="save-card-checkbox">
-                <label class="form-check-label" for="save-card-checkbox" style="font-size:0.88rem;color:#555;">
-                    Save card for next time
-                </label>
+                <label for="save-card-checkbox">Save card for next time</label>
             </div>
         </div>
         {% endif %}
 
-        <button type="button" id="pay-btn" class="btn btn-primary btn-pay btn-lg w-100">
+        <button type="button" id="pay-btn" class="btn-pay">
             <i class="bi bi-lock"></i> Pay ${{ grand_total|currency }}
         </button>
-        <p class="secure-note"><i class="bi bi-shield-lock"></i> Payments secured by Stripe</p>
+        <p class="secure-note"><i class="bi bi-shield-lock"></i>&ensp;Payments secured by Stripe</p>
         {% endif %}
     </div>
 
-    <a href="{% url 'tickets:public_event_buy' event.id %}" class="back-link">
-        <i class="bi bi-arrow-left"></i> Change selection
-    </a>
 </div>
 
 <script type="application/json" id="promo-config">
@@ -230,7 +787,6 @@ document.addEventListener('DOMContentLoaded', function () {
                     applyBtn.textContent = 'Apply';
                     promoMsg.innerHTML = '<div class="promo-error"><i class="bi bi-x-circle"></i> ' + data.error + '</div>';
                 } else {
-                    // Reload so the server recomputes fee and totals correctly
                     window.location.href = promoCfg.checkoutUrl;
                 }
             })
@@ -258,11 +814,12 @@ document.addEventListener('DOMContentLoaded', function () {
     var cardElement = elements.create('card', {
         style: {
             base: {
-                fontSize: '16px',
-                color: '#1a1a2e',
-                '::placeholder': { color: '#aab7c4' },
+                fontSize: '15px',
+                fontFamily: "'DM Sans', system-ui, sans-serif",
+                color: '#EDE8E3',
+                '::placeholder': { color: '#4A4846' },
             },
-            invalid: { color: '#dc3545' },
+            invalid: { color: '#D97060' },
         },
     });
 
@@ -273,7 +830,6 @@ document.addEventListener('DOMContentLoaded', function () {
     var saveCardCheckbox = document.getElementById('save-card-checkbox');
     var useNewCardBtn = document.getElementById('use-new-card-btn');
 
-    // Always mount card element (hidden if saved PM is active)
     cardElement.mount('#card-element');
 
     cardElement.on('change', function (event) {
@@ -285,7 +841,7 @@ document.addEventListener('DOMContentLoaded', function () {
         useNewCardBtn.addEventListener('click', function () {
             savedCardSection.style.display = 'none';
             newCardSection.style.display = 'block';
-            if (saveCardCheckboxWrapper) saveCardCheckboxWrapper.classList.remove('d-none');
+            if (saveCardCheckboxWrapper) saveCardCheckboxWrapper.style.display = '';
             usingSavedPm = false;
         });
     }
@@ -294,16 +850,13 @@ document.addEventListener('DOMContentLoaded', function () {
     payBtn.addEventListener('click', function () {
         var errorEl = document.getElementById('card-errors');
         if (!errorEl) {
-            // When saved PM active, card-errors div is hidden; show inline
             errorEl = document.createElement('div');
-            errorEl.style.color = '#dc3545';
-            errorEl.style.fontSize = '0.875rem';
-            errorEl.style.marginTop = '8px';
+            errorEl.style.cssText = 'color:var(--danger);font-family:var(--font-mono);font-size:0.78rem;margin-top:8px;';
             payBtn.parentNode.insertBefore(errorEl, payBtn);
         }
 
         payBtn.disabled = true;
-        payBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-2" role="status"></span>Processing...';
+        payBtn.innerHTML = '<span class="spinner-border" role="status"></span>&ensp;Processing...';
 
         if (window.fbq) {
             fbq('trackCustom', 'PurchaseInitiated', {
@@ -349,9 +902,7 @@ document.addEventListener('DOMContentLoaded', function () {
             if (usingSavedPm && config.savedPmId) {
                 paymentMethodArg = config.savedPmId;
             } else {
-                paymentMethodArg = {
-                    card: cardElement,
-                };
+                paymentMethodArg = { card: cardElement };
             }
 
             return stripe.confirmCardPayment(data.client_secret, {
@@ -362,9 +913,7 @@ document.addEventListener('DOMContentLoaded', function () {
                     payBtn.disabled = false;
                     payBtn.innerHTML = '<i class="bi bi-lock"></i> Pay ${{ grand_total|currency }}';
                     if (window.fbq) {
-                        fbq('trackCustom', 'PurchaseFailed', {
-                            error_message: result.error.message
-                        });
+                        fbq('trackCustom', 'PurchaseFailed', { error_message: result.error.message });
                     }
                 } else {
                     window.location.href = config.successUrl + '?session_id=' + data.session_id;
@@ -376,9 +925,7 @@ document.addEventListener('DOMContentLoaded', function () {
             payBtn.disabled = false;
             payBtn.innerHTML = '<i class="bi bi-lock"></i> Pay ${{ grand_total|currency }}';
             if (window.fbq) {
-                fbq('trackCustom', 'PurchaseFailed', {
-                    error_message: 'Unexpected error'
-                });
+                fbq('trackCustom', 'PurchaseFailed', { error_message: 'Unexpected error' });
             }
         });
     });
@@ -393,10 +940,7 @@ document.addEventListener('DOMContentLoaded', function() {
     if (form) {
         form.addEventListener('submit', function() {
             if (window.fbq) {
-                fbq('trackCustom', 'PurchaseInitiated', {
-                    value: 0.00,
-                    currency: 'USD'
-                });
+                fbq('trackCustom', 'PurchaseInitiated', { value: 0.00, currency: 'USD' });
             }
         });
     }
@@ -407,26 +951,24 @@ document.addEventListener('DOMContentLoaded', function() {
 {% if not user_is_authenticated %}
 <div class="modal fade" id="signupPromptModal" tabindex="-1" aria-labelledby="signupPromptLabel" aria-hidden="true" data-bs-backdrop="static" data-bs-keyboard="false">
   <div class="modal-dialog modal-dialog-centered">
-    <div class="modal-content" style="border-radius:12px; border:none; box-shadow: 0 8px 32px rgba(0,0,0,0.18);">
-      <div class="modal-body p-4">
+    <div class="modal-content">
+      <div class="modal-body">
 
         <!-- Step 1: Phone -->
         <div id="modal-step-phone">
-          <div class="text-center mb-3">
-            <i class="bi bi-ticket-perforated" style="font-size:2rem; color:#1a1a2e;"></i>
-          </div>
-          <h5 class="fw-bold text-center mb-1">Sign in to get your tickets</h5>
-          <p class="text-muted text-center mb-4" style="font-size:0.88rem;">Enter your phone number — we'll send a quick verification code.</p>
-          <div id="modal-phone-error" class="alert alert-danger py-2 px-3 mb-3" style="font-size:0.875rem; display:none;"></div>
-          <div class="mb-3">
-            <label class="form-label" style="font-size:0.88rem; font-weight:600; color:#444;">Phone number</label>
+          <div class="text-center modal-icon"><i class="bi bi-ticket-perforated"></i></div>
+          <p class="modal-title-text">Sign in to get your tickets</p>
+          <p class="modal-subtitle">Enter your phone number — we'll send a quick verification code.</p>
+          <div id="modal-phone-error" class="modal-error"></div>
+          <div class="modal-field">
+            <label class="form-label">Phone number</label>
             <input type="tel" id="modal-phone-input" class="form-control" placeholder="+1 (555) 000-0000" autocomplete="tel">
           </div>
-          <button type="button" id="modal-phone-btn" class="btn btn-dark w-100 py-2 fw-semibold">
+          <button type="button" id="modal-phone-btn" class="btn-pay" style="margin-top:8px;">
             Send code
           </button>
-          <div class="text-center mt-3">
-            <a href="{% url 'tickets:public_event_buy' event.id %}" class="text-muted small">
+          <div class="text-center" style="margin-top:18px;">
+            <a href="{% url 'tickets:public_event_buy' event.id %}" class="modal-link">
               <i class="bi bi-arrow-left"></i> Back to tickets
             </a>
           </div>
@@ -434,21 +976,19 @@ document.addEventListener('DOMContentLoaded', function() {
 
         <!-- Step 2: OTP -->
         <div id="modal-step-otp" style="display:none;">
-          <div class="text-center mb-3">
-            <i class="bi bi-phone" style="font-size:2rem; color:#1a1a2e;"></i>
+          <div class="text-center modal-icon"><i class="bi bi-phone"></i></div>
+          <p class="modal-title-text">Enter your code</p>
+          <p class="modal-subtitle">We sent a 6-digit code to <strong id="modal-masked-phone"></strong>.</p>
+          <div id="modal-otp-error" class="modal-error"></div>
+          <div class="modal-field">
+            <label class="form-label">Verification code</label>
+            <input type="text" id="modal-otp-input" class="form-control modal-otp-input" placeholder="000000" maxlength="6" inputmode="numeric" autocomplete="one-time-code">
           </div>
-          <h5 class="fw-bold text-center mb-1">Enter your code</h5>
-          <p class="text-muted text-center mb-4" style="font-size:0.88rem;">We sent a 6-digit code to <strong id="modal-masked-phone"></strong>.</p>
-          <div id="modal-otp-error" class="alert alert-danger py-2 px-3 mb-3" style="font-size:0.875rem; display:none;"></div>
-          <div class="mb-3">
-            <label class="form-label" style="font-size:0.88rem; font-weight:600; color:#444;">Verification code</label>
-            <input type="text" id="modal-otp-input" class="form-control text-center" placeholder="000000" maxlength="6" inputmode="numeric" autocomplete="one-time-code" style="letter-spacing:0.3em; font-size:1.1rem;">
-          </div>
-          <button type="button" id="modal-otp-btn" class="btn btn-dark w-100 py-2 fw-semibold">
+          <button type="button" id="modal-otp-btn" class="btn-pay" style="margin-top:8px;">
             Verify
           </button>
-          <div class="text-center mt-3">
-            <button type="button" id="modal-back-to-phone" class="btn btn-link btn-sm text-muted p-0">
+          <div class="text-center" style="margin-top:18px;">
+            <button type="button" id="modal-back-to-phone" class="modal-link">
               <i class="bi bi-arrow-left"></i> Change number
             </button>
           </div>
@@ -456,27 +996,25 @@ document.addEventListener('DOMContentLoaded', function() {
 
         <!-- Step 3: New user profile -->
         <div id="modal-step-profile" style="display:none;">
-          <div class="text-center mb-3">
-            <i class="bi bi-person-plus" style="font-size:2rem; color:#1a1a2e;"></i>
-          </div>
-          <h5 class="fw-bold text-center mb-1">Create your account</h5>
-          <p class="text-muted text-center mb-4" style="font-size:0.88rem;">Just a few details and you're good to go.</p>
-          <div id="modal-profile-error" class="alert alert-danger py-2 px-3 mb-3" style="font-size:0.875rem; display:none;"></div>
-          <div class="row g-2 mb-3">
-            <div class="col">
-              <label class="form-label" style="font-size:0.88rem; font-weight:600; color:#444;">First name</label>
+          <div class="text-center modal-icon"><i class="bi bi-person-plus"></i></div>
+          <p class="modal-title-text">Create your account</p>
+          <p class="modal-subtitle">Just a few details and you're good to go.</p>
+          <div id="modal-profile-error" class="modal-error"></div>
+          <div class="modal-row-grid" style="margin-bottom:14px;">
+            <div>
+              <label class="form-label">First name</label>
               <input type="text" id="modal-first-name" class="form-control" placeholder="Jane" autocomplete="given-name">
             </div>
-            <div class="col">
-              <label class="form-label" style="font-size:0.88rem; font-weight:600; color:#444;">Last name</label>
+            <div>
+              <label class="form-label">Last name</label>
               <input type="text" id="modal-last-name" class="form-control" placeholder="Smith" autocomplete="family-name">
             </div>
           </div>
-          <div class="mb-4">
-            <label class="form-label" style="font-size:0.88rem; font-weight:600; color:#444;">Email address</label>
+          <div class="modal-field">
+            <label class="form-label">Email address</label>
             <input type="email" id="modal-email" class="form-control" placeholder="jane@example.com" autocomplete="email">
           </div>
-          <button type="button" id="modal-profile-btn" class="btn btn-dark w-100 py-2 fw-semibold">
+          <button type="button" id="modal-profile-btn" class="btn-pay" style="margin-top:8px;">
             Create account &amp; continue
           </button>
         </div>
@@ -510,8 +1048,7 @@ document.addEventListener('DOMContentLoaded', function () {
         el.style.display = 'block';
     }
     function hideError(elId) {
-        var el = document.getElementById(elId);
-        el.style.display = 'none';
+        document.getElementById(elId).style.display = 'none';
     }
 
     function showStep(step) {
@@ -523,7 +1060,7 @@ document.addEventListener('DOMContentLoaded', function () {
     function setLoading(btn, loading, defaultText) {
         btn.disabled = loading;
         btn.innerHTML = loading
-            ? '<span class="spinner-border spinner-border-sm me-2" role="status"></span>Please wait...'
+            ? '<span class="spinner-border" role="status"></span>&ensp;Please wait...'
             : defaultText;
     }
 
@@ -623,5 +1160,15 @@ document.addEventListener('DOMContentLoaded', function () {
 });
 </script>
 {% endif %}
+
+<script>
+(function() {
+    var btn = document.getElementById('navUserBtn');
+    var menu = document.getElementById('navDropdownMenu');
+    if (!btn || !menu) return;
+    btn.addEventListener('click', function(e) { e.stopPropagation(); menu.classList.toggle('open'); });
+    document.addEventListener('click', function() { menu.classList.remove('open'); });
+})();
+</script>
 </body>
 </html>

@@ -5,83 +5,851 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{{ event.name }} — Buy Tickets</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link rel="preload" href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;1,9..40,300&family=DM+Mono:ital,wght@0,300;0,400;0,500;1,300;1,400&display=swap" as="style" onload="this.rel='stylesheet'">
+    <noscript><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;1,9..40,300&family=DM+Mono:ital,wght@0,300;0,400;0,500;1,300;1,400&display=swap"></noscript>
+
     <link rel="preload" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" as="style" onload="this.rel='stylesheet'">
     <noscript><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css"></noscript>
     <link rel="preload" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" as="style" onload="this.rel='stylesheet'">
     <noscript><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css"></noscript>
+
     <style>
-        body { background: #f5f7fa; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
-        .buy-container { max-width: 600px; margin: 40px auto; padding: 0 16px 60px; }
-        .buy-header { text-align: center; margin-bottom: 32px; }
-        .buy-header h1 { font-size: 1.6rem; font-weight: 700; color: #1a1a2e; margin-bottom: 4px; }
-        .buy-header p { color: #666; margin: 0; }
-        .ticket-card {
-            background: #fff; border-radius: 8px; padding: 20px 24px;
-            margin-bottom: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.08);
-            display: flex; align-items: center; justify-content: space-between; gap: 16px;
+        :root {
+            --bg:            #0F0E0D;
+            --surface:       #191817;
+            --surface-2:     #232220;
+            --surface-3:     #2D2C2A;
+            --cta:           #EDE8E3;
+            --text:          #EDE8E3;
+            --text-2:        #7A7672;
+            --text-3:        #4A4846;
+            --danger:        #D97060;
+            --success:       #6A9E7F;
+            --border:        rgba(255,255,255,0.07);
+            --border-mid:    rgba(255,255,255,0.11);
+            --border-strong: rgba(255,255,255,0.16);
+            --font-display:  'Syne', system-ui, sans-serif;
+            --font-body:     'DM Sans', system-ui, sans-serif;
+            --font-mono:     'DM Mono', 'Courier New', monospace;
+            --radius:        3px;
         }
-        .ticket-card.sold-out { opacity: 0.55; }
-        .ticket-card--locked {
-            flex-direction: column; align-items: stretch; gap: 12px;
+
+        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+        html { scroll-behavior: smooth; }
+
+        body {
+            background: var(--bg);
+            color: var(--text);
+            font-family: var(--font-body);
+            font-weight: 400;
+            line-height: 1.55;
+            min-height: 100vh;
         }
-        .ticket-card--locked .ticket-card__header {
-            display: flex; align-items: center; justify-content: space-between;
+
+        .page-wrap {
+            max-width: 540px;
+            margin: 0 auto;
+            padding: 0 20px 120px;
         }
-        .ticket-card__unlock { width: 100%; }
-        .ticket-info { flex: 1; }
-        .ticket-name { font-size: 1rem; font-weight: 600; color: #1a1a2e; margin-bottom: 2px; }
-        .ticket-desc { font-size: 0.85rem; color: #777; margin-bottom: 4px; }
-        .ticket-price { font-size: 1.1rem; font-weight: 700; color: #1a1a2e; }
-        .ticket-remaining { font-size: 0.78rem; color: #dc3545; margin-top: 2px; }
-        .qty-control { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
-        .qty-control input[type=number] {
-            width: 70px; text-align: center; border: 1.5px solid #dee2e6;
-            border-radius: 6px; padding: 8px 4px; font-size: 1.05rem; font-weight: 600;
+
+        /* ── FLYER ── */
+        .event-flyer {
+            width: 100%;
+            max-width: 320px;
+            margin: 40px auto 0;
+            aspect-ratio: 4/5;
+            overflow: hidden;
+            border-radius: var(--radius);
+            box-shadow: 0 20px 60px rgba(0,0,0,0.55), 0 4px 12px rgba(0,0,0,0.3);
+            animation: fadeUp 0.5s ease both;
         }
-        .qty-control input[type=number]:focus { border-color: #1a1a2e; outline: none; box-shadow: 0 0 0 2px rgba(26,26,46,0.15); }
-        .sold-out-badge { font-size: 0.8rem; color: #dc3545; font-weight: 600; white-space: nowrap; }
-        .field-error { color: #dc3545; font-size: 0.85rem; margin: -8px 0 8px; padding: 0 4px; }
-        .event-summary { font-size: 1.05rem; color: #555; margin-bottom: 4px; }
-        .event-description { text-align: left; color: #444; font-size: 0.95rem; line-height: 1.6; margin-top: 12px; }
-        .event-description p { margin-bottom: 0.5rem; }
-        .event-description ul, .event-description ol { padding-left: 1.5rem; margin-bottom: 0.5rem; }
-        .event-description-wrap { position: relative; }
-        .event-description-wrap.collapsed .event-description {
-            max-height: 460px; overflow: hidden;
-        }
-        .event-description-wrap.collapsed .event-description-fade {
+
+        .event-flyer img {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
             display: block;
         }
+
+        /* ── HERO ── */
+        .event-hero {
+            padding: 28px 0 0;
+            animation: fadeUp 0.5s 0.08s ease both;
+        }
+
+        .event-hero__location {
+            font-family: var(--font-mono);
+            font-size: 10px;
+            letter-spacing: 0.18em;
+            text-transform: uppercase;
+            color: var(--text-2);
+            margin-bottom: 10px;
+            display: block;
+        }
+
+        .event-hero__title {
+            font-family: var(--font-display);
+            font-size: clamp(1.9rem, 8vw, 2.8rem);
+            font-weight: 800;
+            line-height: 1.05;
+            letter-spacing: -0.02em;
+            color: var(--text);
+            margin-bottom: 14px;
+        }
+
+        .event-hero__meta {
+            display: flex;
+            flex-direction: column;
+            gap: 5px;
+        }
+
+        .event-hero__meta-row {
+            font-family: var(--font-mono);
+            font-size: 11px;
+            color: var(--text);
+            letter-spacing: 0.04em;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .event-hero__meta-row i { font-size: 10px; opacity: 0.5; }
+
+        .event-hero__summary {
+            margin-top: 14px;
+            font-size: 14px;
+            color: var(--text);
+            line-height: 1.65;
+            font-weight: 300;
+        }
+
+        /* ── DIVIDER ── */
+        .page-divider {
+            border: none;
+            border-top: 1px solid var(--border);
+            margin: 14px 0;
+        }
+
+        /* ── DESCRIPTION ── */
+        .event-desc {
+            font-size: 13px;
+            color: var(--text);
+            line-height: 1.75;
+            font-weight: 300;
+        }
+
+        .event-desc p { margin-bottom: 8px; }
+        .event-desc ul, .event-desc ol { padding-left: 1.3rem; margin-bottom: 8px; }
+
+        .event-description-wrap.collapsed .event-description { max-height: 440px; overflow: hidden; }
+        .event-description-wrap.collapsed .event-description-fade { display: block; }
         .event-description-fade {
-            display: none; position: absolute; bottom: 0; left: 0; right: 0; height: 40px;
-            background: linear-gradient(to bottom, transparent, #f5f7fa);
+            display: none;
+            position: absolute;
+            bottom: 0; left: 0; right: 0;
+            height: 56px;
+            background: linear-gradient(to bottom, transparent, var(--bg));
         }
+        .event-description-wrap { position: relative; }
+
         .btn-view-more {
-            background: none; border: none; padding: 6px 0 0; font-size: 0.88rem;
-            color: #1a1a2e; font-weight: 600; cursor: pointer; text-decoration: underline;
-        }
-        .btn-view-more:hover { opacity: 0.7; }
-        .buy-container { padding-bottom: 90px; }
-        .sticky-buy-bar {
-            position: fixed; bottom: 0; left: 0; right: 0; z-index: 1040;
-            background: #1a1a2e; padding: 14px 20px;
-            display: flex; align-items: center; justify-content: center;
-            box-shadow: 0 -2px 12px rgba(0,0,0,0.18);
-        }
-        .sticky-buy-bar .btn-buy {
-            background: #fff; color: #1a1a2e; font-weight: 700; font-size: 1rem;
-            border: none; border-radius: 8px; padding: 12px 40px; width: 100%; max-width: 400px;
+            background: none;
+            border: none;
+            padding: 0;
+            margin-top: 10px;
+            font-family: var(--font-mono);
+            font-size: 10px;
+            letter-spacing: 0.14em;
+            text-transform: uppercase;
+            color: var(--text-3);
             cursor: pointer;
+            display: block;
+            transition: color 0.15s;
         }
-        .sticky-buy-bar .btn-buy:hover { background: #f0f0f0; }
-        .venue-map { margin-top: 20px; border-radius: 10px; overflow: hidden; }
-        .venue-map iframe { display: block; width: 100%; height: 200px; border: none; }
+
+        .btn-view-more:hover { color: var(--text-2); }
+
+        /* ── VENUE MAP ── */
+        .venue-map {
+            margin-top: 24px;
+            border-radius: var(--radius);
+            overflow: hidden;
+            border: 1px solid var(--border);
+        }
+
+        .venue-map iframe {
+            display: block;
+            width: 100%;
+            height: 160px;
+            border: none;
+            filter: grayscale(1) invert(0.88) brightness(0.85) contrast(1.05);
+            opacity: 0.7;
+        }
+
         .venue-map-caption {
-            font-size: 0.82rem; color: #666; margin-top: 6px;
-            display: flex; align-items: center; justify-content: center; gap: 6px; flex-wrap: wrap;
+            margin-top: 8px;
+            font-family: var(--font-mono);
+            font-size: 10px;
+            color: var(--text-3);
+            letter-spacing: 0.04em;
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
         }
-        .venue-map-caption a { color: #1a1a2e; font-weight: 600; }
+
+        .venue-map-caption a { color: var(--text-2); text-decoration: none; }
+        .venue-map-caption a:hover { color: var(--text); }
+
+        /* ── TICKET CARDS ── */
+        .ticket-card {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            padding: 16px 18px;
+            margin-bottom: 6px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 16px;
+            transition: border-color 0.15s, background 0.15s;
+            animation: fadeUp 0.4s ease both;
+        }
+
+        .ticket-card:not(.sold-out):hover {
+            border-color: var(--border-strong);
+            background: var(--surface-2);
+        }
+
+        .ticket-card.sold-out { opacity: 0.4; }
+
+        .ticket-card--locked {
+            flex-direction: column;
+            align-items: stretch;
+            gap: 12px;
+        }
+
+        .ticket-card--locked .ticket-card__header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        .ticket-card__unlock { width: 100%; }
+        .ticket-info { flex: 1; min-width: 0; }
+
+        .ticket-name {
+            font-family: var(--font-display);
+            font-size: 14px;
+            font-weight: 600;
+            color: var(--text);
+            margin-bottom: 3px;
+            letter-spacing: -0.01em;
+        }
+
+        .ticket-desc {
+            font-size: 12px;
+            color: var(--text-2);
+            margin-bottom: 5px;
+            line-height: 1.5;
+            font-weight: 300;
+        }
+
+        .ticket-price {
+            font-family: var(--font-mono);
+            font-size: 14px;
+            font-weight: 500;
+            color: var(--text);
+        }
+
+        .ticket-fee-preview {
+            font-family: var(--font-mono);
+            font-size: 10px;
+            color: var(--text-3);
+            margin-top: 3px;
+        }
+
+        .ticket-remaining {
+            font-family: var(--font-mono);
+            font-size: 10px;
+            color: var(--danger);
+            margin-top: 4px;
+            letter-spacing: 0.04em;
+        }
+
+        .sold-out-badge {
+            font-family: var(--font-mono);
+            font-size: 10px;
+            letter-spacing: 0.1em;
+            text-transform: uppercase;
+            color: var(--text-3);
+            white-space: nowrap;
+        }
+
+        {% if waitlist_feature_enabled %}
+        /* ── WAITLIST ── */
+        .waitlist-section {
+            display: flex;
+            flex-direction: column;
+            gap: 7px;
+            align-items: flex-end;
+            min-width: 160px;
+        }
+        .waitlist-count {
+            font-family: var(--font-mono);
+            font-size: 10px;
+            color: var(--text-3);
+            letter-spacing: 0.04em;
+        }
+        .waitlist-form {
+            display: flex;
+            flex-direction: column;
+            gap: 5px;
+            align-items: stretch;
+            width: 100%;
+        }
+        .waitlist-form input {
+            background: var(--surface-2);
+            border: 1px solid var(--border-mid);
+            border-radius: var(--radius);
+            padding: 6px 10px;
+            color: var(--text);
+            font-family: var(--font-mono);
+            font-size: 11px;
+            width: 100%;
+            outline: none;
+            transition: border-color 0.15s;
+        }
+        .waitlist-form input:focus { border-color: var(--border-strong); }
+        .btn-join-waitlist {
+            font-family: var(--font-mono);
+            font-size: 11px;
+            letter-spacing: 0.04em;
+            padding: 7px 12px;
+            background: transparent;
+            border: 1px solid var(--border-mid);
+            border-radius: var(--radius);
+            color: var(--text-2);
+            cursor: pointer;
+            transition: border-color 0.15s, color 0.15s;
+            width: 100%;
+        }
+        .btn-join-waitlist:hover { border-color: var(--border-strong); color: var(--text); }
+        .btn-join-waitlist:disabled { opacity: 0.5; cursor: not-allowed; }
+        .waitlist-success {
+            font-family: var(--font-mono);
+            font-size: 11px;
+            color: var(--success);
+            text-align: right;
+        }
+        .waitlist-error {
+            font-family: var(--font-mono);
+            font-size: 11px;
+            color: var(--danger);
+            text-align: right;
+        }
+        {% endif %}
+
+        .badge.bg-primary {
+            background: rgba(255,255,255,0.06) !important;
+            color: var(--text-2) !important;
+            border: 1px solid var(--border-mid) !important;
+            font-family: var(--font-mono) !important;
+            font-size: 9px !important;
+            letter-spacing: 0.06em !important;
+            border-radius: 2px !important;
+            padding: 2px 6px !important;
+        }
+
+        /* ── QTY CONTROL ── */
+        .qty-control {
+            display: flex;
+            align-items: center;
+            gap: 0;
+            flex-shrink: 0;
+        }
+
+        .qty-control input[type=number] {
+            width: 40px;
+            text-align: center;
+            background: var(--surface-2);
+            border: 1px solid var(--border-mid);
+            border-left: none;
+            border-right: none;
+            border-radius: 0;
+            padding: 8px 2px;
+            font-family: var(--font-mono);
+            font-size: 15px;
+            font-weight: 500;
+            color: var(--text);
+            -moz-appearance: textfield;
+            appearance: textfield;
+            transition: border-color 0.15s;
+        }
+
+        .qty-control input[type=number]::-webkit-inner-spin-button,
+        .qty-control input[type=number]::-webkit-outer-spin-button { -webkit-appearance: none; }
+
+        .qty-control input[type=number]:focus {
+            outline: none;
+            border-color: var(--border-strong);
+            background: var(--surface-3);
+        }
+
+        .qty-btn {
+            width: 34px;
+            height: 38px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: var(--surface-2);
+            border: 1px solid var(--border-mid);
+            color: var(--text-2);
+            font-size: 17px;
+            line-height: 1;
+            cursor: pointer;
+            transition: background 0.12s, color 0.12s;
+            user-select: none;
+            flex-shrink: 0;
+        }
+
+        .qty-btn:first-child { border-radius: var(--radius) 0 0 var(--radius); }
+        .qty-btn:last-child  { border-radius: 0 var(--radius) var(--radius) 0; }
+
+        .qty-btn:hover { background: var(--surface-3); color: var(--text); }
+        .qty-btn:active { background: var(--border-mid); }
+
+        /* ── ORDER SUMMARY ── */
+        #order-summary {
+            background: var(--surface) !important;
+            border: 1px solid var(--border-mid) !important;
+            border-radius: var(--radius) !important;
+            padding: 14px 18px !important;
+            flex-direction: column !important;
+            gap: 0 !important;
+            margin-top: 4px;
+        }
+
+        .os-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: baseline;
+            padding: 5px 0;
+            font-family: var(--font-mono);
+            font-size: 11px;
+            color: var(--text-2);
+            border-bottom: 1px solid var(--border);
+        }
+
+        .os-total-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: baseline;
+            padding-top: 10px;
+            margin-top: 4px;
+            font-family: var(--font-mono);
+            font-size: 13px;
+            font-weight: 500;
+            color: var(--text);
+            letter-spacing: 0.02em;
+        }
+
+        /* ── FIELD ERRORS ── */
+        .field-error {
+            font-family: var(--font-mono);
+            font-size: 10px;
+            color: var(--danger);
+            margin: -2px 0 8px;
+            padding: 0 4px;
+            letter-spacing: 0.02em;
+        }
+
+        /* ── ALERTS ── */
+        .alert-danger {
+            background: rgba(217,112,96,0.08) !important;
+            border: 1px solid rgba(217,112,96,0.2) !important;
+            color: var(--danger) !important;
+            border-radius: var(--radius) !important;
+            font-size: 13px !important;
+            font-family: var(--font-body) !important;
+        }
+
+        /* ── STICKY CTA BAR ── */
+        .sticky-buy-bar {
+            position: fixed;
+            bottom: 0; left: 0; right: 0;
+            z-index: 1040;
+            background: rgba(15,14,13,0.92);
+            backdrop-filter: blur(20px);
+            -webkit-backdrop-filter: blur(20px);
+            border-top: 1px solid var(--border);
+            padding: 14px 20px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            animation: slideUp 0.45s 0.25s ease both;
+        }
+
+        @keyframes slideUp {
+            from { transform: translateY(100%); }
+            to   { transform: translateY(0); }
+        }
+
+        .btn-buy {
+            background: var(--cta);
+            color: var(--bg);
+            border: none;
+            border-radius: var(--radius);
+            font-family: var(--font-display);
+            font-size: 15px;
+            font-weight: 700;
+            letter-spacing: -0.01em;
+            padding: 14px 40px;
+            width: 100%;
+            max-width: 420px;
+            cursor: pointer;
+            transition: opacity 0.15s, transform 0.08s;
+        }
+
+        .btn-buy:hover:not(:disabled) { opacity: 0.88; }
+        .btn-buy:active:not(:disabled) { transform: scale(0.99); }
+        .btn-buy:disabled { opacity: 0.28; cursor: not-allowed; }
+
+        /* ── MODAL ── */
+        .modal-content {
+            background: var(--surface) !important;
+            border: 1px solid var(--border-mid) !important;
+            border-radius: 4px !important;
+        }
+
+        .modal-header {
+            background: var(--surface) !important;
+            border-bottom: 1px solid var(--border) !important;
+            padding: 18px 22px !important;
+        }
+
+        .modal-title {
+            font-family: var(--font-display) !important;
+            font-size: 16px !important;
+            font-weight: 700 !important;
+            letter-spacing: -0.01em !important;
+            color: var(--text) !important;
+        }
+
+        .modal-body {
+            background: var(--surface) !important;
+            padding: 18px 22px !important;
+        }
+
+        .modal-footer {
+            background: var(--surface) !important;
+            border-top: 1px solid var(--border) !important;
+            padding: 12px 22px !important;
+        }
+
+        .btn-close { filter: invert(1) opacity(0.45) !important; }
+        .btn-close:hover { filter: invert(1) opacity(0.8) !important; }
+
+        #buyModal .btn-primary {
+            background: var(--cta) !important;
+            border-color: var(--cta) !important;
+            color: var(--bg) !important;
+            font-family: var(--font-display) !important;
+            font-size: 14px !important;
+            font-weight: 700 !important;
+            letter-spacing: -0.01em !important;
+            border-radius: var(--radius) !important;
+            padding: 12px 22px !important;
+        }
+
+        #buyModal .btn-primary:hover { opacity: 0.88 !important; }
+
+        .btn-outline-secondary {
+            color: var(--text-3) !important;
+            border-color: var(--border-mid) !important;
+            background: transparent !important;
+            border-radius: var(--radius) !important;
+            font-size: 13px !important;
+            font-family: var(--font-body) !important;
+        }
+
+        .btn-outline-secondary:hover {
+            background: var(--surface-2) !important;
+            color: var(--text-2) !important;
+        }
+
+        #global-unlock-input {
+            background: var(--surface-2) !important;
+            border-color: var(--border-mid) !important;
+            color: var(--text) !important;
+            border-radius: var(--radius) 0 0 var(--radius) !important;
+            font-family: var(--font-mono) !important;
+            font-size: 12px !important;
+        }
+
+        #global-unlock-input::placeholder { color: var(--text-3) !important; }
+
+        #global-unlock-input:focus {
+            border-color: var(--border-strong) !important;
+            box-shadow: none !important;
+            outline: none !important;
+        }
+
+        #global-unlock-btn {
+            background: var(--surface-3) !important;
+            border: 1px solid var(--border-mid) !important;
+            color: var(--text-2) !important;
+            font-family: var(--font-mono) !important;
+            font-size: 10px !important;
+            letter-spacing: 0.1em !important;
+            text-transform: uppercase !important;
+            border-radius: 0 var(--radius) var(--radius) 0 !important;
+            padding: 6px 14px !important;
+            transition: color 0.15s, border-color 0.15s !important;
+        }
+
+        #global-unlock-btn:hover {
+            color: var(--text) !important;
+            border-color: var(--border-strong) !important;
+        }
+
+        #global-unlock-error {
+            color: var(--danger) !important;
+            font-family: var(--font-mono) !important;
+            font-size: 10px !important;
+        }
+
+        #global-unlock-success {
+            color: var(--success) !important;
+            font-family: var(--font-mono) !important;
+            font-size: 10px !important;
+        }
+
+        /* ── EMPTY STATE ── */
+        .empty-state {
+            text-align: center;
+            padding: 56px 20px;
+            font-family: var(--font-mono);
+            font-size: 11px;
+            color: var(--text-3);
+            letter-spacing: 0.1em;
+            text-transform: uppercase;
+        }
+
+        /* ── ANIMATIONS ── */
+        @keyframes fadeUp {
+            from { opacity: 0; transform: translateY(12px); }
+            to   { opacity: 1; transform: translateY(0); }
+        }
+
+        .ticket-card:nth-child(1) { animation-delay: 0.03s; }
+        .ticket-card:nth-child(2) { animation-delay: 0.07s; }
+        .ticket-card:nth-child(3) { animation-delay: 0.11s; }
+        .ticket-card:nth-child(4) { animation-delay: 0.15s; }
+        .ticket-card:nth-child(5) { animation-delay: 0.19s; }
+        .ticket-card:nth-child(6) { animation-delay: 0.23s; }
+
+        ::-webkit-scrollbar { width: 3px; }
+        ::-webkit-scrollbar-track { background: var(--bg); }
+        ::-webkit-scrollbar-thumb { background: var(--border-mid); }
+
+        /* ── NAV ── */
+        .attendee-nav {
+            position: sticky;
+            top: 0;
+            z-index: 100;
+            background: rgba(15, 14, 13, 0.88);
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+            border-bottom: 1px solid var(--border);
+            padding: 0 24px;
+            height: 52px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 16px;
+        }
+        .nav-brand {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            text-decoration: none;
+            flex-shrink: 0;
+        }
+        .nav-brand-icon {
+            width: 26px;
+            height: 26px;
+            background: var(--cta);
+            border-radius: 5px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: var(--bg);
+            font-size: 13px;
+        }
+        .nav-brand-text {
+            font-family: var(--font-display);
+            font-weight: 800;
+            font-size: 0.95rem;
+            letter-spacing: -0.02em;
+            color: var(--text);
+        }
+        .nav-links {
+            display: flex;
+            align-items: center;
+            gap: 2px;
+            flex: 1;
+            padding-left: 24px;
+        }
+        .nav-link {
+            font-family: var(--font-mono);
+            font-size: 0.72rem;
+            letter-spacing: 0.06em;
+            text-transform: uppercase;
+            color: var(--text-3);
+            text-decoration: none;
+            padding: 6px 10px;
+            border-radius: var(--radius);
+            transition: color 0.15s, background 0.15s;
+            white-space: nowrap;
+        }
+        .nav-link:hover { color: var(--text-2); background: rgba(255,255,255,0.04); }
+        .nav-link.active { color: var(--text); background: rgba(255,255,255,0.06); }
+        .nav-right {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            flex-shrink: 0;
+        }
+        .nav-user-btn {
+            display: flex;
+            align-items: center;
+            gap: 7px;
+            background: none;
+            border: 1px solid var(--border-mid);
+            border-radius: var(--radius);
+            padding: 5px 10px 5px 7px;
+            cursor: pointer;
+            color: var(--text-2);
+            font-family: var(--font-mono);
+            font-size: 0.72rem;
+            letter-spacing: 0.05em;
+            text-transform: uppercase;
+            transition: border-color 0.15s, color 0.15s;
+        }
+        .nav-user-btn:hover { border-color: var(--border-strong); color: var(--text); }
+        .nav-user-avatar {
+            width: 22px;
+            height: 22px;
+            border-radius: 50%;
+            background: var(--surface-3);
+            border: 1px solid var(--border-mid);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 10px;
+            font-weight: 500;
+            color: var(--text-2);
+            flex-shrink: 0;
+        }
+        .nav-dropdown { position: relative; }
+        .nav-dropdown-menu {
+            position: absolute;
+            top: calc(100% + 8px);
+            right: 0;
+            background: var(--surface);
+            border: 1px solid var(--border-mid);
+            border-radius: calc(var(--radius) + 2px);
+            min-width: 180px;
+            padding: 6px;
+            display: none;
+            z-index: 200;
+            box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+        }
+        .nav-dropdown-menu.open { display: block; }
+        .nav-dropdown-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 10px;
+            border-radius: var(--radius);
+            font-size: 0.83rem;
+            color: var(--text-2);
+            text-decoration: none;
+            cursor: pointer;
+            transition: background 0.12s, color 0.12s;
+            width: 100%;
+            background: none;
+            border: none;
+            font-family: var(--font-body);
+            text-align: left;
+        }
+        .nav-dropdown-item:hover { background: rgba(255,255,255,0.05); color: var(--text); }
+        .nav-dropdown-divider { height: 1px; background: var(--border); margin: 4px 0; }
+        .nav-dropdown-label {
+            padding: 6px 10px 4px;
+            font-family: var(--font-mono);
+            font-size: 0.65rem;
+            letter-spacing: 0.1em;
+            text-transform: uppercase;
+            color: var(--text-3);
+        }
+
+        /* ── SOCIAL PROOF ── */
+        .social-proof {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-top: 18px;
+            animation: fadeUp 0.5s 0.12s ease both;
+        }
+
+        .avatar-stack {
+            display: flex;
+            flex-direction: row-reverse;
+        }
+
+        .avatar-stack .avatar {
+            width: 30px;
+            height: 30px;
+            border-radius: 50%;
+            border: 2px solid var(--bg);
+            font-family: var(--font-display);
+            font-size: 10px;
+            font-weight: 700;
+            letter-spacing: 0.01em;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin-left: -8px;
+            flex-shrink: 0;
+        }
+
+        .avatar-stack .avatar:last-child { margin-left: 0; }
+
+        .avatar--a { background: #3D5A7A; color: #A8C4E0; }
+        .avatar--b { background: #5A3D7A; color: #C4A8E0; }
+        .avatar--c { background: #3D7A5A; color: #A8E0C4; }
+        .avatar--d { background: #7A5A3D; color: #E0C4A8; }
+        .avatar--e { background: #7A3D5A; color: #E0A8C4; }
+        .avatar--f { background: #3D6A7A; color: #A8D8E0; }
+
+        .social-proof-text {
+            font-family: var(--font-mono);
+            font-size: 10.5px;
+            color: var(--text-3);
+            letter-spacing: 0.03em;
+            line-height: 1.4;
+        }
+
+        .social-proof-text strong {
+            color: var(--text-2);
+            font-weight: 500;
+        }
     </style>
+
     {% include 'tickets/buy/_facebook_pixel.html' %}
     {% if event.facebook_pixel_id %}
     <noscript><img height="1" width="1" style="display:none"
@@ -123,79 +891,172 @@
     {% endif %}
 </head>
 <body>
-<div class="buy-container">
-    <div class="buy-header">
-        {% if event.flyer %}
-        <div class="mb-3" style="aspect-ratio: 4/5; overflow: hidden; max-width: 280px; margin: 0 auto;">
-            <img src="{{ event.flyer.url }}" alt="{{ event.name }}" class="rounded" style="width: 100%; height: 100%; object-fit: cover; display: block;">
+
+<nav class="attendee-nav">
+    <a href="{% url 'tickets:attendee_dashboard' %}" class="nav-brand">
+        <div class="nav-brand-icon"><i class="bi bi-lightning-charge-fill"></i></div>
+        <span class="nav-brand-text">{{ org_name }}</span>
+    </a>
+    <div class="nav-links">
+        <a href="{% url 'tickets:attendee_dashboard' %}" class="nav-link">
+            <i class="bi bi-calendar-event"></i> Events
+        </a>
+        {% if user.is_authenticated %}
+        <a href="{% url 'tickets:my_tickets' %}" class="nav-link">
+            <i class="bi bi-ticket-perforated"></i> My Tickets
+        </a>
+        {% endif %}
+    </div>
+    <div class="nav-right">
+        {% if user.is_authenticated %}
+        <div class="nav-dropdown" id="navDropdown">
+            <button class="nav-user-btn" id="navUserBtn" type="button">
+                <div class="nav-user-avatar">
+                    {{ user.first_name|make_list|first|upper|default:user.get_username|make_list|first|upper }}
+                </div>
+                {{ user.get_full_name|default:user.get_username }}
+                <i class="bi bi-chevron-down" style="font-size:10px;margin-left:2px;"></i>
+            </button>
+            <div class="nav-dropdown-menu" id="navDropdownMenu">
+                <div class="nav-dropdown-label">{{ user.get_full_name|default:user.get_username }}</div>
+                <div class="nav-dropdown-divider"></div>
+                <a href="{% url 'tickets:user_profile' %}" class="nav-dropdown-item">
+                    <i class="bi bi-person-circle"></i> My Profile
+                </a>
+                {% if user_role != 'attendee' %}
+                <div class="nav-dropdown-divider"></div>
+                <form method="post" action="{% url 'tickets:switch_view_mode' %}">
+                    {% csrf_token %}
+                    <input type="hidden" name="mode" value="organizer">
+                    <button type="submit" class="nav-dropdown-item">
+                        <i class="bi bi-grid-1x2"></i> Switch to Organizer View
+                    </button>
+                </form>
+                {% endif %}
+                <div class="nav-dropdown-divider"></div>
+                <form method="post" action="{% url 'tickets:logout' %}">
+                    {% csrf_token %}
+                    <button type="submit" class="nav-dropdown-item">
+                        <i class="bi bi-box-arrow-right"></i> Sign out
+                    </button>
+                </form>
+            </div>
+        </div>
+        {% else %}
+        <a href="{% url 'tickets:login' %}" style="font-family:var(--font-mono);font-size:0.72rem;letter-spacing:0.06em;text-transform:uppercase;color:var(--text-3);text-decoration:none;padding:6px 10px;border:1px solid var(--border-mid);border-radius:var(--radius);transition:color 0.15s,border-color 0.15s;" onmouseover="this.style.color='var(--text)';this.style.borderColor='var(--border-strong)'" onmouseout="this.style.color='var(--text-3)';this.style.borderColor='var(--border-mid)'">Sign in</a>
+        {% endif %}
+    </div>
+</nav>
+
+<div class="page-wrap">
+
+    {% if event.flyer %}
+    <div class="event-flyer">
+        <img src="{{ event.flyer.url }}" alt="{{ event.name }}">
+    </div>
+    {% endif %}
+
+    <div class="event-hero">
+        <span class="event-hero__location">{{ event.venue.city }}{% if event.venue.name %} &middot; {{ event.venue.name }}{% endif %}</span>
+        <h1 class="event-hero__title">{{ event.name }}</h1>
+        <div class="event-hero__meta">
+            <div class="event-hero__meta-row">
+                <i class="bi bi-calendar3"></i>
+                {{ event.start_date|date:"F j, Y" }}{% if event.start_time %}&nbsp;&mdash;&nbsp;{{ event.start_time|time:"g:i A" }}{% endif %}
+            </div>
+            <div class="event-hero__meta-row">
+                <i class="bi bi-geo-alt"></i>
+                {{ event.venue.name }}, {{ event.venue.city }}
+            </div>
+        </div>
+        {% if attendee_count >= 3 %}
+        <div class="social-proof">
+            <div class="avatar-stack">
+                {% for attendee in attendee_preview|slice:":5" %}
+                <div class="avatar avatar--{% cycle 'a' 'b' 'c' 'd' 'e' 'f' %}">{{ attendee.initials }}</div>
+                {% endfor %}
+            </div>
+            <span class="social-proof-text">
+                {% if attendee_count == 1 %}
+                    <strong>{{ attendee_preview.0.first_name }}</strong> is going
+                {% elif attendee_count == 2 %}
+                    <strong>{{ attendee_preview.0.first_name }}</strong> &amp; <strong>{{ attendee_preview.1.first_name }}</strong> are going
+                {% elif attendee_count <= 6 %}
+                    <strong>{{ attendee_preview.0.first_name }}</strong>, <strong>{{ attendee_preview.1.first_name }}</strong>{% if attendee_count > 2 %} + {{ attendee_count|add:"-2" }} others{% endif %} are going
+                {% else %}
+                    <strong>{{ attendee_count }}</strong> people are going
+                {% endif %}
+            </span>
         </div>
         {% endif %}
-        <h1>{{ event.name }}</h1>
-        <p>{{ event.start_date|date:"F j, Y" }}{% if event.start_time %} at {{ event.start_time|time:"g:i A" }}{% endif %}</p>
-        <p>{{ event.venue.name }}, {{ event.venue.city }}</p>
         {% if event.summary %}
-        <p class="event-summary">{{ event.summary }}</p>
-        {% endif %}
-        {% if event.description %}
-        <div class="event-description-wrap collapsed" id="desc-wrap">
-            <div class="event-description">{{ event.description|safe }}</div>
-            <div class="event-description-fade"></div>
-        </div>
-        <button type="button" class="btn-view-more" id="desc-toggle" style="display:none;">View more</button>
-        {% endif %}
-        {% if event.venue.street_address %}
-        {% with addr=event.venue.street_address|add:", "|add:event.venue.city|add:", "|add:event.venue.state|add:" "|add:event.venue.postal_code %}
-        <div class="venue-map">
-            <iframe
-                src="https://maps.google.com/maps?q={{ addr|urlencode }}&output=embed"
-                loading="lazy"
-                referrerpolicy="no-referrer-when-downgrade"
-                title="Venue map">
-            </iframe>
-        </div>
-        <div class="venue-map-caption">
-            <i class="bi bi-geo-alt-fill" style="color:#dc3545;"></i>
-            <span>{{ event.venue.name }} &middot; {{ addr }}</span>
-            <a href="https://maps.google.com/maps?q={{ addr|urlencode }}" target="_blank" rel="noopener">Get directions</a>
-        </div>
-        {% endwith %}
+        <p class="event-hero__summary">{{ event.summary }}</p>
         {% endif %}
     </div>
 
-    {% if not available_pairs and not locked_pairs and not coming_soon_types and not all_sold_out %}
-    <div class="text-center py-5">
-        <i class="bi bi-ticket-perforated" style="font-size: 3rem; color: #ccc;"></i>
-        <p class="mt-3 text-muted">No tickets are currently available for this event.</p>
+    {% if event.description %}
+    <hr class="page-divider">
+    <div class="event-description-wrap collapsed" id="desc-wrap">
+        <div class="event-description event-desc">{{ event.description|safe }}</div>
+        <div class="event-description-fade"></div>
     </div>
-    {% endif %}{# /not empty state #}
+    <button type="button" class="btn-view-more" id="desc-toggle" style="display:none;">View more</button>
+    {% endif %}
+
+    {% if event.venue.street_address %}
+    {% with addr=event.venue.street_address|add:", "|add:event.venue.city|add:", "|add:event.venue.state|add:" "|add:event.venue.postal_code %}
+    <div class="venue-map">
+        <iframe
+            src="https://maps.google.com/maps?q={{ addr|urlencode }}&output=embed"
+            loading="lazy"
+            referrerpolicy="no-referrer-when-downgrade"
+            title="Venue map">
+        </iframe>
+    </div>
+    <div class="venue-map-caption">
+        <span>{{ event.venue.name }} &middot; {{ addr }}</span>
+        <a href="https://maps.google.com/maps?q={{ addr|urlencode }}" target="_blank" rel="noopener">Get directions &rarr;</a>
+    </div>
+    {% endwith %}
+    {% endif %}
+
+    {% if not available_pairs and not locked_pairs and not coming_soon_types and not all_sold_out and not waitlisted_sold_out_types %}
+    <div class="empty-state">
+        <div style="font-size:2rem;margin-bottom:14px;opacity:0.2;">&#9711;</div>
+        No tickets available
+    </div>
+    {% endif %}
+
 </div>
 
-{% if available_pairs or locked_pairs or coming_soon_types or all_sold_out %}
+{% if available_pairs or locked_pairs or coming_soon_types or all_sold_out or waitlisted_sold_out_types %}
 <div class="sticky-buy-bar">
-    {% if all_sold_out %}
-    <button type="button" class="btn-buy" disabled style="opacity:0.5;cursor:not-allowed;">
-        Sold Out
+    {% if all_sold_out and not waitlisted_sold_out_types %}
+    <button type="button" class="btn-buy" disabled>Sold Out</button>
+    {% elif all_sold_out and waitlisted_sold_out_types and waitlist_feature_enabled %}
+    <button type="button" class="btn-buy" data-bs-toggle="modal" data-bs-target="#buyModal">
+        Join Waitlist
     </button>
     {% else %}
     <button type="button" class="btn-buy" data-bs-toggle="modal" data-bs-target="#buyModal">
-        Buy Tickets{% if min_ticket_price %} From {% if min_ticket_price == 0 %}Free{% else %}${{ min_ticket_price|currency }}{% endif %}{% endif %}
+        Get Tickets{% if min_ticket_price %} &mdash; From {% if min_ticket_price == 0 %}Free{% else %}${{ min_ticket_price|currency }}{% endif %}{% endif %}
     </button>
     {% endif %}
 </div>
 
 <div class="modal fade" id="buyModal" tabindex="-1" aria-labelledby="buyModalLabel" aria-hidden="true">
-  <div class="modal-dialog modal-dialog-scrollable" style="max-width:560px;">
+  <div class="modal-dialog modal-dialog-scrollable" style="max-width:520px;">
     <div class="modal-content">
-      <div class="modal-header" style="border-bottom:1px solid #e9ecef;">
+      <div class="modal-header">
         <h5 class="modal-title" id="buyModalLabel">Select Tickets</h5>
         <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
       </div>
-      <div class="modal-body" style="padding:20px;">
+      <div class="modal-body">
 
         <form method="post">
           {% csrf_token %}
 
-          {% if form.non_field_errors %}
+          {% if form.non_field_errors and available_pairs or form.non_field_errors and locked_pairs %}
           <div class="alert alert-danger mb-3">
               {% for error in form.non_field_errors %}{{ error }}{% endfor %}
           </div>
@@ -203,77 +1064,76 @@
 
           {% if locked_pairs %}
           <div class="ticket-card ticket-card--locked" id="unlock-box">
-              <div class="ticket-info">
-                  <div class="ticket-name"><i class="bi bi-lock"></i> Password required for some tickets</div>
-                  <div class="ticket-desc">Enter the password to see additional ticket options.</div>
+              <div class="ticket-card__header">
+                  <div class="ticket-info">
+                      <div class="ticket-name" style="display:flex;align-items:center;gap:8px;">
+                          <i class="bi bi-lock" style="font-size:12px;opacity:0.7;"></i> Password protected
+                      </div>
+                      <div class="ticket-desc">Enter the password to unlock additional ticket options.</div>
+                  </div>
               </div>
-              <div class="ticket-card__unlock" style="min-width:220px;">
+              <div class="ticket-card__unlock">
                   <div class="input-group input-group-sm">
                       <input type="text" id="global-unlock-input" class="form-control" placeholder="Enter password" autocomplete="off">
-                      <button type="button" id="global-unlock-btn" class="btn btn-outline-primary">Unlock</button>
+                      <button type="button" id="global-unlock-btn" class="btn">Unlock</button>
                   </div>
-                  <div id="global-unlock-error" class="text-danger small mt-1" style="display:none;"></div>
-                  <div id="global-unlock-success" class="text-success small mt-1" style="display:none;"></div>
+                  <div id="global-unlock-error" class="small mt-1" style="display:none;"></div>
+                  <div id="global-unlock-success" class="small mt-1" style="display:none;"></div>
               </div>
           </div>
           {% endif %}
 
           {% for tt, bound_field in available_pairs %}
           {% with at=tt.get_active_tier ep=tt.effective_price %}
-          <div class="ticket-card{% if tt.is_sold_out %} sold-out{% endif %}" data-price="{{ ep }}" data-ticket-id="{{ tt.id }}">
+          <div class="ticket-card{% if tt.is_sold_out and tt.id|stringformat:"s" != wl_held_tt_id %} sold-out{% endif %}" data-price="{{ ep }}" data-ticket-id="{{ tt.id }}">
               <div class="ticket-info">
-                  <div class="ticket-name">{{ tt.name }}{% if at %} <span class="badge bg-primary ms-1" style="font-size:0.72rem;">{{ at.name }}</span>{% endif %}</div>
-                  {% if tt.description %}<div class="ticket-desc">{{ tt.description }}</div>{% endif %}
-                  <div class="ticket-price">
-                      {% if ep == 0 %}Free{% else %}${{ ep|currency }}{% endif %}
+                  <div class="ticket-name">
+                      {{ tt.name }}{% if at %} <span class="badge bg-primary ms-1">{{ at.name }}</span>{% endif %}
                   </div>
-                  {% if ep != 0 %}
-                  <div class="ticket-fee-preview" style="font-size:11px;color:#999;display:none;"></div>
-                  {% endif %}
+                  {% if tt.description %}<div class="ticket-desc">{{ tt.description }}</div>{% endif %}
+                  <div class="ticket-price">{% if ep == 0 %}Free{% else %}${{ ep|currency }}{% endif %}</div>
+                  {% if ep != 0 %}<div class="ticket-fee-preview" style="display:none;"></div>{% endif %}
                   {% if at %}
-                  {% if at.remaining_capacity <= 10 %}
-                  <div class="ticket-remaining"><i class="bi bi-exclamation-circle"></i> Only {{ at.remaining_capacity }} left</div>
-                  {% endif %}
+                      {% if at.remaining_capacity <= 10 %}
+                      <div class="ticket-remaining"><i class="bi bi-exclamation-circle"></i> Only {{ at.remaining_capacity }} left</div>
+                      {% endif %}
                   {% elif tt.quantity_limit is not None %}
-                  {% with rem=tt.remaining_quantity %}
-                  {% if rem <= 10 %}
-                  <div class="ticket-remaining"><i class="bi bi-exclamation-circle"></i> Only {{ rem }} left</div>
-                  {% endif %}
-                  {% endwith %}
+                      {% with rem=tt.remaining_quantity %}
+                      {% if rem <= 10 %}
+                      <div class="ticket-remaining"><i class="bi bi-exclamation-circle"></i> Only {{ rem }} left</div>
+                      {% endif %}
+                      {% endwith %}
                   {% endif %}
               </div>
               <div class="qty-control">
-                  {% if tt.is_sold_out %}
+                  {% if tt.is_sold_out and tt.id|stringformat:"s" != wl_held_tt_id %}
                   <span class="sold-out-badge">Sold Out</span>
                   {% else %}
+                  <button type="button" class="qty-btn qty-btn--minus" aria-label="Decrease quantity">&minus;</button>
                   {{ bound_field }}
+                  <button type="button" class="qty-btn qty-btn--plus" aria-label="Increase quantity">+</button>
                   {% endif %}
               </div>
           </div>
-          {% endwith %}
           {% if bound_field.errors %}
           <div class="field-error">{{ bound_field.errors|join:", " }}</div>
           {% endif %}
+          {% endwith %}
           {% endfor %}
 
           {% for tt in coming_soon_types %}
           {% with ep=tt.effective_price %}
-          <div class="ticket-card" style="opacity:0.5;cursor:default;">
+          <div class="ticket-card" style="opacity:0.3;">
               <div class="ticket-info">
                   <div class="ticket-name">{{ tt.name }}</div>
                   {% if tt.description %}<div class="ticket-desc">{{ tt.description }}</div>{% endif %}
-                  <div class="ticket-price">
-                      {% if ep == 0 %}Free{% else %}${{ ep|currency }}{% endif %}
-                  </div>
+                  <div class="ticket-price">{% if ep == 0 %}Free{% else %}${{ ep|currency }}{% endif %}</div>
                   {% if tt.unlocks_after %}
-                  <div class="ticket-desc" style="margin-top:4px;">
-                      <i class="bi bi-hourglass-split"></i>
-                      Available after <strong>{{ tt.unlocks_after.name }}</strong> sells out
-                  </div>
+                  <div class="ticket-desc" style="margin-top:4px;">Available after <strong style="color:var(--text-2);">{{ tt.unlocks_after.name }}</strong> sells out</div>
                   {% endif %}
               </div>
               <div class="qty-control">
-                  <span style="font-size:0.82rem;color:#999;font-weight:600;white-space:nowrap;">Available soon</span>
+                  <span class="sold-out-badge">Coming Soon</span>
               </div>
           </div>
           {% endwith %}
@@ -287,27 +1147,29 @@
                data-ticket-id="{{ tt.id }}"
                style="display:none;">
               <div class="ticket-info">
-                  <div class="ticket-name">{{ tt.name }}{% if at %} <span class="badge bg-primary ms-1" style="font-size:0.72rem;">{{ at.name }}</span>{% endif %}</div>
-                  {% if tt.description %}<div class="ticket-desc">{{ tt.description }}</div>{% endif %}
-                  <div class="ticket-price">
-                      {% if ep == 0 %}Free{% else %}${{ ep|currency }}{% endif %}
+                  <div class="ticket-name">
+                      {{ tt.name }}{% if at %} <span class="badge bg-primary ms-1">{{ at.name }}</span>{% endif %}
                   </div>
-                  {% if ep != 0 %}
-                  <div class="ticket-fee-preview" style="font-size:11px;color:#999;display:none;"></div>
-                  {% endif %}
+                  {% if tt.description %}<div class="ticket-desc">{{ tt.description }}</div>{% endif %}
+                  <div class="ticket-price">{% if ep == 0 %}Free{% else %}${{ ep|currency }}{% endif %}</div>
+                  {% if ep != 0 %}<div class="ticket-fee-preview" style="display:none;"></div>{% endif %}
                   {% if at %}
-                  {% if at.remaining_capacity <= 10 %}
-                  <div class="ticket-remaining"><i class="bi bi-exclamation-circle"></i> Only {{ at.remaining_capacity }} left</div>
-                  {% endif %}
+                      {% if at.remaining_capacity <= 10 %}
+                      <div class="ticket-remaining"><i class="bi bi-exclamation-circle"></i> Only {{ at.remaining_capacity }} left</div>
+                      {% endif %}
                   {% elif tt.quantity_limit is not None %}
-                  {% with rem=tt.remaining_quantity %}
-                  {% if rem <= 10 %}
-                  <div class="ticket-remaining"><i class="bi bi-exclamation-circle"></i> Only {{ rem }} left</div>
-                  {% endif %}
-                  {% endwith %}
+                      {% with rem=tt.remaining_quantity %}
+                      {% if rem <= 10 %}
+                      <div class="ticket-remaining"><i class="bi bi-exclamation-circle"></i> Only {{ rem }} left</div>
+                      {% endif %}
+                      {% endwith %}
                   {% endif %}
               </div>
-              <div class="qty-control">{{ bound_field }}</div>
+              <div class="qty-control">
+                  <button type="button" class="qty-btn qty-btn--minus" aria-label="Decrease quantity">&minus;</button>
+                  {{ bound_field }}
+                  <button type="button" class="qty-btn qty-btn--plus" aria-label="Increase quantity">+</button>
+              </div>
           </div>
           {% endwith %}
           {% if bound_field.errors %}
@@ -315,40 +1177,82 @@
           {% endif %}
           {% endfor %}
 
-          <div id="order-summary" class="ticket-card" style="display:none;flex-direction:column;gap:6px;padding:16px 24px;">
-              <div style="display:flex;justify-content:space-between;font-size:0.9rem;color:#666;">
-                  <span>Subtotal</span><span id="os-subtotal">$0.00</span>
-              </div>
-              <div style="display:flex;justify-content:space-between;font-size:0.9rem;color:#666;">
-                  <span>Service fee</span><span id="os-fee">$0.00</span>
-              </div>
-              <div style="display:flex;justify-content:space-between;font-size:1rem;font-weight:700;border-top:1.5px solid #1a1a2e;padding-top:8px;margin-top:4px;">
-                  <span>Estimated total</span><span id="os-total">$0.00</span>
-              </div>
+          <div id="order-summary" class="ticket-card" style="display:none;">
+              <div class="os-row"><span>Subtotal</span><span id="os-subtotal">$0.00</span></div>
+              <div class="os-row"><span>Service fee</span><span id="os-fee">$0.00</span></div>
+              <div class="os-total-row"><span>Total</span><span id="os-total">$0.00</span></div>
           </div>
 
-          <div class="mt-3">
-              <button type="submit" class="btn btn-primary btn-lg w-100" style="background:#1a1a2e;border-color:#1a1a2e;">
-                  Continue to Checkout <i class="bi bi-arrow-right"></i>
-              </button>
+          {% if available_pairs or locked_pairs %}
+          <div class="mt-4">
+              <button type="submit" class="btn btn-primary btn-lg w-100">Continue</button>
           </div>
+          {% endif %}
         </form>
 
+        {% if waitlist_feature_enabled %}
+        {% for tt in waitlisted_sold_out_types %}
+        {% with ep=tt.effective_price %}
+        <div class="ticket-card sold-out" style="opacity:0.85;margin-top:6px;" id="wl-card-{{ tt.id.hex }}">
+            <div class="ticket-info">
+                <div class="ticket-name">{{ tt.name }}</div>
+                {% if tt.description %}<div class="ticket-desc">{{ tt.description }}</div>{% endif %}
+                <div class="ticket-price">{% if ep == 0 %}Free{% else %}${{ ep|currency }}{% endif %}</div>
+            </div>
+            <div class="qty-control" style="align-items:flex-end;">
+                <div class="waitlist-section" id="wl-section-{{ tt.id.hex }}">
+                    {% if tt.waitlist_count > 0 %}
+                    <div class="waitlist-count">{{ tt.waitlist_count }} on waitlist</div>
+                    {% endif %}
+                    <div class="waitlist-form" id="wl-form-{{ tt.id.hex }}">
+                        {% if not user.is_authenticated %}
+                        <a href="{% url 'tickets:login' %}?next={{ request.get_full_path }}" class="btn-join-waitlist">
+                            Log in to join the waitlist
+                        </a>
+                        {% elif tt.id in already_on_waitlist %}
+                        <button type="button" class="btn-join-waitlist" disabled>
+                            On Waitlist
+                        </button>
+                        {% else %}
+                        <button type="button" class="btn-join-waitlist"
+                                data-url="{% url 'tickets:join_waitlist' event.id tt.id %}"
+                                data-tt="{{ tt.id.hex }}"
+                                data-authed="true">
+                            Join Waitlist
+                        </button>
+                        {% endif %}
+                        <div class="waitlist-error" id="wl-err-{{ tt.id.hex }}" style="display:none;"></div>
+                    </div>
+                    <div class="waitlist-success" id="wl-ok-{{ tt.id.hex }}" style="display:none;">
+                        You're on the list.
+                    </div>
+                </div>
+            </div>
+        </div>
+        {% endwith %}
+        {% endfor %}
+        {% endif %}
+
       </div>
-      <div class="modal-footer" style="border-top:1px solid #e9ecef;">
+      <div class="modal-footer">
         <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
       </div>
     </div>
   </div>
 </div>
 {% endif %}
+
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js" defer></script>
 <script>
-{% if form.errors %}
 document.addEventListener('DOMContentLoaded', function() {
-    bootstrap.Modal.getOrCreateInstance(document.getElementById('buyModal')).show();
+    var hasErrors = document.querySelector('.alert-danger');
+    var hasPurchasable = document.querySelector('.ticket-card[data-ticket-id]');
+    if (hasErrors && hasPurchasable) {
+        var modal = document.getElementById('buyModal');
+        if (modal) bootstrap.Modal.getOrCreateInstance(modal).show();
+    }
 });
-{% endif %}
+
 (function() {
     var FEE_RATE = 0.08;
     var FEE_FIXED_CENTS = 99;
@@ -361,7 +1265,6 @@ document.addEventListener('DOMContentLoaded', function() {
         return '$' + (cents / 100).toFixed(2);
     }
 
-    // Per-ticket fee injection on page load
     document.querySelectorAll('.ticket-card[data-price]').forEach(function(card) {
         var price = parseFloat(card.dataset.price) || 0;
         if (price <= 0) return;
@@ -370,12 +1273,11 @@ document.addEventListener('DOMContentLoaded', function() {
         var totalCents = subtotalCents + feeCents;
         var el = card.querySelector('.ticket-fee-preview');
         if (el) {
-            el.innerHTML = '+ ' + fmt(feeCents) + ' service fee &nbsp;&rarr;&nbsp; <strong>' + fmt(totalCents) + ' total</strong>';
+            el.innerHTML = '+ ' + fmt(feeCents) + ' fee &rarr; ' + fmt(totalCents) + ' total';
             el.style.display = '';
         }
     });
 
-    // Live order summary
     function updateOrderSummary() {
         var subtotalCents = 0;
         document.querySelectorAll('.ticket-card[data-price]').forEach(function(card) {
@@ -398,6 +1300,22 @@ document.addEventListener('DOMContentLoaded', function() {
         inp.addEventListener('input', updateOrderSummary);
     });
     updateOrderSummary();
+
+    document.querySelectorAll('.qty-btn').forEach(function(btn) {
+        btn.addEventListener('click', function() {
+            var inp = btn.parentElement.querySelector('input[type=number]');
+            if (!inp) return;
+            var current = parseInt(inp.value, 10) || 0;
+            var min = parseInt(inp.min, 10) || 0;
+            var max = inp.max !== '' ? parseInt(inp.max, 10) : Infinity;
+            var next = btn.classList.contains('qty-btn--plus')
+                ? Math.min(current + 1, max)
+                : Math.max(current - 1, min);
+            if (next === current) return;
+            inp.value = next;
+            inp.dispatchEvent(new Event('input', { bubbles: true }));
+        });
+    });
 })();
 
 (function() {
@@ -432,10 +1350,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 .then(function(r) { return r.json(); })
                 .then(function(data) {
                     tried++;
-                    if (data.success) {
-                        card.style.display = '';
-                        unlocked++;
-                    }
+                    if (data.success) { card.style.display = ''; unlocked++; }
                     if (tried === remaining.length) {
                         btn.disabled = false;
                         btn.textContent = 'Unlock';
@@ -476,8 +1391,7 @@ document.addEventListener('DOMContentLoaded', function() {
     if (!wrap || !toggle) return;
 
     var desc = wrap.querySelector('.event-description');
-    // Only show the button if content is actually taller than the collapsed height
-    if (desc.scrollHeight <= 460) {
+    if (desc.scrollHeight <= 440) {
         wrap.classList.remove('collapsed');
         return;
     }
@@ -494,5 +1408,74 @@ document.addEventListener('DOMContentLoaded', function() {
     });
 })();
 </script>
+
+<script>
+(function() {
+    var btn = document.getElementById('navUserBtn');
+    var menu = document.getElementById('navDropdownMenu');
+    if (!btn || !menu) return;
+    btn.addEventListener('click', function(e) { e.stopPropagation(); menu.classList.toggle('open'); });
+    document.addEventListener('click', function() { menu.classList.remove('open'); });
+})();
+</script>
+
+{% if waitlist_feature_enabled %}
+<script>
+// Waitlist join form handling
+document.querySelectorAll('.btn-join-waitlist').forEach(function(btn) {
+    btn.addEventListener('click', function() {
+        var ttHex = btn.dataset.tt;
+        var url = btn.dataset.url;
+        var authed = btn.dataset.authed === 'true';
+        var form = document.getElementById('wl-form-' + ttHex);
+        var errEl = document.getElementById('wl-err-' + ttHex);
+        var okEl = document.getElementById('wl-ok-' + ttHex);
+
+        var body = new URLSearchParams();
+
+        if (!authed) {
+            var nameInput = form.querySelector('input[name="wl_' + ttHex + '-name"]');
+            var emailInput = form.querySelector('input[name="wl_' + ttHex + '-email"]');
+            if (!emailInput.value.trim()) {
+                errEl.textContent = 'Please enter your email.';
+                errEl.style.display = '';
+                return;
+            }
+            body.append('wl_' + ttHex + '-name', nameInput ? nameInput.value.trim() : '');
+            body.append('wl_' + ttHex + '-email', emailInput.value.trim());
+        }
+
+        fetch(url, {
+            method: 'POST',
+            headers: {
+                'X-CSRFToken': '{{ csrf_token }}',
+                'Content-Type': 'application/x-www-form-urlencoded',
+            },
+            body: body.toString(),
+        })
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            if (data.success) {
+                form.style.display = 'none';
+                okEl.style.display = '';
+                btn.textContent = 'On Waitlist';
+                btn.disabled = true;
+                btn.style.display = '';
+            } else {
+                var msg = data.error || 'Something went wrong. Please try again.';
+                errEl.textContent = msg;
+                errEl.style.display = '';
+                btn.disabled = false;
+            }
+        })
+        .catch(function() {
+            errEl.textContent = 'Network error. Please try again.';
+            errEl.style.display = '';
+            btn.disabled = false;
+        });
+    });
+});
+</script>
+{% endif %}
 </body>
 </html>

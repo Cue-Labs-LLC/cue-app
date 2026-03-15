@@ -90,6 +90,10 @@ class Organization(BaseModel):
         max_length=255, blank=True, default='',
         help_text='Meta Conversions API access token for server-side event reporting.',
     )
+    waitlist_feature_enabled = models.BooleanField(
+        default=False,
+        help_text='Enable the waitlist feature for this organization.',
+    )
 
     class Meta:
         ordering = ['name']
@@ -1107,6 +1111,14 @@ class SaleableTicketType(BaseModel):
         related_name='unlocked_by',
         help_text='This ticket type will be shown but disabled until the selected ticket type sells out.',
     )
+    waitlist_enabled = models.BooleanField(
+        default=False,
+        help_text='Allow buyers to join a waitlist when this ticket type is sold out.',
+    )
+    quantity_held = models.PositiveIntegerField(
+        default=0,
+        help_text='Spots temporarily held for waitlist notifications. Counted as sold for availability purposes.',
+    )
 
     class Meta:
         ordering = ['order', 'name']
@@ -1145,13 +1157,13 @@ class SaleableTicketType(BaseModel):
         return active.price if active else self.price
 
     def is_sold_out(self):
-        """True only when a limit is set and fully exhausted."""
+        """True only when a limit is set and fully exhausted (including held spots)."""
         tiers = list(self.tiers.all())  # prefetch-safe
         if tiers:
             return not any(t.is_available() for t in tiers)
         if self.quantity_limit is None:
             return False
-        return self.quantity_sold >= self.quantity_limit
+        return (self.quantity_sold + self.quantity_held) >= self.quantity_limit
 
     def is_unlocked(self):
         """True if no prerequisite, or the prerequisite ticket type is sold out."""
@@ -1184,6 +1196,31 @@ class SaleableTicketTypeTier(BaseModel):
 
     def remaining_capacity(self):
         return max(0, self.allotment - self.quantity_sold)
+
+
+class WaitlistEntry(BaseModel):
+    """A single entry in the per-ticket-type waitlist queue."""
+    ticket_type = models.ForeignKey(
+        SaleableTicketType, on_delete=models.CASCADE, related_name='waitlist_entries'
+    )
+    email = models.EmailField(db_index=True)
+    name = models.CharField(max_length=200, blank=True)
+    position = models.PositiveIntegerField()
+    notified_at = models.DateTimeField(null=True, blank=True)
+    hold_expires_at = models.DateTimeField(null=True, blank=True)
+    purchased_at = models.DateTimeField(null=True, blank=True)
+    expired = models.BooleanField(default=False)
+    hold_token = models.UUIDField(default=uuid.uuid4, unique=True, db_index=True)
+
+    class Meta:
+        ordering = ['position']
+        indexes = [
+            models.Index(fields=['ticket_type', 'position']),
+            models.Index(fields=['hold_token']),
+        ]
+
+    def __str__(self):
+        return f"Waitlist #{self.position} — {self.email}"
 
 
 class PromoCode(BaseModel):
@@ -1552,3 +1589,39 @@ class Payout(BaseModel):
 
     def __str__(self):
         return f"Payout ${self.amount} \u2192 {self.organization.name} ({self.status})"
+
+
+class OrganizerWaitlist(BaseModel):
+    """Beta-gate waitlist for prospective organizers."""
+
+    class Status(models.TextChoices):
+        PENDING  = 'pending',  'Pending'
+        APPROVED = 'approved', 'Approved'
+        REJECTED = 'rejected', 'Rejected'
+
+    name              = models.CharField(max_length=200)
+    email             = models.EmailField(unique=True, db_index=True)
+    organization_name = models.CharField(max_length=200)
+    instagram_handle  = models.CharField(max_length=100, blank=True)
+    status            = models.CharField(
+        max_length=20,
+        choices=Status.choices,
+        default=Status.PENDING,
+        db_index=True,
+    )
+    approved_at = models.DateTimeField(null=True, blank=True)
+    approved_by = models.ForeignKey(
+        'auth.User',
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name='approved_waitlist_entries',
+    )
+
+    class Meta:
+        ordering = ['-created_at']
+        verbose_name = 'Organizer Waitlist Entry'
+        verbose_name_plural = 'Organizer Waitlist'
+
+    def __str__(self):
+        return f"{self.name} <{self.email}> ({self.status})"

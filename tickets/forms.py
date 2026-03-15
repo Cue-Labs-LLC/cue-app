@@ -5,7 +5,7 @@ from django.contrib.auth.forms import AuthenticationForm
 from crispy_forms.helper import FormHelper
 from crispy_forms.layout import Layout, Row, Column, Submit, Field
 from django.forms import inlineformset_factory
-from .models import Organization, CSVFormat, Venue, Event, EventTalent, EventExpense, CustomField, IncomeSource, EventIncome, SaleableTicketType, SaleableTicketTypeTier, UserProfile, PromoCode
+from .models import Organization, CSVFormat, Venue, Event, EventTalent, EventExpense, CustomField, IncomeSource, EventIncome, SaleableTicketType, SaleableTicketTypeTier, UserProfile, PromoCode, OrganizerWaitlist
 
 
 class OrganizationForm(forms.ModelForm):
@@ -1018,7 +1018,7 @@ class SaleableTicketTypeForm(forms.ModelForm):
 
     class Meta:
         model = SaleableTicketType
-        fields = ['name', 'description', 'price', 'quantity_limit', 'is_active', 'sale_start', 'sale_end', 'order', 'is_password_protected', 'password', 'unlocks_after']
+        fields = ['name', 'description', 'price', 'quantity_limit', 'is_active', 'sale_start', 'sale_end', 'order', 'is_password_protected', 'password', 'unlocks_after', 'waitlist_enabled']
         widgets = {
             'name': forms.TextInput(attrs={'class': 'form-control', 'placeholder': 'e.g. General Admission'}),
             'description': forms.Textarea(attrs={'rows': 2, 'class': 'form-control', 'placeholder': 'Short buyer-facing copy (optional)'}),
@@ -1035,6 +1035,7 @@ class SaleableTicketTypeForm(forms.ModelForm):
                 'autocomplete': 'off',
             }),
             'unlocks_after': forms.Select(attrs={'class': 'form-select'}),
+            'waitlist_enabled': forms.CheckboxInput(attrs={'class': 'form-check-input'}),
         }
 
     def __init__(self, *args, **kwargs):
@@ -1410,3 +1411,41 @@ class UserProfileForm(forms.Form):
         profile.gender           = data.get('gender') or ''
         profile.marketing_opt_in = data.get('marketing_opt_in', False)
         profile.save(update_fields=['phone_number', 'gender', 'marketing_opt_in'])
+
+
+class WaitlistJoinForm(forms.Form):
+    name = forms.CharField(
+        max_length=200,
+        required=False,
+        widget=forms.TextInput(attrs={'placeholder': 'Your name (optional)'}),
+    )
+    email = forms.EmailField(
+        widget=forms.EmailInput(attrs={'placeholder': 'your@email.com'}),
+    )
+
+
+class OrganizerWaitlistForm(forms.ModelForm):
+    """Form for prospective organizers to join the beta waitlist."""
+
+    class Meta:
+        model = OrganizerWaitlist
+        fields = ['name', 'email', 'organization_name', 'instagram_handle']
+        widgets = {
+            'name': forms.TextInput(attrs={'class': 'form-control', 'placeholder': 'Your full name'}),
+            'email': forms.EmailInput(attrs={'class': 'form-control', 'placeholder': 'your@email.com'}),
+            'organization_name': forms.TextInput(attrs={'class': 'form-control', 'placeholder': 'e.g., Acme Events'}),
+            'instagram_handle': forms.TextInput(attrs={'class': 'form-control', 'placeholder': '@yourhandle'}),
+        }
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields['instagram_handle'].required = False
+        self.helper = FormHelper()
+        self.helper.form_method = 'post'
+        self.helper.layout = Layout(
+            Field('name'),
+            Field('email'),
+            Field('organization_name'),
+            Field('instagram_handle'),
+            Submit('submit', 'Join the Waitlist', css_class='btn btn-primary w-100'),
+        )

@@ -1,3 +1,5 @@
+from datetime import timedelta
+
 from celery import shared_task
 from celery.utils.log import get_task_logger
 
@@ -200,3 +202,121 @@ def recalculate_rfm_task(self, organization_id):
     finally:
         org.rfm_recalc_in_progress = False
         org.save(update_fields=["rfm_recalc_in_progress"])
+
+
+@shared_task(bind=True, max_retries=2, default_retry_delay=30)
+def notify_next_waitlist_entry(self, ticket_type_id):
+    """Notify the next person on a waitlist that a spot is available."""
+    from django.core.mail import send_mail
+    from django.template.loader import render_to_string
+    from django.conf import settings
+    from django.db import transaction
+    from django.db.models import F
+    from django.utils import timezone as tz
+    from tickets.models import SaleableTicketType, WaitlistEntry
+
+    try:
+        with transaction.atomic():
+            tt = SaleableTicketType.objects.select_for_update().get(id=ticket_type_id)
+    except SaleableTicketType.DoesNotExist:
+        return
+
+    if not tt.waitlist_enabled:
+        return
+
+    # Expire any stale holds before checking availability — makes the chain
+    # self-healing even if expire_waitlist_hold never ran (e.g., dev eager mode,
+    # worker restart).
+    from django.db.models import Value
+    from django.db.models.functions import Greatest
+
+    stale_qs = WaitlistEntry.objects.filter(
+        ticket_type=tt,
+        notified_at__isnull=False,
+        hold_expires_at__lt=tz.now(),
+        purchased_at__isnull=True,
+        expired=False,
+    )
+    for stale in stale_qs:
+        stale.expired = True
+        stale.save(update_fields=['expired'])
+        SaleableTicketType.objects.filter(id=ticket_type_id).update(
+            quantity_held=Greatest(F('quantity_held') - 1, Value(0))
+        )
+
+    if tt.quantity_limit is not None:
+        tt.refresh_from_db(fields=['quantity_held'])
+        if (tt.quantity_sold + tt.quantity_held) >= tt.quantity_limit:
+            return
+
+    entry = (WaitlistEntry.objects
+             .filter(ticket_type=tt, notified_at__isnull=True, expired=False, purchased_at__isnull=True)
+             .order_by('position')
+             .first())
+    if not entry:
+        return
+
+    expires = tz.now() + timedelta(minutes=10)
+    with transaction.atomic():
+        entry.notified_at = tz.now()
+        entry.hold_expires_at = expires
+        entry.save(update_fields=['notified_at', 'hold_expires_at'])
+        SaleableTicketType.objects.filter(id=ticket_type_id).update(
+            quantity_held=F('quantity_held') + 1
+        )
+
+    site_url = getattr(settings, 'SITE_URL', '').rstrip('/')
+    activate_url = f"{site_url}/buy/{tt.event_id}/waitlist/activate/{entry.hold_token}/"
+    context = {
+        'entry': entry,
+        'ticket_type': tt,
+        'event': tt.event,
+        'activate_url': activate_url,
+    }
+    try:
+        send_mail(
+            subject=f'Your spot is ready — {tt.event.name}',
+            message=render_to_string('tickets/buy/waitlist_notification_email.txt', context),
+            html_message=render_to_string('tickets/buy/waitlist_notification_email.html', context),
+            from_email=settings.DEFAULT_FROM_EMAIL,
+            recipient_list=[entry.email],
+            fail_silently=False,
+        )
+    except Exception as exc:
+        logger.exception("Failed to send waitlist notification to %s", entry.email)
+        raise self.retry(exc=exc)
+
+    expire_waitlist_hold.apply_async(args=[str(entry.id)], countdown=610)
+    logger.info("Waitlist: notified %s for ticket type %s (hold expires %s)", entry.email, ticket_type_id, expires)
+
+
+@shared_task(bind=True, max_retries=1)
+def expire_waitlist_hold(self, entry_id):
+    """Expire a waitlist hold that was not converted to a purchase."""
+    from django.db import transaction
+    from django.db.models import F
+    from django.db.models.functions import Greatest
+    from django.db.models import Value
+    from django.utils import timezone as tz
+    from tickets.models import WaitlistEntry, SaleableTicketType
+
+    try:
+        entry = WaitlistEntry.objects.select_related('ticket_type').get(id=entry_id)
+    except WaitlistEntry.DoesNotExist:
+        return
+
+    if entry.purchased_at is not None or entry.expired:
+        return
+
+    if entry.hold_expires_at and tz.now() < entry.hold_expires_at:
+        return
+
+    with transaction.atomic():
+        entry.expired = True
+        entry.save(update_fields=['expired'])
+        SaleableTicketType.objects.filter(id=entry.ticket_type_id).update(
+            quantity_held=Greatest(F('quantity_held') - 1, Value(0))
+        )
+
+    notify_next_waitlist_entry.delay(str(entry.ticket_type_id))
+    logger.info("Waitlist: hold expired for entry %s, notifying next", entry_id)
