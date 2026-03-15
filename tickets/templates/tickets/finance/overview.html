@@ -113,11 +113,6 @@
                     </div>
                     <div class="form-text">Min ${{ min_payout|currency }} · Max ${{ available_balance|currency }}</div>
                 </div>
-                <div class="col-md-5">
-                    <label for="payout-notes" class="form-label">Notes <span class="text-muted">(optional)</span></label>
-                    <input type="text" id="payout-notes" name="notes" class="form-control"
-                           maxlength="500" placeholder="e.g. Q1 2026 settlement">
-                </div>
                 <div class="col-md-3">
                     <button type="submit" class="btn btn-success w-100"
                             {% if available_balance <= 0 %}disabled{% endif %}>
@@ -186,7 +181,6 @@
                         <th class="text-end">Amount</th>
                         <th>Status</th>
                         <th>Transfer ID</th>
-                        <th>Notes</th>
                         <th>Initiated By</th>
                     </tr>
                 </thead>
@@ -211,7 +205,6 @@
                             <span class="text-muted">—</span>
                             {% endif %}
                         </td>
-                        <td class="text-muted small">{{ payout.notes|default:"—" }}</td>
                         <td class="text-muted small">
                             {% if payout.initiated_by %}{{ payout.initiated_by.get_full_name|default:payout.initiated_by.username }}{% else %}—{% endif %}
                         </td>

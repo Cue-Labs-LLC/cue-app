@@ -5731,7 +5731,7 @@ def initiate_payout(request):
         messages.error(request, f'Minimum payout is ${_MIN_PAYOUT:.2f}.')
         return redirect('tickets:finance_overview')
 
-    _, _, available_balance = _compute_available_balance(org)
+    _, _, _, available_balance = _compute_available_balance(org)
     if amount > available_balance:
         messages.error(request, f'Payout amount exceeds available balance (${available_balance:.2f}).')
         return redirect('tickets:finance_overview')
