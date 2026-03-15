@@ -16,6 +16,19 @@
         grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
         gap: 12px;
     }
+
+    @media (max-width: 640px) {
+        .explore-header { margin-bottom: 20px; }
+        /* Pull the wrap padding in so cards bleed closer to screen edges */
+        .attendee-wrap {
+            padding-left: 10px;
+            padding-right: 10px;
+        }
+        .explore-grid {
+            grid-template-columns: 1fr;
+            gap: 10px;
+        }
+    }
 </style>
 {% endblock %}
 

@@ -615,6 +615,59 @@
             from { opacity: 0; transform: translateY(10px); }
             to   { opacity: 1; transform: translateY(0); }
         }
+
+        /* ── MOBILE NAV HAMBURGER ── */
+        .nav-hamburger {
+            display: none;
+            background: none;
+            border: 1px solid var(--border-mid);
+            border-radius: var(--radius);
+            padding: 6px 9px;
+            cursor: pointer;
+            color: var(--text-2);
+            transition: border-color 0.15s, color 0.15s;
+        }
+        .nav-hamburger:hover { border-color: var(--border-strong); color: var(--text); }
+        .nav-hamburger i { font-size: 1rem; display: block; }
+
+        .mobile-nav-drawer {
+            display: none;
+            flex-direction: column;
+            background: var(--surface);
+            border-bottom: 1px solid var(--border);
+            padding: 8px 16px 12px;
+            gap: 2px;
+        }
+        .mobile-nav-drawer.open { display: flex; }
+        .mobile-nav-drawer .nav-link {
+            padding: 10px 12px;
+            font-size: 0.78rem;
+        }
+
+        /* ── RESPONSIVE ── */
+        @media (max-width: 640px) {
+            .attendee-nav {
+                padding: 0 16px;
+                gap: 10px;
+            }
+            .nav-links { display: none; }
+            .nav-hamburger { display: block; }
+            .nav-user-btn span.name-label { display: none; }
+
+            .attendee-wrap {
+                padding: 20px 16px 56px;
+            }
+            .page-title { font-size: 1.35rem; }
+            .page-subtitle { margin-bottom: 20px; }
+
+            .detail-row { flex-direction: column; gap: 4px; }
+            .detail-label { min-width: unset; }
+
+            .qr-card img { width: 160px; height: 160px; }
+
+            .a-table th,
+            .a-table td { padding: 10px 12px; }
+        }
     </style>
     {% block extra_head %}{% endblock %}
 </head>
@@ -642,13 +695,16 @@
     </div>
 
     <div class="nav-right">
+        <button class="nav-hamburger" id="navHamburger" type="button" aria-label="Menu">
+            <i class="bi bi-list"></i>
+        </button>
         {% if user.is_authenticated %}
         <div class="nav-dropdown" id="navDropdown">
             <button class="nav-user-btn" id="navUserBtn" type="button">
                 <div class="nav-user-avatar">
                     {{ user.first_name|make_list|first|upper|default:user.get_username|make_list|first|upper }}
                 </div>
-                {{ user.get_full_name|default:user.get_username }}
+                <span class="name-label">{{ user.get_full_name|default:user.get_username }}</span>
                 <i class="bi bi-chevron-down" style="font-size:10px; margin-left:2px;"></i>
             </button>
             <div class="nav-dropdown-menu" id="navDropdownMenu">
@@ -682,6 +738,21 @@
     </div>
 </nav>
 
+<!-- Mobile nav drawer (shown below nav on small screens) -->
+<div class="mobile-nav-drawer" id="mobileNavDrawer">
+    <a href="{% url 'tickets:attendee_dashboard' %}" class="nav-link{% if '/attendee/dashboard/' in request.path %} active{% endif %}">
+        <i class="bi bi-calendar-event"></i> Events
+    </a>
+    <a href="{% url 'tickets:my_tickets' %}" class="nav-link{% if '/my-tickets/' in request.path %} active{% endif %}">
+        <i class="bi bi-ticket-perforated"></i> My Tickets
+    </a>
+    {% if not is_organizer %}
+    <a href="{% url 'tickets:become_organizer' %}" class="nav-link{% if '/become-organizer/' in request.path %} active{% endif %}">
+        <i class="bi bi-briefcase"></i> Become an Organizer
+    </a>
+    {% endif %}
+</div>
+
 <div class="attendee-wrap">
     {% block content %}{% endblock %}
 </div>
@@ -712,15 +783,30 @@ document.addEventListener('DOMContentLoaded', function() {
 (function() {
     var btn = document.getElementById('navUserBtn');
     var menu = document.getElementById('navDropdownMenu');
-    if (!btn || !menu) return;
+    if (btn && menu) {
+        btn.addEventListener('click', function(e) {
+            e.stopPropagation();
+            menu.classList.toggle('open');
+        });
+        document.addEventListener('click', function() {
+            menu.classList.remove('open');
+        });
+    }
 
-    btn.addEventListener('click', function(e) {
-        e.stopPropagation();
-        menu.classList.toggle('open');
-    });
-    document.addEventListener('click', function() {
-        menu.classList.remove('open');
-    });
+    var ham = document.getElementById('navHamburger');
+    var drawer = document.getElementById('mobileNavDrawer');
+    if (ham && drawer) {
+        ham.addEventListener('click', function(e) {
+            e.stopPropagation();
+            var open = drawer.classList.toggle('open');
+            ham.querySelector('i').className = open ? 'bi bi-x-lg' : 'bi bi-list';
+        });
+        document.addEventListener('click', function() {
+            drawer.classList.remove('open');
+            var icon = ham.querySelector('i');
+            if (icon) icon.className = 'bi bi-list';
+        });
+    }
 })();
 </script>
 
