@@ -52,7 +52,7 @@
     /* Typography */
     --font-display: 'Syne', sans-serif;
     --font-body: 'DM Sans', sans-serif;
-    --font-mono: 'JetBrains Mono', 'Courier New', monospace;
+    --font-mono: 'DM Mono', 'Courier New', monospace;
 
     /* Shadows */
     --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.3);
