@@ -10,7 +10,7 @@ def organization_context(request):
     """
     org = get_organization(request)
     ctx = {
-        'org_name': org.name if org else 'Eventflow',
+        'org_name': org.name if org else 'Cue',
         'user_role': 'organizer',
         'is_organizer': True,
         'is_attendee': False,

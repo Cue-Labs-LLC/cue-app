@@ -5587,11 +5587,6 @@ def finance_overview(request):
     """Finance overview: revenue stats, bank account status, payout history."""
     org = get_organization(request)
 
-    gross = TicketOrder.objects.filter(
-        customer__organization=org,
-        stripe_checkout_session__isnull=False,
-    ).aggregate(total=Coalesce(Sum('total_amount'), Decimal('0.00')))['total']
-
     stripe_revenue, platform_fees, paid_out, available_balance = _compute_available_balance(org)
 
     recent_txns = list(
@@ -5609,7 +5604,6 @@ def finance_overview(request):
     )
 
     context = {
-        'gross_revenue': gross,
         'stripe_revenue': stripe_revenue,
         'platform_fees': platform_fees,
         'paid_out': paid_out,
