@@ -4,6 +4,11 @@ from tickets import api_views
 urlpatterns = [
     # Auth
     path('auth/login/', api_views.api_login, name='api_login'),
+    path('auth/scanner-login/', api_views.scanner_login, name='api_scanner_login'),
+
+    # Scanner (PIN-based guest check-in)
+    path('scanner/event/', api_views.scanner_event, name='api_scanner_event'),
+    path('scanner/checkin/', api_views.scanner_checkin, name='api_scanner_checkin'),
 
     # Organizer
     path('organizer/events/', api_views.organizer_events, name='api_organizer_events'),

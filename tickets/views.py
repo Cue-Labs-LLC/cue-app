@@ -38,6 +38,7 @@ from .models import (
     SaleableTicketType, SaleableTicketTypeTier, StripeCheckoutSession, Payout, PromoCode,
     ExternalSurveyUpload, ExternalSurveyResponse,
     WaitlistEntry, OrganizerWaitlist,
+    ScannerSession, generate_unique_scanner_pin,
     EVENT_STATUS_DRAFT, EVENT_STATUS_LIVE, EVENT_STATUS_ENDED, EVENT_STATUS_CANCELLED,
 )
 from .forms import (
@@ -2301,8 +2302,11 @@ def event_detail(request, event_id):
         for row in sales_over_time_qs
     ])
 
+    active_scanner_sessions = ScannerSession.objects.filter(event=event, is_active=True).count()
+
     context = {
         'event': event,
+        'active_scanner_sessions': active_scanner_sessions,
         'upload_stats': upload_stats,
         'total_orders': total_orders,
         'ticket_revenue': ticket_revenue,
@@ -2342,6 +2346,35 @@ def event_detail(request, event_id):
             round(total_orders / views * 100, 1) if views > 0 else None
         )
     return render(request, 'tickets/event_detail.html', context)
+
+
+@login_required
+@require_org
+@require_organizer
+@require_http_methods(["POST"])
+def generate_scanner_pin(request, event_id):
+    org = get_organization(request)
+    event = get_object_or_404(Event.objects.filter(organization=org), id=event_id)
+    if event.scanner_pin:
+        ScannerSession.objects.filter(event=event, is_active=True).update(is_active=False)
+    event.scanner_pin = generate_unique_scanner_pin()
+    event.save(update_fields=['scanner_pin', 'updated_at'])
+    messages.success(request, 'Scanner PIN generated.')
+    return redirect('tickets:event_detail', event_id=event.id)
+
+
+@login_required
+@require_org
+@require_organizer
+@require_http_methods(["POST"])
+def revoke_scanner_pin(request, event_id):
+    org = get_organization(request)
+    event = get_object_or_404(Event.objects.filter(organization=org), id=event_id)
+    ScannerSession.objects.filter(event=event, is_active=True).update(is_active=False)
+    event.scanner_pin = None
+    event.save(update_fields=['scanner_pin', 'updated_at'])
+    messages.success(request, 'Scanner PIN revoked.')
+    return redirect('tickets:event_detail', event_id=event.id)
 
 
 @login_required

@@ -688,6 +688,10 @@ class Event(AuditBaseModel):
         default=0,
         help_text="Number of times the public ticket page (/buy/<id>/) was loaded.",
     )
+    scanner_pin = models.CharField(
+        max_length=8, null=True, blank=True, unique=True, db_index=True,
+        help_text="6-digit PIN for guest scanner access (no Cue account required).",
+    )
 
     class Meta:
         unique_together = [['organization', 'name', 'start_date']]
@@ -723,6 +727,29 @@ class Event(AuditBaseModel):
     def get_upload_count(self):
         """Get count of distinct uploads associated with this event."""
         return self.get_associated_uploads().count()
+
+
+def generate_unique_scanner_pin():
+    """Return a unique 6-digit numeric PIN not already used by any Event."""
+    import random
+    import string
+    while True:
+        pin = ''.join(random.choices(string.digits, k=6))
+        if not Event.objects.filter(scanner_pin=pin).exists():
+            return pin
+
+
+class ScannerSession(BaseModel):
+    """Issued when a guest logs in with an event's scanner PIN."""
+    event = models.ForeignKey('Event', on_delete=models.CASCADE, related_name='scanner_sessions')
+    token = models.UUIDField(default=uuid.uuid4, unique=True, db_index=True)
+    is_active = models.BooleanField(default=True)
+
+    class Meta:
+        indexes = [models.Index(fields=['token', 'is_active'])]
+
+    def __str__(self):
+        return f"ScannerSession {self.token} ({'active' if self.is_active else 'inactive'})"
 
 
 class EventExpense(AuditBaseModel):

@@ -207,6 +207,54 @@
 
 <div class="card mb-4">
     <div class="card-header d-flex justify-content-between align-items-center">
+        <h5 class="mb-0"><i class="bi bi-qr-code-scan me-2"></i>Scanner Access</h5>
+    </div>
+    <div class="card-body">
+        {% if event.scanner_pin %}
+        <p class="mb-2 text-muted small">Share this PIN with door staff to let them scan tickets without a Cue account.</p>
+        <div class="d-flex align-items-center gap-3 mb-3">
+            <span class="font-monospace fs-3 fw-bold letter-spacing-2" id="scanner-pin-display">{{ event.scanner_pin }}</span>
+            <button class="btn btn-sm btn-outline-secondary" type="button" onclick="copyScannnerPin()">
+                <i class="bi bi-clipboard"></i> Copy
+            </button>
+            {% if active_scanner_sessions > 0 %}
+            <span class="badge bg-success">{{ active_scanner_sessions }} active session{{ active_scanner_sessions|pluralize }}</span>
+            {% else %}
+            <span class="badge bg-secondary">No active sessions</span>
+            {% endif %}
+        </div>
+        <div class="d-flex gap-2">
+            <form method="post" action="{% url 'tickets:generate_scanner_pin' event.id %}">
+                {% csrf_token %}
+                <button type="submit" class="btn btn-sm btn-outline-primary">
+                    <i class="bi bi-arrow-clockwise"></i> Regenerate
+                </button>
+            </form>
+            <form method="post" action="{% url 'tickets:revoke_scanner_pin' event.id %}">
+                {% csrf_token %}
+                <button type="submit" class="btn btn-sm btn-outline-danger"
+                    onclick="return confirm('Revoke the scanner PIN? All active scanner sessions will be deactivated.')">
+                    <i class="bi bi-x-circle"></i> Revoke
+                </button>
+            </form>
+        </div>
+        {% else %}
+        <div class="empty-state py-3">
+            <i class="bi bi-qr-code-scan fs-2 text-muted"></i>
+            <p class="mt-2 mb-3 text-muted">No scanner PIN yet. Generate one to let door staff check in guests without a Cue account.</p>
+            <form method="post" action="{% url 'tickets:generate_scanner_pin' event.id %}">
+                {% csrf_token %}
+                <button type="submit" class="btn btn-primary btn-sm">
+                    <i class="bi bi-plus-lg"></i> Generate PIN
+                </button>
+            </form>
+        </div>
+        {% endif %}
+    </div>
+</div>
+
+<div class="card mb-4">
+    <div class="card-header d-flex justify-content-between align-items-center">
         <h5>Additional Income</h5>
         {% if income_sources %}
         <a href="{% url 'tickets:event_income_create' event.id %}" class="btn btn-sm btn-primary"><i class="bi bi-plus-lg"></i> Add Income</a>
@@ -755,6 +803,19 @@ function copyPublicUrl() {
     if (input) {
         navigator.clipboard.writeText(input.value).then(function() {
             const btn = input.nextElementSibling;
+            if (btn) {
+                const orig = btn.innerHTML;
+                btn.innerHTML = '<i class="bi bi-check"></i> Copied';
+                setTimeout(function() { btn.innerHTML = orig; }, 2000);
+            }
+        });
+    }
+}
+function copyScannnerPin() {
+    const el = document.getElementById('scanner-pin-display');
+    if (el) {
+        navigator.clipboard.writeText(el.textContent.trim()).then(function() {
+            const btn = el.nextElementSibling;
             if (btn) {
                 const orig = btn.innerHTML;
                 btn.innerHTML = '<i class="bi bi-check"></i> Copied';
