@@ -410,7 +410,7 @@ def complete_profile_view(request):
             )
             del request.session['pending_signup_phone']
             auth_login(request, user, backend='tickets.backends.PhoneBackend')
-            messages.success(request, 'Welcome to Eventflow!')
+            messages.success(request, 'Welcome to Cue!')
             next_url = request.session.pop('auth_next', None)
             if next_url and url_has_allowed_host_and_scheme(next_url, allowed_hosts={request.get_host()}):
                 return redirect(next_url)
@@ -555,7 +555,7 @@ def email_complete_profile_view(request):
             )
             del request.session['pending_signup_email']
             auth_login(request, user, backend='tickets.backends.EmailOTPBackend')
-            messages.success(request, 'Welcome to Eventflow!')
+            messages.success(request, 'Welcome to Cue!')
             next_url = request.session.pop('auth_next', None)
             if next_url and url_has_allowed_host_and_scheme(next_url, allowed_hosts={request.get_host()}):
                 return redirect(next_url)
@@ -808,7 +808,7 @@ def verify_otp_view(request):
                 UserProfile.objects.create(user=user, role=UserProfile.Role.ATTENDEE, phone_number=phone)
                 del request.session["verify_signup"]
                 login(request, user, backend='tickets.backends.PhoneBackend')
-                messages.success(request, 'Account created! Welcome to Eventflow.')
+                messages.success(request, 'Account created! Welcome to Cue.')
                 return redirect('tickets:attendee_dashboard')
     else:
         form = OTPVerificationForm()

@@ -9,6 +9,8 @@ urlpatterns = [
     # Scanner (PIN-based guest check-in)
     path('scanner/event/', api_views.scanner_event, name='api_scanner_event'),
     path('scanner/checkin/', api_views.scanner_checkin, name='api_scanner_checkin'),
+    path('scanner/checkin-stats/', api_views.scanner_checkin_stats, name='api_scanner_checkin_stats'),
+    path('scanner/orders/', api_views.scanner_orders, name='api_scanner_orders'),
 
     # Organizer
     path('organizer/events/', api_views.organizer_events, name='api_organizer_events'),
