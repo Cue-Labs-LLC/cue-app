@@ -684,7 +684,7 @@
         <a href="{% url 'tickets:my_tickets' %}" class="nav-link{% if '/my-tickets/' in request.path %} active{% endif %}">
             <i class="bi bi-ticket-perforated"></i> My Tickets
         </a>
-        {% if not is_organizer %}
+        {% if user_role != 'organizer' %}
         <a href="{% url 'tickets:become_organizer' %}" class="nav-link{% if '/become-organizer/' in request.path %} active{% endif %}">
             <i class="bi bi-briefcase"></i> Become an Organizer
         </a>
@@ -740,7 +740,7 @@
     <a href="{% url 'tickets:my_tickets' %}" class="nav-link{% if '/my-tickets/' in request.path %} active{% endif %}">
         <i class="bi bi-ticket-perforated"></i> My Tickets
     </a>
-    {% if not is_organizer %}
+    {% if user_role != 'organizer' %}
     <a href="{% url 'tickets:become_organizer' %}" class="nav-link{% if '/become-organizer/' in request.path %} active{% endif %}">
         <i class="bi bi-briefcase"></i> Become an Organizer
     </a>
