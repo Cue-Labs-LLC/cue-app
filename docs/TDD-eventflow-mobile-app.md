@@ -1,4 +1,4 @@
-# Technical Design Document: Eventflow Mobile App
+# Technical Design Document: Cue Mobile App
 
 **Status:** Draft
 **Author:** Engineering
@@ -8,7 +8,7 @@
 
 ## 1. Overview
 
-Eventflow organizers currently have no mobile tool for managing attendee entry at live events,
+Cue organizers currently have no mobile tool for managing attendee entry at live events,
 and attendees have no native mobile experience for discovering events and managing tickets.
 
 This document describes a cross-platform mobile app (iOS + Android) built to serve both user
@@ -32,7 +32,7 @@ be added without restructuring the project.
 - Allow organizers to scan attendee QR codes and see instant check-in status (valid / already scanned / not found)
 - Allow organizers to sell tickets at the door via tap-to-pay (Apple Pay, Google Pay, contactless cards)
 - Support both iOS and Android from a single codebase
-- Integrate with the existing Eventflow Django backend (no separate backend required)
+- Integrate with the existing Cue Django backend (no separate backend required)
 - Scope all organizer data to the organizer's organization (multi-tenancy preserved)
 - **Architect the project so attendee-facing screens, API calls, and auth can be added in v2 without restructuring**
 
@@ -48,7 +48,7 @@ be added without restructuring the project.
 
 ## 4. Background
 
-The existing Eventflow backend:
+The existing Cue backend:
 - Django 5.2, PostgreSQL (prod) / SQLite (dev)
 - Session-based auth only (no JWT, no DRF)
 - `TicketOrder` model with `order_number` (unique CharField) as the scannable identifier
@@ -388,7 +388,7 @@ The project uses a **feature-based folder structure** so organizer and attendee 
 fully separated, share a common API client and auth store, and can evolve independently.
 
 ```
-eventflow-app/                  # Separate git repo (renamed from eventflow-organizer)
+cueup-app/                  # Separate git repo (renamed from cueup-organizer)
 ├── src/
 │   ├── api/
 │   │   ├── client.ts           # Axios instance — base URL + token interceptor (shared)
@@ -556,7 +556,7 @@ For iOS + Android development/testing, use Stripe's **simulated reader** (no har
 ### New Repo (React Native)
 | Directory/File | Description |
 |----------------|-------------|
-| `eventflow-app/` | New React Native project (separate repo, replaces `eventflow-organizer/` name) |
+| `cueup-app/` | New React Native project (separate repo, replaces `cueup-organizer/` name) |
 
 ---
 

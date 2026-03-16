@@ -1,4 +1,4 @@
-Eventflow - Email Verification
+Cue - Email Verification
 
 Your verification code is: {{ otp_code }}
 

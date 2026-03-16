@@ -1,5 +1,5 @@
 """
-Mobile API views for the Eventflow app.
+Mobile API views for the Cue app.
 All views are plain Django function-based views decorated with DRF's @api_view.
 No DRF ViewSets are used, in keeping with the project's FBV-only rule.
 """

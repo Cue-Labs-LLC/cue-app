@@ -29,7 +29,7 @@ def send_otp_email_task(self, otp_id):
 
     try:
         send_mail(
-            subject='Your Eventflow verification code',
+            subject='Your Cue verification code',
             message=text_body,
             from_email=settings.DEFAULT_FROM_EMAIL,
             recipient_list=[otp.email],
@@ -122,7 +122,7 @@ def send_org_invite_email_task(self, invitation_id):
 
     try:
         send_mail(
-            subject=f"You're invited to join {invitation.organization.name} on Eventflow",
+            subject=f"You're invited to join {invitation.organization.name} on Cue",
             message=text_body,
             from_email=settings.DEFAULT_FROM_EMAIL,
             recipient_list=[invitation.email],

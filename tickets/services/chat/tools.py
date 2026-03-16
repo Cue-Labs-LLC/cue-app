@@ -1,5 +1,5 @@
 """
-Org-scoped tool functions for the Eventflow chat agent.
+Org-scoped tool functions for the Cue chat agent.
 
 Each function accepts `organization` as its first argument. At agent construction
 time, `functools.partial` binds the real org so the LLM never controls which org

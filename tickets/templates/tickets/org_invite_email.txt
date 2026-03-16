@@ -1,6 +1,6 @@
-Eventflow - Organization invitation
+Cue - Organization invitation
 
-You've been invited to join {{ organization_name }} on Eventflow.
+You've been invited to join {{ organization_name }} on Cue.
 
 Accept the invitation here: {{ accept_url }}
 

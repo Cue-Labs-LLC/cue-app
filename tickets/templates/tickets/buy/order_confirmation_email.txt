@@ -1,4 +1,4 @@
-Eventflow - Order confirmation
+Cue - Order confirmation
 
 Hi {{ customer.name }},
 
