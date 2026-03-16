@@ -2340,7 +2340,7 @@ def event_detail(request, event_id):
         for s in sessions:
             s.amount_dollars = Decimal(str(s.amount_total_cents)) / 100
         context['dashboard_sessions'] = sessions
-        context['public_buy_url'] = request.build_absolute_uri(f'/buy/{event.id}/')
+        context['public_buy_url'] = request.build_absolute_uri(f'/e/{event.public_id}/')
         views = getattr(event, 'public_buy_page_views', 0) or 0
         context['conversion_rate_pct'] = (
             round(total_orders / views * 100, 1) if views > 0 else None
@@ -4309,11 +4309,17 @@ def event_flyer_upload(request, event_id):
 # Direct Ticket Selling — Public Views
 # ---------------------------------------------------------------------------
 
-def public_event_buy(request, event_id):
+def buy_redirect(request, event_id):
+    """Redirect old /buy/<uuid>/ links to the new short /e/<public_id>/ URL."""
+    event = get_object_or_404(Event, id=event_id, deleted_at__isnull=True)
+    return redirect('tickets:public_event_buy', public_id=event.public_id, permanent=True)
+
+
+def public_event_buy(request, public_id):
     """Public ticket selector page. POST stores cart in session and redirects to checkout."""
     event = get_object_or_404(
         Event.objects.select_related('venue', 'organization'),
-        id=event_id,
+        public_id=public_id,
         deleted_at__isnull=True,
     )
     eff = event.effective_status
@@ -4334,7 +4340,7 @@ def public_event_buy(request, event_id):
                 waitlist_entries__expired=False,
             ))
         ).order_by('order', 'name')
-        wl_hold = request.session.get(f'waitlist_hold_{event_id}')
+        wl_hold = request.session.get(f'waitlist_hold_{event.id}')
         wl_held_tt_id = wl_hold.get('ticket_type_id') if wl_hold else None
     else:
         ticket_types = SaleableTicketType.objects.filter(
@@ -4384,8 +4390,8 @@ def public_event_buy(request, event_id):
                     'tier_id': str(active_tier.id) if active_tier else None,
                     'tier_name': active_tier.name if active_tier else None,
                 })
-            request.session[f'cart_{event_id}'] = snapshot
-            return redirect('tickets:checkout_payment', event_id=event_id)
+            request.session[f'cart_{event.id}'] = snapshot
+            return redirect('tickets:checkout_payment', public_id=public_id)
     else:
         Event.objects.filter(pk=event.pk).update(
             public_buy_page_views=F('public_buy_page_views') + 1
@@ -4486,13 +4492,13 @@ def public_event_buy(request, event_id):
     })
 
 
-def unlock_ticket_type(request, event_id, ticket_type_id):
+def unlock_ticket_type(request, public_id, ticket_type_id):
     """AJAX POST: validate password for a password-protected SaleableTicketType."""
     if request.method != 'POST':
         return JsonResponse({'success': False}, status=405)
     event = get_object_or_404(
         Event.objects.filter(deleted_at__isnull=True),
-        id=event_id,
+        public_id=public_id,
     )
     tt = get_object_or_404(SaleableTicketType, id=ticket_type_id, event=event, is_active=True)
     if not tt.is_password_protected or not tt.password:
@@ -4504,12 +4510,12 @@ def unlock_ticket_type(request, event_id, ticket_type_id):
 
 
 @require_http_methods(["POST"])
-def join_waitlist(request, event_id, ticket_type_id):
+def join_waitlist(request, public_id, ticket_type_id):
     """Public AJAX endpoint — adds the buyer to the waitlist for a sold-out ticket type."""
     if not request.user.is_authenticated:
         return JsonResponse({'success': False, 'error': 'Login required.'}, status=401)
 
-    event = get_object_or_404(Event.objects.select_related('organization'), id=event_id, deleted_at__isnull=True)
+    event = get_object_or_404(Event.objects.select_related('organization'), public_id=public_id, deleted_at__isnull=True)
     if not event.organization.waitlist_feature_enabled:
         raise Http404()
     tt = get_object_or_404(
@@ -4539,31 +4545,31 @@ def join_waitlist(request, event_id, ticket_type_id):
     return JsonResponse({'success': True})
 
 
-def activate_waitlist_hold(request, event_id, hold_token):
+def activate_waitlist_hold(request, public_id, hold_token):
     """Public endpoint — validates a waitlist hold token and sets a session flag."""
     from django.utils import timezone as tz
     entry = get_object_or_404(
         WaitlistEntry, hold_token=hold_token, purchased_at__isnull=True, expired=False
     )
     tt = entry.ticket_type
-    event = get_object_or_404(Event.objects.select_related('organization'), id=event_id)
+    event = get_object_or_404(Event.objects.select_related('organization'), public_id=public_id)
     if not event.organization.waitlist_feature_enabled:
         raise Http404()
     if str(tt.event_id) != str(event.id):
         raise Http404()
     if entry.hold_expires_at and tz.now() > entry.hold_expires_at:
         return render(request, 'tickets/buy/waitlist_expired.html', {'event': event})
-    request.session[f'waitlist_hold_{event_id}'] = {
+    request.session[f'waitlist_hold_{event.id}'] = {
         'ticket_type_id': str(tt.id),
         'entry_id': str(entry.id),
     }
-    return redirect('tickets:public_event_buy', event_id=event_id)
+    return redirect('tickets:public_event_buy', public_id=public_id)
 
 
 @require_http_methods(["POST"])
-def validate_promo_code(request, event_id):
+def validate_promo_code(request, public_id):
     """Public AJAX endpoint — validates a promo code and stores it in the session."""
-    event = get_object_or_404(Event, id=event_id)
+    event = get_object_or_404(Event, public_id=public_id)
 
     try:
         data = json.loads(request.body)
@@ -4587,14 +4593,14 @@ def validate_promo_code(request, event_id):
             return JsonResponse({'error': 'This promo code has expired.'}, status=400)
         return JsonResponse({'error': 'This promo code has reached its usage limit.'}, status=400)
 
-    cart = request.session.get(f'cart_{event_id}', [])
+    cart = request.session.get(f'cart_{event.id}', [])
     subtotal_cents = sum(
         int(Decimal(item['price']) * 100) * item['quantity']
         for item in cart
     )
     discount_cents = promo.calculate_discount_cents(subtotal_cents)
 
-    request.session[f'promo_{event_id}'] = {
+    request.session[f'promo_{event.id}'] = {
         'promo_code_id': str(promo.id),
         'code': promo.code,
         'discount_cents': discount_cents,
@@ -4655,29 +4661,29 @@ def promo_code_delete(request, event_id, promo_code_id):
     return redirect('tickets:event_edit', event_id=event_id)
 
 
-def checkout_payment(request, event_id):
+def checkout_payment(request, public_id):
     """Custom checkout page — collects buyer info and processes payment via Stripe Elements."""
     from django.conf import settings as django_settings
 
     event = get_object_or_404(
         Event.objects.select_related('venue', 'organization'),
-        id=event_id,
+        public_id=public_id,
     )
 
     if event.effective_status != EVENT_STATUS_LIVE:
-        request.session.pop(f'cart_{event_id}', None)
-        return redirect('tickets:public_event_buy', event_id=event_id)
+        request.session.pop(f'cart_{event.id}', None)
+        return redirect('tickets:public_event_buy', public_id=public_id)
 
-    cart = request.session.get(f'cart_{event_id}')
+    cart = request.session.get(f'cart_{event.id}')
     if not cart:
-        return redirect('tickets:public_event_buy', event_id=event_id)
+        return redirect('tickets:public_event_buy', public_id=public_id)
 
     total_cents = sum(
         int(Decimal(item['price']) * 100) * item['quantity']
         for item in cart
     )
 
-    promo_session = request.session.get(f'promo_{event_id}')
+    promo_session = request.session.get(f'promo_{event.id}')
     discount_cents = promo_session['discount_cents'] if promo_session else 0
     discounted_subtotal_cents = total_cents - discount_cents
     is_free = discounted_subtotal_cents == 0
@@ -4759,9 +4765,9 @@ def checkout_payment(request, event_id):
         from tickets.tasks import send_order_confirmation_email_task
         send_order_confirmation_email_task.delay(str(order.id))
 
-        _clear_waitlist_hold(request, event_id)
-        del request.session[f'cart_{event_id}']
-        request.session.pop(f'promo_{event_id}', None)
+        _clear_waitlist_hold(request, event.id)
+        del request.session[f'cart_{event.id}']
+        request.session.pop(f'promo_{event.id}', None)
         return redirect(f"{reverse_lazy('tickets:checkout_success')}?order_id={order.id}")
 
     saved_pm = None
@@ -4784,7 +4790,7 @@ def checkout_payment(request, event_id):
     grand_total_cents = discounted_subtotal_cents + fee_cents
 
     initcheckout_event_id = str(_uuid.uuid4())
-    request.session[f'initcheckout_eid_{event_id}'] = initcheckout_event_id
+    request.session[f'initcheckout_eid_{event.id}'] = initcheckout_event_id
     pixel_id = event.facebook_pixel_id
     capi_token = event.organization.meta_capi_access_token
     if pixel_id and capi_token:
@@ -4822,20 +4828,20 @@ def checkout_payment(request, event_id):
 
 
 @require_http_methods(["POST"])
-def create_payment_intent(request, event_id):
+def create_payment_intent(request, public_id):
     """JSON endpoint — creates a Stripe PaymentIntent and a StripeCheckoutSession record."""
     from django.conf import settings as django_settings
     import stripe as stripe_lib
 
     event = get_object_or_404(
         Event.objects.select_related('organization'),
-        id=event_id,
+        public_id=public_id,
     )
 
     if event.effective_status != EVENT_STATUS_LIVE:
         return JsonResponse({'error': 'Ticket sales for this event have ended.'}, status=400)
 
-    cart = request.session.get(f'cart_{event_id}')
+    cart = request.session.get(f'cart_{event.id}')
     if not cart:
         return JsonResponse({'error': 'No cart found. Please start over.'}, status=400)
 
@@ -4858,7 +4864,7 @@ def create_payment_intent(request, event_id):
         'client_ip': _capi_client_ip,
         'client_user_agent': request.META.get('HTTP_USER_AGENT', ''),
         'event_source_url': request.build_absolute_uri(
-            f'/buy/{event_id}/success/'
+            f'/e/{event.public_id}/success/'
         ),
     }
 
@@ -4889,7 +4895,7 @@ def create_payment_intent(request, event_id):
         return JsonResponse({'error': 'Use the free ticket flow for $0 orders.'}, status=400)
 
     # Re-validate and apply any promo code stored in the session
-    promo_session = request.session.get(f'promo_{event_id}')
+    promo_session = request.session.get(f'promo_{event.id}')
     discount_cents = 0
     promo_code_id = None
     if promo_session:

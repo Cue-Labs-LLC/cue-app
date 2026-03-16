@@ -123,7 +123,7 @@
                                         {% endif %}
                                         {% if event.ticketing_type == 'direct' and direct_ticketing_enabled %}
                                         <li><hr class="dropdown-divider"></li>
-                                        <li><a class="dropdown-item" href="{% url 'tickets:public_event_buy' event.id %}" target="_blank" rel="noopener noreferrer"><i class="bi bi-box-arrow-up-right me-2"></i>View Ticket Page</a></li>
+                                        <li><a class="dropdown-item" href="{% url 'tickets:public_event_buy' event.public_id %}" target="_blank" rel="noopener noreferrer"><i class="bi bi-box-arrow-up-right me-2"></i>View Ticket Page</a></li>
                                         {% elif event.ticket_link %}
                                         <li><hr class="dropdown-divider"></li>
                                         <li><a class="dropdown-item" href="{{ event.ticket_link }}" target="_blank" rel="noopener noreferrer"><i class="bi bi-box-arrow-up-right me-2"></i>View Ticket Page</a></li>
@@ -139,7 +139,7 @@
                                 <a href="{% url 'tickets:event_delete' event.id %}" class="btn btn-sm btn-outline-danger btn-icon" title="Delete event"><i class="bi bi-trash"></i></a>
                                 {% endif %}
                                 {% if event.ticketing_type == 'direct' and direct_ticketing_enabled %}
-                                <a href="{% url 'tickets:public_event_buy' event.id %}" class="btn btn-sm btn-outline-secondary btn-icon" title="View ticket page" target="_blank" rel="noopener noreferrer"><i class="bi bi-box-arrow-up-right"></i></a>
+                                <a href="{% url 'tickets:public_event_buy' event.public_id %}" class="btn btn-sm btn-outline-secondary btn-icon" title="View ticket page" target="_blank" rel="noopener noreferrer"><i class="bi bi-box-arrow-up-right"></i></a>
                                 {% elif event.ticket_link %}
                                 <a href="{{ event.ticket_link }}" class="btn btn-sm btn-outline-secondary btn-icon" title="View ticket link" target="_blank" rel="noopener noreferrer"><i class="bi bi-box-arrow-up-right"></i></a>
                                 {% endif %}

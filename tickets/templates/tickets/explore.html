@@ -56,9 +56,9 @@
 <div class="explore-grid">
     {% for event in page_obj %}
     <div class="event-card" style="animation-delay: {{ forloop.counter0 }}00ms; animation-duration: 0.35s;">
-        {% with ticket_url=event.id|stringformat:"s" %}
+        {% with ticket_url=event.public_id %}
         {% if event.flyer %}
-        <a href="{% if event.ticketing_type == 'direct' %}{% url 'tickets:public_event_buy' event.id %}{% elif event.ticket_link %}{{ event.ticket_link }}{% else %}#{% endif %}" class="event-card-flyer">
+        <a href="{% if event.ticketing_type == 'direct' %}{% url 'tickets:public_event_buy' event.public_id %}{% elif event.ticket_link %}{{ event.ticket_link }}{% else %}#{% endif %}" class="event-card-flyer">
             <img src="{{ event.flyer.url }}" alt="{{ event.name }}" loading="lazy">
         </a>
         {% else %}
@@ -73,7 +73,7 @@
                 <div><i class="bi bi-geo-alt"></i> {{ event.venue.name }}, {{ event.venue.city }}</div>
             </div>
             {% if event.ticketing_type == 'direct' %}
-            <a href="{% url 'tickets:public_event_buy' event.id %}" class="event-card-cta">Get tickets</a>
+            <a href="{% url 'tickets:public_event_buy' event.public_id %}" class="event-card-cta">Get tickets</a>
             {% elif event.ticket_link %}
             <a href="{{ event.ticket_link }}" class="event-card-cta" target="_blank" rel="noopener noreferrer">Get tickets</a>
             {% endif %}

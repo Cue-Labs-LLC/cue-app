@@ -638,7 +638,7 @@
 <div class="checkout-wrap">
 
     <div class="checkout-header">
-        <a href="{% url 'tickets:public_event_buy' event.id %}" class="back-link">
+        <a href="{% url 'tickets:public_event_buy' event.public_id %}" class="back-link">
             <i class="bi bi-arrow-left"></i> Change selection
         </a>
         <h1 class="event-title">{{ event.name }}</h1>
@@ -749,7 +749,7 @@
 </div>
 
 <script type="application/json" id="promo-config">
-{"applyPromoUrl": "{% url 'tickets:validate_promo_code' event.id %}", "checkoutUrl": "{% url 'tickets:checkout_payment' event.id %}"}
+{"applyPromoUrl": "{% url 'tickets:validate_promo_code' event.public_id %}", "checkoutUrl": "{% url 'tickets:checkout_payment' event.public_id %}"}
 </script>
 <script>
 document.addEventListener('DOMContentLoaded', function () {
@@ -802,7 +802,7 @@ document.addEventListener('DOMContentLoaded', function () {
 
 {% if not is_free %}
 <script type="application/json" id="checkout-config">
-{"publishableKey": "{{ stripe_publishable_key }}", "paymentIntentUrl": "{% url 'tickets:create_payment_intent' event.id %}", "successUrl": "{% url 'tickets:checkout_success' %}", "savedPmId": "{% if saved_pm %}{{ saved_pm.id }}{% endif %}"}
+{"publishableKey": "{{ stripe_publishable_key }}", "paymentIntentUrl": "{% url 'tickets:create_payment_intent' event.public_id %}", "successUrl": "{% url 'tickets:checkout_success' %}", "savedPmId": "{% if saved_pm %}{{ saved_pm.id }}{% endif %}"}
 </script>
 <script>
 document.addEventListener('DOMContentLoaded', function () {
@@ -968,7 +968,7 @@ document.addEventListener('DOMContentLoaded', function() {
             Send code
           </button>
           <div class="text-center" style="margin-top:18px;">
-            <a href="{% url 'tickets:public_event_buy' event.id %}" class="modal-link">
+            <a href="{% url 'tickets:public_event_buy' event.public_id %}" class="modal-link">
               <i class="bi bi-arrow-left"></i> Back to tickets
             </a>
           </div>

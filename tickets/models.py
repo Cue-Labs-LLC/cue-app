@@ -1,4 +1,6 @@
 import uuid
+import secrets
+import string
 from decimal import Decimal
 from django.db import models
 from django.conf import settings
@@ -621,6 +623,11 @@ EVENT_STATUS_CHOICES = [
 ]
 
 
+def generate_event_public_id():
+    """Generate a random 10-char alphanumeric ID for public-facing event URLs."""
+    return ''.join(secrets.choice(string.ascii_letters + string.digits) for _ in range(10))
+
+
 class Event(AuditBaseModel):
     """Event information."""
     organization = models.ForeignKey(
@@ -686,11 +693,19 @@ class Event(AuditBaseModel):
     )
     public_buy_page_views = models.PositiveIntegerField(
         default=0,
-        help_text="Number of times the public ticket page (/buy/<id>/) was loaded.",
+        help_text="Number of times the public ticket page (/e/<id>/) was loaded.",
     )
     scanner_pin = models.CharField(
         max_length=8, null=True, blank=True, unique=True, db_index=True,
         help_text="6-digit PIN for guest scanner access (no Cue account required).",
+    )
+    public_id = models.CharField(
+        max_length=10,
+        unique=True,
+        db_index=True,
+        default=generate_event_public_id,
+        editable=False,
+        help_text="Short public-facing ID used in shareable URLs (/e/<public_id>/).",
     )
 
     class Meta:

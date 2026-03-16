@@ -266,7 +266,7 @@ def notify_next_waitlist_entry(self, ticket_type_id):
         )
 
     site_url = getattr(settings, 'SITE_URL', '').rstrip('/')
-    activate_url = f"{site_url}/buy/{tt.event_id}/waitlist/activate/{entry.hold_token}/"
+    activate_url = f"{site_url}/e/{tt.event.public_id}/waitlist/activate/{entry.hold_token}/"
     context = {
         'entry': entry,
         'ticket_type': tt,
