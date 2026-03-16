@@ -424,7 +424,7 @@
         <p class="hero-sub">Built for independent organizers who want more than a checkout link — real analytics, customer intelligence, and revenue visibility across every event.</p>
         <div class="hero-actions">
             <a href="{% url 'tickets:signup' %}" class="btn btn-primary btn-lg">Start for free &rarr;</a>
-            <a href="{% url 'tickets:explore' %}" class="link-muted">Browse upcoming events</a>
+            {% if browse_events_enabled %}<a href="{% url 'tickets:explore' %}" class="link-muted">Browse upcoming events</a>{% endif %}
         </div>
     </section>
 
@@ -459,6 +459,7 @@
     </section>
 
     <!-- ATTENDEE STRIP -->
+    {% if browse_events_enabled %}
     <div class="attendee-strip">
         <div class="attendee-strip-inner">
             <p class="attendee-strip-text">
@@ -469,6 +470,7 @@
             </a>
         </div>
     </div>
+    {% endif %}
 
     <!-- CTA BANNER -->
     <section class="section cta-banner">

@@ -682,7 +682,7 @@
 
     <div class="nav-links">
         <a href="{% url 'tickets:attendee_dashboard' %}" class="nav-link{% if '/attendee/dashboard/' in request.path %} active{% endif %}">
-            <i class="bi bi-calendar-event"></i> Events
+            <i class="bi bi-house"></i> Home
         </a>
         <a href="{% url 'tickets:my_tickets' %}" class="nav-link{% if '/my-tickets/' in request.path %} active{% endif %}">
             <i class="bi bi-ticket-perforated"></i> My Tickets
@@ -741,7 +741,7 @@
 <!-- Mobile nav drawer (shown below nav on small screens) -->
 <div class="mobile-nav-drawer" id="mobileNavDrawer">
     <a href="{% url 'tickets:attendee_dashboard' %}" class="nav-link{% if '/attendee/dashboard/' in request.path %} active{% endif %}">
-        <i class="bi bi-calendar-event"></i> Events
+        <i class="bi bi-house"></i> Home
     </a>
     <a href="{% url 'tickets:my_tickets' %}" class="nav-link{% if '/my-tickets/' in request.path %} active{% endif %}">
         <i class="bi bi-ticket-perforated"></i> My Tickets

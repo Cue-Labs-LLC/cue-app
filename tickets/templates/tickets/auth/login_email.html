@@ -35,9 +35,11 @@
                 <i class="bi bi-phone"></i> Sign in with phone number instead
             </a>
         </div>
+        {% if browse_events_enabled %}
         <div class="text-center mt-2">
             <a href="/explore/" class="text-decoration-none small">Browse upcoming events</a>
         </div>
+        {% endif %}
     </div>
 </div>
 {% endblock %}

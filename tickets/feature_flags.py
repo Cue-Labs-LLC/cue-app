@@ -13,3 +13,8 @@ def waitlist_enabled(organization):
     if organization is None:
         return False
     return bool(organization.waitlist_feature_enabled)
+
+
+def browse_events_enabled():
+    """Return True to make the public Browse Events page accessible."""
+    return False
