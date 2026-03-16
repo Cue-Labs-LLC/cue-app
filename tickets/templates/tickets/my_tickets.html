@@ -79,7 +79,7 @@
 <div class="empty-state">
     <i class="bi bi-ticket-perforated"></i>
     <p>You haven't purchased any tickets yet.</p>
-    <a href="{% url 'tickets:attendee_dashboard' %}" class="btn-primary-dark">Browse Events</a>
+    {% if browse_events_enabled %}<a href="{% url 'tickets:attendee_dashboard' %}" class="btn-primary-dark">Browse Events</a>{% endif %}
 </div>
 {% endif %}
 {% endblock %}

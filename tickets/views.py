@@ -5457,23 +5457,8 @@ def switch_view_mode(request):
 
 @login_required
 def attendee_dashboard(request):
-    """Attendee home — shows the user's next upcoming event."""
-    from .models import TICKETING_TYPE_DIRECT
-    today = django_tz.localdate()
-    next_order = (
-        TicketOrder.objects
-        .filter(
-            customer__email=request.user.email,
-            event__ticketing_type=TICKETING_TYPE_DIRECT,
-            event__start_date__gte=today,
-            refunded_at__isnull=True,
-        )
-        .select_related('event', 'event__venue', 'customer')
-        .prefetch_related('tickets')
-        .order_by('event__start_date', 'event__start_time')
-        .first()
-    )
-    return render(request, 'tickets/attendee_dashboard.html', {'next_order': next_order})
+    """Redirects legacy /attendee/dashboard/ to My Tickets (now the attendee home)."""
+    return redirect('tickets:my_tickets')
 
 
 @login_required
