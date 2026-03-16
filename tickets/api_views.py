@@ -721,3 +721,68 @@ def scanner_checkin(request):
         'ticket_types': [t.ticket_type for t in order.tickets.all()],
         'checked_in_count': checked_in_count,
     })
+
+
+# ---------------------------------------------------------------------------
+# Scanner — Check-in Stats
+# ---------------------------------------------------------------------------
+
+@api_view(['GET'])
+@authentication_classes([ScannerSessionAuthentication])
+@permission_classes([IsScannerAuthenticated])
+def scanner_checkin_stats(request):
+    """
+    GET /api/scanner/checkin-stats/
+    Returns per-ticket-type check-in counts for the scanner's event.
+    """
+    event = request.auth.event
+    stats = (
+        Ticket.objects
+        .filter(ticket_order__event=event)
+        .values('ticket_type')
+        .annotate(
+            total=Count('id'),
+            checked_in=Count('id', filter=Q(ticket_order__checked_in_at__isnull=False)),
+        )
+        .order_by('ticket_type')
+    )
+    return Response(
+        [{'ticket_type_name': s['ticket_type'], 'total': s['total'], 'checked_in': s['checked_in']}
+         for s in stats],
+    )
+
+
+# ---------------------------------------------------------------------------
+# Scanner — Orders
+# ---------------------------------------------------------------------------
+
+@api_view(['GET'])
+@authentication_classes([ScannerSessionAuthentication])
+@permission_classes([IsScannerAuthenticated])
+def scanner_orders(request):
+    """
+    GET /api/scanner/orders/
+    Returns all ticket orders for the scanner's event, newest first.
+    """
+    event = request.auth.event
+    orders = (
+        TicketOrder.objects
+        .filter(event=event)
+        .select_related('customer')
+        .prefetch_related('tickets')
+        .order_by('-order_date')
+    )
+    data = [
+        {
+            'order_number': o.display_order_number,
+            'customer_name': o.customer.name,
+            'customer_email': o.customer.email,
+            'total_amount': str(o.total_amount),
+            'order_date': o.order_date.isoformat(),
+            'checked_in_at': o.checked_in_at.isoformat() if o.checked_in_at else None,
+            'refunded_at': o.refunded_at.isoformat() if o.refunded_at else None,
+            'ticket_types': [t.ticket_type for t in o.tickets.all()],
+        }
+        for o in orders
+    ]
+    return Response(data)
