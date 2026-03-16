@@ -675,19 +675,16 @@
 
 <!-- Nav -->
 <nav class="attendee-nav">
-    <a href="{% url 'tickets:attendee_dashboard' %}" class="nav-brand">
+    <a href="{% url 'tickets:my_tickets' %}" class="nav-brand">
         <div class="nav-brand-icon"><i class="bi bi-lightning-charge-fill"></i></div>
         <span class="nav-brand-text">{{ org_name }}</span>
     </a>
 
     <div class="nav-links">
-        <a href="{% url 'tickets:attendee_dashboard' %}" class="nav-link{% if '/attendee/dashboard/' in request.path %} active{% endif %}">
-            <i class="bi bi-calendar-event"></i> Events
-        </a>
         <a href="{% url 'tickets:my_tickets' %}" class="nav-link{% if '/my-tickets/' in request.path %} active{% endif %}">
             <i class="bi bi-ticket-perforated"></i> My Tickets
         </a>
-        {% if not is_organizer %}
+        {% if user_role != 'organizer' %}
         <a href="{% url 'tickets:become_organizer' %}" class="nav-link{% if '/become-organizer/' in request.path %} active{% endif %}">
             <i class="bi bi-briefcase"></i> Become an Organizer
         </a>
@@ -740,13 +737,10 @@
 
 <!-- Mobile nav drawer (shown below nav on small screens) -->
 <div class="mobile-nav-drawer" id="mobileNavDrawer">
-    <a href="{% url 'tickets:attendee_dashboard' %}" class="nav-link{% if '/attendee/dashboard/' in request.path %} active{% endif %}">
-        <i class="bi bi-calendar-event"></i> Events
-    </a>
     <a href="{% url 'tickets:my_tickets' %}" class="nav-link{% if '/my-tickets/' in request.path %} active{% endif %}">
         <i class="bi bi-ticket-perforated"></i> My Tickets
     </a>
-    {% if not is_organizer %}
+    {% if user_role != 'organizer' %}
     <a href="{% url 'tickets:become_organizer' %}" class="nav-link{% if '/become-organizer/' in request.path %} active{% endif %}">
         <i class="bi bi-briefcase"></i> Become an Organizer
     </a>

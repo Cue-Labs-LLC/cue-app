@@ -63,7 +63,7 @@ from .services.segmentation.segment_definitions import (
 from .services.cohort_analysis.repeat_customer_calculator import RepeatCustomerCalculator
 from .services.cohort_analysis.cohort_retention_calculator import CohortRetentionCalculator
 from .utils import get_organization, require_org, require_organizer, require_host, require_admin, require_owner, clear_org_cache, next_order_number, generate_qr_b64
-from .feature_flags import direct_ticketing_enabled
+from .feature_flags import direct_ticketing_enabled, browse_events_enabled
 
 from django.core.cache import cache as django_cache
 
@@ -854,6 +854,8 @@ def landing(request):
 
 def explore(request):
     """Public page: list upcoming events with direct ticketing (no login required)."""
+    if not browse_events_enabled():
+        raise Http404
     from .models import TICKETING_TYPE_DIRECT
     today = django_tz.now().date()
     events_qs = (
@@ -5455,22 +5457,8 @@ def switch_view_mode(request):
 
 @login_required
 def attendee_dashboard(request):
-    """Attendee dashboard — shows upcoming purchasable events."""
-    from .models import TICKETING_TYPE_DIRECT
-    today = django_tz.localtime(django_tz.now()).date()
-    events_qs = (
-        Event.objects.filter(
-            deleted_at__isnull=True,
-            start_date__gte=today,
-            ticketing_type=TICKETING_TYPE_DIRECT,
-            status=EVENT_STATUS_LIVE,
-        )
-        .select_related('venue')
-        .order_by('start_date', 'start_time', 'name')
-    )
-    paginator = Paginator(events_qs, 24)
-    page_obj = paginator.get_page(request.GET.get('page'))
-    return render(request, 'tickets/attendee_dashboard.html', {'page_obj': page_obj})
+    """Redirects legacy /attendee/dashboard/ to My Tickets (now the attendee home)."""
+    return redirect('tickets:my_tickets')
 
 
 @login_required

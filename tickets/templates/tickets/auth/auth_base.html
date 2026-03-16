@@ -302,7 +302,7 @@
             </span>
             <span class="auth-brand-name">Cue</span>
         </a>
-        <a href="{% url 'tickets:explore' %}" class="auth-nav-link">Browse events</a>
+        {% if browse_events_enabled %}<a href="{% url 'tickets:explore' %}" class="auth-nav-link">Browse events</a>{% endif %}
     </nav>
 
     <main class="auth-main">
