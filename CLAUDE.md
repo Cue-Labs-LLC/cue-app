@@ -1,8 +1,8 @@
-# CLAUDE.md — Eventflow (enhanced-ltv-updater)
+# CLAUDE.md — Cue (enhanced-ltv-updater)
 
 ## Project Overview
 
-Eventflow is a **multi-tenant event ticketing and customer analytics** Django application. It ingests CSV ticket order data, tracks customer lifetime value, and provides analytics (RFM segmentation, cohort retention, sales forecasting).
+Cue is a **multi-tenant event ticketing and customer analytics** Django application. It ingests CSV ticket order data, tracks customer lifetime value, and provides analytics (RFM segmentation, cohort retention, sales forecasting).
 
 **Stack:** Django 5.2 · Python 3.12 · Pandas · Celery + Redis · PostgreSQL (prod) / SQLite (dev) · Bootstrap 5 · Chart.js · Render (hosting)
 
