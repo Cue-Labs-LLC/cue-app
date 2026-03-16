@@ -14,15 +14,18 @@ from django.db.models.functions import Coalesce
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 
+from rest_framework.authentication import BaseAuthentication, get_authorization_header
 from rest_framework.authtoken.models import Token
 from rest_framework.decorators import api_view, authentication_classes, permission_classes
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.exceptions import AuthenticationFailed
+from rest_framework.permissions import BasePermission, IsAuthenticated
 from rest_framework.response import Response
 
 from .models import (
     Customer,
     Event,
     SaleableTicketType,
+    ScannerSession,
     Ticket,
     TicketOrder,
     TICKETING_TYPE_DIRECT,
@@ -57,6 +60,31 @@ def _invalidate_event_list_cache(org):
             pass
     except Exception:
         pass
+
+
+# ---------------------------------------------------------------------------
+# Scanner auth classes
+# ---------------------------------------------------------------------------
+
+class ScannerSessionAuthentication(BaseAuthentication):
+    """Authenticate requests carrying 'Authorization: Scanner <token>'."""
+
+    def authenticate(self, request):
+        auth = get_authorization_header(request).split()
+        if len(auth) != 2 or auth[0].lower() != b'scanner':
+            return None
+        try:
+            session = ScannerSession.objects.select_related('event__organization').get(
+                token=auth[1].decode(), is_active=True
+            )
+        except (ScannerSession.DoesNotExist, Exception):
+            raise AuthenticationFailed('Invalid or expired scanner token.')
+        return (None, session)  # user=None; session is request.auth
+
+
+class IsScannerAuthenticated(BasePermission):
+    def has_permission(self, request, view):
+        return isinstance(request.auth, ScannerSession)
 
 
 # ---------------------------------------------------------------------------
@@ -568,3 +596,128 @@ def organizer_sell(request):
         'total_amount': str(order.total_amount),
         'ticket_count': ticket_count,
     }, status=201)
+
+
+# ---------------------------------------------------------------------------
+# Scanner — guest (PIN-based, no Cue account)
+# ---------------------------------------------------------------------------
+
+@api_view(['POST'])
+@authentication_classes([])
+@permission_classes([])
+def scanner_login(request):
+    """
+    POST /api/auth/scanner-login/
+    Body: {pin}
+    Returns: {scanner_token, event_id, event_name, org_name, venue, start_date}
+    """
+    pin = request.data.get('pin', '').strip()
+    if not pin:
+        return Response({'error': 'pin is required'}, status=400)
+    try:
+        event = Event.objects.select_related('venue', 'organization').get(scanner_pin=pin)
+    except Event.DoesNotExist:
+        return Response({'error': 'Invalid PIN'}, status=400)
+    session = ScannerSession.objects.create(event=event)
+    return Response({
+        'scanner_token': str(session.token),
+        'event_id': str(event.pk),
+        'event_name': event.name,
+        'org_name': event.organization.name,
+        'venue': event.venue.name if event.venue else '',
+        'start_date': event.start_date.isoformat() if event.start_date else None,
+    })
+
+
+@api_view(['GET'])
+@authentication_classes([ScannerSessionAuthentication])
+@permission_classes([IsScannerAuthenticated])
+def scanner_event(request):
+    """
+    GET /api/scanner/event/
+    Returns event info and check-in stats for the scanner's session.
+    """
+    session = request.auth
+    event = session.event
+    org = event.organization
+    total = TicketOrder.objects.filter(event=event, customer__organization=org).count()
+    checked_in = TicketOrder.objects.filter(
+        event=event, customer__organization=org, checked_in_at__isnull=False
+    ).count()
+    return Response({
+        'event_id': str(event.pk),
+        'event_name': event.name,
+        'org_name': org.name,
+        'venue': event.venue.name if event.venue else '',
+        'start_date': event.start_date.isoformat() if event.start_date else None,
+        'start_time': event.start_time.isoformat() if event.start_time else None,
+        'total_orders': total,
+        'checked_in_count': checked_in,
+    })
+
+
+@api_view(['POST'])
+@authentication_classes([ScannerSessionAuthentication])
+@permission_classes([IsScannerAuthenticated])
+def scanner_checkin(request):
+    """
+    POST /api/scanner/checkin/
+    Body: {order_number, event_id}
+    Authorization: Scanner <token>
+    """
+    session = request.auth
+    event = session.event
+    org = event.organization
+
+    order_number = request.data.get('order_number', '').strip()
+    event_id = request.data.get('event_id', '').strip()
+
+    if not order_number or not event_id:
+        return Response({'error': 'order_number and event_id are required'}, status=400)
+    if str(event.pk) != event_id:
+        return Response({'error': 'Event mismatch'}, status=403)
+
+    with transaction.atomic():
+        order = (
+            TicketOrder.objects
+            .select_for_update()
+            .filter(customer__organization=org, event=event, order_number=order_number)
+            .select_related('customer')
+            .prefetch_related('tickets')
+            .first()
+        )
+        if order is None:
+            return Response({'error': 'Order not found'}, status=404)
+        if order.refunded_at is not None:
+            return Response({
+                'status': 'refunded',
+                'order_number': order.order_number,
+                'customer_name': order.customer.name,
+            })
+        if order.checked_in_at is not None:
+            checked_in_count = TicketOrder.objects.filter(
+                event=event, customer__organization=org, checked_in_at__isnull=False
+            ).count()
+            return Response({
+                'status': 'already_checked_in',
+                'order_number': order.order_number,
+                'customer_name': order.customer.name,
+                'checked_in_at': order.checked_in_at.isoformat(),
+                'ticket_types': [t.ticket_type for t in order.tickets.all()],
+                'checked_in_count': checked_in_count,
+            })
+        order.checked_in_at = timezone.now()
+        order.checked_in_by = None  # no Cue account for scanner guests
+        order.save(update_fields=['checked_in_at', 'checked_in_by'])
+
+    checked_in_count = TicketOrder.objects.filter(
+        event=event, customer__organization=org, checked_in_at__isnull=False
+    ).count()
+    return Response({
+        'status': 'checked_in',
+        'order_number': order.order_number,
+        'customer_name': order.customer.name,
+        'checked_in_at': order.checked_in_at.isoformat(),
+        'ticket_types': [t.ticket_type for t in order.tickets.all()],
+        'checked_in_count': checked_in_count,
+    })

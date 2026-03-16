@@ -25,7 +25,7 @@
     <h1>This link has expired</h1>
     <p>Your 10-minute hold for <span class="event-name">{{ event.name }}</span> has passed.</p>
     <p>If spots are still available, you may have been re-queued and will receive a new notification.</p>
-    <a href="{% url 'tickets:public_event_buy' event.id %}" class="btn">View Event &rarr;</a>
+    <a href="{% url 'tickets:public_event_buy' event.public_id %}" class="btn">View Event &rarr;</a>
 </div>
 </body>
 </html>

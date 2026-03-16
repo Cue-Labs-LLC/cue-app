@@ -1142,7 +1142,7 @@
           {% for tt, bound_field in locked_pairs %}
           {% with at=tt.get_active_tier ep=tt.effective_price %}
           <div class="ticket-card" id="locked-card-{{ tt.id.hex }}"
-               data-unlock-url="{% url 'tickets:unlock_ticket_type' event.id tt.id %}"
+               data-unlock-url="{% url 'tickets:unlock_ticket_type' event.public_id tt.id %}"
                data-price="{{ ep }}"
                data-ticket-id="{{ tt.id }}"
                style="display:none;">
@@ -1215,7 +1215,7 @@
                         </button>
                         {% else %}
                         <button type="button" class="btn-join-waitlist"
-                                data-url="{% url 'tickets:join_waitlist' event.id tt.id %}"
+                                data-url="{% url 'tickets:join_waitlist' event.public_id tt.id %}"
                                 data-tt="{{ tt.id.hex }}"
                                 data-authed="true">
                             Join Waitlist

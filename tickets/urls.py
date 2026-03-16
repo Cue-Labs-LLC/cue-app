@@ -1,4 +1,4 @@
-from django.urls import path
+from django.urls import path, re_path
 from django.views.generic import RedirectView
 from . import views
 
@@ -97,6 +97,8 @@ urlpatterns = [
     path('events/create/', views.event_type_select, name='event_type_select'),
     path('events/create/<str:ticketing_type>/', views.event_create, name='event_create'),
     path('events/<uuid:event_id>/', views.event_detail, name='event_detail'),
+    path('events/<uuid:event_id>/scanner-pin/generate/', views.generate_scanner_pin, name='generate_scanner_pin'),
+    path('events/<uuid:event_id>/scanner-pin/revoke/', views.revoke_scanner_pin, name='revoke_scanner_pin'),
     path('events/<uuid:event_id>/edit/', views.event_edit, name='event_edit'),
     path('events/<uuid:event_id>/flyer/', views.event_flyer_upload, name='event_flyer_upload'),
     path('events/<uuid:event_id>/upload/', views.event_upload_csv, name='event_upload_csv'),
@@ -158,14 +160,16 @@ urlpatterns = [
     path('events/<uuid:event_id>/ticket-types/<uuid:ticket_type_id>/toggle/', views.saleable_ticket_type_toggle, name='saleable_ticket_type_toggle'),
     path('events/<uuid:event_id>/ticket-types/<uuid:ticket_type_id>/delete/', views.saleable_ticket_type_delete, name='saleable_ticket_type_delete'),
 
-    # Direct Ticket Selling — Public (no auth)
-    path('buy/<uuid:event_id>/', views.public_event_buy, name='public_event_buy'),
-    path('buy/<uuid:event_id>/unlock/<uuid:ticket_type_id>/', views.unlock_ticket_type, name='unlock_ticket_type'),
-    path('buy/<uuid:event_id>/waitlist/<uuid:ticket_type_id>/', views.join_waitlist, name='join_waitlist'),
-    path('buy/<uuid:event_id>/waitlist/activate/<uuid:hold_token>/', views.activate_waitlist_hold, name='activate_waitlist_hold'),
-    path('buy/<uuid:event_id>/checkout/', views.checkout_payment, name='checkout_payment'),
-    path('buy/<uuid:event_id>/payment-intent/', views.create_payment_intent, name='create_payment_intent'),
-    path('buy/<uuid:event_id>/apply-promo/', views.validate_promo_code, name='validate_promo_code'),
+    # Direct Ticket Selling — Public (no auth) — short alphanumeric public_id
+    re_path(r'^e/(?P<public_id>[A-Za-z0-9]{10})/$', views.public_event_buy, name='public_event_buy'),
+    re_path(r'^e/(?P<public_id>[A-Za-z0-9]{10})/unlock/(?P<ticket_type_id>[0-9a-f-]{36})/$', views.unlock_ticket_type, name='unlock_ticket_type'),
+    re_path(r'^e/(?P<public_id>[A-Za-z0-9]{10})/waitlist/(?P<ticket_type_id>[0-9a-f-]{36})/$', views.join_waitlist, name='join_waitlist'),
+    re_path(r'^e/(?P<public_id>[A-Za-z0-9]{10})/waitlist/activate/(?P<hold_token>[0-9a-f-]{36})/$', views.activate_waitlist_hold, name='activate_waitlist_hold'),
+    re_path(r'^e/(?P<public_id>[A-Za-z0-9]{10})/checkout/$', views.checkout_payment, name='checkout_payment'),
+    re_path(r'^e/(?P<public_id>[A-Za-z0-9]{10})/payment-intent/$', views.create_payment_intent, name='create_payment_intent'),
+    re_path(r'^e/(?P<public_id>[A-Za-z0-9]{10})/apply-promo/$', views.validate_promo_code, name='validate_promo_code'),
+    # Redirect old /buy/<uuid>/ links to new short /e/<public_id>/
+    path('buy/<uuid:event_id>/', views.buy_redirect, name='buy_redirect'),
     path('checkout/success/', views.checkout_success, name='checkout_success'),
 
     # Promo Codes — Organizer
