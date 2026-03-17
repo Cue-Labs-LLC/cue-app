@@ -4350,20 +4350,18 @@ def public_event_buy(request, public_id):
         ).select_related('unlocks_after').prefetch_related('tiers', 'unlocks_after__tiers').order_by('order', 'name')
         wl_held_tt_id = None
 
-    # Purchasable: on sale, not sold out (or held for this session), not pw-protected, prerequisite sold out (or none)
+    # Purchasable: on sale, not pw-protected, prerequisite sold out (or none); sold-out types included so buyers see them
     available_types   = [tt for tt in ticket_types
-                         if tt.is_on_sale() and not tt.is_password_protected and tt.is_unlocked()
-                         and (not tt.is_sold_out() or str(tt.id) == wl_held_tt_id)]
+                         if tt.is_on_sale() and not tt.is_password_protected and tt.is_unlocked()]
 
     # Coming soon: on sale, not sold out, not pw-protected, but prerequisite NOT yet sold out
     coming_soon_types = [tt for tt in ticket_types
                          if tt.is_on_sale() and not tt.is_sold_out()
                          and not tt.is_password_protected and not tt.is_unlocked()]
 
-    # Password-protected and unlocked (existing behavior)
+    # Password-protected and unlocked (existing behavior); sold-out types included so buyers see them
     locked_types      = [tt for tt in ticket_types
-                         if tt.is_on_sale() and not tt.is_sold_out()
-                         and tt.is_password_protected and tt.is_unlocked()]
+                         if tt.is_on_sale() and tt.is_password_protected and tt.is_unlocked()]
 
     # Build waitlist join forms for sold-out + waitlist-enabled types (excluding held)
     if wl_feature_on:
@@ -4421,7 +4419,9 @@ def public_event_buy(request, public_id):
             event_source_url=request.build_absolute_uri(),
         )
 
-    all_sold_out = ticket_types.exists() and not all_types and not coming_soon_types
+    all_sold_out = (ticket_types.exists()
+                    and not any(not tt.is_sold_out() for tt in available_types + locked_types)
+                    and not coming_soon_types)
     min_ticket_price = min((tt.effective_price for tt in all_types), default=None)
 
     # Social proof: up to 6 distinct confirmed attendees + total count
