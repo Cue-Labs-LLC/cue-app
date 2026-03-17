@@ -96,6 +96,13 @@
             </div>
         </div>
 
+        <form method="post" action="{% url 'tickets:stripe_account_login' %}" style="margin-bottom: 1.25rem;">
+            {% csrf_token %}
+            <button type="submit" class="btn btn-outline-secondary">
+                <i class="bi bi-box-arrow-up-right"></i> Manage bank account
+            </button>
+        </form>
+
         <form method="post" action="{% url 'tickets:initiate_payout' %}">
             {% csrf_token %}
             <div class="row g-3 align-items-end">

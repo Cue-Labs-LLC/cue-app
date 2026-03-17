@@ -5734,6 +5734,28 @@ def stripe_connect_refresh(request):
 
 @login_required
 @require_org
+@require_admin
+@require_http_methods(["POST"])
+def stripe_account_login(request):
+    """Generate a Stripe Express dashboard login link and redirect the organizer."""
+    import stripe as stripe_lib
+    from django.conf import settings as django_settings
+    stripe_lib.api_key = django_settings.STRIPE_SECRET_KEY
+    org = get_organization(request)
+    if not org.stripe_account_id or not org.stripe_onboarding_complete:
+        messages.error(request, "No connected bank account found.")
+        return redirect("tickets:finance_overview")
+    try:
+        login_link = stripe_lib.Account.create_login_link(org.stripe_account_id)
+        return redirect(login_link.url)
+    except stripe_lib.error.StripeError as e:
+        logger.exception("Stripe login link error: %s", e)
+        messages.error(request, "Could not open Stripe dashboard. Please try again.")
+        return redirect("tickets:finance_overview")
+
+
+@login_required
+@require_org
 @require_owner
 @require_http_methods(["POST"])
 def initiate_payout(request):
