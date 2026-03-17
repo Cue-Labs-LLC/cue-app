@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>403 — Forbidden · Cue</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link rel="preload" href="https://fonts.googleapis.com/css2?family=Syne:wght@700;800&family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;1,9..40,300&family=DM+Mono:wght@300;400&display=swap" as="style" onload="this.rel='stylesheet'">
+    <noscript><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Syne:wght@700;800&family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;1,9..40,300&family=DM+Mono:wght@300;400&display=swap"></noscript>
+    <style>
+        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+        :root {
+            --bg:         #0F0E0D;
+            --surface:    #191817;
+            --border:     rgba(255,255,255,0.07);
+            --border-mid: rgba(255,255,255,0.11);
+            --text:       #EDE8E3;
+            --text-2:     #7A7672;
+            --text-3:     #4A4846;
+            --cta:        #EDE8E3;
+            --danger:     #D97060;
+            --font-display: 'Syne', system-ui, sans-serif;
+            --font-body:    'DM Sans', system-ui, sans-serif;
+            --font-mono:    'DM Mono', 'Courier New', monospace;
+        }
+
+        html, body { height: 100%; }
+
+        body {
+            background: var(--bg);
+            color: var(--text);
+            font-family: var(--font-body);
+            font-weight: 300;
+            -webkit-font-smoothing: antialiased;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .e-nav {
+            display: flex;
+            align-items: center;
+            padding: 0 clamp(20px, 4vw, 48px);
+            height: 52px;
+            border-bottom: 1px solid var(--border);
+            flex-shrink: 0;
+        }
+        .e-brand {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            text-decoration: none;
+            color: var(--text);
+        }
+        .e-brand-icon {
+            width: 26px;
+            height: 26px;
+            background: var(--cta);
+            border-radius: 5px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: var(--bg);
+            font-size: 13px;
+        }
+        .e-brand-name {
+            font-family: var(--font-display);
+            font-weight: 800;
+            font-size: 1rem;
+            letter-spacing: -0.02em;
+        }
+
+        .e-main {
+            flex: 1;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: clamp(32px, 6vh, 80px) clamp(20px, 4vw, 48px);
+            position: relative;
+            overflow: hidden;
+        }
+
+        .e-ghost {
+            position: absolute;
+            font-family: var(--font-mono);
+            font-weight: 400;
+            font-size: clamp(160px, 28vw, 320px);
+            color: rgba(217, 112, 96, 0.04);
+            letter-spacing: -0.05em;
+            user-select: none;
+            pointer-events: none;
+            line-height: 1;
+        }
+
+        .e-content {
+            position: relative;
+            max-width: 480px;
+            width: 100%;
+        }
+
+        .e-code {
+            font-family: var(--font-mono);
+            font-size: 0.7rem;
+            font-weight: 400;
+            letter-spacing: 0.12em;
+            text-transform: uppercase;
+            color: var(--text-3);
+            margin-bottom: 20px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        .e-code::before {
+            content: '';
+            display: block;
+            width: 24px;
+            height: 1px;
+            background: var(--text-3);
+        }
+
+        .e-title {
+            font-family: var(--font-display);
+            font-weight: 800;
+            font-size: clamp(1.75rem, 4vw, 2.5rem);
+            letter-spacing: -0.03em;
+            line-height: 1.1;
+            color: var(--text);
+            margin-bottom: 16px;
+        }
+
+        .e-body {
+            font-size: 0.9rem;
+            color: var(--text-2);
+            line-height: 1.65;
+            margin-bottom: 12px;
+        }
+
+        .e-reason {
+            font-family: var(--font-mono);
+            font-size: 0.78rem;
+            color: rgba(217, 112, 96, 0.8);
+            background: rgba(217, 112, 96, 0.06);
+            border: 1px solid rgba(217, 112, 96, 0.15);
+            border-radius: 3px;
+            padding: 10px 14px;
+            margin-bottom: 28px;
+            line-height: 1.5;
+        }
+
+        .e-actions {
+            display: flex;
+            gap: 12px;
+            flex-wrap: wrap;
+        }
+
+        .e-btn {
+            display: inline-flex;
+            align-items: center;
+            gap: 7px;
+            font-family: var(--font-mono);
+            font-size: 0.72rem;
+            font-weight: 400;
+            letter-spacing: 0.1em;
+            text-transform: uppercase;
+            text-decoration: none;
+            padding: 11px 20px;
+            border-radius: 3px;
+            border: 1px solid transparent;
+            cursor: pointer;
+            transition: opacity 0.15s, transform 0.1s;
+        }
+        .e-btn:active { transform: scale(0.98); }
+
+        .e-btn--primary {
+            background: var(--cta);
+            border-color: var(--cta);
+            color: var(--bg);
+        }
+        .e-btn--primary:hover { opacity: 0.88; }
+
+        .e-btn--ghost {
+            background: transparent;
+            border-color: var(--border-mid);
+            color: var(--text-2);
+        }
+        .e-btn--ghost:hover { color: var(--text); border-color: rgba(255,255,255,0.2); }
+    </style>
+</head>
+<body>
+
+<nav class="e-nav">
+    <a href="/" class="e-brand">
+        <span class="e-brand-icon">&#9889;</span>
+        <span class="e-brand-name">Cue</span>
+    </a>
+</nav>
+
+<main class="e-main">
+    <span class="e-ghost">403</span>
+    <div class="e-content">
+        <p class="e-code">Error 403</p>
+        {% if csrf_token_missing or no_referer or reason %}
+        <h1 class="e-title">Request blocked</h1>
+        <p class="e-body">Your request couldn't be verified and was blocked for security reasons. This usually happens when a session expires or a form is submitted from an unexpected origin.</p>
+        {% if reason %}<p class="e-reason">{{ reason }}</p>{% endif %}
+        <div class="e-actions">
+            <a href="javascript:history.back()" class="e-btn e-btn--primary">Go back &amp; retry</a>
+            <a href="/" class="e-btn e-btn--ghost">Go to dashboard</a>
+        </div>
+        {% else %}
+        <h1 class="e-title">Access denied</h1>
+        <p class="e-body">You don't have permission to view this page. If you think this is a mistake, contact your organization admin.</p>
+        <div class="e-actions">
+            <a href="/" class="e-btn e-btn--primary">Go to dashboard</a>
+            <a href="javascript:history.back()" class="e-btn e-btn--ghost">Go back</a>
+        </div>
+        {% endif %}
+    </div>
+</main>
+
+</body>
+</html>
