@@ -19,9 +19,9 @@
             --surface-2:     #232220;
             --surface-3:     #2D2C2A;
             --cta:           #EDE8E3;
-            --text:          #EDE8E3;
-            --text-2:        #B0ACA8;
-            --text-3:        #A8A4A0;
+            --text:          #FFFFFF;
+            --text-2:        #E8E6E3;
+            --text-3:        #C8C5C1;
             --danger:        #D97060;
             --success:       #6A9E7F;
             --border:        rgba(255,255,255,0.07);
@@ -46,174 +46,7 @@
             -webkit-font-smoothing: antialiased;
         }
 
-        /* ── NAV ── */
-        .attendee-nav {
-            position: sticky;
-            top: 0;
-            z-index: 100;
-            background: rgba(15, 14, 13, 0.88);
-            backdrop-filter: blur(12px);
-            -webkit-backdrop-filter: blur(12px);
-            border-bottom: 1px solid var(--border);
-            padding: 0 24px;
-            height: 52px;
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            gap: 16px;
-        }
-
-        .nav-brand {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            text-decoration: none;
-            flex-shrink: 0;
-        }
-        .nav-brand-icon {
-            width: 26px;
-            height: 26px;
-            background: var(--cta);
-            border-radius: 5px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            color: var(--bg);
-            font-size: 13px;
-        }
-        .nav-brand-text {
-            font-family: var(--font-display);
-            font-weight: 800;
-            font-size: 0.95rem;
-            letter-spacing: -0.02em;
-            color: var(--text);
-        }
-
-        .nav-links {
-            display: flex;
-            align-items: center;
-            gap: 2px;
-            flex: 1;
-            padding-left: 24px;
-        }
-        .nav-link {
-            font-family: var(--font-mono);
-            font-size: 0.72rem;
-            letter-spacing: 0.06em;
-            text-transform: uppercase;
-            color: #918D89;
-            text-decoration: none;
-            padding: 6px 10px;
-            border-radius: var(--radius);
-            transition: color 0.15s, background 0.15s;
-            white-space: nowrap;
-            position: relative;
-        }
-        .nav-link:hover { color: #C8C4BF; background: rgba(255,255,255,0.05); }
-        .nav-link.active {
-            color: var(--text);
-            background: transparent;
-        }
-        .nav-link.active::after {
-            content: '';
-            position: absolute;
-            bottom: -1px;
-            left: 10px;
-            right: 10px;
-            height: 1px;
-            background: var(--cta);
-            opacity: 0.6;
-        }
-
-        .nav-right {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            flex-shrink: 0;
-        }
-
-        /* User menu */
-        .nav-user-btn {
-            display: flex;
-            align-items: center;
-            gap: 7px;
-            background: none;
-            border: 1px solid var(--border-mid);
-            border-radius: var(--radius);
-            padding: 5px 10px 5px 7px;
-            cursor: pointer;
-            color: var(--text-2);
-            font-family: var(--font-mono);
-            font-size: 0.72rem;
-            letter-spacing: 0.05em;
-            text-transform: uppercase;
-            transition: border-color 0.15s, color 0.15s;
-        }
-        .nav-user-btn:hover { border-color: var(--border-strong); color: var(--text); }
-        .nav-user-avatar {
-            width: 22px;
-            height: 22px;
-            border-radius: 50%;
-            background: var(--surface-3);
-            border: 1px solid var(--border-mid);
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-size: 10px;
-            font-weight: 500;
-            color: var(--text-2);
-            flex-shrink: 0;
-        }
-
-        /* Dropdown */
-        .nav-dropdown {
-            position: relative;
-        }
-        .nav-dropdown-menu {
-            position: absolute;
-            top: calc(100% + 8px);
-            right: 0;
-            background: var(--surface);
-            border: 1px solid var(--border-mid);
-            border-radius: calc(var(--radius) + 2px);
-            min-width: 180px;
-            padding: 6px;
-            display: none;
-            z-index: 200;
-            box-shadow: 0 8px 24px rgba(0,0,0,0.4);
-        }
-        .nav-dropdown-menu.open { display: block; }
-        .nav-dropdown-item {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            padding: 8px 10px;
-            border-radius: var(--radius);
-            font-size: 0.83rem;
-            color: var(--text-2);
-            text-decoration: none;
-            cursor: pointer;
-            transition: background 0.12s, color 0.12s;
-            width: 100%;
-            background: none;
-            border: none;
-            font-family: var(--font-body);
-            text-align: left;
-        }
-        .nav-dropdown-item:hover { background: rgba(255,255,255,0.05); color: var(--text); }
-        .nav-dropdown-divider {
-            height: 1px;
-            background: var(--border);
-            margin: 4px 0;
-        }
-        .nav-dropdown-label {
-            padding: 6px 10px 4px;
-            font-family: var(--font-mono);
-            font-size: 0.65rem;
-            letter-spacing: 0.1em;
-            text-transform: uppercase;
-            color: var(--text-3);
-        }
+        {% include 'tickets/partials/_attendee_nav_css.html' %}
 
         /* Switch view banner (for organizers in attendee mode) */
         .switch-view-bar {
@@ -576,28 +409,6 @@
             color: var(--success);
         }
 
-        /* ── BUTTON ── */
-        .btn-primary-dark {
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
-            gap: 7px;
-            background: var(--cta);
-            color: var(--bg);
-            border: none;
-            border-radius: var(--radius);
-            padding: 11px 20px;
-            font-family: var(--font-mono);
-            font-size: 0.78rem;
-            font-weight: 500;
-            letter-spacing: 0.09em;
-            text-transform: uppercase;
-            cursor: pointer;
-            text-decoration: none;
-            transition: opacity 0.15s;
-        }
-        .btn-primary-dark:hover { opacity: 0.88; color: var(--bg); }
-
         /* ── VENUE LINK ── */
         .venue-map-link {
             color: var(--text-2);
@@ -616,44 +427,8 @@
             to   { opacity: 1; transform: translateY(0); }
         }
 
-        /* ── MOBILE NAV HAMBURGER ── */
-        .nav-hamburger {
-            display: none;
-            background: none;
-            border: 1px solid var(--border-mid);
-            border-radius: var(--radius);
-            padding: 6px 9px;
-            cursor: pointer;
-            color: var(--text-2);
-            transition: border-color 0.15s, color 0.15s;
-        }
-        .nav-hamburger:hover { border-color: var(--border-strong); color: var(--text); }
-        .nav-hamburger i { font-size: 1rem; display: block; }
-
-        .mobile-nav-drawer {
-            display: none;
-            flex-direction: column;
-            background: var(--surface);
-            border-bottom: 1px solid var(--border);
-            padding: 8px 16px 12px;
-            gap: 2px;
-        }
-        .mobile-nav-drawer.open { display: flex; }
-        .mobile-nav-drawer .nav-link {
-            padding: 10px 12px;
-            font-size: 0.78rem;
-        }
-
         /* ── RESPONSIVE ── */
         @media (max-width: 640px) {
-            .attendee-nav {
-                padding: 0 16px;
-                gap: 10px;
-            }
-            .nav-links { display: none; }
-            .nav-hamburger { display: block; }
-            .nav-user-btn span.name-label { display: none; }
-
             .attendee-wrap {
                 padding: 20px 16px 56px;
             }
@@ -673,79 +448,7 @@
 </head>
 <body>
 
-<!-- Nav -->
-<nav class="attendee-nav">
-    <a href="{% url 'tickets:my_tickets' %}" class="nav-brand">
-        <div class="nav-brand-icon"><i class="bi bi-lightning-charge-fill"></i></div>
-        <span class="nav-brand-text">Cue</span>
-    </a>
-
-    <div class="nav-links">
-        <a href="{% url 'tickets:my_tickets' %}" class="nav-link{% if '/my-tickets/' in request.path %} active{% endif %}">
-            <i class="bi bi-ticket-perforated"></i> My Tickets
-        </a>
-        {% if user_role != 'organizer' %}
-        <a href="{% url 'tickets:become_organizer' %}" class="nav-link{% if '/become-organizer/' in request.path %} active{% endif %}">
-            <i class="bi bi-briefcase"></i> Become an Organizer
-        </a>
-        {% endif %}
-    </div>
-
-    <div class="nav-right">
-        <button class="nav-hamburger" id="navHamburger" type="button" aria-label="Menu">
-            <i class="bi bi-list"></i>
-        </button>
-        {% if user.is_authenticated %}
-        <div class="nav-dropdown" id="navDropdown">
-            <button class="nav-user-btn" id="navUserBtn" type="button">
-                <div class="nav-user-avatar">
-                    {{ user.first_name|make_list|first|upper|default:user.get_username|make_list|first|upper }}
-                </div>
-                <span class="name-label">{{ user.get_full_name|default:user.get_username }}</span>
-                <i class="bi bi-chevron-down" style="font-size:10px; margin-left:2px;"></i>
-            </button>
-            <div class="nav-dropdown-menu" id="navDropdownMenu">
-                <div class="nav-dropdown-label">{{ user.get_full_name|default:user.get_username }}</div>
-                <div class="nav-dropdown-divider"></div>
-                <a href="{% url 'tickets:user_profile' %}" class="nav-dropdown-item">
-                    <i class="bi bi-person-circle"></i> My Profile
-                </a>
-                {% if user_role != 'attendee' %}
-                <div class="nav-dropdown-divider"></div>
-                <form method="post" action="{% url 'tickets:switch_view_mode' %}">
-                    {% csrf_token %}
-                    <input type="hidden" name="mode" value="organizer">
-                    <button type="submit" class="nav-dropdown-item">
-                        <i class="bi bi-grid-1x2"></i> Switch to Organizer View
-                    </button>
-                </form>
-                {% endif %}
-                <div class="nav-dropdown-divider"></div>
-                <form method="post" action="{% url 'tickets:logout' %}">
-                    {% csrf_token %}
-                    <button type="submit" class="nav-dropdown-item">
-                        <i class="bi bi-box-arrow-right"></i> Sign out
-                    </button>
-                </form>
-            </div>
-        </div>
-        {% else %}
-        <a href="{% url 'tickets:login' %}" class="btn-primary-dark" style="padding: 7px 14px; font-size: 0.7rem;">Sign in</a>
-        {% endif %}
-    </div>
-</nav>
-
-<!-- Mobile nav drawer (shown below nav on small screens) -->
-<div class="mobile-nav-drawer" id="mobileNavDrawer">
-    <a href="{% url 'tickets:my_tickets' %}" class="nav-link{% if '/my-tickets/' in request.path %} active{% endif %}">
-        <i class="bi bi-ticket-perforated"></i> My Tickets
-    </a>
-    {% if user_role != 'organizer' %}
-    <a href="{% url 'tickets:become_organizer' %}" class="nav-link{% if '/become-organizer/' in request.path %} active{% endif %}">
-        <i class="bi bi-briefcase"></i> Become an Organizer
-    </a>
-    {% endif %}
-</div>
+{% include 'tickets/partials/_attendee_nav.html' %}
 
 <div class="attendee-wrap">
     {% block content %}{% endblock %}
@@ -772,37 +475,6 @@ document.addEventListener('DOMContentLoaded', function() {
 });
 </script>
 {% endif %}
-
-<script>
-(function() {
-    var btn = document.getElementById('navUserBtn');
-    var menu = document.getElementById('navDropdownMenu');
-    if (btn && menu) {
-        btn.addEventListener('click', function(e) {
-            e.stopPropagation();
-            menu.classList.toggle('open');
-        });
-        document.addEventListener('click', function() {
-            menu.classList.remove('open');
-        });
-    }
-
-    var ham = document.getElementById('navHamburger');
-    var drawer = document.getElementById('mobileNavDrawer');
-    if (ham && drawer) {
-        ham.addEventListener('click', function(e) {
-            e.stopPropagation();
-            var open = drawer.classList.toggle('open');
-            ham.querySelector('i').className = open ? 'bi bi-x-lg' : 'bi bi-list';
-        });
-        document.addEventListener('click', function() {
-            drawer.classList.remove('open');
-            var icon = ham.querySelector('i');
-            if (icon) icon.className = 'bi bi-list';
-        });
-    }
-})();
-</script>
 
 {% block extra_js %}{% endblock %}
 {% block modals %}{% endblock %}
