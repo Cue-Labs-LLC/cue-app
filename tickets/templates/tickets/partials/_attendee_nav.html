@@ -1,0 +1,104 @@
+<!-- Nav -->
+<nav class="attendee-nav">
+    <a href="{% url 'tickets:attendee_dashboard' %}" class="nav-brand">
+        <div class="nav-brand-icon"><i class="bi bi-lightning-charge-fill"></i></div>
+        <span class="nav-brand-text">Cue</span>
+    </a>
+
+    <div class="nav-links">
+        <a href="{% url 'tickets:my_tickets' %}" class="nav-link{% if '/my-tickets/' in request.path %} active{% endif %}">
+            <i class="bi bi-ticket-perforated"></i> My Tickets
+        </a>
+        {% if user_role != 'organizer' %}
+        <a href="{% url 'tickets:become_organizer' %}" class="nav-link{% if '/become-organizer/' in request.path %} active{% endif %}">
+            <i class="bi bi-briefcase"></i> Become an Organizer
+        </a>
+        {% endif %}
+    </div>
+
+    <div class="nav-right">
+        <button class="nav-hamburger" id="navHamburger" type="button" aria-label="Menu">
+            <i class="bi bi-list"></i>
+        </button>
+        {% if user.is_authenticated %}
+        <div class="nav-dropdown" id="navDropdown">
+            <button class="nav-user-btn" id="navUserBtn" type="button">
+                <div class="nav-user-avatar">
+                    {{ user.first_name|make_list|first|upper|default:user.get_username|make_list|first|upper }}
+                </div>
+                <span class="name-label">{{ user.get_full_name|default:user.get_username }}</span>
+                <i class="bi bi-chevron-down" style="font-size:10px; margin-left:2px;"></i>
+            </button>
+            <div class="nav-dropdown-menu" id="navDropdownMenu">
+                <div class="nav-dropdown-label">{{ user.get_full_name|default:user.get_username }}</div>
+                <div class="nav-dropdown-divider"></div>
+                <a href="{% url 'tickets:user_profile' %}" class="nav-dropdown-item">
+                    <i class="bi bi-person-circle"></i> My Profile
+                </a>
+                {% if user_role != 'attendee' %}
+                <div class="nav-dropdown-divider"></div>
+                <form method="post" action="{% url 'tickets:switch_view_mode' %}">
+                    {% csrf_token %}
+                    <input type="hidden" name="mode" value="organizer">
+                    <button type="submit" class="nav-dropdown-item">
+                        <i class="bi bi-grid-1x2"></i> Switch to Organizer View
+                    </button>
+                </form>
+                {% endif %}
+                <div class="nav-dropdown-divider"></div>
+                <form method="post" action="{% url 'tickets:logout' %}">
+                    {% csrf_token %}
+                    <button type="submit" class="nav-dropdown-item">
+                        <i class="bi bi-box-arrow-right"></i> Sign out
+                    </button>
+                </form>
+            </div>
+        </div>
+        {% else %}
+        <a href="{% url 'tickets:login' %}" class="btn-primary-dark" style="padding: 7px 14px; font-size: 0.7rem;">Sign in</a>
+        {% endif %}
+    </div>
+</nav>
+
+<!-- Mobile nav drawer (shown below nav on small screens) -->
+<div class="mobile-nav-drawer" id="mobileNavDrawer">
+    <a href="{% url 'tickets:my_tickets' %}" class="nav-link{% if '/my-tickets/' in request.path %} active{% endif %}">
+        <i class="bi bi-ticket-perforated"></i> My Tickets
+    </a>
+    {% if user_role != 'organizer' %}
+    <a href="{% url 'tickets:become_organizer' %}" class="nav-link{% if '/become-organizer/' in request.path %} active{% endif %}">
+        <i class="bi bi-briefcase"></i> Become an Organizer
+    </a>
+    {% endif %}
+</div>
+
+<script>
+(function() {
+    var btn = document.getElementById('navUserBtn');
+    var menu = document.getElementById('navDropdownMenu');
+    if (btn && menu) {
+        btn.addEventListener('click', function(e) {
+            e.stopPropagation();
+            menu.classList.toggle('open');
+        });
+        document.addEventListener('click', function() {
+            menu.classList.remove('open');
+        });
+    }
+
+    var ham = document.getElementById('navHamburger');
+    var drawer = document.getElementById('mobileNavDrawer');
+    if (ham && drawer) {
+        ham.addEventListener('click', function(e) {
+            e.stopPropagation();
+            var open = drawer.classList.toggle('open');
+            ham.querySelector('i').className = open ? 'bi bi-x-lg' : 'bi bi-list';
+        });
+        document.addEventListener('click', function() {
+            drawer.classList.remove('open');
+            var icon = ham.querySelector('i');
+            if (icon) icon.className = 'bi bi-list';
+        });
+    }
+})();
+</script>
