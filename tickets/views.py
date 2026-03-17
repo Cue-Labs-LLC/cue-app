@@ -577,6 +577,16 @@ def modal_auth_start(request):
     phone = (body.get('phone') or '').strip()
     if not phone:
         return JsonResponse({'error': 'Phone number is required.'}, status=400)
+    # Normalize to E.164: strip spaces/dashes/parens, then prepend +1 if no country code
+    digits = ''.join(c for c in phone if c.isdigit())
+    if phone.startswith('+'):
+        phone = '+' + digits
+    elif len(digits) == 10:
+        phone = '+1' + digits
+    elif len(digits) == 11 and digits.startswith('1'):
+        phone = '+' + digits
+    else:
+        phone = '+' + digits
     is_new = not UserProfile.objects.filter(phone_number=phone).exists()
     if not start_phone_verification(phone):
         return JsonResponse({'error': 'Could not send a verification code. Please check the number and try again.'}, status=400)
@@ -647,10 +657,12 @@ def modal_auth_complete(request):
     )
     user.set_unusable_password()
     user.save()
+    marketing_opt_in = bool(body.get('marketing_opt_in', False))
     UserProfile.objects.create(
         user=user,
         role=UserProfile.Role.ATTENDEE,
         phone_number=phone,
+        marketing_opt_in=marketing_opt_in,
     )
     del request.session['modal_auth']
     from django.contrib.auth import login as auth_login
@@ -4491,6 +4503,7 @@ def public_event_buy(request, public_id):
         'attendee_preview': attendee_preview,
         'attendee_count': attendee_count,
         'wl_held_tt_id': wl_held_tt_id,
+        'user_is_authenticated': request.user.is_authenticated,
     })
 
 
