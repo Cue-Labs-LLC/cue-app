@@ -3,12 +3,26 @@
 
 {% block title %}{{ order.event.name }} — My Tickets{% endblock %}
 
+{% block extra_head %}
+<style>
+.event-page-link { color: var(--success) !important; }
+.event-page-link:hover { color: #8ec4a5 !important; }
+
+@media (max-width: 640px) {
+    .ticket-layout { grid-template-columns: 1fr !important; }
+    .qr-card img { width: min(260px, 80vw) !important; height: min(260px, 80vw) !important; }
+    .ticket-header { flex-wrap: wrap; }
+    .ticket-header-badge { margin-top: 4px; }
+}
+</style>
+{% endblock %}
+
 {% block content %}
 <a href="{% url 'tickets:my_tickets' %}" class="back-link">
     <i class="bi bi-arrow-left"></i> My Tickets
 </a>
 
-<div style="display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin-bottom:28px;animation:fadeUp 0.4s ease both;">
+<div class="ticket-header" style="display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin-bottom:28px;animation:fadeUp 0.4s ease both;">
     <div>
         <h1 class="page-title">{{ order.event.name }}</h1>
         {% if order.event.start_date %}
@@ -20,15 +34,23 @@
             {% endif %}
         </p>
         {% endif %}
+        {% if order.event.public_id %}
+        <a href="{% url 'tickets:public_event_buy' order.event.public_id %}"
+           class="back-link event-page-link"
+           style="margin-top:8px;margin-bottom:0;"
+           target="_blank" rel="noopener">
+            <i class="bi bi-arrow-up-right-square"></i> View Event Page
+        </a>
+        {% endif %}
     </div>
     {% if order.refunded_at %}
-    <span class="a-badge a-badge--danger" style="flex-shrink:0;margin-top:6px;">Refunded</span>
+    <span class="a-badge a-badge--danger ticket-header-badge" style="flex-shrink:0;margin-top:6px;">Refunded</span>
     {% elif order.checked_in_at %}
-    <span class="a-badge a-badge--success" style="flex-shrink:0;margin-top:6px;"><i class="bi bi-check-circle"></i> Checked In</span>
+    <span class="a-badge a-badge--success ticket-header-badge" style="flex-shrink:0;margin-top:6px;"><i class="bi bi-check-circle"></i> Checked In</span>
     {% endif %}
 </div>
 
-<div style="display:grid;grid-template-columns:{% if qr_code %}auto 1fr{% else %}1fr{% endif %};gap:16px;align-items:start;">
+<div class="ticket-layout" style="display:grid;grid-template-columns:{% if qr_code %}auto 1fr{% else %}1fr{% endif %};gap:16px;align-items:start;">
 
     {% if qr_code %}
     <div class="qr-card" style="animation:fadeUp 0.4s 0.05s ease both;">
