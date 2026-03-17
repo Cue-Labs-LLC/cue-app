@@ -5972,3 +5972,10 @@ def survey_analytics(request):
         'rating_labels': [r['overall_rating'] for r in stats['rating_breakdown']],
         'rating_counts': [r['count'] for r in stats['rating_breakdown']],
     })
+
+
+# ── Error handlers ──────────────────────────────────────────────────────────
+
+def csrf_failure(request, reason=''):
+    """Custom CSRF failure view — renders the branded 403 template."""
+    return render(request, '403.html', {'reason': reason, 'csrf_token_missing': True}, status=403)

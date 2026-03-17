@@ -261,6 +261,9 @@ EMAIL_HOST_USER = 'apikey'
 EMAIL_HOST_PASSWORD = os.environ.get('SENDGRID_API_KEY', '')
 DEFAULT_FROM_EMAIL = os.environ.get('DEFAULT_FROM_EMAIL', 'noreply@cueup.co')
 
+# Custom error views
+CSRF_FAILURE_VIEW = 'tickets.views.csrf_failure'
+
 # Security settings for production
 if IS_RENDER or not DEBUG:
     SECURE_SSL_REDIRECT = True
