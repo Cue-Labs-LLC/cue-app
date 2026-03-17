@@ -10,7 +10,7 @@
         border-radius: 50%;
         background: var(--surface-3);
         border: 1px solid var(--border-mid);
-        color: var(--text-2);
+        color: var(--text);
         display: flex;
         align-items: center;
         justify-content: center;
@@ -27,7 +27,7 @@
         font-size: 0.7rem;
         letter-spacing: 0.1em;
         text-transform: uppercase;
-        color: var(--text-3);
+        color: var(--text);
         margin-bottom: 7px;
     }
     .form-control, .form-select {
@@ -63,7 +63,7 @@
         font-family: var(--font-mono);
         font-size: 0.67rem;
         letter-spacing: 0.04em;
-        color: var(--text-3);
+        color: var(--text-2);
         margin-top: 6px;
     }
     .is-invalid { border-color: var(--danger) !important; }
@@ -88,7 +88,7 @@
     }
     .form-check-label {
         font-size: 0.85rem;
-        color: var(--text-2);
+        color: var(--text);
         cursor: pointer;
     }
 </style>
@@ -113,7 +113,7 @@
             <div style="font-family: var(--font-display); font-weight: 700; font-size: 1rem; letter-spacing: -0.01em; color: var(--text); margin-bottom: 4px;">
                 {{ request.user.get_full_name|default:request.user.get_username }}
             </div>
-            <div style="font-family: var(--font-mono); font-size: 0.72rem; letter-spacing: 0.04em; color: var(--text-3); margin-bottom: 14px;">
+            <div style="font-family: var(--font-mono); font-size: 0.72rem; letter-spacing: 0.04em; color: var(--text-2); margin-bottom: 14px;">
                 {{ request.user.email }}
             </div>
 
