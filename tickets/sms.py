@@ -13,8 +13,12 @@ def start_phone_verification(phone: str) -> bool:
     try:
         from twilio.rest import Client
         client = Client(settings.TWILIO_ACCOUNT_SID, settings.TWILIO_AUTH_TOKEN)
-        client.verify.v2.services(settings.TWILIO_VERIFY_SERVICE_SID) \
-            .verifications.create(to=phone, channel='sms')
+        svc = client.verify.v2.services(settings.TWILIO_VERIFY_SERVICE_SID)
+        try:
+            svc.verifications(phone).update(status='canceled')
+        except Exception:
+            pass
+        svc.verifications.create(to=phone, channel='sms')
         return True
     except Exception as exc:
         logger.error("Verify start failed for %s: %s", phone, exc)
@@ -42,8 +46,12 @@ def start_email_verification(email: str) -> bool:
     try:
         from twilio.rest import Client
         client = Client(settings.TWILIO_ACCOUNT_SID, settings.TWILIO_AUTH_TOKEN)
-        client.verify.v2.services(settings.TWILIO_VERIFY_SERVICE_SID) \
-            .verifications.create(to=email, channel='email')
+        svc = client.verify.v2.services(settings.TWILIO_VERIFY_SERVICE_SID)
+        try:
+            svc.verifications(email).update(status='canceled')
+        except Exception:
+            pass
+        svc.verifications.create(to=email, channel='email')
         return True
     except Exception as exc:
         logger.error("Email verify start failed for %s: %s", email, exc)
