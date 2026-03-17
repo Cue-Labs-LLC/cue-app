@@ -769,7 +769,7 @@ document.addEventListener('DOMContentLoaded', function() {
           <div id="modal-phone-error" class="modal-error"></div>
           <div class="modal-field">
             <label class="form-label">Phone number</label>
-            <input type="tel" id="modal-phone-input" class="form-control" placeholder="+1 (555) 000-0000" autocomplete="tel">
+            <input type="tel" id="modal-phone-input" class="form-control" placeholder="(555) 000-0000" autocomplete="tel">
           </div>
           <button type="button" id="modal-phone-btn" class="btn-pay" style="margin-top:8px;">
             Send code
@@ -820,6 +820,12 @@ document.addEventListener('DOMContentLoaded', function() {
           <div class="modal-field">
             <label class="form-label">Email address</label>
             <input type="email" id="modal-email" class="form-control" placeholder="jane@example.com" autocomplete="email">
+          </div>
+          <div style="display:flex;align-items:flex-start;gap:10px;margin-bottom:18px;">
+            <input type="checkbox" id="modal-marketing-opt-in" checked style="margin-top:3px;flex-shrink:0;">
+            <label for="modal-marketing-opt-in" style="font-size:0.78rem;color:var(--text-2);line-height:1.45;cursor:pointer;">
+              Send me updates about this event and future events from this organizer.
+            </label>
           </div>
           <button type="button" id="modal-profile-btn" class="btn-pay" style="margin-top:8px;">
             Create account &amp; continue
@@ -944,12 +950,13 @@ document.addEventListener('DOMContentLoaded', function () {
         var firstName = document.getElementById('modal-first-name').value.trim();
         var lastName = document.getElementById('modal-last-name').value.trim();
         var email = document.getElementById('modal-email').value.trim();
+        var marketingOptIn = document.getElementById('modal-marketing-opt-in').checked;
         if (!firstName || !email) { showError('modal-profile-error', 'First name and email are required.'); return; }
         setLoading(profileBtn, true, 'Create account &amp; continue');
         fetch(urls.completeUrl, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', 'X-CSRFToken': getCookie('csrftoken') },
-            body: JSON.stringify({ first_name: firstName, last_name: lastName, email: email }),
+            body: JSON.stringify({ first_name: firstName, last_name: lastName, email: email, marketing_opt_in: marketingOptIn }),
         })
         .then(function(r) { return r.json(); })
         .then(function(data) {

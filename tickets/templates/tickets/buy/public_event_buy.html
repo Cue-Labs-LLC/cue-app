@@ -727,6 +727,103 @@
             color: var(--text-2);
             font-weight: 500;
         }
+
+        /* Auth modal */
+        #signupPromptModal .modal-content {
+            background: var(--surface);
+            border: 1px solid var(--border-mid);
+            border-radius: calc(var(--radius) + 2px);
+            color: var(--text);
+        }
+        #signupPromptModal .modal-body { padding: 32px 28px; }
+        .modal-icon {
+            font-size: 1.75rem;
+            color: var(--text-2);
+            margin-bottom: 16px;
+        }
+        .modal-title-text {
+            font-family: var(--font-display);
+            font-weight: 700;
+            font-size: 1.2rem;
+            text-align: center;
+            color: var(--text);
+            margin-bottom: 6px;
+        }
+        .modal-subtitle {
+            text-align: center;
+            font-size: 0.85rem;
+            color: var(--text-2);
+            margin-bottom: 24px;
+            line-height: 1.5;
+        }
+        .modal-error {
+            background: rgba(217, 112, 96, 0.1);
+            border: 1px solid rgba(217, 112, 96, 0.3);
+            border-radius: var(--radius);
+            padding: 9px 12px;
+            font-size: 0.82rem;
+            color: var(--danger);
+            margin-bottom: 14px;
+            display: none;
+        }
+        .modal-field { margin-bottom: 14px; }
+        .modal-otp-input {
+            text-align: center;
+            letter-spacing: 0.35em;
+            font-family: var(--font-mono);
+            font-size: 1.2rem;
+        }
+        .modal-link {
+            background: none;
+            border: none;
+            padding: 0;
+            font-family: var(--font-mono);
+            font-size: 0.72rem;
+            letter-spacing: 0.06em;
+            text-transform: uppercase;
+            color: var(--text-2);
+            cursor: pointer;
+            text-decoration: none;
+            display: inline-flex;
+            align-items: center;
+            gap: 5px;
+        }
+        .modal-link:hover { color: var(--text); }
+        .modal-row-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+        .btn-pay {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            width: 100%;
+            background: var(--cta);
+            color: var(--bg);
+            border: none;
+            border-radius: var(--radius);
+            padding: 15px 24px;
+            font-family: var(--font-mono);
+            font-size: 0.85rem;
+            font-weight: 500;
+            letter-spacing: 0.1em;
+            text-transform: uppercase;
+            cursor: pointer;
+            transition: opacity 0.15s, transform 0.1s;
+            margin-top: 18px;
+        }
+        .btn-pay:hover { opacity: 0.9; }
+        .btn-pay:active { transform: scale(0.99); }
+        .btn-pay:disabled { opacity: 0.45; cursor: not-allowed; transform: none; }
+        .spinner-border {
+            width: 14px; height: 14px;
+            border: 2px solid transparent;
+            border-top-color: currentColor;
+            border-radius: 50%;
+            display: inline-block;
+            animation: spin 0.65s linear infinite;
+        }
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
     </style>
 
     {% include 'tickets/buy/_facebook_pixel.html' %}
@@ -859,11 +956,11 @@
     {% if all_sold_out and not waitlisted_sold_out_types %}
     <button type="button" class="btn-buy" disabled>Sold Out</button>
     {% elif all_sold_out and waitlisted_sold_out_types and waitlist_feature_enabled %}
-    <button type="button" class="btn-buy" data-bs-toggle="modal" data-bs-target="#buyModal">
+    <button type="button" class="btn-buy js-buy-trigger">
         Join Waitlist
     </button>
     {% else %}
-    <button type="button" class="btn-buy" data-bs-toggle="modal" data-bs-target="#buyModal">
+    <button type="button" class="btn-buy js-buy-trigger">
         Get Tickets{% if min_ticket_price %} &mdash; From {% if min_ticket_price == 0 %}Free{% else %}${{ min_ticket_price|currency }}{% endif %}{% endif %}
     </button>
     {% endif %}
@@ -1300,5 +1397,241 @@ document.querySelectorAll('.btn-join-waitlist').forEach(function(btn) {
 });
 </script>
 {% endif %}
+
+<script>
+document.addEventListener('DOMContentLoaded', function () {
+    var userIsAuthenticated = {{ user_is_authenticated|lower }};
+
+    document.querySelectorAll('.js-buy-trigger').forEach(function(btn) {
+        btn.addEventListener('click', function() {
+            if (userIsAuthenticated) {
+                var buyModal = new bootstrap.Modal(document.getElementById('buyModal'));
+                buyModal.show();
+            } else {
+                var authModal = new bootstrap.Modal(document.getElementById('signupPromptModal'), {
+                    backdrop: 'static',
+                    keyboard: false
+                });
+                authModal.show();
+            }
+        });
+    });
+});
+</script>
+
+{% if not user_is_authenticated %}
+<div class="modal fade" id="signupPromptModal" tabindex="-1" aria-labelledby="signupPromptLabel" aria-hidden="true" data-bs-backdrop="static" data-bs-keyboard="false">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content">
+      <div class="modal-body">
+
+        <!-- Step 1: Phone -->
+        <div id="modal-step-phone">
+          <div class="text-center modal-icon"><i class="bi bi-ticket-perforated"></i></div>
+          <p class="modal-title-text">Sign in to get your tickets</p>
+          <p class="modal-subtitle">Enter your phone number — we'll send a quick verification code.</p>
+          <div id="modal-phone-error" class="modal-error"></div>
+          <div class="modal-field">
+            <label class="form-label">Phone number</label>
+            <input type="tel" id="modal-phone-input" class="form-control" placeholder="(555) 000-0000" autocomplete="tel">
+          </div>
+          <button type="button" id="modal-phone-btn" class="btn-pay" style="margin-top:8px;">
+            Send code
+          </button>
+          <div class="text-center" style="margin-top:18px;">
+            <a href="{% url 'tickets:public_event_buy' event.public_id %}" class="modal-link">
+              <i class="bi bi-arrow-left"></i> Back to tickets
+            </a>
+          </div>
+        </div>
+
+        <!-- Step 2: OTP -->
+        <div id="modal-step-otp" style="display:none;">
+          <div class="text-center modal-icon"><i class="bi bi-phone"></i></div>
+          <p class="modal-title-text">Enter your code</p>
+          <p class="modal-subtitle">We sent a 6-digit code to <strong id="modal-masked-phone"></strong>.</p>
+          <div id="modal-otp-error" class="modal-error"></div>
+          <div class="modal-field">
+            <label class="form-label">Verification code</label>
+            <input type="text" id="modal-otp-input" class="form-control modal-otp-input" placeholder="000000" maxlength="6" inputmode="numeric" autocomplete="one-time-code">
+          </div>
+          <button type="button" id="modal-otp-btn" class="btn-pay" style="margin-top:8px;">
+            Verify
+          </button>
+          <div class="text-center" style="margin-top:18px;">
+            <button type="button" id="modal-back-to-phone" class="modal-link">
+              <i class="bi bi-arrow-left"></i> Change number
+            </button>
+          </div>
+        </div>
+
+        <!-- Step 3: New user profile -->
+        <div id="modal-step-profile" style="display:none;">
+          <div class="text-center modal-icon"><i class="bi bi-person-plus"></i></div>
+          <p class="modal-title-text">Create your account</p>
+          <p class="modal-subtitle">Just a few details and you're good to go.</p>
+          <div id="modal-profile-error" class="modal-error"></div>
+          <div class="modal-row-grid" style="margin-bottom:14px;">
+            <div>
+              <label class="form-label">First name</label>
+              <input type="text" id="modal-first-name" class="form-control" placeholder="Jane" autocomplete="given-name">
+            </div>
+            <div>
+              <label class="form-label">Last name</label>
+              <input type="text" id="modal-last-name" class="form-control" placeholder="Smith" autocomplete="family-name">
+            </div>
+          </div>
+          <div class="modal-field">
+            <label class="form-label">Email address</label>
+            <input type="email" id="modal-email" class="form-control" placeholder="jane@example.com" autocomplete="email">
+          </div>
+          <div style="display:flex;align-items:flex-start;gap:10px;margin-bottom:18px;">
+            <input type="checkbox" id="modal-marketing-opt-in" checked style="margin-top:3px;flex-shrink:0;">
+            <label for="modal-marketing-opt-in" style="font-size:0.78rem;color:var(--text-2);line-height:1.45;cursor:pointer;">
+              Send me updates about this event and future events from this organizer.
+            </label>
+          </div>
+          <button type="button" id="modal-profile-btn" class="btn-pay" style="margin-top:8px;">
+            Create account &amp; continue
+          </button>
+        </div>
+
+      </div>
+    </div>
+  </div>
+</div>
+
+<script type="application/json" id="modal-auth-urls">
+{"startUrl": "{% url 'tickets:modal_auth_start' %}", "verifyUrl": "{% url 'tickets:modal_auth_verify' %}", "completeUrl": "{% url 'tickets:modal_auth_complete' %}"}
+</script>
+<script>
+document.addEventListener('DOMContentLoaded', function () {
+    var urls = JSON.parse(document.getElementById('modal-auth-urls').textContent);
+
+    function getCookie(name) {
+        var v = document.cookie.match('(^|;) ?' + name + '=([^;]*)(;|$)');
+        return v ? v[2] : null;
+    }
+
+    function showError(elId, msg) {
+        var el = document.getElementById(elId);
+        el.textContent = msg;
+        el.style.display = 'block';
+    }
+    function hideError(elId) {
+        document.getElementById(elId).style.display = 'none';
+    }
+
+    function showStep(step) {
+        ['phone', 'otp', 'profile'].forEach(function(s) {
+            document.getElementById('modal-step-' + s).style.display = s === step ? '' : 'none';
+        });
+    }
+
+    function setLoading(btn, loading, defaultText) {
+        btn.disabled = loading;
+        btn.innerHTML = loading
+            ? '<span class="spinner-border" role="status"></span>&ensp;Please wait...'
+            : defaultText;
+    }
+
+    // Step 1 — Phone
+    var phoneBtn = document.getElementById('modal-phone-btn');
+    var phoneInput = document.getElementById('modal-phone-input');
+    phoneInput.addEventListener('keydown', function(e) { if (e.key === 'Enter') phoneBtn.click(); });
+
+    phoneBtn.addEventListener('click', function () {
+        hideError('modal-phone-error');
+        var phone = phoneInput.value.trim();
+        if (!phone) { showError('modal-phone-error', 'Please enter your phone number.'); return; }
+        setLoading(phoneBtn, true, 'Send code');
+        fetch(urls.startUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-CSRFToken': getCookie('csrftoken') },
+            body: JSON.stringify({ phone: phone }),
+        })
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            setLoading(phoneBtn, false, 'Send code');
+            if (data.error) { showError('modal-phone-error', data.error); return; }
+            document.getElementById('modal-masked-phone').textContent = phone.length > 4 ? '***' + phone.slice(-4) : phone;
+            showStep('otp');
+            document.getElementById('modal-otp-input').focus();
+        })
+        .catch(function() {
+            setLoading(phoneBtn, false, 'Send code');
+            showError('modal-phone-error', 'Something went wrong. Please try again.');
+        });
+    });
+
+    // Step 2 — OTP
+    var otpBtn = document.getElementById('modal-otp-btn');
+    var otpInput = document.getElementById('modal-otp-input');
+    otpInput.addEventListener('keydown', function(e) { if (e.key === 'Enter') otpBtn.click(); });
+
+    document.getElementById('modal-back-to-phone').addEventListener('click', function() {
+        hideError('modal-otp-error');
+        showStep('phone');
+    });
+
+    otpBtn.addEventListener('click', function () {
+        hideError('modal-otp-error');
+        var code = otpInput.value.trim();
+        if (!code) { showError('modal-otp-error', 'Please enter the verification code.'); return; }
+        setLoading(otpBtn, true, 'Verify');
+        fetch(urls.verifyUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-CSRFToken': getCookie('csrftoken') },
+            body: JSON.stringify({ code: code }),
+        })
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            setLoading(otpBtn, false, 'Verify');
+            if (data.error) { showError('modal-otp-error', data.error); return; }
+            if (data.status === 'logged_in') {
+                window.location.reload();
+            } else if (data.status === 'new_user') {
+                showStep('profile');
+                document.getElementById('modal-first-name').focus();
+            }
+        })
+        .catch(function() {
+            setLoading(otpBtn, false, 'Verify');
+            showError('modal-otp-error', 'Something went wrong. Please try again.');
+        });
+    });
+
+    // Step 3 — Profile
+    var profileBtn = document.getElementById('modal-profile-btn');
+    profileBtn.addEventListener('click', function () {
+        hideError('modal-profile-error');
+        var firstName = document.getElementById('modal-first-name').value.trim();
+        var lastName = document.getElementById('modal-last-name').value.trim();
+        var email = document.getElementById('modal-email').value.trim();
+        var marketingOptIn = document.getElementById('modal-marketing-opt-in').checked;
+        if (!firstName || !email) { showError('modal-profile-error', 'First name and email are required.'); return; }
+        setLoading(profileBtn, true, 'Create account &amp; continue');
+        fetch(urls.completeUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-CSRFToken': getCookie('csrftoken') },
+            body: JSON.stringify({ first_name: firstName, last_name: lastName, email: email, marketing_opt_in: marketingOptIn }),
+        })
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            setLoading(profileBtn, false, 'Create account &amp; continue');
+            if (data.error) { showError('modal-profile-error', data.error); return; }
+            if (data.status === 'logged_in') {
+                window.location.reload();
+            }
+        })
+        .catch(function() {
+            setLoading(profileBtn, false, 'Create account &amp; continue');
+            showError('modal-profile-error', 'Something went wrong. Please try again.');
+        });
+    });
+});
+</script>
+{% endif %}
+
 </body>
 </html>
