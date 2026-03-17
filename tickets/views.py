@@ -4350,20 +4350,18 @@ def public_event_buy(request, public_id):
         ).select_related('unlocks_after').prefetch_related('tiers', 'unlocks_after__tiers').order_by('order', 'name')
         wl_held_tt_id = None
 
-    # Purchasable: on sale, not sold out (or held for this session), not pw-protected, prerequisite sold out (or none)
+    # Purchasable: on sale, not pw-protected, prerequisite sold out (or none); sold-out types included so buyers see them
     available_types   = [tt for tt in ticket_types
-                         if tt.is_on_sale() and not tt.is_password_protected and tt.is_unlocked()
-                         and (not tt.is_sold_out() or str(tt.id) == wl_held_tt_id)]
+                         if tt.is_on_sale() and not tt.is_password_protected and tt.is_unlocked()]
 
     # Coming soon: on sale, not sold out, not pw-protected, but prerequisite NOT yet sold out
     coming_soon_types = [tt for tt in ticket_types
                          if tt.is_on_sale() and not tt.is_sold_out()
                          and not tt.is_password_protected and not tt.is_unlocked()]
 
-    # Password-protected and unlocked (existing behavior)
+    # Password-protected and unlocked (existing behavior); sold-out types included so buyers see them
     locked_types      = [tt for tt in ticket_types
-                         if tt.is_on_sale() and not tt.is_sold_out()
-                         and tt.is_password_protected and tt.is_unlocked()]
+                         if tt.is_on_sale() and tt.is_password_protected and tt.is_unlocked()]
 
     # Build waitlist join forms for sold-out + waitlist-enabled types (excluding held)
     if wl_feature_on:
@@ -4421,7 +4419,9 @@ def public_event_buy(request, public_id):
             event_source_url=request.build_absolute_uri(),
         )
 
-    all_sold_out = ticket_types.exists() and not all_types and not coming_soon_types
+    all_sold_out = (ticket_types.exists()
+                    and not any(not tt.is_sold_out() for tt in available_types + locked_types)
+                    and not coming_soon_types)
     min_ticket_price = min((tt.effective_price for tt in all_types), default=None)
 
     # Social proof: up to 6 distinct confirmed attendees + total count
@@ -5730,6 +5730,28 @@ def stripe_connect_refresh(request):
     except stripe_lib.error.StripeError as e:
         messages.error(request, f'Could not refresh onboarding link: {getattr(e, "user_message", None) or str(e)}')
         return redirect('tickets:finance_overview')
+
+
+@login_required
+@require_org
+@require_admin
+@require_http_methods(["POST"])
+def stripe_account_login(request):
+    """Generate a Stripe Express dashboard login link and redirect the organizer."""
+    import stripe as stripe_lib
+    from django.conf import settings as django_settings
+    stripe_lib.api_key = django_settings.STRIPE_SECRET_KEY
+    org = get_organization(request)
+    if not org.stripe_account_id or not org.stripe_onboarding_complete:
+        messages.error(request, "No connected bank account found.")
+        return redirect("tickets:finance_overview")
+    try:
+        login_link = stripe_lib.Account.create_login_link(org.stripe_account_id)
+        return redirect(login_link.url)
+    except stripe_lib.error.StripeError as e:
+        logger.exception("Stripe login link error: %s", e)
+        messages.error(request, "Could not open Stripe dashboard. Please try again.")
+        return redirect("tickets:finance_overview")
 
 
 @login_required

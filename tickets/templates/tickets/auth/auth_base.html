@@ -20,7 +20,7 @@
             --surface-3:     #2D2C2A;
             --cta:           #EDE8E3;
             --text:          #EDE8E3;
-            --text-2:        #7A7672;
+            --text-2:        #9E9A96;
             --text-3:        #4A4846;
             --danger:        #D97060;
             --success:       #6A9E7F;
@@ -138,7 +138,7 @@
             font-size: 0.68rem;
             letter-spacing: 0.1em;
             text-transform: uppercase;
-            color: var(--text-2);
+            color: var(--text);
             margin-bottom: 6px;
         }
 
@@ -170,7 +170,7 @@
 
         .auth-wrap .form-text {
             font-size: 0.78rem;
-            color: var(--text-3);
+            color: var(--text-2);
         }
 
         .auth-wrap .form-control.is-invalid,
@@ -188,6 +188,11 @@
             font-size: 0.67rem;
             letter-spacing: 0.04em;
             color: var(--danger);
+        }
+
+        .auth-wrap .form-check-label {
+            color: var(--text);
+            font-size: 0.88rem;
         }
 
         .auth-wrap .mb-3 { margin-bottom: 1rem !important; }
@@ -311,5 +316,27 @@
         </div>
     </main>
 
+<script>
+document.addEventListener('DOMContentLoaded', function () {
+    var input = document.getElementById('id_phone_number');
+    if (!input) return;
+    input.addEventListener('input', function () {
+        var val = this.value;
+        if (val.startsWith('+')) return;
+        var digits = val.replace(/\D/g, '').slice(0, 10);
+        var formatted = '';
+        if (digits.length === 0) {
+            formatted = '';
+        } else if (digits.length <= 3) {
+            formatted = '(' + digits;
+        } else if (digits.length <= 6) {
+            formatted = '(' + digits.slice(0, 3) + ') ' + digits.slice(3);
+        } else {
+            formatted = '(' + digits.slice(0, 3) + ') ' + digits.slice(3, 6) + '-' + digits.slice(6);
+        }
+        this.value = formatted;
+    });
+});
+</script>
 </body>
 </html>

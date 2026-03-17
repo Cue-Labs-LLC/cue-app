@@ -141,3 +141,5 @@ dmypy.json
 
 # Cursor
 .cursor/
+
+.claude/settings.local.json

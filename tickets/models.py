@@ -1194,6 +1194,7 @@ class SaleableTicketType(BaseModel):
                 return tier
         return None
 
+    @property
     def effective_price(self):
         active = self.get_active_tier()
         return active.price if active else self.price

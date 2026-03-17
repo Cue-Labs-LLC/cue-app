@@ -1,4 +1,5 @@
 import json
+import re as _re
 from django import forms
 from django.forms import modelformset_factory
 from django.contrib.auth.forms import AuthenticationForm
@@ -6,6 +7,20 @@ from crispy_forms.helper import FormHelper
 from crispy_forms.layout import Layout, Row, Column, Submit, Field
 from django.forms import inlineformset_factory
 from .models import Organization, CSVFormat, Venue, Event, EventTalent, EventExpense, CustomField, IncomeSource, EventIncome, SaleableTicketType, SaleableTicketTypeTier, UserProfile, PromoCode, OrganizerWaitlist
+
+
+def _normalize_phone(raw: str) -> str:
+    """Normalize a phone number string to E.164 format (+1XXXXXXXXXX for US numbers)."""
+    phone = raw.strip()
+    if not phone.startswith('+'):
+        digits = _re.sub(r'\D', '', phone)
+        if len(digits) == 10:
+            phone = '+1' + digits
+        elif len(digits) == 11 and digits[0] == '1':
+            phone = '+' + digits
+        else:
+            phone = '+' + digits  # let regex validation catch invalid formats
+    return phone
 
 
 class OrganizationForm(forms.ModelForm):
@@ -63,10 +78,10 @@ class AttendeePhoneForm(forms.Form):
         max_length=20,
         widget=forms.TextInput(attrs={
             'class': 'form-control',
-            'placeholder': '+1 (555) 000-0000',
+            'placeholder': '(555) 000-0000',
             'type': 'tel',
         }),
-        help_text='Enter your phone number in international format (e.g. +15551234567)',
+        help_text='Enter your 10-digit phone number',
     )
 
     def __init__(self, *args, **kwargs):
@@ -79,11 +94,10 @@ class AttendeePhoneForm(forms.Form):
         )
 
     def clean_phone_number(self):
-        import re
-        phone = self.cleaned_data['phone_number'].strip()
-        if not re.match(r'^\+[1-9]\d{6,14}$', phone):
+        phone = _normalize_phone(self.cleaned_data['phone_number'])
+        if not _re.match(r'^\+[1-9]\d{6,14}$', phone):
             raise forms.ValidationError(
-                'Enter a valid phone number in international format (e.g. +15551234567).'
+                'Enter a valid phone number (e.g. 5551234567 or +15551234567).'
             )
         return phone
 
@@ -264,14 +278,14 @@ class EmailProfileCompletionForm(forms.Form):
         )
 
     def clean_phone_number(self):
-        import re
         from .models import UserProfile
-        phone = self.cleaned_data.get('phone_number', '').strip()
-        if not phone:
-            return phone
-        if not re.match(r'^\+[1-9]\d{6,14}$', phone):
+        raw = self.cleaned_data.get('phone_number', '').strip()
+        if not raw:
+            return raw
+        phone = _normalize_phone(raw)
+        if not _re.match(r'^\+[1-9]\d{6,14}$', phone):
             raise forms.ValidationError(
-                'Enter a valid phone number in international format (e.g. +15551234567).'
+                'Enter a valid phone number (e.g. 5551234567 or +15551234567).'
             )
         if UserProfile.objects.filter(phone_number=phone).exists():
             raise forms.ValidationError('An account with this phone number already exists.')
@@ -1387,19 +1401,20 @@ class UserProfileForm(forms.Form):
         self.helper.form_tag = False
 
     def clean_phone_number(self):
-        import re
-        phone = self.cleaned_data.get('phone_number', '').strip()
-        if phone:
-            if not re.match(r'^\+[1-9]\d{6,14}$', phone):
-                raise forms.ValidationError(
-                    'Enter a valid international phone number, e.g. +1 5551234567'
-                )
-            qs = UserProfile.objects.filter(phone_number=phone)
-            if self.user:
-                qs = qs.exclude(user=self.user)
-            if qs.exists():
-                raise forms.ValidationError('This phone number is already in use.')
-        return phone or None
+        raw = self.cleaned_data.get('phone_number', '').strip()
+        if not raw:
+            return None
+        phone = _normalize_phone(raw)
+        if not _re.match(r'^\+[1-9]\d{6,14}$', phone):
+            raise forms.ValidationError(
+                'Enter a valid phone number (e.g. 5551234567 or +15551234567).'
+            )
+        qs = UserProfile.objects.filter(phone_number=phone)
+        if self.user:
+            qs = qs.exclude(user=self.user)
+        if qs.exists():
+            raise forms.ValidationError('This phone number is already in use.')
+        return phone
 
     def save(self):
         data = self.cleaned_data
