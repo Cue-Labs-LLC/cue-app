@@ -311,5 +311,27 @@
         </div>
     </main>
 
+<script>
+document.addEventListener('DOMContentLoaded', function () {
+    var input = document.getElementById('id_phone_number');
+    if (!input) return;
+    input.addEventListener('input', function () {
+        var val = this.value;
+        if (val.startsWith('+')) return;
+        var digits = val.replace(/\D/g, '').slice(0, 10);
+        var formatted = '';
+        if (digits.length === 0) {
+            formatted = '';
+        } else if (digits.length <= 3) {
+            formatted = '(' + digits;
+        } else if (digits.length <= 6) {
+            formatted = '(' + digits.slice(0, 3) + ') ' + digits.slice(3);
+        } else {
+            formatted = '(' + digits.slice(0, 3) + ') ' + digits.slice(3, 6) + '-' + digits.slice(6);
+        }
+        this.value = formatted;
+    });
+});
+</script>
 </body>
 </html>
