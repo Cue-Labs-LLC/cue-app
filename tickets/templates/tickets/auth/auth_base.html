@@ -35,7 +35,7 @@
 
         *, *::before, *::after { box-sizing: border-box; }
 
-        html { scroll-behavior: smooth; }
+        html { scroll-behavior: smooth; height: 100%; }
 
         body {
             background: var(--bg);
@@ -43,7 +43,8 @@
             font-family: var(--font-body);
             font-weight: 300;
             line-height: 1.6;
-            min-height: 100vh;
+            height: 100dvh;
+            overflow: hidden;
             -webkit-font-smoothing: antialiased;
             display: flex;
             flex-direction: column;
@@ -99,7 +100,8 @@
             display: flex;
             align-items: center;
             justify-content: center;
-            padding: 48px clamp(20px, 4vw, 48px);
+            padding: clamp(12px, 3vh, 48px) clamp(20px, 4vw, 48px);
+            overflow-y: auto;
         }
 
         .auth-wrap {
