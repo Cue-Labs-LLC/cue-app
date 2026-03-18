@@ -113,7 +113,7 @@
             <div style="font-family: var(--font-display); font-weight: 700; font-size: 1rem; letter-spacing: -0.01em; color: var(--text); margin-bottom: 4px;">
                 {{ request.user.get_full_name|default:request.user.get_username }}
             </div>
-            <div style="font-family: var(--font-mono); font-size: 0.72rem; letter-spacing: 0.04em; color: var(--text-2); margin-bottom: 14px;">
+            <div style="font-family: var(--font-body); font-size: 0.82rem; color: var(--text-2); margin-bottom: 14px;">
                 {{ request.user.email }}
             </div>
 
@@ -190,7 +190,7 @@
                     <input type="text" name="phone_number" id="id_phone_number" maxlength="20"
                            value="{{ form.phone_number.value|default:'' }}"
                            class="form-control{% if form.phone_number.errors %} is-invalid{% endif %}"
-                           placeholder="+1 5551234567">
+                           placeholder="(555) 000-0000">
                     {% for error in form.phone_number.errors %}
                     <div class="invalid-feedback">{{ error }}</div>
                     {% endfor %}

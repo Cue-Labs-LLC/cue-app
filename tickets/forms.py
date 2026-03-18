@@ -1386,7 +1386,12 @@ class UserProfileForm(forms.Form):
     last_name  = forms.CharField(max_length=150, required=False, label='Last name')
     phone_number = forms.CharField(
         max_length=20, required=False,
-        help_text='International format, e.g. +1 5551234567',
+        widget=forms.TextInput(attrs={
+            'class': 'form-control',
+            'placeholder': '(555) 000-0000',
+            'type': 'tel',
+        }),
+        help_text='Enter your 10-digit US phone number',
     )
     gender = forms.ChoiceField(
         choices=[('', '— select —')] + list(UserProfile.Gender.choices),
@@ -1407,7 +1412,7 @@ class UserProfileForm(forms.Form):
         phone = _normalize_phone(raw)
         if not _re.match(r'^\+[1-9]\d{6,14}$', phone):
             raise forms.ValidationError(
-                'Enter a valid phone number (e.g. 5551234567 or +15551234567).'
+                'Enter a valid 10-digit phone number (e.g. 5551234567).'
             )
         qs = UserProfile.objects.filter(phone_number=phone)
         if self.user:
