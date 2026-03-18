@@ -21,6 +21,14 @@
         <div class="stat-label">Total Expenses</div>
         <div class="stat-value">${{ summary_expenses|currency }}</div>
     </div>
+    <div class="stat-card" style="border-left: 3px solid var(--warning, #ffc107);">
+        <div class="stat-label">Fees</div>
+        <div class="stat-value">${{ summary_fees|currency }}</div>
+    </div>
+    <div class="stat-card stat-card--accent">
+        <div class="stat-label">Net Revenue</div>
+        <div class="stat-value">${{ summary_net_revenue|currency }}</div>
+    </div>
     <div class="stat-card{% if summary_profit >= 0 %} stat-card--success{% endif %}" {% if summary_profit < 0 %}style="border-left: 3px solid var(--danger, #dc3545);"{% endif %}>
         <div class="stat-label">Net Profit</div>
         <div class="stat-value"{% if summary_profit < 0 %} style="color: var(--danger, #dc3545);"{% endif %}>${{ summary_profit|currency }}</div>

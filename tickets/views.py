@@ -3549,6 +3549,34 @@ def profitability_overview(request):
                 ),
                 Decimal('0.00'),
             ),
+            paid_ticket_sum=Coalesce(
+                Subquery(
+                    Ticket.objects.filter(
+                        ticket_order__event=OuterRef('pk'),
+                        price__gt=0,
+                        ticket_order__refunded_at__isnull=True,
+                    )
+                    .values('ticket_order__event')
+                    .annotate(total=Sum('price'))
+                    .values('total')[:1],
+                    output_field=models.DecimalField(max_digits=10, decimal_places=2),
+                ),
+                Decimal('0.00'),
+            ),
+            paid_ticket_count=Coalesce(
+                Subquery(
+                    Ticket.objects.filter(
+                        ticket_order__event=OuterRef('pk'),
+                        price__gt=0,
+                        ticket_order__refunded_at__isnull=True,
+                    )
+                    .values('ticket_order__event')
+                    .annotate(cnt=Count('id'))
+                    .values('cnt')[:1],
+                    output_field=models.IntegerField(),
+                ),
+                0,
+            ),
         )
         .select_related('venue')
         .order_by('-start_date')
@@ -3557,23 +3585,30 @@ def profitability_overview(request):
     # Summary stats (total_revenue = ticket_revenue + additional_income)
     summary_revenue = Decimal('0.00')
     summary_expenses = Decimal('0.00')
+    summary_fees = Decimal('0.00')
     event_rows = []
     for e in events:
         total_revenue = e.ticket_revenue + e.total_additional_income
-        profit = total_revenue - e.total_expenses
-        margin = (profit / total_revenue * 100) if total_revenue > 0 else None
+        fees = (e.paid_ticket_sum * Decimal('0.10') + Decimal('0.99') * e.paid_ticket_count) / Decimal('1.10')
+        net_revenue = total_revenue - fees
+        profit = net_revenue - e.total_expenses
+        margin = (profit / net_revenue * 100) if net_revenue > 0 else None
         event_rows.append({
             'event': e,
             'revenue': total_revenue,
             'expenses': e.total_expenses,
+            'net_revenue': net_revenue,
             'profit': profit,
             'margin': margin,
+            'fees': fees,
         })
         summary_revenue += total_revenue
         summary_expenses += e.total_expenses
+        summary_fees += fees
 
-    summary_profit = summary_revenue - summary_expenses
-    summary_margin = (summary_profit / summary_revenue * 100) if summary_revenue > 0 else None
+    summary_net_revenue = summary_revenue - summary_fees
+    summary_profit = summary_net_revenue - summary_expenses
+    summary_margin = (summary_profit / summary_net_revenue * 100) if summary_net_revenue > 0 else None
 
     # Market rollup by venue city (sorted high → low for chart)
     markets: dict = {}
@@ -3629,6 +3664,8 @@ def profitability_overview(request):
         'event_rows': event_rows,
         'summary_revenue': summary_revenue,
         'summary_expenses': summary_expenses,
+        'summary_fees': summary_fees,
+        'summary_net_revenue': summary_net_revenue,
         'summary_profit': summary_profit,
         'summary_margin': summary_margin,
         'chart_data_json': json.dumps(chart_data),
