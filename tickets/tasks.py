@@ -164,7 +164,7 @@ def send_order_confirmation_email_task(self, order_id):
     html_body = render_to_string('tickets/buy/order_confirmation_email.html', context)
     text_body = render_to_string('tickets/buy/order_confirmation_email.txt', context)
 
-    subject = f"Your order confirmation — {order.event.name}"
+    subject = f"Your order confirmation - {order.event.name}"
     msg = EmailMultiAlternatives(
         subject=subject,
         body=text_body,
@@ -275,7 +275,7 @@ def notify_next_waitlist_entry(self, ticket_type_id):
     }
     try:
         send_mail(
-            subject=f'Your spot is ready — {tt.event.name}',
+            subject=f'Your spot is ready - {tt.event.name}',
             message=render_to_string('tickets/buy/waitlist_notification_email.txt', context),
             html_message=render_to_string('tickets/buy/waitlist_notification_email.html', context),
             from_email=settings.DEFAULT_FROM_EMAIL,
