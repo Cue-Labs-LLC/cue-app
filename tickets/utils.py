@@ -49,7 +49,7 @@ def get_organization(request):
     if not request.user.is_authenticated:
         return None
 
-    # Per-request object cache — avoids repeated DB hits within the same request
+    # Per-request object cache - avoids repeated DB hits within the same request
     _attr = '_cached_org'
     _sentinel = '_cached_org_set'
     if getattr(request, _sentinel, False):
@@ -68,7 +68,7 @@ def get_organization(request):
         try:
             org = Organization.objects.get(pk=org_id)
         except Organization.DoesNotExist:
-            # Stale session value — fall through to DB lookup
+            # Stale session value - fall through to DB lookup
             org = None
 
     if org is None and org_id != '':

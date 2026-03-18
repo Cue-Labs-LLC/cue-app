@@ -1,7 +1,7 @@
 {% extends "tickets/base.html" %}
 {% load tickets_extras %}
 
-{% block title %}Finance — {{ org_name }}{% endblock %}
+{% block title %}Finance - {{ org_name }}{% endblock %}
 
 {% block content %}
 <div class="page-header">
@@ -206,11 +206,11 @@
                             {% if payout.stripe_transfer_id %}
                             <code class="small">{{ payout.stripe_transfer_id }}</code>
                             {% else %}
-                            <span class="text-muted">—</span>
+                            <span class="text-muted">-</span>
                             {% endif %}
                         </td>
                         <td class="text-muted small">
-                            {% if payout.initiated_by %}{{ payout.initiated_by.get_full_name|default:payout.initiated_by.username }}{% else %}—{% endif %}
+                            {% if payout.initiated_by %}{{ payout.initiated_by.get_full_name|default:payout.initiated_by.username }}{% else %}-{% endif %}
                         </td>
                     </tr>
                     {% endfor %}

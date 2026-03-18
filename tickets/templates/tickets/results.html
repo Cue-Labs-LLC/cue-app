@@ -62,11 +62,11 @@
             <li class="mb-2">
                 <strong>{{ count }}</strong>
                 {% if reason == "too_few_columns" %}
-                — Too few columns (fewer than 4 non-empty cells). Row may be a section title, blank line, or malformed.
+                - Too few columns (fewer than 4 non-empty cells). Row may be a section title, blank line, or malformed.
                 {% elif reason == "header_repeat" %}
-                — Repeated header row (cell value matches column header). Appears when the CSV has a second header block in the middle of the file.
+                - Repeated header row (cell value matches column header). Appears when the CSV has a second header block in the middle of the file.
                 {% else %}
-                — {{ reason }}
+                - {{ reason }}
                 {% endif %}
             </li>
             {% endfor %}

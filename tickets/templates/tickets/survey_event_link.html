@@ -1,7 +1,7 @@
 {% extends 'tickets/base.html' %}
 {% load humanize %}
 
-{% block title %}Link Events — {{ upload.filename }}{% endblock %}
+{% block title %}Link Events - {{ upload.filename }}{% endblock %}
 
 {% block content %}
 <div class="page-header">
@@ -58,7 +58,7 @@
                             </td>
                             <td style="min-width: 260px;">
                                 <select name="event_{{ resp.id }}" class="form-select form-select-sm">
-                                    <option value="">— no event —</option>
+                                    <option value="">- no event -</option>
                                     {% for event in events %}
                                     <option value="{{ event.id }}"
                                         {% if resp.event_id and resp.event_id|stringformat:'s' == event.id|stringformat:'s' %}selected{% endif %}>

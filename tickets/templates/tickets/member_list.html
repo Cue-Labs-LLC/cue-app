@@ -23,7 +23,7 @@
             <tbody>
                 <tr>
                     <td><span class="badge bg-danger">Owner</span></td>
-                    <td>Full control — manage members, roles, events, and org settings</td>
+                    <td>Full control - manage members, roles, events, and org settings</td>
                 </tr>
                 <tr>
                     <td><span class="badge bg-warning text-dark">Admin</span></td>
@@ -79,7 +79,7 @@
                     <tr>
                         <td>{{ inv.email }}</td>
                         <td><span class="badge bg-primary">{{ inv.get_org_role_display }}</span></td>
-                        <td>{% if inv.invited_by %}{{ inv.invited_by.get_full_name|default:inv.invited_by.email }}{% else %}—{% endif %}</td>
+                        <td>{% if inv.invited_by %}{{ inv.invited_by.get_full_name|default:inv.invited_by.email }}{% else %}-{% endif %}</td>
                         <td>{{ inv.expires_at|date:"M d, Y" }}</td>
                         <td class="text-end">
                             <button type="button" class="btn btn-sm btn-outline-secondary copy-invite-link" data-url="{{ request.scheme }}://{{ request.get_host }}{% url 'tickets:invite_accept' inv.token %}">Copy link</button>
@@ -122,7 +122,7 @@
                 <tbody>
                     {% for profile in members %}
                     <tr>
-                        <td>{{ profile.user.get_full_name|default:"—" }}</td>
+                        <td>{{ profile.user.get_full_name|default:"-" }}</td>
                         <td>{{ profile.user.email }}</td>
                         <td>
                             {% if is_org_owner and profile.user != request.user %}
@@ -135,7 +135,7 @@
                                 </select>
                             </form>
                             {% else %}
-                            <span class="badge bg-primary">{{ profile.get_org_role_display|default:"—" }}</span>
+                            <span class="badge bg-primary">{{ profile.get_org_role_display|default:"-" }}</span>
                             {% endif %}
                         </td>
                         <td></td>

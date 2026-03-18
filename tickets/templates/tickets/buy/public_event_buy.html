@@ -4,7 +4,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{{ event.name }} — Buy Tickets</title>
+    <title>{{ event.name }} - Buy Tickets</title>
 
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -1436,7 +1436,7 @@ document.addEventListener('DOMContentLoaded', function () {
         <div id="modal-step-phone">
           <div class="text-center modal-icon"><i class="bi bi-ticket-perforated"></i></div>
           <p class="modal-title-text">Sign in to get your tickets</p>
-          <p class="modal-subtitle">Enter your phone number — we'll send a quick verification code.</p>
+          <p class="modal-subtitle">Enter your phone number - we'll send a quick verification code.</p>
           <div id="modal-phone-error" class="modal-error"></div>
           <div class="modal-field">
             <label class="form-label">Phone number</label>
@@ -1542,7 +1542,7 @@ document.addEventListener('DOMContentLoaded', function () {
             : defaultText;
     }
 
-    // Step 1 — Phone
+    // Step 1 - Phone
     var phoneBtn = document.getElementById('modal-phone-btn');
     var phoneInput = document.getElementById('modal-phone-input');
     phoneInput.addEventListener('keydown', function(e) { if (e.key === 'Enter') phoneBtn.click(); });
@@ -1571,7 +1571,7 @@ document.addEventListener('DOMContentLoaded', function () {
         });
     });
 
-    // Step 2 — OTP
+    // Step 2 - OTP
     var otpBtn = document.getElementById('modal-otp-btn');
     var otpInput = document.getElementById('modal-otp-input');
     otpInput.addEventListener('keydown', function(e) { if (e.key === 'Enter') otpBtn.click(); });
@@ -1608,7 +1608,7 @@ document.addEventListener('DOMContentLoaded', function () {
         });
     });
 
-    // Step 3 — Profile
+    // Step 3 - Profile
     var profileBtn = document.getElementById('modal-profile-btn');
     profileBtn.addEventListener('click', function () {
         hideError('modal-profile-error');

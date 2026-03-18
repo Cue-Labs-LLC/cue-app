@@ -100,7 +100,7 @@
 <div class="success-container">
 
     {% if order %}
-    {# Free ticket flow — order created synchronously #}
+    {# Free ticket flow - order created synchronously #}
     <div class="success-icon success-icon--ok"><i class="bi bi-check-circle-fill"></i></div>
     <div class="success-title">You're in.</div>
     <p class="success-sub">Your tickets have been confirmed. See you there.</p>
@@ -132,7 +132,7 @@
     {% endif %}
 
     {% elif session and session.status == 'completed' %}
-    {# Paid flow — webhook has fired and fulfilled the order #}
+    {# Paid flow - webhook has fired and fulfilled the order #}
     <div class="success-icon success-icon--ok"><i class="bi bi-check-circle-fill"></i></div>
     <div class="success-title">You're in.</div>
     <p class="success-sub">Your tickets have been confirmed. See you there.</p>
@@ -169,7 +169,7 @@
     <a href="{% url 'tickets:my_tickets' %}" class="btn-primary">View My Tickets</a>
 
     {% else %}
-    {# Paid flow — payment received but webhook not yet processed #}
+    {# Paid flow - payment received but webhook not yet processed #}
     <div class="success-icon"><i class="bi bi-hourglass-split" style="color: var(--warning);"></i></div>
     <div class="success-title">Payment Received</div>
     <p class="success-sub">Your payment was successful. We're finalizing your order.</p>

@@ -39,7 +39,7 @@
                                     <span class="badge bg-primary">Default</span>
                                 {% endif %}
                             </td>
-                            <td>{{ format.description|truncatewords:10|default:"—" }}</td>
+                            <td>{{ format.description|truncatewords:10|default:"-" }}</td>
                             <td>
                                 {% if format.is_default %}
                                     <i class="bi bi-check-circle text-success"></i>

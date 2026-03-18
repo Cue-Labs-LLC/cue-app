@@ -595,7 +595,7 @@ class CSVProcessor:
                 
                 # Get or create event
                 if pinned_event:
-                    # Event was specified via event_id metadata — use it directly
+                    # Event was specified via event_id metadata - use it directly
                     event = pinned_event
                 else:
                     # Use event info from mapped_row, or fall back to metadata/defaults

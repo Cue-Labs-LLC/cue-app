@@ -41,7 +41,7 @@ class Command(BaseCommand):
 
         dry_run = not apply
         if dry_run:
-            self.stdout.write(self.style.WARNING('DRY-RUN mode — no changes will be saved.'))
+            self.stdout.write(self.style.WARNING('DRY-RUN mode - no changes will be saved.'))
 
         api_key = getattr(settings, 'GOOGLE_MAPS_API_KEY', '') if not skip_geocode else ''
 
@@ -83,7 +83,7 @@ class Command(BaseCommand):
                 n_unchanged += 1
                 continue
 
-            self.stdout.write(f'  Venue: {venue.pk} — "{venue.name}" ({venue.city})')
+            self.stdout.write(f'  Venue: {venue.pk} - "{venue.name}" ({venue.city})')
             for f in changed_fields:
                 self.stdout.write(f'    {f}: {original[f]!r} → {after[f]!r}')
 

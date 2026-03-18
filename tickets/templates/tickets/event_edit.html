@@ -107,7 +107,7 @@
                                 <td class="d-none d-md-table-cell">{% if tt.quantity_limit %}{{ tt.quantity_limit }}{% else %}<span class="text-muted">&infin;</span>{% endif %}</td>
                                 <td>${{ tt.effective_price|currency }} &times; {{ tt.quantity_sold }}</td>
                                 <td class="d-none d-md-table-cell">
-                                    {% if tt.unlocks_after %}<span class="text-muted small">{{ tt.unlocks_after.name }}</span>{% else %}<span class="text-muted">—</span>{% endif %}
+                                    {% if tt.unlocks_after %}<span class="text-muted small">{{ tt.unlocks_after.name }}</span>{% else %}<span class="text-muted">-</span>{% endif %}
                                 </td>
                                 <td class="d-none d-md-table-cell">
                                     {% if waitlist_feature_enabled %}
@@ -118,10 +118,10 @@
                                                 <span class="badge bg-secondary">0 waiting</span>
                                             {% endif %}
                                         {% else %}
-                                            <span class="text-muted">—</span>
+                                            <span class="text-muted">-</span>
                                         {% endif %}
                                     {% else %}
-                                        <span class="text-muted">—</span>
+                                        <span class="text-muted">-</span>
                                     {% endif %}
                                 </td>
                                 <td class="d-none d-md-table-cell">
@@ -672,7 +672,7 @@ document.addEventListener('DOMContentLoaded', function () {
             <div class="col-12">
               <label class="form-label fw-semibold">Unlocks After</label>
               <select name="unlocks_after" class="form-select" id="add_unlocks_after">
-                <option value="">— None —</option>
+                <option value="">- None -</option>
                 {% for tt in saleable_ticket_types %}
                 <option value="{{ tt.id }}">{{ tt.name }}</option>
                 {% endfor %}
@@ -774,7 +774,7 @@ document.addEventListener('DOMContentLoaded', function () {
             <div class="col-12">
               <label class="form-label fw-semibold">Unlocks After</label>
               <select name="unlocks_after" class="form-select" id="edit_unlocks_after">
-                <option value="">— None —</option>
+                <option value="">- None -</option>
                 {% for tt in saleable_ticket_types %}
                 <option value="{{ tt.id }}">{{ tt.name }}</option>
                 {% endfor %}

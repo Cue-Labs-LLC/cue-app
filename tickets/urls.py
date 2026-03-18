@@ -5,7 +5,7 @@ from . import views
 app_name = 'tickets'
 
 urlpatterns = [
-    # Authentication — unified phone-first entry point
+    # Authentication - unified phone-first entry point
     path('login/', views.unified_login_view, name='login'),
     path('login/verify/', views.unified_verify_view, name='unified_verify'),
     path('login/resend/', views.unified_resend_view, name='unified_resend'),
@@ -19,7 +19,7 @@ urlpatterns = [
     path('auth/modal/start/', views.modal_auth_start, name='modal_auth_start'),
     path('auth/modal/verify/', views.modal_auth_verify, name='modal_auth_verify'),
     path('auth/modal/complete/', views.modal_auth_complete, name='modal_auth_complete'),
-    # Old attendee phone signup — redirect to unified login
+    # Old attendee phone signup - redirect to unified login
     path('signup/', RedirectView.as_view(pattern_name='tickets:login', permanent=False), name='signup'),
     path('signup/verify/', RedirectView.as_view(pattern_name='tickets:login', permanent=False), name='verify_otp'),
     path('signup/resend-otp/', RedirectView.as_view(pattern_name='tickets:login', permanent=False), name='resend_otp'),
@@ -48,7 +48,7 @@ urlpatterns = [
     # Public attendee paths (no auth required)
     path('join/<slug:org_slug>/', views.attendee_signup_view, name='attendee_signup'),
     path('join/<slug:org_slug>/verify/', views.attendee_verify_otp_view, name='attendee_verify_otp'),
-    # Old phone login — redirect to unified login
+    # Old phone login - redirect to unified login
     path('login/phone/', RedirectView.as_view(pattern_name='tickets:login', permanent=False), name='phone_login'),
     path('login/phone/verify/', RedirectView.as_view(pattern_name='tickets:login', permanent=False), name='phone_login_verify'),
     path('login/phone/resend/', RedirectView.as_view(pattern_name='tickets:login', permanent=False), name='phone_login_resend'),
@@ -153,14 +153,14 @@ urlpatterns = [
     path('chat/history/', views.chat_history, name='chat_history'),
     path('chat/conversations/', views.chat_conversations, name='chat_conversations'),
 
-    # Direct Ticket Selling — Organizer
+    # Direct Ticket Selling - Organizer
     path('events/<uuid:event_id>/ticket-types/create/', views.saleable_ticket_type_create, name='saleable_ticket_type_create'),
     path('events/<uuid:event_id>/ticket-types/<uuid:ticket_type_id>/edit/', views.saleable_ticket_type_edit, name='saleable_ticket_type_edit'),
     path('events/<uuid:event_id>/ticket-types/<uuid:ticket_type_id>/data/', views.saleable_ticket_type_data, name='saleable_ticket_type_data'),
     path('events/<uuid:event_id>/ticket-types/<uuid:ticket_type_id>/toggle/', views.saleable_ticket_type_toggle, name='saleable_ticket_type_toggle'),
     path('events/<uuid:event_id>/ticket-types/<uuid:ticket_type_id>/delete/', views.saleable_ticket_type_delete, name='saleable_ticket_type_delete'),
 
-    # Direct Ticket Selling — Public (no auth) — short alphanumeric public_id
+    # Direct Ticket Selling - Public (no auth) - short alphanumeric public_id
     re_path(r'^e/(?P<public_id>[A-Za-z0-9]{10})/$', views.public_event_buy, name='public_event_buy'),
     re_path(r'^e/(?P<public_id>[A-Za-z0-9]{10})/unlock/(?P<ticket_type_id>[0-9a-f-]{36})/$', views.unlock_ticket_type, name='unlock_ticket_type'),
     re_path(r'^e/(?P<public_id>[A-Za-z0-9]{10})/waitlist/(?P<ticket_type_id>[0-9a-f-]{36})/$', views.join_waitlist, name='join_waitlist'),
@@ -172,7 +172,7 @@ urlpatterns = [
     path('buy/<uuid:event_id>/', views.buy_redirect, name='buy_redirect'),
     path('checkout/success/', views.checkout_success, name='checkout_success'),
 
-    # Promo Codes — Organizer
+    # Promo Codes - Organizer
     path('events/<uuid:event_id>/promo-codes/create/', views.promo_code_create, name='promo_code_create'),
     path('events/<uuid:event_id>/promo-codes/<uuid:promo_code_id>/delete/', views.promo_code_delete, name='promo_code_delete'),
 

@@ -280,7 +280,7 @@ def _sync_event_to_google_calendar(event):
 # Authentication Views
 
 def unified_login_view(request):
-    """Step 1: enter phone number — handles both login and new signup."""
+    """Step 1: enter phone number - handles both login and new signup."""
     from .sms import start_phone_verification
     if request.user.is_authenticated:
         try:
@@ -309,7 +309,7 @@ def unified_login_view(request):
 
 @require_http_methods(["GET", "POST"])
 def unified_verify_view(request):
-    """Step 2: verify OTP — log in existing user or send new user to profile completion."""
+    """Step 2: verify OTP - log in existing user or send new user to profile completion."""
     from django.contrib.auth import login as auth_login
     from django.contrib.auth.models import User
     from .sms import check_phone_verification
@@ -422,7 +422,7 @@ def complete_profile_view(request):
 
 @require_http_methods(["GET", "POST"])
 def email_login_view(request):
-    """Step 1 (email path): enter email address — handles both login and new signup."""
+    """Step 1 (email path): enter email address - handles both login and new signup."""
     from .sms import start_email_verification
     if request.user.is_authenticated:
         try:
@@ -452,7 +452,7 @@ def email_login_view(request):
 
 @require_http_methods(["GET", "POST"])
 def email_verify_view(request):
-    """Step 2 (email path): verify OTP — log in existing user or send new user to profile completion."""
+    """Step 2 (email path): verify OTP - log in existing user or send new user to profile completion."""
     from django.contrib.auth import login as auth_login
     from django.contrib.auth.models import User
     from .sms import check_email_verification
@@ -622,7 +622,7 @@ def modal_auth_verify(request):
         del request.session['modal_auth']
         auth_login(request, user, backend='tickets.backends.PhoneBackend')
         return JsonResponse({'status': 'logged_in'})
-    # New user — keep session data, signal profile step needed
+    # New user - keep session data, signal profile step needed
     request.session['modal_auth']['verified'] = True
     return JsonResponse({'status': 'new_user'})
 
@@ -741,7 +741,7 @@ def become_organizer_view(request):
 
     if request.method == 'POST':
         form = OrganizerWaitlistForm(request.POST)
-        # Treat duplicate email as idempotent — redirect to success rather than error
+        # Treat duplicate email as idempotent - redirect to success rather than error
         submitted_email = request.POST.get('email', '').strip()
         if submitted_email and OrganizerWaitlist.objects.filter(email=submitted_email).exists():
             return redirect('tickets:waitlist_success')
@@ -1621,7 +1621,7 @@ def customer_ltv_by_market(request):
         order_count = row['order_count'] or 0
         avg_orders = round(order_count / customer_count, 1) if customer_count else 0
         market_stats.append({
-            'city': city.strip() or '—',
+            'city': city.strip() or '-',
             'total_ltv': total_ltv,
             'order_count': order_count,
             'customer_count': customer_count,
@@ -1898,7 +1898,7 @@ def customer_detail(request, customer_id):
     org = get_organization(request)
     customer = get_object_or_404(Customer.objects.filter(organization=org), id=customer_id)
     
-    # Order statistics — single aggregate instead of 5 separate queries
+    # Order statistics - single aggregate instead of 5 separate queries
     order_stats = customer.ticket_orders.aggregate(
         total_orders=Count('id'),
         avg_order_value=Coalesce(Avg('total_amount'), Decimal('0.00')),
@@ -1909,12 +1909,12 @@ def customer_detail(request, customer_id):
     last_order_date = order_stats['last_order_date']
     total_tickets = Ticket.objects.filter(ticket_order__customer=customer).count()
 
-    # Event attendance — select_related to avoid N+1 on venue in template
+    # Event attendance - select_related to avoid N+1 on venue in template
     events_attended = Event.objects.filter(
         ticket_orders__customer=customer
     ).select_related('venue').distinct()
 
-    # Paginate orders — select_related + annotate to avoid N+1 in template
+    # Paginate orders - select_related + annotate to avoid N+1 in template
     orders = customer.ticket_orders.select_related('event').annotate(
         tickets_count=Count('tickets')
     ).order_by('-order_date')
@@ -2159,7 +2159,7 @@ def event_detail(request, event_id):
     # Get all distinct uploads associated with this event
     associated_uploads = event.get_associated_uploads().select_related('csv_format')
 
-    # Calculate statistics per upload — use Subquery for revenue to avoid join inflation
+    # Calculate statistics per upload - use Subquery for revenue to avoid join inflation
     # (Count('tickets') joins Ticket and would duplicate rows, inflating Sum('total_amount'))
     revenue_per_upload = (
         TicketOrder.objects.filter(event=event, uploaded_file_id=OuterRef('uploaded_file'))
@@ -2190,7 +2190,7 @@ def event_detail(request, event_id):
             'tickets_count': stats.get('tickets_count', 0),
         })
 
-    # Event statistics — combine into single aggregate (tickets separate to avoid join inflation)
+    # Event statistics - combine into single aggregate (tickets separate to avoid join inflation)
     event_stats = event.ticket_orders.aggregate(
         total_orders=Count('id'),
         total_revenue=Coalesce(Sum('total_amount'), Decimal('0.00')),
@@ -2219,7 +2219,7 @@ def event_detail(request, event_id):
         .order_by('-total')
     )
 
-    # Paginate orders — select_related + annotate to avoid N+1 in template
+    # Paginate orders - select_related + annotate to avoid N+1 in template
     orders_qs = event.ticket_orders.select_related(
         'customer', 'uploaded_file'
     ).annotate(
@@ -2817,9 +2817,9 @@ def event_create(request, ticketing_type):
             )
             for form_item in ticket_formset.forms:
                 form_item.fields['unlocks_after'].queryset = SaleableTicketType.objects.none()
-                form_item.fields['unlocks_after'].empty_label = '— None —'
+                form_item.fields['unlocks_after'].empty_label = '- None -'
             ticket_formset.empty_form.fields['unlocks_after'].queryset = SaleableTicketType.objects.none()
-            ticket_formset.empty_form.fields['unlocks_after'].empty_label = '— None —'
+            ticket_formset.empty_form.fields['unlocks_after'].empty_label = '- None -'
             if form.is_valid() and ticket_formset.is_valid():
                 venue = form.cleaned_data['venue']
                 event = form.save(commit=False)
@@ -2849,9 +2849,9 @@ def event_create(request, ticketing_type):
             )
             for form_item in ticket_formset.forms:
                 form_item.fields['unlocks_after'].queryset = SaleableTicketType.objects.none()
-                form_item.fields['unlocks_after'].empty_label = '— None —'
+                form_item.fields['unlocks_after'].empty_label = '- None -'
             ticket_formset.empty_form.fields['unlocks_after'].queryset = SaleableTicketType.objects.none()
-            ticket_formset.empty_form.fields['unlocks_after'].empty_label = '— None —'
+            ticket_formset.empty_form.fields['unlocks_after'].empty_label = '- None -'
         no_venues = not Venue.objects.filter(organization=org).exists()
         context = {
             'form': form,
@@ -3590,13 +3590,13 @@ def profitability_overview(request):
         m['event_count'] += 1
     market_rows = sorted(markets.values(), key=lambda m: m['profit'], reverse=True)
 
-    # Market chart data — sorted high → low by profit
+    # Market chart data - sorted high → low by profit
     market_chart_data = {
         'labels': [m['city'] for m in market_rows],
         'profit': [float(m['profit']) for m in market_rows],
     }
 
-    # Monthly aggregation for chart — bucket events by calendar month, ordered earliest → most recent
+    # Monthly aggregation for chart - bucket events by calendar month, ordered earliest → most recent
     chart_events = [r for r in reversed(event_rows) if r['revenue'] > 0 or r['expenses'] > 0]
     month_buckets_profit = {}
     for r in chart_events:
@@ -3613,7 +3613,7 @@ def profitability_overview(request):
         'profit': [m['profit'] for m in monthly_profit_chart],
     }
 
-    # Per-event chart data — ordered earliest → most recent
+    # Per-event chart data - ordered earliest → most recent
     event_chart_events = [r for r in reversed(event_rows) if r['revenue'] > 0 or r['expenses'] > 0]
     event_chart_data = {
         'labels': [
@@ -3718,7 +3718,7 @@ def send_survey(request, event_id):
 
 
 def survey_form(request, token):
-    """Public survey form — no login required."""
+    """Public survey form - no login required."""
     invitation = get_object_or_404(
         SurveyInvitation.objects.select_related('event', 'event__venue', 'customer'),
         token=token,
@@ -3816,7 +3816,7 @@ def survey_thank_you(request):
 @require_host
 @require_http_methods(["POST"])
 def chat_stream(request):
-    """SSE endpoint — streams LLM tokens for the chat agent."""
+    """SSE endpoint - streams LLM tokens for the chat agent."""
     import uuid as uuid_mod
     from django.http import StreamingHttpResponse
     from .services.chat.agent import ChatAgentService
@@ -3918,7 +3918,7 @@ def chat_conversations(request):
 
 
 # ---------------------------------------------------------------------------
-# Direct Ticket Selling — Organizer Views
+# Direct Ticket Selling - Organizer Views
 # ---------------------------------------------------------------------------
 
 @login_required
@@ -3935,7 +3935,7 @@ def saleable_ticket_type_create(request, event_id):
     if request.method == 'POST':
         form = SaleableTicketTypeForm(request.POST)
         form.fields['unlocks_after'].queryset = SaleableTicketType.objects.filter(event=event)
-        form.fields['unlocks_after'].empty_label = '— None —'
+        form.fields['unlocks_after'].empty_label = '- None -'
         tier_formset = SaleableTicketTypeTierFormSet(request.POST)
         if form.is_valid() and tier_formset.is_valid():
             tt = form.save(commit=False)
@@ -3957,7 +3957,7 @@ def saleable_ticket_type_create(request, event_id):
     else:
         form = SaleableTicketTypeForm()
         form.fields['unlocks_after'].queryset = SaleableTicketType.objects.filter(event=event)
-        form.fields['unlocks_after'].empty_label = '— None —'
+        form.fields['unlocks_after'].empty_label = '- None -'
         tier_formset = SaleableTicketTypeTierFormSet()
 
     return render(request, 'tickets/saleable_ticket_type_form.html', {
@@ -3983,7 +3983,7 @@ def saleable_ticket_type_edit(request, event_id, ticket_type_id):
         old_quantity_limit = tt.quantity_limit
         form = SaleableTicketTypeForm(request.POST, instance=tt)
         form.fields['unlocks_after'].queryset = SaleableTicketType.objects.filter(event=event).exclude(pk=tt.pk)
-        form.fields['unlocks_after'].empty_label = '— None —'
+        form.fields['unlocks_after'].empty_label = '- None -'
         tier_formset = SaleableTicketTypeTierFormSet(request.POST, instance=tt)
         if form.is_valid() and tier_formset.is_valid():
             updated = form.save()
@@ -4013,7 +4013,7 @@ def saleable_ticket_type_edit(request, event_id, ticket_type_id):
     else:
         form = SaleableTicketTypeForm(instance=tt)
         form.fields['unlocks_after'].queryset = SaleableTicketType.objects.filter(event=event).exclude(pk=tt.pk)
-        form.fields['unlocks_after'].empty_label = '— None —'
+        form.fields['unlocks_after'].empty_label = '- None -'
         tier_formset = SaleableTicketTypeTierFormSet(instance=tt)
 
     return render(request, 'tickets/saleable_ticket_type_form.html', {
@@ -4091,7 +4091,7 @@ def saleable_ticket_type_delete(request, event_id, ticket_type_id):
 
     if request.method == 'POST':
         if tt.quantity_sold > 0:
-            messages.error(request, f'Cannot delete "{tt.name}" — {tt.quantity_sold} tickets already sold.')
+            messages.error(request, f'Cannot delete "{tt.name}" - {tt.quantity_sold} tickets already sold.')
             return redirect('tickets:event_edit', event_id=event.id)
         name = tt.name
         tt.delete()
@@ -4222,7 +4222,7 @@ def event_cancel(request, event_id):
         messages.warning(
             request,
             f'"{event.name}" cancelled. {refunded_count} order(s) refunded. '
-            f'{failed_count} refund(s) failed — please refund those orders manually.',
+            f'{failed_count} refund(s) failed - please refund those orders manually.',
         )
     else:
         messages.success(request, f'"{event.name}" cancelled. {refunded_count} order(s) refunded.')
@@ -4320,7 +4320,7 @@ def event_flyer_upload(request, event_id):
 
 
 # ---------------------------------------------------------------------------
-# Direct Ticket Selling — Public Views
+# Direct Ticket Selling - Public Views
 # ---------------------------------------------------------------------------
 
 def buy_redirect(request, event_id):
@@ -4526,7 +4526,7 @@ def unlock_ticket_type(request, public_id, ticket_type_id):
 
 @require_http_methods(["POST"])
 def join_waitlist(request, public_id, ticket_type_id):
-    """Public AJAX endpoint — adds the buyer to the waitlist for a sold-out ticket type."""
+    """Public AJAX endpoint - adds the buyer to the waitlist for a sold-out ticket type."""
     if not request.user.is_authenticated:
         return JsonResponse({'success': False, 'error': 'Login required.'}, status=401)
 
@@ -4561,7 +4561,7 @@ def join_waitlist(request, public_id, ticket_type_id):
 
 
 def activate_waitlist_hold(request, public_id, hold_token):
-    """Public endpoint — validates a waitlist hold token and sets a session flag."""
+    """Public endpoint - validates a waitlist hold token and sets a session flag."""
     from django.utils import timezone as tz
     entry = get_object_or_404(
         WaitlistEntry, hold_token=hold_token, purchased_at__isnull=True, expired=False
@@ -4583,7 +4583,7 @@ def activate_waitlist_hold(request, public_id, hold_token):
 
 @require_http_methods(["POST"])
 def validate_promo_code(request, public_id):
-    """Public AJAX endpoint — validates a promo code and stores it in the session."""
+    """Public AJAX endpoint - validates a promo code and stores it in the session."""
     event = get_object_or_404(Event, public_id=public_id)
 
     try:
@@ -4677,7 +4677,7 @@ def promo_code_delete(request, event_id, promo_code_id):
 
 
 def checkout_payment(request, public_id):
-    """Custom checkout page — collects buyer info and processes payment via Stripe Elements."""
+    """Custom checkout page - collects buyer info and processes payment via Stripe Elements."""
     from django.conf import settings as django_settings
 
     event = get_object_or_404(
@@ -4844,7 +4844,7 @@ def checkout_payment(request, public_id):
 
 @require_http_methods(["POST"])
 def create_payment_intent(request, public_id):
-    """JSON endpoint — creates a Stripe PaymentIntent and a StripeCheckoutSession record."""
+    """JSON endpoint - creates a Stripe PaymentIntent and a StripeCheckoutSession record."""
     from django.conf import settings as django_settings
     import stripe as stripe_lib
 
@@ -4943,7 +4943,7 @@ def create_payment_intent(request, public_id):
                 UserProfile.objects.filter(pk=profile.pk).update(stripe_customer_id=stripe_customer_id)
         except Exception as e:
             logger.error("Stripe Customer.create failed: %s", e)
-            # non-fatal — card saving skipped, payment proceeds
+            # non-fatal - card saving skipped, payment proceeds
 
     pi_kwargs = {
         'amount': charge_cents,
@@ -4991,7 +4991,7 @@ def create_payment_intent(request, public_id):
 
 
 def checkout_success(request):
-    """Post-payment landing page — supports ?session_id=<uuid> (paid) and ?order_id=<uuid> (free)."""
+    """Post-payment landing page - supports ?session_id=<uuid> (paid) and ?order_id=<uuid> (free)."""
     session_obj = None
     order_obj = None
 
@@ -5124,7 +5124,7 @@ def _fulfill_payment_intent(payment_intent):
         return
 
     if not session_obj:
-        logger.warning("Stripe webhook: no StripeCheckoutSession for PaymentIntent %s — skipping", pi_id)
+        logger.warning("Stripe webhook: no StripeCheckoutSession for PaymentIntent %s - skipping", pi_id)
         return
 
     with transaction.atomic():
@@ -5176,7 +5176,7 @@ def _fulfill_payment_intent(payment_intent):
                 if tt_locked.quantity_limit is not None and (tt_locked.quantity_sold + qty) > tt_locked.quantity_limit:
                     logger.error(
                         "Stripe webhook: oversell detected for SaleableTicketType %s "
-                        "(limit=%s, sold=%s, adding=%s) — fulfilling anyway",
+                        "(limit=%s, sold=%s, adding=%s) - fulfilling anyway",
                         tt_id, tt_locked.quantity_limit, tt_locked.quantity_sold, qty,
                     )
                 SaleableTicketType.objects.filter(id=tt_id).update(
@@ -5190,7 +5190,7 @@ def _fulfill_payment_intent(payment_intent):
                     logger.warning("Stripe webhook: SaleableTicketTypeTier %s not found", tier_id)
                 else:
                     if (tier_locked.quantity_sold + qty) > tier_locked.allotment:
-                        logger.error("Stripe webhook: tier oversell for %s — fulfilling anyway", tier_id)
+                        logger.error("Stripe webhook: tier oversell for %s - fulfilling anyway", tier_id)
                     SaleableTicketTypeTier.objects.filter(id=tier_id).update(
                         quantity_sold=F('quantity_sold') + qty
                     )
@@ -5275,7 +5275,7 @@ def _fulfill_payment_intent(payment_intent):
                 except Exception as e:
                     logger.error("Failed to save PaymentMethod %s for user %s: %s", pm_id, user_id, e)
 
-    logger.info("Fulfilled PaymentIntent %s — order %s", pi_id, order.order_number)
+    logger.info("Fulfilled PaymentIntent %s - order %s", pi_id, order.order_number)
 
 
 def _fail_payment_intent(payment_intent):
@@ -5289,7 +5289,7 @@ def _fail_payment_intent(payment_intent):
         logger.info("PaymentIntent %s marked canceled (payment failed)", pi_id)
 
 # ---------------------------------------------------------------------------
-# Attendee Auth Views (public — no login required)
+# Attendee Auth Views (public - no login required)
 # ---------------------------------------------------------------------------
 
 def attendee_signup_view(request, org_slug):
@@ -5476,7 +5476,7 @@ def attendee_dashboard(request):
 
 @login_required
 def my_tickets(request):
-    """Attendee order history — shows ticket orders for direct ticketing events only."""
+    """Attendee order history - shows ticket orders for direct ticketing events only."""
     from .models import TICKETING_TYPE_DIRECT
     today = django_tz.localdate()  # Use app timezone so Upcoming/Past match where events are held
     base_qs = (
@@ -5512,7 +5512,7 @@ def my_tickets(request):
 
 @login_required
 def my_ticket_detail(request, order_id):
-    """Ticket detail page for a single order — shows QR code and full order info."""
+    """Ticket detail page for a single order - shows QR code and full order info."""
     order = get_object_or_404(
         TicketOrder.objects
         .select_related('event', 'event__venue', 'customer')
@@ -5990,5 +5990,5 @@ def survey_analytics(request):
 # ── Error handlers ──────────────────────────────────────────────────────────
 
 def csrf_failure(request, reason=''):
-    """Custom CSRF failure view — renders the branded 403 template."""
+    """Custom CSRF failure view - renders the branded 403 template."""
     return render(request, '403.html', {'reason': reason, 'csrf_token_missing': True}, status=403)

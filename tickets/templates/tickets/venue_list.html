@@ -43,11 +43,11 @@
                     {% for venue in page_obj %}
                     <tr>
                         <td><strong>{{ venue.name }}</strong></td>
-                        <td class="d-none d-md-table-cell">{{ venue.street_address|default:"—" }}</td>
+                        <td class="d-none d-md-table-cell">{{ venue.street_address|default:"-" }}</td>
                         <td>{{ venue.city }}</td>
-                        <td class="d-none d-sm-table-cell">{{ venue.state|default:"—" }}</td>
-                        <td class="d-none d-sm-table-cell">{{ venue.country|default:"—" }}</td>
-                        <td class="d-none d-md-table-cell">{{ venue.capacity|default:"—" }}</td>
+                        <td class="d-none d-sm-table-cell">{{ venue.state|default:"-" }}</td>
+                        <td class="d-none d-sm-table-cell">{{ venue.country|default:"-" }}</td>
+                        <td class="d-none d-md-table-cell">{{ venue.capacity|default:"-" }}</td>
                         <td>{{ venue.event_count|default:0 }}</td>
                         <td><a href="{% url 'tickets:venue_edit' venue.id %}" class="btn btn-sm btn-outline-secondary"><i class="bi bi-pencil"></i> Edit</a></td>
                     </tr>

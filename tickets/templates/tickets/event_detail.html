@@ -95,7 +95,7 @@
 
 {% if event.ticketing_type == 'direct' and direct_ticketing_enabled and event.effective_status == 'draft' %}
 <div class="alert alert-warning">
-    <i class="bi bi-eye-slash"></i> This event is <strong>Draft</strong> — the public ticket page returns a 404. Click <strong>Publish</strong> to make it live.
+    <i class="bi bi-eye-slash"></i> This event is <strong>Draft</strong> - the public ticket page returns a 404. Click <strong>Publish</strong> to make it live.
 </div>
 {% endif %}
 
@@ -198,7 +198,7 @@
         {% if conversion_rate_pct is not None %}
         <p class="mb-0 mt-1 text-muted small">Conversion rate: {{ conversion_rate_pct }}% ({{ total_orders }} orders / {{ event.public_buy_page_views }} views)</p>
         {% else %}
-        <p class="mb-0 mt-1 text-muted small">Conversion rate: — (no page views yet)</p>
+        <p class="mb-0 mt-1 text-muted small">Conversion rate: - (no page views yet)</p>
         {% endif %}
     </div>
 </div>

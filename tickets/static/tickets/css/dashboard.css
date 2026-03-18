@@ -356,17 +356,17 @@ a:hover {
     min-width: 0;         /* ensures cards containing tables can shrink */
 }
 
-/* Event list flyer — hidden on desktop, revealed in Block 12 mobile media query */
+/* Event list flyer - hidden on desktop, revealed in Block 12 mobile media query */
 .event-card-flyer {
     display: none;
 }
 
-/* Mobile-only metadata strip — hidden on desktop */
+/* Mobile-only metadata strip - hidden on desktop */
 .event-card-meta {
     display: none;
 }
 
-/* Event card name area sub-elements — base styles applied at all breakpoints */
+/* Event card name area sub-elements - base styles applied at all breakpoints */
 
 /* Venue shown in its own column on desktop; shown as sub-line in mobile card */
 .event-card-venue {
@@ -1825,7 +1825,7 @@ gmp-place-autocomplete#venue-address-autocomplete {
         padding: 0;
     }
 
-    /* Cell 1: flex row — name area left, flyer right */
+    /* Cell 1: flex row - name area left, flyer right */
     .event-list-table tbody td:nth-child(1) {
         display: flex;
         flex-direction: row;
@@ -1916,7 +1916,7 @@ gmp-place-autocomplete#venue-address-autocomplete {
         font-size: 18px;
     }
 
-    /* Actions footer — class-based so column count doesn't matter */
+    /* Actions footer - class-based so column count doesn't matter */
     .event-list-table tbody td.event-actions-cell {
         display: block;
         padding: 8px 12px;
@@ -2049,7 +2049,7 @@ gmp-place-autocomplete#venue-address-autocomplete {
     --accent-muted: rgba(58, 56, 53, 0.07);
     --accent-muted-border: rgba(58, 56, 53, 0.16);
 
-    /* Shadows — softer on light bg */
+    /* Shadows - softer on light bg */
     --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.07);
     --shadow-md: 0 4px 16px rgba(0, 0, 0, 0.09);
     --shadow-lg: 0 8px 32px rgba(0, 0, 0, 0.12);

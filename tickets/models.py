@@ -726,7 +726,7 @@ class Event(AuditBaseModel):
             EVENT_STATUS_DRAFT, EVENT_STATUS_ENDED, EVENT_STATUS_CANCELLED
         ):
             return self.status
-        # status == 'live' — check if event date has passed
+        # status == 'live' - check if event date has passed
         today = timezone.now().date()
         end = self.end_date or self.start_date
         if end < today:
@@ -1188,7 +1188,7 @@ class SaleableTicketType(BaseModel):
         return max(0, self.quantity_limit - self.quantity_sold)
 
     def get_active_tier(self):
-        """First available tier by order. Uses prefetch cache — no extra query."""
+        """First available tier by order. Uses prefetch cache - no extra query."""
         for tier in self.tiers.all():
             if tier.is_available():
                 return tier
@@ -1263,7 +1263,7 @@ class WaitlistEntry(BaseModel):
         ]
 
     def __str__(self):
-        return f"Waitlist #{self.position} — {self.email}"
+        return f"Waitlist #{self.position} - {self.email}"
 
 
 class PromoCode(BaseModel):
@@ -1316,7 +1316,7 @@ class PromoCode(BaseModel):
 
 
 class StripeCheckoutSession(BaseModel):
-    """One row per Stripe Checkout Session — idempotency anchor for webhook processing."""
+    """One row per Stripe Checkout Session - idempotency anchor for webhook processing."""
 
     class Status(models.TextChoices):
         PENDING   = 'pending',   'Pending'
@@ -1612,7 +1612,7 @@ class Payout(BaseModel):
     amount = models.DecimalField(max_digits=10, decimal_places=2)
     stripe_transfer_id = models.CharField(
         max_length=255, unique=True, null=True, blank=True,
-        help_text='Stripe Transfer ID (tr_xxx) — set after successful call.',
+        help_text='Stripe Transfer ID (tr_xxx) - set after successful call.',
     )
     status = models.CharField(
         max_length=20, choices=Status.choices, default=Status.PENDING, db_index=True,

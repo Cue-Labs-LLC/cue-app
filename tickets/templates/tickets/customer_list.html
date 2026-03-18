@@ -53,16 +53,16 @@
                     <tr>
                         <td><strong>{{ customer.name }}</strong></td>
                         <td>{{ customer.email }}</td>
-                        <td class="d-none d-sm-table-cell">{{ customer.phone|default:"—" }}</td>
+                        <td class="d-none d-sm-table-cell">{{ customer.phone|default:"-" }}</td>
                         <td>
                             {% if customer.rfm_segment %}
                             <span class="badge bg-{{ segment_badge_colors|get_item:customer.rfm_segment }}">{{ customer.rfm_segment }}</span>
                             {% else %}
-                            <span class="text-muted">—</span>
+                            <span class="text-muted">-</span>
                             {% endif %}
                         </td>
                         <td><span class="revenue">${{ customer.lifetime_value|currency }}</span></td>
-                        <td class="d-none d-sm-table-cell">{{ customer.last_order_date|date:"M d, Y"|default:"—" }}</td>
+                        <td class="d-none d-sm-table-cell">{{ customer.last_order_date|date:"M d, Y"|default:"-" }}</td>
                         <td class="d-none d-sm-table-cell">{{ customer.order_count }}</td>
                         <td><a href="{% url 'tickets:customer_detail' customer.id %}" class="btn btn-sm btn-outline-secondary">View</a></td>
                     </tr>
