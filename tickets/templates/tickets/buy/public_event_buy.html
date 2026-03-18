@@ -1416,6 +1416,13 @@ document.addEventListener('DOMContentLoaded', function () {
             }
         });
     });
+
+    // Auto-open buy modal if redirected here after auth
+    if (userIsAuthenticated && new URLSearchParams(window.location.search).get('buy') === '1') {
+        history.replaceState(null, '', window.location.pathname);
+        var buyModal = new bootstrap.Modal(document.getElementById('buyModal'));
+        buyModal.show();
+    }
 });
 </script>
 
@@ -1589,7 +1596,7 @@ document.addEventListener('DOMContentLoaded', function () {
             setLoading(otpBtn, false, 'Verify');
             if (data.error) { showError('modal-otp-error', data.error); return; }
             if (data.status === 'logged_in') {
-                window.location.reload();
+                window.location.href = window.location.pathname + '?buy=1';
             } else if (data.status === 'new_user') {
                 showStep('profile');
                 document.getElementById('modal-first-name').focus();
@@ -1621,7 +1628,7 @@ document.addEventListener('DOMContentLoaded', function () {
             setLoading(profileBtn, false, 'Create account &amp; continue');
             if (data.error) { showError('modal-profile-error', data.error); return; }
             if (data.status === 'logged_in') {
-                window.location.reload();
+                window.location.href = window.location.pathname + '?buy=1';
             }
         })
         .catch(function() {
