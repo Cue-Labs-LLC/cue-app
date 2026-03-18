@@ -5,9 +5,6 @@
 
 {% block extra_head %}
 <style>
-.event-page-link { color: var(--success) !important; }
-.event-page-link:hover { color: #8ec4a5 !important; }
-
 @media (max-width: 640px) {
     .ticket-layout { grid-template-columns: 1fr !important; }
     .qr-card img { width: min(260px, 80vw) !important; height: min(260px, 80vw) !important; }
@@ -36,10 +33,10 @@
         {% endif %}
         {% if order.event.public_id %}
         <a href="{% url 'tickets:public_event_buy' order.event.public_id %}"
-           class="back-link event-page-link"
-           style="margin-top:8px;margin-bottom:0;"
+           class="event-card-cta"
+           style="margin-top:10px;width:auto;padding:8px 14px;"
            target="_blank" rel="noopener">
-            <i class="bi bi-arrow-up-right-square"></i> View Event Page
+            View Event Page
         </a>
         {% endif %}
     </div>
