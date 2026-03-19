@@ -9,12 +9,36 @@
     <meta name="description" content="Event ticketing and customer analytics for independent organizers. RFM segmentation, cohort retention, and revenue intelligence - all in one place.">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link rel="preload" href="https://fonts.googleapis.com/css2?family=Syne:wght@700;800&family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;1,9..40,300&family=DM+Mono:ital,wght@0,300;0,400;0,500;1,300;1,400&display=swap" as="style" onload="this.rel='stylesheet'">
-    <noscript><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Syne:wght@700;800&family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;1,9..40,300&family=DM+Mono:ital,wght@0,300;0,400;0,500;1,300;1,400&display=swap"></noscript>
+    <link rel="preload"
+          href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700;800;900&family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;1,9..40,300&family=DM+Mono:wght@400;500&display=swap"
+          as="style" onload="this.rel='stylesheet'">
+    <noscript>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700;800;900&family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;1,9..40,300&family=DM+Mono:wght@400;500&display=swap">
+    </noscript>
     <link rel="preload" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" as="style" onload="this.rel='stylesheet'">
     <noscript><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css"></noscript>
+
     <style>
         :root {
+            --bg:           #0F0E0D;
+            --surface:      #191817;
+            --surface-2:    #232220;
+            --surface-3:    #2D2C2A;
+            --ink:          #EDE8E3;
+            --ink-2:        #7A7672;
+            --ink-3:        #4A4846;
+            --accent:       #00FF87;
+            --accent-dim:   rgba(0,255,135,0.10);
+            --accent-glow:  rgba(0,255,135,0.22);
+            --border:       rgba(255,255,255,0.07);
+            --border-mid:   rgba(255,255,255,0.11);
+            --border-strong:rgba(255,255,255,0.18);
+            --font-display: 'Barlow Condensed', 'Arial Narrow', sans-serif;
+            --font-body:    'DM Sans', system-ui, sans-serif;
+            --font-mono:    'DM Mono', 'Courier New', monospace;
+            --nav-h:        56px;
+            --gutter:       clamp(20px, 5vw, 64px);
+            --max-w:        1140px;
             --bg:            #0F0E0D;
             --surface:       #191817;
             --surface-2:     #232220;
@@ -41,12 +65,14 @@
 
         body {
             background: var(--bg);
-            color: var(--text);
+            color: var(--ink);
             font-family: var(--font-body);
             font-weight: 300;
             line-height: 1.6;
             min-height: 100vh;
             -webkit-font-smoothing: antialiased;
+            /* subtle noise grain — nightlife venues never have perfect walls */
+            background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.03'/%3E%3C/svg%3E");
         }
 
         /* ── NAV ── */
@@ -58,47 +84,40 @@
             display: flex;
             align-items: center;
             justify-content: space-between;
-            padding: 0 clamp(20px, 5vw, 64px);
-            background: rgba(15, 14, 13, 0.82);
-            backdrop-filter: blur(14px);
-            -webkit-backdrop-filter: blur(14px);
+            padding: 0 var(--gutter);
+            background: rgba(15,14,13,0.88);
+            backdrop-filter: blur(16px);
+            -webkit-backdrop-filter: blur(16px);
             border-bottom: 1px solid transparent;
             transition: border-color 0.2s;
         }
-        .site-nav.scrolled {
-            border-bottom-color: var(--border);
-        }
+        .site-nav.scrolled { border-bottom-color: var(--border-mid); }
 
         .nav-brand {
             display: flex;
             align-items: center;
-            gap: 8px;
+            gap: 10px;
             text-decoration: none;
-            color: var(--text);
+            color: var(--ink);
         }
-        .nav-brand-icon {
-            width: 28px;
-            height: 28px;
-            background: var(--cta);
-            border-radius: 6px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            color: var(--bg);
-            font-size: 14px;
-        }
-        .nav-brand-name {
+        .nav-brand-wordmark {
             font-family: var(--font-display);
-            font-weight: 800;
-            font-size: 1.1rem;
-            letter-spacing: -0.02em;
+            font-weight: 900;
+            font-size: 1.5rem;
+            letter-spacing: 0.05em;
+            text-transform: uppercase;
+            line-height: 1;
+        }
+        .nav-brand-dot {
+            width: 7px;
+            height: 7px;
+            border-radius: 50%;
+            background: var(--accent);
+            flex-shrink: 0;
+            box-shadow: 0 0 8px var(--accent-glow);
         }
 
-        .nav-actions {
-            display: flex;
-            align-items: center;
-            gap: 10px;
-        }
+        .nav-actions { display: flex; align-items: center; gap: 8px; }
 
         /* ── BUTTONS ── */
         .btn {
@@ -106,271 +125,340 @@
             align-items: center;
             gap: 6px;
             padding: 8px 18px;
-            border-radius: var(--radius);
             font-family: var(--font-body);
-            font-size: 0.875rem;
-            font-weight: 400;
+            font-size: 0.8rem;
+            font-weight: 500;
             text-decoration: none;
             cursor: pointer;
             border: 1px solid transparent;
-            transition: background 0.15s, color 0.15s, border-color 0.15s, transform 0.1s;
-            white-space: nowrap;
+            letter-spacing: 0.06em;
+            text-transform: uppercase;
+            transition: background 0.15s, color 0.15s, border-color 0.15s, box-shadow 0.15s;
         }
-        .btn:active { transform: scale(0.98); }
 
         .btn-ghost {
-            color: var(--text-2);
+            color: var(--ink-2);
             border-color: var(--border-mid);
             background: transparent;
         }
-        .btn-ghost:hover {
-            color: var(--text);
-            border-color: var(--border-strong);
-            background: var(--surface);
-        }
+        .btn-ghost:hover { color: var(--ink); border-color: var(--border-strong); }
 
-        .btn-primary {
-            background: var(--cta);
+        .btn-accent {
+            background: var(--accent);
             color: var(--bg);
-            border-color: var(--cta);
-            font-weight: 500;
+            border-color: var(--accent);
+            font-weight: 700;
         }
-        .btn-primary:hover {
-            background: #d8d3ce;
-            border-color: #d8d3ce;
-        }
-
-        .btn-lg {
-            padding: 12px 28px;
-            font-size: 0.95rem;
+        .btn-accent:hover {
+            background: #33FFAA;
+            box-shadow: 0 0 18px var(--accent-glow);
         }
 
         .btn-outline {
-            color: var(--text);
+            color: var(--ink);
             border-color: var(--border-mid);
             background: transparent;
         }
-        .btn-outline:hover {
-            border-color: var(--border-strong);
-            background: var(--surface);
-        }
+        .btn-outline:hover { border-color: var(--border-strong); background: var(--surface); }
+
+        .btn-lg { padding: 13px 32px; font-size: 0.82rem; }
 
         .link-muted {
-            color: var(--text-2);
+            color: var(--ink-3);
             text-decoration: none;
-            font-size: 0.875rem;
+            font-size: 0.78rem;
+            letter-spacing: 0.06em;
+            text-transform: uppercase;
             transition: color 0.15s;
         }
-        .link-muted:hover { color: var(--text); }
+        .link-muted:hover { color: var(--ink-2); }
 
-        /* ── SECTIONS ── */
-        .section {
-            padding: clamp(72px, 10vw, 120px) clamp(20px, 5vw, 64px);
-            max-width: 1100px;
+        /* ── WRAP ── */
+        .wrap {
+            max-width: var(--max-w);
             margin: 0 auto;
+            padding-left: var(--gutter);
+            padding-right: var(--gutter);
         }
 
         /* ── HERO ── */
         .hero {
-            padding-top: clamp(80px, 14vw, 140px);
-            padding-bottom: clamp(64px, 10vw, 100px);
-            max-width: 1100px;
-            margin: 0 auto;
-            padding-left: clamp(20px, 5vw, 64px);
-            padding-right: clamp(20px, 5vw, 64px);
+            padding-top: clamp(72px, 13vw, 130px);
+            padding-bottom: clamp(64px, 10vw, 108px);
+            border-bottom: 1px solid var(--border);
         }
 
-        .hero-eyebrow {
+        .hero-badge {
             display: inline-flex;
             align-items: center;
-            gap: 6px;
+            gap: 8px;
             font-family: var(--font-mono);
-            font-size: 0.72rem;
-            letter-spacing: 0.12em;
+            font-size: 0.65rem;
+            letter-spacing: 0.14em;
             text-transform: uppercase;
             color: var(--accent);
-            border: 1px solid rgba(200, 169, 126, 0.25);
-            background: rgba(200, 169, 126, 0.07);
+            border: 1px solid rgba(0,255,135,0.22);
+            background: var(--accent-dim);
             padding: 5px 12px;
-            border-radius: 2px;
-            margin-bottom: 28px;
+            margin-bottom: 36px;
             opacity: 0;
             animation: fadeUp 0.5s ease forwards;
         }
-        .hero-eyebrow::before {
+        .hero-badge::before {
             content: '';
-            width: 6px;
-            height: 6px;
+            width: 5px;
+            height: 5px;
             border-radius: 50%;
             background: var(--accent);
+            box-shadow: 0 0 6px var(--accent);
             flex-shrink: 0;
         }
 
         .hero-headline {
             font-family: var(--font-display);
-            font-weight: 800;
-            font-size: clamp(2.4rem, 5.5vw, 3.8rem);
-            line-height: 1.08;
-            letter-spacing: -0.03em;
-            color: var(--text);
-            max-width: 720px;
-            margin-bottom: 22px;
+            font-weight: 900;
+            font-size: clamp(4rem, 10vw, 8.5rem);
+            line-height: 0.92;
+            letter-spacing: 0.01em;
+            text-transform: uppercase;
+            color: var(--ink);
+            margin-bottom: 40px;
             opacity: 0;
-            animation: fadeUp 0.5s ease 0.1s forwards;
+            animation: fadeUp 0.55s ease 0.1s forwards;
+        }
+
+        .hero-headline .accent-word {
+            color: var(--accent);
+            text-shadow: 0 0 40px rgba(0,255,135,0.3);
+        }
+
+        .hero-lower {
+            display: flex;
+            align-items: flex-end;
+            justify-content: space-between;
+            gap: 40px;
+            flex-wrap: wrap;
+            opacity: 0;
+            animation: fadeUp 0.55s ease 0.2s forwards;
         }
 
         .hero-sub {
-            font-size: clamp(1rem, 1.5vw, 1.1rem);
+            font-size: clamp(0.9rem, 1.3vw, 1rem);
             font-weight: 300;
-            color: var(--text-2);
-            max-width: 520px;
-            line-height: 1.65;
-            margin-bottom: 40px;
-            opacity: 0;
-            animation: fadeUp 0.5s ease 0.2s forwards;
+            color: var(--ink-2);
+            line-height: 1.7;
+            max-width: 440px;
         }
 
         .hero-actions {
             display: flex;
             flex-wrap: wrap;
             align-items: center;
+            gap: 12px;
+            flex-shrink: 0;
+        }
+
+        /* ── MARQUEE STRIP ── */
+        .marquee-strip {
+            border-top: 1px solid var(--border);
+            border-bottom: 1px solid var(--border);
+            overflow: hidden;
+            padding: 12px 0;
+            background: var(--surface);
+        }
+        .marquee-track {
+            display: flex;
+            white-space: nowrap;
+            animation: marquee 30s linear infinite;
+        }
+        .marquee-item {
+            display: inline-flex;
+            align-items: center;
+            gap: 20px;
+            padding: 0 20px;
+            font-family: var(--font-mono);
+            font-size: 0.65rem;
+            letter-spacing: 0.12em;
+            text-transform: uppercase;
+            color: var(--ink-3);
+        }
+        .marquee-item .dot {
+            width: 4px;
+            height: 4px;
+            border-radius: 50%;
+            background: var(--accent);
+            flex-shrink: 0;
+        }
+        @keyframes marquee {
+            from { transform: translateX(0); }
+            to   { transform: translateX(-50%); }
+        }
+
+        /* ── SECTION LABEL ── */
+        .section-overline {
+            font-family: var(--font-mono);
+            font-size: 0.62rem;
+            letter-spacing: 0.16em;
+            text-transform: uppercase;
+            color: var(--ink-3);
+            color: var(--text-2);
+            margin-bottom: 40px;
+            display: flex;
+            align-items: center;
             gap: 14px;
-            opacity: 0;
-            animation: fadeUp 0.5s ease 0.3s forwards;
+        }
+        .section-overline::after {
+            content: '';
+            flex: 1;
+            height: 1px;
+            background: var(--border);
         }
 
         /* ── FEATURES ── */
-        .features-label {
-            font-family: var(--font-mono);
-            font-size: 0.7rem;
-            letter-spacing: 0.1em;
-            text-transform: uppercase;
-            color: var(--text-2);
-            margin-bottom: 40px;
+        .features {
+            padding: clamp(64px, 9vw, 104px) 0;
+            border-bottom: 1px solid var(--border);
         }
 
-        .features-grid {
+        .features-list { display: flex; flex-direction: column; gap: 0; }
+
+        .feature-row {
             display: grid;
-            grid-template-columns: repeat(3, 1fr);
-            gap: 1px;
-            background: var(--border);
-            border: 1px solid var(--border);
-            border-radius: calc(var(--radius) + 2px);
-            overflow: hidden;
+            grid-template-columns: 56px 260px 1fr;
+            gap: 0 32px;
+            padding: 36px 0;
+            border-bottom: 1px solid var(--border);
+            align-items: start;
+            transition: background 0.15s;
         }
+        .feature-row:first-child { border-top: 1px solid var(--border); }
 
-        @media (max-width: 700px) {
-            .features-grid {
-                grid-template-columns: 1fr;
+        @media (max-width: 680px) {
+            .feature-row {
+                grid-template-columns: 40px 1fr;
+                row-gap: 10px;
             }
+            .feature-desc { grid-column: 2; }
         }
 
-        .feature-card {
-            background: var(--surface);
-            padding: 32px 28px;
-            transition: background 0.2s, transform 0.2s;
-        }
-        .feature-card:hover {
-            background: var(--surface-2);
-            transform: translateY(-2px);
-        }
-
-        .feature-icon {
-            width: 36px;
-            height: 36px;
-            background: var(--surface-3);
-            border: 1px solid var(--border-mid);
-            border-radius: var(--radius);
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-size: 16px;
-            color: var(--text-2);
-            margin-bottom: 20px;
-        }
-
-        .feature-title {
+        .feature-num {
             font-family: var(--font-display);
             font-weight: 700;
-            font-size: 1rem;
-            letter-spacing: -0.01em;
-            margin-bottom: 10px;
+            font-size: 1.1rem;
+            letter-spacing: 0.06em;
+            color: var(--accent);
+            text-transform: uppercase;
+            line-height: 1.2;
+            padding-top: 2px;
+        }
+
+        .feature-name {
+            font-family: var(--font-display);
+            font-weight: 800;
+            font-size: 1.75rem;
+            letter-spacing: 0.04em;
+            text-transform: uppercase;
+            line-height: 1.1;
+            color: var(--ink);
         }
 
         .feature-desc {
             font-size: 0.875rem;
-            color: var(--text-2);
-            line-height: 1.6;
+            font-weight: 300;
+            color: var(--ink-2);
+            line-height: 1.7;
         }
 
         /* ── ATTENDEE STRIP ── */
         .attendee-strip {
             background: var(--surface);
-            border-top: 1px solid var(--border);
             border-bottom: 1px solid var(--border);
         }
         .attendee-strip-inner {
-            max-width: 1100px;
+            max-width: var(--max-w);
             margin: 0 auto;
-            padding: 28px clamp(20px, 5vw, 64px);
+            padding: 22px var(--gutter);
             display: flex;
             align-items: center;
             justify-content: space-between;
-            gap: 24px;
             flex-wrap: wrap;
+            gap: 16px;
         }
         .attendee-strip-text {
-            font-size: 0.9rem;
-            color: var(--text-2);
+            font-size: 0.85rem;
+            color: var(--ink-2);
         }
-        .attendee-strip-text strong {
-            color: var(--text);
-            font-weight: 400;
+        .attendee-strip-text strong { font-weight: 500; color: var(--ink); }
+
+        /* ── CTA ── */
+        .cta-section {
+            padding: clamp(72px, 12vw, 128px) var(--gutter);
+            text-align: center;
+            position: relative;
+            overflow: hidden;
+        }
+        /* radial glow behind headline */
+        .cta-section::before {
+            content: '';
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -60%);
+            width: 600px;
+            height: 300px;
+            background: radial-gradient(ellipse, rgba(0,255,135,0.07) 0%, transparent 70%);
+            pointer-events: none;
         }
 
-        /* ── CTA BANNER ── */
-        .cta-banner {
-            text-align: center;
+        .cta-label {
+            font-family: var(--font-mono);
+            font-size: 0.62rem;
+            letter-spacing: 0.16em;
+            text-transform: uppercase;
+            color: var(--ink-3);
+            margin-bottom: 28px;
         }
-        .cta-banner-card {
-            background: var(--surface);
-            border: 1px solid var(--border-mid);
-            border-radius: calc(var(--radius) + 4px);
-            padding: clamp(48px, 8vw, 80px) clamp(24px, 6vw, 80px);
-        }
-        .cta-banner-headline {
+
+        .cta-headline {
             font-family: var(--font-display);
-            font-weight: 800;
-            font-size: clamp(1.6rem, 3.5vw, 2.6rem);
-            letter-spacing: -0.03em;
-            margin-bottom: 14px;
+            font-weight: 900;
+            font-size: clamp(3rem, 7vw, 6.5rem);
+            line-height: 0.92;
+            letter-spacing: 0.02em;
+            text-transform: uppercase;
+            color: var(--ink);
+            margin-bottom: 40px;
         }
-        .cta-banner-sub {
-            font-size: 0.95rem;
-            color: var(--text-2);
-            margin-bottom: 36px;
+        .cta-headline .accent-word {
+            color: var(--accent);
+            text-shadow: 0 0 40px rgba(0,255,135,0.25);
         }
-        .cta-banner-actions {
+
+        .cta-actions {
             display: flex;
             align-items: center;
             justify-content: center;
             flex-wrap: wrap;
-            gap: 16px;
+            gap: 14px;
         }
 
         /* ── FOOTER ── */
         .site-footer {
             border-top: 1px solid var(--border);
-            padding: 28px clamp(20px, 5vw, 64px);
+            padding: 24px var(--gutter);
             display: flex;
             align-items: center;
             justify-content: space-between;
             flex-wrap: wrap;
             gap: 12px;
-            max-width: 100%;
         }
         .footer-brand {
             font-family: var(--font-display);
+            font-weight: 900;
+            font-size: 1rem;
+            letter-spacing: 0.06em;
+            text-transform: uppercase;
+            color: var(--ink-3);
             font-weight: 800;
             font-size: 0.9rem;
             color: var(--text-2);
@@ -380,25 +468,24 @@
             font-size: 0.78rem;
             color: var(--text-2);
             font-family: var(--font-mono);
+            font-size: 0.68rem;
+            color: var(--ink-3);
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
         }
 
-        /* ── DIVIDER ── */
-        .section-divider {
-            border: none;
-            border-top: 1px solid var(--border);
-            margin: 0;
+        /* ── SCROLL REVEAL ── */
+        .reveal {
+            opacity: 0;
+            transform: translateY(16px);
+            transition: opacity 0.55s ease, transform 0.55s ease;
         }
+        .reveal.visible { opacity: 1; transform: none; }
 
         /* ── ANIMATIONS ── */
         @keyframes fadeUp {
-            from {
-                opacity: 0;
-                transform: translateY(16px);
-            }
-            to {
-                opacity: 1;
-                transform: translateY(0);
-            }
+            from { opacity: 0; transform: translateY(16px); }
+            to   { opacity: 1; transform: translateY(0); }
         }
     </style>
 </head>
@@ -407,54 +494,67 @@
     <!-- NAV -->
     <nav class="site-nav" id="siteNav">
         <a href="/" class="nav-brand">
-            <span class="nav-brand-icon">
-                <i class="bi bi-lightning-charge-fill"></i>
-            </span>
-            <span class="nav-brand-name">Cue</span>
+            <span class="nav-brand-dot"></span>
+            <span class="nav-brand-wordmark">Cue</span>
         </a>
         <div class="nav-actions">
             <a href="{% url 'tickets:login' %}" class="btn btn-ghost">Sign in</a>
-            <a href="{% url 'tickets:signup' %}" class="btn btn-primary">Get started</a>
+            <a href="{% url 'tickets:signup' %}" class="btn btn-accent">Get started</a>
         </div>
     </nav>
 
     <!-- HERO -->
     <section class="hero">
-        <div class="hero-eyebrow">Private Beta</div>
-        <h1 class="hero-headline">Sell tickets.<br>Know your crowd.</h1>
-        <p class="hero-sub">Built for independent organizers who want more than a checkout link - real analytics, customer intelligence, and revenue visibility across every event.</p>
-        <div class="hero-actions">
-            <a href="{% url 'tickets:signup' %}" class="btn btn-primary btn-lg">Start for free &rarr;</a>
-            {% if browse_events_enabled %}<a href="{% url 'tickets:explore' %}" class="link-muted">Browse upcoming events</a>{% endif %}
+        <div class="wrap">
+            <div class="hero-badge">Private Beta</div>
+            <h1 class="hero-headline">
+                Sell tickets.<br>
+                Know your <span class="accent-word">crowd.</span>
+            </h1>
+            <div class="hero-lower">
+                <p class="hero-sub">Built for independent organizers who want more than a checkout link — real analytics, customer intelligence, and revenue visibility across every event.</p>
+                <div class="hero-actions">
+                    <a href="{% url 'tickets:signup' %}" class="btn btn-accent btn-lg">Start for free &rarr;</a>
+                    {% if browse_events_enabled %}<a href="{% url 'tickets:explore' %}" class="link-muted">Browse events</a>{% endif %}
+                </div>
+            </div>
         </div>
     </section>
 
-    <hr class="section-divider">
+    <!-- MARQUEE -->
+    <div class="marquee-strip" aria-hidden="true">
+        <div class="marquee-track">
+            {% for _ in "xxxxxxxxxx" %}
+            <span class="marquee-item">Event Management <span class="dot"></span></span>
+            <span class="marquee-item">Customer Analytics <span class="dot"></span></span>
+            <span class="marquee-item">RFM Segmentation <span class="dot"></span></span>
+            <span class="marquee-item">Cohort Retention <span class="dot"></span></span>
+            <span class="marquee-item">Revenue Intelligence <span class="dot"></span></span>
+            <span class="marquee-item">Sales Forecasting <span class="dot"></span></span>
+            {% endfor %}
+        </div>
+    </div>
 
     <!-- FEATURES -->
-    <section class="section">
-        <p class="features-label">Built for organizers</p>
-        <div class="features-grid">
-            <div class="feature-card">
-                <div class="feature-icon">
-                    <i class="bi bi-calendar-check"></i>
+    <section class="features">
+        <div class="wrap">
+            <p class="section-overline">Platform features</p>
+            <div class="features-list">
+                <div class="feature-row reveal">
+                    <span class="feature-num">01</span>
+                    <h3 class="feature-name">Event Management</h3>
+                    <p class="feature-desc">Create events with direct ticketing on Cue, or import order history from Eventbrite, TIXR, or any CSV export. Your data, your way.</p>
                 </div>
-                <h3 class="feature-title">Event Management</h3>
-                <p class="feature-desc">Create events with direct ticketing on Cue, or import order history from Eventbrite, TIXR, or any CSV export. Your data, your way.</p>
-            </div>
-            <div class="feature-card">
-                <div class="feature-icon">
-                    <i class="bi bi-person-lines-fill"></i>
+                <div class="feature-row reveal" style="transition-delay:0.08s">
+                    <span class="feature-num">02</span>
+                    <h3 class="feature-name">Customer Analytics</h3>
+                    <p class="feature-desc">RFM segmentation surfaces your VIPs, loyalists, and at-risk buyers. Cohort retention shows who comes back &mdash; and when they stop.</p>
                 </div>
-                <h3 class="feature-title">Customer Analytics</h3>
-                <p class="feature-desc">RFM segmentation surfaces your VIPs, loyalists, and at-risk buyers. Cohort retention shows who comes back - and when they stop.</p>
-            </div>
-            <div class="feature-card">
-                <div class="feature-icon">
-                    <i class="bi bi-graph-up-arrow"></i>
+                <div class="feature-row reveal" style="transition-delay:0.16s">
+                    <span class="feature-num">03</span>
+                    <h3 class="feature-name">Revenue Intelligence</h3>
+                    <p class="feature-desc">Per-event P&amp;L, income tracking, and sales curve forecasting. Know how you did and what to expect from your next show.</p>
                 </div>
-                <h3 class="feature-title">Revenue Intelligence</h3>
-                <p class="feature-desc">Per-event P&amp;L, income tracking, and sales curve forecasting. Know how you did and what to expect from your next show.</p>
             </div>
         </div>
     </section>
@@ -473,15 +573,15 @@
     </div>
     {% endif %}
 
-    <!-- CTA BANNER -->
-    <section class="section cta-banner">
-        <div class="cta-banner-card">
-            <h2 class="cta-banner-headline">Ready to understand your audience?</h2>
-            <p class="cta-banner-sub">Join organizers already using Cue to grow smarter.</p>
-            <div class="cta-banner-actions">
-                <a href="{% url 'tickets:signup' %}" class="btn btn-primary btn-lg">Create your account</a>
-                <a href="{% url 'tickets:login' %}" class="link-muted">Already have an account? Sign in</a>
-            </div>
+    <!-- CTA -->
+    <section class="cta-section reveal">
+        <p class="cta-label">Get started today</p>
+        <h2 class="cta-headline">
+            Understand<br>your <span class="accent-word">audience.</span>
+        </h2>
+        <div class="cta-actions">
+            <a href="{% url 'tickets:signup' %}" class="btn btn-accent btn-lg">Create your account</a>
+            <a href="{% url 'tickets:login' %}" class="btn btn-ghost">Already have an account?</a>
         </div>
     </section>
 
@@ -492,11 +592,19 @@
     </footer>
 
     <script>
-        // Sticky nav border on scroll
+        // Sticky nav border
         const nav = document.getElementById('siteNav');
-        const onScroll = () => nav.classList.toggle('scrolled', window.scrollY > 8);
-        window.addEventListener('scroll', onScroll, { passive: true });
-        onScroll();
+        window.addEventListener('scroll', () => {
+            nav.classList.toggle('scrolled', window.scrollY > 8);
+        }, { passive: true });
+
+        // Scroll reveal
+        const io = new IntersectionObserver((entries) => {
+            entries.forEach(e => {
+                if (e.isIntersecting) { e.target.classList.add('visible'); io.unobserve(e.target); }
+            });
+        }, { threshold: 0.1 });
+        document.querySelectorAll('.reveal').forEach(el => io.observe(el));
     </script>
 
 </body>
