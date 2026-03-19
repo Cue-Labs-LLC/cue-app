@@ -26,11 +26,11 @@
     --text-sidebar: #8C8884;
     --text-sidebar-active: #EDE8E3;
 
-    /* Accent - warm neutral */
-    --accent: #C8C3BE;
-    --accent-hover: #EDE8E3;
-    --accent-muted: rgba(200, 195, 190, 0.07);
-    --accent-muted-border: rgba(200, 195, 190, 0.16);
+    /* Accent - neon mint */
+    --accent: #00FF87;
+    --accent-hover: #33FFAA;
+    --accent-muted: rgba(0, 255, 135, 0.07);
+    --accent-muted-border: rgba(0, 255, 135, 0.16);
 
     /* Semantic */
     --success: #6A9E7F;
@@ -50,7 +50,7 @@
     --radius-lg: 8px;
 
     /* Typography */
-    --font-display: 'Syne', sans-serif;
+    --font-display: 'DM Sans', sans-serif;
     --font-body: 'DM Sans', sans-serif;
     --font-mono: 'DM Mono', 'Courier New', monospace;
 
@@ -89,9 +89,9 @@ h1, h2, h3, h4, h5, h6 {
     color: var(--text-primary);
 }
 
-h1 { font-size: 1.625rem; letter-spacing: -0.02em; }
-h2 { font-size: 1.375rem; letter-spacing: -0.02em; }
-h3 { font-size: 1.125rem; letter-spacing: -0.01em; }
+h1 { font-size: 1.625rem; letter-spacing: 0.02em; }
+h2 { font-size: 1.375rem; letter-spacing: 0.02em; }
+h3 { font-size: 1.125rem; letter-spacing: 0.01em; }
 h4 { font-size: 1rem; }
 h5 { font-size: 0.875rem; font-weight: 600; }
 h6 { font-size: 0.8125rem; font-weight: 600; }
@@ -168,10 +168,10 @@ a:hover {
 
 .sidebar-brand-text {
     color: var(--text-primary);
-    font-family: var(--font-display);
+    font-family: 'Barlow Condensed', 'Arial Narrow', sans-serif;
     font-size: 14px;
     font-weight: 700;
-    letter-spacing: -0.02em;
+    letter-spacing: 0.02em;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -630,15 +630,15 @@ a:hover {
 .btn-primary,
 .btn-primary:active,
 .btn-primary:focus {
-    background: #EDE8E3 !important;
+    background: #00FF87 !important;
     color: #0B0A09 !important;
-    border-color: #EDE8E3 !important;
+    border-color: #00FF87 !important;
 }
 
 .btn-primary:hover {
     opacity: 0.88;
-    background: #EDE8E3 !important;
-    border-color: #EDE8E3 !important;
+    background: #00FF87 !important;
+    border-color: #00FF87 !important;
     color: #0B0A09 !important;
 }
 
@@ -781,8 +781,8 @@ a:hover {
 }
 
 .form-check-input:checked {
-    background-color: #EDE8E3;
-    border-color: #EDE8E3;
+    background-color: #00FF87;
+    border-color: #00FF87;
 }
 
 .form-check-input:focus {
@@ -874,8 +874,8 @@ a:hover {
 }
 
 .page-item.active .page-link {
-    background: #EDE8E3;
-    border-color: #EDE8E3;
+    background: #00FF87;
+    border-color: #00FF87;
     color: #0B0A09;
 }
 
@@ -922,7 +922,7 @@ a:hover {
     font-family: var(--font-display);
     font-size: 16px;
     font-weight: 700;
-    letter-spacing: -0.02em;
+    letter-spacing: 0.02em;
 }
 
 .modal-header.bg-danger {
@@ -1015,8 +1015,8 @@ a:hover {
 }
 
 .btn-check:checked + .btn-outline-primary {
-    background: #EDE8E3 !important;
-    border-color: #EDE8E3 !important;
+    background: #00FF87 !important;
+    border-color: #00FF87 !important;
     color: #0B0A09 !important;
 }
 
@@ -1186,7 +1186,7 @@ a:hover {
     font-family: var(--font-display);
     font-size: 16px;
     font-weight: 700;
-    letter-spacing: -0.02em;
+    letter-spacing: 0.02em;
     color: var(--text-primary);
 }
 
@@ -1534,7 +1534,7 @@ gmp-place-autocomplete#venue-address-autocomplete {
 
 .chat-bubble--user {
     align-self: flex-end;
-    background: #EDE8E3;
+    background: #00FF87;
     color: #0B0A09;
     font-weight: 400;
 }
@@ -1612,7 +1612,7 @@ gmp-place-autocomplete#venue-address-autocomplete {
     height: 34px;
     border: none;
     border-radius: 3px;
-    background: #EDE8E3;
+    background: #00FF87;
     color: #0B0A09;
     cursor: pointer;
     display: flex;
