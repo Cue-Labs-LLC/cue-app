@@ -990,6 +990,7 @@ class TicketOrder(AuditBaseModel):
         indexes = [
             models.Index(fields=['order_date']),
             models.Index(fields=['customer', 'order_date']),
+            models.Index(fields=['customer', 'refunded_at']),
             models.Index(fields=['event', 'total_amount']),
             models.Index(fields=['event', 'is_in_person']),
         ]
@@ -1259,6 +1260,7 @@ class WaitlistEntry(BaseModel):
         ordering = ['position']
         indexes = [
             models.Index(fields=['ticket_type', 'position']),
+            models.Index(fields=['ticket_type', 'email', 'expired', 'purchased_at']),
             models.Index(fields=['hold_token']),
         ]
 
