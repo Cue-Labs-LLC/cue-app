@@ -24,6 +24,8 @@ from rest_framework.response import Response
 from .models import (
     Customer,
     Event,
+    EventCustomFieldValue,
+    OrganizationAPIKey,
     SaleableTicketType,
     ScannerSession,
     Ticket,
@@ -85,6 +87,142 @@ class ScannerSessionAuthentication(BaseAuthentication):
 class IsScannerAuthenticated(BasePermission):
     def has_permission(self, request, view):
         return isinstance(request.auth, ScannerSession)
+
+
+# ---------------------------------------------------------------------------
+# Organization API key auth
+# ---------------------------------------------------------------------------
+
+class OrganizationAPIKeyAuthentication(BaseAuthentication):
+    """Authenticate requests carrying 'Authorization: Bearer cue_live_...'."""
+
+    def authenticate(self, request):
+        auth = get_authorization_header(request).split()
+        if len(auth) != 2 or auth[0].lower() != b'bearer':
+            return None
+        raw_key = auth[1].decode('utf-8', errors='ignore')
+        if not raw_key.startswith('cue_live_'):
+            return None
+        try:
+            api_key = (
+                OrganizationAPIKey.objects
+                .select_related('organization')
+                .get(key=raw_key, is_active=True)
+            )
+        except OrganizationAPIKey.DoesNotExist:
+            raise AuthenticationFailed('Invalid or revoked API key.')
+        OrganizationAPIKey.objects.filter(pk=api_key.pk).update(last_used_at=timezone.now())
+        return (None, api_key)  # user=None; org via request.auth.organization
+
+
+class IsOrganizationAPIKeyAuthenticated(BasePermission):
+    def has_permission(self, request, view):
+        return isinstance(request.auth, OrganizationAPIKey)
+
+
+# ---------------------------------------------------------------------------
+# Agent API — upcoming events
+# ---------------------------------------------------------------------------
+
+@api_view(['GET'])
+@authentication_classes([OrganizationAPIKeyAuthentication])
+@permission_classes([IsOrganizationAPIKeyAuthenticated])
+def agent_upcoming_events(request):
+    """
+    GET /api/v1/events/upcoming/
+    Returns events starting within the next 31 days for the authenticated org.
+    Query params:
+        limit   int  (default 10, max 50)
+    """
+    from datetime import timedelta
+    from django.db.models import Prefetch
+
+    org = request.auth.organization
+
+    try:
+        limit = min(int(request.query_params.get('limit', 10)), 50)
+    except (ValueError, TypeError):
+        limit = 10
+
+    today = timezone.localdate()
+    cutoff = today + timedelta(days=31)
+
+    events = (
+        Event.objects
+        .filter(
+            organization=org,
+            start_date__gte=today,
+            start_date__lte=cutoff,
+            deleted_at__isnull=True,
+        )
+        .select_related('venue')
+        .prefetch_related(
+            'talent_lineup',
+            Prefetch(
+                'custom_field_values',
+                queryset=EventCustomFieldValue.objects.select_related(
+                    'custom_field', 'custom_field_option'
+                ),
+            ),
+            Prefetch(
+                'saleable_ticket_types',
+                queryset=SaleableTicketType.objects.filter(is_active=True).order_by('order', 'name'),
+            ),
+        )
+        .order_by('start_date', 'start_time', 'name')[:limit]
+    )
+
+    data = []
+    for event in events:
+        venue = event.venue
+        custom_fields = {}
+        for cfv in event.custom_field_values.all():
+            if cfv.custom_field_option:
+                custom_fields[cfv.custom_field.name] = cfv.custom_field_option.label
+
+        talent = [t.name for t in event.talent_lineup.all()]
+
+        ticket_types = [
+            {
+                'name': tt.name,
+                'price': str(tt.price),
+                'description': tt.description,
+                'sold_out': tt.remaining_quantity() == 0,
+            }
+            for tt in event.saleable_ticket_types.all()
+        ]
+
+        data.append({
+            'name': event.name,
+            'summary': event.summary,
+            'description': event.description,
+            'start_date': event.start_date.isoformat(),
+            'start_time': event.start_time.isoformat() if event.start_time else None,
+            'end_date': event.end_date.isoformat() if event.end_date else None,
+            'end_time': event.end_time.isoformat() if event.end_time else None,
+            'timezone': event.timezone,
+            'ticket_link': event.ticket_link or None,
+            'venue': {
+                'name': venue.name,
+                'city': venue.city,
+                'street_address': venue.street_address,
+                'state': venue.state,
+                'postal_code': venue.postal_code,
+                'country': venue.country,
+            },
+            'talent_lineup': talent,
+            'additional_details': custom_fields,
+            'ticket_types': ticket_types,
+        })
+
+    response = Response({
+        'organization': org.name,
+        'generated_at': timezone.now().isoformat(),
+        'event_count': len(data),
+        'events': data,
+    })
+    response['Cache-Control'] = 'no-store, no-cache, must-revalidate'
+    return response
 
 
 # ---------------------------------------------------------------------------

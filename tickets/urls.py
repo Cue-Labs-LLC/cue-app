@@ -139,11 +139,13 @@ urlpatterns = [
     path('formats/<uuid:format_id>/set-default/', views.format_set_default, name='format_set_default'),
     
     # Tools
-    path('tools/regenerate-event-doc/', views.regenerate_event_doc, name='regenerate_event_doc'),
+    # path('tools/regenerate-event-doc/', views.regenerate_event_doc, name='regenerate_event_doc'),
 
     # Settings
     path('settings/google-calendar/', views.settings_google_calendar, name='settings_google_calendar'),
     path('settings/google-calendar/disconnect/', views.settings_google_calendar_disconnect, name='settings_google_calendar_disconnect'),
+    path('settings/api-keys/', views.settings_api_keys, name='settings_api_keys'),
+    path('settings/api-keys/<uuid:key_id>/revoke/', views.settings_api_key_revoke, name='settings_api_key_revoke'),
 
     # Venues
     path('venues/', views.venue_list, name='venue_list'),

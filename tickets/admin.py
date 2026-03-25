@@ -15,6 +15,7 @@ from .models import (
     SaleableTicketType, SaleableTicketTypeTier,
     OrganizerWaitlist,
     PipedreamCalendarConnection,
+    OrganizationAPIKey,
 )
 
 
@@ -843,6 +844,14 @@ class PipedreamCalendarConnectionAdmin(admin.ModelAdmin):
     list_display = ['organization', 'webhook_url', 'created_at', 'updated_at']
     search_fields = ['organization__name', 'webhook_url']
     readonly_fields = ['id', 'created_at', 'updated_at']
+
+
+@admin.register(OrganizationAPIKey)
+class OrganizationAPIKeyAdmin(admin.ModelAdmin):
+    list_display = ('name', 'organization', 'masked_key', 'is_active', 'last_used_at', 'created_at')
+    list_filter = ('is_active', 'organization')
+    search_fields = ('name', 'organization__name')
+    readonly_fields = ('key', 'masked_key', 'last_used_at', 'created_at', 'updated_at')
 
 
 @admin.register(OrganizerWaitlist)

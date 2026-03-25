@@ -134,6 +134,38 @@ class PipedreamCalendarConnection(BaseModel):
         return f"Pipedream calendar: {self.organization.name}"
 
 
+def _generate_api_key():
+    return f"cue_live_{secrets.token_hex(16)}"
+
+
+class OrganizationAPIKey(BaseModel):
+    """Per-organization API key for external AI agent access."""
+    organization = models.ForeignKey(
+        Organization,
+        on_delete=models.CASCADE,
+        related_name='api_keys',
+    )
+    name = models.CharField(max_length=100, help_text="Label to identify this key, e.g. 'Instagram DM Agent'")
+    key = models.CharField(max_length=100, unique=True, default=_generate_api_key, db_index=True)
+    is_active = models.BooleanField(default=True)
+    last_used_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['key', 'is_active']),
+        ]
+        verbose_name = 'Organization API key'
+        verbose_name_plural = 'Organization API keys'
+
+    def __str__(self):
+        return f"{self.organization.name} — {self.name}"
+
+    @property
+    def masked_key(self):
+        return f"{self.key[:14]}...{self.key[-4:]}"
+
+
 class UserProfile(models.Model):
     """OneToOne profile linking a user to an organization."""
 

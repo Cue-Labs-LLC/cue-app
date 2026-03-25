@@ -1,0 +1,115 @@
+{% extends 'tickets/base.html' %}
+
+{% block title %}API Keys{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1>API Keys</h1>
+</div>
+
+{% if new_key_plain %}
+<div class="alert alert-warning border-warning mb-4" role="alert">
+    <h6 class="alert-heading"><i class="bi bi-exclamation-triangle-fill me-1"></i> Copy your new API key now</h6>
+    <p class="mb-2 small">This key will not be shown again. Store it somewhere safe.</p>
+    <div class="input-group">
+        <input type="text" class="form-control font-monospace" id="new-key-value" value="{{ new_key_plain }}" readonly>
+        <button class="btn btn-outline-secondary" type="button" onclick="copyKey()">
+            <i class="bi bi-clipboard" id="copy-icon"></i>
+        </button>
+    </div>
+</div>
+{% endif %}
+
+<div class="card mb-4">
+    <div class="card-header">
+        <h5 class="mb-0">Create new key</h5>
+    </div>
+    <div class="card-body">
+        <p class="text-body-secondary small mb-3">Give this key a name so you can identify which agent is using it (e.g. "Instagram DM Bot").</p>
+        <form method="post" action="{% url 'tickets:settings_api_keys' %}" class="d-flex gap-2 align-items-end">
+            {% csrf_token %}
+            <div class="flex-grow-1">
+                <label for="key-name" class="form-label">Key name</label>
+                <input type="text" name="name" id="key-name" class="form-control" placeholder="e.g. Instagram DM Bot" maxlength="100" required>
+            </div>
+            <button type="submit" class="btn btn-primary">Create key</button>
+        </form>
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-header">
+        <h5 class="mb-0">Existing keys</h5>
+    </div>
+    {% if api_keys %}
+    <div class="table-responsive">
+        <table class="table table-hover mb-0">
+            <thead>
+                <tr>
+                    <th>Name</th>
+                    <th>Key</th>
+                    <th>Created</th>
+                    <th>Last used</th>
+                    <th>Status</th>
+                    <th></th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for key in api_keys %}
+                <tr class="{% if not key.is_active %}text-body-secondary{% endif %}">
+                    <td>{{ key.name }}</td>
+                    <td><code>{{ key.masked_key }}</code></td>
+                    <td>{{ key.created_at|date:"M j, Y" }}</td>
+                    <td>{{ key.last_used_at|date:"M j, Y g:i A"|default:"Never" }}</td>
+                    <td>
+                        {% if key.is_active %}
+                        <span class="badge bg-success-subtle text-success-emphasis">Active</span>
+                        {% else %}
+                        <span class="badge bg-secondary-subtle text-secondary-emphasis">Revoked</span>
+                        {% endif %}
+                    </td>
+                    <td class="text-end">
+                        {% if key.is_active %}
+                        <form method="post" action="{% url 'tickets:settings_api_key_revoke' key.id %}" class="d-inline" onsubmit="return confirm('Revoke this key? This cannot be undone.');">
+                            {% csrf_token %}
+                            <button type="submit" class="btn btn-sm btn-outline-danger">Revoke</button>
+                        </form>
+                        {% endif %}
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% else %}
+    <div class="card-body">
+        <p class="text-body-secondary mb-0">No API keys yet. Create one above.</p>
+    </div>
+    {% endif %}
+</div>
+
+<div class="card mt-4">
+    <div class="card-header">
+        <h5 class="mb-0">Usage</h5>
+    </div>
+    <div class="card-body">
+        <p class="small text-body-secondary mb-2">Call the upcoming events endpoint from your AI agent:</p>
+        <pre class="mb-2 p-3 bg-body-secondary rounded small"><code>GET /api/v1/events/upcoming/
+Authorization: Bearer &lt;your-key&gt;</code></pre>
+        <p class="small text-body-secondary mb-0">Returns events starting within the next 31 days. Optional query param: <code>limit</code> (default 10, max 50).</p>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+function copyKey() {
+    const input = document.getElementById('new-key-value');
+    navigator.clipboard.writeText(input.value).then(() => {
+        const icon = document.getElementById('copy-icon');
+        icon.className = 'bi bi-check2';
+        setTimeout(() => { icon.className = 'bi bi-clipboard'; }, 2000);
+    });
+}
+</script>
+{% endblock %}

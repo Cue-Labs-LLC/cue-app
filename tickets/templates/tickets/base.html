@@ -155,6 +155,13 @@
                         </a>
                     </li>
                     {% endif %}
+                    {% if is_org_admin %}
+                    <li>
+                        <a href="{% url 'tickets:settings_api_keys' %}" class="sidebar-link{% if '/settings/api-keys/' in request.path %} active{% endif %}">
+                            <i class="bi bi-key"></i> API Keys
+                        </a>
+                    </li>
+                    {% endif %}
                     {% endif %}
                 </ul>
             </div>
@@ -224,14 +231,14 @@
                             <i class="bi bi-box-arrow-right"></i> Sign out
                         </button>
                     </form>
-                    {% if request.user.is_superuser %}
-                    <form method="post" action="{% url 'tickets:regenerate_event_doc' %}" class="d-inline">
-                        {% csrf_token %}
-                        <button type="submit" class="sidebar-link" style="width: 100%; border: none; background: none; cursor: pointer; text-align: left;">
-                            <i class="bi bi-file-earmark-text"></i> Regen Event Doc
-                        </button>
-                    </form>
-                    {% endif %}
+                    {# {% if request.user.is_superuser %} #}
+                    {# <form method="post" action="{% url 'tickets:regenerate_event_doc' %}" class="d-inline"> #}
+                    {#     {% csrf_token %} #}
+                    {#     <button type="submit" class="sidebar-link" style="width: 100%; border: none; background: none; cursor: pointer; text-align: left;"> #}
+                    {#         <i class="bi bi-file-earmark-text"></i> Regen Event Doc #}
+                    {#     </button> #}
+                    {# </form> #}
+                    {# {% endif %} #}
                 </div>
             </div>
         </aside>

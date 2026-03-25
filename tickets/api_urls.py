@@ -20,6 +20,9 @@ urlpatterns = [
     path('organizer/checkin/', api_views.organizer_checkin, name='api_organizer_checkin'),
     path('organizer/sell/', api_views.organizer_sell, name='api_organizer_sell'),
 
+    # Agent / External API (API key auth, no user session)
+    path('v1/events/upcoming/', api_views.agent_upcoming_events, name='api_agent_upcoming_events'),
+
     # Stripe Terminal
     path('stripe/connection-token/', api_views.stripe_connection_token, name='api_stripe_connection_token'),
     path('stripe/terminal-payment-intent/', api_views.stripe_terminal_payment_intent, name='api_stripe_terminal_pi'),
