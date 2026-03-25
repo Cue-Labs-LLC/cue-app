@@ -859,6 +859,11 @@ def support(request):
     return render(request, 'tickets/support.html')
 
 
+def privacy(request):
+    """Public privacy policy page."""
+    return render(request, 'tickets/privacy.html')
+
+
 def landing(request):
     """Public landing page (no login required). Logged-in users are redirected to the dashboard."""
     if request.user.is_authenticated:

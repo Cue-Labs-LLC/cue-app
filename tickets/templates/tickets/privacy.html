@@ -1,0 +1,627 @@
+{% load static %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Privacy Policy &mdash; Cue</title>
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='5' fill='%230F0E0D'/%3E%3Cpath d='M6 11a1 1 0 0 1 1-1h18a1 1 0 0 1 1 1v3a2 2 0 0 0 0 4v3a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1v-3a2 2 0 0 0 0-4v-3z' fill='%2300FF87'/%3E%3Cline x1='13' y1='10' x2='13' y2='22' stroke='%230F0E0D' stroke-width='1.5' stroke-dasharray='2 2'/%3E%3C/svg%3E">
+    <meta name="description" content="Cue Up privacy policy — how we collect, use, and protect your data.">
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link rel="preload"
+          href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700;800;900&family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;1,9..40,300&family=DM+Mono:wght@400;500&display=swap"
+          as="style" onload="this.rel='stylesheet'">
+    <noscript>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700;800;900&family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;1,9..40,300&family=DM+Mono:wght@400;500&display=swap">
+    </noscript>
+    <link rel="preload" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" as="style" onload="this.rel='stylesheet'">
+    <noscript><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css"></noscript>
+
+    <style>
+        :root {
+            --bg:             #0F0E0D;
+            --surface:        #191817;
+            --surface-2:      #232220;
+            --ink:            #EDE8E3;
+            --ink-2:          #7A7672;
+            --ink-3:          #4A4846;
+            --accent:         #00FF87;
+            --accent-dim:     rgba(0,255,135,0.10);
+            --accent-glow:    rgba(0,255,135,0.22);
+            --border:         rgba(255,255,255,0.07);
+            --border-mid:     rgba(255,255,255,0.11);
+            --border-strong:  rgba(255,255,255,0.18);
+            --font-display:   'Barlow Condensed', 'Arial Narrow', sans-serif;
+            --font-body:      'DM Sans', system-ui, sans-serif;
+            --font-mono:      'DM Mono', 'Courier New', monospace;
+            --nav-h:          56px;
+            --gutter:         clamp(20px, 5vw, 64px);
+            --max-w:          720px;
+        }
+
+        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+        html { scroll-behavior: smooth; }
+
+        body {
+            background: var(--bg);
+            color: var(--ink);
+            font-family: var(--font-body);
+            font-weight: 300;
+            line-height: 1.6;
+            min-height: 100vh;
+            -webkit-font-smoothing: antialiased;
+            background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.03'/%3E%3C/svg%3E");
+        }
+
+        /* NAV */
+        .site-nav {
+            position: sticky;
+            top: 0;
+            z-index: 100;
+            height: var(--nav-h);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0 var(--gutter);
+            background: rgba(15,14,13,0.88);
+            backdrop-filter: blur(16px);
+            -webkit-backdrop-filter: blur(16px);
+            border-bottom: 1px solid transparent;
+            transition: border-color 0.2s;
+        }
+        .site-nav.scrolled { border-bottom-color: var(--border-mid); }
+        .nav-brand {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            text-decoration: none;
+            color: var(--ink);
+        }
+        .nav-brand-wordmark {
+            font-family: var(--font-display);
+            font-weight: 900;
+            font-size: 1.5rem;
+            letter-spacing: 0.05em;
+            text-transform: uppercase;
+            line-height: 1;
+        }
+        .nav-brand-dot {
+            width: 7px;
+            height: 7px;
+            border-radius: 50%;
+            background: var(--accent);
+            flex-shrink: 0;
+            box-shadow: 0 0 8px var(--accent-glow);
+        }
+        .nav-actions { display: flex; align-items: center; gap: 8px; }
+
+        .btn {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 8px 18px;
+            font-family: var(--font-body);
+            font-size: 0.8rem;
+            font-weight: 500;
+            text-decoration: none;
+            cursor: pointer;
+            border: 1px solid transparent;
+            letter-spacing: 0.06em;
+            text-transform: uppercase;
+            transition: background 0.15s, color 0.15s, border-color 0.15s;
+        }
+        .btn-ghost {
+            color: var(--ink-2);
+            border-color: var(--border-mid);
+            background: transparent;
+        }
+        .btn-ghost:hover { color: var(--ink); border-color: var(--border-strong); }
+
+        /* WRAP */
+        .wrap {
+            max-width: var(--max-w);
+            margin: 0 auto;
+            padding-left: var(--gutter);
+            padding-right: var(--gutter);
+        }
+
+        /* HERO */
+        .policy-hero {
+            padding: clamp(56px, 10vw, 100px) 0 clamp(40px, 6vw, 56px);
+            border-bottom: 1px solid var(--border);
+        }
+        .hero-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            font-family: var(--font-mono);
+            font-size: 0.65rem;
+            letter-spacing: 0.14em;
+            text-transform: uppercase;
+            color: var(--accent);
+            border: 1px solid rgba(0,255,135,0.22);
+            background: var(--accent-dim);
+            padding: 5px 12px;
+            margin-bottom: 28px;
+            opacity: 0;
+            animation: fadeUp 0.5s ease forwards;
+        }
+        .hero-badge::before {
+            content: '';
+            width: 5px;
+            height: 5px;
+            border-radius: 50%;
+            background: var(--accent);
+            box-shadow: 0 0 6px var(--accent);
+            flex-shrink: 0;
+        }
+        .policy-headline {
+            font-family: var(--font-display);
+            font-weight: 900;
+            font-size: clamp(3.2rem, 8vw, 6rem);
+            line-height: 0.92;
+            letter-spacing: 0.01em;
+            text-transform: uppercase;
+            color: var(--ink);
+            margin-bottom: 24px;
+            opacity: 0;
+            animation: fadeUp 0.55s ease 0.1s forwards;
+        }
+        .policy-headline .accent-word {
+            color: var(--accent);
+            text-shadow: 0 0 40px rgba(0,255,135,0.3);
+        }
+        .policy-meta {
+            display: flex;
+            align-items: center;
+            gap: 20px;
+            flex-wrap: wrap;
+            opacity: 0;
+            animation: fadeUp 0.55s ease 0.18s forwards;
+        }
+        .policy-meta-item {
+            display: flex;
+            align-items: center;
+            gap: 7px;
+            font-family: var(--font-mono);
+            font-size: 0.68rem;
+            letter-spacing: 0.1em;
+            text-transform: uppercase;
+            color: var(--ink-3);
+        }
+        .policy-meta-item i { color: var(--ink-3); font-size: 0.85rem; }
+
+        /* TOC */
+        .toc-strip {
+            padding: 28px 0;
+            border-bottom: 1px solid var(--border);
+            opacity: 0;
+            animation: fadeUp 0.55s ease 0.24s forwards;
+        }
+        .toc-label {
+            font-family: var(--font-mono);
+            font-size: 0.6rem;
+            letter-spacing: 0.18em;
+            text-transform: uppercase;
+            color: var(--ink-3);
+            margin-bottom: 14px;
+        }
+        .toc-links {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+        }
+        .toc-link {
+            font-family: var(--font-mono);
+            font-size: 0.68rem;
+            letter-spacing: 0.06em;
+            text-transform: uppercase;
+            color: var(--ink-2);
+            text-decoration: none;
+            padding: 5px 12px;
+            border: 1px solid var(--border);
+            background: var(--surface);
+            transition: color 0.15s, border-color 0.15s;
+        }
+        .toc-link:hover { color: var(--accent); border-color: rgba(0,255,135,0.22); }
+
+        /* POLICY BODY */
+        .policy-body {
+            padding: clamp(48px, 8vw, 80px) 0;
+        }
+
+        .policy-section {
+            margin-bottom: 56px;
+            padding-bottom: 56px;
+            border-bottom: 1px solid var(--border);
+        }
+        .policy-section:last-child {
+            margin-bottom: 0;
+            padding-bottom: 0;
+            border-bottom: none;
+        }
+
+        .section-number {
+            font-family: var(--font-mono);
+            font-size: 0.62rem;
+            letter-spacing: 0.18em;
+            text-transform: uppercase;
+            color: var(--accent);
+            margin-bottom: 10px;
+        }
+        .section-title {
+            font-family: var(--font-display);
+            font-weight: 800;
+            font-size: 1.6rem;
+            letter-spacing: 0.04em;
+            text-transform: uppercase;
+            color: var(--ink);
+            margin-bottom: 20px;
+            scroll-margin-top: calc(var(--nav-h) + 24px);
+        }
+
+        .policy-text {
+            font-size: 0.875rem;
+            font-weight: 300;
+            color: var(--ink-2);
+            line-height: 1.85;
+            margin-bottom: 16px;
+        }
+        .policy-text:last-child { margin-bottom: 0; }
+
+        .policy-text a {
+            color: var(--accent);
+            text-decoration: none;
+        }
+        .policy-text a:hover { text-decoration: underline; }
+
+        .policy-text strong {
+            color: var(--ink);
+            font-weight: 500;
+        }
+
+        .policy-list {
+            font-size: 0.875rem;
+            font-weight: 300;
+            color: var(--ink-2);
+            line-height: 1.85;
+            margin: 16px 0 16px 22px;
+        }
+        .policy-list li { margin-bottom: 8px; }
+        .policy-list li strong { color: var(--ink); font-weight: 500; }
+
+        .inline-card {
+            background: var(--surface);
+            border: 1px solid var(--border-mid);
+            border-left: 3px solid var(--accent);
+            padding: 16px 20px;
+            margin: 20px 0;
+        }
+        .inline-card p {
+            font-size: 0.82rem;
+            font-weight: 300;
+            color: var(--ink-2);
+            line-height: 1.75;
+        }
+        .inline-card p strong { color: var(--ink); font-weight: 500; }
+
+        /* CONTACT CLOSER */
+        .contact-closer {
+            border-top: 1px solid var(--border);
+            padding: clamp(40px, 6vw, 64px) 0;
+        }
+        .contact-closer-inner {
+            background: var(--surface);
+            border: 1px solid var(--border-mid);
+            padding: clamp(28px, 4vw, 44px);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 28px;
+            flex-wrap: wrap;
+        }
+        .closer-text {}
+        .closer-overline {
+            font-family: var(--font-mono);
+            font-size: 0.62rem;
+            letter-spacing: 0.16em;
+            text-transform: uppercase;
+            color: var(--ink-3);
+            margin-bottom: 8px;
+        }
+        .closer-title {
+            font-family: var(--font-display);
+            font-weight: 800;
+            font-size: 1.5rem;
+            letter-spacing: 0.04em;
+            text-transform: uppercase;
+            color: var(--ink);
+            margin-bottom: 8px;
+        }
+        .closer-title .accent-word { color: var(--accent); }
+        .closer-body {
+            font-size: 0.82rem;
+            font-weight: 300;
+            color: var(--ink-2);
+        }
+        .contact-email-link {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            font-family: var(--font-mono);
+            font-size: 0.78rem;
+            letter-spacing: 0.08em;
+            color: var(--accent);
+            text-decoration: none;
+            padding: 12px 20px;
+            border: 1px solid rgba(0,255,135,0.22);
+            background: var(--accent-dim);
+            white-space: nowrap;
+            transition: background 0.15s, box-shadow 0.15s;
+        }
+        .contact-email-link:hover {
+            background: rgba(0,255,135,0.16);
+            box-shadow: 0 0 14px var(--accent-glow);
+        }
+
+        /* FOOTER */
+        .site-footer {
+            border-top: 1px solid var(--border);
+            padding: 24px var(--gutter);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            flex-wrap: wrap;
+            gap: 12px;
+        }
+        .footer-brand {
+            font-family: var(--font-display);
+            font-weight: 900;
+            font-size: 1rem;
+            letter-spacing: 0.06em;
+            text-transform: uppercase;
+            color: var(--ink-3);
+        }
+        .footer-links {
+            display: flex;
+            gap: 20px;
+            align-items: center;
+        }
+        .footer-link {
+            font-family: var(--font-mono);
+            font-size: 0.68rem;
+            color: var(--ink-3);
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+            text-decoration: none;
+            transition: color 0.15s;
+        }
+        .footer-link:hover { color: var(--ink-2); }
+        .footer-copy {
+            font-family: var(--font-mono);
+            font-size: 0.68rem;
+            color: var(--ink-3);
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+        }
+
+        /* REVEAL */
+        .reveal {
+            opacity: 0;
+            transform: translateY(14px);
+            transition: opacity 0.5s ease, transform 0.5s ease;
+        }
+        .reveal.visible { opacity: 1; transform: none; }
+
+        @keyframes fadeUp {
+            from { opacity: 0; transform: translateY(16px); }
+            to   { opacity: 1; transform: translateY(0); }
+        }
+    </style>
+</head>
+<body>
+
+    <!-- NAV -->
+    <nav class="site-nav" id="siteNav">
+        <a href="/" class="nav-brand">
+            <span class="nav-brand-dot"></span>
+            <span class="nav-brand-wordmark">Cue</span>
+        </a>
+        <div class="nav-actions">
+            <a href="{% url 'tickets:login' %}" class="btn btn-ghost">Sign in</a>
+        </div>
+    </nav>
+
+    <!-- HERO -->
+    <section class="policy-hero">
+        <div class="wrap">
+            <div class="hero-badge">Legal</div>
+            <h1 class="policy-headline">Privacy<br><span class="accent-word">Policy.</span></h1>
+            <div class="policy-meta">
+                <span class="policy-meta-item"><i class="bi bi-calendar3"></i> Effective March 25, 2026</span>
+                <span class="policy-meta-item"><i class="bi bi-arrow-clockwise"></i> Last updated March 25, 2026</span>
+            </div>
+        </div>
+    </section>
+
+    <!-- TOC -->
+    <div class="toc-strip">
+        <div class="wrap">
+            <p class="toc-label">Jump to section</p>
+            <div class="toc-links">
+                <a href="#information-we-collect" class="toc-link">Information we collect</a>
+                <a href="#how-we-use-it" class="toc-link">How we use it</a>
+                <a href="#sharing" class="toc-link">Sharing</a>
+                <a href="#data-retention" class="toc-link">Data retention</a>
+                <a href="#your-rights" class="toc-link">Your rights</a>
+                <a href="#security" class="toc-link">Security</a>
+                <a href="#cookies" class="toc-link">Cookies</a>
+                <a href="#children" class="toc-link">Children</a>
+                <a href="#changes" class="toc-link">Changes</a>
+                <a href="#contact" class="toc-link">Contact</a>
+            </div>
+        </div>
+    </div>
+
+    <!-- BODY -->
+    <main class="policy-body">
+        <div class="wrap">
+
+            <div class="inline-card reveal">
+                <p><strong>The short version:</strong> Cue Up collects only what it needs to run your events and serve your attendees. We do not sell your data. We do not use it to train AI models. You can request deletion at any time.</p>
+            </div>
+
+            <!-- 1 -->
+            <div class="policy-section reveal" style="transition-delay:0.04s">
+                <p class="section-number">01</p>
+                <h2 class="section-title" id="information-we-collect">Information we collect</h2>
+                <p class="policy-text">We collect information you provide directly and information generated when you use the platform.</p>
+                <p class="policy-text"><strong>Account information.</strong> When you create a Cue account we collect your name, email address, and phone number. If you connect a Stripe account to receive payouts, Stripe collects and stores your financial details — Cue never sees or stores card numbers or bank account information.</p>
+                <p class="policy-text"><strong>Event and order data.</strong> When you create events or upload CSV order history, we store that data on your behalf. This includes attendee names, email addresses, ticket purchase amounts, and event metadata.</p>
+                <p class="policy-text"><strong>Scanner activity.</strong> When tickets are scanned at your events, we log the scan time, ticket identifier, and the outcome (valid, already scanned, not found).</p>
+                <p class="policy-text"><strong>Usage data.</strong> We collect standard web logs including IP addresses, browser type, pages visited, and timestamps. This data is used to diagnose problems and improve performance.</p>
+            </div>
+
+            <!-- 2 -->
+            <div class="policy-section reveal" style="transition-delay:0.06s">
+                <p class="section-number">02</p>
+                <h2 class="section-title" id="how-we-use-it">How we use it</h2>
+                <p class="policy-text">We use the information we collect to:</p>
+                <ul class="policy-list">
+                    <li>Operate and deliver the ticketing and scanning service</li>
+                    <li>Calculate customer lifetime value (LTV) and RFM analytics for event organizers</li>
+                    <li>Process ticket payments through Stripe</li>
+                    <li>Send transactional emails (ticket confirmations, account alerts)</li>
+                    <li>Diagnose errors and improve platform reliability</li>
+                    <li>Respond to support requests</li>
+                </ul>
+                <p class="policy-text">We do not use your data or your attendees' data for advertising, profiling unrelated to your own analytics, or to train machine learning models.</p>
+            </div>
+
+            <!-- 3 -->
+            <div class="policy-section reveal" style="transition-delay:0.08s">
+                <p class="section-number">03</p>
+                <h2 class="section-title" id="sharing">Sharing your information</h2>
+                <p class="policy-text">We do not sell, rent, or trade personal information. We share data only in the following limited circumstances:</p>
+                <ul class="policy-list">
+                    <li><strong>Service providers.</strong> We use Stripe for payment processing, Render for cloud hosting, AWS S3 for file storage, and Redis Cloud for session caching. Each provider is bound by a data processing agreement and may only use data to provide services to us.</li>
+                    <li><strong>Legal requirements.</strong> We may disclose information if required by law, court order, or to protect the rights, safety, or property of Cue Up or others.</li>
+                    <li><strong>Business transfers.</strong> If Cue Up is acquired or merges with another company, your information may be transferred as part of that transaction. We will notify you before any such transfer takes effect.</li>
+                </ul>
+            </div>
+
+            <!-- 4 -->
+            <div class="policy-section reveal" style="transition-delay:0.1s">
+                <p class="section-number">04</p>
+                <h2 class="section-title" id="data-retention">Data retention</h2>
+                <p class="policy-text">We retain your account data and event history for as long as your account is active. If you delete your account, we permanently remove your data within 30 days, except where we are required by law to retain it longer (for example, payment records for tax purposes).</p>
+                <p class="policy-text">Scanner logs and check-in records for a specific event are retained for 12 months after the event date, then automatically purged.</p>
+            </div>
+
+            <!-- 5 -->
+            <div class="policy-section reveal" style="transition-delay:0.12s">
+                <p class="section-number">05</p>
+                <h2 class="section-title" id="your-rights">Your rights</h2>
+                <p class="policy-text">Depending on where you are located, you may have the right to:</p>
+                <ul class="policy-list">
+                    <li><strong>Access</strong> the personal data we hold about you</li>
+                    <li><strong>Correct</strong> inaccurate data</li>
+                    <li><strong>Delete</strong> your account and associated data</li>
+                    <li><strong>Export</strong> your data in a portable format</li>
+                    <li><strong>Object</strong> to certain uses of your data</li>
+                </ul>
+                <p class="policy-text">To exercise any of these rights, email <a href="mailto:info@cueup.co">info@cueup.co</a> from the address associated with your account. We will respond within 30 days.</p>
+            </div>
+
+            <!-- 6 -->
+            <div class="policy-section reveal" style="transition-delay:0.14s">
+                <p class="section-number">06</p>
+                <h2 class="section-title" id="security">Security</h2>
+                <p class="policy-text">We use industry-standard measures to protect your data: HTTPS for all data in transit, encrypted storage for sensitive fields, and access controls that limit who on our team can reach production data.</p>
+                <p class="policy-text">No system is perfectly secure. If you believe your account has been compromised, contact us immediately at <a href="mailto:info@cueup.co">info@cueup.co</a>.</p>
+            </div>
+
+            <!-- 7 -->
+            <div class="policy-section reveal" style="transition-delay:0.16s">
+                <p class="section-number">07</p>
+                <h2 class="section-title" id="cookies">Cookies &amp; local storage</h2>
+                <p class="policy-text">Cue uses session cookies to keep you signed in and to scope your data to your organization. We do not use third-party tracking cookies or advertising cookies.</p>
+                <p class="policy-text">Dark mode preference is stored in your browser's <code>localStorage</code> and never transmitted to our servers.</p>
+            </div>
+
+            <!-- 8 -->
+            <div class="policy-section reveal" style="transition-delay:0.18s">
+                <p class="section-number">08</p>
+                <h2 class="section-title" id="children">Children's privacy</h2>
+                <p class="policy-text">Cue is not directed at children under 13. We do not knowingly collect personal information from anyone under 13. If you believe a child has provided us with personal data, please contact us and we will promptly delete it.</p>
+            </div>
+
+            <!-- 9 -->
+            <div class="policy-section reveal" style="transition-delay:0.2s">
+                <p class="section-number">09</p>
+                <h2 class="section-title" id="changes">Changes to this policy</h2>
+                <p class="policy-text">We may update this policy from time to time. When we do, we will update the "Last updated" date at the top of this page. For material changes, we will notify you by email or with a notice inside the app at least 14 days before the change takes effect.</p>
+                <p class="policy-text">Continued use of Cue after a change takes effect constitutes acceptance of the updated policy.</p>
+            </div>
+
+            <!-- 10 -->
+            <div class="policy-section reveal" style="transition-delay:0.22s">
+                <p class="section-number">10</p>
+                <h2 class="section-title" id="contact">Contact</h2>
+                <p class="policy-text">Cue Up, Inc. is the data controller for personal information collected through this platform. If you have questions about this privacy policy or how we handle your data, reach us at:</p>
+                <p class="policy-text">
+                    <strong>Cue Up, Inc.</strong><br>
+                    <a href="mailto:info@cueup.co">info@cueup.co</a><br>
+                    <a href="https://cueup.co">cueup.co</a>
+                </p>
+            </div>
+
+        </div>
+    </main>
+
+    <!-- CONTACT CLOSER -->
+    <div class="contact-closer">
+        <div class="wrap">
+            <div class="contact-closer-inner reveal">
+                <div class="closer-text">
+                    <p class="closer-overline">Questions about your data?</p>
+                    <h2 class="closer-title">We're <span class="accent-word">listening.</span></h2>
+                    <p class="closer-body">Email us any time — we read every message and respond within one business day.</p>
+                </div>
+                <a href="mailto:info@cueup.co" class="contact-email-link">
+                    <i class="bi bi-envelope"></i> info@cueup.co
+                </a>
+            </div>
+        </div>
+    </div>
+
+    <!-- FOOTER -->
+    <footer class="site-footer">
+        <span class="footer-brand">Cue &mdash; cueup.co</span>
+        <div class="footer-links">
+            <a href="/support/" class="footer-link">Support</a>
+            <a href="/privacy/" class="footer-link">Privacy</a>
+        </div>
+        <span class="footer-copy">&copy; {% now "Y" %} Cue Up, Inc.</span>
+    </footer>
+
+    <script>
+        // Sticky nav border
+        const nav = document.getElementById('siteNav');
+        window.addEventListener('scroll', () => {
+            nav.classList.toggle('scrolled', window.scrollY > 8);
+        }, { passive: true });
+
+        // Scroll reveal
+        const io = new IntersectionObserver((entries) => {
+            entries.forEach(e => {
+                if (e.isIntersecting) { e.target.classList.add('visible'); io.unobserve(e.target); }
+            });
+        }, { threshold: 0.08 });
+        document.querySelectorAll('.reveal').forEach(el => io.observe(el));
+    </script>
+
+</body>
+</html>

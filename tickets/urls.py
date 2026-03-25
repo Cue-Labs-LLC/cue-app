@@ -62,6 +62,7 @@ urlpatterns = [
 
     # Landing (public) and Dashboard
     path('support/', views.support, name='support'),
+    path('privacy/', views.privacy, name='privacy'),
     path('', views.landing),
     path('dashboard/', views.home, name='home'),
     

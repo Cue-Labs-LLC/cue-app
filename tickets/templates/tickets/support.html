@@ -352,7 +352,7 @@
             gap: 32px;
             flex-wrap: wrap;
         }
-        .contact-card-left {}
+        .contact-card-left { flex: 1; min-width: 0; }
         .contact-card-overline {
             font-family: var(--font-mono);
             font-size: 0.62rem;
@@ -436,6 +436,21 @@
             text-transform: uppercase;
             color: var(--ink-3);
         }
+        .footer-links {
+            display: flex;
+            gap: 20px;
+            align-items: center;
+        }
+        .footer-link {
+            font-family: var(--font-mono);
+            font-size: 0.68rem;
+            color: var(--ink-3);
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+            text-decoration: none;
+            transition: color 0.15s;
+        }
+        .footer-link:hover { color: var(--ink-2); }
         .footer-copy {
             font-family: var(--font-mono);
             font-size: 0.68rem;
@@ -711,6 +726,10 @@
     <!-- FOOTER -->
     <footer class="site-footer">
         <span class="footer-brand">Cue &mdash; cueup.co</span>
+        <div class="footer-links">
+            <a href="{% url 'tickets:support' %}" class="footer-link">Support</a>
+            <a href="{% url 'tickets:privacy' %}" class="footer-link">Privacy</a>
+        </div>
         <span class="footer-copy">&copy; {% now "Y" %} Cue Up, Inc.</span>
     </footer>
 
