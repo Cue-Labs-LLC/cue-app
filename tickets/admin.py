@@ -14,6 +14,7 @@ from .models import (
     ExternalSurveyUpload, ExternalSurveyResponse,
     SaleableTicketType, SaleableTicketTypeTier,
     OrganizerWaitlist,
+    PipedreamCalendarConnection,
 )
 
 
@@ -835,6 +836,13 @@ class SaleableTicketTypeAdmin(admin.ModelAdmin):
         if profile and profile.organization_id:
             return qs.filter(event__organization=profile.organization).select_related('event')
         return qs.none()
+
+
+@admin.register(PipedreamCalendarConnection)
+class PipedreamCalendarConnectionAdmin(admin.ModelAdmin):
+    list_display = ['organization', 'webhook_url', 'created_at', 'updated_at']
+    search_fields = ['organization__name', 'webhook_url']
+    readonly_fields = ['id', 'created_at', 'updated_at']
 
 
 @admin.register(OrganizerWaitlist)
