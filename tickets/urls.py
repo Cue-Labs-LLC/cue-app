@@ -61,6 +61,7 @@ urlpatterns = [
     path('switch-view/', views.switch_view_mode, name='switch_view_mode'),
 
     # Landing (public) and Dashboard
+    path('support/', views.support, name='support'),
     path('', views.landing),
     path('dashboard/', views.home, name='home'),
     

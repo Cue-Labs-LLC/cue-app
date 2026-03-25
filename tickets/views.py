@@ -854,6 +854,11 @@ def health_check(request):
         return HttpResponse(f"Database connection failed: {str(e)}", status=503)
 
 
+def support(request):
+    """Public support / FAQ page."""
+    return render(request, 'tickets/support.html')
+
+
 def landing(request):
     """Public landing page (no login required). Logged-in users are redirected to the dashboard."""
     if request.user.is_authenticated:

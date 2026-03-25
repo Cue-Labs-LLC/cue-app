@@ -1,0 +1,768 @@
+{% load static %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Support &mdash; Cue</title>
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='5' fill='%230F0E0D'/%3E%3Cpath d='M6 11a1 1 0 0 1 1-1h18a1 1 0 0 1 1 1v3a2 2 0 0 0 0 4v3a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1v-3a2 2 0 0 0 0-4v-3z' fill='%2300FF87'/%3E%3Cline x1='13' y1='10' x2='13' y2='22' stroke='%230F0E0D' stroke-width='1.5' stroke-dasharray='2 2'/%3E%3C/svg%3E">
+    <meta name="description" content="Cue support — answers to common questions about scanning tickets, managing events, and account setup.">
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link rel="preload"
+          href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700;800;900&family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;1,9..40,300&family=DM+Mono:wght@400;500&display=swap"
+          as="style" onload="this.rel='stylesheet'">
+    <noscript>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700;800;900&family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;1,9..40,300&family=DM+Mono:wght@400;500&display=swap">
+    </noscript>
+    <link rel="preload" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" as="style" onload="this.rel='stylesheet'">
+    <noscript><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css"></noscript>
+
+    <style>
+        :root {
+            --bg:           #0F0E0D;
+            --surface:      #191817;
+            --surface-2:    #232220;
+            --surface-3:    #2D2C2A;
+            --ink:          #EDE8E3;
+            --ink-2:        #7A7672;
+            --ink-3:        #4A4846;
+            --accent:       #00FF87;
+            --accent-dim:   rgba(0,255,135,0.10);
+            --accent-glow:  rgba(0,255,135,0.22);
+            --border:       rgba(255,255,255,0.07);
+            --border-mid:   rgba(255,255,255,0.11);
+            --border-strong:rgba(255,255,255,0.18);
+            --font-display: 'Barlow Condensed', 'Arial Narrow', sans-serif;
+            --font-body:    'DM Sans', system-ui, sans-serif;
+            --font-mono:    'DM Mono', 'Courier New', monospace;
+            --nav-h:        56px;
+            --gutter:       clamp(20px, 5vw, 64px);
+            --max-w:        860px;
+        }
+
+        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+        html { scroll-behavior: smooth; }
+
+        body {
+            background: var(--bg);
+            color: var(--ink);
+            font-family: var(--font-body);
+            font-weight: 300;
+            line-height: 1.6;
+            min-height: 100vh;
+            -webkit-font-smoothing: antialiased;
+            background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.03'/%3E%3C/svg%3E");
+        }
+
+        /* NAV */
+        .site-nav {
+            position: sticky;
+            top: 0;
+            z-index: 100;
+            height: var(--nav-h);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0 var(--gutter);
+            background: rgba(15,14,13,0.88);
+            backdrop-filter: blur(16px);
+            -webkit-backdrop-filter: blur(16px);
+            border-bottom: 1px solid transparent;
+            transition: border-color 0.2s;
+        }
+        .site-nav.scrolled { border-bottom-color: var(--border-mid); }
+        .nav-brand {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            text-decoration: none;
+            color: var(--ink);
+        }
+        .nav-brand-wordmark {
+            font-family: var(--font-display);
+            font-weight: 900;
+            font-size: 1.5rem;
+            letter-spacing: 0.05em;
+            text-transform: uppercase;
+            line-height: 1;
+        }
+        .nav-brand-dot {
+            width: 7px;
+            height: 7px;
+            border-radius: 50%;
+            background: var(--accent);
+            flex-shrink: 0;
+            box-shadow: 0 0 8px var(--accent-glow);
+        }
+        .nav-actions { display: flex; align-items: center; gap: 8px; }
+
+        /* BUTTONS */
+        .btn {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 8px 18px;
+            font-family: var(--font-body);
+            font-size: 0.8rem;
+            font-weight: 500;
+            text-decoration: none;
+            cursor: pointer;
+            border: 1px solid transparent;
+            letter-spacing: 0.06em;
+            text-transform: uppercase;
+            transition: background 0.15s, color 0.15s, border-color 0.15s, box-shadow 0.15s;
+        }
+        .btn-ghost {
+            color: var(--ink-2);
+            border-color: var(--border-mid);
+            background: transparent;
+        }
+        .btn-ghost:hover { color: var(--ink); border-color: var(--border-strong); }
+        .btn-accent {
+            background: var(--accent);
+            color: var(--bg);
+            border-color: var(--accent);
+            font-weight: 700;
+        }
+        .btn-accent:hover { background: #33FFAA; box-shadow: 0 0 18px var(--accent-glow); }
+
+        /* WRAP */
+        .wrap {
+            max-width: var(--max-w);
+            margin: 0 auto;
+            padding-left: var(--gutter);
+            padding-right: var(--gutter);
+        }
+
+        /* HERO */
+        .support-hero {
+            padding: clamp(56px, 10vw, 100px) 0 clamp(40px, 6vw, 64px);
+            border-bottom: 1px solid var(--border);
+        }
+        .hero-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            font-family: var(--font-mono);
+            font-size: 0.65rem;
+            letter-spacing: 0.14em;
+            text-transform: uppercase;
+            color: var(--accent);
+            border: 1px solid rgba(0,255,135,0.22);
+            background: var(--accent-dim);
+            padding: 5px 12px;
+            margin-bottom: 28px;
+            opacity: 0;
+            animation: fadeUp 0.5s ease forwards;
+        }
+        .hero-badge::before {
+            content: '';
+            width: 5px;
+            height: 5px;
+            border-radius: 50%;
+            background: var(--accent);
+            box-shadow: 0 0 6px var(--accent);
+            flex-shrink: 0;
+        }
+        .support-headline {
+            font-family: var(--font-display);
+            font-weight: 900;
+            font-size: clamp(3.2rem, 8vw, 6.5rem);
+            line-height: 0.92;
+            letter-spacing: 0.01em;
+            text-transform: uppercase;
+            color: var(--ink);
+            margin-bottom: 28px;
+            opacity: 0;
+            animation: fadeUp 0.55s ease 0.1s forwards;
+        }
+        .support-headline .accent-word {
+            color: var(--accent);
+            text-shadow: 0 0 40px rgba(0,255,135,0.3);
+        }
+        .support-sub {
+            font-size: 0.95rem;
+            font-weight: 300;
+            color: var(--ink-2);
+            max-width: 520px;
+            margin-bottom: 36px;
+            opacity: 0;
+            animation: fadeUp 0.55s ease 0.18s forwards;
+        }
+
+        /* SEARCH */
+        .search-wrap {
+            opacity: 0;
+            animation: fadeUp 0.55s ease 0.26s forwards;
+        }
+        .search-bar {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            background: var(--surface);
+            border: 1px solid var(--border-mid);
+            padding: 12px 18px;
+            max-width: 480px;
+            transition: border-color 0.15s, box-shadow 0.15s;
+        }
+        .search-bar:focus-within {
+            border-color: var(--accent);
+            box-shadow: 0 0 0 3px var(--accent-dim);
+        }
+        .search-bar i { color: var(--ink-3); font-size: 1rem; flex-shrink: 0; }
+        .search-bar input {
+            background: transparent;
+            border: none;
+            outline: none;
+            color: var(--ink);
+            font-family: var(--font-body);
+            font-size: 0.9rem;
+            font-weight: 300;
+            width: 100%;
+        }
+        .search-bar input::placeholder { color: var(--ink-3); }
+
+        /* FAQ SECTIONS */
+        .faq-sections {
+            padding: clamp(48px, 8vw, 80px) 0;
+        }
+
+        .faq-group {
+            margin-bottom: 56px;
+        }
+        .faq-group:last-of-type { margin-bottom: 0; }
+
+        .faq-group-header {
+            display: flex;
+            align-items: center;
+            gap: 14px;
+            margin-bottom: 20px;
+        }
+        .faq-group-icon {
+            width: 36px;
+            height: 36px;
+            background: var(--accent-dim);
+            border: 1px solid rgba(0,255,135,0.18);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: var(--accent);
+            font-size: 1rem;
+            flex-shrink: 0;
+        }
+        .faq-group-title {
+            font-family: var(--font-display);
+            font-weight: 800;
+            font-size: 1.4rem;
+            letter-spacing: 0.05em;
+            text-transform: uppercase;
+            color: var(--ink);
+        }
+
+        /* ACCORDION */
+        .accordion { border-top: 1px solid var(--border); }
+
+        .accordion-item { border-bottom: 1px solid var(--border); }
+
+        .accordion-item.hidden { display: none; }
+
+        .accordion-btn {
+            width: 100%;
+            background: transparent;
+            border: none;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 16px;
+            padding: 20px 0;
+            text-align: left;
+            color: var(--ink);
+            font-family: var(--font-body);
+            font-size: 0.9rem;
+            font-weight: 400;
+            transition: color 0.15s;
+        }
+        .accordion-btn:hover { color: var(--accent); }
+        .accordion-btn:hover .acc-icon { color: var(--accent); }
+
+        .acc-q { flex: 1; }
+
+        .acc-icon {
+            color: var(--ink-3);
+            font-size: 0.8rem;
+            flex-shrink: 0;
+            transition: transform 0.2s, color 0.15s;
+        }
+        .accordion-item.open .acc-icon { transform: rotate(45deg); color: var(--accent); }
+        .accordion-item.open .accordion-btn { color: var(--ink); }
+
+        .accordion-body {
+            display: none;
+            padding: 0 0 20px;
+            font-size: 0.875rem;
+            font-weight: 300;
+            color: var(--ink-2);
+            line-height: 1.75;
+            max-width: 640px;
+        }
+        .accordion-item.open .accordion-body { display: block; }
+
+        .accordion-body a {
+            color: var(--accent);
+            text-decoration: none;
+        }
+        .accordion-body a:hover { text-decoration: underline; }
+
+        .accordion-body ul {
+            margin: 12px 0 0 20px;
+        }
+        .accordion-body li { margin-bottom: 6px; }
+
+        /* NO RESULTS */
+        .no-results {
+            display: none;
+            text-align: center;
+            padding: 56px 0;
+        }
+        .no-results.visible { display: block; }
+        .no-results p {
+            font-family: var(--font-mono);
+            font-size: 0.75rem;
+            letter-spacing: 0.1em;
+            text-transform: uppercase;
+            color: var(--ink-3);
+        }
+
+        /* CONTACT CARD */
+        .contact-section {
+            border-top: 1px solid var(--border);
+            padding: clamp(48px, 8vw, 80px) 0;
+        }
+
+        .contact-card {
+            background: var(--surface);
+            border: 1px solid var(--border-mid);
+            padding: clamp(32px, 5vw, 52px);
+            display: flex;
+            align-items: flex-start;
+            justify-content: space-between;
+            gap: 32px;
+            flex-wrap: wrap;
+        }
+        .contact-card-left {}
+        .contact-card-overline {
+            font-family: var(--font-mono);
+            font-size: 0.62rem;
+            letter-spacing: 0.16em;
+            text-transform: uppercase;
+            color: var(--ink-3);
+            margin-bottom: 14px;
+        }
+        .contact-card-title {
+            font-family: var(--font-display);
+            font-weight: 900;
+            font-size: 2rem;
+            letter-spacing: 0.04em;
+            text-transform: uppercase;
+            color: var(--ink);
+            line-height: 1;
+            margin-bottom: 12px;
+        }
+        .contact-card-title .accent-word { color: var(--accent); }
+        .contact-card-body {
+            font-size: 0.875rem;
+            font-weight: 300;
+            color: var(--ink-2);
+            max-width: 400px;
+            line-height: 1.7;
+        }
+        .contact-card-actions {
+            display: flex;
+            flex-direction: column;
+            align-items: flex-end;
+            gap: 10px;
+            flex-shrink: 0;
+        }
+        @media (max-width: 600px) {
+            .contact-card-actions { align-items: flex-start; }
+        }
+        .contact-email-link {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            font-family: var(--font-mono);
+            font-size: 0.78rem;
+            letter-spacing: 0.08em;
+            color: var(--accent);
+            text-decoration: none;
+            padding: 12px 20px;
+            border: 1px solid rgba(0,255,135,0.22);
+            background: var(--accent-dim);
+            transition: background 0.15s, box-shadow 0.15s;
+        }
+        .contact-email-link:hover {
+            background: rgba(0,255,135,0.16);
+            box-shadow: 0 0 14px var(--accent-glow);
+        }
+        .contact-signin-link {
+            font-family: var(--font-mono);
+            font-size: 0.68rem;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+            color: var(--ink-3);
+            text-decoration: none;
+            transition: color 0.15s;
+        }
+        .contact-signin-link:hover { color: var(--ink-2); }
+
+        /* FOOTER */
+        .site-footer {
+            border-top: 1px solid var(--border);
+            padding: 24px var(--gutter);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            flex-wrap: wrap;
+            gap: 12px;
+        }
+        .footer-brand {
+            font-family: var(--font-display);
+            font-weight: 900;
+            font-size: 1rem;
+            letter-spacing: 0.06em;
+            text-transform: uppercase;
+            color: var(--ink-3);
+        }
+        .footer-copy {
+            font-family: var(--font-mono);
+            font-size: 0.68rem;
+            color: var(--ink-3);
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+        }
+
+        /* REVEAL / ANIMATIONS */
+        .reveal {
+            opacity: 0;
+            transform: translateY(16px);
+            transition: opacity 0.55s ease, transform 0.55s ease;
+        }
+        .reveal.visible { opacity: 1; transform: none; }
+
+        @keyframes fadeUp {
+            from { opacity: 0; transform: translateY(16px); }
+            to   { opacity: 1; transform: translateY(0); }
+        }
+    </style>
+</head>
+<body>
+
+    <!-- NAV -->
+    <nav class="site-nav" id="siteNav">
+        <a href="/" class="nav-brand">
+            <span class="nav-brand-dot"></span>
+            <span class="nav-brand-wordmark">Cue</span>
+        </a>
+        <div class="nav-actions">
+            <a href="{% url 'tickets:login' %}" class="btn btn-ghost">Sign in</a>
+        </div>
+    </nav>
+
+    <!-- HERO -->
+    <section class="support-hero">
+        <div class="wrap">
+            <div class="hero-badge">Help Center</div>
+            <h1 class="support-headline">
+                We're here<br>to <span class="accent-word">help.</span>
+            </h1>
+            <p class="support-sub">Find answers to common questions about scanning tickets, managing events, and getting your account set up.</p>
+            <div class="search-wrap">
+                <div class="search-bar">
+                    <i class="bi bi-search"></i>
+                    <input type="text" id="faqSearch" placeholder="Search for an answer..." autocomplete="off">
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- FAQ -->
+    <section class="faq-sections">
+        <div class="wrap">
+
+            <!-- Getting Started -->
+            <div class="faq-group reveal" data-group>
+                <div class="faq-group-header">
+                    <div class="faq-group-icon"><i class="bi bi-rocket-takeoff"></i></div>
+                    <h2 class="faq-group-title">Getting Started</h2>
+                </div>
+                <div class="accordion">
+                    <div class="accordion-item" data-faq>
+                        <button class="accordion-btn">
+                            <span class="acc-q">How do I create my first event?</span>
+                            <i class="bi bi-plus acc-icon"></i>
+                        </button>
+                        <div class="accordion-body">
+                            After signing in, head to the <strong>Events</strong> tab in the sidebar and click <strong>New Event</strong>. Fill in the event name, date, venue, and ticket price. Once saved, Cue generates a shareable ticket link you can send directly to attendees.
+                        </div>
+                    </div>
+                    <div class="accordion-item" data-faq>
+                        <button class="accordion-btn">
+                            <span class="acc-q">Can I import ticket data from Eventbrite or another platform?</span>
+                            <i class="bi bi-plus acc-icon"></i>
+                        </button>
+                        <div class="accordion-body">
+                            Yes. Export a CSV from Eventbrite, TIXR, or any other platform and upload it via <strong>Events &rarr; Import CSV</strong>. Cue maps common column names automatically and will prompt you to confirm any fields it isn't sure about.
+                        </div>
+                    </div>
+                    <div class="accordion-item" data-faq>
+                        <button class="accordion-btn">
+                            <span class="acc-q">How do I set up the ticket scanner on my phone?</span>
+                            <i class="bi bi-plus acc-icon"></i>
+                        </button>
+                        <div class="accordion-body">
+                            Open <strong>cueup.co</strong> in your mobile browser and sign in. Navigate to your event and tap <strong>Scan Tickets</strong>. The scanner uses your device camera — no app download required. For the smoothest experience, use Safari on iOS or Chrome on Android.
+                        </div>
+                    </div>
+                    <div class="accordion-item" data-faq>
+                        <button class="accordion-btn">
+                            <span class="acc-q">Can multiple staff members scan at the same event?</span>
+                            <i class="bi bi-plus acc-icon"></i>
+                        </button>
+                        <div class="accordion-body">
+                            Yes. Share your event's scan link with your door staff — each person can scan simultaneously from their own device. All scans are logged in real time so the system prevents duplicate entries even across multiple scanners.
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Scanning Tickets -->
+            <div class="faq-group reveal" style="transition-delay:0.06s" data-group>
+                <div class="faq-group-header">
+                    <div class="faq-group-icon"><i class="bi bi-qr-code-scan"></i></div>
+                    <h2 class="faq-group-title">Scanning Tickets</h2>
+                </div>
+                <div class="accordion">
+                    <div class="accordion-item" data-faq>
+                        <button class="accordion-btn">
+                            <span class="acc-q">What happens if a ticket is scanned twice?</span>
+                            <i class="bi bi-plus acc-icon"></i>
+                        </button>
+                        <div class="accordion-body">
+                            The scanner shows a clear <strong>Already Scanned</strong> alert with the time of the first scan. The entry is blocked and the attempt is logged so you can review it later in the event check-in report.
+                        </div>
+                    </div>
+                    <div class="accordion-item" data-faq>
+                        <button class="accordion-btn">
+                            <span class="acc-q">Does scanning work without an internet connection?</span>
+                            <i class="bi bi-plus acc-icon"></i>
+                        </button>
+                        <div class="accordion-body">
+                            Cue requires an active internet connection to validate tickets in real time. We recommend using a mobile hotspot as a backup if your venue has unreliable Wi-Fi. Offline mode is on our roadmap — <a href="mailto:info@cueup.co">let us know</a> if this is critical for your events.
+                        </div>
+                    </div>
+                    <div class="accordion-item" data-faq>
+                        <button class="accordion-btn">
+                            <span class="acc-q">The camera won't open — what should I do?</span>
+                            <i class="bi bi-plus acc-icon"></i>
+                        </button>
+                        <div class="accordion-body">
+                            Make sure your browser has camera permission for cueup.co:
+                            <ul>
+                                <li><strong>iOS Safari:</strong> Settings &rarr; Safari &rarr; Camera &rarr; Allow</li>
+                                <li><strong>Android Chrome:</strong> tap the lock icon in the address bar and set Camera to Allow</li>
+                            </ul>
+                            After updating permissions, reload the page. If the issue persists, try a different browser or <a href="mailto:info@cueup.co">contact us</a>.
+                        </div>
+                    </div>
+                    <div class="accordion-item" data-faq>
+                        <button class="accordion-btn">
+                            <span class="acc-q">Can I manually check in an attendee without scanning?</span>
+                            <i class="bi bi-plus acc-icon"></i>
+                        </button>
+                        <div class="accordion-body">
+                            Yes. In the event check-in view, use the <strong>Guest List</strong> tab to search by name or email and manually mark an attendee as checked in.
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Account & Billing -->
+            <div class="faq-group reveal" style="transition-delay:0.12s" data-group>
+                <div class="faq-group-header">
+                    <div class="faq-group-icon"><i class="bi bi-person-circle"></i></div>
+                    <h2 class="faq-group-title">Account &amp; Billing</h2>
+                </div>
+                <div class="accordion">
+                    <div class="accordion-item" data-faq>
+                        <button class="accordion-btn">
+                            <span class="acc-q">How do I change my phone number or email address?</span>
+                            <i class="bi bi-plus acc-icon"></i>
+                        </button>
+                        <div class="accordion-body">
+                            Go to <strong>Account &rarr; Profile</strong> in the sidebar. Update your contact details and save. If you can no longer access your registered phone number, <a href="mailto:info@cueup.co">email us</a> and we'll verify your identity and update it manually.
+                        </div>
+                    </div>
+                    <div class="accordion-item" data-faq>
+                        <button class="accordion-btn">
+                            <span class="acc-q">Can I add other organizers to my account?</span>
+                            <i class="bi bi-plus acc-icon"></i>
+                        </button>
+                        <div class="accordion-body">
+                            Multi-user organization support is on the roadmap. Currently, one account maps to one organizer. If you need a team setup urgently, <a href="mailto:info@cueup.co">get in touch</a> and we'll work something out.
+                        </div>
+                    </div>
+                    <div class="accordion-item" data-faq>
+                        <button class="accordion-btn">
+                            <span class="acc-q">How does Cue handle payment processing?</span>
+                            <i class="bi bi-plus acc-icon"></i>
+                        </button>
+                        <div class="accordion-body">
+                            Ticket payments are processed through <strong>Stripe</strong>. Cue never stores card details — all payment data is handled by Stripe's secure infrastructure. Payouts go directly to your connected Stripe account.
+                        </div>
+                    </div>
+                    <div class="accordion-item" data-faq>
+                        <button class="accordion-btn">
+                            <span class="acc-q">How do I delete my account?</span>
+                            <i class="bi bi-plus acc-icon"></i>
+                        </button>
+                        <div class="accordion-body">
+                            Send a deletion request to <a href="mailto:info@cueup.co">info@cueup.co</a> from your registered email address. We'll confirm the request and permanently remove your data within 30 days.
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Data & Exports -->
+            <div class="faq-group reveal" style="transition-delay:0.18s" data-group>
+                <div class="faq-group-header">
+                    <div class="faq-group-icon"><i class="bi bi-bar-chart-line"></i></div>
+                    <h2 class="faq-group-title">Data &amp; Exports</h2>
+                </div>
+                <div class="accordion">
+                    <div class="accordion-item" data-faq>
+                        <button class="accordion-btn">
+                            <span class="acc-q">How is customer lifetime value (LTV) calculated?</span>
+                            <i class="bi bi-plus acc-icon"></i>
+                        </button>
+                        <div class="accordion-body">
+                            LTV is the total revenue a customer has generated across all their ticket purchases in your organization. It is recalculated automatically every time new order data is imported or a ticket is sold through Cue.
+                        </div>
+                    </div>
+                    <div class="accordion-item" data-faq>
+                        <button class="accordion-btn">
+                            <span class="acc-q">What is RFM segmentation?</span>
+                            <i class="bi bi-plus acc-icon"></i>
+                        </button>
+                        <div class="accordion-body">
+                            RFM stands for <strong>Recency</strong>, <strong>Frequency</strong>, and <strong>Monetary</strong> value. Cue scores each customer on all three dimensions and groups them into segments like VIP, Loyalist, At-Risk, and Lapsed — so you can focus marketing effort where it matters most.
+                        </div>
+                    </div>
+                    <div class="accordion-item" data-faq>
+                        <button class="accordion-btn">
+                            <span class="acc-q">Can I export my customer data?</span>
+                            <i class="bi bi-plus acc-icon"></i>
+                        </button>
+                        <div class="accordion-body">
+                            Yes. From the <strong>Customers</strong> section, use the export button to download a CSV of your full customer list including LTV, RFM segment, event history, and contact details. Your data is always yours to take with you.
+                        </div>
+                    </div>
+                    <div class="accordion-item" data-faq>
+                        <button class="accordion-btn">
+                            <span class="acc-q">How far back does historical data go?</span>
+                            <i class="bi bi-plus acc-icon"></i>
+                        </button>
+                        <div class="accordion-body">
+                            As far back as the CSV data you import. Cue doesn't have a date limit — if you upload order history from five years ago, it will be included in your analytics and customer LTV calculations from day one.
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- No results message -->
+            <div class="no-results" id="noResults">
+                <p>No results for that search.<br>Try different keywords or <a href="mailto:info@cueup.co" style="color:var(--accent);text-decoration:none;">email us</a> directly.</p>
+            </div>
+
+        </div>
+    </section>
+
+    <!-- CONTACT -->
+    <section class="contact-section">
+        <div class="wrap">
+            <div class="contact-card reveal">
+                <div class="contact-card-left">
+                    <p class="contact-card-overline">Still need help?</p>
+                    <h2 class="contact-card-title">Drop us a <span class="accent-word">line.</span></h2>
+                    <p class="contact-card-body">We're a small team and we read every message. Reach out and we'll get back to you as soon as we can — usually within one business day.</p>
+                </div>
+                <div class="contact-card-actions">
+                    <a href="mailto:info@cueup.co" class="contact-email-link">
+                        <i class="bi bi-envelope"></i> info@cueup.co
+                    </a>
+                    <a href="{% url 'tickets:login' %}" class="contact-signin-link">Sign in to your account &rarr;</a>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- FOOTER -->
+    <footer class="site-footer">
+        <span class="footer-brand">Cue &mdash; cueup.co</span>
+        <span class="footer-copy">&copy; {% now "Y" %} Cue Up, Inc.</span>
+    </footer>
+
+    <script>
+        // Sticky nav border
+        const nav = document.getElementById('siteNav');
+        window.addEventListener('scroll', () => {
+            nav.classList.toggle('scrolled', window.scrollY > 8);
+        }, { passive: true });
+
+        // Scroll reveal
+        const io = new IntersectionObserver((entries) => {
+            entries.forEach(e => {
+                if (e.isIntersecting) { e.target.classList.add('visible'); io.unobserve(e.target); }
+            });
+        }, { threshold: 0.1 });
+        document.querySelectorAll('.reveal').forEach(el => io.observe(el));
+
+        // Accordion toggle
+        document.querySelectorAll('.accordion-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const item = btn.closest('.accordion-item');
+                const isOpen = item.classList.contains('open');
+                // close all in same accordion
+                btn.closest('.accordion').querySelectorAll('.accordion-item').forEach(i => i.classList.remove('open'));
+                if (!isOpen) item.classList.add('open');
+            });
+        });
+
+        // FAQ search
+        const searchInput = document.getElementById('faqSearch');
+        const noResults = document.getElementById('noResults');
+
+        searchInput.addEventListener('input', () => {
+            const q = searchInput.value.trim().toLowerCase();
+            let anyVisible = false;
+
+            document.querySelectorAll('[data-group]').forEach(group => {
+                let groupHasMatch = false;
+                group.querySelectorAll('[data-faq]').forEach(item => {
+                    const text = item.textContent.toLowerCase();
+                    const match = !q || text.includes(q);
+                    item.classList.toggle('hidden', !match);
+                    if (match) groupHasMatch = true;
+                });
+                group.style.display = groupHasMatch ? '' : 'none';
+                if (groupHasMatch) anyVisible = true;
+            });
+
+            noResults.classList.toggle('visible', !anyVisible && q.length > 0);
+        });
+    </script>
+
+</body>
+</html>
