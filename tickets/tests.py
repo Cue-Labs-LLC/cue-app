@@ -11,7 +11,7 @@ from .models import (
     UploadedFile, TicketOrder, Customer, Event,
     Venue, CSVFormat, Ticket, TicketTier,
     Organization, UserProfile, OrganizationInvitation, ChatMessage,
-    SaleableTicketType,
+    SaleableTicketType, StripeCheckoutSession,
 )
 
 
@@ -989,3 +989,197 @@ class MobileAPITests(TestCase):
     def test_token_auth_required(self):
         response = self.client.get('/api/organizer/events/')
         self.assertEqual(response.status_code, 401)
+
+
+class StripeWebhookTests(TestCase):
+    """Tests for the Stripe webhook endpoint and payment fulfillment logic."""
+
+    def setUp(self):
+        self.client = Client()
+        self.org = Organization.objects.create(name='Webhook Test Org', slug='webhook-test-org')
+        self.venue = Venue.objects.create(
+            organization=self.org, name='Test Venue', city='Test City'
+        )
+        self.event = Event.objects.create(
+            organization=self.org,
+            name='Test Event',
+            venue=self.venue,
+            start_date=date(2025, 6, 15),
+            start_time=time(19, 0),
+        )
+        self.ticket_type = SaleableTicketType.objects.create(
+            event=self.event,
+            name='General Admission',
+            price=Decimal('25.00'),
+            quantity_limit=100,
+            quantity_sold=0,
+        )
+        self.webhook_url = reverse('tickets:stripe_webhook')
+
+    def _create_pending_session(self, pi_id='pi_test_123', **kwargs):
+        """Helper to create a StripeCheckoutSession in PENDING state."""
+        defaults = {
+            'event': self.event,
+            'organization': self.org,
+            'stripe_session_id': pi_id,
+            'stripe_payment_intent_id': pi_id,
+            'buyer_email': 'buyer@example.com',
+            'buyer_name': 'Test Buyer',
+            'status': StripeCheckoutSession.Status.PENDING,
+            'line_items_snapshot': [
+                {
+                    'saleable_ticket_type_id': str(self.ticket_type.id),
+                    'name': 'General Admission',
+                    'price': '25.00',
+                    'quantity': 2,
+                }
+            ],
+            'amount_total_cents': 5000,
+        }
+        defaults.update(kwargs)
+        return StripeCheckoutSession.objects.create(**defaults)
+
+    def _build_webhook_payload(self, pi_id='pi_test_123', event_type='payment_intent.succeeded', amount=5000):
+        """Build a fake Stripe webhook event payload."""
+        import json
+        return json.dumps({
+            'id': 'evt_test_123',
+            'type': event_type,
+            'data': {
+                'object': {
+                    'id': pi_id,
+                    'amount_received': amount,
+                }
+            }
+        })
+
+    @patch('stripe.Webhook.construct_event')
+    def test_webhook_happy_path_creates_order(self, mock_construct):
+        """Valid webhook creates order, updates inventory, marks session COMPLETED."""
+        session = self._create_pending_session()
+        payload = self._build_webhook_payload()
+        mock_construct.return_value = {
+            'type': 'payment_intent.succeeded',
+            'data': {'object': {'id': 'pi_test_123', 'amount_received': 5000}},
+        }
+
+        response = self.client.post(
+            self.webhook_url,
+            data=payload,
+            content_type='application/json',
+            HTTP_STRIPE_SIGNATURE='sig_test',
+        )
+
+        self.assertEqual(response.status_code, 200)
+
+        # Session marked COMPLETED
+        session.refresh_from_db()
+        self.assertEqual(session.status, StripeCheckoutSession.Status.COMPLETED)
+        self.assertIsNotNone(session.fulfilled_at)
+
+        # Order created
+        self.assertIsNotNone(session.ticket_order)
+        order = session.ticket_order
+        self.assertEqual(order.total_amount, Decimal('50.00'))
+        self.assertEqual(order.event, self.event)
+
+        # Tickets created
+        self.assertEqual(order.tickets.count(), 2)
+
+        # Inventory updated
+        self.ticket_type.refresh_from_db()
+        self.assertEqual(self.ticket_type.quantity_sold, 2)
+
+        # Customer created with correct email
+        customer = Customer.objects.get(email='buyer@example.com')
+        self.assertEqual(customer.name, 'Test Buyer')
+
+    @patch('stripe.Webhook.construct_event')
+    def test_webhook_idempotency_prevents_duplicate_orders(self, mock_construct):
+        """Same webhook delivered twice creates only one order."""
+        session = self._create_pending_session()
+        mock_construct.return_value = {
+            'type': 'payment_intent.succeeded',
+            'data': {'object': {'id': 'pi_test_123', 'amount_received': 5000}},
+        }
+        payload = self._build_webhook_payload()
+        kwargs = dict(data=payload, content_type='application/json', HTTP_STRIPE_SIGNATURE='sig_test')
+
+        # First delivery
+        resp1 = self.client.post(self.webhook_url, **kwargs)
+        self.assertEqual(resp1.status_code, 200)
+
+        # Second delivery (Stripe retry)
+        resp2 = self.client.post(self.webhook_url, **kwargs)
+        self.assertEqual(resp2.status_code, 200)
+
+        # Only one order exists
+        self.assertEqual(TicketOrder.objects.filter(event=self.event).count(), 1)
+
+        # Inventory only incremented once
+        self.ticket_type.refresh_from_db()
+        self.assertEqual(self.ticket_type.quantity_sold, 2)
+
+    @patch('stripe.Webhook.construct_event')
+    def test_webhook_invalid_signature_returns_400(self, mock_construct):
+        """Invalid Stripe signature returns 400."""
+        import stripe as stripe_lib
+        mock_construct.side_effect = stripe_lib.error.SignatureVerificationError('bad sig', 'sig_header')
+
+        response = self.client.post(
+            self.webhook_url,
+            data='{}',
+            content_type='application/json',
+            HTTP_STRIPE_SIGNATURE='bad_sig',
+        )
+
+        self.assertEqual(response.status_code, 400)
+
+    @patch('stripe.Webhook.construct_event')
+    def test_webhook_missing_session_does_not_crash(self, mock_construct):
+        """Webhook for unknown PaymentIntent logs warning but returns 200."""
+        mock_construct.return_value = {
+            'type': 'payment_intent.succeeded',
+            'data': {'object': {'id': 'pi_nonexistent', 'amount_received': 5000}},
+        }
+
+        response = self.client.post(
+            self.webhook_url,
+            data=self._build_webhook_payload(pi_id='pi_nonexistent'),
+            content_type='application/json',
+            HTTP_STRIPE_SIGNATURE='sig_test',
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(TicketOrder.objects.count(), 0)
+
+    @patch('stripe.Webhook.construct_event')
+    def test_webhook_oversell_still_fulfills(self, mock_construct):
+        """When inventory exceeds limit, order is still fulfilled (logged as error)."""
+        # Set inventory near limit
+        self.ticket_type.quantity_sold = 99
+        self.ticket_type.save(update_fields=['quantity_sold'])
+
+        session = self._create_pending_session()
+        mock_construct.return_value = {
+            'type': 'payment_intent.succeeded',
+            'data': {'object': {'id': 'pi_test_123', 'amount_received': 5000}},
+        }
+
+        response = self.client.post(
+            self.webhook_url,
+            data=self._build_webhook_payload(),
+            content_type='application/json',
+            HTTP_STRIPE_SIGNATURE='sig_test',
+        )
+
+        self.assertEqual(response.status_code, 200)
+
+        # Order still created despite oversell
+        session.refresh_from_db()
+        self.assertEqual(session.status, StripeCheckoutSession.Status.COMPLETED)
+        self.assertIsNotNone(session.ticket_order)
+
+        # Inventory went over limit (99 + 2 = 101 > 100)
+        self.ticket_type.refresh_from_db()
+        self.assertEqual(self.ticket_type.quantity_sold, 101)

@@ -5,7 +5,7 @@ services:
     runtime: python
     plan: starter
     buildCommand: pip install -r requirements.txt && python manage.py collectstatic --noinput && python manage.py migrate --noinput && python manage.py create_initial_superuser
-    startCommand: gunicorn ltv_updater.wsgi:application --workers 2 --timeout 120
+    startCommand: gunicorn ltv_updater.wsgi:application --workers 4 --timeout 120
     envVars:
       - key: PYTHON_VERSION
         value: 3.12.0
