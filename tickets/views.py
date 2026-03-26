@@ -244,21 +244,6 @@ def _annotate_events(queryset):
 
 
 
-# def _regenerate_event_doc_background(org):
-#     """Regenerate the Upcoming Events Google Doc. Fails silently if not configured."""
-#     from django.conf import settings
-#     if not settings.GOOGLE_DOC_ID or not settings.GOOGLE_SERVICE_ACCOUNT_JSON:
-#         return
-#     try:
-#         from .services.google_docs import EventDocFormatter, GoogleDocWriter
-#         formatter = EventDocFormatter(org)
-#         content = formatter.generate_full_document()
-#         writer = GoogleDocWriter(settings.GOOGLE_DOC_ID)
-#         writer.update_document(content)
-#     except Exception:
-#         logger.exception("Failed to regenerate event doc")
-
-
 def _sync_event_to_google_calendar(event):
     """Send event to Pipedream webhook for Google Calendar sync. Fails silently if not configured."""
     from .services.google_calendar.sync import send_event_to_pipedream
@@ -2483,8 +2468,6 @@ def event_delete(request, event_id):
             success_msg = f"Event '{event_name}' and {orders_count} associated order(s) have been permanently deleted."
             if customers_deleted > 0:
                 success_msg += f" Removed {customers_deleted} customer(s) with no remaining orders."
-            # if was_future:
-            #     _regenerate_event_doc_background(org)
             messages.success(request, success_msg)
             return redirect('tickets:event_list')
         except Exception as e:
@@ -2908,8 +2891,6 @@ def event_create(request, ticketing_type):
                 value.save()
             _invalidate_event_list_cache(org)
             messages.success(request, f"Event '{event.name}' created successfully.")
-            # if event.start_date >= date.today():
-            #     _regenerate_event_doc_background(org)
             _sync_event_to_google_calendar(event)
             return redirect('tickets:event_detail', event_id=event.id)
     else:
@@ -2955,7 +2936,6 @@ def event_edit(request, event_id):
                 event.save()
                 _invalidate_event_list_cache(org)
                 messages.success(request, f"Event '{event.name}' updated successfully.")
-                # _regenerate_event_doc_background(org)
                 return redirect('tickets:event_detail', event_id=event.id)
         else:
             form = DirectEventForm(instance=event, organization=org)
@@ -3011,8 +2991,6 @@ def event_edit(request, event_id):
                 value.save()
             _invalidate_event_list_cache(org)
             messages.success(request, f"Event '{event.name}' updated successfully.")
-            # if was_future or event.start_date >= date.today():
-            #     _regenerate_event_doc_background(org)
             return redirect('tickets:event_detail', event_id=event.id)
     else:
         form = EventForm(instance=event, organization=org, ticketing_type_locked=True)
@@ -3135,47 +3113,6 @@ def settings_google_calendar_disconnect(request):
     PipedreamCalendarConnection.objects.filter(organization=org).delete()
     messages.success(request, 'Google Calendar (Pipedream) disconnected.')
     return redirect('tickets:settings_google_calendar')
-
-
-# @login_required
-# @require_org
-# @require_host
-# @require_http_methods(["POST"])
-# def regenerate_event_doc(request):
-#     """Trigger regeneration of the Upcoming Events Google Doc."""
-#     from django.conf import settings
-#     from .services.google_docs import EventDocFormatter, GoogleDocWriter
-#
-#     org = get_organization(request)
-#     doc_id = settings.GOOGLE_DOC_ID
-#
-#     if not doc_id:
-#         messages.error(request, "Google Doc ID is not configured.")
-#         return redirect('tickets:home')
-#
-#     if not settings.GOOGLE_SERVICE_ACCOUNT_JSON:
-#         messages.error(request, "Google service account credentials are not configured.")
-#         return redirect('tickets:home')
-#
-#     formatter = EventDocFormatter(org)
-#     events = formatter.get_upcoming_events()
-#     content = formatter.generate_full_document()
-#
-#     try:
-#         writer = GoogleDocWriter(doc_id)
-#         result = writer.update_document(content)
-#         if result['success']:
-#             messages.success(
-#                 request,
-#                 f"Updated Google Doc with {len(events)} upcoming event(s) "
-#                 f"({result['characters_written']} characters)."
-#             )
-#         else:
-#             messages.error(request, f"Failed to update Google Doc: {result['error']}")
-#     except Exception as e:
-#         messages.error(request, f"Error updating Google Doc: {e}")
-#
-#     return redirect('tickets:home')
 
 
 @login_required

@@ -138,9 +138,6 @@ urlpatterns = [
     path('formats/<uuid:format_id>/delete/', views.format_delete, name='format_delete'),
     path('formats/<uuid:format_id>/set-default/', views.format_set_default, name='format_set_default'),
     
-    # Tools
-    # path('tools/regenerate-event-doc/', views.regenerate_event_doc, name='regenerate_event_doc'),
-
     # Settings
     path('settings/google-calendar/', views.settings_google_calendar, name='settings_google_calendar'),
     path('settings/google-calendar/disconnect/', views.settings_google_calendar_disconnect, name='settings_google_calendar_disconnect'),
