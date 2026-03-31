@@ -27,7 +27,6 @@ from django.db import connection, transaction
 from django.utils import timezone as django_tz
 from django.utils.http import url_has_allowed_host_and_scheme
 from django.utils.text import slugify
-import pandas as pd
 
 from .models import (
     Organization, UserProfile, OrganizationInvitation,
@@ -1167,6 +1166,7 @@ def price_entry(request, file_id):
             return redirect('tickets:event_list')
         
         # Parse CSV to get ticket types
+        import pandas as pd
         df = pd.read_csv(file_path, dtype=str, keep_default_na=False)
         processor = CSVProcessor(uploaded_file, uploaded_file.csv_format)
         
@@ -1320,6 +1320,7 @@ def price_entry(request, file_id):
             return redirect('tickets:event_list')
         
         # Parse CSV to extract unique ticket types and quantities
+        import pandas as pd
         df = pd.read_csv(file_path, dtype=str, keep_default_na=False)
         processor = CSVProcessor(uploaded_file, uploaded_file.csv_format)
         
