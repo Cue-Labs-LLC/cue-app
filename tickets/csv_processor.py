@@ -7,7 +7,6 @@ from typing import Dict, List, Optional, Tuple
 from django.db import transaction
 from django.utils import timezone
 from dateutil import parser as date_parser
-import pandas as pd
 import os
 
 from .models import (
@@ -151,6 +150,7 @@ class CSVProcessor:
         
         try:
             # Use pandas for efficient CSV reading with chunking support
+            import pandas as pd
             chunk_iter = pd.read_csv(
                 file,
                 chunksize=self.CHUNK_SIZE,
