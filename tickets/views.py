@@ -2630,6 +2630,7 @@ def format_create(request):
     context = {
         'form': form,
         'action': 'Create',
+        'existing_mapping': None,
     }
     return render(request, 'tickets/format_form.html', context)
 
@@ -2656,6 +2657,7 @@ def format_edit(request, format_id):
         'form': form,
         'format': format_obj,
         'action': 'Edit',
+        'existing_mapping': format_obj.column_mapping,
     }
     return render(request, 'tickets/format_form.html', context)
 

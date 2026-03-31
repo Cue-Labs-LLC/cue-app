@@ -1,0 +1,17 @@
+<tr class="mapping-row fmt-row"
+    data-field-key="{{ field_key }}"
+    data-label="{{ label }}"
+    data-required="{{ required|yesno:'true,false' }}">
+  <td class="fmt-row-label">
+    {% if required %}<span class="fmt-req-dot" aria-hidden="true">·</span>{% endif %}{{ label }}{% if note %}<span class="fmt-row-hint" title="{{ note }}"><i class="bi bi-question-circle"></i></span>{% endif %}
+  </td>
+  <td class="fmt-row-input">
+    <div class="alias-group">
+      <div class="fmt-input-row primary-row">
+        <input type="text" class="fmt-col-input primary-input mapping-text" placeholder="column name" autocomplete="off">
+        <button type="button" class="fmt-alias-btn add-alias-btn">+ alias</button>
+      </div>
+      <div class="aliases-container"></div>
+    </div>
+  </td>
+</tr>

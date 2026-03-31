@@ -634,13 +634,9 @@ class TicketPriceEntryForm(forms.Form):
 class CSVFormatForm(forms.ModelForm):
     """Form for creating/editing CSV format configurations."""
     
-    # Override column_mapping field to use PrettyJSONField
+    # Hidden field — visual UI in template serializes to JSON before submit
     column_mapping = PrettyJSONField(
-        widget=JSONTextarea(attrs={
-            'rows': 15,
-            'class': 'form-control font-monospace',
-            'placeholder': '{\n  "order_number": ["order_id", "order_number"],\n  "customer_email": ["email", "customer_email"],\n  ...\n}'
-        })
+        widget=forms.HiddenInput()
     )
     
     class Meta:
@@ -672,6 +668,7 @@ class CSVFormatForm(forms.ModelForm):
                         pass
         
         self.helper = FormHelper()
+        self.helper.form_tag = False  # template wraps the form element
         self.helper.layout = Layout(
             Field('name'),
             Field('description'),
@@ -681,17 +678,10 @@ class CSVFormatForm(forms.ModelForm):
                 Column(Field('uses_tiers', css_class='form-check-input'), css_class='form-group col-md-4 mb-0'),
             ),
             Field('column_mapping'),
-            Submit('submit', 'Save Format', css_class='btn btn-primary')
         )
-        
+
         # Add help text for uses_tiers
         self.fields['uses_tiers'].help_text = "Enable tier-based pricing with allotments. Only available when manual pricing is required."
-        # Optional: document in-person support for column_mapping
-        self.fields['column_mapping'].help_text = (
-            "Required keys: order_number, order_date, customer_email, customer_name, ticket_type. "
-            "Optional: add \"processed_in_person\": [\"Was Processed In Person\"] for exports that include in-person sales; "
-            "rows with that column set to true can omit email/name and will be attributed to \"In-Person Sales\"."
-        )
 
     def clean_column_mapping(self):
         """Validate column mapping JSON."""

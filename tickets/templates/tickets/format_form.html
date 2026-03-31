@@ -1,59 +1,835 @@
 {% extends 'tickets/base.html' %}
-{% load crispy_forms_tags %}
 
-{% block title %}{{ action }} CSV Format{% endblock %}
+{% block title %}{{ action }} Format{% endblock %}
+
+{% block extra_head %}
+<style>
+/* ── Only custom styles needed on top of dashboard.css ─────────── */
+
+.fmt-page { max-width: 620px; }
+
+/* Title input */
+.fmt-title-input {
+  display: block;
+  width: 100%;
+  font-size: 24px;
+  font-weight: 600;
+  font-family: var(--font-display);
+  color: var(--text-primary);
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  padding: 0 0 8px;
+  margin-bottom: 10px;
+  outline: none;
+  letter-spacing: 0.01em;
+  transition: border-color .15s;
+}
+.fmt-title-input::placeholder { color: var(--text-tertiary); }
+.fmt-title-input:focus        { border-bottom-color: var(--accent); }
+.fmt-title-input.is-invalid   { border-bottom-color: var(--danger); }
+.fmt-field-error {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--danger);
+  margin: -6px 0 12px;
+}
+
+/* Description */
+.fmt-desc-input {
+  display: block;
+  width: 100%;
+  font-size: 13px;
+  font-family: var(--font-body);
+  font-weight: 300;
+  color: var(--text-secondary);
+  background: transparent;
+  border: none;
+  padding: 0;
+  margin-bottom: 20px;
+  outline: none;
+  resize: none;
+  line-height: 1.55;
+  transition: color .15s;
+}
+.fmt-desc-input::placeholder { color: var(--text-tertiary); }
+.fmt-desc-input:focus         { color: var(--text-primary); }
+
+/* Toggle chips */
+.fmt-toggles { display: flex; gap: 7px; flex-wrap: wrap; margin-bottom: 24px; }
+.fmt-toggle-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+  padding: 6px 12px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  cursor: pointer;
+  user-select: none;
+  transition: color .12s, border-color .12s, background .12s;
+}
+.fmt-toggle-chip:hover { color: var(--text-primary); border-color: rgba(255,255,255,0.14); }
+.fmt-toggle-chip input[type="checkbox"] {
+  width: 13px; height: 13px; margin: 0;
+  accent-color: var(--accent); cursor: pointer;
+}
+.fmt-toggle-chip:has(input:checked) {
+  color: var(--accent);
+  border-color: var(--accent-muted-border);
+  background: var(--accent-muted);
+}
+
+/* Section divider */
+.fmt-divider {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 28px 0 16px;
+}
+.fmt-divider::before,
+.fmt-divider::after { content: ''; flex: 1; height: 1px; background: var(--border); }
+.fmt-divider span {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 500;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-tertiary);
+  white-space: nowrap;
+}
+
+/* CSV upload strip */
+.fmt-upload-strip {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 11px 16px;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-inset);
+  margin-bottom: 10px;
+  cursor: pointer;
+  transition: border-color .12s;
+  text-decoration: none;
+}
+.fmt-upload-strip:hover { border-color: rgba(255,255,255,0.14); }
+.fmt-upload-label {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  font-size: 13px;
+  font-weight: 300;
+  color: var(--text-secondary);
+  flex: 1;
+  cursor: pointer;
+}
+.fmt-upload-label i { color: var(--text-tertiary); font-size: 15px; }
+input#csv-sample-input { display: none; }
+#headers-status {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  white-space: nowrap;
+}
+#headers-status.ok  { color: var(--success); }
+#headers-status.err { color: var(--danger); }
+
+.fmt-headers-line {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--text-tertiary);
+  margin-bottom: 10px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Data preview table */
+.fmt-preview-wrap {
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  max-height: 150px;
+  overflow-y: auto;
+  margin-bottom: 4px;
+}
+.fmt-preview-tbl {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  white-space: nowrap;
+}
+.fmt-preview-tbl thead th {
+  padding: 6px 12px;
+  background: var(--bg-inset);
+  border-bottom: 1px solid var(--border);
+  color: var(--text-secondary);
+  position: sticky;
+  top: 0;
+  font-weight: 500;
+}
+.fmt-preview-tbl tbody td {
+  padding: 4px 12px;
+  border-bottom: 1px solid var(--border-light);
+  color: var(--text-tertiary);
+}
+.fmt-preview-tbl tbody tr:last-child td { border-bottom: none; }
+
+/* Mapping table */
+.fmt-map-tbl { width: 100%; border-collapse: collapse; }
+
+.fmt-section-lbl td {
+  padding: 20px 0 6px;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 500;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-tertiary);
+}
+
+.fmt-row { border-top: 1px solid var(--border-light); transition: background .1s; }
+.fmt-row:hover { background: var(--bg-inset); }
+.fmt-row:hover .fmt-alias-btn { opacity: 1; }
+
+.fmt-row-label {
+  width: 186px;
+  padding: 11px 14px 11px 0;
+  font-size: 13px;
+  color: var(--text-primary);
+  font-weight: 300;
+  vertical-align: top;
+  white-space: nowrap;
+}
+.fmt-req-dot {
+  color: var(--danger);
+  font-size: 20px;
+  line-height: 0;
+  margin-right: 1px;
+  vertical-align: middle;
+  position: relative;
+  top: 2px;
+}
+.fmt-row-hint {
+  color: var(--text-tertiary);
+  font-size: 11px;
+  margin-left: 4px;
+  cursor: help;
+  opacity: .55;
+  text-decoration: none;
+}
+.fmt-row-hint:hover { opacity: 1; color: var(--text-secondary); }
+.fmt-row-input { padding: 8px 0; vertical-align: top; }
+
+/* Column inputs */
+.fmt-input-row { display: flex; align-items: center; gap: 8px; }
+.fmt-col-input {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-primary);
+  background: var(--bg-inset);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 6px 10px;
+  width: 260px;
+  max-width: 260px;
+  outline: none;
+  transition: border-color .12s;
+}
+.fmt-col-input::placeholder { color: var(--text-tertiary); }
+.fmt-col-input:focus { border-color: rgba(255,255,255,0.22); }
+select.fmt-col-input,
+select.mapping-select {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-primary);
+  background: var(--bg-inset);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 6px 10px;
+  width: 260px;
+  max-width: 260px;
+  outline: none;
+  cursor: pointer;
+  transition: border-color .12s;
+  appearance: auto;
+  -webkit-appearance: auto;
+  background-image: none !important;
+  box-shadow: none;
+}
+select.fmt-col-input option,
+select.mapping-select option { background: var(--bg-surface); color: var(--text-primary); }
+select.fmt-col-input:focus,
+select.mapping-select:focus   { border-color: rgba(255,255,255,0.22); outline: none; box-shadow: none; }
+
+/* Add alias button */
+.fmt-alias-btn {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--text-tertiary);
+  background: transparent;
+  border: 1px solid transparent;
+  padding: 4px 8px;
+  cursor: pointer;
+  border-radius: 3px;
+  opacity: 0;
+  transition: opacity .12s, color .12s, border-color .12s;
+}
+.fmt-alias-btn:hover { color: var(--accent); border-color: var(--accent-muted-border); }
+
+/* Alias rows */
+.alias-row { display: flex; align-items: center; gap: 6px; margin-top: 5px; }
+.alias-row .fmt-col-input,
+.alias-row select.mapping-select { width: 240px; max-width: 240px; font-size: 11.5px; }
+.alias-remove-btn {
+  background: transparent;
+  border: none;
+  color: var(--text-tertiary);
+  padding: 3px 5px;
+  cursor: pointer;
+  font-size: 12px;
+  border-radius: 3px;
+  line-height: 1;
+  transition: color .12s;
+}
+.alias-remove-btn:hover { color: var(--danger); }
+
+/* Name mode */
+.fmt-name-modes { display: flex; gap: 14px; margin-bottom: 8px; }
+.fmt-radio {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-weight: 300;
+}
+.fmt-radio input[type="radio"] { accent-color: var(--accent); }
+.fmt-radio:has(input:checked)  { color: var(--text-primary); }
+.fmt-split-pair { display: flex; gap: 12px; flex-wrap: wrap; }
+.fmt-split-lbl {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: .1em;
+  color: var(--text-tertiary);
+  margin-bottom: 4px;
+}
+
+/* Sample values */
+.sample-values {
+  margin-top: 4px;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--text-tertiary);
+}
+.sample-values code {
+  color: var(--text-secondary);
+  background: var(--bg-inset);
+  border: 1px solid var(--border-light);
+  padding: 1px 5px;
+  border-radius: 2px;
+  font-family: inherit;
+  font-size: inherit;
+}
+
+/* Mapping errors */
+.fmt-errors {
+  font-size: 13px;
+  background: var(--danger-muted);
+  border: 1px solid rgba(217,112,96,.22);
+  border-radius: var(--radius);
+  padding: 12px 16px;
+  color: var(--danger);
+  margin-bottom: 16px;
+}
+</style>
+{% endblock %}
+
 
 {% block content %}
-<div class="page-header">
-    <h1>{{ action }} CSV Format</h1>
-</div>
+<form method="post" id="format-form" novalidate>
+  {% csrf_token %}
+  {# Hidden — JS writes the JSON mapping here before submit #}
+  {{ form.column_mapping }}
 
-<div class="row">
-    <div class="col-md-8">
-        <div class="card">
-            <div class="card-body">
-                {% crispy form %}
-            </div>
-        </div>
+  {# ── Page header ───────────────────────────────────────────── #}
+  <div class="page-header">
+    <div>
+      <h1>{{ action }} CSV Format</h1>
+      <p class="page-header-subtitle">Map your CSV column names to Cue Up fields.</p>
     </div>
-    <div class="col-md-4">
-        <div class="card">
-            <div class="card-header">
-                <h5 class="mb-0">Format Configuration Help</h5>
-            </div>
-            <div class="card-body">
-                <p><strong>Column Mapping Format:</strong></p>
-                <pre class="bg-light p-2 small">{
-  "order_number": ["order_id", "order_number"],
-  "order_date": ["date", "order_date"],
-  "customer_email": ["email", "customer_email"],
-  "customer_name": ["name", "customer_name"],
-  "event_name": ["event", "event_name"],
-  "event_date": ["event_date", "show_date"],
-  "venue": ["venue", "location"],
-  "ticket_type": ["ticket_type", "tier"],
-  "price": ["price", "ticket_price"],
-  "quantity": ["quantity", "qty"]
-}</pre>
-                <p class="small text-muted">
-                    The system will try each column name in the array until it finds a match in the CSV file.
-                </p>
-                <hr>
-                <p><strong>In-Person Sales (optional):</strong></p>
-                <p class="small text-muted">
-                    For Eventbrite or similar exports that include a "Was Processed In Person" column, add
-                    <code>"processed_in_person": ["Was Processed In Person"]</code> to the column mapping.
-                    Rows with that column set to true can omit email and name; they will be imported and attributed to "In-Person Sales."
-                </p>
-                <hr>
-                <p><strong>Tier-Based Pricing:</strong></p>
-                <p class="small text-muted">
-                    When enabled, you can define multiple pricing tiers per ticket type with allotments.
-                    Orders are assigned to tiers based on order date (first-come-first-served) until tier capacity is reached.
-                    <strong>Note:</strong> Tier-based pricing can only be enabled when manual pricing is required.
-                </p>
-            </div>
-        </div>
+    <div class="page-header-actions">
+      <a href="{% url 'tickets:format_list' %}" class="btn btn-outline-secondary btn-sm">
+        Cancel
+      </a>
+      <button type="submit" class="btn btn-primary btn-sm" id="save-btn">
+        Save Format
+      </button>
     </div>
-</div>
+  </div>
+
+  <div class="fmt-page">
+
+    {# ── Format name ───────────────────────────────────────────── #}
+    {{ form.non_field_errors }}
+    <input type="text"
+           name="{{ form.name.html_name }}"
+           id="{{ form.name.id_for_label }}"
+           value="{{ form.name.value }}"
+           class="fmt-title-input{% if form.name.errors %} is-invalid{% endif %}"
+           placeholder="Format name"
+           autocomplete="off">
+    {% if form.name.errors %}
+      <div class="fmt-field-error">{{ form.name.errors.0 }}</div>
+    {% endif %}
+
+    {# ── Description ───────────────────────────────────────────── #}
+    <textarea name="{{ form.description.html_name }}"
+              id="{{ form.description.id_for_label }}"
+              class="fmt-desc-input"
+              placeholder="Description (optional)"
+              rows="2">{{ form.description.value }}</textarea>
+
+    {# ── Toggle chips ──────────────────────────────────────────── #}
+    <div class="fmt-toggles">
+      <label class="fmt-toggle-chip" title="Pre-select this format on every upload">
+        <input type="checkbox"
+               name="{{ form.is_default.html_name }}"
+               id="{{ form.is_default.id_for_label }}"
+               {% if form.is_default.value %}checked{% endif %}>
+        <span>Set as default</span>
+      </label>
+      <label class="fmt-toggle-chip" title="Enter prices manually during upload instead of reading from CSV">
+        <input type="checkbox"
+               name="{{ form.requires_manual_pricing.html_name }}"
+               id="{{ form.requires_manual_pricing.id_for_label }}"
+               {% if form.requires_manual_pricing.value %}checked{% endif %}>
+        <span>Manual pricing</span>
+      </label>
+      <label class="fmt-toggle-chip" title="Define pricing tiers with allotments (requires manual pricing)">
+        <input type="checkbox"
+               name="{{ form.uses_tiers.html_name }}"
+               id="{{ form.uses_tiers.id_for_label }}"
+               {% if form.uses_tiers.value %}checked{% endif %}>
+        <span>Tier pricing</span>
+      </label>
+    </div>
+
+    {# ── Section: CSV Sample ───────────────────────────────────── #}
+    <div class="fmt-divider"><span>Sample CSV</span></div>
+
+    <label class="fmt-upload-strip" for="csv-sample-input">
+      <span class="fmt-upload-label">
+        <i class="bi bi-file-earmark-spreadsheet"></i>
+        <span id="upload-label-text">Choose a CSV sample to auto-fill column dropdowns</span>
+      </span>
+      <span id="headers-status"></span>
+    </label>
+    <input type="file" id="csv-sample-input" accept=".csv,.tsv,.txt">
+
+    <div id="headers-preview" class="fmt-headers-line d-none"></div>
+    <div id="csv-data-preview" class="d-none">
+      <div class="fmt-preview-wrap">
+        <table class="fmt-preview-tbl" id="csv-preview-table"></table>
+      </div>
+    </div>
+
+    {# ── Section: Column Mapping ───────────────────────────────── #}
+    <div class="fmt-divider"><span>Column Mapping</span></div>
+
+    <div id="mapping-errors" class="fmt-errors d-none" role="alert"></div>
+
+    <table class="fmt-map-tbl" id="mapping-table">
+      <tbody>
+
+        {% include "tickets/_mapping_row.html" with field_key="order_number"   label="Order Number"   required=True  note="" only %}
+        {% include "tickets/_mapping_row.html" with field_key="order_date"     label="Order Date"     required=True  note="e.g. 2024-01-15 or Jan 15, 2024" only %}
+        {% include "tickets/_mapping_row.html" with field_key="customer_email" label="Customer Email" required=True  note="" only %}
+
+        {# Customer name — split option #}
+        <tr class="mapping-row fmt-row" data-field-key="customer_name" data-label="Customer Name" data-required="true">
+          <td class="fmt-row-label">
+            <span class="fmt-req-dot" aria-hidden="true">·</span>Customer Name
+          </td>
+          <td class="fmt-row-input">
+            <div class="fmt-name-modes">
+              <label class="fmt-radio">
+                <input type="radio" name="name_mode" id="name_mode_single" value="single" checked> single
+              </label>
+              <label class="fmt-radio">
+                <input type="radio" name="name_mode" id="name_mode_split" value="split"> split (first + last)
+              </label>
+            </div>
+            <div id="name-single-panel">
+              <div class="alias-group">
+                <div class="fmt-input-row primary-row">
+                  <input type="text" class="fmt-col-input primary-input mapping-text" placeholder="column name" autocomplete="off">
+                  <button type="button" class="fmt-alias-btn add-alias-btn">+ alias</button>
+                </div>
+                <div class="aliases-container"></div>
+              </div>
+            </div>
+            <div id="name-split-panel" class="d-none">
+              <div class="fmt-split-pair">
+                <div>
+                  <div class="fmt-split-lbl">First Name</div>
+                  <input type="text" class="fmt-col-input name-first mapping-text" placeholder="column name" autocomplete="off">
+                </div>
+                <div>
+                  <div class="fmt-split-lbl">Last Name</div>
+                  <input type="text" class="fmt-col-input name-last mapping-text" placeholder="column name" autocomplete="off">
+                </div>
+              </div>
+            </div>
+          </td>
+        </tr>
+
+        {% include "tickets/_mapping_row.html" with field_key="ticket_type" label="Ticket Type" required=True note="" only %}
+
+        <tr class="fmt-section-lbl"><td colspan="2">Pricing</td></tr>
+        {% include "tickets/_mapping_row.html" with field_key="total_amount" label="Total Amount"     required=False note="Required if not using manual pricing" only %}
+        {% include "tickets/_mapping_row.html" with field_key="price"        label="Price Per Ticket" required=False note="Alternative to Total Amount" only %}
+
+        <tr class="fmt-section-lbl"><td colspan="2">Event Info</td></tr>
+        {% include "tickets/_mapping_row.html" with field_key="event_name" label="Event Name" required=False note="Can be set during upload instead" only %}
+        {% include "tickets/_mapping_row.html" with field_key="event_date" label="Event Date" required=False note="Can be set during upload instead" only %}
+        {% include "tickets/_mapping_row.html" with field_key="venue"      label="Venue"      required=False note="Can be set during upload instead" only %}
+
+        <tr class="fmt-section-lbl"><td colspan="2">Optional</td></tr>
+        {% include "tickets/_mapping_row.html" with field_key="quantity"            label="Quantity"            required=False note="" only %}
+        {% include "tickets/_mapping_row.html" with field_key="customer_phone"      label="Customer Phone"      required=False note="" only %}
+        {% include "tickets/_mapping_row.html" with field_key="processed_in_person" label="Processed In Person" required=False note="Boolean: true / yes / 1 = in-person sale" only %}
+
+      </tbody>
+    </table>
+
+    <div style="height:32px;"></div>
+
+  </div>{# /fmt-page #}
+</form>
+
+{{ existing_mapping|json_script:"existing-mapping-data" }}
+{% endblock %}
+
+
+{% block extra_js %}
+<script>
+(function () {
+  'use strict';
+
+  let csvHeaders     = [];
+  let csvPreviewRows = [];
+
+  // ── CSV Parsing ────────────────────────────────────────────────
+
+  function parseCSVRow(line, delimiter) {
+    const fields = [];
+    let current = '', inQuotes = false;
+    for (let i = 0; i < line.length; i++) {
+      const ch = line[i];
+      if (ch === '"') {
+        if (inQuotes && line[i + 1] === '"') { current += '"'; i++; }
+        else { inQuotes = !inQuotes; }
+      } else if (ch === delimiter && !inQuotes) {
+        fields.push(current); current = '';
+      } else { current += ch; }
+    }
+    fields.push(current);
+    return fields;
+  }
+
+  function loadCSVHeaders(file) {
+    if (!file) return;
+    if (file.size > 3 * 1024 * 1024) {
+      setStatus('File too large — only the header row is needed.', 'err'); return;
+    }
+    const reader = new FileReader();
+    reader.onload = function (e) {
+      let text = e.target.result.replace(/^\uFEFF/, '');
+      const lines = text.split(/\r?\n/);
+      const headerLine = lines.find(l => l.trim() !== '');
+      if (!headerLine) { setStatus('Could not read headers.', 'err'); return; }
+
+      const commas = (headerLine.match(/,/g)  || []).length;
+      const tabs   = (headerLine.match(/\t/g) || []).length;
+      const delim  = tabs > commas ? '\t' : ',';
+
+      const headers = parseCSVRow(headerLine, delim).map(h => h.trim()).filter(Boolean);
+      if (!headers.length) { setStatus('No headers found in first row.', 'err'); return; }
+
+      csvHeaders = headers;
+
+      const hi = lines.findIndex(l => l.trim() === headerLine.trim());
+      const dataLines = lines.slice(hi + 1).filter(l => l.trim() !== '').slice(0, 3);
+      csvPreviewRows = dataLines.map(line => {
+        const fields = parseCSVRow(line, delim);
+        const obj = {};
+        headers.forEach((h, i) => { obj[h] = (fields[i] || '').trim(); });
+        return obj;
+      });
+
+      document.querySelectorAll('.mapping-row').forEach(upgradeRowToSelects);
+
+      setStatus(headers.length + ' column' + (headers.length === 1 ? '' : 's') + ' loaded', 'ok');
+      const preview = document.getElementById('headers-preview');
+      preview.textContent = headers.join(' · ');
+      preview.classList.remove('d-none');
+      document.getElementById('upload-label-text').textContent = file.name;
+      renderPreviewTable(headers, csvPreviewRows);
+    };
+    reader.readAsText(file, 'UTF-8');
+  }
+
+  function setStatus(msg, cls) {
+    const el = document.getElementById('headers-status');
+    el.textContent = msg;
+    el.className = cls || '';
+  }
+
+  document.getElementById('csv-sample-input').addEventListener('change', function () {
+    loadCSVHeaders(this.files[0] || null);
+  });
+
+  // ── Preview table ──────────────────────────────────────────────
+
+  function escapeHtml(s) {
+    return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  }
+
+  function renderPreviewTable(headers, rows) {
+    const table = document.getElementById('csv-preview-table');
+    const thead = document.createElement('thead');
+    const hr = document.createElement('tr');
+    headers.forEach(h => { const th = document.createElement('th'); th.textContent = h; hr.appendChild(th); });
+    thead.appendChild(hr);
+    const tbody = document.createElement('tbody');
+    rows.forEach(row => {
+      const tr = document.createElement('tr');
+      headers.forEach(h => { const td = document.createElement('td'); td.textContent = row[h] || ''; tr.appendChild(td); });
+      tbody.appendChild(tr);
+    });
+    table.innerHTML = '';
+    table.appendChild(thead);
+    table.appendChild(tbody);
+    document.getElementById('csv-data-preview').classList.remove('d-none');
+  }
+
+  // ── Sample values ──────────────────────────────────────────────
+
+  function getPreviewValues(colName) {
+    if (!colName || !csvPreviewRows.length) return [];
+    const lower = colName.toLowerCase();
+    return csvPreviewRows.map(row => {
+      const key = Object.keys(row).find(k => k.toLowerCase() === lower);
+      return key ? row[key] : '';
+    }).filter(Boolean);
+  }
+
+  function showSampleValues(inputEl, colName) {
+    let el = inputEl.nextElementSibling;
+    if (!el || !el.classList.contains('sample-values')) {
+      el = document.createElement('div');
+      el.className = 'sample-values';
+      inputEl.after(el);
+    }
+    if (!colName) { el.textContent = ''; return; }
+    const vals = getPreviewValues(colName);
+    if (!vals.length) { el.textContent = ''; return; }
+    el.innerHTML = '<span style="opacity:.45">e.g.</span> ' +
+      vals.map(v => '<code>' + escapeHtml(v) + '</code>').join(' &middot; ');
+  }
+
+  document.getElementById('mapping-table').addEventListener('change', function (e) {
+    const sel = e.target.closest('select.mapping-select');
+    if (sel) showSampleValues(sel, sel.value);
+  });
+  document.getElementById('mapping-table').addEventListener('input', function (e) {
+    const inp = e.target.closest('input.mapping-text');
+    if (inp) showSampleValues(inp, inp.value.trim());
+  });
+
+  // ── Upgrade text inputs → selects ─────────────────────────────
+
+  function buildSelect(currentValue) {
+    const sel = document.createElement('select');
+    sel.className = 'fmt-col-input mapping-select';
+    rebuildOptions(sel, currentValue);
+    return sel;
+  }
+
+  function rebuildOptions(sel, currentValue) {
+    sel.innerHTML = '<option value="">— select column —</option>';
+    csvHeaders.forEach(h => sel.appendChild(new Option(h, h, false, h === currentValue)));
+    if (currentValue && !csvHeaders.includes(currentValue)) {
+      sel.appendChild(new Option(currentValue, currentValue, true, true));
+    }
+  }
+
+  function upgradeRowToSelects(row) {
+    row.querySelectorAll('.mapping-text').forEach(input => {
+      const val = input.value.trim();
+      const sel = buildSelect(val);
+      ['primary-input','alias-input','name-first','name-last'].forEach(c => {
+        if (input.classList.contains(c)) sel.classList.add(c);
+      });
+      input.replaceWith(sel);
+    });
+  }
+
+  function getVal(el) { return el ? (el.value || '').trim() : ''; }
+
+  // ── Alias rows ─────────────────────────────────────────────────
+
+  function buildAliasRow(value) {
+    const wrapper = document.createElement('div');
+    wrapper.className = 'alias-row';
+
+    let input;
+    if (csvHeaders.length) {
+      input = buildSelect(value || '');
+      input.classList.add('alias-input');
+    } else {
+      input = document.createElement('input');
+      input.type = 'text';
+      input.className = 'fmt-col-input alias-input mapping-text';
+      input.placeholder = 'column name';
+      input.autocomplete = 'off';
+      if (value) input.value = value;
+    }
+
+    const rm = document.createElement('button');
+    rm.type = 'button';
+    rm.className = 'alias-remove-btn';
+    rm.title = 'Remove';
+    rm.innerHTML = '<i class="bi bi-x-lg"></i>';
+    rm.addEventListener('click', () => wrapper.remove());
+
+    wrapper.appendChild(input);
+    wrapper.appendChild(rm);
+    return wrapper;
+  }
+
+  document.getElementById('mapping-table').addEventListener('click', function (e) {
+    const btn = e.target.closest('.add-alias-btn');
+    if (!btn) return;
+    const grp = btn.closest('.alias-group');
+    if (grp) grp.querySelector('.aliases-container').appendChild(buildAliasRow(''));
+  });
+
+  // ── Customer name toggle ───────────────────────────────────────
+
+  function toggleNameMode(mode) {
+    document.getElementById('name-single-panel').classList.toggle('d-none', mode === 'split');
+    document.getElementById('name-split-panel').classList.toggle('d-none', mode !== 'split');
+  }
+  document.querySelectorAll('input[name="name_mode"]').forEach(r =>
+    r.addEventListener('change', () => toggleNameMode(r.value))
+  );
+
+  // ── Populate from existing mapping ────────────────────────────
+
+  function setVal(el, value) {
+    if (!el || !value) return;
+    if (el.tagName === 'SELECT') {
+      if (!Array.from(el.options).some(o => o.value === value)) el.appendChild(new Option(value, value));
+      el.value = value;
+    } else {
+      el.value = value;
+    }
+  }
+
+  document.addEventListener('DOMContentLoaded', function () {
+    let existing = null;
+    try { existing = JSON.parse(document.getElementById('existing-mapping-data').textContent || 'null'); } catch (_) {}
+    if (!existing) return;
+
+    document.querySelectorAll('.mapping-row').forEach(row => {
+      const key    = row.dataset.fieldKey;
+      const values = existing[key];
+      if (!values || !values.length) return;
+
+      if (key === 'customer_name') {
+        if (values.length >= 2) {
+          document.getElementById('name_mode_split').checked = true;
+          toggleNameMode('split');
+          setVal(row.querySelector('.name-first'), values[0]);
+          setVal(row.querySelector('.name-last'),  values[1]);
+        } else {
+          setVal(row.querySelector('#name-single-panel .primary-input'), values[0]);
+        }
+        return;
+      }
+      setVal(row.querySelector('.primary-input'), values[0]);
+      const container = row.querySelector('.aliases-container');
+      if (container) values.slice(1).forEach(v => container.appendChild(buildAliasRow(v)));
+    });
+  });
+
+  // ── Serialize & validate ───────────────────────────────────────
+
+  document.getElementById('format-form').addEventListener('submit', function (e) {
+    e.preventDefault();
+    const mapping = {}, errors = [];
+
+    document.querySelectorAll('.mapping-row').forEach(row => {
+      const key        = row.dataset.fieldKey;
+      const isRequired = row.dataset.required === 'true';
+      let values;
+
+      if (key === 'customer_name') {
+        const mode = document.querySelector('input[name="name_mode"]:checked').value;
+        if (mode === 'split') {
+          values = [getVal(row.querySelector('.name-first')), getVal(row.querySelector('.name-last'))].filter(Boolean);
+        } else {
+          const primary = getVal(row.querySelector('#name-single-panel .primary-input'));
+          const aliases = Array.from(row.querySelectorAll('#name-single-panel .alias-input')).map(getVal).filter(Boolean);
+          values = primary ? [primary, ...aliases] : aliases;
+        }
+      } else {
+        const primary = getVal(row.querySelector('.primary-input'));
+        const aliases = Array.from(row.querySelectorAll('.alias-input')).map(getVal).filter(Boolean);
+        values = primary ? [primary, ...aliases] : aliases;
+      }
+
+      if (values.length) mapping[key] = values;
+      if (isRequired && key !== 'total_amount' && key !== 'price' && !values.length) {
+        errors.push('"' + row.dataset.label + '" is required — map at least one CSV column.');
+      }
+    });
+
+    const isManual = document.getElementById('id_requires_manual_pricing').checked;
+    if (!isManual) {
+      const hasAmount = mapping['total_amount'] && mapping['total_amount'].length;
+      const hasPrice  = mapping['price']        && mapping['price'].length;
+      if (!hasAmount && !hasPrice) {
+        errors.push('"Total Amount" or "Price Per Ticket" must be mapped when manual pricing is off.');
+      }
+    }
+
+    const errDiv = document.getElementById('mapping-errors');
+    if (errors.length) {
+      errDiv.innerHTML = '<strong>Fix before saving:</strong><ul class="mb-0 mt-1 ps-3">' +
+        errors.map(m => '<li>' + m + '</li>').join('') + '</ul>';
+      errDiv.classList.remove('d-none');
+      errDiv.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      return;
+    }
+    errDiv.classList.add('d-none');
+    document.getElementById('id_column_mapping').value = JSON.stringify(mapping);
+    this.submit();
+  });
+
+})();
+</script>
 {% endblock %}
