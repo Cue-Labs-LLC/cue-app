@@ -1160,14 +1160,18 @@ def price_entry(request, file_id):
     
     if request.method == 'POST':
         # Extract unique ticket types from CSV
-        file_path = os.path.join('media', uploaded_file.metadata.get('file_path', ''))
-        if not os.path.exists(file_path):
-            messages.error(request, "CSV file not found.")
-            return redirect('tickets:event_list')
-        
-        # Parse CSV to get ticket types
+        if uploaded_file.csv_file:
+            _post_file_handle = uploaded_file.csv_file.open('rb')
+        else:
+            _legacy_path = os.path.join('media', uploaded_file.metadata.get('file_path', ''))
+            if not os.path.exists(_legacy_path):
+                messages.error(request, "CSV file not found.")
+                return redirect('tickets:event_list')
+            _post_file_handle = open(_legacy_path, 'rb')
+
         import pandas as pd
-        df = pd.read_csv(file_path, dtype=str, keep_default_na=False)
+        df = pd.read_csv(_post_file_handle, dtype=str, keep_default_na=False)
+        _post_file_handle.close()
         processor = CSVProcessor(uploaded_file, uploaded_file.csv_format)
         
         # Use dict to preserve order (same as GET request)
@@ -1314,14 +1318,18 @@ def price_entry(request, file_id):
             return process_csv_file(request, uploaded_file, manual_prices=manual_prices)
     else:
         # GET: Display form with ticket types
-        file_path = os.path.join('media', uploaded_file.metadata.get('file_path', ''))
-        if not os.path.exists(file_path):
-            messages.error(request, "CSV file not found.")
-            return redirect('tickets:event_list')
-        
-        # Parse CSV to extract unique ticket types and quantities
+        if uploaded_file.csv_file:
+            _get_file_handle = uploaded_file.csv_file.open('rb')
+        else:
+            _legacy_path = os.path.join('media', uploaded_file.metadata.get('file_path', ''))
+            if not os.path.exists(_legacy_path):
+                messages.error(request, "CSV file not found.")
+                return redirect('tickets:event_list')
+            _get_file_handle = open(_legacy_path, 'rb')
+
         import pandas as pd
-        df = pd.read_csv(file_path, dtype=str, keep_default_na=False)
+        df = pd.read_csv(_get_file_handle, dtype=str, keep_default_na=False)
+        _get_file_handle.close()
         processor = CSVProcessor(uploaded_file, uploaded_file.csv_format)
         
         ticket_type_counts = {}
@@ -1349,29 +1357,35 @@ def price_entry(request, file_id):
 def process_csv_file(request, uploaded_file, manual_prices=None, tier_definitions=None):
     """Process CSV file and redirect to results."""
     try:
-        file_path = os.path.join('media', uploaded_file.metadata.get('file_path', ''))
-        if not os.path.exists(file_path):
-            messages.error(request, "CSV file not found.")
-            return redirect('tickets:event_list')
-        
+        # Resolve file handle — prefer FileField (S3/local via storage), fall back to
+        # legacy metadata path for records uploaded before the FileField migration.
+        if uploaded_file.csv_file:
+            file_handle_bin = uploaded_file.csv_file.open('rb')
+        else:
+            legacy_path = os.path.join('media', uploaded_file.metadata.get('file_path', ''))
+            if not os.path.exists(legacy_path):
+                messages.error(request, "CSV file not found.")
+                return redirect('tickets:event_list')
+            file_handle_bin = open(legacy_path, 'rb')
+
         # Initialize processor
         processor = CSVProcessor(uploaded_file, uploaded_file.csv_format)
-        
+
         # Check if format uses tiers
         uses_tiers = uploaded_file.csv_format.uses_tiers
-        
+
         # Validate CSV
-        with open(file_path, 'rb') as f:
-            is_valid, error_msg = processor.validate_csv(f)
-            if not is_valid:
-                uploaded_file.status = 'failed'
-                uploaded_file.save(update_fields=['status'])
-                messages.error(request, f"CSV validation failed: {error_msg}")
-                return redirect('tickets:upload_results', file_id=uploaded_file.id)
-        
-        # Parse CSV
-        with open(file_path, 'r', encoding='utf-8') as f:
-            csv_data = processor.parse_csv(f)
+        is_valid, error_msg = processor.validate_csv(file_handle_bin)
+        if not is_valid:
+            file_handle_bin.close()
+            uploaded_file.status = 'failed'
+            uploaded_file.save(update_fields=['status'])
+            messages.error(request, f"CSV validation failed: {error_msg}")
+            return redirect('tickets:upload_results', file_id=uploaded_file.id)
+
+        # Parse CSV (pandas accepts a binary file handle directly)
+        csv_data = processor.parse_csv(file_handle_bin)
+        file_handle_bin.close()
         
         # Process and save based on format type
         if uses_tiers and tier_definitions:
@@ -1432,6 +1446,33 @@ def process_csv_file(request, uploaded_file, manual_prices=None, tier_definition
         uploaded_file.save(update_fields=['status'])
         messages.error(request, f"Error processing CSV: {str(e)}")
         return redirect('tickets:upload_results', file_id=uploaded_file.id)
+
+
+@login_required
+@require_org
+@require_host
+@require_http_methods(["GET", "POST"])
+def reprocess_csv_file(request, file_id):
+    """Delete all orders from an upload and re-run the CSV processor with current format settings."""
+    org = get_organization(request)
+    uploaded_file = get_object_or_404(UploadedFile.objects.filter(organization=org), id=file_id)
+
+    if not uploaded_file.csv_file:
+        messages.error(request, "No stored file available to re-process. Re-processing requires the original CSV file.")
+        return redirect('tickets:upload_results', file_id=uploaded_file.id)
+
+    if request.method == 'POST':
+        TicketOrder.objects.filter(uploaded_file=uploaded_file).delete()
+        uploaded_file.status = 'pending'
+        uploaded_file.metadata.pop('processing_results', None)
+        uploaded_file.save(update_fields=['status', 'metadata'])
+        return process_csv_file(request, uploaded_file)
+
+    order_count = TicketOrder.objects.filter(uploaded_file=uploaded_file).count()
+    return render(request, 'tickets/reprocess_confirm.html', {
+        'uploaded_file': uploaded_file,
+        'order_count': order_count,
+    })
 
 
 @login_required
@@ -3044,14 +3085,7 @@ def event_upload_csv(request, event_id):
                 }
             )
 
-            media_path = os.path.join('uploads', f"{uploaded_file.id}_{csv_file.name}")
-            os.makedirs(os.path.dirname(os.path.join('media', media_path)), exist_ok=True)
-            with open(os.path.join('media', media_path), 'wb+') as destination:
-                for chunk in csv_file.chunks():
-                    destination.write(chunk)
-
-            uploaded_file.metadata['file_path'] = media_path
-            uploaded_file.save(update_fields=['metadata'])
+            uploaded_file.csv_file.save(csv_file.name, csv_file, save=True)
 
             if csv_format.requires_manual_pricing:
                 return redirect('tickets:price_entry', file_id=uploaded_file.id)

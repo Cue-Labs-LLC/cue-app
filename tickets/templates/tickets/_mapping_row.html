@@ -3,7 +3,7 @@
     data-label="{{ label }}"
     data-required="{{ required|yesno:'true,false' }}">
   <td class="fmt-row-label">
-    {% if required %}<span class="fmt-req-dot" aria-hidden="true">·</span>{% endif %}{{ label }}{% if note %}<span class="fmt-row-hint" title="{{ note }}"><i class="bi bi-question-circle"></i></span>{% endif %}
+    {% if required %}<span class="fmt-req-dot" aria-hidden="true">·</span>{% endif %}{{ label }}{% if note %}<span class="fmt-row-hint" data-bs-toggle="tooltip" data-bs-placement="right" title="{{ note }}"><i class="bi bi-question-circle"></i></span>{% endif %}
   </td>
   <td class="fmt-row-input">
     <div class="alias-group">

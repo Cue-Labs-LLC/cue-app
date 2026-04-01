@@ -389,6 +389,9 @@
                         <td>
                             <div class="d-flex gap-1">
                                 <a href="{% url 'tickets:upload_results' stat.upload.id %}" class="btn btn-sm btn-outline-secondary">Results</a>
+                                {% if stat.upload.csv_file %}
+                                <a href="{% url 'tickets:reprocess_csv_file' stat.upload.id %}" class="btn btn-sm btn-outline-warning">Re-process</a>
+                                {% endif %}
                                 <button type="button" class="btn btn-sm btn-outline-danger btn-delete-upload"
                                         data-upload-id="{{ stat.upload.id }}"
                                         data-upload-filename="{{ stat.upload.filename }}"

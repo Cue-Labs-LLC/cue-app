@@ -498,8 +498,8 @@ select.mapping-select:focus   { border-color: rgba(255,255,255,0.22); outline: n
         {% include "tickets/_mapping_row.html" with field_key="ticket_type" label="Ticket Type" required=True note="" only %}
 
         <tr class="fmt-section-lbl"><td colspan="2">Pricing</td></tr>
-        {% include "tickets/_mapping_row.html" with field_key="total_amount" label="Total Amount"     required=False note="Required if not using manual pricing" only %}
-        {% include "tickets/_mapping_row.html" with field_key="price"        label="Price Per Ticket" required=False note="Alternative to Total Amount" only %}
+        {% include "tickets/_mapping_row.html" with field_key="total_amount" label="Total Amount"     required=False note="Revenue for the whole order (e.g. a column summing all tickets). Used directly as the order total. Map this if your CSV has a per-order revenue column." only %}
+        {% include "tickets/_mapping_row.html" with field_key="price"        label="Price Per Ticket" required=False note="Price of a single ticket. Used as a fallback when Total Amount is not mapped — the order total is calculated as price × quantity. Map this if your CSV has a per-ticket price but no order total column." only %}
 
         <tr class="fmt-section-lbl"><td colspan="2">Event Info</td></tr>
         {% include "tickets/_mapping_row.html" with field_key="event_name" label="Event Name" required=False note="Can be set during upload instead" only %}
@@ -831,5 +831,12 @@ select.mapping-select:focus   { border-color: rgba(255,255,255,0.22); outline: n
   });
 
 })();
+</script>
+<script>
+document.addEventListener('DOMContentLoaded', function () {
+  document.querySelectorAll('[data-bs-toggle="tooltip"]').forEach(function (el) {
+    new bootstrap.Tooltip(el);
+  });
+});
 </script>
 {% endblock %}

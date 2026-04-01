@@ -1,0 +1,32 @@
+{% extends 'tickets/base.html' %}
+
+{% block title %}Re-process Upload{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1>Re-process Upload</h1>
+</div>
+
+<div class="row">
+    <div class="col-md-6">
+        <div class="card">
+            <div class="card-body">
+                <p>Re-process <strong>{{ uploaded_file.filename }}</strong> using the current <strong>{{ uploaded_file.csv_format.name }}</strong> format settings?</p>
+                <p class="text-muted">
+                    This will delete <strong>{{ order_count }} order{{ order_count|pluralize }}</strong> associated with this upload, then re-import the original CSV file with the current column mapping. Customer LTV will be recalculated after processing.
+                </p>
+                <p class="text-muted">This cannot be undone.</p>
+                <form method="post">
+                    {% csrf_token %}
+                    <button type="submit" class="btn btn-warning">
+                        <i class="bi bi-arrow-repeat"></i> Re-process
+                    </button>
+                    <a href="{% url 'tickets:upload_results' uploaded_file.id %}" class="btn btn-outline-secondary">
+                        Cancel
+                    </a>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

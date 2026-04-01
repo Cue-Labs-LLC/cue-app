@@ -25,6 +25,11 @@ def _event_flyer_upload_to(instance, filename):
     return f"orgs/{instance.organization.slug}/event_flyers/{filename}"
 
 
+def _csv_upload_to(instance, filename):
+    org_slug = instance.organization.slug if instance.organization_id else 'unknown'
+    return f"orgs/{org_slug}/csv_uploads/{instance.id}_{filename}"
+
+
 class BaseModel(models.Model):
     """Base model with UUID primary key and timestamps."""
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
@@ -477,6 +482,12 @@ class UploadedFile(AuditBaseModel):
         related_name='uploaded_files'
     )
     filename = models.CharField(max_length=255)
+    csv_file = models.FileField(
+        upload_to=_csv_upload_to,
+        storage=_get_media_storage,
+        blank=True,
+        null=True,
+    )
     description = models.TextField(blank=True)
     source = models.CharField(max_length=200, blank=True)
     uploaded_at = models.DateTimeField(auto_now_add=True)
