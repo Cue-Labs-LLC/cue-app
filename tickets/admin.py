@@ -6,7 +6,7 @@ from django.db.models import Sum, Count
 from django import forms
 from .models import (
     Organization, UserProfile, OrganizationInvitation, EmailOTP, PhoneOTP,
-    CSVFormat, UploadedFile, Customer, Event, EventExpense, EventTalent, TicketOrder, Ticket, TicketTier, Venue,
+    CSVFormat, UploadedFile, Customer, Event, ScannerSession, EventExpense, EventTalent, TicketOrder, Ticket, TicketTier, Venue,
     CustomField, CustomFieldOption, EventCustomFieldValue,
     IncomeSource, EventIncome,
     SurveyQuestion, SurveyInvitation, SurveyResponse, SurveyAnswer,
@@ -242,7 +242,7 @@ class EventExpenseInline(admin.TabularInline):
 
 @admin.register(Event)
 class EventAdmin(admin.ModelAdmin):
-    list_display = ['name', 'venue', 'organization', 'start_date', 'start_time', 'end_date', 'end_time', 'capacity', 'order_count', 'created_at']
+    list_display = ['name', 'venue', 'organization', 'start_date', 'start_time', 'end_date', 'end_time', 'capacity', 'scanner_pin', 'order_count', 'created_at']
     list_filter = ['organization', 'start_date', 'created_at', 'venue__city']
     search_fields = ['name', 'venue__name', 'venue__city', 'description', 'ticket_link']
     readonly_fields = ['id', 'created_at', 'updated_at']
@@ -256,12 +256,16 @@ class EventAdmin(admin.ModelAdmin):
                 'description', 'capacity', 'ticket_link',
             )
         }),
+        ('Scanner Access', {
+            'fields': ('scanner_pin',),
+            'description': 'PIN for guest scanner login. Leave blank to disable scanner access.',
+        }),
         ('Metadata', {
             'fields': ('id', 'created_at', 'updated_at'),
             'classes': ('collapse',)
         }),
     )
-    
+
     def order_count(self, obj):
         """Display number of orders for this event."""
         return obj.ticket_orders.count()
@@ -284,6 +288,34 @@ class EventAdmin(admin.ModelAdmin):
             if profile and profile.organization_id:
                 obj.organization = profile.organization
         super().save_model(request, obj, form, change)
+
+
+@admin.register(ScannerSession)
+class ScannerSessionAdmin(admin.ModelAdmin):
+    list_display = ['event', 'token', 'is_active', 'created_at']
+    list_filter = ['is_active', 'event__organization']
+    search_fields = ['event__name', 'token']
+    readonly_fields = ['id', 'token', 'created_at', 'updated_at']
+    list_editable = ['is_active']
+
+    fieldsets = (
+        ('Session', {
+            'fields': ('event', 'token', 'is_active')
+        }),
+        ('Metadata', {
+            'fields': ('id', 'created_at', 'updated_at'),
+            'classes': ('collapse',)
+        }),
+    )
+
+    def get_queryset(self, request):
+        qs = super().get_queryset(request)
+        if not request.user.is_superuser:
+            profile = getattr(request.user, 'profile', None)
+            if profile and profile.organization_id:
+                return qs.filter(event__organization=profile.organization)
+            return qs.none()
+        return qs.select_related('event')
 
 
 @admin.register(EventExpense)
