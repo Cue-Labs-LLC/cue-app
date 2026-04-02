@@ -5668,9 +5668,10 @@ def finance_overview(request):
         .select_related('initiated_by')
     )
 
+    net_sales = stripe_revenue - platform_fees
+
     context = {
-        'stripe_revenue': stripe_revenue,
-        'platform_fees': platform_fees,
+        'net_sales': net_sales,
         'paid_out': paid_out,
         'available_balance': available_balance,
         'recent_transactions': recent_txns,

@@ -24,30 +24,16 @@
 
 <!-- Stats row -->
 <div class="row g-3 mb-4">
-    <div class="col-6 col-lg-3">
+    <div class="col-6 col-lg-6">
         <div class="stat-card">
-            <div class="stat-label">Gross Revenue</div>
-            <div class="stat-value">${{ stripe_revenue|currency }}</div>
-            <div class="stat-sub">Direct ticket sales</div>
+            <div class="stat-label">Sales</div>
+            <div class="stat-value">${{ net_sales|currency }}</div>
+            <div class="stat-sub">All-time direct ticket revenue</div>
         </div>
     </div>
-    <div class="col-6 col-lg-3">
-        <div class="stat-card stat-card--accent">
-            <div class="stat-label">Platform Fees</div>
-            <div class="stat-value">${{ platform_fees|currency }}</div>
-            <div class="stat-sub">Collected service fees</div>
-        </div>
-    </div>
-    <div class="col-6 col-lg-3">
-        <div class="stat-card stat-card--info">
-            <div class="stat-label">Total Paid Out</div>
-            <div class="stat-value">${{ paid_out|currency }}</div>
-            <div class="stat-sub">Completed payouts</div>
-        </div>
-    </div>
-    <div class="col-6 col-lg-3">
+    <div class="col-6 col-lg-6">
         <div class="stat-card stat-card--success">
-            <div class="stat-label">Available to Organizer</div>
+            <div class="stat-label">Available Balance</div>
             <div class="stat-value">${{ available_balance|currency }}</div>
             <div class="stat-sub">After fees and payouts</div>
         </div>
