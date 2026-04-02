@@ -284,6 +284,8 @@
         .btn-pay:hover { opacity: 0.9; }
         .btn-pay:active { transform: scale(0.99); }
         .btn-pay:disabled { opacity: 0.45; cursor: not-allowed; transform: none; }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        .spin { display: inline-block; animation: spin 0.75s linear infinite; }
 
         .btn-ghost {
             background: transparent;
@@ -553,7 +555,8 @@
         {% endif %}
 
         <button type="button" id="pay-btn" class="btn-pay">
-            <i class="bi bi-lock"></i> Pay ${{ grand_total|currency }}
+            <span id="pay-btn-label"><i class="bi bi-lock"></i> Pay ${{ grand_total|currency }}</span>
+            <span id="pay-btn-processing" style="display:none;"><i class="bi bi-arrow-repeat spin"></i>&ensp;Processing...</span>
         </button>
         <p class="secure-note"><i class="bi bi-shield-lock"></i>&ensp;Payments secured by Stripe</p>
         {% endif %}
@@ -738,7 +741,8 @@ document.addEventListener('DOMContentLoaded', function () {
         }
 
         payBtn.disabled = true;
-        payBtn.innerHTML = '<span class="spinner-border" role="status"></span>&ensp;Processing...';
+        document.getElementById('pay-btn-label').style.display = 'none';
+        document.getElementById('pay-btn-processing').style.display = '';
 
         if (window.fbq) {
             fbq('trackCustom', 'PurchaseInitiated', {
@@ -776,7 +780,8 @@ document.addEventListener('DOMContentLoaded', function () {
             if (data.error) {
                 errorEl.textContent = data.error;
                 payBtn.disabled = false;
-                payBtn.innerHTML = '<i class="bi bi-lock"></i> Pay ${{ grand_total|currency }}';
+                document.getElementById('pay-btn-label').style.display = '';
+                document.getElementById('pay-btn-processing').style.display = 'none';
                 return;
             }
 
@@ -793,7 +798,8 @@ document.addEventListener('DOMContentLoaded', function () {
                 if (result.error) {
                     errorEl.textContent = result.error.message;
                     payBtn.disabled = false;
-                    payBtn.innerHTML = '<i class="bi bi-lock"></i> Pay ${{ grand_total|currency }}';
+                    document.getElementById('pay-btn-label').style.display = '';
+                    document.getElementById('pay-btn-processing').style.display = 'none';
                     if (window.fbq) {
                         fbq('trackCustom', 'PurchaseFailed', { error_message: result.error.message });
                     }
@@ -805,7 +811,8 @@ document.addEventListener('DOMContentLoaded', function () {
         .catch(function () {
             errorEl.textContent = 'An unexpected error occurred. Please try again.';
             payBtn.disabled = false;
-            payBtn.innerHTML = '<i class="bi bi-lock"></i> Pay ${{ grand_total|currency }}';
+            document.getElementById('pay-btn-label').style.display = '';
+            document.getElementById('pay-btn-processing').style.display = 'none';
             if (window.fbq) {
                 fbq('trackCustom', 'PurchaseFailed', { error_message: 'Unexpected error' });
             }
