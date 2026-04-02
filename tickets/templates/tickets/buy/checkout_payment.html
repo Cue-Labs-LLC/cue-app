@@ -620,18 +620,27 @@ document.addEventListener('DOMContentLoaded', function () {
 <script>
 // Apple Pay / Payment Request Button
 document.addEventListener('DOMContentLoaded', function () {
-    var config = JSON.parse(document.getElementById('checkout-config').textContent);
+    console.log('[Apple Pay] script started');
+    var rawConfig = document.getElementById('checkout-config').textContent;
+    console.log('[Apple Pay] raw config:', rawConfig);
+    var config;
+    try { config = JSON.parse(rawConfig); } catch(e) { console.error('[Apple Pay] JSON parse failed:', e); return; }
+    console.log('[Apple Pay] config parsed, grandTotalCents:', config.grandTotalCents, 'currency:', config.currency);
     var stripe = Stripe(config.publishableKey);
 
-    var pr = stripe.paymentRequest({
-        country: 'US',
-        currency: config.currency,
-        total: { label: document.title, amount: config.grandTotalCents },
-        requestPayerName: false,
-        requestPayerEmail: false,
-    });
+    var pr;
+    try {
+        pr = stripe.paymentRequest({
+            country: 'US',
+            currency: config.currency,
+            total: { label: document.title, amount: config.grandTotalCents },
+            requestPayerName: false,
+            requestPayerEmail: false,
+        });
+    } catch(e) { console.error('[Apple Pay] paymentRequest() failed:', e); return; }
 
     pr.canMakePayment().then(function (result) {
+        console.log('[Apple Pay] canMakePayment result:', result);
         if (!result) return;
         document.getElementById('payment-request-section').style.display = '';
         var elements = stripe.elements();
