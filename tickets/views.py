@@ -1355,97 +1355,28 @@ def price_entry(request, file_id):
 
 @login_required
 def process_csv_file(request, uploaded_file, manual_prices=None, tier_definitions=None):
-    """Process CSV file and redirect to results."""
-    try:
-        # Resolve file handle — prefer FileField (S3/local via storage), fall back to
-        # legacy metadata path for records uploaded before the FileField migration.
-        if uploaded_file.csv_file:
-            file_handle_bin = uploaded_file.csv_file.open('rb')
-        else:
-            legacy_path = os.path.join('media', uploaded_file.metadata.get('file_path', ''))
-            if not os.path.exists(legacy_path):
-                messages.error(request, "CSV file not found.")
-                return redirect('tickets:event_list')
-            file_handle_bin = open(legacy_path, 'rb')
+    """Queue CSV processing as a Celery task and redirect to results page."""
+    from tickets.tasks import process_csv_task
 
-        # Initialize processor
-        processor = CSVProcessor(uploaded_file, uploaded_file.csv_format)
+    # Serialize Decimal values to strings for JSON-safe task transport
+    serialized_prices = (
+        {k: str(v) for k, v in manual_prices.items()} if manual_prices else None
+    )
+    serialized_tiers = None
+    if tier_definitions:
+        serialized_tiers = {}
+        for ticket_type, tiers in tier_definitions.items():
+            serialized_tiers[ticket_type] = [
+                {**t, 'price': str(t['price']) if t.get('price') is not None else None}
+                for t in tiers
+            ]
 
-        # Check if format uses tiers
-        uses_tiers = uploaded_file.csv_format.uses_tiers
-
-        # Validate CSV
-        is_valid, error_msg = processor.validate_csv(file_handle_bin)
-        if not is_valid:
-            file_handle_bin.close()
-            uploaded_file.status = 'failed'
-            uploaded_file.save(update_fields=['status'])
-            messages.error(request, f"CSV validation failed: {error_msg}")
-            return redirect('tickets:upload_results', file_id=uploaded_file.id)
-
-        # Parse CSV (pandas accepts a binary file handle directly)
-        csv_data = processor.parse_csv(file_handle_bin)
-        file_handle_bin.close()
-        
-        # Process and save based on format type
-        if uses_tiers and tier_definitions:
-            results = processor.process_and_save(csv_data, tier_definitions=tier_definitions)
-        else:
-            results = processor.process_and_save(csv_data, manual_prices=manual_prices)
-        
-        # Store results in session or metadata
-        uploaded_file.metadata['processing_results'] = {
-            'success_count': results['success_count'],
-            'error_count': results['error_count'],
-            'skipped_duplicates': results['skipped_duplicates'],
-            'errors': results['errors'][:50],  # Limit to first 50 errors
-            'skipped_order_numbers': results['skipped_order_numbers'][:50],  # Limit to first 50
-            'rejected_orders': results.get('rejected_orders', [])[:50],  # Limit to first 50
-            'skipped_rows_count': results.get('skipped_rows_count', 0),
-            'skipped_rows_by_reason': results.get('skipped_rows_by_reason', {}),
-        }
-        uploaded_file.save(update_fields=['metadata'])
-        
-        if results['success_count'] > 0:
-            messages.success(
-                request,
-                f"Successfully processed {results['success_count']} orders."
-            )
-        if results['error_count'] > 0:
-            messages.warning(
-                request,
-                f"{results['error_count']} rows had errors. Check results for details."
-            )
-        if results['skipped_duplicates'] > 0:
-            messages.info(
-                request,
-                f"{results['skipped_duplicates']} duplicate orders were skipped."
-            )
-        if results.get('rejected_orders'):
-            messages.warning(
-                request,
-                f"{len(results['rejected_orders'])} orders were rejected due to tier capacity limits."
-            )
-        if results.get('skipped_rows_count', 0) > 0:
-            messages.info(
-                request,
-                f"{results['skipped_rows_count']} row(s) were skipped (section headers, blank rows, etc.). See results for details."
-            )
-
-        if results['success_count'] > 0:
-            try:
-                RFMCalculator(uploaded_file.organization).calculate_all()
-            except Exception:
-                logger.exception("RFM recalc after CSV import failed")
-            _invalidate_event_list_cache(uploaded_file.organization)
-
-        return redirect('tickets:upload_results', file_id=uploaded_file.id)
-
-    except Exception as e:
-        uploaded_file.status = 'failed'
-        uploaded_file.save(update_fields=['status'])
-        messages.error(request, f"Error processing CSV: {str(e)}")
-        return redirect('tickets:upload_results', file_id=uploaded_file.id)
+    process_csv_task.delay(
+        str(uploaded_file.id),
+        manual_prices=serialized_prices,
+        tier_definitions=serialized_tiers,
+    )
+    return redirect('tickets:upload_results', file_id=uploaded_file.id)
 
 
 @login_required
@@ -1472,6 +1403,20 @@ def reprocess_csv_file(request, file_id):
     return render(request, 'tickets/reprocess_confirm.html', {
         'uploaded_file': uploaded_file,
         'order_count': order_count,
+    })
+
+
+@login_required
+@require_org
+def upload_status_api(request, file_id):
+    """JSON endpoint returning current processing status for a given upload."""
+    org = get_organization(request)
+    uploaded_file = get_object_or_404(UploadedFile.objects.filter(organization=org), id=file_id)
+    return JsonResponse({
+        'status': uploaded_file.status,
+        'processed_rows': uploaded_file.processed_rows,
+        'total_rows': uploaded_file.total_rows,
+        'processing_results': uploaded_file.metadata.get('processing_results'),
     })
 
 

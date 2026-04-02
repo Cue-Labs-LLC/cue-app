@@ -16,7 +16,7 @@
                     <tr><th style="width:120px">Filename:</th><td>{{ uploaded_file.filename }}</td></tr>
                     <tr><th>Format:</th><td>{{ uploaded_file.csv_format.name }}</td></tr>
                     <tr><th>Uploaded:</th><td>{{ uploaded_file.uploaded_at|date:"M d, Y H:i" }}</td></tr>
-                    <tr><th>Status:</th><td><span class="badge bg-{% if uploaded_file.status == 'completed' %}success{% elif uploaded_file.status == 'failed' %}danger{% elif uploaded_file.status == 'processing' %}warning{% else %}secondary{% endif %}">{{ uploaded_file.get_status_display }}</span></td></tr>
+                    <tr><th>Status:</th><td><span class="badge bg-{% if uploaded_file.status == 'completed' %}success{% elif uploaded_file.status == 'failed' %}danger{% elif uploaded_file.status == 'processing' %}warning{% else %}secondary{% endif %}" id="status-badge">{{ uploaded_file.get_status_display }}</span></td></tr>
                     {% if uploaded_file.description %}<tr><th>Description:</th><td>{{ uploaded_file.description }}</td></tr>{% endif %}
                     {% if uploaded_file.source %}<tr><th>Source:</th><td>{{ uploaded_file.source }}</td></tr>{% endif %}
                 </table>
@@ -25,6 +25,19 @@
     </div>
 </div>
 
+{% if uploaded_file.status == 'pending' or uploaded_file.status == 'processing' %}
+<div id="processing-card" class="card mb-4">
+    <div class="card-body">
+        <p class="mb-1"><strong>Processing your file…</strong></p>
+        <p class="text-muted small mb-2" id="progress-label">Starting up</p>
+        <div class="progress" style="height: 6px;">
+            <div class="progress-bar progress-bar-striped progress-bar-animated w-100"></div>
+        </div>
+    </div>
+</div>
+{% endif %}
+
+<div id="results-section" {% if uploaded_file.status == 'pending' or uploaded_file.status == 'processing' %}style="display:none"{% endif %}>
 <div class="stats-grid">
     <div class="stat-card stat-card--success">
         <div class="stat-label">Successful Orders</div>
@@ -121,4 +134,37 @@
     </form>
     {% endif %}
 </div>
+</div>{# /results-section #}
+{% endblock %}
+
+{% block extra_js %}
+{% if uploaded_file.status == 'pending' or uploaded_file.status == 'processing' %}
+<script>
+(function () {
+  var label = document.getElementById('progress-label');
+  var processingCard = document.getElementById('processing-card');
+  var resultsSection = document.getElementById('results-section');
+  var statusBadge = document.getElementById('status-badge');
+
+  function poll() {
+    fetch("{% url 'tickets:upload_status_api' uploaded_file.id %}")
+      .then(function (r) { return r.json(); })
+      .then(function (data) {
+        if (data.status === 'pending' || data.status === 'processing') {
+          if (label && data.processed_rows > 0) {
+            label.textContent = data.processed_rows.toLocaleString() + ' rows processed\u2026';
+          }
+          setTimeout(poll, 2000);
+        } else {
+          // Done — reload so Django renders the full results template
+          window.location.reload();
+        }
+      })
+      .catch(function () { setTimeout(poll, 3000); });
+  }
+
+  document.addEventListener('DOMContentLoaded', poll);
+})();
+</script>
+{% endif %}
 {% endblock %}

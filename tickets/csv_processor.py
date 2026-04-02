@@ -143,31 +143,6 @@ class CSVProcessor:
             logger.warning(f"Could not parse date: {date_str}")
             return None
     
-    def parse_csv(self, file) -> List[Dict]:
-        """Read and parse CSV using column mappings."""
-        file.seek(0)
-        rows = []
-        
-        try:
-            # Use pandas for efficient CSV reading with chunking support
-            import pandas as pd
-            chunk_iter = pd.read_csv(
-                file,
-                chunksize=self.CHUNK_SIZE,
-                dtype=str,  # Read all as strings to preserve data
-                keep_default_na=False  # Don't convert empty strings to NaN
-            )
-            
-            for chunk in chunk_iter:
-                # Convert DataFrame to list of dicts
-                chunk_rows = chunk.to_dict('records')
-                rows.extend(chunk_rows)
-        except Exception as e:
-            logger.error(f"Error parsing CSV: {str(e)}")
-            raise
-        
-        return rows
-    
     # Reason codes for skipped rows (used in processing_results and results template)
     SKIP_REASON_TOO_FEW_COLUMNS = "too_few_columns"
     SKIP_REASON_HEADER_REPEAT = "header_repeat"
@@ -244,17 +219,20 @@ class CSVProcessor:
         return f"ORD-{timezone.now().strftime('%Y%m%d-%H%M%S')}-{str(uuid.uuid4())[:8]}"
     
     def process_and_save(
-        self, 
-        csv_data: List[Dict], 
+        self,
+        file_handle,
         manual_prices: Optional[Dict[str, Decimal]] = None,
         tier_definitions: Optional[Dict] = None
     ) -> Dict:
         """
-        Main processing logic with chunked processing and bulk operations.
-        
+        Stream-process CSV from a binary file handle, one chunk at a time.
+        Never loads the full file into memory.
+
         Returns:
             Dict with keys: success_count, error_count, skipped_duplicates, errors, rejected_orders
         """
+        import pandas as pd
+
         results = {
             'success_count': 0,
             'error_count': 0,
@@ -265,28 +243,34 @@ class CSVProcessor:
             'skipped_rows_count': 0,
             'skipped_rows_by_reason': {},
         }
-        
+
         # If using tiers, create tier instances first
         if self.uses_tiers and tier_definitions:
             self._create_tier_instances(tier_definitions)
-        
-        total_rows = len(csv_data)
-        self.uploaded_file.total_rows = total_rows
+
         self.uploaded_file.status = 'processing'
-        self.uploaded_file.save(update_fields=['total_rows', 'status'])
-        
-        # Process in chunks
-        for chunk_start in range(0, total_rows, self.CHUNK_SIZE):
-            chunk_end = min(chunk_start + self.CHUNK_SIZE, total_rows)
-            chunk_data = csv_data[chunk_start:chunk_end]
-            
+        self.uploaded_file.save(update_fields=['status'])
+
+        chunk_iter = pd.read_csv(
+            file_handle,
+            chunksize=self.CHUNK_SIZE,
+            dtype=str,
+            keep_default_na=False,
+        )
+        processed_rows = 0
+
+        # Process one pandas chunk at a time — peak memory ≈ CHUNK_SIZE rows
+        for chunk in chunk_iter:
+            chunk_data = chunk.to_dict('records')
+            chunk_start = processed_rows
+
             try:
                 with transaction.atomic():
                     if self.uses_tiers:
                         chunk_results = self._process_chunk(chunk_data, tier_definitions=tier_definitions)
                     else:
                         chunk_results = self._process_chunk(chunk_data, manual_prices=manual_prices)
-                    
+
                     # Update results
                     results['success_count'] += chunk_results['success_count']
                     results['error_count'] += chunk_results['error_count']
@@ -299,18 +283,19 @@ class CSVProcessor:
                         results['skipped_rows_by_reason'][reason] = (
                             results['skipped_rows_by_reason'].get(reason, 0) + count
                         )
-                    
-                    # Update progress
-                    self.uploaded_file.processed_rows = chunk_end
+
+                    processed_rows += len(chunk_data)
+                    self.uploaded_file.processed_rows = processed_rows
                     self.uploaded_file.save(update_fields=['processed_rows'])
-                    
+
                     # Update customer LTV after each chunk
                     self._update_customer_ltv(chunk_results['customer_ids'])
-                    
+
             except Exception as e:
-                logger.error(f"Error processing chunk {chunk_start}-{chunk_end}: {str(e)}")
+                logger.error(f"Error processing chunk starting at row {chunk_start}: {str(e)}")
                 results['error_count'] += len(chunk_data)
-                results['errors'].append(f"Chunk {chunk_start}-{chunk_end}: {str(e)}")
+                results['errors'].append(f"Chunk starting at row {chunk_start}: {str(e)}")
+                processed_rows += len(chunk_data)
         
         # Update final status
         if results['error_count'] == 0 and results['skipped_duplicates'] == 0:
@@ -319,8 +304,9 @@ class CSVProcessor:
             self.uploaded_file.status = 'completed'  # Partial success
         else:
             self.uploaded_file.status = 'failed'
-        
-        self.uploaded_file.save(update_fields=['status'])
+
+        self.uploaded_file.total_rows = processed_rows
+        self.uploaded_file.save(update_fields=['status', 'total_rows'])
         
         return results
     

@@ -71,6 +71,7 @@ urlpatterns = [
     path('upload/results/<uuid:file_id>/', views.upload_results, name='upload_results'),
     path('upload/<uuid:file_id>/delete/', views.upload_delete, name='upload_delete'),
     path('upload/<uuid:file_id>/reprocess/', views.reprocess_csv_file, name='reprocess_csv_file'),
+    path('upload/<uuid:file_id>/status/', views.upload_status_api, name='upload_status_api'),
 
     # Customers
     path('customers/', views.customer_list, name='customer_list'),

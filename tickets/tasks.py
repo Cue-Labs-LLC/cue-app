@@ -1,4 +1,5 @@
 from datetime import timedelta
+from decimal import Decimal
 
 from celery import shared_task
 from celery.utils.log import get_task_logger
@@ -320,3 +321,85 @@ def expire_waitlist_hold(self, entry_id):
 
     notify_next_waitlist_entry.delay(str(entry.ticket_type_id))
     logger.info("Waitlist: hold expired for entry %s, notifying next", entry_id)
+
+
+@shared_task(bind=True, max_retries=2, default_retry_delay=30)
+def process_csv_task(self, uploaded_file_id, manual_prices=None, tier_definitions=None):
+    """Process an uploaded CSV file asynchronously.
+
+    manual_prices and tier_definitions are JSON-safe (Decimal values serialized as strings).
+    """
+    from tickets.models import UploadedFile
+    from tickets.csv_processor import CSVProcessor
+    from tickets.services.segmentation.rfm_calculator import RFMCalculator
+    from tickets.views import _invalidate_event_list_cache
+
+    try:
+        uploaded_file = UploadedFile.objects.select_related(
+            'organization', 'csv_format'
+        ).get(id=uploaded_file_id)
+    except UploadedFile.DoesNotExist:
+        logger.warning("process_csv_task: UploadedFile %s not found", uploaded_file_id)
+        return
+
+    # Deserialize Decimal values (serialized as strings for JSON transport)
+    if manual_prices:
+        manual_prices = {k: Decimal(v) for k, v in manual_prices.items()}
+    if tier_definitions:
+        for tiers in tier_definitions.values():
+            for tier in tiers:
+                if tier.get('price') is not None:
+                    tier['price'] = Decimal(str(tier['price']))
+
+    if not uploaded_file.csv_file:
+        uploaded_file.status = 'failed'
+        uploaded_file.metadata['processing_results'] = {'error': 'No stored file found.'}
+        uploaded_file.save(update_fields=['status', 'metadata'])
+        return
+
+    processor = CSVProcessor(uploaded_file, uploaded_file.csv_format)
+    file_handle = uploaded_file.csv_file.open('rb')
+    try:
+        is_valid, error_msg = processor.validate_csv(file_handle)
+        if not is_valid:
+            uploaded_file.status = 'failed'
+            uploaded_file.metadata['processing_results'] = {'error': error_msg}
+            uploaded_file.save(update_fields=['status', 'metadata'])
+            return
+
+        results = processor.process_and_save(
+            file_handle,
+            manual_prices=manual_prices,
+            tier_definitions=tier_definitions,
+        )
+    except Exception as exc:
+        uploaded_file.status = 'failed'
+        uploaded_file.save(update_fields=['status'])
+        logger.exception("process_csv_task failed for %s", uploaded_file_id)
+        raise self.retry(exc=exc)
+    finally:
+        file_handle.close()
+
+    uploaded_file.metadata['processing_results'] = {
+        'success_count': results['success_count'],
+        'error_count': results['error_count'],
+        'skipped_duplicates': results['skipped_duplicates'],
+        'errors': results['errors'][:50],
+        'skipped_order_numbers': results['skipped_order_numbers'][:50],
+        'rejected_orders': results.get('rejected_orders', [])[:50],
+        'skipped_rows_count': results.get('skipped_rows_count', 0),
+        'skipped_rows_by_reason': results.get('skipped_rows_by_reason', {}),
+    }
+    uploaded_file.save(update_fields=['metadata'])
+
+    if results['success_count'] > 0:
+        try:
+            RFMCalculator(uploaded_file.organization).calculate_all()
+        except Exception:
+            logger.exception("RFM recalc after CSV import failed for %s", uploaded_file_id)
+        _invalidate_event_list_cache(uploaded_file.organization)
+
+    logger.info(
+        "process_csv_task complete for %s: %d success, %d errors",
+        uploaded_file_id, results['success_count'], results['error_count'],
+    )
