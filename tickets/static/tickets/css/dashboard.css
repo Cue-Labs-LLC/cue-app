@@ -1254,6 +1254,7 @@ pre {
     border-radius: var(--radius-sm);
     padding: 12px;
     font-size: 12px;
+    font-family: var(--font-body);
 }
 
 code {
@@ -1262,6 +1263,7 @@ code {
     padding: 1px 5px;
     border-radius: 3px;
     font-size: 12.5px;
+    font-family: var(--font-body);
 }
 
 /* -- Color Overrides (Bootstrap) --------------- */
