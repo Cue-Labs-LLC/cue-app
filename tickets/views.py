@@ -5129,7 +5129,7 @@ def _fulfill_payment_intent(payment_intent):
     Buyer info is pre-populated in our DB record at PI creation time.
     """
     pi_id = payment_intent['id']
-    amount_total_cents = payment_intent.get('amount_received', 0) or 0
+    amount_total_cents = getattr(payment_intent, 'amount_received', 0) or 0
 
     # Idempotency check #1: outside lock
     session_obj = StripeCheckoutSession.objects.filter(stripe_session_id=pi_id).first()
@@ -5270,20 +5270,21 @@ def _fulfill_payment_intent(payment_intent):
                 event_source_url=fb.get('event_source_url', ''),
             )
 
-        if payment_intent.get('setup_future_usage') == 'off_session':
-            user_id = payment_intent.get('metadata', {}).get('user_id', '')
-            pm_id   = payment_intent.get('payment_method', '')
+        if getattr(payment_intent, 'setup_future_usage', None) == 'off_session':
+            metadata = getattr(payment_intent, 'metadata', {}) or {}
+            user_id = metadata.get('user_id', '') if isinstance(metadata, dict) else getattr(metadata, 'user_id', '')
+            pm_id   = getattr(payment_intent, 'payment_method', '') or ''
             if user_id and pm_id:
                 import stripe as stripe_lib_inner
                 from django.conf import settings as django_settings_inner
                 stripe_lib_inner.api_key = django_settings_inner.STRIPE_SECRET_KEY
                 try:
                     pm   = stripe_lib_inner.PaymentMethod.retrieve(pm_id)
-                    card = pm.get('card', {})
+                    card = getattr(pm, 'card', None) or {}
                     UserProfile.objects.filter(user_id=user_id).update(
                         stripe_pm_id=pm_id,
-                        stripe_pm_brand=card.get('brand', ''),
-                        stripe_pm_last4=card.get('last4', ''),
+                        stripe_pm_brand=card.get('brand', '') if isinstance(card, dict) else getattr(card, 'brand', ''),
+                        stripe_pm_last4=card.get('last4', '') if isinstance(card, dict) else getattr(card, 'last4', ''),
                     )
                     logger.info("Saved PaymentMethod %s for user %s", pm_id, user_id)
                 except Exception as e:
@@ -5294,7 +5295,7 @@ def _fulfill_payment_intent(payment_intent):
 
 def _fail_payment_intent(payment_intent):
     """Mark a failed PaymentIntent session as canceled."""
-    pi_id = payment_intent.get('id', '')
+    pi_id = payment_intent['id'] if 'id' in payment_intent else getattr(payment_intent, 'id', '')
     if pi_id:
         StripeCheckoutSession.objects.filter(
             stripe_session_id=pi_id,
