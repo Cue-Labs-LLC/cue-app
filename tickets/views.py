@@ -4853,6 +4853,8 @@ def checkout_payment(request, public_id):
         'discount_dollars': Decimal(discount_cents) / 100,
         'promo_applied': promo_session,
         'initcheckout_event_id': initcheckout_event_id,
+        'grand_total_cents': grand_total_cents,
+        'stripe_currency': django_settings.STRIPE_CURRENCY,
     })
 
 
@@ -5121,6 +5123,15 @@ def stripe_webhook(request):
         _fail_payment_intent(event['data']['object'])
 
     return HttpResponse(status=200)
+
+
+def apple_pay_domain_association(request):
+    """Serve Apple Pay domain verification file for Stripe."""
+    from django.conf import settings as django_settings
+    content = getattr(django_settings, 'APPLE_PAY_DOMAIN_ASSOCIATION', '')
+    if not content:
+        raise Http404
+    return HttpResponse(content, content_type='text/plain')
 
 
 def _fulfill_payment_intent(payment_intent):

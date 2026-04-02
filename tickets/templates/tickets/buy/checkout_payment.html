@@ -516,6 +516,12 @@
         </form>
         {% else %}
 
+        <div id="payment-request-section" style="display:none; margin-bottom:18px;">
+            <div id="payment-request-button"></div>
+            <div class="rule" style="margin:16px 0 0;"></div>
+            <p style="text-align:center; font-family:var(--font-mono); font-size:0.68rem; letter-spacing:0.08em; color:var(--text-3); margin:12px 0 14px; text-transform:uppercase;">Or pay with card</p>
+        </div>
+
         {% if saved_pm %}
         <div id="saved-card-section" style="margin-bottom:14px;">
             <label class="form-label">Saved Card</label>
@@ -609,7 +615,67 @@ document.addEventListener('DOMContentLoaded', function () {
 
 {% if not is_free %}
 <script type="application/json" id="checkout-config">
-{"publishableKey": "{{ stripe_publishable_key }}", "paymentIntentUrl": "{% url 'tickets:create_payment_intent' event.public_id %}", "successUrl": "{% url 'tickets:checkout_success' %}", "savedPmId": "{% if saved_pm %}{{ saved_pm.id }}{% endif %}"}
+{"publishableKey": "{{ stripe_publishable_key }}", "paymentIntentUrl": "{% url 'tickets:create_payment_intent' event.public_id %}", "successUrl": "{% url 'tickets:checkout_success' %}", "savedPmId": "{% if saved_pm %}{{ saved_pm.id }}{% endif %}", "grandTotalCents": {{ grand_total_cents }}, "currency": "{{ stripe_currency }}"}
+</script>
+<script>
+// Apple Pay / Payment Request Button
+(function () {
+    var config = JSON.parse(document.getElementById('checkout-config').textContent);
+    var stripe = Stripe(config.publishableKey);
+
+    var pr = stripe.paymentRequest({
+        country: 'US',
+        currency: config.currency,
+        total: { label: document.title, amount: config.grandTotalCents },
+        requestPayerName: false,
+        requestPayerEmail: false,
+    });
+
+    pr.canMakePayment().then(function (result) {
+        if (!result) return;
+        document.getElementById('payment-request-section').style.display = '';
+        var elements = stripe.elements();
+        var prButton = elements.create('paymentRequestButton', {
+            paymentRequest: pr,
+            style: { paymentRequestButton: { type: 'buy', theme: 'dark', height: '48px' } },
+        });
+        prButton.mount('#payment-request-button');
+    });
+
+    pr.on('paymentmethod', function (ev) {
+        function getCookie(n) { var v = document.cookie.match('(^|;) ?' + n + '=([^;]*)(;|$)'); return v ? v[2] : null; }
+
+        fetch(config.paymentIntentUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-CSRFToken': getCookie('csrftoken') },
+            body: JSON.stringify({ fbp: getCookie('_fbp') || '', fbc: getCookie('_fbc') || '' }),
+        })
+        .then(function (res) { return res.json(); })
+        .then(function (data) {
+            if (data.error) { ev.complete('fail'); return; }
+            return stripe.confirmCardPayment(
+                data.client_secret,
+                { payment_method: ev.paymentMethod.id },
+                { handleActions: false }
+            ).then(function (result) {
+                if (result.error) { ev.complete('fail'); return; }
+                ev.complete('success');
+                if (result.paymentIntent.status === 'requires_action') {
+                    return stripe.confirmCardPayment(data.client_secret).then(function (r2) {
+                        if (r2.error) {
+                            var el = document.getElementById('card-errors');
+                            if (el) el.textContent = r2.error.message;
+                        } else {
+                            window.location.href = config.successUrl + '?session_id=' + data.session_id;
+                        }
+                    });
+                }
+                window.location.href = config.successUrl + '?session_id=' + data.session_id;
+            });
+        })
+        .catch(function () { ev.complete('fail'); });
+    });
+})();
 </script>
 <script>
 document.addEventListener('DOMContentLoaded', function () {

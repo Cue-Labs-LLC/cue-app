@@ -251,6 +251,7 @@ STRIPE_SECRET_KEY      = os.environ.get('STRIPE_SECRET_KEY', '')
 STRIPE_WEBHOOK_SECRET  = os.environ.get('STRIPE_WEBHOOK_SECRET', '')
 STRIPE_CURRENCY        = os.environ.get('STRIPE_CURRENCY', 'usd')
 STRIPE_TERMINAL_LOCATION_ID = os.environ.get('STRIPE_TERMINAL_LOCATION_ID', '')
+APPLE_PAY_DOMAIN_ASSOCIATION = os.environ.get('APPLE_PAY_DOMAIN_ASSOCIATION', '')
 
 # Email backend configuration — SendGrid SMTP for all environments
 EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'

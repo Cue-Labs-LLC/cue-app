@@ -18,10 +18,14 @@ from django.contrib import admin
 from django.urls import path, include
 from django.conf import settings
 from django.conf.urls.static import static
+from tickets import views as tickets_views
 
 urlpatterns = [
     path('admin/', admin.site.urls),
     path('api/', include('tickets.api_urls')),
+    path('.well-known/apple-developer-merchantid-domain-association',
+         tickets_views.apple_pay_domain_association,
+         name='apple_pay_domain_association'),
     path('', include(('tickets.urls', 'tickets'))),
 ]
 
