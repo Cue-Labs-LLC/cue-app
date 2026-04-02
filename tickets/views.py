@@ -4964,7 +4964,6 @@ def create_payment_intent(request, public_id):
     pi_kwargs = {
         'amount': charge_cents,
         'currency': django_settings.STRIPE_CURRENCY,
-        'receipt_email': buyer_email,
         'metadata': {
             'event_id': str(event.id),
             'org_id': str(event.organization_id),
