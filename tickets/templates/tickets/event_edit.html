@@ -91,7 +91,7 @@
                     <table class="table table-hover mb-0">
                         <thead>
                             <tr>
-                                <th>Ticket Type</th><th>Price</th><th>Sold</th>
+                                <th>Ticket Type</th><th>Display&nbsp;Price / Gross</th><th>Sold</th>
                                 <th class="d-none d-md-table-cell">Limit</th><th>Revenue</th>
                                 <th class="d-none d-md-table-cell">Unlocks After</th>
                                 <th class="d-none d-md-table-cell">Waitlist</th>
@@ -102,7 +102,7 @@
                             {% for tt in saleable_ticket_types %}
                             <tr>
                                 <td><strong>{{ tt.name }}</strong>{% if tt.description %}<br><small class="text-muted">{{ tt.description|truncatechars:60 }}</small>{% endif %}</td>
-                                <td>{% with at=tt.get_active_tier %}{% if at %}${{ at.price|currency }}<br><small class="text-muted">{{ at.name }}</small>{% else %}${{ tt.price|currency }}{% endif %}{% endwith %}</td>
+                                <td>{% with at=tt.get_active_tier %}{% if at %}${{ at.price|currency }}<br><small class="text-muted">{{ at.name }}</small>{% else %}${{ tt.price|currency }}{% endif %}{% endwith %}<br><small class="text-muted">Gross: ${{ tt.gross_price|currency }}</small></td>
                                 <td>{{ tt.quantity_sold }}</td>
                                 <td class="d-none d-md-table-cell">{% if tt.quantity_limit %}{{ tt.quantity_limit }}{% else %}<span class="text-muted">&infin;</span>{% endif %}</td>
                                 <td>${{ tt.effective_price|currency }} &times; {{ tt.quantity_sold }}</td>
@@ -620,6 +620,28 @@ document.addEventListener('DOMContentLoaded', function () {
       });
   });
 })();
+// Gross price preview for Display Price inputs
+(function () {
+    function extractFeeCents(displayCents) {
+        if (displayCents <= 0) return 0;
+        return displayCents - Math.round((displayCents - 99) / 1.08);
+    }
+    function updateGrossPreview(inputId, previewId) {
+        var input = document.getElementById(inputId);
+        var preview = document.getElementById(previewId);
+        if (!input || !preview) return;
+        input.addEventListener('input', function () {
+            var val = parseFloat(input.value) || 0;
+            if (val <= 0) { preview.textContent = ''; return; }
+            var displayCents = Math.round(val * 100);
+            var feeCents = extractFeeCents(displayCents);
+            var grossCents = displayCents - feeCents;
+            preview.textContent = 'You receive: $' + (grossCents / 100).toFixed(2);
+        });
+    }
+    updateGrossPreview('add_price', 'add-gross-preview');
+    updateGrossPreview('edit_price', 'edit-gross-preview');
+}());
 }); {# /DOMContentLoaded #}
 {% endif %}{# /ticketing_type direct #}
 </script>
@@ -655,8 +677,9 @@ document.addEventListener('DOMContentLoaded', function () {
               <div class="invalid-feedback" id="err-description"></div>
             </div>
             <div class="col-md-4">
-              <label class="form-label fw-semibold">Price ($) <span class="text-danger">*</span></label>
-              <input type="number" name="price" class="form-control" step="0.01" min="0" placeholder="0.00" required>
+              <label class="form-label fw-semibold">Display Price ($) <span class="text-danger">*</span></label>
+              <input type="number" name="price" id="add_price" class="form-control" step="0.01" min="0" placeholder="0.00" required>
+              <div class="form-text text-muted" id="add-gross-preview"></div>
               <div class="invalid-feedback" id="err-price"></div>
             </div>
             <div class="col-md-4">
@@ -757,8 +780,9 @@ document.addEventListener('DOMContentLoaded', function () {
               <div class="invalid-feedback" id="edit-err-description"></div>
             </div>
             <div class="col-md-4">
-              <label class="form-label fw-semibold">Price ($) <span class="text-danger">*</span></label>
+              <label class="form-label fw-semibold">Display Price ($) <span class="text-danger">*</span></label>
               <input type="number" name="price" id="edit_price" class="form-control" step="0.01" min="0" required>
+              <div class="form-text text-muted" id="edit-gross-preview"></div>
               <div class="invalid-feedback" id="edit-err-price"></div>
             </div>
             <div class="col-md-4">

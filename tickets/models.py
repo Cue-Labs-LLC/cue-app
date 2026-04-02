@@ -1243,6 +1243,17 @@ class SaleableTicketType(BaseModel):
         active = self.get_active_tier()
         return active.price if active else self.price
 
+    @property
+    def gross_price(self):
+        """Estimated organizer net for a single-ticket order (Display Price minus extracted fee)."""
+        from tickets.utils import extract_fee_from_display_cents
+        price = self.effective_price
+        if price == 0:
+            return Decimal('0.00')
+        display_cents = int(price * 100)
+        fee_cents = extract_fee_from_display_cents(display_cents)
+        return (Decimal(display_cents - fee_cents) / 100).quantize(Decimal('0.01'))
+
     def is_sold_out(self):
         """True only when a limit is set and fully exhausted (including held spots)."""
         tiers = list(self.tiers.all())  # prefetch-safe

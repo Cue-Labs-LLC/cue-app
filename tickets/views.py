@@ -4814,9 +4814,9 @@ def checkout_payment(request, public_id):
         except UserProfile.DoesNotExist:
             pass
 
-    from tickets.utils import calculate_platform_fee_cents
-    fee_cents = calculate_platform_fee_cents(discounted_subtotal_cents) if not is_free else 0
-    grand_total_cents = discounted_subtotal_cents + fee_cents
+    from tickets.utils import extract_fee_from_display_cents
+    fee_cents = extract_fee_from_display_cents(discounted_subtotal_cents) if not is_free else 0
+    grand_total_cents = discounted_subtotal_cents  # Display price is already fee-inclusive
 
     initcheckout_event_id = str(_uuid.uuid4())
     request.session[f'initcheckout_eid_{event.id}'] = initcheckout_event_id
@@ -4940,9 +4940,9 @@ def create_payment_intent(request, public_id):
 
     discounted_subtotal_cents = total_cents - discount_cents
 
-    from tickets.utils import calculate_platform_fee_cents
-    fee_cents = calculate_platform_fee_cents(discounted_subtotal_cents)
-    charge_cents = discounted_subtotal_cents + fee_cents  # buyer pays discounted subtotal + platform fee
+    from tickets.utils import extract_fee_from_display_cents
+    fee_cents = extract_fee_from_display_cents(discounted_subtotal_cents)
+    charge_cents = discounted_subtotal_cents  # Display price is fee-inclusive; buyer pays display total
 
     stripe_lib.api_key = django_settings.STRIPE_SECRET_KEY
 

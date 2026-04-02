@@ -1049,7 +1049,7 @@ class SaleableTicketTypeForm(forms.ModelForm):
         self.fields['sale_start'].required = False
         self.fields['sale_end'].required = False
         self.fields['unlocks_after'].required = False
-        self.fields['price'].help_text = 'Fallback price when no tiers are configured.'
+        self.fields['price'].help_text = 'Display price shown to buyers (fee-inclusive). Fallback when no tiers are configured. Your gross = Display Price minus the 8% + $0.99 service fee.'
         submit_label = 'Update Ticket Type' if (self.instance and self.instance.pk) else 'Create Ticket Type'
         self.helper = FormHelper()
         self.helper.layout = Layout(

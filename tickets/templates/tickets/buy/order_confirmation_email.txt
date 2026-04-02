@@ -12,7 +12,7 @@ Address: {{ event.venue.get_display_address }}{% endif %}{% endif %}
 
 Tickets:
 {% for ticket in tickets %}  {{ ticket.ticket_type }}    {% if ticket.price %}${{ ticket.price }}{% else %}Free{% endif %}
-{% endfor %}{% if service_fee %}  Service fee    ${{ service_fee }}
+{% endfor %}{% if service_fee %}  Includes service fee    ${{ service_fee }}
 {% endif %}
 Total:    {% if order.total_amount %}${{ order.total_amount }}{% else %}Free{% endif %}
 

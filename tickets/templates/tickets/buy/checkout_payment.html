@@ -471,7 +471,7 @@
             </span>
         </div>
         {% endfor %}
-        {% if not is_free or discount_cents %}
+        {% if discount_cents %}
         <div class="line-item line-item-muted">
             <span class="line-item-name">Subtotal</span>
             <span class="line-item-price" id="subtotal-display">${{ subtotal|currency }}</span>
@@ -481,18 +481,18 @@
             <span class="line-item-name">Promo <strong id="promo-code-label">{% if promo_applied %}{{ promo_applied.code }}{% endif %}</strong></span>
             <span class="line-item-price" id="discount-display">{% if discount_dollars %}&minus;${{ discount_dollars|currency }}{% endif %}</span>
         </div>
-        {% if not is_free %}
-        <div class="line-item line-item-muted">
-            <span class="line-item-name">Service fee</span>
-            <span class="line-item-price" id="fee-display">${{ service_fee|currency }}</span>
-        </div>
-        {% endif %}
         <div class="total-row">
             <span class="total-label">Total</span>
             <span class="total-amount" id="grand-total-display">
                 {% if is_free %}Free{% else %}${{ grand_total|currency }}{% endif %}
             </span>
         </div>
+        {% if not is_free %}
+        <div class="line-item line-item-muted" style="font-size:0.78rem; opacity:0.7; margin-top:4px;">
+            <span class="line-item-name">Includes service fee</span>
+            <span class="line-item-price" id="fee-display">${{ service_fee|currency }}</span>
+        </div>
+        {% endif %}
     </div>
 
     <!-- Promo Code -->

@@ -186,3 +186,16 @@ def next_order_number():
 def calculate_platform_fee_cents(subtotal_cents: int) -> int:
     """Platform service fee: 8% of subtotal + $0.99, in cents."""
     return round(subtotal_cents * 0.08) + 99
+
+
+def extract_fee_from_display_cents(display_total_cents: int) -> int:
+    """Extract platform fee from a fee-inclusive display price (in cents).
+
+    Reverses: display_total = subtotal * 1.08 + 99
+    So:       subtotal = (display_total - 99) / 1.08
+              fee = display_total - subtotal
+    """
+    if display_total_cents <= 0:
+        return 0
+    subtotal_cents = round((display_total_cents - 99) / 1.08)
+    return display_total_cents - subtotal_cents
