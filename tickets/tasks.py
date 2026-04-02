@@ -155,12 +155,20 @@ def send_order_confirmation_email_task(self, order_id):
 
     customer = order.customer
     qr_png_bytes = generate_qr_png_bytes(order.order_number)
+
+    from decimal import Decimal
+    try:
+        service_fee = Decimal(order.stripe_checkout_session.platform_fee_cents) / 100
+    except Exception:
+        service_fee = Decimal('0.00')
+
     context = {
         'order': order,
         'customer': customer,
         'event': order.event,
         'tickets': list(order.tickets.all()),
         'show_qr_code': bool(qr_png_bytes),
+        'service_fee': service_fee,
     }
     html_body = render_to_string('tickets/buy/order_confirmation_email.html', context)
     text_body = render_to_string('tickets/buy/order_confirmation_email.txt', context)
