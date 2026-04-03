@@ -2035,8 +2035,12 @@ def event_list(request):
         page_obj.object_list = [annotated_map[pk] for pk in page_pks]
 
     # Compute net_revenue (ticket revenue after fees + additional income) for each event on this page
+    # Fees only apply to direct ticketing events; external/CSV events are shown at gross
     for ev in page_obj.object_list:
-        fees = (ev.paid_ticket_sum * Decimal('0.10') + Decimal('0.99') * ev.paid_ticket_count) / Decimal('1.10')
+        if ev.ticketing_type == 'direct':
+            fees = (ev.paid_ticket_sum * Decimal('0.10') + Decimal('0.99') * ev.paid_ticket_count) / Decimal('1.10')
+        else:
+            fees = Decimal('0.00')
         ev.net_revenue = ev.ticket_revenue - fees + ev.total_additional_income
 
     # Show warning when current time is past the event's end date+time and upload_count is 0 (same as home)
@@ -2217,19 +2221,22 @@ def event_detail(request, event_id):
     total_customers = event_stats['total_customers']
     total_tickets = Ticket.objects.filter(ticket_order__event=event).count()
 
-    # Platform fee calculation (consistent with profitability_overview)
-    paid_ticket_stats = Ticket.objects.filter(
-        ticket_order__event=event,
-        price__gt=0,
-        ticket_order__refunded_at__isnull=True,
-    ).aggregate(
-        paid_sum=Coalesce(Sum('price'), Decimal('0.00')),
-        paid_count=Count('id'),
-    )
-    ticket_fees = (
-        paid_ticket_stats['paid_sum'] * Decimal('0.10')
-        + Decimal('0.99') * paid_ticket_stats['paid_count']
-    ) / Decimal('1.10')
+    # Platform fee calculation — only for direct ticketing (not external/CSV imports)
+    if event.ticketing_type == 'direct':
+        paid_ticket_stats = Ticket.objects.filter(
+            ticket_order__event=event,
+            price__gt=0,
+            ticket_order__refunded_at__isnull=True,
+        ).aggregate(
+            paid_sum=Coalesce(Sum('price'), Decimal('0.00')),
+            paid_count=Count('id'),
+        )
+        ticket_fees = (
+            paid_ticket_stats['paid_sum'] * Decimal('0.10')
+            + Decimal('0.99') * paid_ticket_stats['paid_count']
+        ) / Decimal('1.10')
+    else:
+        ticket_fees = Decimal('0.00')
     net_ticket_revenue = ticket_revenue - ticket_fees
 
     # Additional income (user-defined sources: Bar Splits, Merch, etc.)

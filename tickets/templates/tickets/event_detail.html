@@ -125,10 +125,8 @@
     <div class="stat-card stat-card--success">
         <div class="stat-label">Total Revenue</div>
         <div class="stat-value">${{ total_revenue|currency }}</div>
-        {% if ticket_fees > 0 or total_additional_income > 0 %}
-        <div class="stat-detail" style="font-size: 0.75rem; margin-top: 4px;">
-            Tickets: ${{ net_ticket_revenue|currency }}{% if total_additional_income > 0 %} + Other: ${{ total_additional_income|currency }}{% endif %}{% if ticket_fees > 0 %}<br>Fees: -${{ ticket_fees|currency }}{% endif %}
-        </div>
+        {% if total_additional_income > 0 %}
+        <div class="stat-detail" style="font-size: 0.75rem; margin-top: 4px;">Tickets: ${{ net_ticket_revenue|currency }} + Other: ${{ total_additional_income|currency }}</div>
         {% endif %}
     </div>
     <div class="stat-card stat-card--info">
