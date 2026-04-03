@@ -24,20 +24,37 @@
 
 <!-- Stats row -->
 <div class="row g-3 mb-4">
-    <div class="col-6 col-lg-6">
+    <div class="col-6 col-lg-3">
         <div class="stat-card">
             <div class="stat-label">Sales</div>
             <div class="stat-value">${{ net_sales|currency }}</div>
             <div class="stat-sub">All-time direct ticket revenue</div>
         </div>
     </div>
-    <div class="col-6 col-lg-6">
+    {% if stripe_available is not None and settling_balance > 0 %}
+    <div class="col-6 col-lg-3">
         <div class="stat-card stat-card--success">
-            <div class="stat-label">Available Balance</div>
-            <div class="stat-value">${{ available_balance|currency }}</div>
-            <div class="stat-sub">After fees and payouts</div>
+            <div class="stat-label">Ready to Withdraw</div>
+            <div class="stat-value">${{ stripe_available|currency }}</div>
+            <div class="stat-sub">Settled and available now</div>
         </div>
     </div>
+    <div class="col-6 col-lg-3">
+        <div class="stat-card stat-card--info">
+            <div class="stat-label">Settling</div>
+            <div class="stat-value">${{ settling_balance|currency }}</div>
+            <div class="stat-sub"><i class="bi bi-clock"></i> Available in 2–7 business days</div>
+        </div>
+    </div>
+    {% else %}
+    <div class="col-6 col-lg-3">
+        <div class="stat-card stat-card--success">
+            <div class="stat-label">Available Balance</div>
+            <div class="stat-value">${{ stripe_available|default:available_balance|currency }}</div>
+            <div class="stat-sub">Ready to withdraw</div>
+        </div>
+    </div>
+    {% endif %}
 </div>
 
 <!-- Bank Account & Payout -->
@@ -108,13 +125,13 @@
                         <input type="text" inputmode="decimal" id="payout-amount" name="amount"
                                class="form-control"
                                pattern="^\d+(\.\d{1,2})?$"
-                               placeholder="{{ available_balance|floatformat:2 }}"
+                               placeholder="{{ stripe_available|default:available_balance|floatformat:2 }}"
                                required>
                     </div>
                 </div>
                 <div class="col-md-3">
                     <button type="submit" class="btn btn-success w-100"
-                            {% if available_balance <= 0 %}disabled{% endif %}>
+                            {% if available_balance <= 0 or stripe_available is None or stripe_available <= 0 %}disabled{% endif %}>
                         <i class="bi bi-send"></i> Request Payout
                     </button>
                 </div>

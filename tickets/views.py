@@ -5302,6 +5302,34 @@ def _fulfill_payment_intent(payment_intent):
 
     logger.info("Fulfilled PaymentIntent %s - order %s", pi_id, order.order_number)
 
+    # Store the settlement date so we can gate payouts to settled funds only.
+    # latest_charge is a string ID in the webhook payload; fetch the charge to get
+    # its balance_transaction.available_on.
+    latest_charge_id = (
+        payment_intent.get('latest_charge')
+        if isinstance(payment_intent, dict)
+        else getattr(payment_intent, 'latest_charge', None)
+    )
+    if latest_charge_id and isinstance(latest_charge_id, str):
+        try:
+            import stripe as stripe_lib_bt
+            from django.conf import settings as django_settings_bt
+            stripe_lib_bt.api_key = django_settings_bt.STRIPE_SECRET_KEY
+            charge = stripe_lib_bt.Charge.retrieve(
+                latest_charge_id,
+                expand=['balance_transaction'],
+            )
+            bt = charge.balance_transaction
+            if bt and getattr(bt, 'available_on', None):
+                import datetime as _dt
+                available_on_dt = _dt.datetime.fromtimestamp(bt.available_on, tz=_dt.timezone.utc)
+                StripeCheckoutSession.objects.filter(stripe_session_id=pi_id).update(
+                    available_on=available_on_dt,
+                )
+                logger.info("Set available_on=%s for PaymentIntent %s", available_on_dt, pi_id)
+        except Exception:
+            logger.exception("Could not fetch balance_transaction for charge %s (PI %s)", latest_charge_id, pi_id)
+
 
 def _fail_payment_intent(payment_intent):
     """Mark a failed PaymentIntent session as canceled."""
@@ -5644,6 +5672,37 @@ def _compute_available_balance(org):
     return stripe_revenue, platform_fees, paid_out, organizer_revenue - paid_out
 
 
+def _compute_settled_payout_balance(org):
+    """
+    Return the amount available for payout for this org, in dollars.
+
+    Only counts sessions whose funds have settled into the Stripe platform balance
+    (available_on <= now, or available_on is null for pre-migration records which
+    are assumed to have already settled).  Subtracts completed payouts.
+    """
+    from django.utils import timezone as django_tz
+    from django.db.models import Q
+    now = django_tz.now()
+    settled_sessions = StripeCheckoutSession.objects.filter(
+        organization=org,
+        status=StripeCheckoutSession.Status.COMPLETED,
+    ).filter(Q(available_on__lte=now) | Q(available_on__isnull=True))
+
+    agg = settled_sessions.aggregate(
+        total_charged=Coalesce(Sum('amount_total_cents'), 0),
+        total_fees=Coalesce(Sum('platform_fee_cents'), 0),
+    )
+    settled_organizer_cents = agg['total_charged'] - agg['total_fees']
+
+    paid_out = Payout.objects.filter(
+        organization=org,
+        status=Payout.Status.COMPLETED,
+    ).aggregate(total=Coalesce(Sum('amount'), Decimal('0.00')))['total']
+
+    settled = Decimal(str(settled_organizer_cents)) / 100 - paid_out
+    return max(Decimal('0.00'), settled)
+
+
 @login_required
 @require_org
 @require_admin
@@ -5661,11 +5720,19 @@ def finance_overview(request):
 
     net_sales = stripe_revenue - platform_fees
 
+    stripe_available = None
+    settling_balance = Decimal('0.00')
+    if org.stripe_onboarding_complete and org.stripe_account_id:
+        stripe_available = _compute_settled_payout_balance(org)
+        settling_balance = max(Decimal('0.00'), available_balance - stripe_available)
+
     context = {
         'net_sales': net_sales,
         'paid_out': paid_out,
         'available_balance': available_balance,
-'payout_history': payout_history,
+        'stripe_available': stripe_available,
+        'settling_balance': settling_balance,
+        'payout_history': payout_history,
         'onboarding_complete': org.stripe_onboarding_complete,
         'has_stripe_account': bool(org.stripe_account_id),
         'min_payout': _MIN_PAYOUT,
@@ -5835,6 +5902,15 @@ def initiate_payout(request):
     _, _, _, available_balance = _compute_available_balance(org)
     if amount > available_balance:
         messages.error(request, f'Payout amount exceeds available balance (${available_balance:.2f}).')
+        return redirect('tickets:finance_overview')
+
+    stripe_available = _compute_settled_payout_balance(org)
+    if amount > stripe_available:
+        messages.error(
+            request,
+            f'Only ${stripe_available:.2f} has settled and is available to pay out. '
+            f'Funds from recent sales typically settle within 2\u20137 business days.',
+        )
         return redirect('tickets:finance_overview')
 
     if Payout.objects.filter(organization=org, status=Payout.Status.PENDING).exists():

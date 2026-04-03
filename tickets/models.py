@@ -1421,6 +1421,12 @@ class StripeCheckoutSession(BaseModel):
         related_name='stripe_checkout_session',
     )
     fulfilled_at = models.DateTimeField(null=True, blank=True)
+    # Populated from the charge's balance_transaction.available_on at webhook time.
+    # Null means the payment pre-dates this field — treat as already settled.
+    available_on = models.DateTimeField(
+        null=True, blank=True,
+        help_text='When this payment settles into the Stripe platform balance (from balance_transaction.available_on).',
+    )
     fb_browser_data = models.JSONField(
         default=dict, blank=True,
         help_text='Stores _fbp, _fbc, client IP, user agent for CAPI Purchase call on webhook.',
@@ -1430,6 +1436,7 @@ class StripeCheckoutSession(BaseModel):
         indexes = [
             models.Index(fields=['organization', 'status']),
             models.Index(fields=['event', 'status']),
+            models.Index(fields=['organization', 'status', 'available_on']),
         ]
 
     def __str__(self):
