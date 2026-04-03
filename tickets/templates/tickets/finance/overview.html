@@ -31,19 +31,19 @@
             <div class="stat-sub">All-time direct ticket revenue</div>
         </div>
     </div>
-    {% if stripe_available is not None and settling_balance > 0 %}
-    <div class="col-6 col-lg-3">
-        <div class="stat-card stat-card--success">
-            <div class="stat-label">Ready to Withdraw</div>
-            <div class="stat-value">${{ stripe_available|currency }}</div>
-            <div class="stat-sub">Settled and available now</div>
-        </div>
-    </div>
+    {% if stripe_available is not None %}
     <div class="col-6 col-lg-3">
         <div class="stat-card stat-card--info">
             <div class="stat-label">Settling</div>
             <div class="stat-value">${{ settling_balance|currency }}</div>
             <div class="stat-sub"><i class="bi bi-clock"></i> Available in 2–7 business days</div>
+        </div>
+    </div>
+    <div class="col-6 col-lg-3">
+        <div class="stat-card stat-card--success">
+            <div class="stat-label">Ready to Withdraw</div>
+            <div class="stat-value">${{ stripe_available|currency }}</div>
+            <div class="stat-sub">Settled and available now</div>
         </div>
     </div>
     {% else %}
