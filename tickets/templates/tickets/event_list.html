@@ -99,8 +99,8 @@
                         </td>
                         <td>{{ event.start_date|date:"M d, Y" }}{% if event.start_time %} {{ event.start_time|time:"g:i A" }}{% endif %}</td>
                         <td class="d-none d-md-table-cell">{{ event.venue.name|default:"-" }}</td>
-                        <td>{% if event.id in event_ids_show_placeholder %}-{% else %}<span class="revenue">${{ event.total_revenue|currency }}</span>{% endif %}</td>
-                        {% with profit=event.total_revenue|subtract:event.total_expenses %}
+                        <td>{% if event.id in event_ids_show_placeholder %}-{% else %}<span class="revenue">${{ event.net_revenue|currency }}</span>{% endif %}</td>
+                        {% with profit=event.net_revenue|subtract:event.total_expenses %}
                         <td class="d-none d-md-table-cell"{% if event.id not in event_ids_show_placeholder and profit < 0 %} style="color: var(--danger, #dc3545);"{% endif %}>{% if event.id in event_ids_show_placeholder %}-{% else %}${{ profit|currency }}{% endif %}</td>
                         {% endwith %}
                         <td>{% if event.id in event_ids_show_placeholder %}-{% else %}{{ event.total_tickets|default:0 }}{% endif %}</td>

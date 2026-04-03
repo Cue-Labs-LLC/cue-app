@@ -239,6 +239,34 @@ def _annotate_events(queryset):
             ),
             Decimal('0.00'),
         ),
+        paid_ticket_sum=Coalesce(
+            Subquery(
+                Ticket.objects.filter(
+                    ticket_order__event=OuterRef('pk'),
+                    price__gt=0,
+                    ticket_order__refunded_at__isnull=True,
+                )
+                .values('ticket_order__event')
+                .annotate(total=Sum('price'))
+                .values('total')[:1],
+                output_field=models.DecimalField(max_digits=10, decimal_places=2),
+            ),
+            Decimal('0.00'),
+        ),
+        paid_ticket_count=Coalesce(
+            Subquery(
+                Ticket.objects.filter(
+                    ticket_order__event=OuterRef('pk'),
+                    price__gt=0,
+                    ticket_order__refunded_at__isnull=True,
+                )
+                .values('ticket_order__event')
+                .annotate(cnt=Count('id'))
+                .values('cnt')[:1],
+                output_field=models.IntegerField(),
+            ),
+            0,
+        ),
     )
 
 
@@ -2006,6 +2034,11 @@ def event_list(request):
         # Replace the page's object list, preserving the paginator's sort order
         page_obj.object_list = [annotated_map[pk] for pk in page_pks]
 
+    # Compute net_revenue (ticket revenue after fees + additional income) for each event on this page
+    for ev in page_obj.object_list:
+        fees = (ev.paid_ticket_sum * Decimal('0.10') + Decimal('0.99') * ev.paid_ticket_count) / Decimal('1.10')
+        ev.net_revenue = ev.ticket_revenue - fees + ev.total_additional_income
+
     # Show warning when current time is past the event's end date+time and upload_count is 0 (same as home)
     now_local = django_tz.localtime(django_tz.now()).replace(tzinfo=None)
     event_ids_show_warning = set()
@@ -2184,10 +2217,25 @@ def event_detail(request, event_id):
     total_customers = event_stats['total_customers']
     total_tickets = Ticket.objects.filter(ticket_order__event=event).count()
 
+    # Platform fee calculation (consistent with profitability_overview)
+    paid_ticket_stats = Ticket.objects.filter(
+        ticket_order__event=event,
+        price__gt=0,
+        ticket_order__refunded_at__isnull=True,
+    ).aggregate(
+        paid_sum=Coalesce(Sum('price'), Decimal('0.00')),
+        paid_count=Count('id'),
+    )
+    ticket_fees = (
+        paid_ticket_stats['paid_sum'] * Decimal('0.10')
+        + Decimal('0.99') * paid_ticket_stats['paid_count']
+    ) / Decimal('1.10')
+    net_ticket_revenue = ticket_revenue - ticket_fees
+
     # Additional income (user-defined sources: Bar Splits, Merch, etc.)
     additional_income_lines = list(event.additional_income.all())
     total_additional_income = sum(line.amount for line in additional_income_lines)
-    total_revenue = ticket_revenue + total_additional_income
+    total_revenue = net_ticket_revenue + total_additional_income
 
     # Expense data
     expenses = event.expenses.filter(deleted_at__isnull=True)
@@ -2307,6 +2355,8 @@ def event_detail(request, event_id):
         'upload_stats': upload_stats,
         'total_orders': total_orders,
         'ticket_revenue': ticket_revenue,
+        'ticket_fees': ticket_fees,
+        'net_ticket_revenue': net_ticket_revenue,
         'total_additional_income': total_additional_income,
         'total_revenue': total_revenue,
         'total_tickets': total_tickets,
