@@ -43,7 +43,11 @@
         <div class="stat-card stat-card--success">
             <div class="stat-label">Ready to Withdraw</div>
             <div class="stat-value">${{ stripe_available|currency }}</div>
+            {% if stripe_available <= 0 and settling_balance > 0 %}
+            <div class="stat-sub"><i class="bi bi-hourglass-split"></i> Incoming funds settling</div>
+            {% else %}
             <div class="stat-sub">Settled and available now</div>
+            {% endif %}
         </div>
     </div>
     {% else %}
@@ -121,7 +125,7 @@
             </form>
         </div>
 
-        <form method="post" action="{% url 'tickets:initiate_payout' %}">
+        <form method="post" action="{% url 'tickets:initiate_payout' %}" id="payout-form">
             {% csrf_token %}
             <div class="row g-3 align-items-end">
                 <div class="col-md-4">
@@ -131,18 +135,62 @@
                         <input type="text" inputmode="decimal" id="payout-amount" name="amount"
                                class="form-control"
                                pattern="^\d+(\.\d{1,2})?$"
-                               placeholder="{{ stripe_available|default:available_balance|floatformat:2 }}"
+                               placeholder="{{ stripe_available|floatformat:2 }}"
                                required>
                     </div>
+                    <div id="payout-amount-error" class="invalid-feedback" style="display:none;"></div>
                 </div>
                 <div class="col-md-3">
-                    <button type="submit" class="btn btn-success w-100"
-                            {% if available_balance <= 0 or stripe_available is None or stripe_available <= 0 %}disabled{% endif %}>
+                    <button type="submit" id="payout-submit" class="btn btn-success w-100" disabled>
                         <i class="bi bi-send"></i> Request Payout
                     </button>
                 </div>
             </div>
         </form>
+        <script>
+        (function () {
+            var input = document.getElementById('payout-amount');
+            var btn = document.getElementById('payout-submit');
+            var err = document.getElementById('payout-amount-error');
+            var max = {{ stripe_available|default:"0"|floatformat:2 }};
+
+            function validate() {
+                var raw = input.value.trim();
+                if (!raw) {
+                    btn.disabled = true;
+                    input.classList.remove('is-invalid');
+                    err.style.display = 'none';
+                    return;
+                }
+                var val = parseFloat(raw);
+                if (isNaN(val)) {
+                    btn.disabled = true;
+                    input.classList.remove('is-invalid');
+                    err.style.display = 'none';
+                    return;
+                }
+                if (val <= 0) {
+                    input.classList.add('is-invalid');
+                    err.textContent = 'Amount must be greater than $0.00.';
+                    err.style.display = 'block';
+                    btn.disabled = false;
+                    return;
+                }
+                if (val > max) {
+                    input.classList.add('is-invalid');
+                    err.textContent = 'Amount exceeds the $' + max.toFixed(2) + ' available to withdraw.';
+                    err.style.display = 'block';
+                    btn.disabled = true;
+                } else {
+                    input.classList.remove('is-invalid');
+                    err.style.display = 'none';
+                    btn.disabled = false;
+                }
+            }
+
+            input.addEventListener('input', validate);
+        })();
+        </script>
         {% endif %}
     </div>
 </div>

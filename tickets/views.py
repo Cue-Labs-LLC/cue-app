@@ -5672,21 +5672,41 @@ def _compute_available_balance(org):
     return stripe_revenue, platform_fees, paid_out, organizer_revenue - paid_out
 
 
+def _get_stripe_available_cents():
+    """
+    Query the Stripe platform account's actual available USD balance in cents.
+    Returns None on error.
+    """
+    import stripe as stripe_lib
+    from django.conf import settings as django_settings
+    stripe_lib.api_key = django_settings.STRIPE_SECRET_KEY
+    try:
+        balance = stripe_lib.Balance.retrieve()
+        for entry in balance.available:
+            if entry.currency.lower() == django_settings.STRIPE_CURRENCY.lower():
+                return entry.amount
+        return 0
+    except Exception:
+        logger.exception("Could not retrieve Stripe platform balance")
+        return None
+
+
 def _compute_settled_payout_balance(org):
     """
     Return the amount available for payout for this org, in dollars.
 
-    Only counts sessions whose funds have settled into the Stripe platform balance
-    (available_on <= now, or available_on is null for pre-migration records which
-    are assumed to have already settled).  Subtracts completed payouts.
+    Only counts sessions whose funds have an explicit available_on <= now.
+    Sessions with available_on=NULL are treated as settling (unknown status)
+    rather than settled, since their funds may not yet be in the Stripe balance.
+    Subtracts completed payouts.
     """
     from django.utils import timezone as django_tz
-    from django.db.models import Q
     now = django_tz.now()
     settled_sessions = StripeCheckoutSession.objects.filter(
         organization=org,
         status=StripeCheckoutSession.Status.COMPLETED,
-    ).filter(Q(available_on__lte=now) | Q(available_on__isnull=True))
+        available_on__lte=now,
+    )
 
     agg = settled_sessions.aggregate(
         total_charged=Coalesce(Sum('amount_total_cents'), 0),
@@ -5725,6 +5745,10 @@ def finance_overview(request):
     bank_account = None
     if org.stripe_onboarding_complete and org.stripe_account_id:
         stripe_available = _compute_settled_payout_balance(org)
+        stripe_actual_cents = _get_stripe_available_cents()
+        if stripe_actual_cents is not None:
+            stripe_actual = Decimal(str(stripe_actual_cents)) / 100
+            stripe_available = min(stripe_available, stripe_actual)
         settling_balance = max(Decimal('0.00'), available_balance - stripe_available)
         try:
             import stripe as stripe_lib
@@ -5932,6 +5956,17 @@ def initiate_payout(request):
             f'Funds from recent sales typically settle within 2\u20137 business days.',
         )
         return redirect('tickets:finance_overview')
+
+    stripe_actual_cents = _get_stripe_available_cents()
+    if stripe_actual_cents is not None:
+        stripe_actual = Decimal(str(stripe_actual_cents)) / 100
+        if amount > stripe_actual:
+            messages.error(
+                request,
+                f'Your Stripe balance has ${stripe_actual:.2f} available right now. '
+                f'Funds from recent sales typically settle within 2\u20137 business days.',
+            )
+            return redirect('tickets:finance_overview')
 
     if Payout.objects.filter(organization=org, status=Payout.Status.PENDING).exists():
         messages.error(request, 'A payout is already pending for your organization.')
