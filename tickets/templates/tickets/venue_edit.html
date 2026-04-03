@@ -71,8 +71,32 @@ window.initVenuePlacesAutocomplete = async function() {
 
         var label = document.createElement('label');
         label.className = 'form-label venue-address-autocomplete-label';
-        label.textContent = 'Address lookup';
+        label.textContent = 'Address';
         wrapper.appendChild(label);
+
+        // Build current-address row (shown when an address already exists).
+        var currentRow = document.createElement('div');
+        currentRow.id = 'venue-address-current';
+        currentRow.className = 'd-flex align-items-center gap-2';
+
+        var currentDisplay = document.createElement('input');
+        currentDisplay.type = 'text';
+        currentDisplay.className = 'form-control';
+        currentDisplay.readOnly = true;
+        currentDisplay.id = 'venue-address-current-display';
+        currentRow.appendChild(currentDisplay);
+
+        var changeBtn = document.createElement('button');
+        changeBtn.type = 'button';
+        changeBtn.className = 'btn btn-outline-secondary text-nowrap';
+        changeBtn.textContent = 'Change address';
+        currentRow.appendChild(changeBtn);
+
+        wrapper.appendChild(currentRow);
+
+        // Build lookup row (hidden until Change address is clicked).
+        var lookupRow = document.createElement('div');
+        lookupRow.id = 'venue-address-lookup';
 
         var placesLib = await google.maps.importLibrary('places');
         var placeAutocomplete = new placesLib.PlaceAutocompleteElement({
@@ -81,30 +105,58 @@ window.initVenuePlacesAutocomplete = async function() {
 
         placeAutocomplete.id = 'venue-address-autocomplete';
         placeAutocomplete.className = 'form-control';
+        lookupRow.appendChild(placeAutocomplete);
 
-        wrapper.appendChild(placeAutocomplete);
+        var lookupActions = document.createElement('div');
+        lookupActions.className = 'd-flex gap-2 mt-2';
 
-        var addressDisplay = document.createElement('div');
-        addressDisplay.id = 'venue-address-selected-display';
-        addressDisplay.className = 'venue-address-selected-display';
-        wrapper.appendChild(addressDisplay);
+        var confirmBtn = document.createElement('button');
+        confirmBtn.type = 'button';
+        confirmBtn.className = 'btn btn-primary btn-sm';
+        confirmBtn.textContent = 'Confirm address';
+        confirmBtn.disabled = true;
+        lookupActions.appendChild(confirmBtn);
+
+        var cancelBtn = document.createElement('button');
+        cancelBtn.type = 'button';
+        cancelBtn.className = 'btn btn-outline-secondary btn-sm';
+        cancelBtn.textContent = 'Cancel';
+        lookupActions.appendChild(cancelBtn);
+
+        lookupRow.appendChild(lookupActions);
+
+        wrapper.appendChild(lookupRow);
 
         capacityGroup.parentNode.insertBefore(wrapper, capacityGroup);
 
-        placeAutocomplete.addEventListener('focus', function() {
-            var display = document.getElementById('venue-address-selected-display');
-            if (display && display.textContent.trim() !== '') {
-                display.textContent = '';
-                if (streetInput) streetInput.value = '';
-                var cityField = document.getElementById('id_city');
-                var stateField = document.getElementById('id_state');
-                var postalField = document.getElementById('id_postal_code');
-                var countryField = document.getElementById('id_country');
-                if (cityField) cityField.value = '';
-                if (stateField) stateField.value = '';
-                if (postalField) postalField.value = '';
-                if (countryField) countryField.value = '';
-            }
+        // Populate the current-address display from existing hidden field values,
+        // or skip straight to the lookup if there is no existing address.
+        var existingStreet = streetInput.value;
+        if (existingStreet) {
+            var existingCity    = (document.getElementById('id_city')        || {}).value || '';
+            var existingState   = (document.getElementById('id_state')       || {}).value || '';
+            var existingPostal  = (document.getElementById('id_postal_code') || {}).value || '';
+            var existingCountry = (document.getElementById('id_country')     || {}).value || '';
+            var parts = [existingStreet];
+            if (existingCity)    parts.push(existingCity);
+            if (existingState)   parts.push(existingState);
+            if (existingPostal)  parts.push(existingPostal);
+            if (existingCountry) parts.push(existingCountry);
+            currentDisplay.value = parts.join(', ');
+            lookupRow.style.display = 'none';
+        } else {
+            currentRow.style.display = 'none';
+        }
+
+        changeBtn.addEventListener('click', function() {
+            currentRow.style.display = 'none';
+            lookupRow.style.display = '';
+            placeAutocomplete.focus();
+        });
+
+        cancelBtn.addEventListener('click', function() {
+            lookupRow.style.display = 'none';
+            currentRow.style.display = '';
         });
 
         placeAutocomplete.addEventListener('gmp-select', async function(event) {
@@ -175,11 +227,20 @@ window.initVenuePlacesAutocomplete = async function() {
             if (postalField && postalCode) postalField.value = postalCode;
             if (countryField && country) countryField.value = country;
 
-            var display = document.getElementById('venue-address-selected-display');
-            if (display) {
-                display.textContent = place.formattedAddress || '-';
-            }
+            confirmBtn.disabled = false;
+            confirmBtn.dataset.formattedAddress = place.formattedAddress || '';
         });
+
+        confirmBtn.addEventListener('click', function() {
+            if (confirmBtn.dataset.formattedAddress) {
+                currentDisplay.value = confirmBtn.dataset.formattedAddress;
+            }
+            lookupRow.style.display = 'none';
+            currentRow.style.display = '';
+            confirmBtn.disabled = true;
+            confirmBtn.dataset.formattedAddress = '';
+        });
+
     } catch (e) {
         console && console.error && console.error('Error initializing PlaceAutocompleteElement', e);
     }
