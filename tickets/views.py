@@ -5722,9 +5722,28 @@ def finance_overview(request):
 
     stripe_available = None
     settling_balance = Decimal('0.00')
+    bank_account = None
     if org.stripe_onboarding_complete and org.stripe_account_id:
         stripe_available = _compute_settled_payout_balance(org)
         settling_balance = max(Decimal('0.00'), available_balance - stripe_available)
+        try:
+            import stripe as stripe_lib
+            from django.conf import settings as django_settings
+            stripe_lib.api_key = django_settings.STRIPE_SECRET_KEY
+            acct = stripe_lib.Account.retrieve(
+                org.stripe_account_id,
+                expand=['external_accounts'],
+            )
+            ext_accounts = acct.get('external_accounts', {}).get('data', [])
+            if ext_accounts:
+                ba = ext_accounts[0]
+                bank_account = {
+                    'bank_name': ba.get('bank_name') or 'Bank',
+                    'last4': ba.get('last4', ''),
+                    'currency': (ba.get('currency') or 'usd').upper(),
+                }
+        except Exception:
+            logger.exception("Could not retrieve Stripe external account for org %s", org.id)
 
     context = {
         'net_sales': net_sales,
@@ -5736,6 +5755,7 @@ def finance_overview(request):
         'onboarding_complete': org.stripe_onboarding_complete,
         'has_stripe_account': bool(org.stripe_account_id),
         'min_payout': _MIN_PAYOUT,
+        'bank_account': bank_account,
     }
     return render(request, 'tickets/finance/overview.html', context)
 

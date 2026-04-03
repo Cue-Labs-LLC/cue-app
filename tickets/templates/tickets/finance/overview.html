@@ -91,11 +91,17 @@
         </form>
 
         {% else %}
-        <div class="alert alert-success d-flex align-items-start gap-2 mb-4">
-            <i class="bi bi-check-circle-fill flex-shrink-0 mt-1"></i>
+        <div class="d-flex align-items-center gap-3 mb-4 p-3 rounded" style="background:var(--bs-body-bg);border:1px solid var(--bs-border-color);">
+            <div class="d-flex align-items-center justify-content-center rounded-circle bg-success bg-opacity-10" style="width:2.5rem;height:2.5rem;flex-shrink:0;">
+                <i class="bi bi-bank text-success"></i>
+            </div>
             <div>
-                <strong>Bank account connected.</strong>
-                Payouts will be transferred to your linked bank account on Stripe's schedule.
+                {% if bank_account %}
+                <div class="fw-semibold">{{ bank_account.bank_name }} &bull;&bull;&bull;&bull; {{ bank_account.last4 }}</div>
+                <div class="text-muted small">{{ bank_account.currency }}</div>
+                {% else %}
+                <div class="fw-semibold">Bank account connected</div>
+                {% endif %}
             </div>
         </div>
 
