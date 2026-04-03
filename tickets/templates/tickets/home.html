@@ -89,7 +89,7 @@
                                 <div class="event-card-meta">
                                     <span class="event-card-meta-date">{{ event.start_date|date:"M d, Y" }}{% if event.start_time %} · {{ event.start_time|time:"g:i A" }}{% endif %}</span>
                                     {% if event.id not in event_ids_show_placeholder %}
-                                    <span class="event-card-meta-stats">${{ event.total_revenue|currency }} · {{ event.total_tickets|default:0 }} tkts</span>
+                                    <span class="event-card-meta-stats">${{ event.net_revenue|currency }} · {{ event.total_tickets|default:0 }} tkts</span>
                                     {% endif %}
                                 </div>
                             </div>
@@ -105,7 +105,7 @@
                         </td>
                         <td>{{ event.start_date|date:"M d, Y" }}{% if event.start_time %} {{ event.start_time|time:"g:i A" }}{% endif %}</td>
                         <td class="d-none d-md-table-cell">{{ event.venue.name|default:"-" }}</td>
-                        <td>{% if event.id in event_ids_show_placeholder %}-{% else %}<span class="revenue">${{ event.total_revenue|currency }}</span>{% endif %}</td>
+                        <td>{% if event.id in event_ids_show_placeholder %}-{% else %}<span class="revenue">${{ event.net_revenue|currency }}</span>{% endif %}</td>
                         <td>{% if event.id in event_ids_show_placeholder %}-{% else %}{{ event.total_tickets|default:0 }}{% endif %}</td>
                         <td class="event-actions-cell">
                             <!-- Desktop: View button + dots dropdown for secondary actions -->

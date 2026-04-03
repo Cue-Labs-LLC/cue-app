@@ -1134,6 +1134,14 @@ def home(request):
     }
     page_obj.object_list = [annotated_map[pk] for pk in page_pks]
 
+    # Compute net_revenue (after fees for direct events, gross for external)
+    for ev in page_obj.object_list:
+        if ev.ticketing_type == 'direct':
+            fees = (ev.paid_ticket_sum * Decimal('0.10') + Decimal('0.99') * ev.paid_ticket_count) / Decimal('1.10')
+        else:
+            fees = Decimal('0.00')
+        ev.net_revenue = ev.ticket_revenue - fees + ev.total_additional_income
+
     # Show warning when current time is past the event's end date+time and upload_count is 0 (current page only)
     now_local = django_tz.localtime(django_tz.now()).replace(tzinfo=None)
     event_ids_show_warning = set()
