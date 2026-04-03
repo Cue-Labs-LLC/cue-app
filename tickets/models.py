@@ -752,7 +752,6 @@ class Event(AuditBaseModel):
     )
 
     class Meta:
-        unique_together = [['organization', 'name', 'start_date']]
         ordering = ['-start_date', '-start_time', 'name']
         indexes = [
             models.Index(fields=['name', 'start_date']),

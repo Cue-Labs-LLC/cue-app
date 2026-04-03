@@ -1010,11 +1010,6 @@ class EventForm(forms.ModelForm):
 
         return cleaned_data
 
-    def validate_unique(self):
-        try:
-            self.instance.validate_unique()
-        except forms.ValidationError as e:
-            self._update_errors(e)
 
 
 class SaleableTicketTypeForm(forms.ModelForm):
