@@ -5654,15 +5654,6 @@ def finance_overview(request):
 
     stripe_revenue, platform_fees, paid_out, available_balance = _compute_available_balance(org)
 
-    recent_txns = list(
-        StripeCheckoutSession.objects
-        .filter(organization=org, status=StripeCheckoutSession.Status.COMPLETED)
-        .select_related('ticket_order', 'event')
-        .order_by('-fulfilled_at')[:20]
-    )
-    for s in recent_txns:
-        s.amount_dollars = Decimal(str(s.amount_total_cents)) / 100
-
     payout_history = (
         Payout.objects.filter(organization=org)
         .select_related('initiated_by')
@@ -5674,8 +5665,7 @@ def finance_overview(request):
         'net_sales': net_sales,
         'paid_out': paid_out,
         'available_balance': available_balance,
-        'recent_transactions': recent_txns,
-        'payout_history': payout_history,
+'payout_history': payout_history,
         'onboarding_complete': org.stripe_onboarding_complete,
         'has_stripe_account': bool(org.stripe_account_id),
         'min_payout': _MIN_PAYOUT,
@@ -5795,6 +5785,25 @@ def stripe_account_login(request):
         logger.exception("Stripe login link error for account %s: %s", org.stripe_account_id, e)
         messages.error(request, "Could not open Stripe dashboard. Please try again.")
         return redirect("tickets:finance_overview")
+
+
+@login_required
+@require_org
+@require_admin
+@require_http_methods(["POST"])
+def stripe_disconnect(request):
+    """Unlink the Stripe Connect account from this organization."""
+    org = get_organization(request)
+    if not org.stripe_account_id:
+        messages.error(request, "No Stripe account is connected.")
+        return redirect("tickets:finance_overview")
+    old_account_id = org.stripe_account_id
+    org.stripe_account_id = ""
+    org.stripe_onboarding_complete = False
+    org.save(update_fields=["stripe_account_id", "stripe_onboarding_complete"])
+    logger.info("Stripe account %s disconnected from org %s by user %s", old_account_id, org.id, request.user.id)
+    messages.success(request, "Bank account disconnected. You can reconnect a new account at any time.")
+    return redirect("tickets:finance_overview")
 
 
 @login_required

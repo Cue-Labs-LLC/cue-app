@@ -188,5 +188,6 @@ urlpatterns = [
     path('finance/stripe/return/', views.stripe_connect_return, name='stripe_connect_return'),
     path('finance/stripe/refresh/', views.stripe_connect_refresh, name='stripe_connect_refresh'),
     path('finance/stripe/manage/', views.stripe_account_login, name='stripe_account_login'),
+    path('finance/stripe/disconnect/', views.stripe_disconnect, name='stripe_disconnect'),
     path('finance/payout/', views.initiate_payout, name='initiate_payout'),
 ]

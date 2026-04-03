@@ -52,8 +52,8 @@
             <p class="mt-2 mb-3">Connect your bank account to receive payouts from ticket sales.</p>
             <form method="post" action="{% url 'tickets:stripe_connect_onboard' %}">
                 {% csrf_token %}
-                <button type="submit" class="btn btn-primary">
-                    <i class="bi bi-plug"></i> Connect Bank Account
+                <button type="submit" class="btn btn-success">
+                    Connect Bank Account
                 </button>
             </form>
         </div>
@@ -82,12 +82,21 @@
             </div>
         </div>
 
-        <form method="post" action="{% url 'tickets:stripe_account_login' %}" target="_blank" style="margin-bottom: 1.25rem;">
-            {% csrf_token %}
-            <button type="submit" class="btn btn-outline-secondary">
-                <i class="bi bi-box-arrow-up-right"></i> Manage bank account
-            </button>
-        </form>
+        <div class="d-flex gap-2 flex-wrap" style="margin-bottom: 1.25rem;">
+            <form method="post" action="{% url 'tickets:stripe_account_login' %}" target="_blank">
+                {% csrf_token %}
+                <button type="submit" class="btn btn-outline-secondary">
+                    <i class="bi bi-box-arrow-up-right"></i> Manage bank account
+                </button>
+            </form>
+            <form method="post" action="{% url 'tickets:stripe_disconnect' %}"
+                  onsubmit="return confirm('Disconnect your bank account? You will need to reconnect to receive payouts.');">
+                {% csrf_token %}
+                <button type="submit" class="btn btn-outline-danger">
+                    <i class="bi bi-plug-fill"></i> Disconnect
+                </button>
+            </form>
+        </div>
 
         <form method="post" action="{% url 'tickets:initiate_payout' %}">
             {% csrf_token %}
@@ -115,47 +124,6 @@
     </div>
 </div>
 
-<!-- Recent Online Transactions -->
-<div class="card mb-4">
-    <div class="card-header d-flex justify-content-between align-items-center">
-        <h5 class="mb-0">Recent Online Transactions</h5>
-        <span class="badge bg-secondary">Last 20</span>
-    </div>
-    {% if recent_transactions %}
-    <div class="card-body p-0">
-        <div class="table-responsive">
-            <table class="table table-hover mb-0">
-                <thead>
-                    <tr>
-                        <th>Date</th>
-                        <th>Event</th>
-                        <th>Buyer</th>
-                        <th class="text-end">Amount</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {% for session in recent_transactions %}
-                    <tr>
-                        <td class="text-nowrap">{{ session.fulfilled_at|date:"M j, Y" }}</td>
-                        <td>{{ session.event.name }}</td>
-                        <td>{{ session.buyer_name|default:session.buyer_email }}</td>
-                        <td class="text-end">${{ session.amount_dollars|currency }}</td>
-                    </tr>
-                    {% endfor %}
-                </tbody>
-            </table>
-        </div>
-    </div>
-    {% else %}
-    <div class="card-body">
-        <div class="empty-state">
-            <i class="bi bi-receipt fs-2 text-muted"></i>
-            <p class="mt-2 mb-0 text-muted">No completed online transactions yet.</p>
-        </div>
-    </div>
-    {% endif %}
-</div>
-
 <!-- Payout History -->
 <div class="card mb-4">
     <div class="card-header">
@@ -164,13 +132,18 @@
     {% if payout_history %}
     <div class="card-body p-0">
         <div class="table-responsive">
-            <table class="table table-hover mb-0">
+            <table class="table table-hover mb-0" style="table-layout: fixed; width: 100%;">
+                <colgroup>
+                    <col style="width: 25%;">
+                    <col style="width: 25%;">
+                    <col style="width: 25%;">
+                    <col style="width: 25%;">
+                </colgroup>
                 <thead>
                     <tr>
                         <th>Date</th>
-                        <th class="text-end">Amount</th>
+                        <th>Amount</th>
                         <th>Status</th>
-                        <th>Transfer ID</th>
                         <th>Initiated By</th>
                     </tr>
                 </thead>
@@ -178,7 +151,7 @@
                     {% for payout in payout_history %}
                     <tr>
                         <td class="text-nowrap">{{ payout.created_at|date:"M j, Y" }}</td>
-                        <td class="text-end">${{ payout.amount|currency }}</td>
+                        <td>${{ payout.amount|currency }}</td>
                         <td>
                             {% if payout.status == 'completed' %}
                             <span class="badge bg-success">Completed</span>
@@ -186,13 +159,6 @@
                             <span class="badge bg-warning text-dark">Pending</span>
                             {% else %}
                             <span class="badge bg-danger">Failed</span>
-                            {% endif %}
-                        </td>
-                        <td>
-                            {% if payout.stripe_transfer_id %}
-                            <code class="small">{{ payout.stripe_transfer_id }}</code>
-                            {% else %}
-                            <span class="text-muted">-</span>
                             {% endif %}
                         </td>
                         <td class="text-muted small">
