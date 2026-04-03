@@ -210,6 +210,14 @@
 <div class="card mb-4">
     <div class="card-header d-flex justify-content-between align-items-center">
         <h5 class="mb-0"><i class="bi bi-qr-code-scan me-2"></i>Scanner Access</h5>
+        {% if not event.scanner_pin %}
+        <form method="post" action="{% url 'tickets:generate_scanner_pin' event.id %}">
+            {% csrf_token %}
+            <button type="submit" class="btn btn-sm btn-primary">
+                <i class="bi bi-plus-lg"></i> Generate PIN
+            </button>
+        </form>
+        {% endif %}
     </div>
     <div class="card-body">
         {% if event.scanner_pin %}
@@ -243,13 +251,7 @@
         {% else %}
         <div class="empty-state py-3">
             <i class="bi bi-qr-code-scan fs-2 text-muted"></i>
-            <p class="mt-2 mb-3 text-muted">No scanner PIN yet. Generate one to let door staff check in guests without a Cue account.</p>
-            <form method="post" action="{% url 'tickets:generate_scanner_pin' event.id %}">
-                {% csrf_token %}
-                <button type="submit" class="btn btn-primary btn-sm">
-                    <i class="bi bi-plus-lg"></i> Generate PIN
-                </button>
-            </form>
+            <p class="mt-2 mb-0 text-muted">No scanner PIN yet. Generate one to let door staff check in guests without a Cue account.</p>
         </div>
         {% endif %}
     </div>
@@ -261,7 +263,7 @@
         {% if income_sources %}
         <a href="{% url 'tickets:event_income_create' event.id %}" class="btn btn-sm btn-primary"><i class="bi bi-plus-lg"></i> Add Income</a>
         {% else %}
-        <a href="{% url 'tickets:income_source_list' %}" class="btn btn-sm btn-outline-secondary">Define income sources first</a>
+        <a href="{% url 'tickets:income_source_list' %}" class="btn btn-sm btn-primary">Define income sources first</a>
         {% endif %}
     </div>
     <div class="card-body p-0">
