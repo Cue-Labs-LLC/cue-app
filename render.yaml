@@ -39,6 +39,14 @@ services:
         sync: false
       - key: SITE_URL
         sync: false
+      - key: STRIPE_SECRET_KEY
+        sync: false
+      - key: STRIPE_PUBLISHABLE_KEY
+        sync: false
+      - key: STRIPE_WEBHOOK_SECRET
+        sync: false
+      - key: STRIPE_CURRENCY
+        value: usd
     healthCheckPath: /health/
 
   # Redis for Celery broker (schema requires ipAllowList)

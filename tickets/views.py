@@ -5780,6 +5780,10 @@ def stripe_account_login(request):
     import stripe as stripe_lib
     from django.conf import settings as django_settings
     stripe_lib.api_key = django_settings.STRIPE_SECRET_KEY
+    if not stripe_lib.api_key:
+        logger.error("STRIPE_SECRET_KEY is not configured")
+        messages.error(request, "Stripe is not configured. Contact support.")
+        return redirect("tickets:finance_overview")
     org = get_organization(request)
     if not org.stripe_account_id or not org.stripe_onboarding_complete:
         messages.error(request, "No connected bank account found.")
@@ -5788,7 +5792,7 @@ def stripe_account_login(request):
         login_link = stripe_lib.Account.create_login_link(org.stripe_account_id)
         return redirect(login_link.url)
     except stripe_lib.error.StripeError as e:
-        logger.exception("Stripe login link error: %s", e)
+        logger.exception("Stripe login link error for account %s: %s", org.stripe_account_id, e)
         messages.error(request, "Could not open Stripe dashboard. Please try again.")
         return redirect("tickets:finance_overview")
 
