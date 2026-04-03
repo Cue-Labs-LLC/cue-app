@@ -94,7 +94,7 @@
                                 <th>Ticket Type</th><th>Display&nbsp;Price / Gross</th><th>Sold</th>
                                 <th class="d-none d-md-table-cell">Limit</th><th>Revenue</th>
                                 <th class="d-none d-md-table-cell">Unlocks After</th>
-                                <th class="d-none d-md-table-cell">Waitlist</th>
+
                                 <th class="d-none d-md-table-cell">Status</th><th></th>
                             </tr>
                         </thead>
@@ -109,21 +109,7 @@
                                 <td class="d-none d-md-table-cell">
                                     {% if tt.unlocks_after %}<span class="text-muted small">{{ tt.unlocks_after.name }}</span>{% else %}<span class="text-muted">-</span>{% endif %}
                                 </td>
-                                <td class="d-none d-md-table-cell">
-                                    {% if waitlist_feature_enabled %}
-                                        {% if tt.waitlist_enabled %}
-                                            {% if tt.waitlist_count %}
-                                                <span class="badge bg-secondary">{{ tt.waitlist_count }} waiting</span>
-                                            {% else %}
-                                                <span class="badge bg-secondary">0 waiting</span>
-                                            {% endif %}
-                                        {% else %}
-                                            <span class="text-muted">-</span>
-                                        {% endif %}
-                                    {% else %}
-                                        <span class="text-muted">-</span>
-                                    {% endif %}
-                                </td>
+
                                 <td class="d-none d-md-table-cell">
                                     {% if tt.is_active %}<span class="badge bg-success">Active</span>{% else %}<span class="badge bg-secondary">Inactive</span>{% endif %}
                                     {% if tt.is_sold_out %}<span class="badge bg-warning ms-1">Sold Out</span>{% endif %}
@@ -533,6 +519,11 @@ document.addEventListener('DOMContentLoaded', function () {
           document.getElementById('edit_name').value = d.name;
           document.getElementById('edit_description').value = d.description;
           document.getElementById('edit_price').value = d.price;
+          var _editGross = document.getElementById('edit_gross');
+          if (_editGross) {
+            var _dc = Math.round((parseFloat(d.price) || 0) * 100);
+            _editGross.value = _dc > 0 ? (Math.round((_dc - 99) / 1.08) / 100).toFixed(2) : '';
+          }
           document.getElementById('edit_quantity_limit').value = d.quantity_limit;
           document.getElementById('edit_order').value = d.order;
           document.getElementById('edit_sale_start').value = d.sale_start;
@@ -620,27 +611,31 @@ document.addEventListener('DOMContentLoaded', function () {
       });
   });
 })();
-// Gross price preview for Display Price inputs
+// Bidirectional display price <-> gross price calculator
 (function () {
-    function extractFeeCents(displayCents) {
+    function grossFromDisplayCents(displayCents) {
         if (displayCents <= 0) return 0;
-        return displayCents - Math.round((displayCents - 99) / 1.08);
+        return Math.round((displayCents - 99) / 1.08);
     }
-    function updateGrossPreview(inputId, previewId) {
-        var input = document.getElementById(inputId);
-        var preview = document.getElementById(previewId);
-        if (!input || !preview) return;
-        input.addEventListener('input', function () {
-            var val = parseFloat(input.value) || 0;
-            if (val <= 0) { preview.textContent = ''; return; }
-            var displayCents = Math.round(val * 100);
-            var feeCents = extractFeeCents(displayCents);
-            var grossCents = displayCents - feeCents;
-            preview.textContent = 'You receive: $' + (grossCents / 100).toFixed(2);
+    function displayFromGrossCents(grossCents) {
+        if (grossCents <= 0) return 0;
+        return grossCents + Math.round(grossCents * 0.08) + 99;
+    }
+    function wirePricePair(displayId, grossId) {
+        var displayInput = document.getElementById(displayId);
+        var grossInput = document.getElementById(grossId);
+        if (!displayInput || !grossInput) return;
+        displayInput.addEventListener('input', function () {
+            var cents = Math.round((parseFloat(displayInput.value) || 0) * 100);
+            grossInput.value = cents > 0 ? (grossFromDisplayCents(cents) / 100).toFixed(2) : '';
+        });
+        grossInput.addEventListener('input', function () {
+            var cents = Math.round((parseFloat(grossInput.value) || 0) * 100);
+            displayInput.value = cents > 0 ? (displayFromGrossCents(cents) / 100).toFixed(2) : '';
         });
     }
-    updateGrossPreview('add_price', 'add-gross-preview');
-    updateGrossPreview('edit_price', 'edit-gross-preview');
+    wirePricePair('add_price', 'add_gross');
+    wirePricePair('edit_price', 'edit_gross');
 }());
 }); {# /DOMContentLoaded #}
 {% endif %}{# /ticketing_type direct #}
@@ -676,11 +671,21 @@ document.addEventListener('DOMContentLoaded', function () {
               <textarea name="description" class="form-control" rows="2" placeholder="Short buyer-facing copy (optional)"></textarea>
               <div class="invalid-feedback" id="err-description"></div>
             </div>
-            <div class="col-md-4">
+            <div class="col-md-6">
               <label class="form-label fw-semibold">Display Price ($) <span class="text-danger">*</span></label>
-              <input type="number" name="price" id="add_price" class="form-control" step="0.01" min="0" placeholder="0.00" required>
-              <div class="form-text text-muted" id="add-gross-preview"></div>
+              <div class="input-group">
+                <span class="input-group-text">$</span>
+                <input type="number" name="price" id="add_price" class="form-control" step="0.01" min="0" placeholder="0.00" required>
+              </div>
+              <div class="form-text text-muted">What the buyer pays</div>
               <div class="invalid-feedback" id="err-price"></div>
+            </div>
+            <div class="col-md-6">
+              <label class="form-label fw-semibold">You Receive ($)</label>
+              <div class="input-group">
+                <span class="input-group-text">$</span>
+                <input type="number" id="add_gross" class="form-control" step="0.01" min="0" placeholder="0.00">
+              </div>
             </div>
             <div class="col-md-4">
               <label class="form-label fw-semibold">Quantity Limit</label>
@@ -779,11 +784,21 @@ document.addEventListener('DOMContentLoaded', function () {
               <textarea name="description" id="edit_description" class="form-control" rows="2"></textarea>
               <div class="invalid-feedback" id="edit-err-description"></div>
             </div>
-            <div class="col-md-4">
+            <div class="col-md-6">
               <label class="form-label fw-semibold">Display Price ($) <span class="text-danger">*</span></label>
-              <input type="number" name="price" id="edit_price" class="form-control" step="0.01" min="0" required>
-              <div class="form-text text-muted" id="edit-gross-preview"></div>
+              <div class="input-group">
+                <span class="input-group-text">$</span>
+                <input type="number" name="price" id="edit_price" class="form-control" step="0.01" min="0" required>
+              </div>
+              <div class="form-text text-muted">What the buyer pays</div>
               <div class="invalid-feedback" id="edit-err-price"></div>
+            </div>
+            <div class="col-md-6">
+              <label class="form-label fw-semibold">You Receive ($)</label>
+              <div class="input-group">
+                <span class="input-group-text">$</span>
+                <input type="number" id="edit_gross" class="form-control" step="0.01" min="0" placeholder="0.00">
+              </div>
             </div>
             <div class="col-md-4">
               <label class="form-label fw-semibold">Quantity Limit</label>
