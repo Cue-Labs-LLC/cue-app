@@ -6,7 +6,7 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('tickets', '0081_remove_event_unique_together'),
+        ('tickets', '0083_add_org_profile_fields'),
     ]
 
     operations = [
