@@ -187,13 +187,7 @@
             {% endif %}
 
             <div class="sidebar-footer">
-                {% if request.user.is_superuser %}
-                <a href="{% url 'admin:index' %}" class="sidebar-link" target="_blank" style="margin-bottom: 2px;">
-                    <i class="bi bi-shield-lock"></i> Admin Panel
-                </a>
-                {% endif %}
                 {% if user_role != 'attendee' %}
-                <div class="sidebar-divider" style="margin: 4px 0 8px;"></div>
                 {% if view_mode == 'organizer' %}
                 <form method="post" action="{% url 'tickets:switch_view_mode' %}">
                     {% csrf_token %}
