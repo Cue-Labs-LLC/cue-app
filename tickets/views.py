@@ -2521,13 +2521,17 @@ def event_summary_stream(request, event_id):
 
     # Rate limit: 10 generations per org per hour
     rate_key = f"summary_ratelimit:{org.id}"
-    current_count = django_cache.get(rate_key, 0)
-    if current_count >= 10:
-        return JsonResponse(
-            {'error': 'Rate limit exceeded. Please try again later.'},
-            status=429,
-        )
-    django_cache.set(rate_key, current_count + 1, timeout=3600)
+    try:
+        current_count = django_cache.get(rate_key, 0)
+        if current_count >= 10:
+            return JsonResponse(
+                {'error': 'Rate limit exceeded. Please try again later.'},
+                status=429,
+            )
+        django_cache.set(rate_key, current_count + 1, timeout=3600)
+    except Exception:
+        # Redis unavailable — skip rate limiting rather than blocking the request
+        pass
 
     event = get_object_or_404(
         Event.objects.filter(organization=org).select_related('venue'),
