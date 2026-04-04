@@ -6,7 +6,9 @@
 
 {% block extra_css %}
 <style>
-.flyer-drop-zone.flyer-dragover { outline: 2px dashed var(--bs-primary); outline-offset: 4px; background: rgba(var(--bs-primary-rgb), 0.05); }
+#event-flyer-card { max-width: 380px; }
+.flyer-drop-zone { border: 2px dashed var(--bs-border-color); border-radius: var(--bs-border-radius); overflow: hidden; }
+.flyer-drop-zone.flyer-dragover { border-color: var(--bs-primary); background: rgba(var(--bs-primary-rgb), 0.05); }
 </style>
 <link rel="preload" href="https://cdn.jsdelivr.net/npm/quill@2.0.3/dist/quill.snow.css" as="style" onload="this.rel='stylesheet'">
 <noscript><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/quill@2.0.3/dist/quill.snow.css"></noscript>
@@ -40,19 +42,20 @@
                 <input type="hidden" id="flyer-csrf" value="{{ csrf_token }}">
                 <input type="file" id="flyer-file-input" accept="image/*,.heic,.heif" class="d-none"
                        data-flyer-url="{% url 'tickets:event_flyer_upload' event.id %}">
-                <div id="flyer-drop-zone" class="flyer-drop-zone position-relative" style="min-height: 200px; cursor: pointer;">
+                <div id="flyer-drop-zone" class="flyer-drop-zone position-relative" style="aspect-ratio: 4/5; cursor: pointer;">
                     {% if event.flyer %}
-                    <div class="flyer-4-5 mx-auto" style="max-width: 320px;">
-                        <img id="event-flyer-img" src="{{ event.flyer.url }}" alt="{{ event.name }} event image">
-                    </div>
-                    <p class="small text-muted mt-2 mb-0">Click or drag a new image to replace</p>
+                    <img id="event-flyer-img" src="{{ event.flyer.url }}" alt="{{ event.name }} event image" style="width: 100%; height: 100%; object-fit: cover;">
+                    <p class="small text-muted position-absolute bottom-0 start-50 translate-middle-x pb-2">Click or drag to replace</p>
                     {% else %}
-                    <div class="d-flex flex-column align-items-center justify-content-center py-5 text-muted">
+                    <div class="d-flex flex-column align-items-center justify-content-center h-100 text-muted">
                         <i class="bi bi-image fs-1 mb-2"></i>
                         <p class="mb-0">Click or drop an image to add a flyer</p>
                     </div>
                     {% endif %}
                 </div>
+                <p class="small text-muted mt-2 mb-1 text-center">
+                    <i class="bi bi-info-circle"></i> Best results with a 4:5 image (e.g. 1080&times;1350 px)
+                </p>
             </div>
         </div>
         {% endif %}
@@ -402,7 +405,7 @@ document.addEventListener('DOMContentLoaded', function() {
                         if (img) {
                             img.src = result.data.url + (result.data.url.indexOf('?') === -1 ? '?' : '&') + 't=' + Date.now();
                         } else {
-                            flyerZone.innerHTML = '<div class="flyer-4-5 mx-auto" style="max-width: 320px;"><img id="event-flyer-img" src="' + result.data.url + '" alt="Event flyer"></div><p class="small text-muted mt-2 mb-0">Click or drag a new image to replace</p>';
+                            flyerZone.innerHTML = '<img id="event-flyer-img" src="' + result.data.url + '" alt="Event flyer" style="width: 100%; height: 100%; object-fit: cover;"><p class="small text-muted position-absolute bottom-0 start-50 translate-middle-x pb-2">Click or drag to replace</p>';
                         }
                         showAlert('success', 'Flyer updated.');
                     } else {
