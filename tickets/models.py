@@ -101,6 +101,22 @@ class Organization(BaseModel):
         default=False,
         help_text='Enable the waitlist feature for this organization.',
     )
+    photo = models.ImageField(
+        upload_to='org_photos/',
+        storage=_get_media_storage,
+        blank=True,
+        null=True,
+    )
+    description = models.TextField(
+        max_length=500,
+        blank=True,
+        default='',
+    )
+    website = models.URLField(
+        max_length=255,
+        blank=True,
+        default='',
+    )
 
     class Meta:
         ordering = ['name']

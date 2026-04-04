@@ -43,6 +43,28 @@ class OrganizationForm(forms.ModelForm):
         )
 
 
+class OrgProfileForm(forms.ModelForm):
+    """Form for editing the organization's public profile."""
+
+    class Meta:
+        model = Organization
+        fields = ['photo', 'description', 'website']
+        widgets = {
+            'description': forms.Textarea(attrs={'rows': 3, 'maxlength': 500}),
+            'website':     forms.URLInput(attrs={'placeholder': 'https://'}),
+        }
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.helper = FormHelper()
+        self.helper.form_tag = False
+        self.helper.layout = Layout(
+            'photo',
+            'description',
+            'website',
+        )
+
+
 class MemberInviteForm(forms.Form):
     """Form to invite a member to the organization by email."""
 

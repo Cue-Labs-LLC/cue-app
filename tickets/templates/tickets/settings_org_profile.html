@@ -1,0 +1,119 @@
+{% extends 'tickets/base.html' %}
+{% load crispy_forms_tags %}
+
+{% block title %}Organization Profile{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1>Organization Profile</h1>
+    <p class="text-body-secondary mb-0">Your organization's public-facing identity — photo, description, and website.</p>
+</div>
+
+<div class="row g-4 align-items-start">
+
+    <!-- Preview card -->
+    <div class="col-lg-3">
+        <div class="card">
+            <div class="card-body text-center py-4">
+                {% if org.photo %}
+                <img src="{{ org.photo.url }}" alt="{{ org.name }}"
+                     class="rounded-circle mb-3"
+                     style="width: 80px; height: 80px; object-fit: cover; border: 2px solid var(--bs-border-color);">
+                {% else %}
+                <div class="rounded-circle d-flex align-items-center justify-content-center mx-auto mb-3"
+                     style="width: 80px; height: 80px; background: var(--bs-secondary-bg); border: 2px solid var(--bs-border-color); font-size: 2rem; color: var(--bs-secondary-color);">
+                    <i class="bi bi-building"></i>
+                </div>
+                {% endif %}
+
+                <div class="fw-semibold mb-1">{{ org.name }}</div>
+
+                {% if org.description %}
+                <p class="text-body-secondary small mb-2" style="overflow: hidden; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical;">
+                    {{ org.description }}
+                </p>
+                {% endif %}
+
+                {% if org.website %}
+                <a href="{{ org.website }}" target="_blank" rel="noopener noreferrer"
+                   class="small text-break">
+                    <i class="bi bi-link-45deg"></i>
+                    {{ org.website|truncatechars:40 }}
+                </a>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+
+    <!-- Edit form -->
+    <div class="col-lg-9">
+        <div class="card">
+            <div class="card-header">
+                <h5 class="mb-0">Edit Profile</h5>
+            </div>
+            <div class="card-body">
+                <form method="post" enctype="multipart/form-data" novalidate>
+                    {% csrf_token %}
+
+                    <div class="mb-3">
+                        <label class="form-label" for="{{ form.photo.id_for_label }}">Organization photo</label>
+                        {{ form.photo }}
+                        {% if form.photo.errors %}
+                            {% for error in form.photo.errors %}
+                            <div class="invalid-feedback d-block">{{ error }}</div>
+                            {% endfor %}
+                        {% endif %}
+                        <div class="form-text">Accepted formats: JPG, PNG, GIF, WebP. Used as your org's logo or avatar.</div>
+                    </div>
+
+                    <div class="mb-3">
+                        <label class="form-label" for="{{ form.description.id_for_label }}">Description</label>
+                        <textarea name="description" id="{{ form.description.id_for_label }}"
+                                  class="form-control{% if form.description.errors %} is-invalid{% endif %}"
+                                  rows="3" maxlength="500"
+                                  placeholder="Tell attendees a bit about your organization…">{{ form.description.value|default:'' }}</textarea>
+                        {% if form.description.errors %}
+                            {% for error in form.description.errors %}
+                            <div class="invalid-feedback">{{ error }}</div>
+                            {% endfor %}
+                        {% endif %}
+                        <div class="form-text d-flex justify-content-between">
+                            <span>Max 500 characters.</span>
+                            <span id="desc-count">{{ org.description|length }}/500</span>
+                        </div>
+                    </div>
+
+                    <div class="mb-4">
+                        <label class="form-label" for="{{ form.website.id_for_label }}">Website</label>
+                        <input type="url" name="website" id="{{ form.website.id_for_label }}"
+                               class="form-control{% if form.website.errors %} is-invalid{% endif %}"
+                               value="{{ form.website.value|default:'' }}"
+                               placeholder="https://yourwebsite.com">
+                        {% if form.website.errors %}
+                            {% for error in form.website.errors %}
+                            <div class="invalid-feedback">{{ error }}</div>
+                            {% endfor %}
+                        {% endif %}
+                    </div>
+
+                    <button type="submit" class="btn btn-primary">Save changes</button>
+                </form>
+            </div>
+        </div>
+    </div>
+
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+document.addEventListener('DOMContentLoaded', function () {
+    var textarea = document.getElementById('{{ form.description.id_for_label }}');
+    var counter  = document.getElementById('desc-count');
+    if (!textarea || !counter) return;
+    textarea.addEventListener('input', function () {
+        counter.textContent = this.value.length + '/500';
+    });
+});
+</script>
+{% endblock %}

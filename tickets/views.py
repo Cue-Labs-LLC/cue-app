@@ -48,7 +48,7 @@ from .forms import (
     ProfileCompletionForm, EmailLoginForm, EmailProfileCompletionForm,
     SaleableTicketTypeForm, SaleableTicketTypeTierFormSet, PublicTicketPurchaseForm,
     DirectEventForm, DirectTicketTypeFormSet,
-    PromoCodeForm, SurveyUploadForm, UserProfileForm,
+    PromoCodeForm, SurveyUploadForm, UserProfileForm, OrgProfileForm,
     WaitlistJoinForm, OrganizerWaitlistForm,
 )
 from .csv_processor import CSVProcessor
@@ -3237,6 +3237,23 @@ def settings_api_key_revoke(request, key_id):
     api_key.save(update_fields=['is_active'])
     messages.success(request, f'API key "{api_key.name}" has been revoked.')
     return redirect('tickets:settings_api_keys')
+
+
+@login_required
+@require_org
+@require_admin
+def org_profile(request):
+    """View and edit the organization's public profile (photo, description, website)."""
+    org = get_organization(request)
+    if request.method == 'POST':
+        form = OrgProfileForm(request.POST, request.FILES, instance=org)
+        if form.is_valid():
+            form.save()
+            messages.success(request, 'Organization profile updated.')
+            return redirect('tickets:org_profile')
+    else:
+        form = OrgProfileForm(instance=org)
+    return render(request, 'tickets/settings_org_profile.html', {'form': form, 'org': org})
 
 
 # Forecast Tool Views

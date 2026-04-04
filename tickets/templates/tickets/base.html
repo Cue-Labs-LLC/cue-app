@@ -143,6 +143,11 @@
                     </li>
                     {% if is_org_admin %}
                     <li>
+                        <a href="{% url 'tickets:org_profile' %}" class="sidebar-link{% if '/settings/profile/' in request.path %} active{% endif %}">
+                            <i class="bi bi-building"></i> Org Profile
+                        </a>
+                    </li>
+                    <li>
                         <a href="{% url 'tickets:income_source_list' %}" class="sidebar-link{% if '/income-sources/' in request.path %} active{% endif %}">
                             <i class="bi bi-cash-stack"></i> Income Sources
                         </a>

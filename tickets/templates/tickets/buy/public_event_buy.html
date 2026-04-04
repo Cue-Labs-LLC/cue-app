@@ -118,6 +118,45 @@
 
         .event-hero__meta-row i { font-size: 10px; opacity: 0.5; }
 
+        .event-organizer {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-top: 14px;
+        }
+
+        .event-organizer__photo {
+            width: 28px;
+            height: 28px;
+            border-radius: 50%;
+            object-fit: cover;
+            flex-shrink: 0;
+            border: 1px solid var(--border-mid);
+        }
+
+        .event-organizer__initial {
+            width: 28px;
+            height: 28px;
+            border-radius: 50%;
+            background: var(--surface-3);
+            border: 1px solid var(--border-mid);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 11px;
+            font-weight: 700;
+            color: var(--text-3);
+            flex-shrink: 0;
+            text-transform: uppercase;
+        }
+
+        .event-organizer__name {
+            font-family: var(--font-mono);
+            font-size: 11px;
+            color: var(--text-3);
+            letter-spacing: 0.04em;
+        }
+
         .event-hero__summary {
             margin-top: 14px;
             font-size: 14px;
@@ -890,6 +929,14 @@
                 <i class="bi bi-geo-alt"></i>
                 {{ event.venue.name }}, {{ event.venue.city }}
             </div>
+        </div>
+        <div class="event-organizer">
+            {% if event.organization.photo %}
+            <img src="{{ event.organization.photo.url }}" alt="{{ event.organization.name }}" class="event-organizer__photo">
+            {% else %}
+            <div class="event-organizer__initial">{{ event.organization.name|make_list|first }}</div>
+            {% endif %}
+            <span class="event-organizer__name">{{ event.organization.name }}</span>
         </div>
         {% if attendee_count >= 3 %}
         <div class="social-proof">

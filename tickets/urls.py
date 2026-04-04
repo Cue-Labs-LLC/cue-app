@@ -143,6 +143,7 @@ urlpatterns = [
     # Settings
     path('settings/google-calendar/', views.settings_google_calendar, name='settings_google_calendar'),
     path('settings/google-calendar/disconnect/', views.settings_google_calendar_disconnect, name='settings_google_calendar_disconnect'),
+    path('settings/profile/', views.org_profile, name='org_profile'),
     path('settings/api-keys/', views.settings_api_keys, name='settings_api_keys'),
     path('settings/api-keys/<uuid:key_id>/revoke/', views.settings_api_key_revoke, name='settings_api_key_revoke'),
 
