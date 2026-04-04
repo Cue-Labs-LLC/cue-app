@@ -912,6 +912,26 @@ def explore(request):
     return render(request, 'tickets/explore.html', {'page_obj': page_obj})
 
 
+def public_org_profile(request, slug):
+    """Public organizer profile page — no login required."""
+    org = get_object_or_404(Organization, slug=slug)
+    today = django_tz.now().date()
+    events = (
+        Event.objects.filter(
+            organization=org,
+            status=EVENT_STATUS_LIVE,
+            deleted_at__isnull=True,
+        )
+        .filter(
+            Q(end_date__isnull=False, end_date__gte=today) |
+            Q(end_date__isnull=True, start_date__gte=today)
+        )
+        .select_related('venue')
+        .order_by('start_date', 'start_time', 'name')
+    )
+    return render(request, 'tickets/public_org_profile.html', {'org': org, 'events': events})
+
+
 @login_required
 def org_required(request):
     """Shown when user has no organization; prompt to create or join one."""

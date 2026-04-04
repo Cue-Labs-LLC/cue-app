@@ -123,6 +123,13 @@
             align-items: center;
             gap: 8px;
             margin-top: 14px;
+            text-decoration: none;
+            color: inherit;
+        }
+
+        .event-organizer:hover .event-organizer__name {
+            text-decoration: underline;
+            text-underline-offset: 2px;
         }
 
         .event-organizer__photo {
@@ -930,14 +937,14 @@
                 {{ event.venue.name }}, {{ event.venue.city }}
             </div>
         </div>
-        <div class="event-organizer">
+        <a href="{% url 'tickets:public_org_profile' event.organization.slug %}" class="event-organizer">
             {% if event.organization.photo %}
             <img src="{{ event.organization.photo.url }}" alt="{{ event.organization.name }}" class="event-organizer__photo">
             {% else %}
             <div class="event-organizer__initial">{{ event.organization.name|make_list|first }}</div>
             {% endif %}
             <span class="event-organizer__name">{{ event.organization.name }}</span>
-        </div>
+        </a>
         {% if attendee_count >= 3 %}
         <div class="social-proof">
             <div class="avatar-stack">

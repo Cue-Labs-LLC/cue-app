@@ -35,6 +35,7 @@ urlpatterns = [
 
     # Public explore (no login)
     path('explore/', views.explore, name='explore'),
+    path('org/<slug:slug>/', views.public_org_profile, name='public_org_profile'),
 
     # Organization (no-org flow)
     path('org-required/', views.org_required, name='org_required'),
