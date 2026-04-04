@@ -2869,26 +2869,36 @@ def event_create(request, ticketing_type):
             ticket_formset.empty_form.fields['unlocks_after'].queryset = SaleableTicketType.objects.none()
             ticket_formset.empty_form.fields['unlocks_after'].empty_label = '- None -'
             if form.is_valid() and ticket_formset.is_valid():
-                venue = form.cleaned_data['venue']
-                event = form.save(commit=False)
-                event.organization = org
-                event.created_by = request.user
-                event.venue = venue
-                event.ticketing_type = TICKETING_TYPE_DIRECT
-                event.save()
-                instances = ticket_formset.save(commit=False)
-                for tt in instances:
-                    if tt.name and tt.name.strip():
-                        tt.event = event
-                        tt.save()
-                for tt in ticket_formset.deleted_objects:
-                    tt.delete()
-                _invalidate_event_list_cache(org)
-                messages.success(request, f"Event '{event.name}' created successfully.")
-                # TODO: re-enable when calendar sync is ready
-                # if event.start_date >= date.today():
-                #     _sync_event_to_google_calendar(event)
-                return redirect('tickets:event_detail', event_id=event.id)
+                valid_tts = [
+                    f for f in ticket_formset.forms
+                    if f.cleaned_data.get('name', '').strip()
+                    and not f.cleaned_data.get('DELETE', False)
+                ]
+                if not valid_tts:
+                    ticket_formset._non_form_errors = ticket_formset.error_class(
+                        ['At least one ticket type is required.']
+                    )
+                else:
+                    venue = form.cleaned_data['venue']
+                    event = form.save(commit=False)
+                    event.organization = org
+                    event.created_by = request.user
+                    event.venue = venue
+                    event.ticketing_type = TICKETING_TYPE_DIRECT
+                    event.save()
+                    instances = ticket_formset.save(commit=False)
+                    for tt in instances:
+                        if tt.name and tt.name.strip():
+                            tt.event = event
+                            tt.save()
+                    for tt in ticket_formset.deleted_objects:
+                        tt.delete()
+                    _invalidate_event_list_cache(org)
+                    messages.success(request, f"Event '{event.name}' created successfully.")
+                    # TODO: re-enable when calendar sync is ready
+                    # if event.start_date >= date.today():
+                    #     _sync_event_to_google_calendar(event)
+                    return redirect('tickets:event_detail', event_id=event.id)
         else:
             form = DirectEventForm(organization=org)
             ticket_formset = DirectTicketTypeFormSet(
@@ -2983,14 +2993,17 @@ def event_edit(request, event_id):
         if request.method == 'POST':
             form = DirectEventForm(request.POST, request.FILES, instance=event, organization=org)
             if form.is_valid():
-                venue = form.cleaned_data['venue']
-                event = form.save(commit=False)
-                event.updated_by = request.user
-                event.venue = venue
-                event.save()
-                _invalidate_event_list_cache(org)
-                messages.success(request, f"Event '{event.name}' updated successfully.")
-                return redirect('tickets:event_detail', event_id=event.id)
+                if not SaleableTicketType.objects.filter(event=event).exists():
+                    messages.error(request, 'At least one ticket type is required before saving.')
+                else:
+                    venue = form.cleaned_data['venue']
+                    event = form.save(commit=False)
+                    event.updated_by = request.user
+                    event.venue = venue
+                    event.save()
+                    _invalidate_event_list_cache(org)
+                    messages.success(request, f"Event '{event.name}' updated successfully.")
+                    return redirect('tickets:event_detail', event_id=event.id)
         else:
             form = DirectEventForm(instance=event, organization=org)
         saleable_tts = list(

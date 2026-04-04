@@ -25,7 +25,7 @@
 </div>
 
 <div class="row">
-    <div class="col-md-10">
+    <div class="col-12">
         {% if ticketing_type == 'direct' %}
         {% if no_venues %}
         <div class="alert alert-warning">
@@ -33,96 +33,83 @@
             <a href="{% url 'tickets:venue_create' %}" class="alert-link">Create a venue</a>
         </div>
         {% else %}
-        <form method="post" enctype="multipart/form-data">
-            {% csrf_token %}
-            {# Flyer drag-and-drop card #}
-            <div class="card mb-4" id="event-flyer-card">
-                <div class="card-header"><h5 class="mb-0">Event Flyer</h5></div>
-                <div class="card-body p-0 text-center">
-                    <input type="file" id="flyer-file-input" name="flyer" accept="image/*,.heic,.heif" class="d-none">
-                    <div id="flyer-drop-zone" class="flyer-drop-zone position-relative" style="min-height: 200px; cursor: pointer;">
-                        <div class="d-flex flex-column align-items-center justify-content-center py-5 text-muted" id="flyer-placeholder">
-                            <i class="bi bi-image fs-1 mb-2"></i>
-                            <p class="mb-0">Click or drop an image to add a flyer</p>
+        {# Flyer drag-and-drop card (outside form — upload happens on submit) #}
+        <div class="card mb-4" id="event-flyer-card">
+            <div class="card-header"><h5 class="mb-0">Event Flyer</h5></div>
+            <div class="card-body p-0 text-center">
+                <div id="flyer-drop-zone" class="flyer-drop-zone position-relative" style="min-height: 200px; cursor: pointer;">
+                    <div class="d-flex flex-column align-items-center justify-content-center py-5 text-muted" id="flyer-placeholder">
+                        <i class="bi bi-image fs-1 mb-2"></i>
+                        <p class="mb-0">Click or drop an image to add a flyer</p>
+                    </div>
+                    <div id="flyer-preview" class="d-none">
+                        <div class="flyer-4-5 mx-auto" style="max-width: 320px;">
+                            <img id="flyer-preview-img" src="" alt="Event flyer preview">
                         </div>
-                        <div id="flyer-preview" class="d-none">
-                            <div class="flyer-4-5 mx-auto" style="max-width: 320px;">
-                                <img id="flyer-preview-img" src="" alt="Event flyer preview">
-                            </div>
-                            <p class="small text-muted mt-2 mb-0">Click or drag a new image to replace</p>
-                        </div>
+                        <p class="small text-muted mt-2 mb-0">Click or drag a new image to replace</p>
                     </div>
                 </div>
             </div>
+        </div>
+        <form method="post" enctype="multipart/form-data">
+            {% csrf_token %}
+            <input type="file" id="flyer-file-input" name="flyer" accept="image/*,.heic,.heif" class="d-none">
             <div class="card mb-3">
-                <div class="card-header">
-                    <h5 class="mb-0">Event Details</h5>
-                </div>
                 <div class="card-body">
                     {% crispy form %}
                 </div>
             </div>
-            <div class="card mb-3">
-                <div class="card-header">
+            <div class="card mb-4">
+                <div class="card-header d-flex justify-content-between align-items-center">
                     <h5 class="mb-0">Ticket Types</h5>
+                    <button type="button" class="btn btn-sm btn-primary" data-bs-toggle="modal" data-bs-target="#addTicketTypeModal">
+                        <i class="bi bi-plus-lg"></i> Add Ticket Type
+                    </button>
                 </div>
-                <div class="card-body">
-                    <p class="small text-muted">
-                        Use <strong>Unlocks After</strong> to sequence ticket tiers: a ticket type set to
-                        "Unlocks After" another will appear disabled on the buy page until that ticket sells out.
-                        Leave blank to make a ticket type always purchasable.
-                    </p>
+                <div class="card-body p-0">
                     {{ ticket_formset.management_form }}
-                    <div class="table-responsive">
-                        <table class="table table-sm" id="ticket-type-formset-table">
+                    {% if ticket_formset.non_form_errors %}
+                    <div class="alert alert-danger mx-3 mt-3 py-2">{{ ticket_formset.non_form_errors }}</div>
+                    {% endif %}
+                    {# Hidden formset rows — submitted with the main form #}
+                    <div id="tt-hidden-formset" class="d-none">
+                        {% for tt_form in ticket_formset %}
+                        <div class="tt-hidden-row" data-idx="{{ forloop.counter0 }}"
+                             data-name="{{ tt_form.name.value|default:'' }}"
+                             data-description="{{ tt_form.description.value|default:'' }}"
+                             data-price="{{ tt_form.price.value|default:'' }}"
+                             data-quantity-limit="{{ tt_form.quantity_limit.value|default:'' }}"
+                             data-order="{{ tt_form.order.value|default:'0' }}">
+                            {{ tt_form.name }}{{ tt_form.description }}{{ tt_form.price }}
+                            {{ tt_form.quantity_limit }}{{ tt_form.order }}{{ tt_form.unlocks_after }}
+                            {{ tt_form.DELETE }}{{ tt_form.id }}
+                        </div>
+                        {% endfor %}
+                    </div>
+                    <template id="tt-hidden-row-template">
+                        <div class="tt-hidden-row" data-idx="__prefix__">
+                            {{ ticket_formset.empty_form.name }}{{ ticket_formset.empty_form.description }}{{ ticket_formset.empty_form.price }}
+                            {{ ticket_formset.empty_form.quantity_limit }}{{ ticket_formset.empty_form.order }}{{ ticket_formset.empty_form.unlocks_after }}
+                            {{ ticket_formset.empty_form.DELETE }}{{ ticket_formset.empty_form.id }}
+                        </div>
+                    </template>
+                    {# Display table — mirrors edit page style #}
+                    <div id="tt-empty-state" class="empty-state" style="padding:32px;{% if ticket_formset.forms %}display:none{% endif %}">
+                        <p class="mb-0 text-muted">No ticket types added yet.</p>
+                    </div>
+                    <div class="table-responsive{% if not ticket_formset.forms %} d-none{% endif %}" id="tt-display-wrapper">
+                        <table class="table table-hover mb-0" id="tt-display-table">
                             <thead>
                                 <tr>
                                     <th>Ticket Name</th>
-                                    <th>Description</th>
-                                    <th>Display Price ($)</th>
+                                    <th>Display&nbsp;Price / You&nbsp;Receive</th>
                                     <th>Quantity Limit</th>
-                                    <th style="width:70px;">Order</th>
-                                    <th>Unlocks After</th>
-                                    <th>Remove</th>
+                                    <th></th>
                                 </tr>
                             </thead>
-                            <tbody id="ticket-type-formset-tbody">
-                            {% for tt_form in ticket_formset %}
-                            <tr class="ticket-type-form-row" data-tt-idx="{{ forloop.counter0 }}">
-                                <td>{{ tt_form.name }}</td>
-                                <td>{{ tt_form.description }}</td>
-                                <td>{{ tt_form.price }}</td>
-                                <td>{{ tt_form.quantity_limit }}</td>
-                                <td>{{ tt_form.order }}</td>
-                                <td>{{ tt_form.unlocks_after }}</td>
-                                <td>
-                                    <button type="button" class="btn btn-sm btn-outline-danger ticket-type-remove" aria-label="Remove row">Remove</button>
-                                    <span class="d-none">{{ tt_form.DELETE }}</span>
-                                    {{ tt_form.id }}
-                                </td>
-                            </tr>
-                            {% endfor %}
-                            </tbody>
+                            <tbody id="tt-display-tbody"></tbody>
                         </table>
                     </div>
-                    <button type="button" id="ticket-type-add-row" class="btn btn-sm btn-outline-secondary mb-3">
-                        <i class="bi bi-plus-lg"></i> Add ticket type
-                    </button>
-                    <template id="ticket-type-row-template">
-                        <tr class="ticket-type-form-row" data-tt-idx="__prefix__">
-                            <td>{{ ticket_formset.empty_form.name }}</td>
-                            <td>{{ ticket_formset.empty_form.description }}</td>
-                            <td>{{ ticket_formset.empty_form.price }}</td>
-                            <td>{{ ticket_formset.empty_form.quantity_limit }}</td>
-                            <td>{{ ticket_formset.empty_form.order }}</td>
-                            <td>{{ ticket_formset.empty_form.unlocks_after }}</td>
-                            <td>
-                                <button type="button" class="btn btn-sm btn-outline-danger ticket-type-remove" aria-label="Remove row">Remove</button>
-                                <span class="d-none">{{ ticket_formset.empty_form.DELETE }}</span>
-                                {{ ticket_formset.empty_form.id }}
-                            </td>
-                        </tr>
-                    </template>
                 </div>
             </div>
             <div class="mb-3">
@@ -240,66 +227,207 @@ document.addEventListener('DOMContentLoaded', function() {
     }
 });
 
-(function() {
+document.addEventListener('DOMContentLoaded', function () {
+(function () {
     var totalFormsInput = document.querySelector('input[name="ticket_type-TOTAL_FORMS"]');
-    var tbody = document.getElementById('ticket-type-formset-tbody');
-    var template = document.getElementById('ticket-type-row-template');
-    var addBtn = document.getElementById('ticket-type-add-row');
-    if (!totalFormsInput || !tbody || !template || !addBtn) return;
+    var hiddenFormset = document.getElementById('tt-hidden-formset');
+    var hiddenTemplate = document.getElementById('tt-hidden-row-template');
+    var displayTbody = document.getElementById('tt-display-tbody');
+    var displayWrapper = document.getElementById('tt-display-wrapper');
+    var emptyState = document.getElementById('tt-empty-state');
+    var modal = document.getElementById('addTicketTypeModal');
+    var addForm = document.getElementById('add-ticket-type-form');
+    if (!totalFormsInput || !hiddenFormset || !displayTbody) return;
 
     function getTotalForms() { return parseInt(totalFormsInput.value, 10) || 0; }
     function setTotalForms(n) { totalFormsInput.value = n; }
 
-    addBtn.addEventListener('click', function() {
-        var index = getTotalForms();
-        var clone = template.content.cloneNode(true);
-        clone.querySelectorAll('[name], [id], [for]').forEach(function(el) {
-            if (el.id) el.id = el.id.replace(/__prefix__/g, index);
-            if (el.name) el.name = el.name.replace(/__prefix__/g, index);
-            if (el.getAttribute('for')) el.setAttribute('for', el.getAttribute('for').replace(/__prefix__/g, index));
-        });
-        clone.querySelectorAll('input:not([type="hidden"]), select, textarea').forEach(function(el) {
-            if (el.type !== 'hidden') el.value = '';
-        });
-        var mainRow = clone.querySelector('tr.ticket-type-form-row');
-        if (mainRow) mainRow.dataset.ttIdx = String(index);
-        tbody.appendChild(clone);
-        setTotalForms(index + 1);
+    function grossFromDisplayCents(c) { return c > 0 ? Math.round((c - 99) / 1.08) : 0; }
+    function displayFromGrossCents(c) { return c > 0 ? c + Math.round(c * 0.08) + 99 : 0; }
+
+    function formatMoney(cents) { return '$' + (cents / 100).toFixed(2); }
+
+    function refreshEmpty() {
+        var visible = displayTbody.querySelectorAll('tr:not([data-deleted])').length;
+        emptyState.style.display = visible ? 'none' : '';
+        displayWrapper.classList.toggle('d-none', !visible);
+    }
+
+    function addDisplayRow(idx, name, description, price, quantityLimit, order) {
+        var displayCents = Math.round((parseFloat(price) || 0) * 100);
+        var grossCents = grossFromDisplayCents(displayCents);
+        var priceHtml = displayCents > 0
+            ? formatMoney(displayCents) + '<br><small class="text-muted">You receive: ' + formatMoney(grossCents) + '</small>'
+            : '<span class="text-muted">Free</span>';
+        var limitHtml = quantityLimit ? quantityLimit : '<span class="text-muted">&infin;</span>';
+        var tr = document.createElement('tr');
+        tr.dataset.idx = String(idx);
+        tr.innerHTML =
+            '<td><strong>' + escHtml(name) + '</strong>' +
+                (description ? '<br><small class="text-muted">' + escHtml(description) + '</small>' : '') + '</td>' +
+            '<td>' + priceHtml + '</td>' +
+            '<td>' + limitHtml + '</td>' +
+            '<td><div class="d-flex gap-1">' +
+                '<button type="button" class="btn btn-sm btn-outline-secondary tt-edit-btn" data-idx="' + idx + '" data-bs-toggle="modal" data-bs-target="#addTicketTypeModal"><i class="bi bi-pencil"></i></button>' +
+                '<button type="button" class="btn btn-sm btn-outline-danger tt-remove-btn" data-idx="' + idx + '"><i class="bi bi-trash"></i></button>' +
+            '</div></td>';
+        displayTbody.appendChild(tr);
+        refreshEmpty();
+    }
+
+    function escHtml(s) {
+        return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+    }
+
+    function getHiddenRow(idx) {
+        return hiddenFormset.querySelector('.tt-hidden-row[data-idx="' + idx + '"]');
+    }
+
+    function setHiddenField(row, suffix, value) {
+        var idx = row.dataset.idx;
+        var input = row.querySelector('[name="ticket_type-' + idx + '-' + suffix + '"]');
+        if (input) input.value = value;
+    }
+
+    // Populate display table from server-rendered hidden rows (handles validation resubmit)
+    hiddenFormset.querySelectorAll('.tt-hidden-row').forEach(function (row) {
+        var idx = row.dataset.idx;
+        var name = row.dataset.name;
+        if (!name) return; // skip empty rows
+        addDisplayRow(idx, name, row.dataset.description, row.dataset.price, row.dataset.quantityLimit, row.dataset.order);
     });
 
-    tbody.addEventListener('click', function(e) {
-        var removeBtn = e.target.closest('.ticket-type-remove');
-        if (!removeBtn) return;
-        e.preventDefault();
-        var row = removeBtn.closest('tr');
-        if (!row) return;
-        var idInput = row.querySelector('input[name^="ticket_type-"][name$="-id"]');
-        var deleteInput = row.querySelector('input[name^="ticket_type-"][name$="-DELETE"]');
-        if (idInput && idInput.value) {
-            if (deleteInput) deleteInput.checked = true;
-            row.style.display = 'none';
-        } else {
-            row.remove();
-            var rows = tbody.querySelectorAll('tr.ticket-type-form-row');
-            var i, r;
-            for (i = 0; i < rows.length; i++) {
-                r = rows[i];
-                r.querySelectorAll('[name^="ticket_type-"], [id^="id_ticket_type-"]').forEach(function(el) {
-                    if (el.name) {
-                        var match = el.name.match(/^ticket_type-(\d+)-(.*)$/);
-                        if (match) el.name = 'ticket_type-' + i + '-' + match[2];
-                    }
-                    if (el.id) {
-                        var idMatch = el.id.match(/^id_ticket_type-(\d+)-(.*)$/);
-                        if (idMatch) el.id = 'id_ticket_type-' + i + '-' + idMatch[2];
-                    }
-                });
-                r.dataset.ttIdx = String(i);
+    // Wire price <-> gross calculator in modal
+    var addPrice = document.getElementById('add_price');
+    var addGross = document.getElementById('add_gross');
+    if (addPrice && addGross) {
+        addPrice.addEventListener('input', function () {
+            var c = Math.round((parseFloat(addPrice.value) || 0) * 100);
+            addGross.value = c > 0 ? (grossFromDisplayCents(c) / 100).toFixed(2) : '';
+        });
+        addGross.addEventListener('input', function () {
+            var c = Math.round((parseFloat(addGross.value) || 0) * 100);
+            addPrice.value = c > 0 ? (displayFromGrossCents(c) / 100).toFixed(2) : '';
+        });
+    }
+
+    // Password toggle
+    var pwCheck = document.getElementById('modal_is_pw');
+    var pwField = document.getElementById('modal-pw-field');
+    if (pwCheck && pwField) {
+        pwCheck.addEventListener('change', function () {
+            pwField.classList.toggle('d-none', !pwCheck.checked);
+        });
+    }
+
+    // Track which idx is being edited (null = adding new)
+    var editingIdx = null;
+
+    // "Edit" button on display row
+    displayTbody.addEventListener('click', function (e) {
+        var editBtn = e.target.closest('.tt-edit-btn');
+        if (editBtn) {
+            editingIdx = editBtn.dataset.idx;
+            var row = getHiddenRow(editingIdx);
+            if (!row) return;
+            document.getElementById('add_name').value = row.querySelector('[name$="-name"]').value;
+            document.getElementById('add_description').value = row.querySelector('[name$="-description"]').value;
+            var priceVal = row.querySelector('[name$="-price"]').value;
+            document.getElementById('add_price').value = priceVal;
+            var c = Math.round((parseFloat(priceVal) || 0) * 100);
+            if (addGross) addGross.value = c > 0 ? (grossFromDisplayCents(c) / 100).toFixed(2) : '';
+            document.getElementById('add_quantity_limit').value = row.querySelector('[name$="-quantity_limit"]').value;
+            document.getElementById('add_order').value = row.querySelector('[name$="-order"]').value;
+            document.getElementById('add-tt-modal-title').textContent = 'Edit Ticket Type';
+            document.getElementById('add-tt-submit').textContent = 'Save Changes';
+        }
+
+        // "Remove" button on display row
+        var removeBtn = e.target.closest('.tt-remove-btn');
+        if (removeBtn) {
+            var idx = removeBtn.dataset.idx;
+            var hiddenRow = getHiddenRow(idx);
+            if (hiddenRow) {
+                var deleteInput = hiddenRow.querySelector('[name$="-DELETE"]');
+                if (deleteInput) deleteInput.checked = true;
             }
-            setTotalForms(rows.length);
+            var displayRow = displayTbody.querySelector('tr[data-idx="' + idx + '"]');
+            if (displayRow) displayRow.remove();
+            refreshEmpty();
         }
     });
-})();
+
+    // Reset modal on close
+    if (modal) {
+        modal.addEventListener('hidden.bs.modal', function () {
+            editingIdx = null;
+            addForm.reset();
+            if (pwField) pwField.classList.add('d-none');
+            document.getElementById('add-tt-modal-title').textContent = 'Add Ticket Type';
+            document.getElementById('add-tt-submit').textContent = 'Add Ticket Type';
+            addForm.querySelectorAll('.is-invalid').forEach(function (el) { el.classList.remove('is-invalid'); });
+        });
+    }
+
+    // Modal form submit — add or update formset row
+    if (addForm) {
+        addForm.addEventListener('submit', function (e) {
+            e.preventDefault();
+            var name = document.getElementById('add_name').value.trim();
+            if (!name) {
+                document.getElementById('add_name').classList.add('is-invalid');
+                return;
+            }
+            document.getElementById('add_name').classList.remove('is-invalid');
+
+            var price = document.getElementById('add_price').value;
+            var description = document.getElementById('add_description').value;
+            var quantityLimit = document.getElementById('add_quantity_limit').value;
+            var order = document.getElementById('add_order').value || '0';
+
+            if (editingIdx !== null) {
+                // Update existing hidden row
+                var row = getHiddenRow(editingIdx);
+                if (row) {
+                    setHiddenField(row, 'name', name);
+                    setHiddenField(row, 'description', description);
+                    setHiddenField(row, 'price', price);
+                    setHiddenField(row, 'quantity_limit', quantityLimit);
+                    setHiddenField(row, 'order', order);
+                }
+                // Update display row
+                var displayRow = displayTbody.querySelector('tr[data-idx="' + editingIdx + '"]');
+                if (displayRow) displayRow.remove();
+                addDisplayRow(editingIdx, name, description, price, quantityLimit, order);
+            } else {
+                // Add new hidden row
+                var idx = getTotalForms();
+                var clone = hiddenTemplate.content.cloneNode(true);
+                var newRow = clone.querySelector('.tt-hidden-row');
+                if (newRow) {
+                    newRow.dataset.idx = String(idx);
+                    newRow.querySelectorAll('[name], [id], [for]').forEach(function (el) {
+                        if (el.name) el.name = el.name.replace(/__prefix__/g, idx);
+                        if (el.id) el.id = el.id.replace(/__prefix__/g, idx);
+                        if (el.getAttribute('for')) el.setAttribute('for', el.getAttribute('for').replace(/__prefix__/g, idx));
+                    });
+                    setHiddenField(newRow, 'name', name);
+                    setHiddenField(newRow, 'description', description);
+                    setHiddenField(newRow, 'price', price);
+                    setHiddenField(newRow, 'quantity_limit', quantityLimit);
+                    setHiddenField(newRow, 'order', order);
+                    hiddenFormset.appendChild(clone);
+                }
+                setTotalForms(idx + 1);
+                addDisplayRow(idx, name, description, price, quantityLimit, order);
+            }
+
+            var bsModal = bootstrap.Modal.getInstance(modal);
+            if (bsModal) bsModal.hide();
+        });
+    }
+}());
+}); {# /DOMContentLoaded #}
 {% else %}
 (function() {
     var totalFormsInput = document.querySelector('input[name="talent-TOTAL_FORMS"]');
@@ -379,4 +507,72 @@ document.addEventListener('DOMContentLoaded', function() {
 })();
 {% endif %}
 </script>
+{% endblock %}
+
+{% block modals %}
+{% if ticketing_type == 'direct' %}
+<div class="modal fade" id="addTicketTypeModal" tabindex="-1" aria-labelledby="add-tt-modal-title" aria-hidden="true">
+  <div class="modal-dialog modal-lg">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="add-tt-modal-title">Add Ticket Type</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <form id="add-ticket-type-form">
+        <div class="modal-body">
+          <div class="row g-3">
+            <div class="col-12">
+              <label class="form-label fw-semibold">Name <span class="text-danger">*</span></label>
+              <input type="text" id="add_name" class="form-control" placeholder="e.g. General Admission" autocomplete="off">
+              <div class="invalid-feedback">Name is required.</div>
+            </div>
+            <div class="col-12">
+              <label class="form-label fw-semibold">Description</label>
+              <textarea id="add_description" class="form-control" rows="2" placeholder="Short buyer-facing copy (optional)"></textarea>
+            </div>
+            <div class="col-md-6">
+              <label class="form-label fw-semibold">Display Price ($) <span class="text-danger">*</span></label>
+              <div class="input-group">
+                <span class="input-group-text">$</span>
+                <input type="number" id="add_price" class="form-control" step="0.01" min="0" placeholder="0.00">
+              </div>
+              <div class="form-text text-muted">What the buyer pays (includes service fee)</div>
+            </div>
+            <div class="col-md-6">
+              <label class="form-label fw-semibold">You Receive ($)</label>
+              <div class="input-group">
+                <span class="input-group-text">$</span>
+                <input type="number" id="add_gross" class="form-control" step="0.01" min="0" placeholder="0.00">
+              </div>
+              <div class="form-text text-muted">After 8% + $0.99 service fee</div>
+            </div>
+            <div class="col-md-6">
+              <label class="form-label fw-semibold">Quantity Limit</label>
+              <input type="number" id="add_quantity_limit" class="form-control" min="1" placeholder="Unlimited">
+            </div>
+            <div class="col-md-6">
+              <label class="form-label fw-semibold">Order</label>
+              <input type="number" id="add_order" class="form-control" min="0" value="0">
+            </div>
+            <div class="col-12">
+              <div class="form-check">
+                <input class="form-check-input" type="checkbox" name="is_password_protected" id="modal_is_pw">
+                <label class="form-check-label" for="modal_is_pw">Password protected</label>
+              </div>
+            </div>
+            <div class="col-12 d-none" id="modal-pw-field">
+              <label class="form-label fw-semibold">Password</label>
+              <input type="text" id="add_password" class="form-control" placeholder="Enter password" autocomplete="off">
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+          <button type="submit" class="btn btn-primary" id="add-tt-submit">Add Ticket Type</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+{% endif %}
 {% endblock %}
