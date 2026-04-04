@@ -766,6 +766,8 @@ class Event(AuditBaseModel):
         editable=False,
         help_text="Short public-facing ID used in shareable URLs (/e/<public_id>/).",
     )
+    ai_summary = models.TextField(blank=True, default='')
+    ai_summary_generated_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         ordering = ['-start_date', '-start_time', 'name']

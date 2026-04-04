@@ -1183,3 +1183,149 @@ class StripeWebhookTests(TestCase):
         # Inventory went over limit (99 + 2 = 101 > 100)
         self.ticket_type.refresh_from_db()
         self.assertEqual(self.ticket_type.quantity_sold, 101)
+
+
+class EventSummaryStreamTests(TestCase):
+    """Test cases for the AI event summary streaming endpoint."""
+
+    def setUp(self):
+        self.client = Client()
+        self.org = Organization.objects.create(name='Summary Test Org', slug='summary-test-org')
+        self.user = User.objects.create_user(
+            username='summaryuser',
+            email='summary@test.com',
+            password='testpass123',
+        )
+        UserProfile.objects.create(
+            user=self.user, organization=self.org,
+            org_role=UserProfile.OrgRole.OWNER,
+        )
+        self.client.login(username='summary@test.com', password='testpass123')
+        self.client.get(reverse('tickets:home'))
+
+        self.venue = Venue.objects.create(
+            organization=self.org, name='Summary Venue', city='Summary City',
+        )
+        self.event = Event.objects.create(
+            organization=self.org, name='Summary Event',
+            venue=self.venue, start_date=date(2024, 9, 15),
+        )
+        self.url = reverse('tickets:event_summary_stream', args=[self.event.id])
+
+    def test_unauthenticated_redirects(self):
+        """Unauthenticated user is redirected to login."""
+        self.client.logout()
+        response = self.client.post(self.url)
+        self.assertEqual(response.status_code, 302)
+
+    def test_get_not_allowed(self):
+        """GET method is not allowed — POST only."""
+        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, 405)
+
+    def test_wrong_org_returns_404(self):
+        """Event belonging to a different org returns 404."""
+        other_org = Organization.objects.create(name='Other Org', slug='other-org')
+        other_venue = Venue.objects.create(
+            organization=other_org, name='Other Venue', city='Other City',
+        )
+        other_event = Event.objects.create(
+            organization=other_org, name='Other Event',
+            venue=other_venue, start_date=date(2024, 9, 15),
+        )
+        url = reverse('tickets:event_summary_stream', args=[other_event.id])
+        response = self.client.post(url)
+        self.assertEqual(response.status_code, 404)
+
+    @patch('langchain_openai.ChatOpenAI')
+    def test_stream_returns_sse_content_type(self, mock_llm_cls):
+        """Successful request returns text/event-stream content type."""
+        mock_instance = MagicMock()
+        mock_chunk = MagicMock()
+        mock_chunk.content = 'Test summary'
+        mock_instance.stream.return_value = [mock_chunk]
+        mock_llm_cls.return_value = mock_instance
+
+        response = self.client.post(self.url)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response['Content-Type'], 'text/event-stream')
+
+    @patch('langchain_openai.ChatOpenAI')
+    def test_stream_persists_summary(self, mock_llm_cls):
+        """After streaming, the summary is saved to the event."""
+        mock_instance = MagicMock()
+        mock_chunk = MagicMock()
+        mock_chunk.content = 'Generated summary text'
+        mock_instance.stream.return_value = [mock_chunk]
+        mock_llm_cls.return_value = mock_instance
+
+        response = self.client.post(self.url)
+        # Consume the streaming response to trigger the generator
+        list(response.streaming_content)
+
+        self.event.refresh_from_db()
+        self.assertEqual(self.event.ai_summary, 'Generated summary text')
+        self.assertIsNotNone(self.event.ai_summary_generated_at)
+
+    @patch('langchain_openai.ChatOpenAI')
+    def test_stream_handles_llm_error(self, mock_llm_cls):
+        """LLM API error yields an error SSE event, not a 500."""
+        mock_instance = MagicMock()
+        mock_instance.stream.side_effect = Exception('API key invalid')
+        mock_llm_cls.return_value = mock_instance
+
+        response = self.client.post(self.url)
+        self.assertEqual(response.status_code, 200)
+        content = b''.join(response.streaming_content).decode()
+        self.assertIn('"type": "error"', content)
+        self.assertIn('"type": "done"', content)
+
+    def test_ai_summary_field_persistence(self):
+        """ai_summary field saves and loads correctly."""
+        self.event.ai_summary = 'Test stored summary'
+        self.event.ai_summary_generated_at = timezone.now()
+        self.event.save(update_fields=['ai_summary', 'ai_summary_generated_at'])
+
+        self.event.refresh_from_db()
+        self.assertEqual(self.event.ai_summary, 'Test stored summary')
+        self.assertIsNotNone(self.event.ai_summary_generated_at)
+
+    @patch('langchain_openai.ChatOpenAI')
+    def test_rate_limit_returns_429(self, mock_llm_cls):
+        """After 10 requests, the endpoint returns 429."""
+        mock_instance = MagicMock()
+        mock_chunk = MagicMock()
+        mock_chunk.content = 'Summary'
+        mock_instance.stream.return_value = [mock_chunk]
+        mock_llm_cls.return_value = mock_instance
+
+        from django.core.cache import cache as django_cache
+        rate_key = f"summary_ratelimit:{self.org.id}"
+        django_cache.set(rate_key, 10, timeout=3600)
+
+        response = self.client.post(self.url)
+        self.assertEqual(response.status_code, 429)
+
+        django_cache.delete(rate_key)
+
+    def test_event_detail_still_works(self):
+        """Regression: event_detail view still renders after stats extraction."""
+        url = reverse('tickets:event_detail', args=[self.event.id])
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'Summary Event')
+
+    def test_build_prompt_structure(self):
+        """_build_prompt returns a string containing expected sections."""
+        from tickets.services.event_summary import EventSummaryService
+        from tickets.views import _compute_event_stats
+
+        service = EventSummaryService(self.org)
+        event_data = _compute_event_stats(self.event)
+        prompt = service._build_prompt(self.event, event_data)
+
+        self.assertIn('Event Results', prompt)
+        self.assertIn('Attendee Feedback', prompt)
+        self.assertIn('Financial Performance', prompt)
+        self.assertIn('Summary Event', prompt)
+        self.assertIn('Summary Venue', prompt)
