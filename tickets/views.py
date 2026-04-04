@@ -877,6 +877,11 @@ def privacy(request):
     return render(request, 'tickets/privacy.html')
 
 
+def terms(request):
+    """Public terms and conditions page."""
+    return render(request, 'tickets/terms.html')
+
+
 def landing(request):
     """Public landing page (no login required). Logged-in users are redirected to the dashboard."""
     if request.user.is_authenticated:
