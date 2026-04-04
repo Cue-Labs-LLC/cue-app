@@ -179,6 +179,11 @@ urlpatterns = [
     path('events/<uuid:event_id>/promo-codes/create/', views.promo_code_create, name='promo_code_create'),
     path('events/<uuid:event_id>/promo-codes/<uuid:promo_code_id>/delete/', views.promo_code_delete, name='promo_code_delete'),
 
+    # Tracking Links
+    path('track/<str:token>/', views.track_link_redirect, name='track_link_redirect'),
+    path('events/<uuid:event_id>/tracking-links/create/', views.tracking_link_create, name='tracking_link_create'),
+    path('events/<uuid:event_id>/tracking-links/<uuid:link_id>/delete/', views.tracking_link_delete, name='tracking_link_delete'),
+
     # Stripe Webhook
     path('webhooks/stripe/', views.stripe_webhook, name='stripe_webhook'),
 

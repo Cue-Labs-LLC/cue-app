@@ -1370,6 +1370,38 @@ class PromoCode(BaseModel):
             return min(subtotal_cents, int(self.discount_value * 100))
 
 
+def _generate_tracking_token():
+    """Generate a unique 12-character alphanumeric token for a TrackingLink."""
+    alphabet = string.ascii_letters + string.digits
+    while True:
+        token = ''.join(secrets.choice(alphabet) for _ in range(12))
+        if not TrackingLink.objects.filter(token=token).exists():
+            return token
+
+
+class TrackingLink(BaseModel):
+    """Named short link attached to a direct-ticketing event for click and purchase attribution."""
+    organization = models.ForeignKey(
+        Organization,
+        on_delete=models.CASCADE,
+        related_name='tracking_links',
+    )
+    event = models.ForeignKey(
+        'Event',
+        on_delete=models.CASCADE,
+        related_name='tracking_links',
+    )
+    name = models.CharField(max_length=100)
+    token = models.CharField(max_length=12, unique=True, db_index=True)
+    click_count = models.PositiveIntegerField(default=0)
+
+    class Meta:
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f"{self.name} ({self.token})"
+
+
 class StripeCheckoutSession(BaseModel):
     """One row per Stripe Checkout Session - idempotency anchor for webhook processing."""
 
@@ -1418,6 +1450,13 @@ class StripeCheckoutSession(BaseModel):
         null=True,
         blank=True,
         related_name='stripe_checkout_session',
+    )
+    tracking_link = models.ForeignKey(
+        TrackingLink,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name='checkout_sessions',
     )
     fulfilled_at = models.DateTimeField(null=True, blank=True)
     # Populated from the charge's balance_transaction.available_on at webhook time.

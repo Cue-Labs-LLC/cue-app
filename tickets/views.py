@@ -20,7 +20,7 @@ from django.db.models.functions import Coalesce, Greatest, TruncDate
 from django.db import models
 from django.core.paginator import Paginator
 from django.core.files.uploadedfile import InMemoryUploadedFile
-from django.http import JsonResponse, Http404, HttpResponse
+from django.http import JsonResponse, Http404, HttpResponse, HttpResponseBadRequest
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
 from django.db import connection, transaction
@@ -37,7 +37,7 @@ from .models import (
     SaleableTicketType, SaleableTicketTypeTier, StripeCheckoutSession, Payout, PromoCode,
     ExternalSurveyUpload, ExternalSurveyResponse,
     WaitlistEntry, OrganizerWaitlist,
-    ScannerSession, generate_unique_scanner_pin,
+    ScannerSession, generate_unique_scanner_pin, TrackingLink, _generate_tracking_token,
     EVENT_STATUS_DRAFT, EVENT_STATUS_LIVE, EVENT_STATUS_ENDED, EVENT_STATUS_CANCELLED,
 )
 from .forms import (
@@ -2407,6 +2407,31 @@ def event_detail(request, event_id):
         context['conversion_rate_pct'] = (
             round(total_orders / views * 100, 1) if views > 0 else None
         )
+        tracking_links = list(
+            TrackingLink.objects
+            .filter(event=event)
+            .annotate(
+                purchase_count=Coalesce(Subquery(
+                    StripeCheckoutSession.objects
+                    .filter(tracking_link=OuterRef('pk'), status=StripeCheckoutSession.Status.COMPLETED)
+                    .values('tracking_link')
+                    .annotate(c=Count('id'))
+                    .values('c')
+                ), 0),
+                purchase_revenue_cents=Coalesce(Subquery(
+                    StripeCheckoutSession.objects
+                    .filter(tracking_link=OuterRef('pk'), status=StripeCheckoutSession.Status.COMPLETED)
+                    .values('tracking_link')
+                    .annotate(s=Sum('amount_total_cents'))
+                    .values('s')
+                ), 0),
+            )
+            .order_by('-created_at')
+        )
+        for tl in tracking_links:
+            tl.purchase_revenue = Decimal(str(tl.purchase_revenue_cents)) / 100
+            tl.full_url = request.build_absolute_uri(f'/track/{tl.token}/')
+        context['tracking_links'] = tracking_links
     return render(request, 'tickets/event_detail.html', context)
 
 
@@ -4500,6 +4525,9 @@ def public_event_buy(request, public_id):
         Event.objects.filter(pk=event.pk).update(
             public_buy_page_views=F('public_buy_page_views') + 1
         )
+        ref = request.GET.get('ref')
+        if ref:
+            request.session[f'tracking_ref_{event.id}'] = ref
         form = PublicTicketPurchaseForm(all_types)
 
     all_pairs       = list(zip(all_types, form))
@@ -4766,6 +4794,53 @@ def promo_code_delete(request, event_id, promo_code_id):
     promo.delete()
     messages.success(request, f'Promo code "{code}" deleted.')
     return redirect('tickets:event_edit', event_id=event_id)
+
+
+# ---------------------------------------------------------------------------
+# Tracking Links
+# ---------------------------------------------------------------------------
+
+def track_link_redirect(request, token):
+    """Public redirect that records a click and forwards to the event buy page."""
+    link = get_object_or_404(TrackingLink.objects.select_related('event'), token=token)
+    TrackingLink.objects.filter(pk=link.pk).update(click_count=models.F('click_count') + 1)
+    request.session[f'tracking_ref_{link.event_id}'] = token
+    return redirect(f"/e/{link.event.public_id}/?ref={token}")
+
+
+@login_required
+@require_org
+@require_organizer
+@require_http_methods(["POST"])
+def tracking_link_create(request, event_id):
+    """Create a new tracking link for a direct-ticketing event."""
+    org = get_organization(request)
+    event = get_object_or_404(Event.objects.filter(organization=org), id=event_id)
+    if event.ticketing_type != 'direct':
+        return HttpResponseBadRequest("Tracking links are only available for direct-ticketing events.")
+    name = request.POST.get('name', '').strip()
+    if not name or len(name) > 100:
+        messages.error(request, 'Link name must be between 1 and 100 characters.')
+        return redirect('tickets:event_detail', event_id=event_id)
+    token = _generate_tracking_token()
+    TrackingLink.objects.create(organization=org, event=event, name=name, token=token)
+    messages.success(request, f'Tracking link "{name}" created.')
+    return redirect('tickets:event_detail', event_id=event_id)
+
+
+@login_required
+@require_org
+@require_organizer
+@require_http_methods(["POST"])
+def tracking_link_delete(request, event_id, link_id):
+    """Delete a tracking link."""
+    org = get_organization(request)
+    event = get_object_or_404(Event.objects.filter(organization=org), id=event_id)
+    link = get_object_or_404(TrackingLink.objects.filter(organization=org, event=event), id=link_id)
+    name = link.name
+    link.delete()
+    messages.success(request, f'Tracking link "{name}" deleted.')
+    return redirect('tickets:event_detail', event_id=event_id)
 
 
 def checkout_payment(request, public_id):
@@ -5061,6 +5136,11 @@ def create_payment_intent(request, public_id):
         logger.error("PaymentIntent creation failed: %s", e)
         return JsonResponse({'error': 'Could not initiate payment. Please try again.'}, status=500)
 
+    tracking_ref = request.session.get(f'tracking_ref_{event.id}')
+    tracking_link_obj = None
+    if tracking_ref:
+        tracking_link_obj = TrackingLink.objects.filter(token=tracking_ref, event=event).first()
+
     session_record = StripeCheckoutSession.objects.create(
         event=event,
         organization=event.organization,
@@ -5075,6 +5155,7 @@ def create_payment_intent(request, public_id):
         promo_code_id=promo_code_id,
         discount_cents=discount_cents,
         fb_browser_data=fb_browser_data,
+        tracking_link=tracking_link_obj,
     )
 
     return JsonResponse({
