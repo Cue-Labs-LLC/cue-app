@@ -2568,6 +2568,7 @@ def event_detail(request, event_id):
             tl.purchase_revenue = Decimal(str(tl.purchase_revenue_cents)) / 100
             tl.full_url = request.build_absolute_uri(f'/track/{tl.token}/')
         context['tracking_links'] = tracking_links
+    context['today'] = date.today()
     return render(request, 'tickets/event_detail.html', context)
 
 
