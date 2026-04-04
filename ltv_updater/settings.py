@@ -316,8 +316,10 @@ if _CELERY_BROKER_URL:
             'LOCATION': _cache_url,
             'TIMEOUT': 300,
             'OPTIONS': {
-                'socket_connect_timeout': 0.5,
-                'socket_timeout': 0.5,
+                'socket_connect_timeout': 5,
+                'socket_timeout': 5,
+                'socket_keepalive': True,
+                'health_check_interval': 30,
             }
         }
     }
