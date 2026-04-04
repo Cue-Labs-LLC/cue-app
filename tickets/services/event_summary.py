@@ -20,7 +20,7 @@ You are an event analytics assistant for "{org_name}".
 Analyze the following event data and provide a concise summary with three sections:
 
 ## Event Results
-Summarize attendance, ticket sales, capacity utilization, and ticket type mix.
+Summarize attendance, ticket sales, capacity utilization, ticket type mix, and the customer segment composition of attendees.
 
 ## Attendee Feedback
 Summarize survey results including star ratings, NPS score, and notable attendee comments. \
@@ -49,6 +49,9 @@ Ticket Sales:
 
 Ticket Type Breakdown:
 {ticket_type_lines}
+
+Attendee Segments (RFM):
+{attendee_segment_lines}
 
 Revenue:
 - Gross Ticket Revenue: ${ticket_revenue}
@@ -132,6 +135,16 @@ class EventSummaryService:
         else:
             ticket_type_lines = "- No ticket type data available"
 
+        # Attendee segment breakdown
+        segments = event_data.get('attendee_segments', [])
+        if segments:
+            attendee_segment_lines = "\n".join(
+                f"- {s['segment']}: {s['count']} ({s['pct']}%)"
+                for s in segments
+            )
+        else:
+            attendee_segment_lines = "- No segment data available"
+
         # Expense breakdown
         expenses_by_category = event_data.get('expenses_by_category', [])
         if expenses_by_category:
@@ -196,6 +209,7 @@ class EventSummaryService:
             total_customers=event_data['total_customers'],
             utilization_pct=utilization_pct,
             ticket_type_lines=ticket_type_lines,
+            attendee_segment_lines=attendee_segment_lines,
             ticket_revenue=f"{event_data['ticket_revenue']:,.2f}",
             ticket_fees=f"{event_data['ticket_fees']:,.2f}",
             net_ticket_revenue=f"{event_data['net_ticket_revenue']:,.2f}",

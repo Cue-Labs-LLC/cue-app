@@ -2333,6 +2333,24 @@ def _compute_event_stats(event):
             'overall_rating_breakdown': ext_rating_breakdown,
         }
 
+    # Customer segment breakdown for attendees of this event
+    segment_rows = list(
+        Customer.objects.filter(
+            ticket_orders__event=event,
+        ).exclude(
+            rfm_segment='',
+        ).values('rfm_segment').annotate(count=Count('id', distinct=True)).order_by('-count')
+    )
+    attendee_total_with_segment = sum(r['count'] for r in segment_rows)
+    attendee_segments = [
+        {
+            'segment': r['rfm_segment'],
+            'count': r['count'],
+            'pct': round(r['count'] / attendee_total_with_segment * 100) if attendee_total_with_segment else 0,
+        }
+        for r in segment_rows
+    ]
+
     return {
         'total_orders': total_orders,
         'ticket_revenue': ticket_revenue,
@@ -2353,6 +2371,7 @@ def _compute_event_stats(event):
         'survey_invitations_count': survey_invitations_count,
         'survey_responses_count': survey_responses_count,
         'survey_results': survey_results,
+        'attendee_segments': attendee_segments,
     }
 
 
