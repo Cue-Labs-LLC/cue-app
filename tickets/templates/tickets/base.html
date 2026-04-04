@@ -58,11 +58,6 @@
                         </a>
                     </li>
                     <li>
-                        <a href="{% url 'tickets:event_calendar' %}" class="sidebar-link{% if '/events/calendar/' in request.path %} active{% endif %}">
-                            <i class="bi bi-calendar3"></i> Calendar
-                        </a>
-                    </li>
-                    <li>
                         <a href="{% url 'tickets:customer_list' %}" class="sidebar-link{% if '/customers/' in request.path and '/customers/ltv-by-market/' not in request.path %} active{% endif %}">
                             <i class="bi bi-people"></i> Customers
                         </a>
@@ -100,76 +95,86 @@
             {% endif %}
 
             <div class="sidebar-section">
-                <div class="sidebar-section-label">Analytics</div>
-                <ul class="sidebar-nav">
-                    <li>
-                        <a href="{% url 'tickets:forecast_tool' %}" class="sidebar-link{% if '/forecast/' in request.path %} active{% endif %}">
-                            <i class="bi bi-graph-up-arrow"></i> Forecast
-                        </a>
-                    </li>
-                    <li>
-                        <a href="{% url 'tickets:customer_ltv_by_market' %}" class="sidebar-link{% if '/customers/ltv-by-market/' in request.path %} active{% endif %}">
-                            <i class="bi bi-bar-chart"></i> LTV by Market
-                        </a>
-                    </li>
-                    <li>
-                        <a href="{% url 'tickets:customer_segments' %}" class="sidebar-link{% if '/analytics/segments/' in request.path %} active{% endif %}">
-                            <i class="bi bi-diagram-3"></i> Segments
-                        </a>
-                    </li>
-                    <li>
-                        <a href="{% url 'tickets:repeat_customers' %}" class="sidebar-link{% if '/analytics/repeat-customers/' in request.path %} active{% endif %}">
-                            <i class="bi bi-arrow-repeat"></i> Repeat Customers
-                        </a>
-                    </li>
-                    <li>
-                        <a href="{% url 'tickets:cohort_retention' %}" class="sidebar-link{% if '/analytics/cohort-retention/' in request.path %} active{% endif %}">
-                            <i class="bi bi-calendar2-range"></i> Cohort Retention
-                        </a>
-                    </li>
-                    <li>
-                        <a href="{% url 'tickets:survey_upload_list' %}" class="sidebar-link{% if '/analytics/surveys/' in request.path %} active{% endif %}">
-                            <i class="bi bi-clipboard-data"></i> Survey Insights
-                        </a>
-                    </li>
-                </ul>
+                <button class="sidebar-section-toggle" id="toggleAnalytics" data-submenu="submenuAnalytics">
+                    <span>Analytics</span>
+                    <i class="bi bi-chevron-down sidebar-toggle-icon"></i>
+                </button>
+                <div class="sidebar-submenu" id="submenuAnalytics">
+                    <ul class="sidebar-nav">
+                        <li>
+                            <a href="{% url 'tickets:forecast_tool' %}" class="sidebar-link{% if '/forecast/' in request.path %} active{% endif %}">
+                                <i class="bi bi-graph-up-arrow"></i> Forecast
+                            </a>
+                        </li>
+                        <li>
+                            <a href="{% url 'tickets:customer_ltv_by_market' %}" class="sidebar-link{% if '/customers/ltv-by-market/' in request.path %} active{% endif %}">
+                                <i class="bi bi-bar-chart"></i> LTV by Market
+                            </a>
+                        </li>
+                        <li>
+                            <a href="{% url 'tickets:customer_segments' %}" class="sidebar-link{% if '/analytics/segments/' in request.path %} active{% endif %}">
+                                <i class="bi bi-diagram-3"></i> Segments
+                            </a>
+                        </li>
+                        <li>
+                            <a href="{% url 'tickets:repeat_customers' %}" class="sidebar-link{% if '/analytics/repeat-customers/' in request.path %} active{% endif %}">
+                                <i class="bi bi-arrow-repeat"></i> Repeat Customers
+                            </a>
+                        </li>
+                        <li>
+                            <a href="{% url 'tickets:cohort_retention' %}" class="sidebar-link{% if '/analytics/cohort-retention/' in request.path %} active{% endif %}">
+                                <i class="bi bi-calendar2-range"></i> Cohort Retention
+                            </a>
+                        </li>
+                        <li>
+                            <a href="{% url 'tickets:survey_upload_list' %}" class="sidebar-link{% if '/analytics/surveys/' in request.path %} active{% endif %}">
+                                <i class="bi bi-clipboard-data"></i> Survey Insights
+                            </a>
+                        </li>
+                    </ul>
+                </div>
             </div>
 
             <div class="sidebar-section">
-                <div class="sidebar-section-label">Settings</div>
-                <ul class="sidebar-nav">
-                    <li>
-                        <a href="{% url 'tickets:format_list' %}" class="sidebar-link{% if '/formats/' in request.path %} active{% endif %}">
-                            <i class="bi bi-file-earmark-spreadsheet"></i> CSV Formats
-                        </a>
-                    </li>
-                    {% if is_org_admin %}
-                    <li>
-                        <a href="{% url 'tickets:org_profile' %}" class="sidebar-link{% if '/settings/profile/' in request.path %} active{% endif %}">
-                            <i class="bi bi-building"></i> Org Profile
-                        </a>
-                    </li>
-                    <li>
-                        <a href="{% url 'tickets:income_source_list' %}" class="sidebar-link{% if '/income-sources/' in request.path %} active{% endif %}">
-                            <i class="bi bi-cash-stack"></i> Income Sources
-                        </a>
-                    </li>
-                    {% if request.user.is_superuser %}
-                    <li>
-                        <a href="{% url 'tickets:settings_google_calendar' %}" class="sidebar-link{% if '/settings/google-calendar/' in request.path %} active{% endif %}">
-                            <i class="bi bi-calendar-check"></i> Google Calendar
-                        </a>
-                    </li>
-                    {% endif %}
-                    {% if is_org_admin %}
-                    <li>
-                        <a href="{% url 'tickets:settings_api_keys' %}" class="sidebar-link{% if '/settings/api-keys/' in request.path %} active{% endif %}">
-                            <i class="bi bi-key"></i> API Keys
-                        </a>
-                    </li>
-                    {% endif %}
-                    {% endif %}
-                </ul>
+                <button class="sidebar-section-toggle" id="toggleSettings" data-submenu="submenuSettings">
+                    <span>Settings</span>
+                    <i class="bi bi-chevron-down sidebar-toggle-icon"></i>
+                </button>
+                <div class="sidebar-submenu" id="submenuSettings">
+                    <ul class="sidebar-nav">
+                        <li>
+                            <a href="{% url 'tickets:format_list' %}" class="sidebar-link{% if '/formats/' in request.path %} active{% endif %}">
+                                <i class="bi bi-file-earmark-spreadsheet"></i> CSV Formats
+                            </a>
+                        </li>
+                        {% if is_org_admin %}
+                        <li>
+                            <a href="{% url 'tickets:org_profile' %}" class="sidebar-link{% if '/settings/profile/' in request.path %} active{% endif %}">
+                                <i class="bi bi-building"></i> Org Profile
+                            </a>
+                        </li>
+                        <li>
+                            <a href="{% url 'tickets:income_source_list' %}" class="sidebar-link{% if '/income-sources/' in request.path %} active{% endif %}">
+                                <i class="bi bi-cash-stack"></i> Income Sources
+                            </a>
+                        </li>
+                        {% if request.user.is_superuser %}
+                        <li>
+                            <a href="{% url 'tickets:settings_google_calendar' %}" class="sidebar-link{% if '/settings/google-calendar/' in request.path %} active{% endif %}">
+                                <i class="bi bi-calendar-check"></i> Google Calendar
+                            </a>
+                        </li>
+                        {% endif %}
+                        {% if is_org_admin %}
+                        <li>
+                            <a href="{% url 'tickets:settings_api_keys' %}" class="sidebar-link{% if '/settings/api-keys/' in request.path %} active{% endif %}">
+                                <i class="bi bi-key"></i> API Keys
+                            </a>
+                        </li>
+                        {% endif %}
+                        {% endif %}
+                    </ul>
+                </div>
             </div>
             {% endif %}
 
@@ -525,6 +530,34 @@
             userMenu.style.display = userMenu.style.display === 'none' ? 'block' : 'none';
         });
     }
+
+    // Collapsible sidebar sections (Analytics, Settings)
+    var collapsibles = [
+        { btnId: 'toggleAnalytics', menuId: 'submenuAnalytics', key: 'sidebar_analytics_open' },
+        { btnId: 'toggleSettings',  menuId: 'submenuSettings',  key: 'sidebar_settings_open'  },
+    ];
+
+    collapsibles.forEach(function(c) {
+        var btn  = document.getElementById(c.btnId);
+        var menu = document.getElementById(c.menuId);
+        if (!btn || !menu) return;
+
+        // Force-open if an active link is inside
+        var hasActive = menu.querySelector('.sidebar-link.active');
+        var stored    = localStorage.getItem(c.key);
+        var shouldOpen = hasActive || stored === 'true';
+
+        if (shouldOpen) {
+            btn.classList.add('open');
+            menu.classList.add('open');
+        }
+
+        btn.addEventListener('click', function() {
+            var isOpen = menu.classList.toggle('open');
+            btn.classList.toggle('open', isOpen);
+            localStorage.setItem(c.key, isOpen ? 'true' : 'false');
+        });
+    });
 
 })();
 </script>

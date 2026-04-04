@@ -69,7 +69,7 @@
     --info-muted: rgba(123, 143, 191, 0.12);
 
     /* Layout */
-    --sidebar-width: 256px;
+    --sidebar-width: 210px;
     --content-max: 1200px;
     --radius: 6px;
     --radius-sm: 4px;
@@ -223,6 +223,49 @@ a:hover {
     letter-spacing: 0.14em;
     color: var(--text-tertiary);
     padding: 12px 8px 5px;
+}
+
+.sidebar-section-toggle {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    width: 100%;
+    background: none;
+    border: none;
+    cursor: pointer;
+    padding: 12px 8px 5px;
+    font-family: var(--font-mono);
+    font-size: 9px;
+    font-weight: 500;
+    text-transform: uppercase;
+    letter-spacing: 0.14em;
+    color: var(--text-tertiary);
+    transition: color 0.12s;
+}
+
+.sidebar-section-toggle:hover {
+    color: var(--text-secondary);
+}
+
+.sidebar-toggle-icon {
+    font-size: 8px;
+    opacity: 0.6;
+    transition: transform 0.2s ease, opacity 0.12s;
+}
+
+.sidebar-section-toggle.open .sidebar-toggle-icon {
+    transform: rotate(180deg);
+    opacity: 0.9;
+}
+
+.sidebar-submenu {
+    overflow: hidden;
+    max-height: 0;
+    transition: max-height 0.22s ease;
+}
+
+.sidebar-submenu.open {
+    max-height: 400px;
 }
 
 .sidebar-nav {
