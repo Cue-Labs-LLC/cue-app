@@ -2406,10 +2406,10 @@ def event_detail(request, event_id):
     page_number = request.GET.get('page')
     page_obj = paginator.get_page(page_number)
 
-    # Custom field values: only show those for the current org's custom fields
+    # Custom field values: org-scoped rows with a selected option (template only renders those)
     custom_field_values_display = [
         v for v in event.custom_field_values.all()
-        if v.custom_field.organization_id == org.id
+        if v.custom_field.organization_id == org.id and v.custom_field_option_id
     ]
 
     # Map category keys to display labels
