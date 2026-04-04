@@ -65,8 +65,10 @@ Profit/Loss: ${profit} (Margin: {margin_pct})
 Survey Results:
 - Invitations Sent: {survey_invitations_count}
 - Responses Received: {survey_responses_count}
+- External Survey Responses: {ext_survey_count}
 - Average Star Rating: {avg_star_rating}
 - NPS Score: {nps_score}
+- Overall Rating Breakdown: {overall_rating_breakdown}
 - Recent Comments:
 {comment_lines}
 """
@@ -147,10 +149,18 @@ class EventSummaryService:
         if survey:
             avg_star_rating = f"{survey['avg_star_rating']}/5" if survey.get('avg_star_rating') else "N/A"
             nps_score = str(survey['nps_score']) if survey.get('nps_score') is not None else "N/A"
+            ext_survey_count = survey.get('ext_response_count', 0)
+            rating_breakdown = survey.get('overall_rating_breakdown', [])
+            if rating_breakdown:
+                overall_rating_breakdown = ', '.join(
+                    f"{r['overall_rating']} ({r['count']})" for r in rating_breakdown
+                )
+            else:
+                overall_rating_breakdown = "N/A"
             comments = survey.get('recent_comments', [])
             if comments:
                 comment_lines = "\n".join(
-                    f'- "{c["text_answer"]}" — {c["response__customer__name"]}'
+                    f'- "{c["text"]}" — {c["author"]}'
                     for c in comments
                 )
             else:
@@ -158,6 +168,8 @@ class EventSummaryService:
         else:
             avg_star_rating = "N/A"
             nps_score = "N/A"
+            ext_survey_count = 0
+            overall_rating_breakdown = "N/A"
             comment_lines = "- No survey data available"
 
         # Capacity utilization
@@ -195,7 +207,9 @@ class EventSummaryService:
             margin_pct=margin_str,
             survey_invitations_count=event_data['survey_invitations_count'],
             survey_responses_count=event_data['survey_responses_count'],
+            ext_survey_count=ext_survey_count,
             avg_star_rating=avg_star_rating,
             nps_score=nps_score,
+            overall_rating_breakdown=overall_rating_breakdown,
             comment_lines=comment_lines,
         )

@@ -2250,11 +2250,14 @@ def _compute_event_stats(event):
             if row['ticket_type']
         ]
 
-    # Survey results
+    # Survey results — internal (SurveyResponse/SurveyAnswer)
     survey_invitations_count = SurveyInvitation.objects.filter(event=event).count()
     survey_responses_count = SurveyResponse.objects.filter(event=event).count()
 
-    survey_results = None
+    star_avg = None
+    int_nps_total = int_promoters = int_detractors = 0
+    internal_comments = []
+
     if survey_responses_count > 0:
         star_avg = SurveyAnswer.objects.filter(
             response__event=event, star_rating__isnull=False
@@ -2263,28 +2266,71 @@ def _compute_event_stats(event):
         nps_answers = SurveyAnswer.objects.filter(
             response__event=event, nps_score__isnull=False
         )
-        nps_total = nps_answers.count()
-        nps_score = None
-        if nps_total > 0:
-            promoters = nps_answers.filter(nps_score__gte=9).count()
-            detractors = nps_answers.filter(nps_score__lte=6).count()
-            nps_score = round((promoters - detractors) / nps_total * 100)
+        int_nps_total = nps_answers.count()
+        if int_nps_total > 0:
+            int_promoters = nps_answers.filter(nps_score__gte=9).count()
+            int_detractors = nps_answers.filter(nps_score__lte=6).count()
 
-        recent_comments = list(
-            SurveyAnswer.objects.filter(
+        internal_comments = [
+            {
+                'text': c['text_answer'],
+                'author': c['response__customer__name'] or c['response__customer__email'] or 'Anonymous',
+            }
+            for c in SurveyAnswer.objects.filter(
                 response__event=event
             ).exclude(text_answer='').order_by('-response__submitted_at').values(
                 'text_answer',
                 'response__customer__name',
                 'response__customer__email',
             )[:5]
+        ]
+
+    # Survey results — external (ExternalSurveyResponse from CSV uploads)
+    ext_qs = ExternalSurveyResponse.objects.filter(event=event)
+    ext_count = ext_qs.count()
+    ext_nps_total = ext_promoters = ext_detractors = 0
+    ext_comments = []
+    ext_rating_breakdown = []
+
+    if ext_count > 0:
+        ext_nps_qs = ext_qs.filter(nps_score__isnull=False)
+        ext_nps_total = ext_nps_qs.count()
+        if ext_nps_total > 0:
+            ext_promoters = ext_nps_qs.filter(nps_score__gte=9).count()
+            ext_detractors = ext_nps_qs.filter(nps_score__lte=6).count()
+
+        ext_comments = [
+            {'text': c['text_feedback'], 'author': c['email'] or 'Anonymous'}
+            for c in ext_qs.exclude(text_feedback='').order_by('-responded_at').values('text_feedback', 'email')[:5]
+        ]
+
+        ext_rating_breakdown = list(
+            ext_qs.exclude(overall_rating='')
+            .values('overall_rating')
+            .annotate(count=Count('id'))
+            .order_by('-count')
         )
+
+    # Merge both sources
+    survey_results = None
+    if survey_responses_count > 0 or ext_count > 0:
+        combined_nps_total = int_nps_total + ext_nps_total
+        if combined_nps_total > 0:
+            combined_promoters = int_promoters + ext_promoters
+            combined_detractors = int_detractors + ext_detractors
+            nps_score = round((combined_promoters - combined_detractors) / combined_nps_total * 100)
+        else:
+            nps_score = None
+
+        all_comments = (internal_comments + ext_comments)[:5]
 
         survey_results = {
             'avg_star_rating': round(star_avg, 1) if star_avg else None,
             'nps_score': nps_score,
-            'nps_total': nps_total,
-            'recent_comments': recent_comments,
+            'nps_total': combined_nps_total,
+            'recent_comments': all_comments,
+            'ext_response_count': ext_count,
+            'overall_rating_breakdown': ext_rating_breakdown,
         }
 
     return {
