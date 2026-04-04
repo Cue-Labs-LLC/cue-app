@@ -2154,6 +2154,140 @@ def event_calendar(request):
     return render(request, 'tickets/event_calendar.html', context)
 
 
+def _compute_event_stats(event):
+    """Compute financial, attendance, and survey stats for an event.
+
+    Returns a dict used by both event_detail (for rendering) and
+    event_summary_stream (for LLM prompt construction).
+    """
+    # Core order stats
+    event_stats = event.ticket_orders.aggregate(
+        total_orders=Count('id'),
+        total_revenue=Coalesce(Sum('total_amount'), Decimal('0.00')),
+        total_customers=Count('customer', distinct=True),
+    )
+    total_orders = event_stats['total_orders']
+    ticket_revenue = event_stats['total_revenue']
+    total_customers = event_stats['total_customers']
+    total_tickets = Ticket.objects.filter(ticket_order__event=event).count()
+
+    # Platform fee calculation — only for direct ticketing
+    if event.ticketing_type == 'direct':
+        paid_ticket_stats = Ticket.objects.filter(
+            ticket_order__event=event,
+            price__gt=0,
+            ticket_order__refunded_at__isnull=True,
+        ).aggregate(
+            paid_sum=Coalesce(Sum('price'), Decimal('0.00')),
+            paid_count=Count('id'),
+        )
+        ticket_fees = (
+            paid_ticket_stats['paid_sum'] * Decimal('0.10')
+            + Decimal('0.99') * paid_ticket_stats['paid_count']
+        ) / Decimal('1.10')
+    else:
+        ticket_fees = Decimal('0.00')
+    net_ticket_revenue = ticket_revenue - ticket_fees
+
+    # Additional income
+    additional_income_lines = list(event.additional_income.all())
+    total_additional_income = sum(line.amount for line in additional_income_lines)
+    total_revenue = net_ticket_revenue + total_additional_income
+
+    # Expenses
+    expenses = event.expenses.filter(deleted_at__isnull=True)
+    total_expenses = expenses.aggregate(
+        total=Coalesce(Sum('amount'), Decimal('0.00'))
+    )['total']
+    profit = total_revenue - total_expenses
+    margin_pct = (profit / total_revenue * 100) if total_revenue > 0 else None
+    expenses_by_category = (
+        expenses.values('category')
+        .annotate(total=Sum('amount'))
+        .order_by('-total')
+    )
+
+    # Ticket type breakdown
+    saleable_ticket_types_list = list(event.saleable_ticket_types.all())
+    if event.ticketing_type == 'direct':
+        ticket_type_breakdown = [
+            {'label': tt.name, 'count': tt.quantity_sold}
+            for tt in saleable_ticket_types_list
+            if tt.quantity_sold > 0
+        ]
+    else:
+        _breakdown_qs = (
+            Ticket.objects.filter(ticket_order__event=event)
+            .values('ticket_type')
+            .annotate(count=Count('id'))
+            .order_by('-count')
+        )
+        ticket_type_breakdown = [
+            {'label': row['ticket_type'], 'count': row['count']}
+            for row in _breakdown_qs
+            if row['ticket_type']
+        ]
+
+    # Survey results
+    survey_invitations_count = SurveyInvitation.objects.filter(event=event).count()
+    survey_responses_count = SurveyResponse.objects.filter(event=event).count()
+
+    survey_results = None
+    if survey_responses_count > 0:
+        star_avg = SurveyAnswer.objects.filter(
+            response__event=event, star_rating__isnull=False
+        ).aggregate(avg=Avg('star_rating'))['avg']
+
+        nps_answers = SurveyAnswer.objects.filter(
+            response__event=event, nps_score__isnull=False
+        )
+        nps_total = nps_answers.count()
+        nps_score = None
+        if nps_total > 0:
+            promoters = nps_answers.filter(nps_score__gte=9).count()
+            detractors = nps_answers.filter(nps_score__lte=6).count()
+            nps_score = round((promoters - detractors) / nps_total * 100)
+
+        recent_comments = list(
+            SurveyAnswer.objects.filter(
+                response__event=event
+            ).exclude(text_answer='').order_by('-response__submitted_at').values(
+                'text_answer',
+                'response__customer__name',
+                'response__customer__email',
+            )[:5]
+        )
+
+        survey_results = {
+            'avg_star_rating': round(star_avg, 1) if star_avg else None,
+            'nps_score': nps_score,
+            'nps_total': nps_total,
+            'recent_comments': recent_comments,
+        }
+
+    return {
+        'total_orders': total_orders,
+        'ticket_revenue': ticket_revenue,
+        'ticket_fees': ticket_fees,
+        'net_ticket_revenue': net_ticket_revenue,
+        'total_tickets': total_tickets,
+        'total_customers': total_customers,
+        'total_additional_income': total_additional_income,
+        'additional_income_lines': additional_income_lines,
+        'total_revenue': total_revenue,
+        'total_expenses': total_expenses,
+        'expenses': expenses,
+        'expenses_by_category': expenses_by_category,
+        'profit': profit,
+        'margin_pct': margin_pct,
+        'ticket_type_breakdown': ticket_type_breakdown,
+        'saleable_ticket_types_list': saleable_ticket_types_list,
+        'survey_invitations_count': survey_invitations_count,
+        'survey_responses_count': survey_responses_count,
+        'survey_results': survey_results,
+    }
+
+
 @login_required
 @require_org
 @require_organizer
@@ -2218,52 +2352,27 @@ def event_detail(request, event_id):
             'tickets_count': stats.get('tickets_count', 0),
         })
 
-    # Event statistics - combine into single aggregate (tickets separate to avoid join inflation)
-    event_stats = event.ticket_orders.aggregate(
-        total_orders=Count('id'),
-        total_revenue=Coalesce(Sum('total_amount'), Decimal('0.00')),
-        total_customers=Count('customer', distinct=True),
-    )
-    total_orders = event_stats['total_orders']
-    ticket_revenue = event_stats['total_revenue']
-    total_customers = event_stats['total_customers']
-    total_tickets = Ticket.objects.filter(ticket_order__event=event).count()
-
-    # Platform fee calculation — only for direct ticketing (not external/CSV imports)
-    if event.ticketing_type == 'direct':
-        paid_ticket_stats = Ticket.objects.filter(
-            ticket_order__event=event,
-            price__gt=0,
-            ticket_order__refunded_at__isnull=True,
-        ).aggregate(
-            paid_sum=Coalesce(Sum('price'), Decimal('0.00')),
-            paid_count=Count('id'),
-        )
-        ticket_fees = (
-            paid_ticket_stats['paid_sum'] * Decimal('0.10')
-            + Decimal('0.99') * paid_ticket_stats['paid_count']
-        ) / Decimal('1.10')
-    else:
-        ticket_fees = Decimal('0.00')
-    net_ticket_revenue = ticket_revenue - ticket_fees
-
-    # Additional income (user-defined sources: Bar Splits, Merch, etc.)
-    additional_income_lines = list(event.additional_income.all())
-    total_additional_income = sum(line.amount for line in additional_income_lines)
-    total_revenue = net_ticket_revenue + total_additional_income
-
-    # Expense data
-    expenses = event.expenses.filter(deleted_at__isnull=True)
-    total_expenses = expenses.aggregate(
-        total=Coalesce(Sum('amount'), Decimal('0.00'))
-    )['total']
-    profit = total_revenue - total_expenses
-    margin_pct = (profit / total_revenue * 100) if total_revenue > 0 else None
-    expenses_by_category = (
-        expenses.values('category')
-        .annotate(total=Sum('amount'))
-        .order_by('-total')
-    )
+    # Compute event stats via shared helper
+    stats = _compute_event_stats(event)
+    total_orders = stats['total_orders']
+    ticket_revenue = stats['ticket_revenue']
+    ticket_fees = stats['ticket_fees']
+    net_ticket_revenue = stats['net_ticket_revenue']
+    total_tickets = stats['total_tickets']
+    total_customers = stats['total_customers']
+    total_additional_income = stats['total_additional_income']
+    additional_income_lines = stats['additional_income_lines']
+    total_revenue = stats['total_revenue']
+    total_expenses = stats['total_expenses']
+    expenses = stats['expenses']
+    expenses_by_category = stats['expenses_by_category']
+    profit = stats['profit']
+    margin_pct = stats['margin_pct']
+    ticket_type_breakdown = stats['ticket_type_breakdown']
+    saleable_ticket_types_list = stats['saleable_ticket_types_list']
+    survey_invitations_count = stats['survey_invitations_count']
+    survey_responses_count = stats['survey_responses_count']
+    survey_results = stats['survey_results']
 
     # Paginate orders - select_related + annotate to avoid N+1 in template
     orders_qs = event.ticket_orders.select_related(
@@ -2284,66 +2393,6 @@ def event_detail(request, event_id):
     # Map category keys to display labels
     category_labels = dict(EventExpense.CATEGORY_CHOICES)
 
-    # Survey results
-    survey_invitations_count = SurveyInvitation.objects.filter(event=event).count()
-    survey_responses_count = SurveyResponse.objects.filter(event=event).count()
-
-    survey_results = None
-    if survey_responses_count > 0:
-        star_avg = SurveyAnswer.objects.filter(
-            response__event=event, star_rating__isnull=False
-        ).aggregate(avg=Avg('star_rating'))['avg']
-
-        nps_answers = SurveyAnswer.objects.filter(
-            response__event=event, nps_score__isnull=False
-        )
-        nps_total = nps_answers.count()
-        nps_score = None
-        if nps_total > 0:
-            promoters = nps_answers.filter(nps_score__gte=9).count()
-            detractors = nps_answers.filter(nps_score__lte=6).count()
-            nps_score = round((promoters - detractors) / nps_total * 100)
-
-        recent_comments = list(
-            SurveyAnswer.objects.filter(
-                response__event=event
-            ).exclude(text_answer='').order_by('-response__submitted_at').values(
-                'text_answer',
-                'response__customer__name',
-                'response__customer__email',
-            )[:5]
-        )
-
-        survey_results = {
-            'avg_star_rating': round(star_avg, 1) if star_avg else None,
-            'nps_score': nps_score,
-            'nps_total': nps_total,
-            'recent_comments': recent_comments,
-        }
-
-    # Direct ticketing: sales dashboard data inlined on event detail
-    saleable_ticket_types_list = list(event.saleable_ticket_types.all())
-
-
-    # Ticket type breakdown for donut chart
-    if event.ticketing_type == 'direct':
-        ticket_type_breakdown = [
-            {'label': tt.name, 'count': tt.quantity_sold}
-            for tt in saleable_ticket_types_list
-            if tt.quantity_sold > 0
-        ]
-    else:
-        _breakdown_qs = (
-            Ticket.objects.filter(ticket_order__event=event)
-            .values('ticket_type')
-            .annotate(count=Count('id'))
-            .order_by('-count')
-        )
-        ticket_type_breakdown = [
-            {'label': row['ticket_type'], 'count': row['count']}
-            for row in _breakdown_qs
-            if row['ticket_type']
-        ]
     ticket_type_breakdown_json = json.dumps(ticket_type_breakdown)
 
     sales_over_time_qs = (
@@ -2408,6 +2457,46 @@ def event_detail(request, event_id):
             round(total_orders / views * 100, 1) if views > 0 else None
         )
     return render(request, 'tickets/event_detail.html', context)
+
+
+@login_required
+@require_org
+@require_organizer
+@require_http_methods(["POST"])
+def event_summary_stream(request, event_id):
+    """SSE endpoint - streams LLM-generated event summary."""
+    from django.http import StreamingHttpResponse
+    from django.core.cache import cache as django_cache
+
+    from .services.event_summary import EventSummaryService
+
+    org = get_organization(request)
+
+    # Rate limit: 10 generations per org per hour
+    rate_key = f"summary_ratelimit:{org.id}"
+    current_count = django_cache.get(rate_key, 0)
+    if current_count >= 10:
+        return JsonResponse(
+            {'error': 'Rate limit exceeded. Please try again later.'},
+            status=429,
+        )
+    django_cache.set(rate_key, current_count + 1, timeout=3600)
+
+    event = get_object_or_404(
+        Event.objects.filter(organization=org).select_related('venue'),
+        id=event_id,
+    )
+
+    event_data = _compute_event_stats(event)
+
+    service = EventSummaryService(org)
+    response = StreamingHttpResponse(
+        service.stream_summary(event, event_data),
+        content_type='text/event-stream',
+    )
+    response['Cache-Control'] = 'no-cache'
+    response['X-Accel-Buffering'] = 'no'
+    return response
 
 
 @login_required

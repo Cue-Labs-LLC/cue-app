@@ -13,6 +13,7 @@
 {% if ticket_type_breakdown or total_orders %}
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js" defer></script>
 {% endif %}
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js" defer></script>
 {% endblock %}
 
 {% block content %}
@@ -144,6 +145,33 @@
     <div class="stat-card{% if profit >= 0 %} stat-card--success{% endif %}" {% if profit < 0 %}style="border-left: 3px solid var(--danger, #dc3545);"{% endif %}>
         <div class="stat-label">Profit / Loss</div>
         <div class="stat-value"{% if profit < 0 %} style="color: var(--danger, #dc3545);"{% endif %}>${{ profit|currency }}{% if margin_pct != None %} <small style="font-size:0.6em;">({{ margin_pct|floatformat:1 }}%)</small>{% endif %}</div>
+    </div>
+</div>
+
+<!-- AI Event Summary -->
+<div class="card mb-4" id="ai-summary-card">
+    <div class="card-header d-flex justify-content-between align-items-center">
+        <h5 class="mb-0"><i class="bi bi-stars"></i> AI Event Summary</h5>
+        <div class="d-flex align-items-center gap-2">
+            {% if event.ai_summary_generated_at %}
+            <span class="text-muted" style="font-size: 0.8rem;" id="ai-summary-timestamp">
+                Generated {{ event.ai_summary_generated_at|timesince }} ago
+            </span>
+            {% endif %}
+            <button class="btn btn-sm btn-outline-primary" id="btn-generate-summary" type="button">
+                <i class="bi bi-arrow-repeat"></i>
+                {% if event.ai_summary %}Regenerate{% else %}Generate Summary{% endif %}
+            </button>
+        </div>
+    </div>
+    <div class="card-body" id="ai-summary-body">
+        {% if event.ai_summary %}
+        <div id="ai-summary-content">{{ event.ai_summary }}</div>
+        {% else %}
+        <div class="text-muted" style="padding: 8px 0;" id="ai-summary-empty">
+            Click "Generate Summary" to create an AI-powered analysis of this event's performance.
+        </div>
+        {% endif %}
     </div>
 </div>
 
@@ -859,4 +887,93 @@ function copyScannnerPin() {
     </div>
 </div>
 {% endif %}
+
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    var btn = document.getElementById('btn-generate-summary');
+    if (!btn) return;
+
+    // Render cached summary on load if present
+    var contentEl = document.getElementById('ai-summary-content');
+    if (contentEl && contentEl.textContent.trim() && typeof marked !== 'undefined') {
+        contentEl.innerHTML = marked.parse(contentEl.textContent);
+    }
+
+    btn.addEventListener('click', async function() {
+        var body = document.getElementById('ai-summary-body');
+        var emptyEl = document.getElementById('ai-summary-empty');
+        var tsEl = document.getElementById('ai-summary-timestamp');
+
+        btn.disabled = true;
+        btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Generating...';
+
+        // Clear existing content
+        if (emptyEl) emptyEl.remove();
+        body.innerHTML = '<div id="ai-summary-content"></div>';
+        var content = document.getElementById('ai-summary-content');
+        var fullText = '';
+
+        try {
+            var response = await fetch("{% url 'tickets:event_summary_stream' event.id %}", {
+                method: 'POST',
+                headers: {
+                    'X-CSRFToken': '{{ csrf_token }}',
+                },
+            });
+
+            if (response.status === 429) {
+                content.innerHTML = '<div class="text-warning"><i class="bi bi-exclamation-triangle"></i> Rate limit reached. Please try again later.</div>';
+                btn.disabled = false;
+                btn.innerHTML = '<i class="bi bi-arrow-repeat"></i> Regenerate';
+                return;
+            }
+
+            var reader = response.body.getReader();
+            var decoder = new TextDecoder();
+            var buffer = '';
+
+            while (true) {
+                var result = await reader.read();
+                if (result.done) break;
+                buffer += decoder.decode(result.value, { stream: true });
+                var lines = buffer.split('\n');
+                buffer = lines.pop();
+                for (var i = 0; i < lines.length; i++) {
+                    var line = lines[i];
+                    if (line.startsWith('data: ')) {
+                        try {
+                            var data = JSON.parse(line.slice(6));
+                            if (data.type === 'token') {
+                                fullText += data.content;
+                                if (typeof marked !== 'undefined') {
+                                    content.innerHTML = marked.parse(fullText);
+                                } else {
+                                    content.textContent = fullText;
+                                }
+                            } else if (data.type === 'error') {
+                                content.innerHTML = '<div class="text-danger"><i class="bi bi-exclamation-triangle"></i> ' + data.content + '</div>';
+                            } else if (data.type === 'done') {
+                                // Final render
+                                if (fullText && typeof marked !== 'undefined') {
+                                    content.innerHTML = marked.parse(fullText);
+                                }
+                            }
+                        } catch (e) {
+                            // Skip malformed SSE lines
+                        }
+                    }
+                }
+            }
+        } catch (e) {
+            content.innerHTML = '<div class="text-danger"><i class="bi bi-exclamation-triangle"></i> Failed to connect to the summary service. Please try again.</div>';
+        }
+
+        btn.disabled = false;
+        btn.innerHTML = '<i class="bi bi-arrow-repeat"></i> Regenerate';
+        if (tsEl) {
+            tsEl.textContent = 'Generated just now';
+        }
+    });
+});
+</script>
 {% endblock %}
