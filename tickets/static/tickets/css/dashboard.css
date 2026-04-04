@@ -178,26 +178,32 @@ a:hover {
     margin-bottom: 8px;
 }
 
-.sidebar-brand-icon {
+.sidebar-brand-avatar {
     width: 30px;
     height: 30px;
-    background: var(--bg-inset);
+    border-radius: 50%;
+    object-fit: cover;
+    flex-shrink: 0;
     border: 1px solid var(--border);
-    border-radius: 3px;
+}
+
+.sidebar-brand-avatar--initial {
+    background: var(--bg-inset);
     display: flex;
     align-items: center;
     justify-content: center;
+    font-family: 'DM Sans', sans-serif;
+    font-size: 12px;
+    font-weight: 500;
     color: var(--text-secondary);
-    font-size: 14px;
-    flex-shrink: 0;
 }
 
 .sidebar-brand-text {
     color: var(--text-primary);
-    font-family: 'Barlow Condensed', 'Arial Narrow', sans-serif;
-    font-size: 14px;
-    font-weight: 700;
-    letter-spacing: 0.02em;
+    font-family: 'DM Sans', sans-serif;
+    font-size: 13px;
+    font-weight: 500;
+    letter-spacing: 0.01em;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;

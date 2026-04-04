@@ -914,12 +914,14 @@ def explore(request):
 
 def public_org_profile(request, slug):
     """Public organizer profile page — no login required."""
+    from .models import TICKETING_TYPE_DIRECT
     org = get_object_or_404(Organization, slug=slug)
     today = django_tz.now().date()
     events = (
         Event.objects.filter(
             organization=org,
             status=EVENT_STATUS_LIVE,
+            ticketing_type=TICKETING_TYPE_DIRECT,
             deleted_at__isnull=True,
         )
         .filter(

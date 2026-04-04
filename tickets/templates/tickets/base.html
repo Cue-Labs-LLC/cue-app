@@ -24,9 +24,11 @@
         <!-- Sidebar -->
         <aside class="sidebar" id="sidebar">
             <a href="{% if view_mode == 'attendee' %}{% url 'tickets:attendee_dashboard' %}{% else %}{% url 'tickets:home' %}{% endif %}" class="sidebar-brand" style="text-decoration:none">
-                <div class="sidebar-brand-icon">
-                    <i class="bi bi-lightning-charge-fill"></i>
-                </div>
+                {% if org and org.photo %}
+                <img src="{{ org.photo.url }}" alt="{{ org_name }}" class="sidebar-brand-avatar">
+                {% else %}
+                <div class="sidebar-brand-avatar sidebar-brand-avatar--initial">{{ org_name|make_list|first|upper }}</div>
+                {% endif %}
                 <span class="sidebar-brand-text">{{ org_name }}</span>
             </a>
 
