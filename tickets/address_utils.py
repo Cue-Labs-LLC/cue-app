@@ -40,7 +40,8 @@ def normalize_venue_address_fields(venue):
     if venue.postal_code:
         venue.postal_code = venue.postal_code.strip().upper()
     if venue.country:
-        venue.country = _title_case_with_ordinals(venue.country)
+        c = venue.country.strip()
+        venue.country = c.upper() if len(c) <= 3 else _title_case_with_ordinals(c)
 
 
 def geocode_venue_address(venue, api_key, timeout=5):
