@@ -2534,6 +2534,8 @@ def event_detail(request, event_id):
         'ticket_type_breakdown_json': ticket_type_breakdown_json,
         'sales_over_time_json': sales_over_time_json,
     }
+    if event.ticketing_type != 'direct':
+        context['upload_form'] = EventCSVUploadForm(organization=org)
     if event.ticketing_type == 'direct':
         sessions = list(
             StripeCheckoutSession.objects.filter(event=event)
@@ -3295,6 +3297,8 @@ def event_upload_csv(request, event_id):
     org = get_organization(request)
     event = get_object_or_404(Event.objects.filter(organization=org).select_related('venue'), id=event_id)
 
+    is_ajax = request.headers.get('X-Requested-With') == 'XMLHttpRequest'
+
     if request.method == 'POST':
         form = EventCSVUploadForm(request.POST, request.FILES, organization=org)
         if form.is_valid():
@@ -3322,9 +3326,19 @@ def event_upload_csv(request, event_id):
             uploaded_file.csv_file.save(csv_file.name, csv_file, save=True)
 
             if csv_format.requires_manual_pricing:
+                if is_ajax:
+                    from django.urls import reverse
+                    return JsonResponse({'redirect': reverse('tickets:price_entry', kwargs={'file_id': uploaded_file.id})})
                 return redirect('tickets:price_entry', file_id=uploaded_file.id)
             else:
+                if is_ajax:
+                    from tickets.tasks import process_csv_task
+                    process_csv_task.delay(str(uploaded_file.id))
+                    return JsonResponse({'file_id': str(uploaded_file.id)})
                 return process_csv_file(request, uploaded_file)
+        elif is_ajax:
+            errors = {field: [str(e) for e in errs] for field, errs in form.errors.items()}
+            return JsonResponse({'errors': errors}, status=400)
     else:
         form = EventCSVUploadForm(organization=org)
 

@@ -22,7 +22,8 @@
       "Bash(.venv/bin/python manage.py makemigrations tickets --name add_organization_api_key 2>&1)",
       "Bash(.venv/bin/python manage.py migrate 2>&1)",
       "Bash(.venv/bin/python manage.py check 2>&1)",
-      "Bash(.venv/bin/python manage.py test tickets --verbosity=1 2>&1)"
+      "Bash(.venv/bin/python manage.py test tickets --verbosity=1 2>&1)",
+      "Bash(xargs git:*)"
     ]
   },
   "enabledPlugins": {

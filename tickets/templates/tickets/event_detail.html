@@ -14,6 +14,10 @@
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js" defer></script>
 {% endif %}
 <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js" defer></script>
+{% if event.ticketing_type != 'direct' %}
+<link rel="stylesheet" href="https://releases.transloadit.com/uppy/v3.27.3/uppy.min.css">
+<script src="https://releases.transloadit.com/uppy/v3.27.3/uppy.min.js" defer></script>
+{% endif %}
 {% endblock %}
 
 {% block content %}
@@ -462,7 +466,7 @@
 <div class="card mb-4">
     <div class="card-header d-flex justify-content-between align-items-center">
         <h5>Uploads</h5>
-        <a href="{% url 'tickets:event_upload_csv' event.id %}" class="btn btn-sm btn-primary"><i class="bi bi-upload"></i> Upload CSV</a>
+        <button type="button" class="btn btn-sm btn-primary" data-bs-toggle="modal" data-bs-target="#uploadCsvModal"><i class="bi bi-upload"></i> Upload CSV</button>
     </div>
     <div class="card-body p-0">
         {% if upload_stats %}
@@ -649,6 +653,49 @@
 
 <a href="{% url 'tickets:event_list' %}" class="btn btn-outline-secondary"><i class="bi bi-arrow-left"></i> Back to Events</a>
 
+<!-- Upload CSV Modal -->
+{% if event.ticketing_type != 'direct' %}
+<div class="modal fade" id="uploadCsvModal" tabindex="-1" aria-labelledby="uploadCsvModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="uploadCsvModalLabel"><i class="bi bi-upload"></i> Upload CSV &mdash; {{ event.name }}</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <form method="post" action="{% url 'tickets:event_upload_csv' event.id %}" enctype="multipart/form-data" id="csvUploadModalForm">
+                {% csrf_token %}
+                <div class="modal-body" id="csvUploadModalBody">
+                    <div id="csvUppyDashboard" class="mb-3"></div>
+                    <div class="mb-3">
+                        <label for="csvFormatSelect" class="form-label">CSV Format <span class="text-danger">*</span></label>
+                        <select name="csv_format" id="csvFormatSelect" class="form-select" required>
+                            <option value="">Select a format...</option>
+                            {% for fmt in upload_form.fields.csv_format.queryset %}
+                            <option value="{{ fmt.pk }}"{% if upload_form.fields.csv_format.initial.pk == fmt.pk %} selected{% endif %}>{{ fmt.name }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                </div>
+                <div id="csvUploadProcessing" style="display:none; padding:48px 24px; text-align:center;">
+                    <div class="spinner-border" style="width:2.5rem; height:2.5rem;" role="status">
+                        <span class="visually-hidden">Loading...</span>
+                    </div>
+                    <p class="mt-3 mb-1 fw-semibold">Processing your CSV&hellip;</p>
+                    <p class="text-muted small mb-0" id="csvProcessingLabel">Please wait, this may take a moment.</p>
+                </div>
+                <div id="csvUploadResults" style="display:none;" class="modal-body"></div>
+                <div class="modal-footer" id="csvUploadFooter">
+                    <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="button" class="btn btn-primary" id="csvUploadSubmitBtn" disabled>
+                        <i class="bi bi-upload"></i> Upload CSV
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+{% endif %}
+
 <!-- Delete Upload Modal -->
 <div class="modal fade" id="deleteUploadModal" tabindex="-1" aria-labelledby="deleteUploadModalLabel" aria-hidden="true">
     <div class="modal-dialog">
@@ -682,6 +729,226 @@
 {% endblock %}
 
 {% block extra_js %}
+{% if event.ticketing_type != 'direct' %}
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    var submitBtn = document.getElementById('csvUploadSubmitBtn');
+    var form = document.getElementById('csvUploadModalForm');
+    var processingEl = document.getElementById('csvUploadProcessing');
+    var processingLabel = document.getElementById('csvProcessingLabel');
+    var resultsEl = document.getElementById('csvUploadResults');
+    var modalBody = document.getElementById('csvUploadModalBody');
+    var footer = document.getElementById('csvUploadFooter');
+    var modal = document.getElementById('uploadCsvModal');
+    var csrfToken = '{{ csrf_token }}';
+    if (!form) return;
+
+    // --- Uppy setup ---
+    var isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+    var uppy = new Uppy.Uppy({
+        autoProceed: false,
+        restrictions: {
+            maxFileSize: 10 * 1024 * 1024,
+            maxNumberOfFiles: 1,
+            allowedFileTypes: ['.csv', 'text/csv', 'application/csv'],
+        },
+    })
+    .use(Uppy.Dashboard, {
+        inline: true,
+        target: '#csvUppyDashboard',
+        height: 240,
+        hideUploadButton: true,
+        proudlyDisplayPoweredByUppy: false,
+        theme: isDark ? 'dark' : 'light',
+        note: 'CSV files only \u00b7 max 10\u202fMB',
+    })
+    .use(Uppy.XHRUpload, {
+        endpoint: form.action,
+        fieldName: 'csv_file',
+        formData: true,
+        allowedMetaFields: ['csv_format'],
+        headers: {
+            'X-Requested-With': 'XMLHttpRequest',
+            'X-CSRFToken': csrfToken,
+        },
+    });
+
+    uppy.on('file-added',   function() { var b = document.getElementById('csvUploadSubmitBtn'); if (b) b.disabled = false; });
+    uppy.on('file-removed', function() { var b = document.getElementById('csvUploadSubmitBtn'); if (b) b.disabled = uppy.getFiles().length === 0; });
+
+    uppy.on('upload-success', function(file, response) {
+        var data = response.body;
+        if (data.redirect) { window.location.href = data.redirect; return; }
+        pollStatus(data.file_id);
+    });
+
+    uppy.on('upload-error', function(file, error, response) {
+        var msg = 'Upload failed. Please try again.';
+        if (response && response.body && response.body.errors) {
+            var msgs = [];
+            Object.values(response.body.errors).forEach(function(e) { msgs = msgs.concat(e); });
+            if (msgs.length) msg = msgs.join(' ');
+        }
+        showError(msg);
+    });
+
+    function resetToForm() {
+        uppy.cancelAll();
+        processingLabel.textContent = 'Please wait, this may take a moment.';
+        resultsEl.style.display = 'none';
+        resultsEl.innerHTML = '';
+        processingEl.style.display = 'none';
+        modalBody.style.display = '';
+        footer.innerHTML = '<button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>'
+            + '<button type="button" class="btn btn-primary" id="csvUploadSubmitBtn" disabled>'
+            + '<i class="bi bi-upload"></i> Upload CSV</button>';
+        footer.style.display = '';
+    }
+
+    // --- Footer submit button triggers Uppy (delegated so it survives innerHTML reset) ---
+    footer.addEventListener('click', function(e) {
+        if (e.target.closest('#csvTryAgainBtn')) { resetToForm(); return; }
+        if (!e.target.closest('#csvUploadSubmitBtn')) return;
+        var formatEl = document.getElementById('csvFormatSelect');
+        if (!formatEl.value) {
+            formatEl.classList.add('is-invalid');
+            formatEl.focus();
+            return;
+        }
+        formatEl.classList.remove('is-invalid');
+        uppy.setMeta({ csv_format: formatEl.value });
+        modalBody.style.display = 'none';
+        footer.style.display = 'none';
+        processingEl.style.display = 'block';
+        uppy.upload();
+    });
+
+    // --- Polling ---
+    function pollStatus(fileId) {
+        fetch('/upload/' + fileId + '/status/')
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            if (data.status === 'pending' || data.status === 'processing') {
+                if (processingLabel && data.processed_rows > 0) {
+                    processingLabel.textContent = data.processed_rows.toLocaleString() + ' rows processed\u2026';
+                }
+                setTimeout(function() { pollStatus(fileId); }, 2000);
+            } else {
+                showResults(data);
+            }
+        })
+        .catch(function() { setTimeout(function() { pollStatus(fileId); }, 3000); });
+    }
+
+    // --- Results ---
+    function showResults(data) {
+        processingEl.style.display = 'none';
+        var r = data.processing_results || {};
+        var success = r.success_count || 0;
+        var errors = r.error_count || 0;
+        var dupes = r.skipped_duplicates || 0;
+        var skipped = r.skipped_rows_count || 0;
+        var failed = data.status === 'failed';
+        var totalIssues = errors + dupes + skipped;
+
+        // Header
+        var html = '<div class="d-flex align-items-center gap-3 mb-4 pb-3" style="border-bottom:1px solid var(--bs-border-color);">';
+        if (failed && !success) {
+            html += '<div style="width:40px;height:40px;border-radius:50%;flex-shrink:0;display:flex;align-items:center;justify-content:center;background:var(--bs-danger-bg-subtle);">'
+                + '<i class="bi bi-x-lg text-danger" style="font-size:16px;"></i></div>'
+                + '<div><div class="fw-semibold">Upload failed</div>'
+                + '<div class="text-muted small">Check the file format and try again</div></div>';
+        } else {
+            html += '<div style="width:40px;height:40px;border-radius:50%;flex-shrink:0;display:flex;align-items:center;justify-content:center;background:var(--bs-success-bg-subtle);">'
+                + '<i class="bi bi-check2 text-success" style="font-size:20px;"></i></div>'
+                + '<div><div class="fw-semibold">Upload complete</div>'
+                + '<div class="text-muted small">' + success.toLocaleString() + ' order' + (success !== 1 ? 's' : '') + ' imported'
+                + (totalIssues > 0 ? ' &mdash; ' + totalIssues + ' item' + (totalIssues !== 1 ? 's' : '') + ' need attention' : '') + '</div></div>';
+        }
+        html += '</div>';
+
+        // Stat tiles
+        html += '<div class="d-flex gap-2 flex-wrap mb-4">';
+        html += stat(success, 'Orders imported', 'check2-circle', failed ? 'secondary' : (success > 0 ? 'success' : 'secondary'));
+        if (errors > 0)  html += stat(errors,  'Errors',             'exclamation-circle', 'danger');
+        if (dupes > 0)   html += stat(dupes,   'Duplicates skipped', 'skip-forward-circle', 'warning');
+        if (skipped > 0) html += stat(skipped, 'Rows skipped',       'dash-circle',         'secondary');
+        html += '</div>';
+
+        // Detail lists
+        if (r.errors && r.errors.length) {
+            html += detailSection('Errors', 'danger', r.errors.slice(0, 10).map(function(e) {
+                return '<span class="text-danger">' + esc(e) + '</span>';
+            }), r.errors.length);
+        }
+        if (r.rejected_orders && r.rejected_orders.length) {
+            html += detailSection('Rejected orders', 'danger', r.rejected_orders.slice(0, 5).map(function(o) {
+                return '<span class="fw-medium">' + esc(o.order_number) + '</span><span class="text-muted"> &mdash; ' + esc(o.reason) + '</span>';
+            }), r.rejected_orders.length);
+        }
+        if (r.skipped_order_numbers && r.skipped_order_numbers.length) {
+            html += detailSection('Duplicate order numbers', 'warning', r.skipped_order_numbers.slice(0, 5).map(function(n) {
+                return '<span class="text-muted">' + esc(String(n)) + '</span>';
+            }), r.skipped_order_numbers.length);
+        }
+
+        resultsEl.innerHTML = html;
+        resultsEl.style.display = 'block';
+        footer.innerHTML = '<button type="button" class="btn btn-outline-secondary" id="csvTryAgainBtn">Try Again</button>'
+            + '<button type="button" class="btn btn-primary" data-bs-dismiss="modal">Done</button>';
+        footer.style.display = '';
+        modal.addEventListener('hidden.bs.modal', function() { window.location.reload(); }, { once: true });
+    }
+
+    function stat(value, label, icon, color) {
+        return '<div style="flex:1;min-width:110px;padding:14px 16px;border-radius:8px;'
+            + 'background:var(--bs-' + color + '-bg-subtle,rgba(0,0,0,0.04));'
+            + 'border-left:3px solid var(--bs-' + color + ',#6c757d);">'
+            + '<div class="d-flex align-items-center gap-1 mb-2">'
+            + '<i class="bi bi-' + icon + ' text-' + color + '" style="font-size:12px;opacity:0.75;"></i>'
+            + '<span class="text-muted" style="font-size:11px;text-transform:uppercase;letter-spacing:.04em;font-weight:500;">' + label + '</span>'
+            + '</div>'
+            + '<div class="fw-bold" style="font-size:1.6rem;line-height:1;letter-spacing:-0.02em;">' + value.toLocaleString() + '</div>'
+            + '</div>';
+    }
+
+    function detailSection(title, color, items, total) {
+        var extra = total > items.length ? '<li class="text-muted" style="font-size:12px;">\u2026 and ' + (total - items.length) + ' more</li>' : '';
+        return '<div class="mb-3" style="background:var(--bs-' + color + '-bg-subtle,rgba(0,0,0,0.03));border-radius:8px;padding:12px 14px;">'
+            + '<div class="fw-medium small mb-2">' + title + ' <span class="text-muted fw-normal">(' + total + ')</span></div>'
+            + '<ul class="list-unstyled mb-0 small" style="display:flex;flex-direction:column;gap:4px;">'
+            + items.map(function(i) { return '<li>' + i + '</li>'; }).join('')
+            + extra
+            + '</ul></div>';
+    }
+
+    function esc(s) {
+        return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    }
+
+    function showError(msg) {
+        processingEl.style.display = 'none';
+        modalBody.style.display = '';
+        footer.style.display = '';
+        var existing = modalBody.querySelector('.alert');
+        if (existing) existing.remove();
+        var alertEl = document.createElement('div');
+        alertEl.className = 'alert alert-danger mb-3';
+        alertEl.textContent = msg;
+        modalBody.insertBefore(alertEl, modalBody.firstChild);
+        var btn = document.getElementById('csvUploadSubmitBtn');
+        if (btn) btn.disabled = uppy.getFiles().length === 0;
+    }
+
+    // --- Reset on close ---
+    modal.addEventListener('hidden.bs.modal', function() {
+        resetToForm();
+        document.getElementById('csvFormatSelect').classList.remove('is-invalid');
+        submitBtn = document.getElementById('csvUploadSubmitBtn');
+    });
+});
+</script>
+{% endif %}
 {% if ticket_type_breakdown %}
 <script type="application/json" id="ticket-breakdown-data">{{ ticket_type_breakdown_json|safe }}</script>
 <script>
