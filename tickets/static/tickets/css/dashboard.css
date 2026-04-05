@@ -871,6 +871,47 @@ a:hover {
     font-weight: 300;
 }
 
+/* -- Nav Tabs (Status Filter) ------------------ */
+.nav-tabs {
+    border-bottom: none;
+    background: var(--bg-inset);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 3px;
+    display: inline-flex;
+    gap: 2px;
+    margin-bottom: 16px !important;
+}
+
+.nav-tabs .nav-link {
+    border: none;
+    border-radius: calc(var(--radius) - 1px);
+    color: var(--text-secondary);
+    font-size: 12.5px;
+    font-weight: 400;
+    padding: 5px 14px;
+    line-height: 1.5;
+    transition: color 0.15s, background 0.15s;
+    background: transparent;
+    letter-spacing: 0.01em;
+}
+
+.nav-tabs .nav-link:hover {
+    color: var(--text-primary);
+    background: rgba(255, 255, 255, 0.05);
+}
+
+.nav-tabs .nav-link.active {
+    color: var(--text-inverse);
+    background: var(--accent);
+    font-weight: 500;
+}
+
+.nav-tabs .nav-link:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
+}
+
 /* -- Search Bar -------------------------------- */
 .search-bar {
     display: flex;
@@ -1795,11 +1836,13 @@ gmp-place-autocomplete#venue-address-autocomplete {
 /* -- Block 4: Nav Tabs Horizontal Scroll ------ */
 @media (max-width: 767px) {
     .nav-tabs {
+        display: flex;
         flex-wrap: nowrap;
         overflow-x: auto;
         overflow-y: hidden;
         -webkit-overflow-scrolling: touch;
         scrollbar-width: none;
+        width: 100%;
     }
 
     .nav-tabs::-webkit-scrollbar {
@@ -1809,6 +1852,8 @@ gmp-place-autocomplete#venue-address-autocomplete {
     .nav-tabs .nav-link {
         white-space: nowrap;
         flex-shrink: 0;
+        flex: 1;
+        text-align: center;
     }
 }
 
@@ -2235,6 +2280,21 @@ gmp-place-autocomplete#venue-address-autocomplete {
 
 [data-view="organizer"] .event-card-flyer-placeholder {
     background: linear-gradient(180deg, var(--bg-inset) 0%, #dddbd6 100%);
+}
+
+/* -- Nav Tabs ----------------------------------- */
+[data-view="organizer"] .nav-tabs {
+    background: rgba(0, 0, 0, 0.04);
+    border-color: rgba(0, 0, 0, 0.09);
+}
+
+[data-view="organizer"] .nav-tabs .nav-link:hover {
+    background: rgba(0, 0, 0, 0.06);
+}
+
+[data-view="organizer"] .nav-tabs .nav-link.active {
+    background: #1A1917;
+    color: #F5F4F1;
 }
 
 /* -- Chat Widget -------------------------------- */

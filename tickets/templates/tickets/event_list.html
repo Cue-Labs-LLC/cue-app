@@ -16,7 +16,7 @@
     </div>
 </div>
 
-<nav class="nav nav-tabs mb-3 overflow-auto" style="flex-wrap: nowrap;" aria-label="Event status filter">
+<nav class="nav nav-tabs" aria-label="Event status filter">
     <a class="nav-link{% if status_filter == 'all' %} active{% endif %}" href="?status=all&search={{ search_query }}&sort={{ sort_by }}">All</a>
     <a class="nav-link{% if status_filter == 'upcoming' %} active{% endif %}" href="?status=upcoming&search={{ search_query }}&sort={{ sort_by }}">Upcoming</a>
     <a class="nav-link{% if status_filter == 'live' %} active{% endif %}" href="?status=live&search={{ search_query }}&sort={{ sort_by }}">Live</a>
