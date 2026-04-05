@@ -263,6 +263,7 @@ class CSVProcessor:
         for chunk in chunk_iter:
             chunk_data = chunk.to_dict('records')
             chunk_start = processed_rows
+            chunk_results = None
 
             try:
                 with transaction.atomic():
@@ -271,21 +272,9 @@ class CSVProcessor:
                     else:
                         chunk_results = self._process_chunk(chunk_data, manual_prices=manual_prices)
 
-                    # Update results
-                    results['success_count'] += chunk_results['success_count']
-                    results['error_count'] += chunk_results['error_count']
-                    results['skipped_duplicates'] += chunk_results['skipped_duplicates']
-                    results['errors'].extend(chunk_results['errors'])
-                    results['skipped_order_numbers'].extend(chunk_results['skipped_order_numbers'])
-                    results['rejected_orders'].extend(chunk_results.get('rejected_orders', []))
-                    results['skipped_rows_count'] += chunk_results.get('skipped_rows_count', 0)
-                    for reason, count in chunk_results.get('skipped_rows_by_reason', {}).items():
-                        results['skipped_rows_by_reason'][reason] = (
-                            results['skipped_rows_by_reason'].get(reason, 0) + count
-                        )
-
-                    processed_rows += len(chunk_data)
-                    self.uploaded_file.processed_rows = processed_rows
+                    # Save progress counter inside the transaction so it rolls back with the
+                    # orders if anything below raises (avoids a stale processed_rows value).
+                    self.uploaded_file.processed_rows = processed_rows + len(chunk_data)
                     self.uploaded_file.save(update_fields=['processed_rows'])
 
                     # Update customer LTV after each chunk
@@ -295,7 +284,29 @@ class CSVProcessor:
                 logger.error(f"Error processing chunk starting at row {chunk_start}: {str(e)}")
                 results['error_count'] += len(chunk_data)
                 results['errors'].append(f"Chunk starting at row {chunk_start}: {str(e)}")
+                chunk_results = None
+
+            finally:
+                # Always advance processed_rows exactly once, whether the chunk
+                # committed or rolled back (fixes pre-existing double-increment).
                 processed_rows += len(chunk_data)
+
+            # Only credit results after the DB transaction committed successfully.
+            # Updating the Python dict inside the atomic block caused success_count
+            # to be inflated when uploaded_file.save() rolled back the transaction
+            # but the dict mutation had already happened.
+            if chunk_results is not None:
+                results['success_count'] += chunk_results['success_count']
+                results['error_count'] += chunk_results['error_count']
+                results['skipped_duplicates'] += chunk_results['skipped_duplicates']
+                results['errors'].extend(chunk_results['errors'])
+                results['skipped_order_numbers'].extend(chunk_results['skipped_order_numbers'])
+                results['rejected_orders'].extend(chunk_results.get('rejected_orders', []))
+                results['skipped_rows_count'] += chunk_results.get('skipped_rows_count', 0)
+                for reason, count in chunk_results.get('skipped_rows_by_reason', {}).items():
+                    results['skipped_rows_by_reason'][reason] = (
+                        results['skipped_rows_by_reason'].get(reason, 0) + count
+                    )
         
         # Update final status
         if results['error_count'] == 0 and results['skipped_duplicates'] == 0:

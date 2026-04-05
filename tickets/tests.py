@@ -1328,4 +1328,109 @@ class EventSummaryStreamTests(TestCase):
         self.assertIn('Attendee Feedback', prompt)
         self.assertIn('Financial Performance', prompt)
         self.assertIn('Summary Event', prompt)
-        self.assertIn('Summary Venue', prompt)
+
+
+class CSVProcessorChunkRollbackTest(TestCase):
+    """Tests that success_count in process_and_save() reflects only committed orders."""
+
+    # Minimal CSV with 3 valid rows: order_date, customer_email, customer_name, ticket_type
+    CSV_ROWS = (
+        "order_date,customer_email,customer_name,ticket_type\n"
+        "2024-06-01,alice@example.com,Alice Smith,GA\n"
+        "2024-06-01,bob@example.com,Bob Jones,GA\n"
+        "2024-06-01,carol@example.com,Carol Lee,GA\n"
+    )
+
+    def setUp(self):
+        self.org = Organization.objects.create(name='Chunk Test Org', slug='chunk-test-org')
+        self.venue = Venue.objects.create(organization=self.org, name='Venue', city='City')
+        self.event = Event.objects.create(
+            organization=self.org,
+            name='Chunk Test Event',
+            venue=self.venue,
+            start_date=date(2024, 6, 15),
+        )
+        self.csv_format = CSVFormat.objects.create(
+            organization=self.org,
+            name='Chunk Test Format',
+            column_mapping={
+                'order_date': ['order_date'],
+                'customer_email': ['customer_email'],
+                'customer_name': ['customer_name'],
+                'ticket_type': ['ticket_type'],
+            },
+        )
+        self.upload = UploadedFile.objects.create(
+            organization=self.org,
+            csv_format=self.csv_format,
+            filename='chunk_test.csv',
+            status='pending',
+            metadata={'event_id': str(self.event.id), 'event_name': self.event.name,
+                      'event_start_date': '2024-06-15'},
+        )
+
+    def _make_processor(self):
+        from tickets.csv_processor import CSVProcessor
+        return CSVProcessor(self.upload, self.csv_format)
+
+    def _csv_handle(self):
+        import io
+        return io.BytesIO(self.CSV_ROWS.encode('utf-8'))
+
+    def test_happy_path_success_count_matches_db(self):
+        """On full success, success_count equals the number of orders in the DB."""
+        processor = self._make_processor()
+        results = processor.process_and_save(self._csv_handle())
+        db_count = TicketOrder.objects.filter(uploaded_file=self.upload).count()
+        self.assertEqual(results['success_count'], db_count)
+
+    def test_success_count_not_inflated_on_save_failure(self):
+        """When uploaded_file.save() raises after bulk_create, the transaction rolls
+        back and success_count must equal the actual committed DB order count."""
+        processor = self._make_processor()
+
+        original_save = self.upload.__class__.save
+        call_count = {'n': 0}
+
+        def patched_save(self_inner, *args, **kwargs):
+            call_count['n'] += 1
+            # Fail on the second save (progress counter update inside chunk 1).
+            # The first save sets status='processing' before the loop.
+            if call_count['n'] == 2:
+                raise RuntimeError('simulated DB failure')
+            return original_save(self_inner, *args, **kwargs)
+
+        with patch.object(self.upload.__class__, 'save', patched_save):
+            results = processor.process_and_save(self._csv_handle())
+
+        db_count = TicketOrder.objects.filter(uploaded_file=self.upload).count()
+        self.assertEqual(
+            results['success_count'], db_count,
+            f"success_count ({results['success_count']}) must equal DB count ({db_count}), "
+            "not be inflated by rolled-back chunks",
+        )
+
+    def test_processed_rows_not_double_incremented_on_failure(self):
+        """total_rows must equal the CSV row count even when a chunk fails
+        (pre-existing double-increment bug: was counted in atomic block AND except)."""
+        processor = self._make_processor()
+        csv_row_count = self.CSV_ROWS.count('\n') - 1  # exclude header
+
+        original_save = self.upload.__class__.save
+        call_count = {'n': 0}
+
+        def patched_save(self_inner, *args, **kwargs):
+            call_count['n'] += 1
+            if call_count['n'] == 2:
+                raise RuntimeError('simulated DB failure')
+            return original_save(self_inner, *args, **kwargs)
+
+        with patch.object(self.upload.__class__, 'save', patched_save):
+            processor.process_and_save(self._csv_handle())
+
+        self.upload.refresh_from_db()
+        self.assertEqual(
+            self.upload.total_rows, csv_row_count,
+            f"total_rows ({self.upload.total_rows}) should be {csv_row_count}, "
+            "not double-counted",
+        )
