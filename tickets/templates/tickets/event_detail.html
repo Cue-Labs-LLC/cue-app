@@ -85,6 +85,11 @@
             {% endwith %}
         {% endif %}
         <a href="{% url 'tickets:event_export_csv' event.id %}" class="btn btn-outline-secondary btn-sm"><i class="bi bi-download"></i> Export CSV</a>
+        {% if org_has_custom_fields %}
+        <button type="button" class="btn btn-outline-secondary btn-sm" data-bs-toggle="modal" data-bs-target="#customFieldsModal">
+            <i class="bi bi-sliders"></i> Custom Fields
+        </button>
+        {% endif %}
         <a href="{% url 'tickets:event_edit' event.id %}" class="btn btn-outline-secondary btn-sm"><i class="bi bi-pencil"></i> Edit</a>
         {% if event.ticketing_type != 'direct' or not direct_ticketing_enabled or event.effective_status == 'draft' %}
         <a href="{% url 'tickets:event_delete' event.id %}" class="btn btn-outline-danger btn-sm"><i class="bi bi-trash"></i> Delete</a>
@@ -725,6 +730,39 @@
         </div>
     </div>
 </div>
+
+{% if org_has_custom_fields %}
+<div class="modal fade" id="customFieldsModal" tabindex="-1" aria-labelledby="customFieldsModalLabel" aria-hidden="true">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="customFieldsModalLabel"><i class="bi bi-sliders"></i> Custom Fields</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <form method="post" action="{% url 'tickets:event_custom_fields' event.id %}">
+                {% csrf_token %}
+                <div class="modal-body">
+                    {% for cf in org_custom_fields %}
+                    <div class="mb-3">
+                        <label class="form-label fw-medium">{{ cf.name }}{% if cf.required %} <span class="text-danger">*</span>{% endif %}</label>
+                        <select name="custom_field_{{ cf.id }}" class="form-select"{% if cf.required %} required{% endif %}>
+                            <option value="">---------</option>
+                            {% for opt in cf.options.all %}
+                            <option value="{{ opt.id }}"{% if existing_values|get_item:cf.id == opt.id %} selected{% endif %}>{{ opt.label }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                    {% endfor %}
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="submit" class="btn btn-primary">Save</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+{% endif %}
 
 {% endblock %}
 

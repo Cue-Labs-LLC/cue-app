@@ -149,6 +149,11 @@
                         </li>
                         {% if is_org_admin %}
                         <li>
+                            <a href="{% url 'tickets:custom_field_list' %}" class="sidebar-link{% if '/settings/custom-fields/' in request.path %} active{% endif %}">
+                                <i class="bi bi-sliders"></i> Custom Fields
+                            </a>
+                        </li>
+                        <li>
                             <a href="{% url 'tickets:org_profile' %}" class="sidebar-link{% if '/settings/profile/' in request.path %} active{% endif %}">
                                 <i class="bi bi-building"></i> Org Profile
                             </a>

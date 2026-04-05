@@ -6,7 +6,7 @@ from django.contrib.auth.forms import AuthenticationForm
 from crispy_forms.helper import FormHelper
 from crispy_forms.layout import Layout, Row, Column, Submit, Field
 from django.forms import inlineformset_factory
-from .models import Organization, CSVFormat, Venue, Event, EventTalent, EventExpense, CustomField, IncomeSource, EventIncome, SaleableTicketType, SaleableTicketTypeTier, UserProfile, PromoCode, OrganizerWaitlist
+from .models import Organization, CSVFormat, Venue, Event, EventTalent, EventExpense, CustomField, CustomFieldOption, IncomeSource, EventIncome, SaleableTicketType, SaleableTicketTypeTier, UserProfile, PromoCode, OrganizerWaitlist
 
 
 def _normalize_phone(raw: str) -> str:
@@ -1476,3 +1476,32 @@ class OrganizerWaitlistForm(forms.ModelForm):
             Field('instagram_handle'),
             Submit('submit', 'Join the Waitlist', css_class='btn btn-primary w-100'),
         )
+
+
+class CustomFieldForm(forms.ModelForm):
+    """Form for creating/editing an org-level custom field definition."""
+    class Meta:
+        model = CustomField
+        fields = ['name', 'required']
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.helper = FormHelper()
+        self.helper.form_tag = False
+        self.helper.layout = Layout(
+            Field('name'),
+            Field('required'),
+        )
+
+
+CustomFieldOptionFormSet = inlineformset_factory(
+    CustomField,
+    CustomFieldOption,
+    fields=['label', 'order'],
+    extra=3,
+    can_delete=True,
+    widgets={
+        'label': forms.TextInput(attrs={'class': 'form-control', 'placeholder': 'Option label'}),
+        'order': forms.NumberInput(attrs={'class': 'form-control', 'min': 0, 'style': 'width:80px'}),
+    },
+)

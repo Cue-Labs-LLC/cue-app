@@ -31,7 +31,7 @@ from django.utils.text import slugify
 from .models import (
     Organization, UserProfile, OrganizationInvitation,
     CSVFormat, UploadedFile, Customer, Event, EventExpense, EventTalent, TicketOrder, Ticket, Venue,
-    CustomField, EventCustomFieldValue, IncomeSource, EventIncome,
+    CustomField, CustomFieldOption, EventCustomFieldValue, IncomeSource, EventIncome,
     SurveyQuestion, SurveyInvitation, SurveyResponse, SurveyAnswer,
     PipedreamCalendarConnection, OrganizationAPIKey,
     SaleableTicketType, SaleableTicketTypeTier, StripeCheckoutSession, Payout, PromoCode,
@@ -43,6 +43,7 @@ from .models import (
 from .forms import (
     EventCSVUploadForm, EventExpenseForm, TicketPriceEntryForm, CSVFormatForm,
     VenueForm, EventForm, EventTalentFormSet, LoginForm,
+    CustomFieldForm, CustomFieldOptionFormSet,
     IncomeSourceForm, EventIncomeForm,
     OTPVerificationForm, MemberInviteForm, AttendeePhoneForm,
     ProfileCompletionForm, EmailLoginForm, EmailProfileCompletionForm,
@@ -2482,6 +2483,16 @@ def event_detail(request, event_id):
         if v.custom_field.organization_id == org.id and v.custom_field_option_id
     ]
 
+    # All org custom fields + existing event values for the modal
+    org_custom_fields = list(
+        CustomField.objects.filter(organization=org, field_type='dropdown')
+        .prefetch_related('options')
+    )
+    existing_values = {
+        v.custom_field_id: v.custom_field_option_id
+        for v in EventCustomFieldValue.objects.filter(event=event)
+    }
+
     # Map category keys to display labels
     category_labels = dict(EventExpense.CATEGORY_CHOICES)
 
@@ -2527,6 +2538,9 @@ def event_detail(request, event_id):
         'income_sources': IncomeSource.objects.filter(organization=org).order_by('order', 'name'),
         'page_obj': page_obj,
         'custom_field_values_display': custom_field_values_display,
+        'org_custom_fields': org_custom_fields,
+        'existing_values': existing_values,
+        'org_has_custom_fields': bool(org_custom_fields),
         'survey_invitations_count': survey_invitations_count,
         'survey_responses_count': survey_responses_count,
         'survey_results': survey_results,
@@ -3437,6 +3451,154 @@ def settings_api_key_revoke(request, key_id):
     api_key.save(update_fields=['is_active'])
     messages.success(request, f'API key "{api_key.name}" has been revoked.')
     return redirect('tickets:settings_api_keys')
+
+
+@login_required
+@require_org
+@require_admin
+def custom_field_list(request):
+    """List all org-level custom field definitions."""
+    org = get_organization(request)
+    fields = CustomField.objects.filter(organization=org).prefetch_related('options')
+    return render(request, 'tickets/custom_field_list.html', {'fields': fields})
+
+
+@login_required
+@require_org
+@require_admin
+def custom_field_create(request):
+    """Create a new custom field with inline options."""
+    org = get_organization(request)
+    if request.method == 'POST':
+        form = CustomFieldForm(request.POST)
+        formset = CustomFieldOptionFormSet(request.POST)
+        if form.is_valid() and formset.is_valid():
+            field = form.save(commit=False)
+            field.organization = org
+            field.field_type = 'dropdown'
+            # Append new fields at the end of the current order
+            field.order = CustomField.objects.filter(organization=org).count()
+            field.save()
+            formset.instance = field
+            formset.save()
+            messages.success(request, f'Custom field "{field.name}" created.')
+            return redirect('tickets:custom_field_list')
+    else:
+        form = CustomFieldForm()
+        formset = CustomFieldOptionFormSet()
+    return render(request, 'tickets/custom_field_form.html', {
+        'form': form,
+        'formset': formset,
+        'action': 'Create',
+    })
+
+
+@login_required
+@require_org
+@require_admin
+def custom_field_edit(request, field_id):
+    """Edit a custom field and manage its options."""
+    org = get_organization(request)
+    field = get_object_or_404(CustomField.objects.filter(organization=org), id=field_id)
+    if request.method == 'POST':
+        form = CustomFieldForm(request.POST, instance=field)
+        formset = CustomFieldOptionFormSet(request.POST, instance=field)
+        if form.is_valid() and formset.is_valid():
+            form.save()
+            formset.save()
+            # Handle default_option after formset.save() so newly-added options are available
+            raw_default = request.POST.get('default_option', '').strip()
+            if raw_default:
+                try:
+                    opt = CustomFieldOption.objects.get(id=int(raw_default), custom_field=field)
+                    field.default_option = opt
+                except (ValueError, CustomFieldOption.DoesNotExist):
+                    field.default_option = None
+            else:
+                field.default_option = None
+            field.save(update_fields=['default_option'])
+            messages.success(request, f'Custom field "{field.name}" updated.')
+            return redirect('tickets:custom_field_list')
+    else:
+        form = CustomFieldForm(instance=field)
+        formset = CustomFieldOptionFormSet(instance=field)
+    return render(request, 'tickets/custom_field_form.html', {
+        'form': form,
+        'formset': formset,
+        'action': 'Edit',
+        'field': field,
+    })
+
+
+@login_required
+@require_org
+@require_admin
+def custom_field_delete(request, field_id):
+    """Delete a custom field (cascades to options and event values)."""
+    if request.method != 'POST':
+        return redirect('tickets:custom_field_list')
+    org = get_organization(request)
+    field = get_object_or_404(CustomField.objects.filter(organization=org), id=field_id)
+    name = field.name
+    field.delete()
+    messages.success(request, f'Custom field "{name}" deleted.')
+    return redirect('tickets:custom_field_list')
+
+
+@login_required
+@require_org
+@require_admin
+def custom_field_reorder(request):
+    """AJAX: save new order for custom fields after drag-and-drop."""
+    if request.method != 'POST':
+        return JsonResponse({'error': 'POST required'}, status=405)
+    org = get_organization(request)
+    try:
+        data = json.loads(request.body)
+        ids = [int(i) for i in data.get('order', [])]
+    except (json.JSONDecodeError, ValueError, TypeError):
+        return JsonResponse({'error': 'Invalid payload'}, status=400)
+
+    fields = {cf.id: cf for cf in CustomField.objects.filter(organization=org, id__in=ids)}
+    to_update = []
+    for position, field_id in enumerate(ids):
+        if field_id in fields:
+            fields[field_id].order = position
+            to_update.append(fields[field_id])
+    CustomField.objects.bulk_update(to_update, ['order'])
+    return JsonResponse({'ok': True})
+
+
+@login_required
+@require_org
+@require_host
+def event_custom_fields(request, event_id):
+    """POST-only: save custom field values for a specific event."""
+    if request.method != 'POST':
+        return redirect('tickets:event_detail', event_id=event_id)
+    org = get_organization(request)
+    event = get_object_or_404(Event.objects.filter(organization=org), id=event_id)
+    dropdown_fields = CustomField.objects.filter(
+        organization=org, field_type='dropdown'
+    ).prefetch_related('options')
+
+    for cf in dropdown_fields:
+        raw = request.POST.get(f'custom_field_{cf.id}', '').strip()
+        if raw:
+            try:
+                option = CustomFieldOption.objects.get(id=int(raw), custom_field=cf)
+                EventCustomFieldValue.objects.update_or_create(
+                    event=event,
+                    custom_field=cf,
+                    defaults={'custom_field_option': option},
+                )
+            except (ValueError, CustomFieldOption.DoesNotExist):
+                pass
+        else:
+            EventCustomFieldValue.objects.filter(event=event, custom_field=cf).delete()
+
+    messages.success(request, 'Custom field values saved.')
+    return redirect('tickets:event_detail', event_id=event.id)
 
 
 @login_required

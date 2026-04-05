@@ -111,6 +111,7 @@ urlpatterns = [
     path('events/<uuid:event_id>/upload/', views.event_upload_csv, name='event_upload_csv'),
     path('events/<uuid:event_id>/export-csv/', views.event_export_csv, name='event_export_csv'),
     path('events/<uuid:event_id>/delete/', views.event_delete, name='event_delete'),
+    path('events/<uuid:event_id>/custom-fields/', views.event_custom_fields, name='event_custom_fields'),
     path('events/<uuid:event_id>/publish/', views.event_publish, name='event_publish'),
     path('events/<uuid:event_id>/end-sales/', views.event_end_sales, name='event_end_sales'),
     path('events/<uuid:event_id>/cancel/', views.event_cancel, name='event_cancel'),
@@ -149,6 +150,11 @@ urlpatterns = [
     path('settings/profile/', views.org_profile, name='org_profile'),
     path('settings/api-keys/', views.settings_api_keys, name='settings_api_keys'),
     path('settings/api-keys/<uuid:key_id>/revoke/', views.settings_api_key_revoke, name='settings_api_key_revoke'),
+    path('settings/custom-fields/', views.custom_field_list, name='custom_field_list'),
+    path('settings/custom-fields/create/', views.custom_field_create, name='custom_field_create'),
+    path('settings/custom-fields/<int:field_id>/edit/', views.custom_field_edit, name='custom_field_edit'),
+    path('settings/custom-fields/<int:field_id>/delete/', views.custom_field_delete, name='custom_field_delete'),
+    path('settings/custom-fields/reorder/', views.custom_field_reorder, name='custom_field_reorder'),
 
     # Venues
     path('venues/', views.venue_list, name='venue_list'),

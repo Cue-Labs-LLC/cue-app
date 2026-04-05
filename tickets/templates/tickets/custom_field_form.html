@@ -1,0 +1,127 @@
+{% extends 'tickets/base.html' %}
+{% load crispy_forms_tags %}
+
+{% block title %}{{ action }} Custom Field{% endblock %}
+
+{% block content %}
+<nav aria-label="breadcrumb" class="mb-3">
+    <ol class="breadcrumb" style="font-size: 13px;">
+        <li class="breadcrumb-item"><a href="{% url 'tickets:custom_field_list' %}">Custom Fields</a></li>
+        <li class="breadcrumb-item active">{% if action == 'Edit' %}{{ field.name }}{% else %}New Field{% endif %}</li>
+    </ol>
+</nav>
+
+<div class="page-header">
+    <h1>{{ action }} Custom Field</h1>
+</div>
+
+<div class="row">
+    <div class="col-md-7">
+        <form method="post">
+            {% csrf_token %}
+
+            <div class="card mb-4">
+                <div class="card-header"><h5 class="mb-0">Field Details</h5></div>
+                <div class="card-body">
+                    {% crispy form %}
+                </div>
+            </div>
+
+            <div class="card mb-4">
+                <div class="card-header d-flex justify-content-between align-items-center">
+                    <h5 class="mb-0">Options</h5>
+                    <button type="button" class="btn btn-sm btn-outline-secondary" id="addOptionBtn">
+                        <i class="bi bi-plus-lg"></i> Add option
+                    </button>
+                </div>
+                <div class="card-body">
+                    {{ formset.management_form }}
+                    <div id="options-container">
+                        {% for form in formset %}
+                        <div class="option-row d-flex align-items-center gap-2 mb-2">
+                            {{ form.id }}
+                            {{ form.order.as_hidden }}
+                            <div class="flex-grow-1">{{ form.label }}</div>
+                            <div class="form-check mb-0" title="Delete">
+                                {{ form.DELETE }}
+                                <label class="form-check-label text-danger" for="{{ form.DELETE.id_for_label }}">
+                                    <i class="bi bi-trash"></i>
+                                </label>
+                            </div>
+                            {% for error in form.non_field_errors %}
+                            <div class="text-danger small">{{ error }}</div>
+                            {% endfor %}
+                        </div>
+                        {% endfor %}
+                    </div>
+                    <p class="text-muted small mb-0 mt-2">Check the trash icon to remove an option. Removing an option clears it from any event using it.</p>
+
+                    {% if action == 'Edit' %}
+                    <hr class="my-3">
+                    <div>
+                        <label class="form-label fw-medium mb-1">Default value</label>
+                        <select name="default_option" class="form-select form-select-sm" style="max-width: 260px;">
+                            <option value="">None</option>
+                            {% for opt in field.options.all %}
+                            <option value="{{ opt.id }}"{% if field.default_option_id == opt.id %} selected{% endif %}>{{ opt.label }}</option>
+                            {% endfor %}
+                        </select>
+                        <p class="text-muted small mt-1 mb-0">Pre-selected when adding this field's value to a new event.</p>
+                    </div>
+                    {% else %}
+                    <hr class="my-3">
+                    <p class="text-muted small mb-0"><i class="bi bi-info-circle"></i> Save the field and add options first, then you can set a default value.</p>
+                    {% endif %}
+                </div>
+            </div>
+
+            <div class="d-flex gap-2">
+                <button type="submit" class="btn btn-primary">Save Field</button>
+                <a href="{% url 'tickets:custom_field_list' %}" class="btn btn-outline-secondary">Cancel</a>
+            </div>
+        </form>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+(function () {
+    var container = document.getElementById('options-container');
+    var addBtn = document.getElementById('addOptionBtn');
+    var totalForms = document.getElementById('id_customfieldoption_set-TOTAL_FORMS');
+
+    addBtn.addEventListener('click', function () {
+        var rows = container.querySelectorAll('.option-row');
+        var newIndex = parseInt(totalForms.value);
+
+        // Clone the last row and update its indices
+        var lastRow = rows[rows.length - 1];
+        var newRow = lastRow.cloneNode(true);
+
+        newRow.querySelectorAll('input, select, textarea').forEach(function (el) {
+            el.name = el.name.replace(/-\d+-/, '-' + newIndex + '-');
+            el.id = el.id.replace(/-\d+-/, '-' + newIndex + '-');
+            if (el.type !== 'checkbox' && el.type !== 'hidden') {
+                el.value = '';
+            }
+            if (el.type === 'checkbox') {
+                el.checked = false;
+            }
+            if (el.name.endsWith('-id')) {
+                el.value = '';
+            }
+        });
+
+        newRow.querySelectorAll('label').forEach(function (el) {
+            if (el.htmlFor) {
+                el.htmlFor = el.htmlFor.replace(/-\d+-/, '-' + newIndex + '-');
+            }
+        });
+
+        container.appendChild(newRow);
+        totalForms.value = newIndex + 1;
+    });
+})();
+</script>
+{% endblock %}

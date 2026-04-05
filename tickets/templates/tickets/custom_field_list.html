@@ -1,0 +1,182 @@
+{% extends 'tickets/base.html' %}
+
+{% block title %}Custom Fields{% endblock %}
+
+{% block extra_head %}
+<script defer src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.0/Sortable.min.js"></script>
+<style>
+  .field-row {
+    transition: background 0.15s, opacity 0.15s, box-shadow 0.15s;
+  }
+  .field-row.sortable-ghost {
+    opacity: 0.35;
+    background: var(--accent, #0d6efd);
+    box-shadow: none;
+  }
+  .field-row.sortable-chosen {
+    background: var(--bs-table-hover-bg, rgba(0,0,0,.04));
+    box-shadow: 0 4px 16px rgba(0,0,0,.12);
+    z-index: 10;
+    position: relative;
+  }
+  .drag-handle {
+    cursor: grab;
+    color: var(--text-muted, #6c757d);
+    padding: 0 6px;
+    user-select: none;
+    transition: color 0.15s;
+  }
+  .drag-handle:hover { color: var(--accent, #0d6efd); }
+  .drag-handle:active { cursor: grabbing; }
+  #save-status {
+    font-size: 12px;
+    transition: opacity 0.4s;
+    min-width: 80px;
+    text-align: right;
+  }
+  #save-status.saving { opacity: 1; color: var(--text-muted, #6c757d); }
+  #save-status.saved  { opacity: 1; color: #198754; }
+  #save-status.error  { opacity: 1; color: #dc3545; }
+  #save-status.idle   { opacity: 0; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1>Custom Fields</h1>
+        <p class="text-muted mb-0" style="font-size: 13px;">Dropdown fields that appear on events. Drag to reorder. Set values per event from the event detail page.</p>
+    </div>
+    <div class="page-header-actions">
+        <span id="save-status" class="idle me-2"></span>
+        <a href="{% url 'tickets:custom_field_create' %}" class="btn btn-primary btn-sm"><i class="bi bi-plus-lg"></i> Add Field</a>
+    </div>
+</div>
+
+{% if fields %}
+<div class="card">
+    <div class="card-body p-0">
+        <div class="table-responsive">
+            <table class="table table-hover mb-0">
+                <thead>
+                    <tr>
+                        <th style="width: 32px;"></th>
+                        <th>Name</th>
+                        <th>Options</th>
+                        <th>Default</th>
+                        <th>Required</th>
+                        <th></th>
+                    </tr>
+                </thead>
+                <tbody id="sortable-fields">
+                    {% for field in fields %}
+                    <tr class="field-row" data-id="{{ field.id }}">
+                        <td class="drag-handle" title="Drag to reorder">
+                            <i class="bi bi-grip-vertical"></i>
+                        </td>
+                        <td class="fw-medium">{{ field.name }}</td>
+                        <td style="font-size: 13px; color: var(--text-muted);">
+                            {% with opts=field.options.all %}
+                            {% if opts %}
+                                {% for opt in opts|slice:":5" %}{{ opt.label }}{% if not forloop.last %}, {% endif %}{% endfor %}{% if opts.count > 5 %}&hellip;{% endif %}
+                            {% else %}
+                                <span class="fst-italic">No options</span>
+                            {% endif %}
+                            {% endwith %}
+                        </td>
+                        <td style="font-size: 13px;">
+                            {% if field.default_option %}
+                            <span class="badge bg-secondary">{{ field.default_option.label }}</span>
+                            {% else %}
+                            <span class="text-muted fst-italic">None</span>
+                            {% endif %}
+                        </td>
+                        <td>
+                            {% if field.required %}
+                            <span class="badge bg-warning text-dark">Required</span>
+                            {% else %}
+                            <span class="text-muted" style="font-size: 13px;">Optional</span>
+                            {% endif %}
+                        </td>
+                        <td class="text-end">
+                            <a href="{% url 'tickets:custom_field_edit' field.id %}" class="btn btn-sm btn-outline-secondary"><i class="bi bi-pencil"></i> Edit</a>
+                            <form method="post" action="{% url 'tickets:custom_field_delete' field.id %}" class="d-inline"
+                                  onsubmit="return confirm('Delete \u201c{{ field.name }}\u201d? This will also remove its value from all events.');">
+                                {% csrf_token %}
+                                <button type="submit" class="btn btn-sm btn-outline-danger"><i class="bi bi-trash"></i></button>
+                            </form>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+{% else %}
+<div class="empty-state">
+    <i class="bi bi-sliders" style="font-size: 2.5rem; color: var(--text-muted);"></i>
+    <h3>No custom fields yet</h3>
+    <p class="text-muted">Custom fields let you tag events with dropdown values like "Market", "Event Type", or "Season".</p>
+    <a href="{% url 'tickets:custom_field_create' %}" class="btn btn-primary"><i class="bi bi-plus-lg"></i> Add your first field</a>
+</div>
+{% endif %}
+{% endblock %}
+
+{% block extra_js %}
+{% if fields %}
+<script>
+document.addEventListener('DOMContentLoaded', function () {
+    var el = document.getElementById('sortable-fields');
+    var status = document.getElementById('save-status');
+    var csrfToken = '{{ csrf_token }}';
+    var reorderUrl = '{% url "tickets:custom_field_reorder" %}';
+    var saveTimer = null;
+
+    function setStatus(state, text) {
+        status.className = state;
+        status.textContent = text;
+        if (state === 'saved') {
+            clearTimeout(saveTimer);
+            saveTimer = setTimeout(function () {
+                status.className = 'idle';
+            }, 2000);
+        }
+    }
+
+    function saveOrder() {
+        var rows = el.querySelectorAll('tr.field-row');
+        var ids = Array.from(rows).map(function (r) { return parseInt(r.dataset.id, 10); });
+        setStatus('saving', 'Saving\u2026');
+        fetch(reorderUrl, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-CSRFToken': csrfToken,
+            },
+            body: JSON.stringify({ order: ids }),
+        })
+        .then(function (r) { return r.json(); })
+        .then(function (data) {
+            if (data.ok) {
+                setStatus('saved', '\u2713 Saved');
+            } else {
+                setStatus('error', 'Save failed');
+            }
+        })
+        .catch(function () {
+            setStatus('error', 'Save failed');
+        });
+    }
+
+    new Sortable(el, {
+        handle: '.drag-handle',
+        animation: 150,
+        ghostClass: 'sortable-ghost',
+        chosenClass: 'sortable-chosen',
+        onEnd: saveOrder,
+    });
+});
+</script>
+{% endif %}
+{% endblock %}
