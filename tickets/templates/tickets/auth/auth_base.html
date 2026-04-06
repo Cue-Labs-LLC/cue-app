@@ -302,6 +302,49 @@
         .auth-below a:hover { color: var(--text); }
     </style>
     {% block extra_head %}{% endblock %}
+    <style>
+        /* ── intl-tel-input integration (auth pages) ─── */
+        .iti { width: 100%; }
+        .iti__selected-flag:focus { outline: none; }
+        .iti__selected-flag:focus-visible {
+            box-shadow: 0 0 0 0.25rem rgba(0, 255, 135, 0.15);
+        }
+        .iti:has(.is-invalid) {
+            border: 1px solid var(--danger);
+            border-radius: var(--radius);
+        }
+        /* Auth pages are always dark — no data-theme conditional needed */
+        .iti__selected-flag {
+            background: #232220;
+            border-color: rgba(255,255,255,0.11);
+        }
+        .iti__selected-flag:hover {
+            background: #2D2C2A;
+        }
+        .iti__dropdown-content,
+        .iti__country-list {
+            background: #191817;
+            border: 1px solid rgba(255,255,255,0.11);
+            border-radius: 4px;
+            color: #EDE8E3;
+            box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+        }
+        .iti__search-input {
+            background: #232220;
+            border-color: rgba(255,255,255,0.11);
+            color: #EDE8E3;
+        }
+        .iti__search-input::placeholder { color: #9E9A96; }
+        .iti__country:hover,
+        .iti__country--highlight {
+            background: #232220;
+        }
+        .iti__divider {
+            border-color: rgba(255,255,255,0.07);
+        }
+        .iti__dial-code { color: #9E9A96; }
+        .iti__country-name { color: #EDE8E3; }
+    </style>
 </head>
 <body>
 
@@ -319,27 +362,6 @@
         </div>
     </main>
 
-<script>
-document.addEventListener('DOMContentLoaded', function () {
-    var input = document.getElementById('id_phone_number');
-    if (!input) return;
-    input.addEventListener('input', function () {
-        var val = this.value;
-        if (val.startsWith('+')) return;
-        var digits = val.replace(/\D/g, '').slice(0, 10);
-        var formatted = '';
-        if (digits.length === 0) {
-            formatted = '';
-        } else if (digits.length <= 3) {
-            formatted = '(' + digits;
-        } else if (digits.length <= 6) {
-            formatted = '(' + digits.slice(0, 3) + ') ' + digits.slice(3);
-        } else {
-            formatted = '(' + digits.slice(0, 3) + ') ' + digits.slice(3, 6) + '-' + digits.slice(6);
-        }
-        this.value = formatted;
-    });
-});
-</script>
+{% block extra_js %}{% endblock %}
 </body>
 </html>

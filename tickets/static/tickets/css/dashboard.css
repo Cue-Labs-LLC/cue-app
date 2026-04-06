@@ -2325,3 +2325,34 @@ gmp-place-autocomplete#venue-address-autocomplete {
 [data-view="organizer"] .sidebar-overlay {
     background: rgba(0, 0, 0, 0.3);
 }
+
+/* ── intl-tel-input integration ─────────────────── */
+.iti { width: 100%; }
+
+.iti__selected-flag:focus { outline: none; }
+.iti__selected-flag:focus-visible {
+    box-shadow: 0 0 0 0.25rem rgba(var(--bs-primary-rgb), 0.25);
+}
+
+.iti:has(.is-invalid) {
+    border: 1px solid var(--bs-danger);
+    border-radius: var(--bs-border-radius);
+}
+
+[data-theme="dark"] .iti__dropdown-content,
+[data-theme="dark"] .iti__country-list {
+    background: var(--bs-dark);
+    border-color: var(--bs-border-color);
+    color: var(--bs-light);
+}
+[data-theme="dark"] .iti__country:hover,
+[data-theme="dark"] .iti__country--highlight {
+    background: var(--bs-secondary-bg);
+}
+[data-theme="dark"] .iti__divider {
+    border-color: var(--bs-border-color);
+}
+[data-theme="dark"] .iti__selected-flag {
+    background: var(--bs-secondary-bg);
+    border-color: var(--bs-border-color);
+}

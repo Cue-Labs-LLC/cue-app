@@ -16,6 +16,9 @@
     <link rel="preload" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" as="style" onload="this.rel='stylesheet'">
     <noscript><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css"></noscript>
 
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/intl-tel-input@23/build/css/intlTelInput.css">
+    <script defer src="https://cdn.jsdelivr.net/npm/intl-tel-input@23/build/js/intlTelInput.min.js"></script>
+
     <style>
         :root {
             --bg:            #0F0E0D;
@@ -1472,7 +1475,7 @@ document.addEventListener('DOMContentLoaded', function () {
           <div id="modal-phone-error" class="modal-error"></div>
           <div class="modal-field">
             <label class="form-label">Phone number</label>
-            <input type="tel" id="modal-phone-input" class="form-control" placeholder="(555) 000-0000" autocomplete="tel">
+            <input type="tel" id="modal-phone-input" class="form-control" placeholder="Enter your phone number" autocomplete="tel">
           </div>
           <button type="button" id="modal-phone-btn" class="btn-pay" style="margin-top:8px;">
             Send code
@@ -1577,12 +1580,20 @@ document.addEventListener('DOMContentLoaded', function () {
     // Step 1 - Phone
     var phoneBtn = document.getElementById('modal-phone-btn');
     var phoneInput = document.getElementById('modal-phone-input');
+    var modalIti = null;
+    if (phoneInput && typeof window.intlTelInput === 'function') {
+        modalIti = window.intlTelInput(phoneInput, {
+            initialCountry: 'us',
+            preferredCountries: ['us', 'gb', 'ca', 'au'],
+            useFullscreenPopup: false,
+        });
+    }
     phoneInput.addEventListener('keydown', function(e) { if (e.key === 'Enter') phoneBtn.click(); });
 
     phoneBtn.addEventListener('click', function () {
         hideError('modal-phone-error');
-        var phone = phoneInput.value.trim();
-        if (!phone) { showError('modal-phone-error', 'Please enter your phone number.'); return; }
+        var phone = modalIti ? ("+" + (modalIti.getSelectedCountryData().dialCode || "1") + phoneInput.value.replace(/\D/g, "")) : phoneInput.value.trim();
+        if (!phone || phone.replace(/\D/g, '').length < 7) { showError('modal-phone-error', 'Please enter a valid phone number.'); return; }
         setLoading(phoneBtn, true, 'Send code');
         fetch(urls.startUrl, {
             method: 'POST',

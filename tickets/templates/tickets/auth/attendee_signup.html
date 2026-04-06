@@ -3,6 +3,11 @@
 
 {% block title %}Join {{ org.name }} - Cue{% endblock %}
 
+{% block extra_head %}
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/intl-tel-input@23/build/css/intlTelInput.css">
+<script defer src="https://cdn.jsdelivr.net/npm/intl-tel-input@23/build/js/intlTelInput.min.js"></script>
+{% endblock %}
+
 {% block content %}
 <div class="row justify-content-center">
     <div class="col-md-5">
@@ -40,22 +45,24 @@
 document.addEventListener('DOMContentLoaded', function () {
     var input = document.getElementById('id_phone_number');
     if (!input) return;
-    input.addEventListener('input', function () {
-        var val = this.value;
-        if (val.startsWith('+')) return;
-        var digits = val.replace(/\D/g, '').slice(0, 10);
-        var formatted = '';
-        if (digits.length === 0) {
-            formatted = '';
-        } else if (digits.length <= 3) {
-            formatted = '(' + digits;
-        } else if (digits.length <= 6) {
-            formatted = '(' + digits.slice(0, 3) + ') ' + digits.slice(3);
-        } else {
-            formatted = '(' + digits.slice(0, 3) + ') ' + digits.slice(3, 6) + '-' + digits.slice(6);
-        }
-        this.value = formatted;
+    if (typeof window.intlTelInput !== 'function') return;
+    var iti = window.intlTelInput(input, {
+        initialCountry: 'us',
+        preferredCountries: ['us', 'gb', 'ca', 'au'],
+        useFullscreenPopup: false,
     });
+    var form = input.closest('form');
+    if (form) {
+        var hidden = document.createElement('input');
+        hidden.type = 'hidden';
+        hidden.name = input.name;
+        input.removeAttribute('name');
+        form.appendChild(hidden);
+        form.addEventListener('submit', function () {
+            var dialCode = iti.getSelectedCountryData().dialCode || '1';
+            hidden.value = '+' + dialCode + input.value.replace(/[^0-9]/g, '');
+        });
+    }
 });
 </script>
 {% endblock %}

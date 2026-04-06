@@ -1434,3 +1434,41 @@ class CSVProcessorChunkRollbackTest(TestCase):
             f"total_rows ({self.upload.total_rows}) should be {csv_row_count}, "
             "not double-counted",
         )
+
+
+class PhoneValidationTest(TestCase):
+    """Tests for phone number normalization and form validation."""
+
+    def test_normalize_phone_e164_passthrough(self):
+        from tickets.forms import _normalize_phone
+        self.assertEqual(_normalize_phone('+447911123456'), '+447911123456')
+
+    def test_normalize_phone_10digit_us(self):
+        from tickets.forms import _normalize_phone
+        self.assertEqual(_normalize_phone('5551234567'), '+15551234567')
+
+    def test_normalize_phone_11digit_us(self):
+        from tickets.forms import _normalize_phone
+        self.assertEqual(_normalize_phone('15551234567'), '+15551234567')
+
+    def test_attendee_form_accepts_us_e164(self):
+        from tickets.forms import AttendeePhoneForm
+        form = AttendeePhoneForm({'phone_number': '+15551234567'})
+        self.assertTrue(form.is_valid())
+
+    def test_attendee_form_accepts_international_e164(self):
+        """UK number — must work after intl-tel-input ships."""
+        from tickets.forms import AttendeePhoneForm
+        form = AttendeePhoneForm({'phone_number': '+447911123456'})
+        self.assertTrue(form.is_valid())
+
+    def test_attendee_form_rejects_country_code_only(self):
+        """intl-tel-input returns '+1' when user doesn't enter digits."""
+        from tickets.forms import AttendeePhoneForm
+        form = AttendeePhoneForm({'phone_number': '+1'})
+        self.assertFalse(form.is_valid())
+
+    def test_attendee_form_rejects_garbage(self):
+        from tickets.forms import AttendeePhoneForm
+        form = AttendeePhoneForm({'phone_number': 'notanumber'})
+        self.assertFalse(form.is_valid())

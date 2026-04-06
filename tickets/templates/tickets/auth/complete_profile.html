@@ -4,6 +4,8 @@
 {% block title %}Complete Your Profile{% endblock %}
 
 {% block extra_head %}
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/intl-tel-input@23/build/css/intlTelInput.css">
+<script defer src="https://cdn.jsdelivr.net/npm/intl-tel-input@23/build/js/intlTelInput.min.js"></script>
 <style>
     /* Tighter card for this form-heavy page */
     .auth-wrap .card-body { padding: 1.4rem 1.6rem !important; }
@@ -77,4 +79,31 @@
         </form>
     </div>
 </div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+document.addEventListener('DOMContentLoaded', function () {
+    var input = document.getElementById('id_phone_number');
+    if (!input) return;
+    if (typeof window.intlTelInput !== 'function') return;
+    var iti = window.intlTelInput(input, {
+        initialCountry: 'us',
+        preferredCountries: ['us', 'gb', 'ca', 'au'],
+        useFullscreenPopup: false,
+    });
+    var form = input.closest('form');
+    if (form) {
+        var hidden = document.createElement('input');
+        hidden.type = 'hidden';
+        hidden.name = input.name;
+        input.removeAttribute('name');
+        form.appendChild(hidden);
+        form.addEventListener('submit', function () {
+            var dialCode = iti.getSelectedCountryData().dialCode || '1';
+            hidden.value = '+' + dialCode + input.value.replace(/[^0-9]/g, '');
+        });
+    }
+});
+</script>
 {% endblock %}

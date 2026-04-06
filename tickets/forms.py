@@ -100,10 +100,10 @@ class AttendeePhoneForm(forms.Form):
         max_length=20,
         widget=forms.TextInput(attrs={
             'class': 'form-control',
-            'placeholder': '(555) 000-0000',
+            'placeholder': 'Enter your phone number',
             'type': 'tel',
         }),
-        help_text='Enter your 10-digit phone number',
+        help_text='Select your country and enter your number',
     )
 
     def __init__(self, *args, **kwargs):
@@ -119,7 +119,7 @@ class AttendeePhoneForm(forms.Form):
         phone = _normalize_phone(self.cleaned_data['phone_number'])
         if not _re.match(r'^\+[1-9]\d{6,14}$', phone):
             raise forms.ValidationError(
-                'Enter a valid phone number (e.g. 5551234567 or +15551234567).'
+                'Enter a valid phone number for the selected country.'
             )
         return phone
 
@@ -269,10 +269,10 @@ class EmailProfileCompletionForm(forms.Form):
         max_length=20,
         widget=forms.TextInput(attrs={
             'class': 'form-control',
-            'placeholder': '+1 (555) 000-0000',
+            'placeholder': 'Enter your phone number',
             'type': 'tel',
         }),
-        help_text='Enter your phone number in international format (e.g. +15551234567)',
+        help_text='Select your country and enter your number',
         required=False,
     )
     email_display = forms.CharField(
@@ -317,7 +317,7 @@ class EmailProfileCompletionForm(forms.Form):
         phone = _normalize_phone(raw)
         if not _re.match(r'^\+[1-9]\d{6,14}$', phone):
             raise forms.ValidationError(
-                'Enter a valid phone number (e.g. 5551234567 or +15551234567).'
+                'Enter a valid phone number for the selected country.'
             )
         if UserProfile.objects.filter(phone_number=phone).exists():
             raise forms.ValidationError('An account with this phone number already exists.')
@@ -1405,10 +1405,10 @@ class UserProfileForm(forms.Form):
         max_length=20, required=False,
         widget=forms.TextInput(attrs={
             'class': 'form-control',
-            'placeholder': '(555) 000-0000',
+            'placeholder': 'Enter your phone number',
             'type': 'tel',
         }),
-        help_text='Enter your 10-digit US phone number',
+        help_text='Select your country and enter your number',
     )
     gender = forms.ChoiceField(
         choices=[('', '— select —')] + list(UserProfile.Gender.choices),
@@ -1429,7 +1429,7 @@ class UserProfileForm(forms.Form):
         phone = _normalize_phone(raw)
         if not _re.match(r'^\+[1-9]\d{6,14}$', phone):
             raise forms.ValidationError(
-                'Enter a valid 10-digit phone number (e.g. 5551234567).'
+                'Enter a valid phone number for the selected country.'
             )
         qs = UserProfile.objects.filter(phone_number=phone)
         if self.user:
