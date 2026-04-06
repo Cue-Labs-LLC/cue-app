@@ -1,34 +1,80 @@
 {% extends 'tickets/auth/auth_base.html' %}
 {% load crispy_forms_tags %}
 
-{% block title %}Complete Your Profile {% endblock %}
+{% block title %}Complete Your Profile{% endblock %}
+
+{% block extra_head %}
+<style>
+    /* Tighter card for this form-heavy page */
+    .auth-wrap .card-body { padding: 1.4rem 1.6rem !important; }
+
+    /* Restore side-by-side layout for the crispy name row */
+    .auth-wrap form .row { display: flex !important; gap: 10px; }
+    .auth-wrap form .row [class*="col-"] { flex: 1; width: auto !important; max-width: none !important; padding: 0 !important; }
+
+    /* Compress field spacing */
+    .auth-wrap form .mb-3 { margin-bottom: 0.55rem !important; }
+
+    /* Slightly smaller inputs */
+    .auth-wrap .form-control,
+    .auth-wrap .form-select { padding: 7px 11px; font-size: 0.875rem; }
+
+    /* Compact consent blocks */
+    .consent-block { display: flex; align-items: flex-start; gap: 8px; margin-bottom: 0.4rem; }
+    .consent-block input[type="checkbox"] { margin-top: 3px; flex-shrink: 0; }
+    .consent-block label { font-size: 0.74rem; line-height: 1.4; color: var(--text-2); cursor: pointer; }
+    .consent-block a { color: inherit; text-decoration: underline; text-underline-offset: 2px; }
+    .consent-block a:hover { color: var(--text); }
+    .consent-error { background: rgba(217,112,96,0.06); border-radius: 3px; padding: 4px 6px; margin-left: -6px; }
+    .consent-error label { color: var(--danger) !important; }
+</style>
+{% endblock %}
 
 {% block content %}
-<div class="row justify-content-center">
-    <div class="col-md-6">
-        <div class="card shadow">
-            <div class="card-body p-5">
-                <h2 class="card-title text-center mb-2">
-                    <i class="bi bi-person-fill-add"></i> Complete your profile
-                </h2>
-                <p class="text-center text-muted mb-4">
-                    Just a few details to get you started.
-                </p>
+<div class="card">
+    <div class="card-body">
+        <h2 class="card-title text-center mb-1">
+            <i class="bi bi-person-fill-add"></i> Complete your profile
+        </h2>
+        <p class="text-center text-muted mb-3" style="font-size:0.85rem;">
+            Just a few details to get you started.
+        </p>
 
-                {% if messages %}
-                    {% for message in messages %}
-                        <div class="alert alert-{{ message.tags }}" role="alert">
-                            {{ message }}
-                        </div>
-                    {% endfor %}
-                {% endif %}
+        {% if messages %}
+            {% for message in messages %}
+                <div class="alert alert-{{ message.tags }}" role="alert">{{ message }}</div>
+            {% endfor %}
+        {% endif %}
 
-                <form method="post">
-                    {% csrf_token %}
-                    {% crispy form %}
-                </form>
+        <form method="post">
+            {% csrf_token %}
+            {% crispy form %}
+
+            <div class="consent-block mt-1{% if form.terms_accepted.errors %} consent-error{% endif %}">
+                {{ form.terms_accepted }}
+                <label for="{{ form.terms_accepted.id_for_label }}">
+                    I agree to the
+                    <a href="{% url 'tickets:terms' %}" target="_blank">Terms &amp; Conditions</a>
+                    and <a href="{% url 'tickets:privacy' %}" target="_blank">Privacy Policy</a>.
+                    <span style="color:var(--text-2);">*</span>
+                </label>
             </div>
-        </div>
+            {% if form.terms_accepted.errors %}
+                <div class="invalid-feedback d-block mb-1" style="font-size:0.67rem;color:var(--danger);">{{ form.terms_accepted.errors.0 }}</div>
+            {% endif %}
+
+            <div class="consent-block mb-3">
+                {{ form.marketing_opt_in }}
+                <label for="{{ form.marketing_opt_in.id_for_label }}">
+                    By checking this box, you authorize Cue and event organizers you register with to send
+                    you automated informational and marketing texts. Your consent is not a condition of any
+                    purchase. Messages may be sent any time of day and message frequency varies.
+                    Msg &amp; data rates may apply. Reply STOP to unsubscribe.
+                </label>
+            </div>
+
+            <button type="submit" class="btn btn-primary w-100">Complete setup</button>
+        </form>
     </div>
 </div>
 {% endblock %}

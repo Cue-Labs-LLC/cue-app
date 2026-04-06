@@ -200,14 +200,21 @@ class ProfileCompletionForm(forms.Form):
         choices=[('', 'Select gender'), ('male', 'Male'), ('female', 'Female'), ('other', 'Other')],
         widget=forms.Select(attrs={'class': 'form-select'}),
     )
+    terms_accepted = forms.BooleanField(
+        required=True,
+        label='',
+        error_messages={'required': 'You must accept the Terms & Conditions and Privacy Policy to continue.'},
+        widget=forms.CheckboxInput(attrs={'required': True}),
+    )
     marketing_opt_in = forms.BooleanField(
         required=False,
-        label='I agree to receive marketing communications',
+        label='',
     )
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.helper = FormHelper()
+        self.helper.form_tag = False
         self.helper.layout = Layout(
             Row(
                 Column('first_name', css_class='col-md-6'),
@@ -215,8 +222,6 @@ class ProfileCompletionForm(forms.Form):
             ),
             Field('email'),
             Field('gender'),
-            Field('marketing_opt_in'),
-            Submit('submit', 'Complete setup', css_class='btn btn-primary w-100 mt-2'),
         )
 
     def clean_email(self):
@@ -279,14 +284,21 @@ class EmailProfileCompletionForm(forms.Form):
         choices=[('', 'Select gender'), ('male', 'Male'), ('female', 'Female'), ('other', 'Other')],
         widget=forms.Select(attrs={'class': 'form-select'}),
     )
+    terms_accepted = forms.BooleanField(
+        required=True,
+        label='',
+        error_messages={'required': 'You must accept the Terms & Conditions and Privacy Policy to continue.'},
+        widget=forms.CheckboxInput(attrs={'required': True}),
+    )
     marketing_opt_in = forms.BooleanField(
         required=False,
-        label='I agree to receive marketing communications',
+        label='',
     )
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.helper = FormHelper()
+        self.helper.form_tag = False
         self.helper.layout = Layout(
             Row(
                 Column('first_name', css_class='col-md-6'),
@@ -295,8 +307,6 @@ class EmailProfileCompletionForm(forms.Form):
             Field('phone_number'),
             Field('email_display'),
             Field('gender'),
-            Field('marketing_opt_in'),
-            Submit('submit', 'Complete setup', css_class='btn btn-primary w-100 mt-2'),
         )
 
     def clean_phone_number(self):

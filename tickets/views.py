@@ -415,12 +415,14 @@ def complete_profile_view(request):
             )
             user.set_unusable_password()
             user.save()
+            from django.utils import timezone as tz
             UserProfile.objects.create(
                 user=user,
                 role=UserProfile.Role.ATTENDEE,
                 phone_number=phone,
                 gender=cd['gender'],
                 marketing_opt_in=cd['marketing_opt_in'],
+                terms_accepted_at=tz.now(),
             )
             del request.session['pending_signup_phone']
             auth_login(request, user, backend='tickets.backends.PhoneBackend')
@@ -560,12 +562,14 @@ def email_complete_profile_view(request):
             )
             user.set_unusable_password()
             user.save()
+            from django.utils import timezone as tz
             UserProfile.objects.create(
                 user=user,
                 role=UserProfile.Role.ATTENDEE,
                 phone_number=cd['phone_number'] or None,
                 gender=cd['gender'],
                 marketing_opt_in=cd['marketing_opt_in'],
+                terms_accepted_at=tz.now(),
             )
             del request.session['pending_signup_email']
             auth_login(request, user, backend='tickets.backends.EmailOTPBackend')

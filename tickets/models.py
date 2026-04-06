@@ -245,6 +245,7 @@ class UserProfile(models.Model):
         null=True,
     )
     marketing_opt_in = models.BooleanField(default=False)
+    terms_accepted_at = models.DateTimeField(null=True, blank=True)
 
     stripe_customer_id = models.CharField(
         max_length=255, blank=True, null=True, db_index=True,
