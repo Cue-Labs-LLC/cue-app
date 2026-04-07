@@ -407,23 +407,30 @@ def complete_profile_view(request):
                 del request.session['pending_signup_phone']
                 return redirect('tickets:login')
             from .utils import generate_username
-            user = User.objects.create(
-                username=generate_username(cd['first_name'], cd['last_name']),
-                email=cd['email'],
-                first_name=cd['first_name'],
-                last_name=cd['last_name'],
-            )
-            user.set_unusable_password()
-            user.save()
+            from django.db import transaction, IntegrityError
             from django.utils import timezone as tz
-            UserProfile.objects.create(
-                user=user,
-                role=UserProfile.Role.ATTENDEE,
-                phone_number=phone,
-                gender=cd['gender'],
-                marketing_opt_in=cd['marketing_opt_in'],
-                terms_accepted_at=tz.now(),
-            )
+            try:
+                with transaction.atomic():
+                    user = User.objects.create(
+                        username=generate_username(cd['first_name'], cd['last_name']),
+                        email=cd['email'],
+                        first_name=cd['first_name'],
+                        last_name=cd['last_name'],
+                    )
+                    user.set_unusable_password()
+                    user.save()
+                    UserProfile.objects.create(
+                        user=user,
+                        role=UserProfile.Role.ATTENDEE,
+                        phone_number=phone,
+                        gender=cd['gender'],
+                        marketing_opt_in=cd['marketing_opt_in'],
+                        terms_accepted_at=tz.now(),
+                    )
+            except IntegrityError:
+                messages.info(request, 'An account with this phone already exists. Please log in.')
+                del request.session['pending_signup_phone']
+                return redirect('tickets:login')
             del request.session['pending_signup_phone']
             auth_login(request, user, backend='tickets.backends.PhoneBackend')
             messages.success(request, 'Welcome to Cue!')
@@ -554,23 +561,29 @@ def email_complete_profile_view(request):
                 del request.session['pending_signup_email']
                 return redirect('tickets:email_login')
             from .utils import generate_username
-            user = User.objects.create(
-                username=generate_username(cd['first_name'], cd['last_name']),
-                email=email,
-                first_name=cd['first_name'],
-                last_name=cd['last_name'],
-            )
-            user.set_unusable_password()
-            user.save()
+            from django.db import transaction, IntegrityError
             from django.utils import timezone as tz
-            UserProfile.objects.create(
-                user=user,
-                role=UserProfile.Role.ATTENDEE,
-                phone_number=cd['phone_number'] or None,
-                gender=cd['gender'],
-                marketing_opt_in=cd['marketing_opt_in'],
-                terms_accepted_at=tz.now(),
-            )
+            try:
+                with transaction.atomic():
+                    user = User.objects.create(
+                        username=generate_username(cd['first_name'], cd['last_name']),
+                        email=email,
+                        first_name=cd['first_name'],
+                        last_name=cd['last_name'],
+                    )
+                    user.set_unusable_password()
+                    user.save()
+                    UserProfile.objects.create(
+                        user=user,
+                        role=UserProfile.Role.ATTENDEE,
+                        phone_number=cd['phone_number'],
+                        gender=cd['gender'],
+                        marketing_opt_in=cd['marketing_opt_in'],
+                        terms_accepted_at=tz.now(),
+                    )
+            except IntegrityError:
+                form.add_error('phone_number', 'An account with this phone number already exists.')
+                return render(request, 'tickets/auth/complete_profile.html', {'form': form})
             del request.session['pending_signup_email']
             auth_login(request, user, backend='tickets.backends.EmailOTPBackend')
             messages.success(request, 'Welcome to Cue!')

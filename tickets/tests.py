@@ -1472,3 +1472,135 @@ class PhoneValidationTest(TestCase):
         from tickets.forms import AttendeePhoneForm
         form = AttendeePhoneForm({'phone_number': 'notanumber'})
         self.assertFalse(form.is_valid())
+
+
+class EmailProfileCompletionFormTest(TestCase):
+    """Tests for EmailProfileCompletionForm — phone required, validation, normalization."""
+
+    _EMAIL = 'jane@example.com'
+
+    def _make_form(self, phone, **data_overrides):
+        """Mirrors how the view instantiates the form: POST data + initial for the disabled field."""
+        from tickets.forms import EmailProfileCompletionForm
+        data = {
+            'first_name': 'Jane',
+            'last_name': 'Doe',
+            'phone_number': phone,
+            'gender': 'female',
+            'terms_accepted': True,
+        }
+        data.update(data_overrides)
+        return EmailProfileCompletionForm(data, initial={'email_display': self._EMAIL})
+
+    def test_phone_required(self):
+        """Empty phone number must be rejected."""
+        form = self._make_form('')
+        self.assertFalse(form.is_valid())
+        self.assertIn('phone_number', form.errors)
+
+    def test_valid_us_e164(self):
+        form = self._make_form('+12125551234')
+        self.assertTrue(form.is_valid())
+        self.assertEqual(form.cleaned_data['phone_number'], '+12125551234')
+
+    def test_valid_international_e164(self):
+        """UK number — intl-tel-input sends full E.164."""
+        form = self._make_form('+447911123456')
+        self.assertTrue(form.is_valid())
+
+    def test_rejects_country_code_only(self):
+        """intl-tel-input sends '+1' when user doesn't type digits."""
+        form = self._make_form('+1')
+        self.assertFalse(form.is_valid())
+        self.assertIn('phone_number', form.errors)
+
+    def test_rejects_garbage(self):
+        form = self._make_form('notanumber')
+        self.assertFalse(form.is_valid())
+        self.assertIn('phone_number', form.errors)
+
+    def test_10digit_us_normalizes_to_e164(self):
+        """Bare 10-digit number (no-JS path) gets normalized to +1XXXXXXXXXX."""
+        form = self._make_form('2125551234')
+        self.assertTrue(form.is_valid())
+        self.assertEqual(form.cleaned_data['phone_number'], '+12125551234')
+
+    def test_rejects_duplicate_phone(self):
+        """Phone already in use by another UserProfile must be rejected."""
+        existing_user = User.objects.create_user(username='existing', email='existing@example.com')
+        UserProfile.objects.create(user=existing_user, phone_number='+12125559999')
+        form = self._make_form('+12125559999')
+        self.assertFalse(form.is_valid())
+        self.assertIn('phone_number', form.errors)
+
+
+class EmailCompleteProfileViewTest(TestCase):
+    """Integration tests for email_complete_profile_view."""
+
+    def setUp(self):
+        self.client = Client()
+
+    def test_no_session_email_redirects(self):
+        """Without pending_signup_email in session, redirect to email_login."""
+        response = self.client.get(reverse('tickets:email_complete_profile'))
+        self.assertRedirects(response, reverse('tickets:email_login'))
+
+    def test_get_shows_form(self):
+        session = self.client.session
+        session['pending_signup_email'] = 'newuser@example.com'
+        session.save()
+        response = self.client.get(reverse('tickets:email_complete_profile'))
+        self.assertEqual(response.status_code, 200)
+
+    def test_post_creates_user_and_sets_phone(self):
+        """Valid POST creates User + UserProfile with phone_number set."""
+        session = self.client.session
+        session['pending_signup_email'] = 'newuser@example.com'
+        session.save()
+        response = self.client.post(reverse('tickets:email_complete_profile'), {
+            'first_name': 'Jane',
+            'last_name': 'Doe',
+            'phone_number': '+12125551234',
+            'email_display': 'newuser@example.com',
+            'gender': 'female',
+            'terms_accepted': True,
+        })
+        self.assertRedirects(response, reverse('tickets:attendee_dashboard'), fetch_redirect_response=False)
+        user = User.objects.get(email='newuser@example.com')
+        self.assertEqual(user.first_name, 'Jane')
+        profile = UserProfile.objects.get(user=user)
+        self.assertEqual(profile.phone_number, '+12125551234')
+
+    def test_post_empty_phone_rejected(self):
+        """Empty phone must return a form error and not create a User."""
+        session = self.client.session
+        session['pending_signup_email'] = 'newuser2@example.com'
+        session.save()
+        response = self.client.post(reverse('tickets:email_complete_profile'), {
+            'first_name': 'Jane',
+            'last_name': 'Doe',
+            'phone_number': '',
+            'email_display': 'newuser2@example.com',
+            'gender': 'female',
+            'terms_accepted': True,
+        })
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(User.objects.filter(email='newuser2@example.com').exists())
+
+    def test_post_duplicate_phone_rejected(self):
+        """Phone already in use must return a form error and not create a User."""
+        existing_user = User.objects.create_user(username='taken', email='taken@example.com')
+        UserProfile.objects.create(user=existing_user, phone_number='+12125559999')
+        session = self.client.session
+        session['pending_signup_email'] = 'newuser3@example.com'
+        session.save()
+        response = self.client.post(reverse('tickets:email_complete_profile'), {
+            'first_name': 'Jane',
+            'last_name': 'Doe',
+            'phone_number': '+12125559999',
+            'email_display': 'newuser3@example.com',
+            'gender': 'female',
+            'terms_accepted': True,
+        })
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(User.objects.filter(email='newuser3@example.com').exists())

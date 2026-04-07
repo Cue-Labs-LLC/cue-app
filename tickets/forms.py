@@ -273,7 +273,8 @@ class EmailProfileCompletionForm(forms.Form):
             'type': 'tel',
         }),
         help_text='Select your country and enter your number',
-        required=False,
+        required=True,
+        error_messages={'required': 'Please enter your phone number.'},
     )
     email_display = forms.CharField(
         label='Email address',
@@ -312,8 +313,6 @@ class EmailProfileCompletionForm(forms.Form):
     def clean_phone_number(self):
         from .models import UserProfile
         raw = self.cleaned_data.get('phone_number', '').strip()
-        if not raw:
-            return raw
         phone = _normalize_phone(raw)
         if not _re.match(r'^\+[1-9]\d{6,14}$', phone):
             raise forms.ValidationError(

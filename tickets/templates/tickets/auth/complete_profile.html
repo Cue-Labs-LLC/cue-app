@@ -91,7 +91,16 @@ document.addEventListener('DOMContentLoaded', function () {
         initialCountry: 'us',
         preferredCountries: ['us', 'gb', 'ca', 'au'],
         useFullscreenPopup: false,
+        // Required for getNumber() to return E.164 format and for setNumber()
+        // to correctly parse international numbers on validation-error re-renders.
+        utilsScript: 'https://cdn.jsdelivr.net/npm/intl-tel-input@23/build/js/utils.js',
     });
+    // After a validation error Django re-renders the input with the full E.164 value
+    // (e.g. "+12125551234"). Parse it so intl-tel-input displays it correctly and
+    // doesn't double-prefix on the next submission.
+    if (input.value && input.value.startsWith('+')) {
+        iti.setNumber(input.value);
+    }
     var form = input.closest('form');
     if (form) {
         var hidden = document.createElement('input');
@@ -100,8 +109,10 @@ document.addEventListener('DOMContentLoaded', function () {
         input.removeAttribute('name');
         form.appendChild(hidden);
         form.addEventListener('submit', function () {
-            var dialCode = iti.getSelectedCountryData().dialCode || '1';
-            hidden.value = '+' + dialCode + input.value.replace(/[^0-9]/g, '');
+            // getNumber() returns E.164 when utils are loaded; fall back to manual
+            // construction for the rare case utils haven't finished loading yet.
+            var num = iti.getNumber();
+            hidden.value = num || ('+' + (iti.getSelectedCountryData().dialCode || '1') + input.value.replace(/[^0-9]/g, ''));
         });
     }
 });

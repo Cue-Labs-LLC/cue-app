@@ -185,11 +185,12 @@
             box-shadow: 0 0 0 3px rgba(217, 112, 96, 0.08) !important;
         }
 
-        .auth-wrap .invalid-feedback {
+        .auth-wrap .invalid-feedback,
+        .auth-wrap .invalid-feedback strong {
             font-family: var(--font-mono);
             font-size: 0.67rem;
             letter-spacing: 0.04em;
-            color: var(--danger);
+            color: #e05c4a;
         }
 
         .auth-wrap .form-check-label {
@@ -312,6 +313,12 @@
         .iti:has(.is-invalid) {
             border: 1px solid var(--danger);
             border-radius: var(--radius);
+        }
+        /* Bootstrap's invalid-feedback is a sibling of .is-invalid, but intl-tel-input
+           wraps the input in .iti — so the feedback div ends up as a sibling of .iti,
+           not the input. This rule makes it visible in that structure. */
+        .iti:has(.is-invalid) ~ .invalid-feedback {
+            display: block;
         }
         /* Auth pages are always dark — no data-theme conditional needed */
         .iti__selected-flag {
