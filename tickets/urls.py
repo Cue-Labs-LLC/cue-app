@@ -14,6 +14,10 @@ urlpatterns = [
     path('login/email/verify/', views.email_verify_view, name='email_verify'),
     path('login/email/resend/', views.email_resend_view, name='email_resend'),
     path('login/email/complete-profile/', views.email_complete_profile_view, name='email_complete_profile'),
+    path('login/verify-email/', views.verify_email_after_profile_view, name='verify_email_after_profile'),
+    path('login/resend-email/', views.resend_email_after_profile_view, name='resend_email_after_profile'),
+    path('login/email/verify-phone/', views.verify_phone_after_profile_view, name='verify_phone_after_profile'),
+    path('login/email/resend-phone/', views.resend_phone_after_profile_view, name='resend_phone_after_profile'),
     path('logout/', views.logout_view, name='logout'),
     # Inline modal auth (JSON endpoints for checkout flow)
     path('auth/modal/start/', views.modal_auth_start, name='modal_auth_start'),

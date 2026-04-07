@@ -391,8 +391,7 @@ def unified_resend_view(request):
 @require_http_methods(["GET", "POST"])
 def complete_profile_view(request):
     """Step 3 (new users only): collect name, email, gender, marketing opt-in."""
-    from django.contrib.auth import login as auth_login
-    from django.contrib.auth.models import User
+    from .sms import start_email_verification
     if request.user.is_authenticated:
         return redirect('tickets:attendee_dashboard')
     phone = request.session.get('pending_signup_phone')
@@ -406,41 +405,100 @@ def complete_profile_view(request):
                 messages.info(request, 'An account with this phone already exists. Please log in.')
                 del request.session['pending_signup_phone']
                 return redirect('tickets:login')
-            from .utils import generate_username
-            from django.db import transaction, IntegrityError
-            from django.utils import timezone as tz
-            try:
-                with transaction.atomic():
-                    user = User.objects.create(
-                        username=generate_username(cd['first_name'], cd['last_name']),
-                        email=cd['email'],
-                        first_name=cd['first_name'],
-                        last_name=cd['last_name'],
-                    )
-                    user.set_unusable_password()
-                    user.save()
-                    UserProfile.objects.create(
-                        user=user,
-                        role=UserProfile.Role.ATTENDEE,
-                        phone_number=phone,
-                        gender=cd['gender'],
-                        marketing_opt_in=cd['marketing_opt_in'],
-                        terms_accepted_at=tz.now(),
-                    )
-            except IntegrityError:
-                messages.info(request, 'An account with this phone already exists. Please log in.')
-                del request.session['pending_signup_phone']
-                return redirect('tickets:login')
+            email = cd['email']
+            if not start_email_verification(email):
+                messages.error(request, 'Could not send a verification code to that email. Please check the address and try again.')
+                return render(request, 'tickets/auth/complete_profile.html', {'form': form})
             del request.session['pending_signup_phone']
-            auth_login(request, user, backend='tickets.backends.PhoneBackend')
-            messages.success(request, 'Welcome to Cue!')
-            next_url = request.session.pop('auth_next', None)
-            if next_url and url_has_allowed_host_and_scheme(next_url, allowed_hosts={request.get_host()}):
-                return redirect(next_url)
-            return redirect('tickets:attendee_dashboard')
+            request.session['pending_profile_data'] = {
+                'phone': phone,
+                'first_name': cd['first_name'],
+                'last_name': cd['last_name'],
+                'email': email,
+                'gender': cd['gender'],
+                'marketing_opt_in': cd['marketing_opt_in'],
+            }
+            return redirect('tickets:verify_email_after_profile')
     else:
         form = ProfileCompletionForm()
     return render(request, 'tickets/auth/complete_profile.html', {'form': form})
+
+
+@require_http_methods(["GET", "POST"])
+def verify_email_after_profile_view(request):
+    """Step 4 (phone signup, new users): verify email OTP then create account."""
+    from django.contrib.auth import login as auth_login
+    from django.contrib.auth.models import User
+    from .sms import check_email_verification
+    if request.user.is_authenticated:
+        return redirect('tickets:attendee_dashboard')
+    profile_data = request.session.get('pending_profile_data')
+    if not profile_data:
+        return redirect('tickets:login')
+    email = profile_data['email']
+    at_index = email.index('@')
+    masked_email = email[:2] + '***' + email[at_index:]
+    if request.method == 'POST':
+        form = OTPVerificationForm(request.POST)
+        if form.is_valid():
+            code = form.cleaned_data['otp_code']
+            if not check_email_verification(email, code):
+                messages.error(request, 'Incorrect or expired code. Please try again.')
+            else:
+                from .utils import generate_username
+                from django.db import transaction, IntegrityError
+                from django.utils import timezone as tz
+                try:
+                    with transaction.atomic():
+                        user = User.objects.create(
+                            username=generate_username(profile_data['first_name'], profile_data['last_name']),
+                            email=email,
+                            first_name=profile_data['first_name'],
+                            last_name=profile_data['last_name'],
+                        )
+                        user.set_unusable_password()
+                        user.save()
+                        UserProfile.objects.create(
+                            user=user,
+                            role=UserProfile.Role.ATTENDEE,
+                            phone_number=profile_data['phone'],
+                            gender=profile_data['gender'],
+                            marketing_opt_in=profile_data['marketing_opt_in'],
+                            terms_accepted_at=tz.now(),
+                        )
+                except IntegrityError:
+                    messages.info(request, 'An account with this phone or email already exists. Please log in.')
+                    del request.session['pending_profile_data']
+                    return redirect('tickets:login')
+                del request.session['pending_profile_data']
+                auth_login(request, user, backend='tickets.backends.PhoneBackend')
+                messages.success(request, 'Welcome to Cue!')
+                next_url = request.session.pop('auth_next', None)
+                if next_url and url_has_allowed_host_and_scheme(next_url, allowed_hosts={request.get_host()}):
+                    return redirect(next_url)
+                return redirect('tickets:attendee_dashboard')
+    else:
+        form = OTPVerificationForm()
+    return render(request, 'tickets/auth/verify_email_after_profile.html', {
+        'form': form,
+        'masked_email': masked_email,
+    })
+
+
+@require_http_methods(["POST"])
+def resend_email_after_profile_view(request):
+    """Resend email OTP during phone-signup email verification step."""
+    from .sms import start_email_verification
+    if request.user.is_authenticated:
+        return redirect('tickets:attendee_dashboard')
+    profile_data = request.session.get('pending_profile_data')
+    if not profile_data:
+        return redirect('tickets:login')
+    if not start_email_verification(profile_data['email']):
+        messages.error(request, 'Could not resend the code. Please try again.')
+    else:
+        messages.success(request, 'A new code has been sent.')
+    return redirect('tickets:verify_email_after_profile')
 
 
 @require_http_methods(["GET", "POST"])
@@ -545,8 +603,7 @@ def email_resend_view(request):
 @require_http_methods(["GET", "POST"])
 def email_complete_profile_view(request):
     """Step 3 (email path, new users only): collect name, phone, gender, marketing opt-in."""
-    from django.contrib.auth import login as auth_login
-    from django.contrib.auth.models import User
+    from .sms import start_phone_verification
     if request.user.is_authenticated:
         return redirect('tickets:attendee_dashboard')
     email = request.session.get('pending_signup_email')
@@ -556,44 +613,103 @@ def email_complete_profile_view(request):
         form = EmailProfileCompletionForm(request.POST, initial={'email_display': email})
         if form.is_valid():
             cd = form.cleaned_data
+            from django.contrib.auth.models import User
             if User.objects.filter(email__iexact=email).exists():
                 messages.info(request, 'An account with this email already exists. Please log in.')
                 del request.session['pending_signup_email']
                 return redirect('tickets:email_login')
-            from .utils import generate_username
-            from django.db import transaction, IntegrityError
-            from django.utils import timezone as tz
-            try:
-                with transaction.atomic():
-                    user = User.objects.create(
-                        username=generate_username(cd['first_name'], cd['last_name']),
-                        email=email,
-                        first_name=cd['first_name'],
-                        last_name=cd['last_name'],
-                    )
-                    user.set_unusable_password()
-                    user.save()
-                    UserProfile.objects.create(
-                        user=user,
-                        role=UserProfile.Role.ATTENDEE,
-                        phone_number=cd['phone_number'],
-                        gender=cd['gender'],
-                        marketing_opt_in=cd['marketing_opt_in'],
-                        terms_accepted_at=tz.now(),
-                    )
-            except IntegrityError:
-                form.add_error('phone_number', 'An account with this phone number already exists.')
+            phone = cd['phone_number']
+            if not start_phone_verification(phone):
+                messages.error(request, 'Could not send a verification code to that number. Please check it and try again.')
                 return render(request, 'tickets/auth/complete_profile.html', {'form': form})
             del request.session['pending_signup_email']
-            auth_login(request, user, backend='tickets.backends.EmailOTPBackend')
-            messages.success(request, 'Welcome to Cue!')
-            next_url = request.session.pop('auth_next', None)
-            if next_url and url_has_allowed_host_and_scheme(next_url, allowed_hosts={request.get_host()}):
-                return redirect(next_url)
-            return redirect('tickets:attendee_dashboard')
+            request.session['pending_email_profile_data'] = {
+                'email': email,
+                'first_name': cd['first_name'],
+                'last_name': cd['last_name'],
+                'phone_number': phone,
+                'gender': cd['gender'],
+                'marketing_opt_in': cd['marketing_opt_in'],
+            }
+            return redirect('tickets:verify_phone_after_profile')
     else:
         form = EmailProfileCompletionForm(initial={'email_display': email})
     return render(request, 'tickets/auth/complete_profile.html', {'form': form})
+
+
+@require_http_methods(["GET", "POST"])
+def verify_phone_after_profile_view(request):
+    """Step 4 (email signup, new users): verify phone OTP then create account."""
+    from django.contrib.auth import login as auth_login
+    from django.contrib.auth.models import User
+    from .sms import check_phone_verification
+    if request.user.is_authenticated:
+        return redirect('tickets:attendee_dashboard')
+    profile_data = request.session.get('pending_email_profile_data')
+    if not profile_data:
+        return redirect('tickets:email_login')
+    phone = profile_data['phone_number']
+    if request.method == 'POST':
+        form = OTPVerificationForm(request.POST)
+        if form.is_valid():
+            code = form.cleaned_data['otp_code']
+            if not check_phone_verification(phone, code):
+                messages.error(request, 'Incorrect or expired code. Please try again.')
+            else:
+                from .utils import generate_username
+                from django.db import transaction, IntegrityError
+                from django.utils import timezone as tz
+                try:
+                    with transaction.atomic():
+                        user = User.objects.create(
+                            username=generate_username(profile_data['first_name'], profile_data['last_name']),
+                            email=profile_data['email'],
+                            first_name=profile_data['first_name'],
+                            last_name=profile_data['last_name'],
+                        )
+                        user.set_unusable_password()
+                        user.save()
+                        UserProfile.objects.create(
+                            user=user,
+                            role=UserProfile.Role.ATTENDEE,
+                            phone_number=phone,
+                            gender=profile_data['gender'],
+                            marketing_opt_in=profile_data['marketing_opt_in'],
+                            terms_accepted_at=tz.now(),
+                        )
+                except IntegrityError:
+                    messages.info(request, 'An account with this phone or email already exists. Please log in.')
+                    del request.session['pending_email_profile_data']
+                    return redirect('tickets:email_login')
+                del request.session['pending_email_profile_data']
+                auth_login(request, user, backend='tickets.backends.EmailOTPBackend')
+                messages.success(request, 'Welcome to Cue!')
+                next_url = request.session.pop('auth_next', None)
+                if next_url and url_has_allowed_host_and_scheme(next_url, allowed_hosts={request.get_host()}):
+                    return redirect(next_url)
+                return redirect('tickets:attendee_dashboard')
+    else:
+        form = OTPVerificationForm()
+    return render(request, 'tickets/auth/verify_phone_after_profile.html', {
+        'form': form,
+        'masked_phone': f"***{phone[-4:]}",
+    })
+
+
+@require_http_methods(["POST"])
+def resend_phone_after_profile_view(request):
+    """Resend phone OTP during email-signup phone verification step."""
+    from .sms import start_phone_verification
+    if request.user.is_authenticated:
+        return redirect('tickets:attendee_dashboard')
+    profile_data = request.session.get('pending_email_profile_data')
+    if not profile_data:
+        return redirect('tickets:email_login')
+    if not start_phone_verification(profile_data['phone_number']):
+        messages.error(request, 'Could not resend the code. Please try again.')
+    else:
+        messages.success(request, 'A new code has been sent.')
+    return redirect('tickets:verify_phone_after_profile')
 
 
 @require_http_methods(["POST"])
