@@ -11,3 +11,4 @@ class TicketsConfig(AppConfig):
             register_heif_opener()
         except ImportError:
             pass
+        import tickets.signals  # noqa: F401 — registers signal handlers

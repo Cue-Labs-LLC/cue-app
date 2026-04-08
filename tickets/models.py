@@ -769,6 +769,10 @@ class Event(AuditBaseModel):
     )
     ai_summary = models.TextField(blank=True, default='')
     ai_summary_generated_at = models.DateTimeField(null=True, blank=True)
+    computed_total_revenue = models.DecimalField(
+        max_digits=12, decimal_places=2, default=Decimal('0.00'),
+        help_text="Denormalized sum of ticket revenue + additional income; maintained by signals.",
+    )
 
     class Meta:
         ordering = ['-start_date', '-start_time', 'name']
@@ -1054,6 +1058,7 @@ class TicketOrder(AuditBaseModel):
             models.Index(fields=['customer', 'refunded_at']),
             models.Index(fields=['event', 'total_amount']),
             models.Index(fields=['event', 'is_in_person']),
+            models.Index(fields=['event', 'refunded_at'], name='tktorder_event_refund_idx'),
         ]
 
     @property
@@ -1130,6 +1135,7 @@ class Ticket(BaseModel):
         ordering = ['ticket_order', 'ticket_type']
         indexes = [
             models.Index(fields=['ticket_order']),
+            models.Index(fields=['ticket_order', 'price'], name='tkt_ticketorder_price_idx'),
             models.Index(fields=['tier']),
         ]
 

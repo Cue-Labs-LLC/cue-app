@@ -170,26 +170,22 @@ def _clear_waitlist_hold(request, event_id):
 
 
 _ANNOTATED_SORT_FIELDS = {
-    'upload_count', '-upload_count', 'total_revenue', '-total_revenue',
+    'upload_count', '-upload_count',
 }
 _ALLOWED_SORTS = {
     'name', '-name', 'start_date', '-start_date',
     'upload_count', '-upload_count', 'total_revenue', '-total_revenue',
 }
+# Map URL sort params to actual DB column names where they differ
+_SORT_FIELD_MAP = {
+    'total_revenue': 'computed_total_revenue',
+    '-total_revenue': '-computed_total_revenue',
+}
 
 
 def _annotate_events(queryset):
-    """Add subquery annotations (orders, uploads, ticket_revenue, additional_income, total_revenue, tickets, expenses) to an Event queryset."""
+    """Add subquery annotations (uploads, ticket_revenue, additional_income, total_revenue, tickets, expenses) to an Event queryset."""
     return queryset.annotate(
-        total_orders=Coalesce(
-            Subquery(
-                TicketOrder.objects.filter(event=OuterRef('pk'))
-                .values('event')
-                .annotate(n=Count('id'))
-                .values('n')[:1]
-            ),
-            0,
-        ),
         upload_count=Coalesce(
             Subquery(
                 TicketOrder.objects.filter(event=OuterRef('pk'))
@@ -2180,15 +2176,18 @@ def event_list(request):
     elif status_filter == 'upcoming':
         base_qs = base_qs.filter(start_date__gte=today)
 
+    # Map sort param to actual DB column (e.g. total_revenue → computed_total_revenue)
+    db_sort_by = _SORT_FIELD_MAP.get(sort_by, sort_by)
+
     if sort_by in _ANNOTATED_SORT_FIELDS:
         # Slow path: must annotate all rows before sorting by a computed field.
         # Caching mitigates repeat hits.
-        events = _annotate_events(base_qs).order_by(sort_by)
+        events = _annotate_events(base_qs).order_by(db_sort_by)
         paginator = Paginator(events, 25)
         page_obj = paginator.get_page(page_number)
     else:
         # Fast path: sort + paginate on native columns first, then annotate only the page.
-        events = base_qs.order_by(sort_by)
+        events = base_qs.order_by(db_sort_by)
         paginator = Paginator(events, 25)
         page_obj = paginator.get_page(page_number)
 
