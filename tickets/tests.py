@@ -1604,3 +1604,116 @@ class EmailCompleteProfileViewTest(TestCase):
         })
         self.assertEqual(response.status_code, 200)
         self.assertFalse(User.objects.filter(email='newuser3@example.com').exists())
+
+
+class TestRFMCalculator(TestCase):
+    """Tests for RFMCalculator.calculate_all()."""
+
+    def setUp(self):
+        from datetime import date
+        self.org = Organization.objects.create(name='RFM Test Org', slug='rfm-test-org')
+        self.venue = Venue.objects.create(organization=self.org, name='Venue', city='City')
+        self.event = Event.objects.create(
+            organization=self.org, name='Event', venue=self.venue,
+            start_date=date(2025, 1, 1),
+        )
+        self.csv_format = CSVFormat.objects.create(
+            organization=self.org, name='Fmt', column_mapping={'order_number': 'Order ID'},
+        )
+        self.upload = UploadedFile.objects.create(
+            organization=self.org, csv_format=self.csv_format,
+            filename='test.csv', status='completed',
+        )
+
+    def _make_customer(self, email, lifetime_value=Decimal('0.00'), last_order_date=None):
+        return Customer.objects.create(
+            organization=self.org, email=email, name=email,
+            lifetime_value=lifetime_value, last_order_date=last_order_date,
+        )
+
+    def _make_order(self, customer, total, days_ago=30, order_num=None):
+        from datetime import date, timedelta
+        import uuid
+        order_date = timezone.now() - timedelta(days=days_ago)
+        TicketOrder.objects.create(
+            customer=customer, event=self.event, uploaded_file=self.upload,
+            order_number=order_num or str(uuid.uuid4())[:20],
+            order_date=order_date, total_amount=total,
+        )
+
+    def test_happy_path_scores_customers(self):
+        """Customers with orders get varied 1-5 scores and non-empty segments."""
+        from tickets.services.segmentation.rfm_calculator import RFMCalculator
+        c1 = self._make_customer('c1@example.com', Decimal('1000.00'), date(2025, 6, 1))
+        c2 = self._make_customer('c2@example.com', Decimal('200.00'), date(2025, 3, 1))
+        c3 = self._make_customer('c3@example.com', Decimal('50.00'), date(2024, 12, 1))
+        for c, amt, days in [(c1, 1000, 10), (c2, 200, 90), (c3, 50, 200)]:
+            self._make_order(c, amt, days_ago=days)
+        self._make_order(c1, 500, days_ago=5)  # c1 has more orders (higher frequency)
+
+        RFMCalculator(self.org).calculate_all()
+
+        for customer in [c1, c2, c3]:
+            customer.refresh_from_db()
+            self.assertIn(customer.rfm_recency_score, range(1, 6))
+            self.assertIn(customer.rfm_frequency_score, range(1, 6))
+            self.assertIn(customer.rfm_monetary_score, range(1, 6))
+            self.assertTrue(customer.rfm_segment)  # not blank
+
+    def test_no_orders_all_default_to_dormant(self):
+        """Org with no orders: all customers get score=1 and segment Dormant."""
+        from tickets.services.segmentation.rfm_calculator import RFMCalculator
+        c1 = self._make_customer('no1@example.com')
+        c2 = self._make_customer('no2@example.com')
+
+        RFMCalculator(self.org).calculate_all()
+
+        for customer in [c1, c2]:
+            customer.refresh_from_db()
+            self.assertEqual(customer.rfm_recency_score, 1)
+            self.assertEqual(customer.rfm_frequency_score, 1)
+            self.assertEqual(customer.rfm_monetary_score, 1)
+            self.assertEqual(customer.rfm_segment, 'Dormant')
+
+    def test_single_customer_degenerate_percentiles(self):
+        """One customer with orders: degenerate percentiles fall back to median, no crash."""
+        from tickets.services.segmentation.rfm_calculator import RFMCalculator
+        c = self._make_customer('solo@example.com', Decimal('100.00'), date(2025, 5, 1))
+        self._make_order(c, 100, days_ago=30)
+
+        RFMCalculator(self.org).calculate_all()
+
+        c.refresh_from_db()
+        self.assertIn(c.rfm_recency_score, range(1, 6))
+        self.assertTrue(c.rfm_segment)
+
+    def test_placeholder_customers_excluded(self):
+        """Customers with @placeholder.local emails are not scored."""
+        from tickets.services.segmentation.rfm_calculator import RFMCalculator
+        real = self._make_customer('real@example.com', Decimal('100.00'), date(2025, 5, 1))
+        placeholder = self._make_customer('ghost@placeholder.local')
+        self._make_order(real, 100, days_ago=30)
+
+        RFMCalculator(self.org).calculate_all()
+
+        placeholder.refresh_from_db()
+        self.assertIsNone(placeholder.rfm_recency_score)
+        self.assertIsNone(placeholder.rfm_frequency_score)
+        self.assertIsNone(placeholder.rfm_monetary_score)
+
+    def test_null_last_order_date_with_orders_falls_back(self):
+        """Customer with orders but last_order_date=None gets 9999 recency days (scores low on R)."""
+        from tickets.services.segmentation.rfm_calculator import RFMCalculator
+        c1 = self._make_customer('null_date@example.com', Decimal('500.00'), last_order_date=None)
+        c2 = self._make_customer('recent@example.com', Decimal('100.00'), date(2025, 6, 1))
+        self._make_order(c1, 500, days_ago=10)
+        self._make_order(c2, 100, days_ago=10)
+
+        RFMCalculator(self.org).calculate_all()
+
+        c1.refresh_from_db()
+        c2.refresh_from_db()
+        # c1 has null last_order_date → 9999 recency → worst recency score
+        self.assertEqual(c1.rfm_recency_score, 1)
+        # c2 has a real recent date → better recency
+        self.assertGreaterEqual(c2.rfm_recency_score, c1.rfm_recency_score)
