@@ -358,8 +358,9 @@ if _SENTRY_DSN:
         # Capture 100% of transactions for performance monitoring.
         # Lower to 0.2 (20%) if volume gets large and costs become a concern.
         traces_sample_rate=1.0,
-        # Profile 20% of sampled transactions (CPU flamegraphs).
-        profiles_sample_rate=0.2,
+        # Profile 100% of sessions that have an active transaction (CPU flamegraphs).
+        profile_session_sample_rate=1.0,
+        profile_lifecycle="trace",
         # Don't send PII (user emails/IPs) unless you explicitly want it.
         send_default_pii=False,
     )
