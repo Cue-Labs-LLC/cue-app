@@ -2648,6 +2648,21 @@ def event_detail(request, event_id):
 
     active_scanner_sessions = ScannerSession.objects.filter(event=event, is_active=True).count()
 
+    # Prev/next event navigation (ordered newest-first, matching event list default)
+    event_ids = list(
+        Event.objects.filter(organization=org)
+        .order_by('-start_date', '-start_time', 'name')
+        .values_list('id', flat=True)
+    )
+    try:
+        idx = event_ids.index(event.id)
+        prev_event_id = event_ids[idx - 1] if idx > 0 else None
+        next_event_id = event_ids[idx + 1] if idx + 1 < len(event_ids) else None
+    except ValueError:
+        prev_event_id = next_event_id = None
+    nav_ids = [i for i in [prev_event_id, next_event_id] if i]
+    nav_names = dict(Event.objects.filter(id__in=nav_ids).values_list('id', 'name')) if nav_ids else {}
+
     context = {
         'event': event,
         'active_scanner_sessions': active_scanner_sessions,
@@ -2679,6 +2694,10 @@ def event_detail(request, event_id):
         'ticket_type_breakdown': ticket_type_breakdown,
         'ticket_type_breakdown_json': ticket_type_breakdown_json,
         'sales_over_time_json': sales_over_time_json,
+        'prev_event_id': prev_event_id,
+        'next_event_id': next_event_id,
+        'prev_event_name': nav_names.get(prev_event_id),
+        'next_event_name': nav_names.get(next_event_id),
     }
     if event.ticketing_type != 'direct':
         context['upload_form'] = EventCSVUploadForm(organization=org)

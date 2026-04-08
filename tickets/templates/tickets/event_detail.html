@@ -60,6 +60,20 @@
         </div>
     </div>
     <div class="page-header-actions">
+        {% if prev_event_id or next_event_id %}
+        <div class="d-flex gap-1 me-1">
+            <a href="{% if prev_event_id %}{% url 'tickets:event_detail' prev_event_id %}{% else %}#{% endif %}"
+               class="btn btn-outline-secondary btn-sm{% if not prev_event_id %} disabled{% endif %}"
+               title="{{ prev_event_name|default:'' }}">
+                <i class="bi bi-chevron-left"></i>
+            </a>
+            <a href="{% if next_event_id %}{% url 'tickets:event_detail' next_event_id %}{% else %}#{% endif %}"
+               class="btn btn-outline-secondary btn-sm{% if not next_event_id %} disabled{% endif %}"
+               title="{{ next_event_name|default:'' }}">
+                <i class="bi bi-chevron-right"></i>
+            </a>
+        </div>
+        {% endif %}
         <!-- <form method="post" action="{% url 'tickets:send_survey' event.id %}" class="d-inline"
               onsubmit="return confirm('Send post-event survey to all attendees who haven\'t received one yet?');">
             {% csrf_token %}
