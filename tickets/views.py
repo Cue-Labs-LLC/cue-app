@@ -169,22 +169,16 @@ def _clear_waitlist_hold(request, event_id):
     )
 
 
-_ANNOTATED_SORT_FIELDS = {
-    'upload_count', '-upload_count',
-}
-_ALLOWED_SORTS = {
-    'name', '-name', 'start_date', '-start_date',
-    'upload_count', '-upload_count', 'total_revenue', '-total_revenue',
-}
-# Map URL sort params to actual DB column names where they differ
-_SORT_FIELD_MAP = {
-    'total_revenue': 'computed_total_revenue',
-    '-total_revenue': '-computed_total_revenue',
-}
 
 
 def _annotate_events(queryset):
-    """Add subquery annotations (uploads, ticket_revenue, additional_income, total_revenue, tickets, expenses) to an Event queryset."""
+    """Annotate an Event queryset with stats needed for the event list page.
+
+    Uses denormalized cached_* fields for all ticket stats (avoids expensive
+    Ticket→TicketOrder joins on large datasets). Only two subqueries remain:
+    upload_count (needed for the past-event warning logic) and total_expenses
+    (EventExpense table is small and now has a covering index on (event, deleted_at)).
+    """
     return queryset.annotate(
         upload_count=Coalesce(
             Subquery(
@@ -192,36 +186,6 @@ def _annotate_events(queryset):
                 .exclude(uploaded_file__isnull=True)
                 .values('event')
                 .annotate(n=Count('uploaded_file', distinct=True))
-                .values('n')[:1]
-            ),
-            0,
-        ),
-        ticket_revenue=Coalesce(
-            Subquery(
-                TicketOrder.objects.filter(event=OuterRef('pk'))
-                .values('event')
-                .annotate(total=Sum('total_amount'))
-                .values('total')[:1],
-                output_field=models.DecimalField(max_digits=10, decimal_places=2),
-            ),
-            Decimal('0.00'),
-        ),
-        total_additional_income=Coalesce(
-            Subquery(
-                EventIncome.objects.filter(event=OuterRef('pk'), deleted_at__isnull=True)
-                .values('event')
-                .annotate(total=Sum('amount'))
-                .values('total')[:1],
-                output_field=models.DecimalField(max_digits=10, decimal_places=2),
-            ),
-            Decimal('0.00'),
-        ),
-        total_revenue=F('ticket_revenue') + F('total_additional_income'),
-        total_tickets=Coalesce(
-            Subquery(
-                Ticket.objects.filter(ticket_order__event=OuterRef('pk'))
-                .values('ticket_order__event')
-                .annotate(n=Count('id'))
                 .values('n')[:1]
             ),
             0,
@@ -236,34 +200,11 @@ def _annotate_events(queryset):
             ),
             Decimal('0.00'),
         ),
-        paid_ticket_sum=Coalesce(
-            Subquery(
-                Ticket.objects.filter(
-                    ticket_order__event=OuterRef('pk'),
-                    price__gt=0,
-                    ticket_order__refunded_at__isnull=True,
-                )
-                .values('ticket_order__event')
-                .annotate(total=Sum('price'))
-                .values('total')[:1],
-                output_field=models.DecimalField(max_digits=10, decimal_places=2),
-            ),
-            Decimal('0.00'),
-        ),
-        paid_ticket_count=Coalesce(
-            Subquery(
-                Ticket.objects.filter(
-                    ticket_order__event=OuterRef('pk'),
-                    price__gt=0,
-                    ticket_order__refunded_at__isnull=True,
-                )
-                .values('ticket_order__event')
-                .annotate(cnt=Count('id'))
-                .values('cnt')[:1],
-                output_field=models.IntegerField(),
-            ),
-            0,
-        ),
+        # Denormalized fields — maintained by signals.refresh_event_stats and CSV import
+        total_revenue=F('computed_total_revenue'),
+        total_tickets=F('cached_ticket_count'),
+        paid_ticket_sum=F('cached_paid_ticket_sum'),
+        paid_ticket_count=F('cached_paid_ticket_count'),
     )
 
 
@@ -1297,7 +1238,8 @@ def home(request):
             fees = (ev.paid_ticket_sum * Decimal('0.10') + Decimal('0.99') * ev.paid_ticket_count) / Decimal('1.10')
         else:
             fees = Decimal('0.00')
-        ev.net_revenue = ev.ticket_revenue - fees + ev.total_additional_income
+        # computed_total_revenue = ticket_revenue + additional_income (signal-maintained)
+        ev.net_revenue = ev.total_revenue - fees
 
     # Show warning when current time is past the event's end date+time and upload_count is 0 (current page only)
     now_local = django_tz.localtime(django_tz.now()).replace(tzinfo=None)
@@ -2120,26 +2062,17 @@ def customer_detail(request, customer_id):
 @require_org
 @require_organizer
 def event_list(request):
-    """Display list of all events with associated uploads."""
+    """Display list of all events ordered by most recent start date."""
     org = get_organization(request)
 
     search_query = request.GET.get('search', '')
-    sort_by = request.GET.get('sort', '-start_date')
     page_number = request.GET.get('page', '1')
     status_filter = request.GET.get('status', 'all')
     if status_filter not in ('all', 'live', 'ended', 'upcoming'):
         status_filter = 'all'
 
-    # Default upcoming tab to ascending date (nearest first)
-    if status_filter == 'upcoming' and 'sort' not in request.GET:
-        sort_by = 'start_date'
-
-    # Validate sort parameter
-    if sort_by not in _ALLOWED_SORTS:
-        sort_by = '-start_date'
-
     # Check cache first (skip gracefully when Redis is unavailable)
-    cache_key = _event_list_cache_key(org.pk, search_query, sort_by, page_number, status_filter)
+    cache_key = _event_list_cache_key(org.pk, search_query, '', page_number, status_filter)
     try:
         cached = django_cache.get(cache_key)
     except Exception:
@@ -2176,42 +2109,33 @@ def event_list(request):
     elif status_filter == 'upcoming':
         base_qs = base_qs.filter(start_date__gte=today)
 
-    # Map sort param to actual DB column (e.g. total_revenue → computed_total_revenue)
-    db_sort_by = _SORT_FIELD_MAP.get(sort_by, sort_by)
+    # Always sort by most recent start date. Paginate first, then annotate only the page.
+    events = base_qs.order_by('-start_date')
+    paginator = Paginator(events, 25)
+    page_obj = paginator.get_page(page_number)
 
-    if sort_by in _ANNOTATED_SORT_FIELDS:
-        # Slow path: must annotate all rows before sorting by a computed field.
-        # Caching mitigates repeat hits.
-        events = _annotate_events(base_qs).order_by(db_sort_by)
-        paginator = Paginator(events, 25)
-        page_obj = paginator.get_page(page_number)
-    else:
-        # Fast path: sort + paginate on native columns first, then annotate only the page.
-        events = base_qs.order_by(db_sort_by)
-        paginator = Paginator(events, 25)
-        page_obj = paginator.get_page(page_number)
+    page_pks = [e.pk for e in page_obj.object_list]
+    annotated_map = {
+        e.pk: e
+        for e in _annotate_events(
+            Event.objects.filter(pk__in=page_pks)
+        ).select_related('venue')
+    }
+    page_obj.object_list = [annotated_map[pk] for pk in page_pks]
 
-        # Annotate only the events on the current page
-        page_pks = [e.pk for e in page_obj.object_list]
-        annotated_map = {
-            e.pk: e
-            for e in _annotate_events(
-                Event.objects.filter(pk__in=page_pks)
-            ).select_related('venue')
-        }
-        # Replace the page's object list, preserving the paginator's sort order
-        page_obj.object_list = [annotated_map[pk] for pk in page_pks]
-
-    # Compute net_revenue (ticket revenue after fees + additional income) for each event on this page
-    # Fees only apply to direct ticketing events; external/CSV events are shown at gross
+    # Compute net_revenue for each event on this page.
+    # Fees apply to direct ticketing events only; external/CSV events are shown at gross.
+    # computed_total_revenue = ticket_revenue + additional_income (signal-maintained),
+    # so net_revenue = total_revenue - fees is algebraically equivalent to the old formula
+    # ticket_revenue - fees + total_additional_income. See signals.refresh_event_stats.
     for ev in page_obj.object_list:
         if ev.ticketing_type == 'direct':
             fees = (ev.paid_ticket_sum * Decimal('0.10') + Decimal('0.99') * ev.paid_ticket_count) / Decimal('1.10')
         else:
             fees = Decimal('0.00')
-        ev.net_revenue = ev.ticket_revenue - fees + ev.total_additional_income
+        ev.net_revenue = ev.total_revenue - fees
 
-    # Show warning when current time is past the event's end date+time and upload_count is 0 (same as home)
+    # Show warning when current time is past the event's end date+time and upload_count is 0
     now_local = django_tz.localtime(django_tz.now()).replace(tzinfo=None)
     event_ids_show_warning = set()
     event_ids_show_placeholder = set()
@@ -2229,7 +2153,6 @@ def event_list(request):
     context = {
         'page_obj': page_obj,
         'search_query': search_query,
-        'sort_by': sort_by,
         'status_filter': status_filter,
         'event_ids_show_warning': event_ids_show_warning,
         'event_ids_show_placeholder': event_ids_show_placeholder,
@@ -4122,26 +4045,6 @@ def profitability_overview(request):
     events = (
         events_qs
         .annotate(
-            ticket_revenue=Coalesce(
-                Subquery(
-                    TicketOrder.objects.filter(event=OuterRef('pk'))
-                    .values('event')
-                    .annotate(total=Sum('total_amount'))
-                    .values('total')[:1],
-                    output_field=models.DecimalField(max_digits=10, decimal_places=2),
-                ),
-                Decimal('0.00'),
-            ),
-            total_additional_income=Coalesce(
-                Subquery(
-                    EventIncome.objects.filter(event=OuterRef('pk'), deleted_at__isnull=True)
-                    .values('event')
-                    .annotate(total=Sum('amount'))
-                    .values('total')[:1],
-                    output_field=models.DecimalField(max_digits=10, decimal_places=2),
-                ),
-                Decimal('0.00'),
-            ),
             total_expenses=Coalesce(
                 Subquery(
                     EventExpense.objects.filter(event=OuterRef('pk'), deleted_at__isnull=True)
@@ -4152,40 +4055,14 @@ def profitability_overview(request):
                 ),
                 Decimal('0.00'),
             ),
-            paid_ticket_sum=Coalesce(
-                Subquery(
-                    Ticket.objects.filter(
-                        ticket_order__event=OuterRef('pk'),
-                        price__gt=0,
-                        ticket_order__refunded_at__isnull=True,
-                    )
-                    .values('ticket_order__event')
-                    .annotate(total=Sum('price'))
-                    .values('total')[:1],
-                    output_field=models.DecimalField(max_digits=10, decimal_places=2),
-                ),
-                Decimal('0.00'),
-            ),
-            paid_ticket_count=Coalesce(
-                Subquery(
-                    Ticket.objects.filter(
-                        ticket_order__event=OuterRef('pk'),
-                        price__gt=0,
-                        ticket_order__refunded_at__isnull=True,
-                    )
-                    .values('ticket_order__event')
-                    .annotate(cnt=Count('id'))
-                    .values('cnt')[:1],
-                    output_field=models.IntegerField(),
-                ),
-                0,
-            ),
+            paid_ticket_sum=F('cached_paid_ticket_sum'),
+            paid_ticket_count=F('cached_paid_ticket_count'),
         )
         .select_related('venue')
         .order_by('-start_date')
     )
 
-    # Summary stats (total_revenue = ticket_revenue + additional_income)
+    # Summary stats (computed_total_revenue = ticket_revenue + additional_income, signal-maintained)
     summary_revenue = Decimal('0.00')
     summary_expenses = Decimal('0.00')
     summary_fees = Decimal('0.00')
@@ -4193,7 +4070,7 @@ def profitability_overview(request):
     summary_paid_ticket_count = 0
     event_rows = []
     for e in events:
-        total_revenue = e.ticket_revenue + e.total_additional_income
+        total_revenue = e.computed_total_revenue
         fees = (e.paid_ticket_sum * Decimal('0.10') + Decimal('0.99') * e.paid_ticket_count) / Decimal('1.10')
         net_revenue = total_revenue - fees
         profit = net_revenue - e.total_expenses

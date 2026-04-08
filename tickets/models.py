@@ -773,6 +773,18 @@ class Event(AuditBaseModel):
         max_digits=12, decimal_places=2, default=Decimal('0.00'),
         help_text="Denormalized sum of ticket revenue + additional income; maintained by signals.",
     )
+    cached_ticket_count = models.IntegerField(
+        default=0,
+        help_text="Denormalized total ticket count; maintained by signals and CSV import.",
+    )
+    cached_paid_ticket_count = models.IntegerField(
+        default=0,
+        help_text="Denormalized count of non-refunded paid tickets; maintained by signals and CSV import.",
+    )
+    cached_paid_ticket_sum = models.DecimalField(
+        max_digits=12, decimal_places=2, default=Decimal('0.00'),
+        help_text="Denormalized sum of non-refunded paid ticket prices; maintained by signals and CSV import.",
+    )
 
     class Meta:
         ordering = ['-start_date', '-start_time', 'name']
@@ -858,6 +870,7 @@ class EventExpense(AuditBaseModel):
         indexes = [
             models.Index(fields=['event', 'category']),
             models.Index(fields=['event', '-expense_date']),
+            models.Index(fields=['event', 'deleted_at']),
         ]
 
     def __str__(self):
@@ -906,6 +919,7 @@ class EventIncome(AuditBaseModel):
         indexes = [
             models.Index(fields=['event', 'income_source']),
             models.Index(fields=['event', '-income_date']),
+            models.Index(fields=['event', 'deleted_at']),
         ]
 
     def __str__(self):

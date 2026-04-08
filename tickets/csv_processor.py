@@ -242,6 +242,7 @@ class CSVProcessor:
             'rejected_orders': [],
             'skipped_rows_count': 0,
             'skipped_rows_by_reason': {},
+            'event_ids': set(),
         }
 
         # If using tiers, create tier instances first
@@ -307,6 +308,7 @@ class CSVProcessor:
                     results['skipped_rows_by_reason'][reason] = (
                         results['skipped_rows_by_reason'].get(reason, 0) + count
                     )
+                results['event_ids'].update(chunk_results.get('event_ids', set()))
         
         # Update final status
         if results['error_count'] == 0 and results['skipped_duplicates'] == 0:
@@ -318,7 +320,17 @@ class CSVProcessor:
 
         self.uploaded_file.total_rows = processed_rows
         self.uploaded_file.save(update_fields=['status', 'total_rows'])
-        
+
+        # Refresh denormalized event stats for all events touched by this import.
+        # Must be called explicitly because bulk_create does not fire Django signals.
+        if results['event_ids']:
+            from .signals import refresh_event_stats
+            for event_id in results['event_ids']:
+                try:
+                    refresh_event_stats(str(event_id))
+                except Exception as e:
+                    logger.error(f"Error refreshing stats for event {event_id}: {str(e)}")
+
         return results
     
     def _create_tier_instances(self, tier_definitions: Dict):
@@ -404,6 +416,7 @@ class CSVProcessor:
             'errors': [],
             'skipped_order_numbers': [],
             'customer_ids': set(),
+            'event_ids': set(),
             'rejected_orders': [],
             'skipped_rows_count': sum(skipped_by_reason.values()),
             'skipped_rows_by_reason': skipped_by_reason,
@@ -795,6 +808,8 @@ class CSVProcessor:
                     is_in_person=bool(mapped_row.get('processed_in_person')),
                 )
                 ticket_orders_to_create.append(ticket_order)
+                if event.id:
+                    results['event_ids'].add(event.id)
 
                 # Create tickets
                 for _ in range(quantity):

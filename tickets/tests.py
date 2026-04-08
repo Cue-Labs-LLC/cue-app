@@ -1717,3 +1717,134 @@ class TestRFMCalculator(TestCase):
         self.assertEqual(c1.rfm_recency_score, 1)
         # c2 has a real recent date → better recency
         self.assertGreaterEqual(c2.rfm_recency_score, c1.rfm_recency_score)
+
+
+class EventCachedStatsTest(TestCase):
+    """Tests for Event cached stat fields and net_revenue calculation."""
+
+    def setUp(self):
+        self.org = Organization.objects.create(name='Stats Test Org', slug='stats-test-org')
+        self.venue = Venue.objects.create(organization=self.org, name='Venue', city='City')
+        self.event = Event.objects.create(
+            organization=self.org, name='Test Event', venue=self.venue,
+            start_date=date(2025, 6, 1),
+        )
+        self.customer = Customer.objects.create(
+            organization=self.org, email='buyer@example.com', name='Buyer',
+        )
+
+    def _make_order_with_tickets(self, total_amount, ticket_prices, refunded=False):
+        """Create a TicketOrder with Ticket rows and optional refund."""
+        import uuid
+        order = TicketOrder.objects.create(
+            event=self.event,
+            customer=self.customer,
+            order_number=str(uuid.uuid4())[:12],
+            total_amount=total_amount,
+            order_date=timezone.now(),
+            refunded_at=timezone.now() if refunded else None,
+        )
+        for price in ticket_prices:
+            Ticket.objects.create(ticket_order=order, price=price)
+        return order
+
+    # ------------------------------------------------------------------ #
+    # Stats edge cases                                                     #
+    # ------------------------------------------------------------------ #
+
+    def test_zero_tickets_all_stats_zero(self):
+        """Event with no orders has all cached stats at zero defaults."""
+        self.event.refresh_from_db()
+        self.assertEqual(self.event.cached_ticket_count, 0)
+        self.assertEqual(self.event.cached_paid_ticket_count, 0)
+        self.assertEqual(self.event.cached_paid_ticket_sum, Decimal('0.00'))
+
+    def test_all_refunded_paid_stats_zero(self):
+        """Fully refunded order: total tickets counted, paid stats zero."""
+        from tickets.signals import refresh_event_stats
+        self._make_order_with_tickets(
+            total_amount=Decimal('100.00'),
+            ticket_prices=[Decimal('50.00'), Decimal('50.00')],
+            refunded=True,
+        )
+        refresh_event_stats(str(self.event.id))
+        self.event.refresh_from_db()
+
+        self.assertEqual(self.event.cached_ticket_count, 2)
+        self.assertEqual(self.event.cached_paid_ticket_count, 0)
+        self.assertEqual(self.event.cached_paid_ticket_sum, Decimal('0.00'))
+
+    def test_mixed_paid_free_refunded(self):
+        """Only unrefunded paid tickets count toward paid_* fields."""
+        from tickets.signals import refresh_event_stats
+        # 2 paid tickets, not refunded
+        self._make_order_with_tickets(
+            total_amount=Decimal('80.00'),
+            ticket_prices=[Decimal('40.00'), Decimal('40.00')],
+            refunded=False,
+        )
+        # 1 free ticket, not refunded
+        self._make_order_with_tickets(
+            total_amount=Decimal('0.00'),
+            ticket_prices=[Decimal('0.00')],
+            refunded=False,
+        )
+        # 1 paid ticket, refunded
+        self._make_order_with_tickets(
+            total_amount=Decimal('50.00'),
+            ticket_prices=[Decimal('50.00')],
+            refunded=True,
+        )
+        refresh_event_stats(str(self.event.id))
+        self.event.refresh_from_db()
+
+        self.assertEqual(self.event.cached_ticket_count, 4)
+        self.assertEqual(self.event.cached_paid_ticket_count, 2)
+        self.assertEqual(self.event.cached_paid_ticket_sum, Decimal('80.00'))
+
+    # ------------------------------------------------------------------ #
+    # Net revenue regression                                               #
+    # ------------------------------------------------------------------ #
+
+    def test_net_revenue_equivalence(self):
+        """
+        net_revenue = total_revenue - fees is algebraically equivalent to
+        ticket_revenue - fees when all revenue comes through TicketOrders.
+
+        computed_total_revenue is signal-maintained as Sum(total_amount) across
+        TicketOrders + EventIncome. With no EventIncome, total_revenue == ticket_revenue,
+        so the simplified formula is definitionally equivalent.
+        """
+        from tickets.signals import refresh_event_stats
+        from decimal import ROUND_HALF_UP
+
+        # 3 paid tickets at $30 each — ticket_revenue = $90
+        self._make_order_with_tickets(
+            total_amount=Decimal('90.00'),
+            ticket_prices=[Decimal('30.00'), Decimal('30.00'), Decimal('30.00')],
+            refunded=False,
+        )
+        refresh_event_stats(str(self.event.id))
+        self.event.refresh_from_db()
+
+        ticket_revenue = Decimal('90.00')
+        paid_ticket_sum = self.event.cached_paid_ticket_sum   # 90.00
+        paid_ticket_count = self.event.cached_paid_ticket_count  # 3
+
+        # Fees formula (direct ticketing): (paid_ticket_sum * 0.10 + 0.99 * count) / 1.10
+        fees = (
+            paid_ticket_sum * Decimal('0.10')
+            + Decimal('0.99') * paid_ticket_count
+        ) / Decimal('1.10')
+
+        # Original formula (no additional income in this test)
+        original = ticket_revenue - fees
+        # Simplified formula using computed_total_revenue
+        simplified = self.event.computed_total_revenue - fees
+
+        self.assertEqual(
+            original.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP),
+            simplified.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP),
+        )
+        # Sanity: computed_total_revenue matches the order total
+        self.assertEqual(self.event.computed_total_revenue, ticket_revenue)

@@ -17,20 +17,19 @@
 </div>
 
 <nav class="nav nav-tabs" aria-label="Event status filter">
-    <a class="nav-link{% if status_filter == 'all' %} active{% endif %}" href="?status=all&search={{ search_query }}&sort={{ sort_by }}">All</a>
-    <a class="nav-link{% if status_filter == 'upcoming' %} active{% endif %}" href="?status=upcoming&search={{ search_query }}&sort={{ sort_by }}">Upcoming</a>
-    <a class="nav-link{% if status_filter == 'live' %} active{% endif %}" href="?status=live&search={{ search_query }}&sort={{ sort_by }}">Live</a>
-    <a class="nav-link{% if status_filter == 'ended' %} active{% endif %}" href="?status=ended&search={{ search_query }}&sort={{ sort_by }}">Ended</a>
+    <a class="nav-link{% if status_filter == 'all' %} active{% endif %}" href="?status=all&search={{ search_query }}">All</a>
+    <a class="nav-link{% if status_filter == 'upcoming' %} active{% endif %}" href="?status=upcoming&search={{ search_query }}">Upcoming</a>
+    <a class="nav-link{% if status_filter == 'live' %} active{% endif %}" href="?status=live&search={{ search_query }}">Live</a>
+    <a class="nav-link{% if status_filter == 'ended' %} active{% endif %}" href="?status=ended&search={{ search_query }}">Ended</a>
 </nav>
 
 <div class="search-bar">
     <form method="get" class="d-flex flex-wrap gap-2 w-100">
         <input type="hidden" name="status" value="{{ status_filter }}">
-        <input type="hidden" name="sort" value="{{ sort_by }}">
         <input type="text" name="search" class="form-control" placeholder="Search by event name, venue, or city..." value="{{ search_query }}">
         <button type="submit" class="btn btn-outline-secondary"><i class="bi bi-search"></i></button>
         {% if search_query %}
-        <a href="?status={{ status_filter }}&sort={{ sort_by }}" class="btn btn-outline-secondary">Clear</a>
+        <a href="?status={{ status_filter }}" class="btn btn-outline-secondary">Clear</a>
         {% endif %}
     </form>
 </div>
@@ -42,10 +41,10 @@
             <table class="table table-hover mb-0 event-list-table">
                 <thead>
                     <tr>
-                        <th><a href="?sort={% if sort_by == 'name' %}-name{% else %}name{% endif %}&search={{ search_query }}&status={{ status_filter }}">Event Name {% if sort_by == 'name' %}<i class="bi bi-arrow-up"></i>{% elif sort_by == '-name' %}<i class="bi bi-arrow-down"></i>{% else %}<i class="bi bi-arrow-down-up"></i>{% endif %}</a></th>
-                        <th><a href="?sort={% if sort_by == '-start_date' %}start_date{% else %}-start_date{% endif %}&search={{ search_query }}&status={{ status_filter }}">Date {% if sort_by == '-start_date' %}<i class="bi bi-arrow-down"></i>{% elif sort_by == 'start_date' %}<i class="bi bi-arrow-up"></i>{% else %}<i class="bi bi-arrow-down-up"></i>{% endif %}</a></th>
+                        <th>Event Name</th>
+                        <th>Date</th>
                         <th class="d-none d-md-table-cell">Venue</th>
-                        <th><a href="?sort={% if sort_by == '-total_revenue' %}total_revenue{% else %}-total_revenue{% endif %}&search={{ search_query }}&status={{ status_filter }}">Revenue {% if sort_by == '-total_revenue' %}<i class="bi bi-arrow-down"></i>{% elif sort_by == 'total_revenue' %}<i class="bi bi-arrow-up"></i>{% else %}<i class="bi bi-arrow-down-up"></i>{% endif %}</a></th>
+                        <th>Revenue</th>
                         <th class="d-none d-md-table-cell">Profit</th>
                         <th>Tickets</th>
                         <th></th>
@@ -155,11 +154,11 @@
             <nav>
                 <ul class="pagination mb-0">
                     {% if page_obj.has_previous %}
-                    <li class="page-item"><a class="page-link" href="?page={{ page_obj.previous_page_number }}&search={{ search_query }}&sort={{ sort_by }}&status={{ status_filter }}">Previous</a></li>
+                    <li class="page-item"><a class="page-link" href="?page={{ page_obj.previous_page_number }}&search={{ search_query }}&status={{ status_filter }}">Previous</a></li>
                     {% endif %}
                     <li class="page-item active"><span class="page-link">{{ page_obj.number }} / {{ page_obj.paginator.num_pages }}</span></li>
                     {% if page_obj.has_next %}
-                    <li class="page-item"><a class="page-link" href="?page={{ page_obj.next_page_number }}&search={{ search_query }}&sort={{ sort_by }}&status={{ status_filter }}">Next</a></li>
+                    <li class="page-item"><a class="page-link" href="?page={{ page_obj.next_page_number }}&search={{ search_query }}&status={{ status_filter }}">Next</a></li>
                     {% endif %}
                 </ul>
             </nav>
