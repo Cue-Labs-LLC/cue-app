@@ -42,12 +42,6 @@
             Just a few details to get you started.
         </p>
 
-        {% if messages %}
-            {% for message in messages %}
-                <div class="alert alert-{{ message.tags }}" role="alert">{{ message }}</div>
-            {% endfor %}
-        {% endif %}
-
         <form method="post">
             {% csrf_token %}
             {% crispy form %}
@@ -84,37 +78,88 @@
 {% block extra_js %}
 <script>
 document.addEventListener('DOMContentLoaded', function () {
+    // ── Phone number (intl-tel-input) setup ──
     var input = document.getElementById('id_phone_number');
-    if (!input) return;
-    if (typeof window.intlTelInput !== 'function') return;
-    var iti = window.intlTelInput(input, {
-        initialCountry: 'us',
-        preferredCountries: ['us', 'gb', 'ca', 'au'],
-        useFullscreenPopup: false,
-        // Required for getNumber() to return E.164 format and for setNumber()
-        // to correctly parse international numbers on validation-error re-renders.
-        utilsScript: 'https://cdn.jsdelivr.net/npm/intl-tel-input@23/build/js/utils.js',
-    });
-    // After a validation error Django re-renders the input with the full E.164 value
-    // (e.g. "+12125551234"). Parse it so intl-tel-input displays it correctly and
-    // doesn't double-prefix on the next submission.
-    if (input.value && input.value.startsWith('+')) {
-        iti.setNumber(input.value);
-    }
-    var form = input.closest('form');
-    if (form) {
-        var hidden = document.createElement('input');
-        hidden.type = 'hidden';
-        hidden.name = input.name;
-        input.removeAttribute('name');
-        form.appendChild(hidden);
-        form.addEventListener('submit', function () {
-            // getNumber() returns E.164 when utils are loaded; fall back to manual
-            // construction for the rare case utils haven't finished loading yet.
-            var num = iti.getNumber();
-            hidden.value = num || ('+' + (iti.getSelectedCountryData().dialCode || '1') + input.value.replace(/[^0-9]/g, ''));
+    if (input && typeof window.intlTelInput === 'function') {
+        var iti = window.intlTelInput(input, {
+            initialCountry: 'us',
+            preferredCountries: ['us', 'gb', 'ca', 'au'],
+            useFullscreenPopup: false,
+            // Required for getNumber() to return E.164 format and for setNumber()
+            // to correctly parse international numbers on validation-error re-renders.
+            utilsScript: 'https://cdn.jsdelivr.net/npm/intl-tel-input@23/build/js/utils.js',
         });
+        // After a validation error Django re-renders the input with the full E.164 value
+        // (e.g. "+12125551234"). Parse it so intl-tel-input displays it correctly and
+        // doesn't double-prefix on the next submission.
+        if (input.value && input.value.startsWith('+')) {
+            iti.setNumber(input.value);
+        }
+        var phoneForm = input.closest('form');
+        if (phoneForm) {
+            var hidden = document.createElement('input');
+            hidden.type = 'hidden';
+            hidden.name = input.name;
+            input.removeAttribute('name');
+            phoneForm.appendChild(hidden);
+            phoneForm.addEventListener('submit', function () {
+                // getNumber() returns E.164 when utils are loaded; fall back to manual
+                // construction for the rare case utils haven't finished loading yet.
+                var num = iti.getNumber();
+                hidden.value = num || ('+' + (iti.getSelectedCountryData().dialCode || '1') + input.value.replace(/[^0-9]/g, ''));
+            });
+        }
     }
+
+    // ── Marketing opt-in nudge — intercept first unchecked submit, allow second ──
+    (function () {
+        var marketingBox = document.getElementById('id_marketing_opt_in');
+        var profileForm = document.querySelector('form[method="post"]');
+        if (!marketingBox || !profileForm) return;
+
+        var warned = false;
+        var activeToast = null;
+
+        profileForm.addEventListener('submit', function (e) {
+            if (!marketingBox.checked && !warned) {
+                e.preventDefault();
+                warned = true;
+                if (activeToast) { activeToast.hideToast(); }
+                var isMobile = window.matchMedia('(max-width: 767px)').matches;
+                activeToast = Toastify({
+                    text: 'Stay in the loop - check the box to receive updates from Cue and the events you attend.',
+                    duration: 6000,
+                    gravity: 'bottom',
+                    position: isMobile ? 'center' : 'right',
+                    stopOnFocus: true,
+                    close: true,
+                    style: {
+                        background: 'rgba(0,255,135,0.10)',
+                        borderTop: '1px solid rgba(255,255,255,0.08)',
+                        borderRight: '1px solid rgba(255,255,255,0.08)',
+                        borderBottom: '1px solid rgba(255,255,255,0.08)',
+                        borderLeft: '3px solid #00FF87',
+                        color: '#EDE8E3',
+                        fontFamily: "'DM Sans', system-ui, sans-serif",
+                        fontSize: '0.875rem',
+                        borderRadius: '3px',
+                        padding: '12px 16px',
+                        boxShadow: '0 8px 24px rgba(0,0,0,0.4)',
+                    },
+                });
+                activeToast.showToast();
+            }
+            // Second attempt (warned=true) or box is checked → form submits normally
+        });
+
+        marketingBox.addEventListener('change', function () {
+            if (marketingBox.checked && activeToast) {
+                activeToast.hideToast();
+                activeToast = null;
+                warned = false;
+            }
+        });
+    }());
 });
 </script>
 {% endblock %}

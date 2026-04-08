@@ -16,6 +16,9 @@
     <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css" rel="stylesheet" media="print" onload="this.media='all'">
     <noscript><link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css" rel="stylesheet"></noscript>
     <link href="{% static 'tickets/css/dashboard.css' %}" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/toastify-js/src/toastify.min.css">
+    <script defer src="https://cdn.jsdelivr.net/npm/toastify-js"></script>
+    <style>.toastify { width: min(360px, calc(100vw - 32px)); }</style>
     <script async defer src="https://tools.luckyorange.com/core/lo.js?site-id=b8f766b4"></script>
     {% block extra_css %}{% endblock %}
     {% block extra_head %}{% endblock %}
@@ -570,27 +573,46 @@
 </script>
 {% block extra_js %}{% endblock %}
 {% block modals %}{% endblock %}
-{% if messages %}
-<div class="toast-container position-fixed top-0 end-0 p-3" style="z-index:1080;">
-  {% for message in messages %}
-  <div class="toast align-items-center border-0 mb-2 text-bg-{% if 'error' in message.tags %}danger{% else %}{{ message.tags }}{% endif %}"
-       role="alert" aria-live="assertive" aria-atomic="true"
-       data-bs-delay="{% if 'error' in message.tags or 'warning' in message.tags %}7000{% else %}4500{% endif %}">
-    <div class="d-flex">
-      <div class="toast-body fw-semibold">{{ message }}</div>
-      <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast" aria-label="Close"></button>
-    </div>
-  </div>
-  {% endfor %}
-</div>
 <script>
 document.addEventListener('DOMContentLoaded', function () {
-  document.querySelectorAll('.toast').forEach(function (el) {
-    bootstrap.Toast.getOrCreateInstance(el).show();
-  });
+    window.showCueToast = function (text, type, opts) {
+        var palette = {
+            success: { bg: 'rgba(106,158,127,0.18)', border: '#6A9E7F' },
+            error:   { bg: 'rgba(217,112,96,0.18)',  border: '#D97060' },
+            warning: { bg: 'rgba(201,147,58,0.18)',  border: '#c9933a' },
+            info:    { bg: 'rgba(0,255,135,0.10)',   border: '#00FF87' },
+            nudge:   { bg: 'rgba(0,255,135,0.10)',   border: '#00FF87' },
+        };
+        var s = palette[type] || palette.info;
+        var isMobile = window.matchMedia('(max-width: 767px)').matches;
+        Toastify(Object.assign({
+            duration: (type === 'error' || type === 'warning') ? 7000 : 4500,
+            gravity: 'bottom',
+            position: isMobile ? 'center' : 'right',
+            stopOnFocus: true,
+            close: true,
+            style: {
+                background: s.bg,
+                borderTop: '1px solid rgba(255,255,255,0.08)',
+                borderRight: '1px solid rgba(255,255,255,0.08)',
+                borderBottom: '1px solid rgba(255,255,255,0.08)',
+                borderLeft: '3px solid ' + s.border,
+                color: '#EDE8E3',
+                fontFamily: "'DM Sans', system-ui, sans-serif",
+                fontSize: '0.875rem',
+                borderRadius: '3px',
+                padding: '12px 16px',
+                boxShadow: '0 8px 24px rgba(0,0,0,0.4)',
+            },
+        }, opts || {}, { text: text })).showToast();
+    };
+    {% if messages %}
+    {% for message in messages %}
+    window.showCueToast("{{ message|escapejs }}", "{% if 'error' in message.tags %}error{% elif 'success' in message.tags %}success{% elif 'warning' in message.tags %}warning{% else %}info{% endif %}");
+    {% endfor %}
+    {% endif %}
 });
 </script>
-{% endif %}
 <script src="https://instant.page/5.2.0" type="module"
   integrity="sha384-jnZyxPjiipYXnSU0ygqeac2q7CVYMbh84q0uHVRRxEtvFPiQYbXWUorga2aqZJ0z"></script>
 </body>

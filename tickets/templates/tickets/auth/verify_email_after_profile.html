@@ -15,14 +15,6 @@
                     We sent a 6-digit code to <strong>{{ masked_email }}</strong>
                 </p>
 
-                {% if messages %}
-                    {% for message in messages %}
-                        <div class="alert alert-{{ message.tags }}" role="alert">
-                            {{ message }}
-                        </div>
-                    {% endfor %}
-                {% endif %}
-
                 <form method="post">
                     {% csrf_token %}
                     {% crispy form %}
