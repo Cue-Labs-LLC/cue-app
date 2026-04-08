@@ -29,6 +29,10 @@ urlpatterns = [
     path('', include(('tickets.urls', 'tickets'))),
 ]
 
+if settings.DEBUG:
+    import debug_toolbar
+    urlpatterns = [path('__debug__/', include(debug_toolbar.urls))] + urlpatterns
+
 # Serve media files in development only
 # In production, static files are served by WhiteNoise
 # Media files are served from S3 (if configured) or not served directly

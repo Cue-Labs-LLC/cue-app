@@ -24,3 +24,5 @@ pillow-heif>=0.18.0
 djangorestframework>=3.14.0
 qrcode[pil]>=8.0
 twilio>=9.0.0
+django-debug-toolbar
+sentry-sdk[django]

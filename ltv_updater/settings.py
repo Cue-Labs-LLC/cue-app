@@ -64,6 +64,9 @@ INSTALLED_APPS = [
 if os.environ.get('AWS_STORAGE_BUCKET_NAME'):
     INSTALLED_APPS.append('storages')
 
+if DEBUG:
+    INSTALLED_APPS.append('debug_toolbar')
+
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
     'whitenoise.middleware.WhiteNoiseMiddleware',  # Add WhiteNoise for static files
@@ -74,6 +77,10 @@ MIDDLEWARE = [
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
 ]
+
+if DEBUG:
+    MIDDLEWARE.insert(0, 'debug_toolbar.middleware.DebugToolbarMiddleware')
+    INTERNAL_IPS = ['127.0.0.1']
 
 ROOT_URLCONF = 'ltv_updater.urls'
 
@@ -330,6 +337,32 @@ else:
             'TIMEOUT': 300,
         }
     }
+
+# Sentry — error tracking + performance monitoring
+# Set SENTRY_DSN in Render environment variables to enable.
+_SENTRY_DSN = os.environ.get('SENTRY_DSN')
+if _SENTRY_DSN:
+    import sentry_sdk
+    from sentry_sdk.integrations.django import DjangoIntegration
+    from sentry_sdk.integrations.celery import CeleryIntegration
+    from sentry_sdk.integrations.redis import RedisIntegration
+
+    sentry_sdk.init(
+        dsn=_SENTRY_DSN,
+        integrations=[
+            DjangoIntegration(),
+            CeleryIntegration(),
+            RedisIntegration(),
+        ],
+        environment='production' if IS_RENDER else 'development',
+        # Capture 100% of transactions for performance monitoring.
+        # Lower to 0.2 (20%) if volume gets large and costs become a concern.
+        traces_sample_rate=1.0,
+        # Profile 20% of sampled transactions (CPU flamegraphs).
+        profiles_sample_rate=0.2,
+        # Don't send PII (user emails/IPs) unless you explicitly want it.
+        send_default_pii=False,
+    )
 
 # Logging configuration
 LOGGING = {
