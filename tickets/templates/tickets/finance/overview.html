@@ -226,8 +226,10 @@
                         <td>
                             {% if payout.status == 'completed' %}
                             <span class="badge bg-success">Completed</span>
+                            {% elif payout.status == 'in_transit' %}
+                            <span class="badge bg-info text-dark">In Transit</span>
                             {% elif payout.status == 'pending' %}
-                            <span class="badge bg-warning text-dark">Pending</span>
+                            <span class="badge bg-warning text-dark">Queued</span>
                             {% else %}
                             <span class="badge bg-danger">Failed</span>
                             {% endif %}

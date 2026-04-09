@@ -198,8 +198,9 @@ urlpatterns = [
     path('events/<uuid:event_id>/tracking-links/create/', views.tracking_link_create, name='tracking_link_create'),
     path('events/<uuid:event_id>/tracking-links/<uuid:link_id>/delete/', views.tracking_link_delete, name='tracking_link_delete'),
 
-    # Stripe Webhook
+    # Stripe Webhooks
     path('webhooks/stripe/', views.stripe_webhook, name='stripe_webhook'),
+    path('webhooks/stripe/connect/', views.stripe_connect_webhook, name='stripe_connect_webhook'),
 
     # Finance / Stripe Connect
     path('finance/', views.finance_overview, name='finance_overview'),

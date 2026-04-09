@@ -5771,6 +5771,100 @@ def stripe_webhook(request):
     return HttpResponse(status=200)
 
 
+@csrf_exempt
+@require_http_methods(["POST"])
+def stripe_connect_webhook(request):
+    """Receive payout lifecycle events from Stripe connected accounts."""
+    from django.conf import settings as django_settings
+    import stripe as stripe_lib
+
+    payload = request.body
+    sig_header = request.META.get('HTTP_STRIPE_SIGNATURE', '')
+    try:
+        event = stripe_lib.Webhook.construct_event(
+            payload, sig_header, django_settings.STRIPE_CONNECTED_ACCOUNT_WEBHOOK_SECRET
+        )
+    except ValueError:
+        logger.warning("Stripe connect webhook: invalid payload")
+        return HttpResponse(status=400)
+    except stripe_lib.error.SignatureVerificationError:
+        logger.warning("Stripe connect webhook: invalid signature")
+        return HttpResponse(status=400)
+
+    event_type = event['type']
+    if event_type in ('payout.created', 'payout.updated', 'payout.paid', 'payout.failed'):
+        _handle_stripe_payout_event(event)
+
+    return HttpResponse(status=200)
+
+
+def _handle_stripe_payout_event(event):
+    """
+    Handle Stripe payout lifecycle webhooks from connected accounts.
+
+    Stripe fires these on the connected account, so the event includes an
+    'account' field with the Express account ID. We use that to find the org
+    and advance the Payout record to the correct status.
+
+    payout.created  → store stripe_payout_id (Stripe queued it)
+    payout.updated  → advance to IN_TRANSIT when Stripe dispatches to bank
+    payout.paid     → advance to COMPLETED (funds arrived at bank)
+    payout.failed   → advance to FAILED
+    """
+    stripe_payout_obj = event['data']['object']
+    connected_account_id = event.get('account')
+    stripe_payout_id = stripe_payout_obj.get('id')
+    stripe_payout_status = stripe_payout_obj.get('status')  # pending, in_transit, paid, failed, canceled
+
+    if not connected_account_id:
+        logger.warning("Stripe payout webhook missing 'account' field: %s", event.get('id'))
+        return
+
+    try:
+        org = Organization.objects.get(stripe_account_id=connected_account_id)
+    except Organization.DoesNotExist:
+        logger.warning("Stripe payout webhook for unknown account: %s", connected_account_id)
+        return
+
+    # Find the most recent non-failed payout for this org to advance its status.
+    # We guard against multiple concurrent payouts elsewhere, so there should be at most one.
+    payout = (
+        Payout.objects
+        .filter(organization=org)
+        .exclude(status=Payout.Status.FAILED)
+        .filter(Q(stripe_payout_id=stripe_payout_id) | Q(stripe_payout_id__isnull=True))
+        .order_by('-created_at')
+        .first()
+    )
+    if not payout:
+        logger.info("No matching Payout record for Stripe payout %s (org %s)", stripe_payout_id, org.id)
+        return
+
+    update_fields = []
+
+    if not payout.stripe_payout_id and stripe_payout_id:
+        payout.stripe_payout_id = stripe_payout_id
+        update_fields.append('stripe_payout_id')
+
+    status_map = {
+        'in_transit': Payout.Status.IN_TRANSIT,
+        'paid':       Payout.Status.COMPLETED,
+        'failed':     Payout.Status.FAILED,
+        'canceled':   Payout.Status.FAILED,
+    }
+    new_status = status_map.get(stripe_payout_status)
+    if new_status and payout.status != new_status:
+        payout.status = new_status
+        update_fields.append('status')
+
+    if update_fields:
+        payout.save(update_fields=update_fields)
+        logger.info(
+            "Payout %s advanced to %s via Stripe payout %s",
+            payout.id, payout.status, stripe_payout_id,
+        )
+
+
 def apple_pay_domain_association(request):
     """Serve Apple Pay domain verification file for Stripe."""
     from django.conf import settings as django_settings
@@ -6311,9 +6405,13 @@ def _compute_available_balance(org):
     stripe_revenue = Decimal(str(agg['total_charged'])) / 100
     platform_fees = Decimal(str(agg['total_fees'])) / 100
 
+    # Deduct all non-failed payouts — PENDING and IN_TRANSIT are already committed
+    # to the connected account, so they must not be available for re-request.
     paid_out = Payout.objects.filter(
-        organization=org, status=Payout.Status.COMPLETED,
-    ).aggregate(total=Coalesce(Sum('amount'), Decimal('0.00')))['total']
+        organization=org,
+    ).exclude(status=Payout.Status.FAILED).aggregate(
+        total=Coalesce(Sum('amount'), Decimal('0.00'))
+    )['total']
 
     organizer_revenue = stripe_revenue - platform_fees
     return stripe_revenue, platform_fees, paid_out, organizer_revenue - paid_out
@@ -6365,8 +6463,9 @@ def _compute_settled_payout_balance(org):
 
     paid_out = Payout.objects.filter(
         organization=org,
-        status=Payout.Status.COMPLETED,
-    ).aggregate(total=Coalesce(Sum('amount'), Decimal('0.00')))['total']
+    ).exclude(status=Payout.Status.FAILED).aggregate(
+        total=Coalesce(Sum('amount'), Decimal('0.00'))
+    )['total']
 
     settled = Decimal(str(settled_organizer_cents)) / 100 - paid_out
     return max(Decimal('0.00'), settled)
@@ -6635,9 +6734,10 @@ def initiate_payout(request):
             metadata={'org_id': str(org.id), 'payout_id': str(payout.id)},
         )
         payout.stripe_transfer_id = transfer.id
-        payout.status = Payout.Status.COMPLETED
-        payout.save(update_fields=['stripe_transfer_id', 'status'])
-        messages.success(request, f'Payout of ${amount:.2f} initiated. Transfer: {transfer.id}')
+        # Stay PENDING — Stripe will create a bank Payout from the connected account.
+        # The payout.paid webhook advances this to COMPLETED when funds reach the bank.
+        payout.save(update_fields=['stripe_transfer_id'])
+        messages.success(request, f'Payout of ${amount:.2f} queued. Funds will arrive in 1–5 business days.')
     except stripe_lib.error.StripeError as e:
         payout.status = Payout.Status.FAILED
         error_note = f' [Stripe error: {str(e)[:400]}]'

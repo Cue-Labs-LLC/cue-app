@@ -1746,9 +1746,10 @@ class Payout(BaseModel):
     """Platform-to-organizer Stripe Transfer record."""
 
     class Status(models.TextChoices):
-        PENDING   = 'pending',   'Pending'
-        COMPLETED = 'completed', 'Completed'
-        FAILED    = 'failed',    'Failed'
+        PENDING    = 'pending',    'Pending'
+        IN_TRANSIT = 'in_transit', 'In Transit'
+        COMPLETED  = 'completed',  'Completed'
+        FAILED     = 'failed',     'Failed'
 
     organization = models.ForeignKey(
         Organization, on_delete=models.CASCADE, related_name='payouts', db_index=True,
@@ -1756,7 +1757,11 @@ class Payout(BaseModel):
     amount = models.DecimalField(max_digits=10, decimal_places=2)
     stripe_transfer_id = models.CharField(
         max_length=255, unique=True, null=True, blank=True,
-        help_text='Stripe Transfer ID (tr_xxx) - set after successful call.',
+        help_text='Stripe Transfer ID (tr_xxx) - set after successful Transfer call.',
+    )
+    stripe_payout_id = models.CharField(
+        max_length=255, unique=True, null=True, blank=True,
+        help_text='Stripe Payout ID (po_xxx) - set via payout.created webhook on the connected account.',
     )
     status = models.CharField(
         max_length=20, choices=Status.choices, default=Status.PENDING, db_index=True,
