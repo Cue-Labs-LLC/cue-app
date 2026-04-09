@@ -14,7 +14,7 @@ from django.contrib.auth.decorators import login_required
 from django.urls import reverse_lazy
 from django.db.models import (
     Sum, Count, Avg, Max, Q, Subquery, OuterRef, Prefetch,
-    Case, When, Value, F, CharField,
+    Case, When, Value, F, CharField, Exists,
 )
 from django.db.models.functions import Coalesce, Greatest, TruncDate
 from django.db import models
@@ -176,19 +176,17 @@ def _annotate_events(queryset):
 
     Uses denormalized cached_* fields for all ticket stats (avoids expensive
     Ticket→TicketOrder joins on large datasets). Only two subqueries remain:
-    upload_count (needed for the past-event warning logic) and total_expenses
+    has_uploads (EXISTS — needed for the past-event warning logic) and total_expenses
     (EventExpense table is small and now has a covering index on (event, deleted_at)).
     """
     return queryset.annotate(
-        upload_count=Coalesce(
-            Subquery(
-                TicketOrder.objects.filter(event=OuterRef('pk'))
-                .exclude(uploaded_file__isnull=True)
-                .values('event')
-                .annotate(n=Count('uploaded_file', distinct=True))
-                .values('n')[:1]
-            ),
-            0,
+        # EXISTS stops on the first match — avoids COUNT(DISTINCT) table scans on large
+        # events. The (event_id, uploaded_file_id) index makes this an index point-lookup.
+        has_uploads=Exists(
+            TicketOrder.objects.filter(
+                event=OuterRef('pk'),
+                uploaded_file__isnull=False,
+            )
         ),
         total_expenses=Coalesce(
             Subquery(
@@ -1246,7 +1244,7 @@ def home(request):
     event_ids_show_warning = set()
     event_ids_show_placeholder = set()
     for ev in page_obj:
-        if ev.upload_count != 0:
+        if ev.has_uploads:
             continue
         end_date = ev.end_date or ev.start_date
         end_time = ev.end_time or ev.start_time or time(23, 59, 59)
@@ -2140,7 +2138,7 @@ def event_list(request):
     event_ids_show_warning = set()
     event_ids_show_placeholder = set()
     for ev in page_obj:
-        if ev.upload_count != 0:
+        if ev.has_uploads:
             continue
         end_date = ev.end_date or ev.start_date
         end_time = ev.end_time or ev.start_time or time(23, 59, 59)

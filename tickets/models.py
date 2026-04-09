@@ -1073,6 +1073,8 @@ class TicketOrder(AuditBaseModel):
             models.Index(fields=['event', 'total_amount']),
             models.Index(fields=['event', 'is_in_person']),
             models.Index(fields=['event', 'refunded_at'], name='tktorder_event_refund_idx'),
+            # Covers the has_uploads EXISTS check: only indexes non-NULL uploaded_file_id rows
+            models.Index(fields=['event', 'uploaded_file'], name='tktorder_event_upload_idx'),
         ]
 
     @property
