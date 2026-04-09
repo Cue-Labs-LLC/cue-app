@@ -6319,24 +6319,23 @@ def _compute_available_balance(org):
     return stripe_revenue, platform_fees, paid_out, organizer_revenue - paid_out
 
 
-def _get_stripe_available_cents(org):
+def _get_stripe_platform_available_cents():
     """
-    Query the organizer's Stripe Express connected account available balance in cents.
+    Query the Stripe platform account's available balance in cents.
+    Used as a safety check before initiating a Transfer, not for per-org display.
     Returns None on error.
     """
     import stripe as stripe_lib
     from django.conf import settings as django_settings
     stripe_lib.api_key = django_settings.STRIPE_SECRET_KEY
     try:
-        balance = stripe_lib.Balance.retrieve(
-            stripe_account=org.stripe_account_id,
-        )
+        balance = stripe_lib.Balance.retrieve()
         for entry in balance.available:
             if entry.currency.lower() == django_settings.STRIPE_CURRENCY.lower():
                 return entry.amount
         return 0
     except Exception:
-        logger.exception("Could not retrieve Stripe balance for org %s", org.id)
+        logger.exception("Could not retrieve Stripe platform balance")
         return None
 
 
@@ -6395,10 +6394,6 @@ def finance_overview(request):
     bank_account = None
     if org.stripe_onboarding_complete and org.stripe_account_id:
         stripe_available = _compute_settled_payout_balance(org)
-        stripe_actual_cents = _get_stripe_available_cents(org)
-        if stripe_actual_cents is not None:
-            stripe_actual = Decimal(str(stripe_actual_cents)) / 100
-            stripe_available = min(stripe_available, stripe_actual)
         settling_balance = max(Decimal('0.00'), available_balance - stripe_available)
         try:
             import stripe as stripe_lib
@@ -6607,7 +6602,7 @@ def initiate_payout(request):
         )
         return redirect('tickets:finance_overview')
 
-    stripe_actual_cents = _get_stripe_available_cents()
+    stripe_actual_cents = _get_stripe_platform_available_cents()
     if stripe_actual_cents is not None:
         stripe_actual = Decimal(str(stripe_actual_cents)) / 100
         if amount > stripe_actual:
