@@ -1075,6 +1075,8 @@ class TicketOrder(AuditBaseModel):
             models.Index(fields=['event', 'refunded_at'], name='tktorder_event_refund_idx'),
             # Covers the has_uploads EXISTS check: only indexes non-NULL uploaded_file_id rows
             models.Index(fields=['event', 'uploaded_file'], name='tktorder_event_upload_idx'),
+            # Covers paginated orders query: filter by event + sort by order_date
+            models.Index(fields=['event', 'order_date'], name='tktorder_event_orderdate_idx'),
         ]
 
     @property

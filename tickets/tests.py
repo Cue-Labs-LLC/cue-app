@@ -12,6 +12,8 @@ from .models import (
     Venue, CSVFormat, Ticket, TicketTier,
     Organization, UserProfile, OrganizationInvitation, ChatMessage,
     SaleableTicketType, StripeCheckoutSession,
+    SurveyInvitation, SurveyResponse, SurveyAnswer, SurveyQuestion,
+    ExternalSurveyResponse,
 )
 
 
@@ -1866,3 +1868,177 @@ class HealthCheckTest(TestCase):
         self.assertIn('cache_url', data)
         self.assertIn('cache', data)
         self.assertIn('cache_ms', data)
+
+
+class EventDetailCacheTest(TestCase):
+    """Tests for _compute_event_stats() caching and cache invalidation."""
+
+    def setUp(self):
+        from django.core.cache import cache as django_cache
+        self.org = Organization.objects.create(name='Cache Test Org', slug='cache-test-org')
+        self.venue = Venue.objects.create(organization=self.org, name='Venue', city='City')
+        self.event = Event.objects.create(
+            organization=self.org, name='Cache Test Event', venue=self.venue,
+            start_date=date(2025, 8, 1),
+        )
+        self.customer = Customer.objects.create(
+            organization=self.org, email='cachebuyer@example.com', name='Cache Buyer',
+        )
+        self.csv_format = CSVFormat.objects.create(
+            organization=self.org,
+            name='Cache Format',
+            column_mapping={'order_number': 'Order ID'},
+        )
+        django_cache.clear()
+
+    def tearDown(self):
+        from django.core.cache import cache as django_cache
+        django_cache.clear()
+
+    def _make_order(self, ticket_prices=None, uploaded_file=None):
+        order = TicketOrder.objects.create(
+            event=self.event,
+            customer=self.customer,
+            order_number=str(uuid.uuid4())[:12],
+            total_amount=sum(ticket_prices or [Decimal('0.00')]),
+            order_date=timezone.now(),
+        )
+        if uploaded_file:
+            order.uploaded_file = uploaded_file
+            order.save(update_fields=['uploaded_file'])
+        for price in (ticket_prices or []):
+            Ticket.objects.create(ticket_order=order, price=price)
+        return order
+
+    def test_nps_aggregate_matches_expected_counts(self):
+        """NPS aggregate consolidation produces correct promoter/detractor/total counts."""
+        from tickets.views import _compute_event_stats
+        from django.core.cache import cache as django_cache
+
+        # Create survey response
+        invitation = SurveyInvitation.objects.create(
+            organization=self.org, event=self.event,
+            customer=self.customer, email=self.customer.email,
+        )
+        response = SurveyResponse.objects.create(
+            organization=self.org, event=self.event,
+            customer=self.customer, invitation=invitation,
+        )
+        # SurveyAnswer has unique constraint on (response, question) —
+        # use a separate question per answer to test multiple NPS scores.
+        # 2 promoters (score >= 9), 1 detractor (score <= 6), 1 neutral (score 7)
+        for pos, score in enumerate([10, 9, 5, 7], start=1):
+            q = SurveyQuestion.objects.create(
+                organization=self.org,
+                question_text=f'NPS question {pos}',
+                question_type='nps',
+                position=pos,
+            )
+            SurveyAnswer.objects.create(response=response, question=q, nps_score=score)
+
+        django_cache.clear()
+        stats = _compute_event_stats(self.event)
+        survey = stats['survey_results']
+
+        self.assertIsNotNone(survey)
+        self.assertEqual(survey['nps_total'], 4)
+        # NPS = (promoters - detractors) / total * 100 = (2 - 1) / 4 * 100 = 25
+        self.assertEqual(survey['nps_score'], 25)
+
+    def test_stats_cache_hit_skips_db(self):
+        """Second call to _compute_event_stats() returns cached result without hitting DB."""
+        from tickets.views import _compute_event_stats
+        from django.core.cache import cache as django_cache
+        from django.test.utils import CaptureQueriesContext
+        from django.db import connection
+
+        django_cache.clear()
+        # Prime the cache
+        _compute_event_stats(self.event)
+
+        # Second call should hit cache — 0 queries
+        with CaptureQueriesContext(connection) as ctx:
+            result = _compute_event_stats(self.event)
+        self.assertEqual(len(ctx), 0, f"Expected 0 queries on cache hit, got {len(ctx)}")
+        self.assertIsNotNone(result)
+
+    def test_expense_change_invalidates_cache(self):
+        """Saving or deleting an EventExpense clears the event_stats cache."""
+        from tickets.views import _compute_event_stats, _event_stats_cache_key
+        from tickets.models import EventExpense
+        from django.core.cache import cache as django_cache
+
+        django_cache.clear()
+        # Prime the cache
+        _compute_event_stats(self.event)
+        self.assertIsNotNone(django_cache.get(_event_stats_cache_key(self.event.pk)))
+
+        # Create an expense — post_save signal should delete the cache entry
+        expense = EventExpense.objects.create(
+            event=self.event,
+            description='Sound system', amount=Decimal('500.00'),
+            category='production',
+        )
+        self.assertIsNone(
+            django_cache.get(_event_stats_cache_key(self.event.pk)),
+            "Cache should be cleared after expense creation",
+        )
+
+        # Re-prime and then delete
+        _compute_event_stats(self.event)
+        expense.hard_delete()
+        self.assertIsNone(
+            django_cache.get(_event_stats_cache_key(self.event.pk)),
+            "Cache should be cleared after expense deletion",
+        )
+
+    def test_upload_tickets_count_subquery_correct(self):
+        """upload_agg tickets_count Subquery returns the correct ticket count per upload."""
+        from django.db.models import Count, Sum, Subquery, OuterRef, IntegerField
+        from django.db.models.functions import Coalesce
+        from django.db import models as djmodels
+        from tickets.models import Ticket
+
+        upload = UploadedFile.objects.create(
+            organization=self.org, csv_format=self.csv_format,
+            filename='test.csv', status='completed',
+        )
+        # 2 orders on the same upload, 3 tickets total
+        self._make_order(ticket_prices=[Decimal('10.00'), Decimal('20.00')], uploaded_file=upload)
+        self._make_order(ticket_prices=[Decimal('15.00')], uploaded_file=upload)
+
+        tickets_per_upload = (
+            Ticket.objects.filter(
+                ticket_order__event=self.event,
+                ticket_order__uploaded_file_id=OuterRef('uploaded_file'),
+            )
+            .values('ticket_order__uploaded_file')
+            .annotate(c=Count('id'))
+            .values('c')[:1]
+        )
+        revenue_per_upload = (
+            TicketOrder.objects.filter(event=self.event, uploaded_file_id=OuterRef('uploaded_file'))
+            .values('uploaded_file')
+            .annotate(s=Sum('total_amount'))
+            .values('s')[:1]
+        )
+        agg = list(
+            TicketOrder.objects.filter(event=self.event, uploaded_file=upload)
+            .values('uploaded_file')
+            .annotate(
+                orders_count=Count('id'),
+                revenue=Coalesce(
+                    Subquery(revenue_per_upload, output_field=djmodels.DecimalField(max_digits=10, decimal_places=2)),
+                    Decimal('0.00'),
+                ),
+                tickets_count=Coalesce(
+                    Subquery(tickets_per_upload, output_field=IntegerField()),
+                    0,
+                ),
+            )
+        )
+
+        self.assertEqual(len(agg), 1)
+        self.assertEqual(agg[0]['orders_count'], 2)
+        self.assertEqual(agg[0]['tickets_count'], 3)
+        self.assertEqual(agg[0]['revenue'], Decimal('45.00'))

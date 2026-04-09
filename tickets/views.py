@@ -155,6 +155,11 @@ def _invalidate_event_list_cache(org):
         pass
 
 
+def _event_stats_cache_key(event_id):
+    """Cache key for _compute_event_stats() results. Invalidated via django_cache.delete()."""
+    return f'event_stats:{event_id}'
+
+
 def _clear_waitlist_hold(request, event_id):
     """Mark a waitlist hold as purchased and release the hold counter."""
     wl_hold = request.session.pop(f'waitlist_hold_{event_id}', None)
@@ -2279,7 +2284,17 @@ def _compute_event_stats(event):
 
     Returns a dict used by both event_detail (for rendering) and
     event_summary_stream (for LLM prompt construction).
+
+    Results are cached under _event_stats_cache_key(event.pk) for 300s.
+    Invalidated by signals in signals.py and call-site invalidation in
+    send_survey() and survey_event_link() (which use bulk_create/queryset.update
+    that bypass signals).
     """
+    cache_key = _event_stats_cache_key(event.pk)
+    cached = django_cache.get(cache_key)
+    if cached is not None:
+        return cached
+
     # Core order stats
     event_stats = event.ticket_orders.aggregate(
         total_orders=Count('id'),
@@ -2289,21 +2304,16 @@ def _compute_event_stats(event):
     total_orders = event_stats['total_orders']
     ticket_revenue = event_stats['total_revenue']
     total_customers = event_stats['total_customers']
-    total_tickets = Ticket.objects.filter(ticket_order__event=event).count()
+
+    # Use cached counts from Event — maintained by refresh_event_stats() in signals.py.
+    # Avoids 2 queries to the Ticket table on every page load.
+    total_tickets = event.cached_ticket_count
 
     # Platform fee calculation — only for direct ticketing
     if event.ticketing_type == 'direct':
-        paid_ticket_stats = Ticket.objects.filter(
-            ticket_order__event=event,
-            price__gt=0,
-            ticket_order__refunded_at__isnull=True,
-        ).aggregate(
-            paid_sum=Coalesce(Sum('price'), Decimal('0.00')),
-            paid_count=Count('id'),
-        )
         ticket_fees = (
-            paid_ticket_stats['paid_sum'] * Decimal('0.10')
-            + Decimal('0.99') * paid_ticket_stats['paid_count']
+            event.cached_paid_ticket_sum * Decimal('0.10')
+            + Decimal('0.99') * event.cached_paid_ticket_count
         ) / Decimal('1.10')
     else:
         ticket_fees = Decimal('0.00')
@@ -2314,15 +2324,16 @@ def _compute_event_stats(event):
     total_additional_income = sum(line.amount for line in additional_income_lines)
     total_revenue = net_ticket_revenue + total_additional_income
 
-    # Expenses
-    expenses = event.expenses.filter(deleted_at__isnull=True)
-    total_expenses = expenses.aggregate(
+    # Expenses — evaluate queryset to list so it can be pickled for cache
+    expenses_qs = event.expenses.filter(deleted_at__isnull=True)
+    total_expenses = expenses_qs.aggregate(
         total=Coalesce(Sum('amount'), Decimal('0.00'))
     )['total']
     profit = total_revenue - total_expenses
     margin_pct = (profit / total_revenue * 100) if total_revenue > 0 else None
-    expenses_by_category = (
-        expenses.values('category')
+    expenses = list(expenses_qs)
+    expenses_by_category = list(
+        expenses_qs.values('category')
         .annotate(total=Sum('amount'))
         .order_by('-total')
     )
@@ -2348,6 +2359,15 @@ def _compute_event_stats(event):
             if row['ticket_type']
         ]
 
+    # Sales over time — for the chart; cached here so it's not re-run on every page load
+    sales_over_time = list(
+        event.ticket_orders
+        .annotate(date=TruncDate('order_date'))
+        .values('date')
+        .annotate(count=Count('id'), revenue=Sum('total_amount'))
+        .order_by('date')
+    )
+
     # Survey results — internal (SurveyResponse/SurveyAnswer)
     survey_invitations_count = SurveyInvitation.objects.filter(event=event).count()
     survey_responses_count = SurveyResponse.objects.filter(event=event).count()
@@ -2361,13 +2381,17 @@ def _compute_event_stats(event):
             response__event=event, star_rating__isnull=False
         ).aggregate(avg=Avg('star_rating'))['avg']
 
-        nps_answers = SurveyAnswer.objects.filter(
+        # Single aggregate instead of 3 separate .count() calls
+        nps_agg = SurveyAnswer.objects.filter(
             response__event=event, nps_score__isnull=False
+        ).aggregate(
+            total=Count('id'),
+            promoters=Count('id', filter=Q(nps_score__gte=9)),
+            detractors=Count('id', filter=Q(nps_score__lte=6)),
         )
-        int_nps_total = nps_answers.count()
-        if int_nps_total > 0:
-            int_promoters = nps_answers.filter(nps_score__gte=9).count()
-            int_detractors = nps_answers.filter(nps_score__lte=6).count()
+        int_nps_total = nps_agg['total']
+        int_promoters = nps_agg['promoters']
+        int_detractors = nps_agg['detractors']
 
         internal_comments = [
             {
@@ -2391,11 +2415,15 @@ def _compute_event_stats(event):
     ext_rating_breakdown = []
 
     if ext_count > 0:
-        ext_nps_qs = ext_qs.filter(nps_score__isnull=False)
-        ext_nps_total = ext_nps_qs.count()
-        if ext_nps_total > 0:
-            ext_promoters = ext_nps_qs.filter(nps_score__gte=9).count()
-            ext_detractors = ext_nps_qs.filter(nps_score__lte=6).count()
+        # Single aggregate instead of 3 separate .count() calls
+        nps_agg = ext_qs.filter(nps_score__isnull=False).aggregate(
+            total=Count('id'),
+            promoters=Count('id', filter=Q(nps_score__gte=9)),
+            detractors=Count('id', filter=Q(nps_score__lte=6)),
+        )
+        ext_nps_total = nps_agg['total']
+        ext_promoters = nps_agg['promoters']
+        ext_detractors = nps_agg['detractors']
 
         ext_comments = [
             {'text': c['text_feedback'], 'author': c['email'] or 'Anonymous'}
@@ -2431,7 +2459,9 @@ def _compute_event_stats(event):
             'overall_rating_breakdown': ext_rating_breakdown,
         }
 
-    # Customer segment breakdown for attendees of this event
+    # Customer segment breakdown for attendees of this event.
+    # NOTE: attendee_segments reflects Customer.rfm_segment at cache-write time.
+    # Refreshes within 300s after RFM recalculation runs — TTL is the safety net.
     segment_rows = list(
         Customer.objects.filter(
             ticket_orders__event=event,
@@ -2449,7 +2479,7 @@ def _compute_event_stats(event):
         for r in segment_rows
     ]
 
-    return {
+    result = {
         'total_orders': total_orders,
         'ticket_revenue': ticket_revenue,
         'ticket_fees': ticket_fees,
@@ -2466,11 +2496,17 @@ def _compute_event_stats(event):
         'margin_pct': margin_pct,
         'ticket_type_breakdown': ticket_type_breakdown,
         'saleable_ticket_types_list': saleable_ticket_types_list,
+        'sales_over_time': sales_over_time,
         'survey_invitations_count': survey_invitations_count,
         'survey_responses_count': survey_responses_count,
         'survey_results': survey_results,
         'attendee_segments': attendee_segments,
     }
+    try:
+        django_cache.set(cache_key, result, 300)
+    except Exception:
+        pass
+    return result
 
 
 @login_required
@@ -2506,13 +2542,23 @@ def event_detail(request, event_id):
     # Get all distinct uploads associated with this event
     associated_uploads = event.get_associated_uploads().select_related('csv_format')
 
-    # Calculate statistics per upload - use Subquery for revenue to avoid join inflation
-    # (Count('tickets') joins Ticket and would duplicate rows, inflating Sum('total_amount'))
+    # Calculate statistics per upload using isolated Subqueries to avoid join inflation.
+    # Count('tickets', distinct=True) joins Ticket and inflates rows, corrupting revenue.
+    # Separate Subqueries for revenue and ticket count keep each aggregate clean.
     revenue_per_upload = (
         TicketOrder.objects.filter(event=event, uploaded_file_id=OuterRef('uploaded_file'))
         .values('uploaded_file')
         .annotate(s=Sum('total_amount'))
         .values('s')[:1]
+    )
+    tickets_per_upload = (
+        Ticket.objects.filter(
+            ticket_order__event=event,
+            ticket_order__uploaded_file_id=OuterRef('uploaded_file'),
+        )
+        .values('ticket_order__uploaded_file')
+        .annotate(c=Count('id'))
+        .values('c')[:1]
     )
     upload_agg = (
         TicketOrder.objects.filter(event=event, uploaded_file__in=associated_uploads)
@@ -2523,7 +2569,10 @@ def event_detail(request, event_id):
                 Subquery(revenue_per_upload, output_field=models.DecimalField(max_digits=10, decimal_places=2)),
                 Decimal('0.00'),
             ),
-            tickets_count=Count('tickets', distinct=True),
+            tickets_count=Coalesce(
+                Subquery(tickets_per_upload, output_field=models.IntegerField()),
+                0,
+            ),
         )
     )
     upload_stats_map = {row['uploaded_file']: row for row in upload_agg}
@@ -2590,20 +2639,13 @@ def event_detail(request, event_id):
 
     ticket_type_breakdown_json = json.dumps(ticket_type_breakdown)
 
-    sales_over_time_qs = (
-        event.ticket_orders
-        .annotate(date=TruncDate('order_date'))
-        .values('date')
-        .annotate(count=Count('id'), revenue=Sum('total_amount'))
-        .order_by('date')
-    )
     sales_over_time_json = json.dumps([
         {
             'date': row['date'].isoformat(),
             'count': row['count'],
             'revenue': float(row['revenue'] or 0),
         }
-        for row in sales_over_time_qs
+        for row in stats['sales_over_time']
     ])
 
     active_scanner_sessions = ScannerSession.objects.filter(event=event, is_active=True).count()
@@ -4266,6 +4308,8 @@ def send_survey(request, event_id):
             email=customer.email,
         ))
     SurveyInvitation.objects.bulk_create(invitations)
+    # bulk_create bypasses post_save signals — invalidate manually
+    django_cache.delete(_event_stats_cache_key(event.id))
 
     # Dispatch Celery task
     from .tasks import send_survey_emails_task
@@ -6709,11 +6753,23 @@ def survey_event_link(request, upload_id):
         for resp_id, event_id in mapping.items():
             by_event[event_id].append(resp_id)
 
+        # Collect event IDs affected before and after the update for cache invalidation.
+        # queryset.update() bypasses post_save signals — must invalidate manually.
+        old_event_ids = set(
+            str(eid) for eid in
+            ExternalSurveyResponse.objects.filter(upload=upload, event__isnull=False)
+            .values_list('event_id', flat=True)
+        )
         for event_id, resp_ids in by_event.items():
             if event_id and event_id in valid_event_ids:
                 ExternalSurveyResponse.objects.filter(id__in=resp_ids).update(event_id=event_id)
             else:
                 ExternalSurveyResponse.objects.filter(id__in=resp_ids).update(event=None)
+
+        # Invalidate cache for all affected events (old assignments + new assignments)
+        new_event_ids = set(eid for eid in by_event if eid and eid in valid_event_ids)
+        for eid in old_event_ids | new_event_ids:
+            django_cache.delete(_event_stats_cache_key(eid))
 
         messages.success(request, 'Event links saved.')
         return redirect(f"{reverse_lazy('tickets:survey_analytics')}?upload={upload.id}")
