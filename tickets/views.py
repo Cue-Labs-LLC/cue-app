@@ -926,14 +926,53 @@ def resend_otp_view(request):
 
 
 def health_check(request):
-    """Health check endpoint for Render monitoring."""
+    """Health check endpoint for Render monitoring.
+
+    DB failure → 503 (liveness signal, triggers Render restart).
+    Redis failure → 200 with error in body (informational — Redis flakiness
+    should not restart the service).
+
+    Add ?fmt=json to get machine-readable output.
+    """
+    import time
+    import uuid
+    from django.core.cache import cache as django_cache
+    from django.conf import settings
+
+    status = {}
+
+    # DB check — sole liveness signal
     try:
-        # Check database connection
         with connection.cursor() as cursor:
             cursor.execute("SELECT 1")
-        return HttpResponse("OK", status=200)
+        status['db'] = 'ok'
     except Exception as e:
-        return HttpResponse(f"Database connection failed: {str(e)}", status=503)
+        status['db'] = f'ERROR: {e}'
+
+    # Redis / cache check — informational only
+    cache_url = getattr(settings, 'CACHES', {}).get('default', {}).get('LOCATION', 'n/a')
+    status['cache_url'] = cache_url
+    t0 = time.monotonic()
+    try:
+        probe_key = f'_health_probe_{uuid.uuid4().hex}'
+        probe_val = probe_key
+        django_cache.set(probe_key, probe_val, timeout=10)
+        val = django_cache.get(probe_key)
+        django_cache.delete(probe_key)
+        elapsed_ms = round((time.monotonic() - t0) * 1000, 1)
+        status['cache'] = 'ok' if val == probe_val else 'MISS'
+        status['cache_ms'] = elapsed_ms
+    except Exception as e:
+        elapsed_ms = round((time.monotonic() - t0) * 1000, 1)
+        status['cache'] = f'ERROR: {e}'
+        status['cache_ms'] = elapsed_ms
+
+    http_status = 200 if status['db'] == 'ok' else 503
+
+    if request.GET.get('fmt') == 'json':
+        return JsonResponse(status, status=http_status)
+    lines = [f'{k}: {v}' for k, v in status.items()]
+    return HttpResponse('\n'.join(lines), status=http_status, content_type='text/plain')
 
 
 def support(request):

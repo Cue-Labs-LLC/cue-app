@@ -1848,3 +1848,21 @@ class EventCachedStatsTest(TestCase):
         )
         # Sanity: computed_total_revenue matches the order total
         self.assertEqual(self.event.computed_total_revenue, ticket_revenue)
+
+
+class HealthCheckTest(TestCase):
+    """Tests for the /health/ endpoint."""
+
+    def test_health_check_returns_200(self):
+        resp = self.client.get('/health/')
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn(b'db', resp.content)
+
+    def test_health_check_json_format(self):
+        resp = self.client.get('/health/?fmt=json')
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertIn('db', data)
+        self.assertIn('cache_url', data)
+        self.assertIn('cache', data)
+        self.assertIn('cache_ms', data)

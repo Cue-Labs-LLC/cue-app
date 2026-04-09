@@ -315,8 +315,13 @@ CELERY_RESULT_SERIALIZER = 'json'
 
 # Cache framework — Redis when available, in-memory fallback for dev
 if _CELERY_BROKER_URL:
-    # Use DB 1 to isolate from Celery broker on DB 0
-    _cache_url = _CELERY_BROKER_URL.rsplit('/', 1)[0] + '/1'
+    # Use DB 1 to isolate from Celery broker on DB 0.
+    # urlparse handles Render's connectionString format (no DB suffix) correctly:
+    #   redis://red-xxx.render.com:6379   → redis://red-xxx.render.com:6379/1
+    #   redis://red-xxx.render.com:6379/0 → redis://red-xxx.render.com:6379/1
+    from urllib.parse import urlparse, urlunparse
+    _parsed = urlparse(_CELERY_BROKER_URL)
+    _cache_url = urlunparse(_parsed._replace(path='/1'))
     CACHES = {
         'default': {
             'BACKEND': 'django.core.cache.backends.redis.RedisCache',
@@ -327,6 +332,7 @@ if _CELERY_BROKER_URL:
                 'socket_timeout': 0.5,
                 'socket_keepalive': True,
                 'health_check_interval': 30,
+                'max_connections': 5,  # 4 Gunicorn workers × 5 = 20 connections, leaves headroom for Celery
             }
         }
     }
