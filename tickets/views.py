@@ -160,6 +160,79 @@ def _event_stats_cache_key(event_id):
     return f'event_stats:{event_id}'
 
 
+def _event_upload_stats_cache_key(event_id):
+    """Cache key for cached upload stats shown on the event detail uploads card."""
+    return f'event_upload_stats:{event_id}'
+
+
+def _invalidate_event_upload_stats_cache(event_id):
+    """Clear cached upload stats for an event."""
+    try:
+        django_cache.delete(_event_upload_stats_cache_key(event_id))
+    except Exception:
+        pass
+
+
+def _compute_event_upload_stats(event):
+    """Return cached per-upload stats for an event using grouped queries only.
+
+    Results are cached for 300s. Aggregations remain isolated to avoid join
+    inflation while also avoiding correlated subqueries per upload.
+    """
+    cache_key = _event_upload_stats_cache_key(event.pk)
+    cached = django_cache.get(cache_key)
+    if cached is not None:
+        return cached
+
+    associated_uploads = list(
+        event.get_associated_uploads().select_related('csv_format')
+    )
+    if not associated_uploads:
+        try:
+            django_cache.set(cache_key, [], 300)
+        except Exception:
+            pass
+        return []
+
+    order_stats_map = {
+        row['uploaded_file']: row
+        for row in TicketOrder.objects.filter(
+            event=event,
+            uploaded_file__isnull=False,
+        )
+        .values('uploaded_file')
+        .annotate(
+            orders_count=Count('id'),
+            revenue=Coalesce(Sum('total_amount'), Decimal('0.00')),
+        )
+    }
+    ticket_counts_map = {
+        row['ticket_order__uploaded_file']: row['tickets_count']
+        for row in Ticket.objects.filter(
+            ticket_order__event=event,
+            ticket_order__uploaded_file__isnull=False,
+        )
+        .values('ticket_order__uploaded_file')
+        .annotate(tickets_count=Count('id'))
+    }
+
+    upload_stats = []
+    for upload in associated_uploads:
+        order_stats = order_stats_map.get(upload.id, {})
+        upload_stats.append({
+            'upload': upload,
+            'orders_count': order_stats.get('orders_count', 0),
+            'revenue': order_stats.get('revenue', Decimal('0.00')),
+            'tickets_count': ticket_counts_map.get(upload.id, 0),
+        })
+
+    try:
+        django_cache.set(cache_key, upload_stats, 300)
+    except Exception:
+        pass
+    return upload_stats
+
+
 def _clear_waitlist_hold(request, event_id):
     """Mark a waitlist hold as purchased and release the hold counter."""
     wl_hold = request.session.pop(f'waitlist_hold_{event_id}', None)
@@ -1570,10 +1643,17 @@ def reprocess_csv_file(request, file_id):
         return redirect('tickets:upload_results', file_id=uploaded_file.id)
 
     if request.method == 'POST':
+        event_ids = list(
+            TicketOrder.objects.filter(uploaded_file=uploaded_file)
+            .values_list('event_id', flat=True)
+            .distinct()
+        )
         TicketOrder.objects.filter(uploaded_file=uploaded_file).delete()
         uploaded_file.status = 'pending'
         uploaded_file.metadata.pop('processing_results', None)
         uploaded_file.save(update_fields=['status', 'metadata'])
+        for event_id in event_ids:
+            _invalidate_event_upload_stats_cache(event_id)
         return process_csv_file(request, uploaded_file)
 
     order_count = TicketOrder.objects.filter(uploaded_file=uploaded_file).count()
@@ -1637,6 +1717,7 @@ def upload_delete(request, file_id):
             # Get all orders associated with this upload
             orders = uploaded_file.ticket_orders.all()
             orders_count = orders.count()
+            affected_event_ids = list(orders.values_list('event_id', flat=True).distinct())
 
             # Collect affected customers before deletion
             affected_customer_ids = list(
@@ -1649,6 +1730,9 @@ def upload_delete(request, file_id):
             # Delete the upload file (TicketTiers will cascade delete)
             filename = uploaded_file.filename
             uploaded_file.hard_delete()
+
+            for event_id in affected_event_ids:
+                _invalidate_event_upload_stats_cache(event_id)
 
             # Delete orphaned customers (no remaining orders) or recalculate LTV
             customers_deleted = 0
@@ -2509,6 +2593,34 @@ def _compute_event_stats(event):
     return result
 
 
+def _get_adjacent_event(org, event, direction):
+    """Return the previous or next event in newest-first event-list order."""
+    current_start_time = event.start_time or time.min
+    base_qs = (
+        Event.objects.filter(organization=org)
+        .annotate(
+            sort_start_time=Coalesce(
+                'start_time',
+                Value(time.min, output_field=models.TimeField()),
+            )
+        )
+        .only('id', 'name', 'start_date', 'start_time')
+    )
+
+    if direction == 'prev':
+        return base_qs.filter(
+            Q(start_date__gt=event.start_date)
+            | Q(start_date=event.start_date, sort_start_time__gt=current_start_time)
+            | Q(start_date=event.start_date, sort_start_time=current_start_time, name__lt=event.name)
+        ).order_by('start_date', 'sort_start_time', '-name').first()
+
+    return base_qs.filter(
+        Q(start_date__lt=event.start_date)
+        | Q(start_date=event.start_date, sort_start_time__lt=current_start_time)
+        | Q(start_date=event.start_date, sort_start_time=current_start_time, name__gt=event.name)
+    ).order_by('-start_date', '-sort_start_time', 'name').first()
+
+
 @login_required
 @require_org
 @require_organizer
@@ -2538,53 +2650,6 @@ def event_detail(request, event_id):
         ),
         id=event_id,
     )
-
-    # Get all distinct uploads associated with this event
-    associated_uploads = event.get_associated_uploads().select_related('csv_format')
-
-    # Calculate statistics per upload using isolated Subqueries to avoid join inflation.
-    # Count('tickets', distinct=True) joins Ticket and inflates rows, corrupting revenue.
-    # Separate Subqueries for revenue and ticket count keep each aggregate clean.
-    revenue_per_upload = (
-        TicketOrder.objects.filter(event=event, uploaded_file_id=OuterRef('uploaded_file'))
-        .values('uploaded_file')
-        .annotate(s=Sum('total_amount'))
-        .values('s')[:1]
-    )
-    tickets_per_upload = (
-        Ticket.objects.filter(
-            ticket_order__event=event,
-            ticket_order__uploaded_file_id=OuterRef('uploaded_file'),
-        )
-        .values('ticket_order__uploaded_file')
-        .annotate(c=Count('id'))
-        .values('c')[:1]
-    )
-    upload_agg = (
-        TicketOrder.objects.filter(event=event, uploaded_file__in=associated_uploads)
-        .values('uploaded_file')
-        .annotate(
-            orders_count=Count('id'),
-            revenue=Coalesce(
-                Subquery(revenue_per_upload, output_field=models.DecimalField(max_digits=10, decimal_places=2)),
-                Decimal('0.00'),
-            ),
-            tickets_count=Coalesce(
-                Subquery(tickets_per_upload, output_field=models.IntegerField()),
-                0,
-            ),
-        )
-    )
-    upload_stats_map = {row['uploaded_file']: row for row in upload_agg}
-    upload_stats = []
-    for upload in associated_uploads:
-        stats = upload_stats_map.get(upload.id, {})
-        upload_stats.append({
-            'upload': upload,
-            'orders_count': stats.get('orders_count', 0),
-            'revenue': stats.get('revenue', Decimal('0.00')),
-            'tickets_count': stats.get('tickets_count', 0),
-        })
 
     # Compute event stats via shared helper
     stats = _compute_event_stats(event)
@@ -2650,25 +2715,12 @@ def event_detail(request, event_id):
 
     active_scanner_sessions = ScannerSession.objects.filter(event=event, is_active=True).count()
 
-    # Prev/next event navigation (ordered newest-first, matching event list default)
-    event_ids = list(
-        Event.objects.filter(organization=org)
-        .order_by('-start_date', '-start_time', 'name')
-        .values_list('id', flat=True)
-    )
-    try:
-        idx = event_ids.index(event.id)
-        prev_event_id = event_ids[idx - 1] if idx > 0 else None
-        next_event_id = event_ids[idx + 1] if idx + 1 < len(event_ids) else None
-    except ValueError:
-        prev_event_id = next_event_id = None
-    nav_ids = [i for i in [prev_event_id, next_event_id] if i]
-    nav_names = dict(Event.objects.filter(id__in=nav_ids).values_list('id', 'name')) if nav_ids else {}
+    prev_event = _get_adjacent_event(org, event, 'prev')
+    next_event = _get_adjacent_event(org, event, 'next')
 
     context = {
         'event': event,
         'active_scanner_sessions': active_scanner_sessions,
-        'upload_stats': upload_stats,
         'total_orders': total_orders,
         'ticket_revenue': ticket_revenue,
         'ticket_fees': ticket_fees,
@@ -2696,10 +2748,10 @@ def event_detail(request, event_id):
         'ticket_type_breakdown': ticket_type_breakdown,
         'ticket_type_breakdown_json': ticket_type_breakdown_json,
         'sales_over_time_json': sales_over_time_json,
-        'prev_event_id': prev_event_id,
-        'next_event_id': next_event_id,
-        'prev_event_name': nav_names.get(prev_event_id),
-        'next_event_name': nav_names.get(next_event_id),
+        'prev_event_id': prev_event.id if prev_event else None,
+        'next_event_id': next_event.id if next_event else None,
+        'prev_event_name': prev_event.name if prev_event else None,
+        'next_event_name': next_event.name if next_event else None,
     }
     if event.ticketing_type != 'direct':
         context['upload_form'] = EventCSVUploadForm(organization=org)
@@ -2744,6 +2796,23 @@ def event_detail(request, event_id):
         context['tracking_links'] = tracking_links
     context['today'] = date.today()
     return render(request, 'tickets/event_detail.html', context)
+
+
+@login_required
+@require_org
+@require_organizer
+def event_uploads_summary(request, event_id):
+    """Render the uploads card separately so the main detail page can load sooner."""
+    org = get_organization(request)
+    event = get_object_or_404(
+        Event.objects.filter(organization=org).only('id', 'ticketing_type', 'name'),
+        id=event_id,
+    )
+    upload_stats = _compute_event_upload_stats(event)
+    return render(request, 'tickets/includes/event_uploads_card.html', {
+        'event': event,
+        'upload_stats': upload_stats,
+    })
 
 
 @login_required
@@ -4310,6 +4379,7 @@ def send_survey(request, event_id):
     SurveyInvitation.objects.bulk_create(invitations)
     # bulk_create bypasses post_save signals — invalidate manually
     django_cache.delete(_event_stats_cache_key(event.id))
+    _invalidate_event_upload_stats_cache(event.id)
 
     # Dispatch Celery task
     from .tasks import send_survey_emails_task
@@ -6934,6 +7004,7 @@ def survey_event_link(request, upload_id):
         new_event_ids = set(eid for eid in by_event if eid and eid in valid_event_ids)
         for eid in old_event_ids | new_event_ids:
             django_cache.delete(_event_stats_cache_key(eid))
+            _invalidate_event_upload_stats_cache(eid)
 
         messages.success(request, 'Event links saved.')
         return redirect(f"{reverse_lazy('tickets:survey_analytics')}?upload={upload.id}")

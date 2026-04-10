@@ -484,68 +484,18 @@
 </div>
 
 {% if event.ticketing_type != 'direct' %}
-<div class="card mb-4">
-    <div class="card-header d-flex justify-content-between align-items-center">
-        <h5>Uploads</h5>
-        <button type="button" class="btn btn-sm btn-primary" data-bs-toggle="modal" data-bs-target="#uploadCsvModal"><i class="bi bi-upload"></i> Upload CSV</button>
-    </div>
-    <div class="card-body p-0">
-        {% if upload_stats %}
-        <div class="table-responsive">
-            <table class="table table-hover mb-0">
-                <thead>
-                    <tr>
-                        <th>Filename</th>
-                        <th class="d-none d-md-table-cell">Format</th>
-                        <th class="d-none d-md-table-cell">Upload Date</th>
-                        <th>Status</th>
-                        <th>Orders</th>
-                        <th>Revenue</th>
-                        <th class="d-none d-md-table-cell">Tickets</th>
-                        <th></th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {% for stat in upload_stats %}
-                    <tr>
-                        <td><strong>{{ stat.upload.filename }}</strong></td>
-                        <td class="d-none d-md-table-cell">{{ stat.upload.csv_format.name }}</td>
-                        <td class="d-none d-md-table-cell">{{ stat.upload.uploaded_at|date:"M d, Y H:i" }}</td>
-                        <td>
-                            <span class="badge bg-{% if stat.upload.status == 'completed' %}success{% elif stat.upload.status == 'failed' %}danger{% elif stat.upload.status == 'processing' %}warning{% else %}secondary{% endif %}">
-                                {{ stat.upload.get_status_display }}
-                            </span>
-                        </td>
-                        <td>{{ stat.orders_count }}</td>
-                        <td><span class="revenue">${{ stat.revenue|currency }}</span></td>
-                        <td class="d-none d-md-table-cell">{{ stat.tickets_count }}</td>
-                        <td>
-                            <div class="d-flex gap-1">
-                                <a href="{% url 'tickets:upload_results' stat.upload.id %}" class="btn btn-sm btn-outline-secondary">Results</a>
-                                {% if stat.upload.csv_file %}
-                                <a href="{% url 'tickets:reprocess_csv_file' stat.upload.id %}" class="btn btn-sm btn-outline-warning">Re-process</a>
-                                {% endif %}
-                                <button type="button" class="btn btn-sm btn-outline-danger btn-delete-upload"
-                                        data-upload-id="{{ stat.upload.id }}"
-                                        data-upload-filename="{{ stat.upload.filename }}"
-                                        data-upload-orders="{{ stat.orders_count }}"
-                                        data-upload-revenue="{{ stat.revenue|currency }}"
-                                        data-bs-toggle="modal"
-                                        data-bs-target="#deleteUploadModal">
-                                    <i class="bi bi-trash"></i>
-                                </button>
-                            </div>
-                        </td>
-                    </tr>
-                    {% endfor %}
-                </tbody>
-            </table>
+<div id="event-uploads-card" data-url="{% url 'tickets:event_uploads_summary' event.id %}">
+    <div class="card mb-4">
+        <div class="card-header d-flex justify-content-between align-items-center">
+            <h5>Uploads</h5>
+            <button type="button" class="btn btn-sm btn-primary" data-bs-toggle="modal" data-bs-target="#uploadCsvModal"><i class="bi bi-upload"></i> Upload CSV</button>
         </div>
-        {% else %}
-        <div class="empty-state" style="padding: 32px;">
-            <p class="mb-0">No uploads associated with this event.</p>
+        <div class="card-body" style="padding: 32px;">
+            <div class="d-flex align-items-center gap-2 text-muted">
+                <span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>
+                <span>Loading uploads…</span>
+            </div>
         </div>
-        {% endif %}
     </div>
 </div>
 {% endif %}
@@ -1165,6 +1115,30 @@ document.addEventListener('DOMContentLoaded', function () {
 </script>
 <script>
 document.addEventListener('DOMContentLoaded', function() {
+    const uploadsCard = document.getElementById('event-uploads-card');
+    if (uploadsCard) {
+        fetch(uploadsCard.dataset.url, {
+            headers: { 'X-Requested-With': 'XMLHttpRequest' }
+        })
+        .then(function(response) {
+            if (!response.ok) throw new Error('Failed to load uploads.');
+            return response.text();
+        })
+        .then(function(html) {
+            uploadsCard.innerHTML = html;
+        })
+        .catch(function() {
+            uploadsCard.innerHTML = ''
+                + '<div class="card mb-4">'
+                + '<div class="card-header d-flex justify-content-between align-items-center">'
+                + '<h5>Uploads</h5>'
+                + '<button type="button" class="btn btn-sm btn-primary" data-bs-toggle="modal" data-bs-target="#uploadCsvModal"><i class="bi bi-upload"></i> Upload CSV</button>'
+                + '</div>'
+                + '<div class="card-body"><div class="alert alert-warning mb-0">Could not load uploads right now.</div></div>'
+                + '</div>';
+        });
+    }
+
     const deleteModal = document.getElementById('deleteUploadModal');
     const confirmBtn = document.getElementById('confirmDeleteBtn');
     let currentUploadId = null;
@@ -1200,10 +1174,11 @@ document.addEventListener('DOMContentLoaded', function() {
                     currentRow.style.transition = 'opacity 0.3s';
                     currentRow.style.opacity = '0';
                     setTimeout(() => {
+                        const tbody = currentRow.closest('tbody');
+                        const cardBody = currentRow.closest('.card-body');
                         currentRow.remove();
-                        const tbody = document.querySelector('.card:first-of-type tbody');
                         if (tbody && tbody.children.length === 0) {
-                            tbody.closest('.card-body').innerHTML = '<div class="empty-state" style="padding:32px"><p class="mb-0">No uploads associated with this event.</p></div>';
+                            cardBody.innerHTML = '<div class="empty-state" style="padding:32px"><p class="mb-0">No uploads associated with this event.</p></div>';
                         }
                     }, 300);
                 }

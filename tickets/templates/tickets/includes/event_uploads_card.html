@@ -1,0 +1,64 @@
+<div class="card mb-4">
+    <div class="card-header d-flex justify-content-between align-items-center">
+        <h5>Uploads</h5>
+        <button type="button" class="btn btn-sm btn-primary" data-bs-toggle="modal" data-bs-target="#uploadCsvModal"><i class="bi bi-upload"></i> Upload CSV</button>
+    </div>
+    <div class="card-body p-0">
+        {% if upload_stats %}
+        <div class="table-responsive">
+            <table class="table table-hover mb-0">
+                <thead>
+                    <tr>
+                        <th>Filename</th>
+                        <th class="d-none d-md-table-cell">Format</th>
+                        <th class="d-none d-md-table-cell">Upload Date</th>
+                        <th>Status</th>
+                        <th>Orders</th>
+                        <th>Revenue</th>
+                        <th class="d-none d-md-table-cell">Tickets</th>
+                        <th></th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for stat in upload_stats %}
+                    <tr>
+                        <td><strong>{{ stat.upload.filename }}</strong></td>
+                        <td class="d-none d-md-table-cell">{{ stat.upload.csv_format.name }}</td>
+                        <td class="d-none d-md-table-cell">{{ stat.upload.uploaded_at|date:"M d, Y H:i" }}</td>
+                        <td>
+                            <span class="badge bg-{% if stat.upload.status == 'completed' %}success{% elif stat.upload.status == 'failed' %}danger{% elif stat.upload.status == 'processing' %}warning{% else %}secondary{% endif %}">
+                                {{ stat.upload.get_status_display }}
+                            </span>
+                        </td>
+                        <td>{{ stat.orders_count }}</td>
+                        <td><span class="revenue">${{ stat.revenue|currency }}</span></td>
+                        <td class="d-none d-md-table-cell">{{ stat.tickets_count }}</td>
+                        <td>
+                            <div class="d-flex gap-1">
+                                <a href="{% url 'tickets:upload_results' stat.upload.id %}" class="btn btn-sm btn-outline-secondary">Results</a>
+                                {% if stat.upload.csv_file %}
+                                <a href="{% url 'tickets:reprocess_csv_file' stat.upload.id %}" class="btn btn-sm btn-outline-warning">Re-process</a>
+                                {% endif %}
+                                <button type="button" class="btn btn-sm btn-outline-danger btn-delete-upload"
+                                        data-upload-id="{{ stat.upload.id }}"
+                                        data-upload-filename="{{ stat.upload.filename }}"
+                                        data-upload-orders="{{ stat.orders_count }}"
+                                        data-upload-revenue="{{ stat.revenue|currency }}"
+                                        data-bs-toggle="modal"
+                                        data-bs-target="#deleteUploadModal">
+                                    <i class="bi bi-trash"></i>
+                                </button>
+                            </div>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% else %}
+        <div class="empty-state" style="padding: 32px;">
+            <p class="mb-0">No uploads associated with this event.</p>
+        </div>
+        {% endif %}
+    </div>
+</div>

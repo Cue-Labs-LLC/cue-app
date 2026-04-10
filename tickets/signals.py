@@ -29,7 +29,7 @@ from django.dispatch import receiver
 def refresh_event_stats(event_id):
     """Recompute and store all denormalized stats for a single event."""
     from .models import Event, EventIncome, TicketOrder
-    from .views import _event_stats_cache_key
+    from .views import _event_stats_cache_key, _invalidate_event_upload_stats_cache
 
     # Revenue: TicketOrder-only aggregate (no Ticket join — see module docstring)
     order_total = TicketOrder.objects.filter(event_id=event_id).aggregate(
@@ -63,6 +63,7 @@ def refresh_event_stats(event_id):
 
     # Invalidate event_stats cache so the next page load recomputes fresh
     django_cache.delete(_event_stats_cache_key(event_id))
+    _invalidate_event_upload_stats_cache(event_id)
 
     # Invalidate event_list cache so stats are live (especially for direct ticketing)
     event = Event.objects.filter(pk=event_id).select_related('organization').first()
@@ -104,15 +105,17 @@ def on_ticket_change(sender, instance, **kwargs):
 @receiver(post_delete, sender='tickets.EventExpense')
 def on_expense_change(sender, instance, **kwargs):
     """Expense changes affect total_expenses and expenses display in cached stats."""
-    from .views import _event_stats_cache_key
+    from .views import _event_stats_cache_key, _invalidate_event_upload_stats_cache
     django_cache.delete(_event_stats_cache_key(instance.event_id))
+    _invalidate_event_upload_stats_cache(instance.event_id)
 
 
 @receiver(post_save, sender='tickets.SurveyResponse')
 def on_survey_response_change(sender, instance, **kwargs):
     """New survey response affects survey_responses_count and survey_results."""
-    from .views import _event_stats_cache_key
+    from .views import _event_stats_cache_key, _invalidate_event_upload_stats_cache
     django_cache.delete(_event_stats_cache_key(instance.event_id))
+    _invalidate_event_upload_stats_cache(instance.event_id)
 
 
 @receiver(post_save, sender='tickets.ExternalSurveyResponse')
@@ -120,13 +123,15 @@ def on_external_survey_response_change(sender, instance, **kwargs):
     """New external survey response affects ext_count and NPS results.
     Note: survey_event_link() uses queryset.update() which bypasses this signal —
     that view handles invalidation manually."""
-    from .views import _event_stats_cache_key
+    from .views import _event_stats_cache_key, _invalidate_event_upload_stats_cache
     django_cache.delete(_event_stats_cache_key(instance.event_id))
+    _invalidate_event_upload_stats_cache(instance.event_id)
 
 
 @receiver(post_save, sender='tickets.SaleableTicketType')
 @receiver(post_delete, sender='tickets.SaleableTicketType')
 def on_saleable_ticket_type_change(sender, instance, **kwargs):
     """Ticket type changes affect ticket_type_breakdown for direct events."""
-    from .views import _event_stats_cache_key
+    from .views import _event_stats_cache_key, _invalidate_event_upload_stats_cache
     django_cache.delete(_event_stats_cache_key(instance.event_id))
+    _invalidate_event_upload_stats_cache(instance.event_id)

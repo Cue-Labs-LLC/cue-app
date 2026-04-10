@@ -294,6 +294,27 @@ class UploadDeleteViewTests(TestCase):
         data = response.json()
         self.assertIn('2', data['message'])  # Should mention 2 orders
 
+    def test_delete_invalidates_event_upload_stats_cache(self):
+        """Deleting an upload clears the cached upload stats for its event."""
+        from django.core.cache import cache as django_cache
+        from tickets.views import _compute_event_upload_stats, _event_upload_stats_cache_key
+
+        Ticket.objects.create(
+            ticket_order=self.order,
+            ticket_type='GA',
+            price=Decimal('150.00'),
+        )
+        _compute_event_upload_stats(self.event)
+        self.assertIsNotNone(django_cache.get(_event_upload_stats_cache_key(self.event.id)))
+
+        response = self.client.post(
+            reverse('tickets:upload_delete', args=[self.upload.id]),
+            HTTP_X_REQUESTED_WITH='XMLHttpRequest'
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIsNone(django_cache.get(_event_upload_stats_cache_key(self.event.id)))
+
 
 class VenueAddressFieldsTests(TestCase):
     """Test venue address fields and get_display_address."""
@@ -2192,12 +2213,9 @@ class EventDetailCacheTest(TestCase):
             "Cache should be cleared after expense deletion",
         )
 
-    def test_upload_tickets_count_subquery_correct(self):
-        """upload_agg tickets_count Subquery returns the correct ticket count per upload."""
-        from django.db.models import Count, Sum, Subquery, OuterRef, IntegerField
-        from django.db.models.functions import Coalesce
-        from django.db import models as djmodels
-        from tickets.models import Ticket
+    def test_event_upload_stats_grouped_queries_return_correct_counts(self):
+        """Grouped upload stats return correct per-upload orders, tickets, and revenue."""
+        from tickets.views import _compute_event_upload_stats
 
         upload = UploadedFile.objects.create(
             organization=self.org, csv_format=self.csv_format,
@@ -2207,38 +2225,31 @@ class EventDetailCacheTest(TestCase):
         self._make_order(ticket_prices=[Decimal('10.00'), Decimal('20.00')], uploaded_file=upload)
         self._make_order(ticket_prices=[Decimal('15.00')], uploaded_file=upload)
 
-        tickets_per_upload = (
-            Ticket.objects.filter(
-                ticket_order__event=self.event,
-                ticket_order__uploaded_file_id=OuterRef('uploaded_file'),
-            )
-            .values('ticket_order__uploaded_file')
-            .annotate(c=Count('id'))
-            .values('c')[:1]
-        )
-        revenue_per_upload = (
-            TicketOrder.objects.filter(event=self.event, uploaded_file_id=OuterRef('uploaded_file'))
-            .values('uploaded_file')
-            .annotate(s=Sum('total_amount'))
-            .values('s')[:1]
-        )
-        agg = list(
-            TicketOrder.objects.filter(event=self.event, uploaded_file=upload)
-            .values('uploaded_file')
-            .annotate(
-                orders_count=Count('id'),
-                revenue=Coalesce(
-                    Subquery(revenue_per_upload, output_field=djmodels.DecimalField(max_digits=10, decimal_places=2)),
-                    Decimal('0.00'),
-                ),
-                tickets_count=Coalesce(
-                    Subquery(tickets_per_upload, output_field=IntegerField()),
-                    0,
-                ),
-            )
-        )
+        agg = _compute_event_upload_stats(self.event)
 
         self.assertEqual(len(agg), 1)
         self.assertEqual(agg[0]['orders_count'], 2)
         self.assertEqual(agg[0]['tickets_count'], 3)
         self.assertEqual(agg[0]['revenue'], Decimal('45.00'))
+
+    def test_event_upload_stats_cache_hit_skips_db(self):
+        """Second call to _compute_event_upload_stats() should return from cache."""
+        from django.test.utils import CaptureQueriesContext
+        from django.db import connection
+        from tickets.views import _compute_event_upload_stats
+
+        upload = UploadedFile.objects.create(
+            organization=self.org,
+            csv_format=self.csv_format,
+            filename='cached.csv',
+            status='completed',
+        )
+        self._make_order(ticket_prices=[Decimal('25.00')], uploaded_file=upload)
+
+        _compute_event_upload_stats(self.event)
+
+        with CaptureQueriesContext(connection) as ctx:
+            result = _compute_event_upload_stats(self.event)
+
+        self.assertEqual(len(ctx), 0, f"Expected 0 queries on cache hit, got {len(ctx)}")
+        self.assertEqual(len(result), 1)
