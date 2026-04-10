@@ -577,11 +577,11 @@
 document.addEventListener('DOMContentLoaded', function () {
     window.showCueToast = function (text, type, opts) {
         var palette = {
-            success: { bg: 'rgba(106,158,127,0.18)', border: '#6A9E7F' },
-            error:   { bg: 'rgba(217,112,96,0.18)',  border: '#D97060' },
-            warning: { bg: 'rgba(201,147,58,0.18)',  border: '#c9933a' },
-            info:    { bg: 'rgba(0,255,135,0.10)',   border: '#00FF87' },
-            nudge:   { bg: 'rgba(0,255,135,0.10)',   border: '#00FF87' },
+            success: { bg: '#163126', border: '#6A9E7F', text: '#F2F7F3' },
+            error:   { bg: '#341a18', border: '#D97060', text: '#F9EEEE' },
+            warning: { bg: '#3B2A12', border: '#c9933a', text: '#FBF2E2' },
+            info:    { bg: '#103227', border: '#00FF87', text: '#ECFFF5' },
+            nudge:   { bg: '#103227', border: '#00FF87', text: '#ECFFF5' },
         };
         var s = palette[type] || palette.info;
         var isMobile = window.matchMedia('(max-width: 767px)').matches;
@@ -593,11 +593,11 @@ document.addEventListener('DOMContentLoaded', function () {
             close: true,
             style: {
                 background: s.bg,
-                borderTop: '1px solid rgba(255,255,255,0.08)',
-                borderRight: '1px solid rgba(255,255,255,0.08)',
-                borderBottom: '1px solid rgba(255,255,255,0.08)',
+                borderTop: '1px solid rgba(255,255,255,0.12)',
+                borderRight: '1px solid rgba(255,255,255,0.12)',
+                borderBottom: '1px solid rgba(255,255,255,0.12)',
                 borderLeft: '3px solid ' + s.border,
-                color: '#EDE8E3',
+                color: s.text,
                 fontFamily: "'DM Sans', system-ui, sans-serif",
                 fontSize: '0.875rem',
                 borderRadius: '3px',

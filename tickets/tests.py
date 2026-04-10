@@ -12,7 +12,7 @@ from .models import (
     Venue, CSVFormat, Ticket, TicketTier,
     Organization, UserProfile, OrganizationInvitation, ChatMessage,
     SaleableTicketType, StripeCheckoutSession,
-    SurveyInvitation, SurveyResponse, SurveyAnswer, SurveyQuestion,
+    SurveyInvitation, SurveyResponse, SurveyAnswer, SurveyQuestion, Payout,
     ExternalSurveyResponse,
 )
 
@@ -1185,6 +1185,206 @@ class StripeWebhookTests(TestCase):
         # Inventory went over limit (99 + 2 = 101 > 100)
         self.ticket_type.refresh_from_db()
         self.assertEqual(self.ticket_type.quantity_sold, 101)
+
+
+class FinancePayoutTests(TestCase):
+    """Tests for organizer payout requests and connected-account payout webhooks."""
+
+    def setUp(self):
+        self.client = Client()
+        self.org = Organization.objects.create(
+            name='Finance Test Org',
+            slug='finance-test-org',
+            stripe_account_id='acct_123',
+            stripe_onboarding_complete=True,
+        )
+        self.user = User.objects.create_user(
+            username='finance-owner',
+            email='owner@example.com',
+            password='testpass123',
+        )
+        UserProfile.objects.create(
+            user=self.user,
+            organization=self.org,
+            org_role=UserProfile.OrgRole.OWNER,
+        )
+        self.client.login(username='owner@example.com', password='testpass123')
+        self.client.get(reverse('tickets:home'))
+        self.payout_url = reverse('tickets:initiate_payout')
+        self.finance_url = reverse('tickets:finance_overview')
+        self.connect_webhook_url = reverse('tickets:stripe_connect_webhook')
+
+    @patch('tickets.views._compute_available_balance')
+    @patch('tickets.views._compute_settled_payout_balance')
+    @patch('tickets.views._get_stripe_platform_available_cents')
+    @patch('stripe.Transfer.create')
+    def test_can_request_multiple_pending_payouts(
+        self,
+        mock_transfer_create,
+        mock_platform_available,
+        mock_settled_balance,
+        mock_available_balance,
+    ):
+        mock_available_balance.return_value = (
+            Decimal('500.00'),
+            Decimal('50.00'),
+            Decimal('0.00'),
+            Decimal('450.00'),
+        )
+        mock_settled_balance.return_value = Decimal('450.00')
+        mock_platform_available.return_value = 45000
+        mock_transfer_create.side_effect = [
+            MagicMock(id='tr_first'),
+            MagicMock(id='tr_second'),
+        ]
+
+        first = self.client.post(self.payout_url, {'amount': '100.00'})
+        second = self.client.post(self.payout_url, {'amount': '50.00'})
+
+        self.assertEqual(first.status_code, 302)
+        self.assertEqual(second.status_code, 302)
+
+        payouts = list(Payout.objects.filter(organization=self.org).order_by('created_at'))
+        self.assertEqual(len(payouts), 2)
+        self.assertEqual([payout.amount for payout in payouts], [Decimal('100.00'), Decimal('50.00')])
+        self.assertEqual([payout.status for payout in payouts], [Payout.Status.PENDING, Payout.Status.PENDING])
+        self.assertEqual([payout.stripe_transfer_id for payout in payouts], ['tr_first', 'tr_second'])
+        self.assertEqual([payout.stripe_payout_id for payout in payouts], [None, None])
+        self.assertEqual(mock_transfer_create.call_count, 2)
+
+    @patch('stripe.Webhook.construct_event')
+    def test_connect_webhook_matches_by_stripe_payout_id_with_multiple_pending_payouts(self, mock_construct):
+        first = Payout.objects.create(
+            organization=self.org,
+            amount=Decimal('80.00'),
+            status=Payout.Status.PENDING,
+            stripe_payout_id='po_first',
+        )
+        second = Payout.objects.create(
+            organization=self.org,
+            amount=Decimal('90.00'),
+            status=Payout.Status.PENDING,
+            stripe_payout_id='po_second',
+        )
+        mock_construct.return_value = {
+            'type': 'payout.paid',
+            'account': self.org.stripe_account_id,
+            'data': {
+                'object': {
+                    'id': 'po_second',
+                    'status': 'paid',
+                    'metadata': {'payout_id': str(second.id), 'org_id': str(self.org.id)},
+                }
+            },
+        }
+
+        response = self.client.post(
+            self.connect_webhook_url,
+            data='{}',
+            content_type='application/json',
+            HTTP_STRIPE_SIGNATURE='sig_test',
+        )
+
+        self.assertEqual(response.status_code, 200)
+        first.refresh_from_db()
+        second.refresh_from_db()
+        self.assertEqual(first.status, Payout.Status.PENDING)
+        self.assertEqual(second.status, Payout.Status.COMPLETED)
+
+    @patch('stripe.Webhook.construct_event')
+    def test_connect_webhook_matches_by_metadata_when_payout_id_not_yet_saved(self, mock_construct):
+        other = Payout.objects.create(
+            organization=self.org,
+            amount=Decimal('60.00'),
+            status=Payout.Status.PENDING,
+        )
+        target = Payout.objects.create(
+            organization=self.org,
+            amount=Decimal('70.00'),
+            status=Payout.Status.PENDING,
+        )
+        mock_construct.return_value = {
+            'type': 'payout.updated',
+            'account': self.org.stripe_account_id,
+            'data': {
+                'object': {
+                    'id': 'po_target',
+                    'status': 'in_transit',
+                    'metadata': {'payout_id': str(target.id), 'org_id': str(self.org.id)},
+                }
+            },
+        }
+
+        response = self.client.post(
+            self.connect_webhook_url,
+            data='{}',
+            content_type='application/json',
+            HTTP_STRIPE_SIGNATURE='sig_test',
+        )
+
+        self.assertEqual(response.status_code, 200)
+        other.refresh_from_db()
+        target.refresh_from_db()
+        self.assertEqual(other.status, Payout.Status.PENDING)
+        self.assertIsNone(other.stripe_payout_id)
+        self.assertEqual(target.status, Payout.Status.IN_TRANSIT)
+        self.assertEqual(target.stripe_payout_id, 'po_target')
+
+    @patch('stripe.Webhook.construct_event')
+    def test_connect_webhook_matches_oldest_open_payout_by_amount(self, mock_construct):
+        first = Payout.objects.create(
+            organization=self.org,
+            amount=Decimal('25.00'),
+            status=Payout.Status.PENDING,
+        )
+        second = Payout.objects.create(
+            organization=self.org,
+            amount=Decimal('25.00'),
+            status=Payout.Status.PENDING,
+        )
+        mock_construct.return_value = {
+            'type': 'payout.updated',
+            'account': self.org.stripe_account_id,
+            'data': {
+                'object': {
+                    'id': 'po_amount_match',
+                    'status': 'in_transit',
+                    'amount': 2500,
+                    'metadata': {},
+                }
+            },
+        }
+
+        response = self.client.post(
+            self.connect_webhook_url,
+            data='{}',
+            content_type='application/json',
+            HTTP_STRIPE_SIGNATURE='sig_test',
+        )
+
+        self.assertEqual(response.status_code, 200)
+        first.refresh_from_db()
+        second.refresh_from_db()
+        self.assertEqual(first.status, Payout.Status.IN_TRANSIT)
+        self.assertEqual(first.stripe_payout_id, 'po_amount_match')
+        self.assertEqual(second.status, Payout.Status.PENDING)
+        self.assertIsNone(second.stripe_payout_id)
+
+    @patch('stripe.Account.retrieve')
+    def test_finance_history_renders_processing_for_pending_payouts(self, mock_account_retrieve):
+        mock_account_retrieve.return_value = {'external_accounts': {'data': []}}
+        Payout.objects.create(
+            organization=self.org,
+            amount=Decimal('42.00'),
+            status=Payout.Status.PENDING,
+            initiated_by=self.user,
+        )
+
+        response = self.client.get(self.finance_url)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'Processing')
+        self.assertNotContains(response, 'Queued')
 
 
 class EventSummaryStreamTests(TestCase):

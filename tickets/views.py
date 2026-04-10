@@ -5853,9 +5853,10 @@ def _handle_stripe_payout_event(event):
 
     Stripe fires these on the connected account, so the event includes an
     'account' field with the Express account ID. We use that to find the org
-    and advance the Payout record to the correct status.
+    and then reconcile by Stripe payout ID first, with best-effort fallback
+    to metadata or the oldest open payout of the same amount.
 
-    payout.created  → store stripe_payout_id (Stripe queued it)
+    payout.created  → confirm/store stripe_payout_id
     payout.updated  → advance to IN_TRANSIT when Stripe dispatches to bank
     payout.paid     → advance to COMPLETED (funds arrived at bank)
     payout.failed   → advance to FAILED
@@ -5864,6 +5865,9 @@ def _handle_stripe_payout_event(event):
     connected_account_id = event.get('account')
     stripe_payout_id = stripe_payout_obj.get('id')
     stripe_payout_status = stripe_payout_obj.get('status')  # pending, in_transit, paid, failed, canceled
+    stripe_payout_amount = stripe_payout_obj.get('amount')
+    payout_metadata = stripe_payout_obj.get('metadata') or {}
+    local_payout_id = payout_metadata.get('payout_id')
 
     if not connected_account_id:
         logger.warning("Stripe payout webhook missing 'account' field: %s", event.get('id'))
@@ -5875,16 +5879,35 @@ def _handle_stripe_payout_event(event):
         logger.warning("Stripe payout webhook for unknown account: %s", connected_account_id)
         return
 
-    # Find the most recent non-failed payout for this org to advance its status.
-    # We guard against multiple concurrent payouts elsewhere, so there should be at most one.
-    payout = (
-        Payout.objects
-        .filter(organization=org)
-        .exclude(status=Payout.Status.FAILED)
-        .filter(Q(stripe_payout_id=stripe_payout_id) | Q(stripe_payout_id__isnull=True))
-        .order_by('-created_at')
-        .first()
-    )
+    payout = None
+    if stripe_payout_id:
+        payout = (
+            Payout.objects
+            .filter(organization=org, stripe_payout_id=stripe_payout_id)
+            .first()
+        )
+
+    if not payout and local_payout_id:
+        payout = (
+            Payout.objects
+            .filter(organization=org, id=local_payout_id)
+            .first()
+        )
+
+    if not payout and stripe_payout_amount is not None:
+        payout_amount = Decimal(str(stripe_payout_amount)) / 100
+        payout = (
+            Payout.objects
+            .filter(
+                organization=org,
+                amount=payout_amount,
+                stripe_payout_id__isnull=True,
+                status__in=[Payout.Status.PENDING, Payout.Status.IN_TRANSIT],
+            )
+            .order_by('created_at')
+            .first()
+        )
+
     if not payout:
         logger.info("No matching Payout record for Stripe payout %s (org %s)", stripe_payout_id, org.id)
         return
@@ -6519,7 +6542,6 @@ def _compute_settled_payout_balance(org):
     settled = Decimal(str(settled_organizer_cents)) / 100 - paid_out
     return max(Decimal('0.00'), settled)
 
-
 @login_required
 @require_org
 @require_admin
@@ -6761,10 +6783,6 @@ def initiate_payout(request):
             )
             return redirect('tickets:finance_overview')
 
-    if Payout.objects.filter(organization=org, status=Payout.Status.PENDING).exists():
-        messages.error(request, 'A payout is already pending for your organization.')
-        return redirect('tickets:finance_overview')
-
     notes = request.POST.get('notes', '').strip()[:500]
     payout = Payout.objects.create(
         organization=org,
@@ -6783,10 +6801,9 @@ def initiate_payout(request):
             metadata={'org_id': str(org.id), 'payout_id': str(payout.id)},
         )
         payout.stripe_transfer_id = transfer.id
-        # Stay PENDING — Stripe will create a bank Payout from the connected account.
-        # The payout.paid webhook advances this to COMPLETED when funds reach the bank.
+        # Stay PENDING until connected-account payout webhooks advance the record.
         payout.save(update_fields=['stripe_transfer_id'])
-        messages.success(request, f'Payout of ${amount:.2f} queued. Funds will arrive in 1–5 business days.')
+        messages.success(request, f'Payout of ${amount:.2f} processing. Funds will arrive in 1–5 business days.')
     except stripe_lib.error.StripeError as e:
         payout.status = Payout.Status.FAILED
         error_note = f' [Stripe error: {str(e)[:400]}]'
