@@ -288,6 +288,27 @@
         @keyframes spin { to { transform: rotate(360deg); } }
         .spin { display: inline-block; animation: spin 0.75s linear infinite; }
 
+        /* Pay button loading state: one visible state at a time (avoids iOS Safari overlap of sibling spans) */
+        #pay-btn {
+            position: relative;
+            min-height: 3.25rem;
+        }
+        #pay-btn-label,
+        #pay-btn-processing {
+            width: 100%;
+            display: none;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            box-sizing: border-box;
+        }
+        #pay-btn:not(.is-processing) #pay-btn-label {
+            display: flex;
+        }
+        #pay-btn.is-processing #pay-btn-processing {
+            display: flex;
+        }
+
         .btn-ghost {
             background: transparent;
             border: 1px solid var(--border-mid);
@@ -557,7 +578,7 @@
 
         <button type="button" id="pay-btn" class="btn-pay">
             <span id="pay-btn-label"><i class="bi bi-lock"></i> Pay ${{ grand_total|currency }}</span>
-            <span id="pay-btn-processing" style="display:none;"><i class="bi bi-arrow-repeat spin"></i>&ensp;Processing...</span>
+            <span id="pay-btn-processing" aria-live="polite"><i class="bi bi-arrow-repeat spin"></i><span class="processing-text">Processing...</span></span>
         </button>
         <p class="secure-note"><i class="bi bi-shield-lock"></i>&ensp;Payments secured by Stripe</p>
         {% endif %}
@@ -743,8 +764,7 @@ document.addEventListener('DOMContentLoaded', function () {
         }
 
         payBtn.disabled = true;
-        document.getElementById('pay-btn-label').style.display = 'none';
-        document.getElementById('pay-btn-processing').style.display = '';
+        payBtn.classList.add('is-processing');
 
         if (window.fbq) {
             fbq('trackCustom', 'PurchaseInitiated', {
@@ -782,8 +802,7 @@ document.addEventListener('DOMContentLoaded', function () {
             if (data.error) {
                 errorEl.textContent = data.error;
                 payBtn.disabled = false;
-                document.getElementById('pay-btn-label').style.display = '';
-                document.getElementById('pay-btn-processing').style.display = 'none';
+                payBtn.classList.remove('is-processing');
                 return;
             }
 
@@ -800,8 +819,7 @@ document.addEventListener('DOMContentLoaded', function () {
                 if (result.error) {
                     errorEl.textContent = result.error.message;
                     payBtn.disabled = false;
-                    document.getElementById('pay-btn-label').style.display = '';
-                    document.getElementById('pay-btn-processing').style.display = 'none';
+                    payBtn.classList.remove('is-processing');
                     if (window.fbq) {
                         fbq('trackCustom', 'PurchaseFailed', { error_message: result.error.message });
                     }
@@ -813,8 +831,7 @@ document.addEventListener('DOMContentLoaded', function () {
         .catch(function () {
             errorEl.textContent = 'An unexpected error occurred. Please try again.';
             payBtn.disabled = false;
-            document.getElementById('pay-btn-label').style.display = '';
-            document.getElementById('pay-btn-processing').style.display = 'none';
+            payBtn.classList.remove('is-processing');
             if (window.fbq) {
                 fbq('trackCustom', 'PurchaseFailed', { error_message: 'Unexpected error' });
             }
