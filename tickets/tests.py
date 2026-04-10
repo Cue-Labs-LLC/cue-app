@@ -241,6 +241,35 @@ class UploadDeleteViewTests(TestCase):
         self.customer.refresh_from_db()
         self.assertEqual(self.customer.lifetime_value, Decimal('200.00'))
 
+    def test_delete_preserves_customer_last_order_date_from_remaining_orders(self):
+        """Remaining orders should drive last_order_date after upload deletion."""
+        self.customer.last_order_date = date(2024, 6, 1)
+        self.customer.save(update_fields=['last_order_date'])
+
+        other_upload = UploadedFile.objects.create(
+            organization=self.org,
+            csv_format=self.csv_format,
+            filename='other_upload.csv',
+            status='completed'
+        )
+        TicketOrder.objects.create(
+            customer=self.customer,
+            event=self.event,
+            uploaded_file=other_upload,
+            order_number='ORD-LATER',
+            order_date='2024-06-05 10:00:00',
+            total_amount=Decimal('200.00')
+        )
+
+        response = self.client.post(
+            reverse('tickets:upload_delete', args=[self.upload.id]),
+            HTTP_X_REQUESTED_WITH='XMLHttpRequest'
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.customer.refresh_from_db()
+        self.assertEqual(self.customer.last_order_date, date(2024, 6, 5))
+
     def test_delete_cascades_to_tickets(self):
         """Test that associated tickets are deleted with orders."""
         ticket = Ticket.objects.create(
@@ -2286,3 +2315,90 @@ class EventDetailCacheTest(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, 'fragment.csv')
         self.assertContains(response, '$35.00')
+
+
+class EventDeleteViewTests(TestCase):
+    """Regression coverage for customer reconciliation during event deletion."""
+
+    def setUp(self):
+        self.client = Client()
+        self.org = Organization.objects.create(name='Event Delete Org', slug='event-delete-org')
+        self.user = User.objects.create_user(
+            username='eventdeleteuser',
+            email='eventdelete@example.com',
+            password='testpass123'
+        )
+        UserProfile.objects.create(user=self.user, organization=self.org, org_role=UserProfile.OrgRole.OWNER)
+        self.client.login(username='eventdelete@example.com', password='testpass123')
+        self.client.get(reverse('tickets:home'))
+
+        self.csv_format = CSVFormat.objects.create(
+            organization=self.org,
+            name='Event Delete Format',
+            column_mapping={'order_number': 'Order ID'}
+        )
+        self.venue = Venue.objects.create(
+            organization=self.org,
+            name='Delete Venue',
+            city='Delete City'
+        )
+        self.event = Event.objects.create(
+            organization=self.org,
+            name='Delete Event',
+            venue=self.venue,
+            start_date=date(2024, 6, 15),
+            start_time=time(19, 0, 0)
+        )
+        self.other_event = Event.objects.create(
+            organization=self.org,
+            name='Other Event',
+            venue=self.venue,
+            start_date=date(2024, 6, 20),
+            start_time=time(19, 0, 0)
+        )
+        self.customer = Customer.objects.create(
+            organization=self.org,
+            email='eventcustomer@example.com',
+            name='Event Customer',
+            lifetime_value=Decimal('150.00')
+        )
+
+    def test_event_delete_preserves_customer_with_remaining_orders(self):
+        """Deleting an event should recalculate customer stats from remaining orders."""
+        TicketOrder.objects.create(
+            customer=self.customer,
+            event=self.event,
+            order_number='EV-DELETE-1',
+            order_date='2024-06-01 10:00:00',
+            total_amount=Decimal('150.00')
+        )
+        TicketOrder.objects.create(
+            customer=self.customer,
+            event=self.other_event,
+            order_number='EV-DELETE-2',
+            order_date='2024-06-07 10:00:00',
+            total_amount=Decimal('225.00')
+        )
+
+        response = self.client.post(reverse('tickets:event_delete', args=[self.event.id]))
+
+        self.assertEqual(response.status_code, 302)
+        self.assertTrue(Customer.objects.filter(id=self.customer.id).exists())
+        self.customer.refresh_from_db()
+        self.assertEqual(self.customer.lifetime_value, Decimal('225.00'))
+        self.assertEqual(self.customer.last_order_date, date(2024, 6, 7))
+
+    def test_event_delete_removes_orphaned_customer(self):
+        """Deleting an event should remove customers with no remaining orders."""
+        TicketOrder.objects.create(
+            customer=self.customer,
+            event=self.event,
+            order_number='EV-ORPHAN-1',
+            order_date='2024-06-01 10:00:00',
+            total_amount=Decimal('150.00')
+        )
+
+        response = self.client.post(reverse('tickets:event_delete', args=[self.event.id]))
+
+        self.assertEqual(response.status_code, 302)
+        self.assertFalse(Customer.objects.filter(id=self.customer.id).exists())

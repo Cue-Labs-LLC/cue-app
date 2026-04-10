@@ -233,6 +233,57 @@ def _compute_event_upload_stats(event):
     return upload_stats
 
 
+def _reconcile_customers_after_order_deletion(organization, affected_customer_ids):
+    """Reconcile surviving customers after order deletion in a deterministic lock order."""
+    customer_ids = sorted({cid for cid in affected_customer_ids if cid})
+    if not customer_ids:
+        return 0
+
+    customers = list(
+        Customer.objects.filter(
+            organization=organization,
+            id__in=customer_ids,
+        )
+        .select_for_update()
+        .order_by('id')
+    )
+    if not customers:
+        return 0
+
+    remaining_order_stats = {
+        row['customer_id']: row
+        for row in TicketOrder.objects.filter(
+            customer_id__in=[customer.id for customer in customers],
+            customer__organization=organization,
+        )
+        .values('customer_id')
+        .annotate(
+            order_count=Count('id'),
+            lifetime_value=Coalesce(
+                Sum('total_amount', filter=Q(refunded_at__isnull=True)),
+                Decimal('0.00'),
+            ),
+            last_order_at=Max('order_date'),
+        )
+    }
+
+    customers_deleted = 0
+    for customer in customers:
+        stats = remaining_order_stats.get(customer.id)
+        if not stats or stats['order_count'] == 0:
+            customer.delete()
+            customers_deleted += 1
+            continue
+
+        customer.lifetime_value = stats['lifetime_value']
+        customer.last_order_date = (
+            stats['last_order_at'].date() if stats['last_order_at'] else None
+        )
+        customer.save(update_fields=['lifetime_value', 'last_order_date'])
+
+    return customers_deleted
+
+
 def _clear_waitlist_hold(request, event_id):
     """Mark a waitlist hold as purchased and release the hold counter."""
     wl_hold = request.session.pop(f'waitlist_hold_{event_id}', None)
@@ -1734,18 +1785,10 @@ def upload_delete(request, file_id):
             for event_id in affected_event_ids:
                 _invalidate_event_upload_stats_cache(event_id)
 
-            # Delete orphaned customers (no remaining orders) or recalculate LTV
-            customers_deleted = 0
-            for customer_id in affected_customer_ids:
-                try:
-                    customer = Customer.objects.filter(organization=org).get(id=customer_id)
-                    if not customer.ticket_orders.exists():
-                        customer.delete()
-                        customers_deleted += 1
-                    else:
-                        customer.update_lifetime_value()
-                except Customer.DoesNotExist:
-                    pass
+            customers_deleted = _reconcile_customers_after_order_deletion(
+                org,
+                affected_customer_ids,
+            )
 
         success_msg = f"Successfully deleted '{filename}' and {orders_count} associated order(s)."
         if customers_deleted > 0:
@@ -2953,17 +2996,10 @@ def event_delete(request, event_id):
                 event_name = event.name
                 event.hard_delete()
 
-                customers_deleted = 0
-                for customer_id in affected_customer_ids:
-                    try:
-                        customer = Customer.objects.filter(organization=org).get(id=customer_id)
-                        if not customer.ticket_orders.exists():
-                            customer.delete()
-                            customers_deleted += 1
-                        else:
-                            customer.update_lifetime_value()
-                    except Customer.DoesNotExist:
-                        pass
+                customers_deleted = _reconcile_customers_after_order_deletion(
+                    org,
+                    affected_customer_ids,
+                )
 
             _invalidate_event_list_cache(org)
             success_msg = f"Event '{event_name}' and {orders_count} associated order(s) have been permanently deleted."
