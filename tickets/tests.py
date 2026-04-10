@@ -2253,3 +2253,36 @@ class EventDetailCacheTest(TestCase):
 
         self.assertEqual(len(ctx), 0, f"Expected 0 queries on cache hit, got {len(ctx)}")
         self.assertEqual(len(result), 1)
+
+    def test_uploads_summary_endpoint_renders_upload_stats(self):
+        """The async uploads fragment should render successfully with currency formatting."""
+        user = User.objects.create_user(
+            username='cachetestuser',
+            email='cachetest@example.com',
+            password='testpass123',
+        )
+        UserProfile.objects.create(
+            user=user,
+            organization=self.org,
+            org_role=UserProfile.OrgRole.OWNER,
+        )
+        client = Client()
+        self.assertTrue(client.login(username='cachetest@example.com', password='testpass123'))
+        client.get(reverse('tickets:home'))
+
+        upload = UploadedFile.objects.create(
+            organization=self.org,
+            csv_format=self.csv_format,
+            filename='fragment.csv',
+            status='completed',
+        )
+        self._make_order(ticket_prices=[Decimal('25.00'), Decimal('10.00')], uploaded_file=upload)
+
+        response = client.get(
+            reverse('tickets:event_uploads_summary', args=[self.event.id]),
+            HTTP_X_REQUESTED_WITH='XMLHttpRequest',
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'fragment.csv')
+        self.assertContains(response, '$35.00')
