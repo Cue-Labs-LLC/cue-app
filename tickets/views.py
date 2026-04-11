@@ -6650,10 +6650,25 @@ def _compute_settled_payout_balance(org):
 
 
 def _extract_bank_account(acct):
-    ext_accounts = acct.get('external_accounts', {}).get('data', [])
+    ext_accounts = []
+    if isinstance(acct, dict):
+        ext_accounts = (acct.get('external_accounts') or {}).get('data', [])
+    else:
+        external_accounts = getattr(acct, 'external_accounts', None)
+        if external_accounts is not None:
+            if isinstance(external_accounts, dict):
+                ext_accounts = external_accounts.get('data', [])
+            else:
+                ext_accounts = getattr(external_accounts, 'data', []) or []
     if not ext_accounts:
         return None
     ba = ext_accounts[0]
+    if not isinstance(ba, dict):
+        ba = {
+            'bank_name': getattr(ba, 'bank_name', None),
+            'last4': getattr(ba, 'last4', ''),
+            'currency': getattr(ba, 'currency', 'usd'),
+        }
     return {
         'bank_name': ba.get('bank_name') or 'Bank',
         'last4': ba.get('last4', ''),
