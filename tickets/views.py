@@ -6648,6 +6648,56 @@ def _compute_settled_payout_balance(org):
     settled = Decimal(str(settled_organizer_cents)) / 100 - paid_out
     return max(Decimal('0.00'), settled)
 
+
+def _extract_bank_account(acct):
+    ext_accounts = acct.get('external_accounts', {}).get('data', [])
+    if not ext_accounts:
+        return None
+    ba = ext_accounts[0]
+    return {
+        'bank_name': ba.get('bank_name') or 'Bank',
+        'last4': ba.get('last4', ''),
+        'currency': (ba.get('currency') or 'usd').upper(),
+    }
+
+
+def _get_connected_account_state(stripe_lib, connected_account_id):
+    acct = stripe_lib.Account.retrieve(
+        connected_account_id,
+        expand=['external_accounts'],
+    )
+    bank_account = _extract_bank_account(acct)
+    payouts_ready = bool(
+        getattr(acct, 'details_submitted', False)
+        and getattr(acct, 'charges_enabled', False)
+        and getattr(acct, 'payouts_enabled', False)
+    )
+    return {
+        'account': acct,
+        'bank_account': bank_account,
+        'payouts_ready': payouts_ready,
+    }
+
+
+def _sync_org_payout_readiness(org, payouts_ready):
+    if org.stripe_onboarding_complete != payouts_ready:
+        org.stripe_onboarding_complete = payouts_ready
+        org.save(update_fields=['stripe_onboarding_complete'])
+
+
+def _ensure_manual_payout_schedule(stripe_lib, connected_account_id):
+    """Use manual payouts so organizer requests map to explicit bank payouts."""
+    stripe_lib.Account.modify(
+        connected_account_id,
+        settings={
+            'payouts': {
+                'schedule': {
+                    'interval': 'manual',
+                }
+            }
+        },
+    )
+
 @login_required
 @require_org
 @require_admin
@@ -6668,27 +6718,27 @@ def finance_overview(request):
     stripe_available = None
     settling_balance = Decimal('0.00')
     bank_account = None
-    if org.stripe_onboarding_complete and org.stripe_account_id:
-        stripe_available = _compute_settled_payout_balance(org)
-        settling_balance = max(Decimal('0.00'), available_balance - stripe_available)
+    if org.stripe_account_id:
         try:
             import stripe as stripe_lib
             from django.conf import settings as django_settings
             stripe_lib.api_key = django_settings.STRIPE_SECRET_KEY
-            acct = stripe_lib.Account.retrieve(
-                org.stripe_account_id,
-                expand=['external_accounts'],
-            )
-            ext_accounts = acct.get('external_accounts', {}).get('data', [])
-            if ext_accounts:
-                ba = ext_accounts[0]
-                bank_account = {
-                    'bank_name': ba.get('bank_name') or 'Bank',
-                    'last4': ba.get('last4', ''),
-                    'currency': (ba.get('currency') or 'usd').upper(),
-                }
+            stripe_state = _get_connected_account_state(stripe_lib, org.stripe_account_id)
+            bank_account = stripe_state['bank_account']
+            _sync_org_payout_readiness(org, stripe_state['payouts_ready'])
         except Exception:
-            logger.exception("Could not retrieve Stripe external account for org %s", org.id)
+            logger.exception("Could not retrieve Stripe account state for org %s", org.id)
+
+    if org.stripe_onboarding_complete and org.stripe_account_id:
+        stripe_available = _compute_settled_payout_balance(org)
+        settling_balance = max(Decimal('0.00'), available_balance - stripe_available)
+
+    legacy_pending_payouts = Payout.objects.filter(
+        organization=org,
+        status=Payout.Status.PENDING,
+        stripe_transfer_id__isnull=False,
+        stripe_payout_id__isnull=True,
+    ).count()
 
     context = {
         'net_sales': net_sales,
@@ -6701,6 +6751,7 @@ def finance_overview(request):
         'has_stripe_account': bool(org.stripe_account_id),
         'min_payout': _MIN_PAYOUT,
         'bank_account': bank_account,
+        'legacy_pending_payouts': legacy_pending_payouts,
     }
     return render(request, 'tickets/finance/overview.html', context)
 
@@ -6751,13 +6802,15 @@ def stripe_connect_return(request):
 
     if org.stripe_account_id:
         try:
-            account = stripe_lib.Account.retrieve(org.stripe_account_id)
-            if account.details_submitted and account.charges_enabled:
-                org.stripe_onboarding_complete = True
-                org.save(update_fields=['stripe_onboarding_complete'])
+            stripe_state = _get_connected_account_state(stripe_lib, org.stripe_account_id)
+            _sync_org_payout_readiness(org, stripe_state['payouts_ready'])
+            if stripe_state['payouts_ready']:
                 messages.success(request, 'Bank account connected successfully. You can now request payouts.')
             else:
-                messages.warning(request, 'Onboarding incomplete. Please finish connecting your bank account.')
+                messages.warning(
+                    request,
+                    'Bank account connection is incomplete for payouts. Please finish Stripe onboarding to enable bank payouts.',
+                )
         except stripe_lib.error.StripeError as e:
             messages.error(request, f'Could not verify Stripe account: {getattr(e, "user_message", None) or str(e)}')
 
@@ -6807,10 +6860,15 @@ def stripe_account_login(request):
         messages.error(request, "Stripe is not configured. Contact support.")
         return redirect("tickets:finance_overview")
     org = get_organization(request)
-    if not org.stripe_account_id or not org.stripe_onboarding_complete:
+    if not org.stripe_account_id:
         messages.error(request, "No connected bank account found.")
         return redirect("tickets:finance_overview")
     try:
+        stripe_state = _get_connected_account_state(stripe_lib, org.stripe_account_id)
+        _sync_org_payout_readiness(org, stripe_state['payouts_ready'])
+        if not stripe_state['payouts_ready']:
+            messages.error(request, "Stripe onboarding is not complete for payouts yet.")
+            return redirect("tickets:finance_overview")
         login_link = stripe_lib.Account.create_login_link(org.stripe_account_id)
         return redirect(login_link.url)
     except stripe_lib.error.StripeError as e:
@@ -6843,14 +6901,25 @@ def stripe_disconnect(request):
 @require_owner
 @require_http_methods(["POST"])
 def initiate_payout(request):
-    """Initiate a Stripe Transfer from the platform balance to the organizer's account."""
+    """Initiate a Stripe Transfer and connected-account bank payout."""
     import stripe as stripe_lib
     from django.conf import settings as django_settings
     stripe_lib.api_key = django_settings.STRIPE_SECRET_KEY
     org = get_organization(request)
 
-    if not org.stripe_onboarding_complete or not org.stripe_account_id:
+    if not org.stripe_account_id:
         messages.error(request, 'Please connect your bank account before requesting a payout.')
+        return redirect('tickets:finance_overview')
+
+    try:
+        stripe_state = _get_connected_account_state(stripe_lib, org.stripe_account_id)
+        _sync_org_payout_readiness(org, stripe_state['payouts_ready'])
+    except stripe_lib.error.StripeError as e:
+        messages.error(request, f'Could not verify your Stripe payout settings: {getattr(e, "user_message", None) or str(e)}')
+        return redirect('tickets:finance_overview')
+
+    if not stripe_state['payouts_ready']:
+        messages.error(request, 'Your bank account is not yet enabled for payouts. Please finish Stripe onboarding.')
         return redirect('tickets:finance_overview')
 
     raw_amount = request.POST.get('amount', '').strip()
@@ -6899,6 +6968,7 @@ def initiate_payout(request):
     )
 
     try:
+        _ensure_manual_payout_schedule(stripe_lib, org.stripe_account_id)
         transfer = stripe_lib.Transfer.create(
             amount=int(amount * 100),
             currency=django_settings.STRIPE_CURRENCY,
@@ -6907,15 +6977,126 @@ def initiate_payout(request):
             metadata={'org_id': str(org.id), 'payout_id': str(payout.id)},
         )
         payout.stripe_transfer_id = transfer.id
-        # Stay PENDING until connected-account payout webhooks advance the record.
         payout.save(update_fields=['stripe_transfer_id'])
+
+        stripe_payout = stripe_lib.Payout.create(
+            amount=int(amount * 100),
+            currency=django_settings.STRIPE_CURRENCY,
+            metadata={'org_id': str(org.id), 'payout_id': str(payout.id)},
+            stripe_account=org.stripe_account_id,
+        )
+        payout.stripe_payout_id = stripe_payout.id
+        payout_status_map = {
+            'in_transit': Payout.Status.IN_TRANSIT,
+            'paid': Payout.Status.COMPLETED,
+            'failed': Payout.Status.FAILED,
+            'canceled': Payout.Status.FAILED,
+        }
+        update_fields = ['stripe_payout_id']
+        new_status = payout_status_map.get(getattr(stripe_payout, 'status', None))
+        if new_status and payout.status != new_status:
+            payout.status = new_status
+            update_fields.append('status')
+        payout.save(update_fields=update_fields)
         messages.success(request, f'Payout of ${amount:.2f} processing. Funds will arrive in 1–5 business days.')
     except stripe_lib.error.StripeError as e:
+        transfer = locals().get('transfer')
+        if transfer is not None:
+            try:
+                stripe_lib.Transfer.create_reversal(
+                    transfer.id,
+                    metadata={'org_id': str(org.id), 'payout_id': str(payout.id), 'reason': 'payout_create_failed'},
+                )
+            except stripe_lib.error.StripeError:
+                logger.exception("Could not reverse transfer %s after payout failure for payout %s", transfer.id, payout.id)
         payout.status = Payout.Status.FAILED
         error_note = f' [Stripe error: {str(e)[:400]}]'
         payout.notes = (payout.notes + error_note)[:500]
-        payout.save(update_fields=['status', 'notes'])
+        update_fields = ['status', 'notes']
+        if transfer is not None and payout.stripe_transfer_id != transfer.id:
+            payout.stripe_transfer_id = transfer.id
+            update_fields.append('stripe_transfer_id')
+        payout.save(update_fields=update_fields)
         messages.error(request, f'Payout failed: {getattr(e, "user_message", None) or str(e)}')
+
+    return redirect('tickets:finance_overview')
+
+
+@login_required
+@require_org
+@require_owner
+@require_http_methods(["POST"])
+def recover_pending_payouts(request):
+    """Create missing Stripe payouts for legacy transfer-only pending payouts."""
+    import stripe as stripe_lib
+    from django.conf import settings as django_settings
+
+    stripe_lib.api_key = django_settings.STRIPE_SECRET_KEY
+    org = get_organization(request)
+
+    if not org.stripe_account_id:
+        messages.error(request, 'Please connect your bank account before recovering pending payouts.')
+        return redirect('tickets:finance_overview')
+
+    try:
+        stripe_state = _get_connected_account_state(stripe_lib, org.stripe_account_id)
+        _sync_org_payout_readiness(org, stripe_state['payouts_ready'])
+        if not stripe_state['payouts_ready']:
+            messages.error(request, 'Your bank account is not yet enabled for payouts. Please finish Stripe onboarding.')
+            return redirect('tickets:finance_overview')
+        _ensure_manual_payout_schedule(stripe_lib, org.stripe_account_id)
+    except stripe_lib.error.StripeError as e:
+        messages.error(request, f'Could not prepare Stripe payouts: {getattr(e, "user_message", None) or str(e)}')
+        return redirect('tickets:finance_overview')
+
+    pending_payouts = list(
+        Payout.objects.filter(
+            organization=org,
+            status=Payout.Status.PENDING,
+            stripe_transfer_id__isnull=False,
+            stripe_payout_id__isnull=True,
+        ).order_by('created_at')
+    )
+    if not pending_payouts:
+        messages.warning(request, 'There are no pending payouts that need bank payout recovery.')
+        return redirect('tickets:finance_overview')
+
+    recovered = 0
+    failed = 0
+    for payout in pending_payouts:
+        try:
+            stripe_payout = stripe_lib.Payout.create(
+                amount=int(payout.amount * 100),
+                currency=django_settings.STRIPE_CURRENCY,
+                metadata={'org_id': str(org.id), 'payout_id': str(payout.id)},
+                stripe_account=org.stripe_account_id,
+            )
+            payout.stripe_payout_id = stripe_payout.id
+            payout_status_map = {
+                'in_transit': Payout.Status.IN_TRANSIT,
+                'paid': Payout.Status.COMPLETED,
+                'failed': Payout.Status.FAILED,
+                'canceled': Payout.Status.FAILED,
+            }
+            update_fields = ['stripe_payout_id']
+            new_status = payout_status_map.get(getattr(stripe_payout, 'status', None))
+            if new_status and payout.status != new_status:
+                payout.status = new_status
+                update_fields.append('status')
+            payout.save(update_fields=update_fields)
+            recovered += 1
+        except stripe_lib.error.StripeError as e:
+            error_note = f' [Recovery failed: {str(e)[:400]}]'
+            payout.notes = (payout.notes + error_note)[:500]
+            payout.save(update_fields=['notes'])
+            failed += 1
+
+    if recovered and not failed:
+        messages.success(request, f'Sent {recovered} pending payout(s) to the organizer bank account for processing.')
+    elif recovered and failed:
+        messages.warning(request, f'Sent {recovered} pending payout(s) to the bank, but {failed} still need attention.')
+    else:
+        messages.error(request, 'Could not recover any pending payouts. Check Stripe account status and try again.')
 
     return redirect('tickets:finance_overview')
 

@@ -114,6 +114,21 @@
             </form>
         </div>
 
+        {% if legacy_pending_payouts %}
+        <div class="alert alert-warning d-flex align-items-start justify-content-between gap-3 flex-wrap">
+            <div>
+                <strong>{{ legacy_pending_payouts }} pending payout{{ legacy_pending_payouts|pluralize }}</strong>
+                were created before Cue initiated a bank payout. Send them to the organizer bank account now.
+            </div>
+            <form method="post" action="{% url 'tickets:recover_pending_payouts' %}">
+                {% csrf_token %}
+                <button type="submit" class="btn btn-warning btn-sm">
+                    <i class="bi bi-arrow-repeat"></i> Send Pending Payouts
+                </button>
+            </form>
+        </div>
+        {% endif %}
+
         <form method="post" action="{% url 'tickets:initiate_payout' %}" id="payout-form">
             {% csrf_token %}
             <div class="row g-3 align-items-end">

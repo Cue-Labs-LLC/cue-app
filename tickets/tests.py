@@ -1263,14 +1263,32 @@ class FinancePayoutTests(TestCase):
         self.payout_url = reverse('tickets:initiate_payout')
         self.finance_url = reverse('tickets:finance_overview')
         self.connect_webhook_url = reverse('tickets:stripe_connect_webhook')
+        self.recover_url = reverse('tickets:recover_pending_payouts')
+
+    def _mock_account(self, payouts_enabled=True, external_accounts=None):
+        account = MagicMock()
+        account.details_submitted = True
+        account.charges_enabled = True
+        account.payouts_enabled = payouts_enabled
+        external_accounts = external_accounts if external_accounts is not None else {'data': []}
+        account.get.side_effect = lambda key, default=None: {
+            'external_accounts': external_accounts,
+        }.get(key, default)
+        return account
 
     @patch('tickets.views._compute_available_balance')
     @patch('tickets.views._compute_settled_payout_balance')
     @patch('tickets.views._get_stripe_platform_available_cents')
+    @patch('stripe.Account.retrieve')
+    @patch('stripe.Account.modify')
+    @patch('stripe.Payout.create')
     @patch('stripe.Transfer.create')
     def test_can_request_multiple_pending_payouts(
         self,
         mock_transfer_create,
+        mock_payout_create,
+        mock_account_modify,
+        mock_account_retrieve,
         mock_platform_available,
         mock_settled_balance,
         mock_available_balance,
@@ -1287,6 +1305,11 @@ class FinancePayoutTests(TestCase):
             MagicMock(id='tr_first'),
             MagicMock(id='tr_second'),
         ]
+        mock_payout_create.side_effect = [
+            MagicMock(id='po_first', status='pending'),
+            MagicMock(id='po_second', status='pending'),
+        ]
+        mock_account_retrieve.return_value = self._mock_account(payouts_enabled=True)
 
         first = self.client.post(self.payout_url, {'amount': '100.00'})
         second = self.client.post(self.payout_url, {'amount': '50.00'})
@@ -1299,8 +1322,89 @@ class FinancePayoutTests(TestCase):
         self.assertEqual([payout.amount for payout in payouts], [Decimal('100.00'), Decimal('50.00')])
         self.assertEqual([payout.status for payout in payouts], [Payout.Status.PENDING, Payout.Status.PENDING])
         self.assertEqual([payout.stripe_transfer_id for payout in payouts], ['tr_first', 'tr_second'])
-        self.assertEqual([payout.stripe_payout_id for payout in payouts], [None, None])
+        self.assertEqual([payout.stripe_payout_id for payout in payouts], ['po_first', 'po_second'])
+        self.assertEqual(mock_account_modify.call_count, 2)
         self.assertEqual(mock_transfer_create.call_count, 2)
+        self.assertEqual(mock_payout_create.call_count, 2)
+
+    @patch('stripe.Account.retrieve')
+    def test_connect_return_requires_payouts_enabled(self, mock_account_retrieve):
+        mock_account_retrieve.return_value = self._mock_account(payouts_enabled=False)
+
+        response = self.client.get(reverse('tickets:stripe_connect_return'))
+
+        self.assertEqual(response.status_code, 302)
+        self.org.refresh_from_db()
+        self.assertFalse(self.org.stripe_onboarding_complete)
+
+    @patch('tickets.views._compute_available_balance')
+    @patch('tickets.views._compute_settled_payout_balance')
+    @patch('tickets.views._get_stripe_platform_available_cents')
+    @patch('stripe.Account.retrieve')
+    def test_initiate_payout_rejected_when_payouts_disabled(
+        self,
+        mock_account_retrieve,
+        mock_platform_available,
+        mock_settled_balance,
+        mock_available_balance,
+    ):
+        mock_available_balance.return_value = (
+            Decimal('500.00'),
+            Decimal('50.00'),
+            Decimal('0.00'),
+            Decimal('450.00'),
+        )
+        mock_settled_balance.return_value = Decimal('450.00')
+        mock_platform_available.return_value = 45000
+        mock_account_retrieve.return_value = self._mock_account(payouts_enabled=False)
+
+        response = self.client.post(self.payout_url, {'amount': '100.00'})
+
+        self.assertEqual(response.status_code, 302)
+        payout = Payout.objects.count()
+        self.assertEqual(payout, 0)
+
+    @patch('tickets.views._compute_available_balance')
+    @patch('tickets.views._compute_settled_payout_balance')
+    @patch('tickets.views._get_stripe_platform_available_cents')
+    @patch('stripe.Account.retrieve')
+    @patch('stripe.Account.modify')
+    @patch('stripe.Transfer.create_reversal')
+    @patch('stripe.Payout.create')
+    @patch('stripe.Transfer.create')
+    def test_initiate_payout_reverses_transfer_when_bank_payout_creation_fails(
+        self,
+        mock_transfer_create,
+        mock_payout_create,
+        mock_create_reversal,
+        mock_account_modify,
+        mock_account_retrieve,
+        mock_platform_available,
+        mock_settled_balance,
+        mock_available_balance,
+    ):
+        import stripe as stripe_lib
+
+        mock_available_balance.return_value = (
+            Decimal('500.00'),
+            Decimal('50.00'),
+            Decimal('0.00'),
+            Decimal('450.00'),
+        )
+        mock_settled_balance.return_value = Decimal('450.00')
+        mock_platform_available.return_value = 45000
+        mock_account_retrieve.return_value = self._mock_account(payouts_enabled=True)
+        mock_transfer_create.return_value = MagicMock(id='tr_fail')
+        mock_payout_create.side_effect = stripe_lib.error.InvalidRequestError('bank unavailable', 'amount')
+
+        response = self.client.post(self.payout_url, {'amount': '100.00'})
+
+        self.assertEqual(response.status_code, 302)
+        payout = Payout.objects.get(organization=self.org)
+        self.assertEqual(payout.status, Payout.Status.FAILED)
+        self.assertEqual(payout.stripe_transfer_id, 'tr_fail')
+        self.assertIsNone(payout.stripe_payout_id)
+        mock_create_reversal.assert_called_once()
 
     @patch('stripe.Webhook.construct_event')
     def test_connect_webhook_matches_by_stripe_payout_id_with_multiple_pending_payouts(self, mock_construct):
@@ -1422,7 +1526,7 @@ class FinancePayoutTests(TestCase):
 
     @patch('stripe.Account.retrieve')
     def test_finance_history_renders_processing_for_pending_payouts(self, mock_account_retrieve):
-        mock_account_retrieve.return_value = {'external_accounts': {'data': []}}
+        mock_account_retrieve.return_value = self._mock_account(payouts_enabled=True)
         Payout.objects.create(
             organization=self.org,
             amount=Decimal('42.00'),
@@ -1435,6 +1539,44 @@ class FinancePayoutTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, 'Processing')
         self.assertNotContains(response, 'Queued')
+
+    @patch('stripe.Account.retrieve')
+    @patch('stripe.Account.modify')
+    @patch('stripe.Payout.create')
+    def test_recover_pending_payouts_creates_missing_stripe_payout_ids(
+        self,
+        mock_payout_create,
+        mock_account_modify,
+        mock_account_retrieve,
+    ):
+        mock_account_retrieve.return_value = self._mock_account(payouts_enabled=True)
+        mock_payout_create.side_effect = [
+            MagicMock(id='po_recover_one', status='pending'),
+            MagicMock(id='po_recover_two', status='in_transit'),
+        ]
+        first = Payout.objects.create(
+            organization=self.org,
+            amount=Decimal('25.00'),
+            status=Payout.Status.PENDING,
+            stripe_transfer_id='tr_one',
+        )
+        second = Payout.objects.create(
+            organization=self.org,
+            amount=Decimal('35.00'),
+            status=Payout.Status.PENDING,
+            stripe_transfer_id='tr_two',
+        )
+
+        response = self.client.post(self.recover_url)
+
+        self.assertEqual(response.status_code, 302)
+        first.refresh_from_db()
+        second.refresh_from_db()
+        self.assertEqual(first.stripe_payout_id, 'po_recover_one')
+        self.assertEqual(first.status, Payout.Status.PENDING)
+        self.assertEqual(second.stripe_payout_id, 'po_recover_two')
+        self.assertEqual(second.status, Payout.Status.IN_TRANSIT)
+        self.assertEqual(mock_payout_create.call_count, 2)
 
 
 class EventSummaryStreamTests(TestCase):

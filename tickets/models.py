@@ -91,7 +91,7 @@ class Organization(BaseModel):
     )
     stripe_onboarding_complete = models.BooleanField(
         default=False,
-        help_text='True after Stripe confirms details_submitted and charges_enabled.',
+        help_text='True after Stripe confirms details_submitted, charges_enabled, and payouts_enabled.',
     )
     meta_capi_access_token = models.CharField(
         max_length=255, blank=True, default='',
