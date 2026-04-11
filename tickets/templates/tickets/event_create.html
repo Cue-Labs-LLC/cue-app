@@ -199,6 +199,22 @@ document.addEventListener('DOMContentLoaded', function() {
         textarea.value = quill.root.innerHTML === '<p><br></p>' ? '' : quill.root.innerHTML;
     });
 });
+document.addEventListener('DOMContentLoaded', function() {
+    var venueCapacities = {{ venue_capacities_json|default:'{}'|safe }};
+    var venueSelect = document.getElementById('id_venue');
+    var capacityInput = document.getElementById('id_capacity');
+    if (!venueSelect || !capacityInput) return;
+    function syncCapacityFromVenue() {
+        var cap = venueCapacities[venueSelect.value];
+        if (cap && !capacityInput.value) {
+            capacityInput.value = cap;
+        }
+    }
+    syncCapacityFromVenue();
+    venueSelect.addEventListener('change', function() {
+        syncCapacityFromVenue();
+    });
+});
 {% if ticketing_type == 'direct' %}
 document.addEventListener('DOMContentLoaded', function() {
     var flyerZone = document.getElementById('flyer-drop-zone');
@@ -495,19 +511,6 @@ document.addEventListener('DOMContentLoaded', function () {
     });
 })();
 
-// Auto-fill capacity from venue selection
-(function() {
-    var venueCapacities = {{ venue_capacities_json|safe }};
-    var venueSelect = document.getElementById('id_venue');
-    var capacityInput = document.getElementById('id_capacity');
-    if (!venueSelect || !capacityInput) return;
-    venueSelect.addEventListener('change', function() {
-        var cap = venueCapacities[venueSelect.value];
-        if (cap && !capacityInput.value) {
-            capacityInput.value = cap;
-        }
-    });
-})();
 {% endif %}
 </script>
 {% endblock %}

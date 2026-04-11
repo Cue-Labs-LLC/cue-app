@@ -112,6 +112,7 @@ urlpatterns = [
     path('events/<uuid:event_id>/scanner-pin/generate/', views.generate_scanner_pin, name='generate_scanner_pin'),
     path('events/<uuid:event_id>/scanner-pin/revoke/', views.revoke_scanner_pin, name='revoke_scanner_pin'),
     path('events/<uuid:event_id>/edit/', views.event_edit, name='event_edit'),
+    path('events/<uuid:event_id>/pricing-recommendation/', views.event_pricing_recommendation, name='event_pricing_recommendation'),
     path('events/<uuid:event_id>/flyer/', views.event_flyer_upload, name='event_flyer_upload'),
     path('events/<uuid:event_id>/upload/', views.event_upload_csv, name='event_upload_csv'),
     path('events/<uuid:event_id>/export-csv/', views.event_export_csv, name='event_export_csv'),

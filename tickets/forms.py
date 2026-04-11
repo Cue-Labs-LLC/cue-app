@@ -1018,6 +1018,18 @@ class EventForm(forms.ModelForm):
                 self.fields[field_name].initial = default_option_id
             layout_fields.append(Field(field_name))
 
+        if (
+            not self.is_bound
+            and not self.initial.get('capacity')
+            and not getattr(self.instance, 'capacity', None)
+        ):
+            venue = None
+            venue_id = self.initial.get('venue') or getattr(self.instance, 'venue_id', None)
+            if venue_id:
+                venue = self.fields['venue'].queryset.filter(id=venue_id).first()
+            if venue and venue.capacity:
+                self.initial['capacity'] = venue.capacity
+
         self.helper = FormHelper()
         self.helper.form_tag = False
         self.helper.layout = Layout(*layout_fields)
@@ -1154,7 +1166,7 @@ class DirectEventForm(forms.ModelForm):
 
     class Meta:
         model = Event
-        fields = ['name', 'summary', 'start_date', 'start_time', 'end_date', 'end_time', 'description', 'flyer', 'facebook_pixel_id', 'venue']
+        fields = ['name', 'summary', 'start_date', 'start_time', 'end_date', 'end_time', 'description', 'capacity', 'flyer', 'facebook_pixel_id', 'venue']
         widgets = {
             'name': forms.TextInput(attrs={'class': 'form-control', 'placeholder': 'e.g., Familiar Faces'}),
             'summary': forms.TextInput(attrs={'class': 'form-control', 'placeholder': 'Short tagline shown on the ticket page (optional)'}),
@@ -1163,6 +1175,7 @@ class DirectEventForm(forms.ModelForm):
             'end_date': forms.DateInput(attrs={'type': 'date', 'class': 'form-control'}),
             'end_time': forms.TimeInput(attrs={'type': 'time', 'class': 'form-control'}),
             'description': forms.Textarea(attrs={'rows': 3, 'class': 'form-control', 'placeholder': 'Optional event description'}),
+            'capacity': forms.NumberInput(attrs={'class': 'form-control', 'placeholder': 'e.g., 500', 'min': '1'}),
 'facebook_pixel_id': forms.TextInput(attrs={'class': 'form-control', 'placeholder': 'e.g., 1234567890123456'}),
         }
 
@@ -1174,11 +1187,25 @@ class DirectEventForm(forms.ModelForm):
             ).order_by('name', 'city')
         self.fields['summary'].required = False
         self.fields['description'].required = False
+        self.fields['capacity'].required = False
         self.fields['start_time'].required = True
         self.fields['end_date'].required = True
         self.fields['end_time'].required = True
         self.fields['flyer'].required = False
         self.fields['facebook_pixel_id'].required = False
+
+        if (
+            not self.is_bound
+            and not self.initial.get('capacity')
+            and not getattr(self.instance, 'capacity', None)
+        ):
+            venue = None
+            venue_id = self.initial.get('venue') or getattr(self.instance, 'venue_id', None)
+            if venue_id:
+                venue = self.fields['venue'].queryset.filter(id=venue_id).first()
+            if venue and venue.capacity:
+                self.initial['capacity'] = venue.capacity
+
         self.helper = FormHelper()
         self.helper.form_tag = False
         self.helper.layout = Layout(
@@ -1191,7 +1218,10 @@ class DirectEventForm(forms.ModelForm):
                 Column('end_time', css_class='form-group col-md-3 mb-0'),
             ),
             Field('description'),
-            Field('venue'),
+            Row(
+                Column('venue', css_class='form-group col-md-8 mb-0'),
+                Column('capacity', css_class='form-group col-md-4 mb-0'),
+            ),
             Field('facebook_pixel_id'),
         )
 

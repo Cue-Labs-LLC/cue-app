@@ -11,7 +11,7 @@ from django.shortcuts import render, redirect, get_object_or_404
 from django.contrib import messages
 from django.contrib.auth import views as auth_views
 from django.contrib.auth.decorators import login_required
-from django.urls import reverse_lazy
+from django.urls import reverse, reverse_lazy
 from django.db.models import (
     Sum, Count, Avg, Max, Q, Subquery, OuterRef, Prefetch,
     Case, When, Value, F, CharField, Exists,
@@ -54,6 +54,7 @@ from .forms import (
 )
 from .csv_processor import CSVProcessor
 from .services.forecasting.preview import generate_forecast_preview
+from .services.pricing import SmartPricingRecommender
 from .services.segmentation.rfm_calculator import RFMCalculator
 from .services.segmentation.segment_definitions import (
     SEGMENT_BADGE_COLORS,
@@ -3396,11 +3397,17 @@ def event_create(request, ticketing_type):
             ticket_formset.empty_form.fields['unlocks_after'].queryset = SaleableTicketType.objects.none()
             ticket_formset.empty_form.fields['unlocks_after'].empty_label = '- None -'
         no_venues = not Venue.objects.filter(organization=org).exists()
+        venue_capacities = {
+            str(v.id): v.capacity
+            for v in Venue.objects.filter(organization=org)
+            if v.capacity
+        }
         context = {
             'form': form,
             'ticket_formset': ticket_formset,
             'ticketing_type': ticketing_type,
             'no_venues': no_venues,
+            'venue_capacities_json': json.dumps(venue_capacities),
         }
         return render(request, 'tickets/event_create.html', context)
 
@@ -3509,6 +3516,11 @@ def event_edit(request, event_id):
             'saleable_ticket_types': saleable_tts,
             'direct_total_revenue': sum(tt.quantity_sold * tt.price for tt in saleable_tts),
             'promo_codes': list(PromoCode.objects.filter(event=event, organization=org).order_by('code')),
+            'venue_capacities_json': json.dumps({
+                str(v.id): v.capacity
+                for v in Venue.objects.filter(organization=org)
+                if v.capacity
+            }),
         }
         return render(request, 'tickets/event_edit.html', context)
 
@@ -3950,6 +3962,82 @@ def forecast_api(request):
     response['Cache-Control'] = 'no-store, no-cache, must-revalidate'
     response['Pragma'] = 'no-cache'
     return response
+
+
+@login_required
+@require_org
+@require_host
+@require_http_methods(["GET", "POST"])
+def event_pricing_recommendation(request, event_id):
+    """Get or apply smart pricing recommendations for a direct-ticketing event."""
+    org = get_organization(request)
+    event = get_object_or_404(Event.objects.filter(organization=org), id=event_id)
+    recommender = SmartPricingRecommender(org)
+
+    if request.method == 'GET':
+        preview_event = event
+        venue_id = request.GET.get('venue_id', '').strip()
+        capacity_str = request.GET.get('capacity', '').strip()
+        start_date_str = request.GET.get('start_date', '').strip()
+
+        if venue_id:
+            preview_event.venue = get_object_or_404(Venue.objects.filter(organization=org), id=venue_id)
+            preview_event.venue_id = preview_event.venue.id
+        if capacity_str:
+            try:
+                preview_event.capacity = int(capacity_str)
+            except ValueError:
+                pass
+        if start_date_str:
+            try:
+                preview_event.start_date = date.fromisoformat(start_date_str)
+            except ValueError:
+                pass
+
+        recommendation = recommender.recommend(preview_event)
+        response = JsonResponse(recommendation)
+        response['Cache-Control'] = 'no-store, no-cache, must-revalidate'
+        response['Pragma'] = 'no-cache'
+        return response
+
+    recommendation = recommender.recommend(event)
+    if not recommendation.get('ready'):
+        return JsonResponse({'success': False, 'error': recommendation.get('blocking_reason', 'Unable to apply recommendation.')}, status=400)
+    if event.saleable_ticket_types.exists():
+        return JsonResponse({'success': False, 'error': 'This event already has ticket types. Smart Pricing can only auto-create pricing before ticket types are configured.'}, status=400)
+
+    ticket_type_data = recommendation.get('recommended_ticket_type', {})
+    recommended_tiers = recommendation.get('recommended_tiers', [])
+    if not recommended_tiers:
+        return JsonResponse({'success': False, 'error': 'No recommended tiers were generated.'}, status=400)
+
+    with transaction.atomic():
+        ticket_type = SaleableTicketType.objects.create(
+            event=event,
+            name=ticket_type_data.get('name') or 'General Admission',
+            description='',
+            price=Decimal(ticket_type_data.get('price') or recommended_tiers[-1]['price']),
+            quantity_limit=event.capacity,
+            order=0,
+            is_active=True,
+        )
+        SaleableTicketTypeTier.objects.bulk_create([
+            SaleableTicketTypeTier(
+                ticket_type=ticket_type,
+                name=tier['name'],
+                price=Decimal(tier['price']),
+                allotment=int(tier['allotment']),
+                order=int(tier['order']),
+            )
+            for tier in recommended_tiers
+        ])
+
+    _invalidate_event_list_cache(org)
+    return JsonResponse({
+        'success': True,
+        'message': 'Ticket types created from recommendation.',
+        'redirect': reverse('tickets:event_edit', kwargs={'event_id': event.id}),
+    })
 
 
 # ---------------------------------------------------------------------------

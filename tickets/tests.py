@@ -11,7 +11,7 @@ from .models import (
     UploadedFile, TicketOrder, Customer, Event,
     Venue, CSVFormat, Ticket, TicketTier,
     Organization, UserProfile, OrganizationInvitation, ChatMessage,
-    SaleableTicketType, StripeCheckoutSession,
+    SaleableTicketType, SaleableTicketTypeTier, StripeCheckoutSession,
     SurveyInvitation, SurveyResponse, SurveyAnswer, SurveyQuestion, Payout,
     ExternalSurveyResponse,
 )
@@ -2544,3 +2544,202 @@ class EventDeleteViewTests(TestCase):
 
         self.assertEqual(response.status_code, 302)
         self.assertFalse(Customer.objects.filter(id=self.customer.id).exists())
+
+
+class SmartPricingRecommendationTests(TestCase):
+    def setUp(self):
+        self.client = Client()
+        self.org = Organization.objects.create(name='Pricing Org', slug='pricing-org')
+        self.user = User.objects.create_superuser(
+            username='pricing-admin',
+            email='pricing@example.com',
+            password='testpass123',
+        )
+        UserProfile.objects.create(
+            user=self.user,
+            organization=self.org,
+            org_role=UserProfile.OrgRole.OWNER,
+        )
+        self.client.login(username='pricing@example.com', password='testpass123')
+        self.client.get(reverse('tickets:home'))
+
+        self.venue = Venue.objects.create(
+            organization=self.org,
+            name='Venue One',
+            city='Oakland',
+            capacity=500,
+        )
+        self.target_event = Event.objects.create(
+            organization=self.org,
+            name='Future Show',
+            venue=self.venue,
+            ticketing_type='direct',
+            start_date=date.today() + timedelta(days=30),
+            start_time=time(20, 0),
+            end_date=date.today() + timedelta(days=30),
+            end_time=time(23, 0),
+            capacity=400,
+        )
+        self.recommendation_url = reverse('tickets:event_pricing_recommendation', args=[self.target_event.id])
+
+    def _make_paid_history_event(self, *, name, start_date, capacity, prices):
+        event = Event.objects.create(
+            organization=self.org,
+            name=name,
+            venue=self.venue,
+            ticketing_type='external',
+            start_date=start_date,
+            start_time=time(20, 0),
+            end_date=start_date,
+            end_time=time(23, 0),
+            capacity=capacity,
+        )
+        customer = Customer.objects.create(
+            organization=self.org,
+            email=f'{name.lower().replace(" ", "-")}@example.com',
+            name=f'{name} Buyer',
+        )
+        order = TicketOrder.objects.create(
+            customer=customer,
+            event=event,
+            order_number=f'ORD-{uuid.uuid4().hex[:10]}',
+            order_date=timezone.now() - timedelta(days=90),
+            total_amount=sum(prices),
+        )
+        for price in prices:
+            Ticket.objects.create(
+                ticket_order=order,
+                ticket_type='GA',
+                price=price,
+            )
+        event.cached_paid_ticket_count = len(prices)
+        event.cached_paid_ticket_sum = sum(prices)
+        event.save(update_fields=['cached_paid_ticket_count', 'cached_paid_ticket_sum'])
+        return event
+
+    def test_direct_event_create_persists_capacity(self):
+        response = self.client.post(
+            reverse('tickets:event_create', args=['direct']),
+            {
+                'name': 'New Direct Event',
+                'summary': '',
+                'start_date': (date.today() + timedelta(days=14)).isoformat(),
+                'start_time': '20:00',
+                'end_date': (date.today() + timedelta(days=14)).isoformat(),
+                'end_time': '23:00',
+                'description': '',
+                'capacity': '350',
+                'venue': str(self.venue.id),
+                'facebook_pixel_id': '',
+                'ticket_type-TOTAL_FORMS': '1',
+                'ticket_type-INITIAL_FORMS': '0',
+                'ticket_type-MIN_NUM_FORMS': '0',
+                'ticket_type-MAX_NUM_FORMS': '1000',
+                'ticket_type-0-name': 'General Admission',
+                'ticket_type-0-description': '',
+                'ticket_type-0-price': '35.00',
+                'ticket_type-0-quantity_limit': '',
+                'ticket_type-0-order': '0',
+                'ticket_type-0-unlocks_after': '',
+            },
+        )
+
+        self.assertEqual(response.status_code, 302)
+        event = Event.objects.get(name='New Direct Event')
+        self.assertEqual(event.capacity, 350)
+
+    def test_direct_event_form_defaults_capacity_from_venue(self):
+        from .forms import DirectEventForm
+
+        form = DirectEventForm(
+            organization=self.org,
+            initial={'venue': self.venue.id},
+        )
+
+        self.assertEqual(form.initial.get('capacity'), self.venue.capacity)
+
+    def test_pricing_recommendation_blocks_without_capacity(self):
+        self.target_event.capacity = None
+        self.target_event.save(update_fields=['capacity'])
+
+        response = self.client.get(self.recommendation_url, HTTP_X_REQUESTED_WITH='XMLHttpRequest')
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertFalse(data['ready'])
+        self.assertIn('capacity', data['blocking_reason'].lower())
+
+    def test_pricing_recommendation_uses_query_overrides_for_preview(self):
+        self.target_event.capacity = None
+        self.target_event.save(update_fields=['capacity'])
+        self._make_paid_history_event(
+            name='Override Preview Show',
+            start_date=date.today() - timedelta(days=70),
+            capacity=320,
+            prices=[Decimal('20.00')] * 50 + [Decimal('30.00')] * 70 + [Decimal('40.00')] * 60,
+        )
+
+        response = self.client.get(
+            self.recommendation_url,
+            {
+                'venue_id': str(self.venue.id),
+                'capacity': '400',
+                'start_date': self.target_event.start_date.isoformat(),
+            },
+            HTTP_X_REQUESTED_WITH='XMLHttpRequest',
+        )
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertTrue(data['ready'])
+        self.assertGreaterEqual(len(data['recommended_tiers']), 2)
+
+    def test_pricing_recommendation_is_org_scoped(self):
+        other_org = Organization.objects.create(name='Other Pricing Org', slug='other-pricing-org')
+        other_venue = Venue.objects.create(organization=other_org, name='Elsewhere', city='Oakland')
+        other_event = Event.objects.create(
+            organization=other_org,
+            name='Other Org Event',
+            venue=other_venue,
+            ticketing_type='direct',
+            start_date=date.today() + timedelta(days=15),
+            start_time=time(20, 0),
+            end_date=date.today() + timedelta(days=15),
+            end_time=time(23, 0),
+            capacity=200,
+        )
+
+        response = self.client.get(
+            reverse('tickets:event_pricing_recommendation', args=[other_event.id]),
+            HTTP_X_REQUESTED_WITH='XMLHttpRequest',
+        )
+
+        self.assertEqual(response.status_code, 404)
+
+    def test_apply_recommendation_creates_ticket_type_and_tiers(self):
+        self._make_paid_history_event(
+            name='Spring Show',
+            start_date=date.today() - timedelta(days=90),
+            capacity=300,
+            prices=[Decimal('20.00')] * 60 + [Decimal('30.00')] * 80 + [Decimal('40.00')] * 70,
+        )
+        self._make_paid_history_event(
+            name='Summer Show',
+            start_date=date.today() - timedelta(days=60),
+            capacity=350,
+            prices=[Decimal('25.00')] * 70 + [Decimal('35.00')] * 90 + [Decimal('45.00')] * 60,
+        )
+
+        get_response = self.client.get(self.recommendation_url, HTTP_X_REQUESTED_WITH='XMLHttpRequest')
+        self.assertEqual(get_response.status_code, 200)
+        self.assertTrue(get_response.json()['ready'])
+
+        response = self.client.post(self.recommendation_url, HTTP_X_REQUESTED_WITH='XMLHttpRequest')
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json()['success'])
+        self.assertEqual(SaleableTicketType.objects.filter(event=self.target_event).count(), 1)
+        self.assertGreaterEqual(
+            SaleableTicketTypeTier.objects.filter(ticket_type__event=self.target_event).count(),
+            2,
+        )

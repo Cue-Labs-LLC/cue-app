@@ -9,6 +9,27 @@
 #event-flyer-card { max-width: 380px; }
 .flyer-drop-zone { border: 2px dashed var(--bs-border-color); border-radius: var(--bs-border-radius); overflow: hidden; }
 .flyer-drop-zone.flyer-dragover { border-color: var(--bs-primary); background: rgba(var(--bs-primary-rgb), 0.05); }
+.pricing-reco-card {
+    background:
+        radial-gradient(circle at top right, rgba(var(--bs-info-rgb), 0.12), transparent 32%),
+        linear-gradient(180deg, rgba(var(--bs-body-bg-rgb), 0.98), rgba(var(--bs-body-bg-rgb), 1));
+}
+.pricing-reco-stat {
+    border: 1px solid var(--bs-border-color);
+    border-radius: 16px;
+    padding: 14px 16px;
+    background: rgba(var(--bs-tertiary-bg-rgb), 0.55);
+}
+.pricing-reco-label {
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--bs-secondary-color);
+}
+.pricing-reco-value {
+    font-size: 1.25rem;
+    font-weight: 700;
+}
 </style>
 <link rel="preload" href="https://cdn.jsdelivr.net/npm/quill@2.0.3/dist/quill.snow.css" as="style" onload="this.rel='stylesheet'">
 <noscript><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/quill@2.0.3/dist/quill.snow.css"></noscript>
@@ -80,6 +101,101 @@
         </form>
 
         {% if direct_ticketing_enabled %}
+        <div class="card mb-4 pricing-reco-card" id="pricing-recommendation-card"
+             data-endpoint="{% url 'tickets:event_pricing_recommendation' event.id %}">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <div>
+                    <h5 class="mb-1">Smart Pricing Recommendations</h5>
+                    <p class="mb-0 text-muted small">Venue, city, and org-level sell-through history translated into a suggested ticket ladder.</p>
+                </div>
+                <div class="d-flex gap-2">
+                    <button type="button" class="btn btn-sm btn-outline-secondary" id="pricing-refresh-btn">
+                        <i class="bi bi-stars"></i> Generate
+                    </button>
+                    <button type="button" class="btn btn-sm btn-primary" id="pricing-apply-btn" disabled>
+                        <i class="bi bi-magic"></i> Apply Recommendation
+                    </button>
+                </div>
+            </div>
+            <div class="card-body">
+                <div id="pricing-reco-feedback" class="alert alert-warning mb-3">
+                    Set capacity and click Generate to build a recommendation.
+                </div>
+                <div id="pricing-reco-loading" class="d-none py-3 text-center">
+                    <span class="spinner-border spinner-border-sm"></span>
+                    <span class="ms-2 text-muted">Analyzing historical pricing and sell-through…</span>
+                </div>
+                <div id="pricing-reco-results" class="d-none">
+                    <div class="row g-3 mb-3">
+                        <div class="col-md-4">
+                            <div class="pricing-reco-stat">
+                                <div class="pricing-reco-label">Baseline</div>
+                                <div class="pricing-reco-value" id="pricing-baseline-name">-</div>
+                                <div class="small text-muted" id="pricing-baseline-meta"></div>
+                            </div>
+                        </div>
+                        <div class="col-md-4">
+                            <div class="pricing-reco-stat">
+                                <div class="pricing-reco-label">Projected Sell-Through</div>
+                                <div class="pricing-reco-value" id="pricing-projected-sellthrough">-</div>
+                                <div class="small text-muted" id="pricing-projected-tickets"></div>
+                            </div>
+                        </div>
+                        <div class="col-md-4">
+                            <div class="pricing-reco-stat">
+                                <div class="pricing-reco-label">Projected Gross Revenue</div>
+                                <div class="pricing-reco-value" id="pricing-projected-revenue">-</div>
+                                <div class="small text-muted">One recommended ladder</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="card border-0 bg-body-tertiary mb-3">
+                        <div class="card-body">
+                            <div class="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-2">
+                                <div>
+                                    <div class="pricing-reco-label">Recommended Ticket Type</div>
+                                    <div class="fw-semibold" id="pricing-ticket-type-name">General Admission</div>
+                                </div>
+                                <div class="small text-muted" id="pricing-apply-note"></div>
+                            </div>
+                            <div class="table-responsive">
+                                <table class="table table-sm align-middle mb-0">
+                                    <thead>
+                                        <tr>
+                                            <th>Tier</th>
+                                            <th>Price</th>
+                                            <th>Allotment</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="pricing-tier-table-body"></tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="row g-3">
+                        <div class="col-lg-6">
+                            <div class="card h-100">
+                                <div class="card-body">
+                                    <div class="pricing-reco-label mb-2">Comparable Events</div>
+                                    <div id="pricing-comparable-events" class="small text-muted"></div>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="col-lg-6">
+                            <div class="card h-100">
+                                <div class="card-body">
+                                    <div class="pricing-reco-label mb-2">AI Rationale</div>
+                                    <div id="pricing-ai-rationale" class="small"></div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
         {# Ticket Types card #}
         <div class="card mb-4">
             <div class="card-header d-flex justify-content-between align-items-center">
@@ -305,6 +421,22 @@ document.addEventListener('DOMContentLoaded', function() {
         textarea.value = quill.root.innerHTML === '<p><br></p>' ? '' : quill.root.innerHTML;
     });
 });
+document.addEventListener('DOMContentLoaded', function() {
+    var venueCapacities = {{ venue_capacities_json|default:'{}'|safe }};
+    var venueSelect = document.getElementById('id_venue');
+    var capacityInput = document.getElementById('id_capacity');
+    if (!venueSelect || !capacityInput) return;
+    function syncCapacityFromVenue() {
+        var cap = venueCapacities[venueSelect.value];
+        if (cap && !capacityInput.value) {
+            capacityInput.value = cap;
+        }
+    }
+    syncCapacityFromVenue();
+    venueSelect.addEventListener('change', function() {
+        syncCapacityFromVenue();
+    });
+});
 {% if ticketing_type != 'direct' %}
 (function() {
     var totalFormsInput = document.querySelector('input[name="talent-TOTAL_FORMS"]');
@@ -428,6 +560,172 @@ document.addEventListener('DOMContentLoaded', function() {
 
 document.addEventListener('DOMContentLoaded', function () {
 (function () {
+  function getCsrfToken() {
+    var tokenInput = document.querySelector('form input[name="csrfmiddlewaretoken"]');
+    return tokenInput ? tokenInput.value : '';
+  }
+
+  function escapeHtml(value) {
+    return String(value)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+
+  var recoCard = document.getElementById('pricing-recommendation-card');
+  if (recoCard) {
+    var endpoint = recoCard.getAttribute('data-endpoint');
+    var refreshBtn = document.getElementById('pricing-refresh-btn');
+    var applyBtn = document.getElementById('pricing-apply-btn');
+    var eventVenueInput = document.getElementById('id_venue');
+    var eventCapacityInput = document.getElementById('id_capacity');
+    var eventStartDateInput = document.getElementById('id_start_date');
+    var feedback = document.getElementById('pricing-reco-feedback');
+    var loading = document.getElementById('pricing-reco-loading');
+    var results = document.getElementById('pricing-reco-results');
+    var tierBody = document.getElementById('pricing-tier-table-body');
+    var comparableEl = document.getElementById('pricing-comparable-events');
+    var rationaleEl = document.getElementById('pricing-ai-rationale');
+    var applyNote = document.getElementById('pricing-apply-note');
+
+    function setFeedback(message, type) {
+      feedback.className = 'alert alert-' + type + ' mb-3';
+      feedback.textContent = message;
+      feedback.classList.remove('d-none');
+    }
+
+    function toggleLoading(isLoading) {
+      loading.classList.toggle('d-none', !isLoading);
+      if (refreshBtn) {
+        refreshBtn.disabled = isLoading;
+        refreshBtn.innerHTML = isLoading ? '<span class="spinner-border spinner-border-sm"></span> Generating' : '<i class="bi bi-stars"></i> Refresh';
+      }
+      if (applyBtn) applyBtn.disabled = isLoading || applyBtn.disabled;
+    }
+
+    function renderRecommendation(data) {
+      if (!data.ready) {
+        results.classList.add('d-none');
+        applyBtn.disabled = true;
+        applyNote.textContent = '';
+        setFeedback(data.blocking_reason || 'Unable to build a recommendation yet.', 'warning');
+        return;
+      }
+
+      document.getElementById('pricing-baseline-name').textContent = data.baseline_info.segment_name || 'All Events';
+      document.getElementById('pricing-baseline-meta').textContent = (
+        data.baseline_info.events_count + ' comparable events • ' + data.baseline_info.confidence + ' confidence'
+      );
+      document.getElementById('pricing-projected-sellthrough').textContent = data.expected_outcome.projected_sell_through_pct + '%';
+      document.getElementById('pricing-projected-tickets').textContent = data.expected_outcome.projected_paid_tickets + ' paid tickets projected';
+      document.getElementById('pricing-projected-revenue').textContent = '$' + data.expected_outcome.projected_gross_revenue;
+      document.getElementById('pricing-ticket-type-name').textContent = data.recommended_ticket_type.name;
+
+      tierBody.innerHTML = '';
+      data.recommended_tiers.forEach(function(tier) {
+        var row = document.createElement('tr');
+        row.innerHTML = '<td><strong>' + escapeHtml(tier.name) + '</strong></td>' +
+          '<td>$' + escapeHtml(tier.price) + '</td>' +
+          '<td>' + escapeHtml(tier.allotment) + '</td>';
+        tierBody.appendChild(row);
+      });
+
+      comparableEl.innerHTML = data.comparable_events.length ? data.comparable_events.map(function(item) {
+        var sellThrough = item.sell_through_pct === null || item.sell_through_pct === undefined
+          ? 'Sell-through unavailable'
+          : item.sell_through_pct + '% sell-through';
+        return '<div class="mb-2"><strong>' + escapeHtml(item.name) + '</strong><br>' +
+          '<span class="text-muted">' + escapeHtml(item.event_date) + ' • ' + escapeHtml(item.venue_name) + '</span><br>' +
+          escapeHtml(item.paid_tickets) + ' paid tickets • Avg $' + escapeHtml(item.avg_price) + ' • ' + escapeHtml(sellThrough) +
+          '</div>';
+      }).join('') : '<span class="text-muted">No comparable events available.</span>';
+
+      rationaleEl.innerHTML = data.ai_rationale
+        ? data.ai_rationale.replace(/\n/g, '<br>')
+        : '<span class="text-muted">AI rationale unavailable. The numeric recommendation is still based on historical pricing and sell-through.</span>';
+
+      applyBtn.disabled = !data.can_apply;
+      applyNote.textContent = data.can_apply
+        ? 'Creates one ticket type and tier ladder for this event.'
+        : 'Apply is disabled because this event already has ticket types.';
+      results.classList.remove('d-none');
+      setFeedback('Recommendation ready.', 'success');
+    }
+
+    function fetchRecommendation() {
+      toggleLoading(true);
+      var params = new URLSearchParams();
+      if (eventVenueInput && eventVenueInput.value) params.set('venue_id', eventVenueInput.value);
+      if (eventCapacityInput && eventCapacityInput.value) params.set('capacity', eventCapacityInput.value);
+      if (eventStartDateInput && eventStartDateInput.value) params.set('start_date', eventStartDateInput.value);
+      var url = endpoint + (params.toString() ? ('?' + params.toString()) : '');
+      fetch(url, {
+        headers: {
+          'X-Requested-With': 'XMLHttpRequest',
+          'Cache-Control': 'no-store',
+        },
+      })
+        .then(function(response) {
+          return response.json().then(function(data) {
+            return { ok: response.ok, data: data };
+          });
+        })
+        .then(function(result) {
+          toggleLoading(false);
+          if (!result.ok) {
+            results.classList.add('d-none');
+            applyBtn.disabled = true;
+            setFeedback(result.data.error || 'Failed to generate recommendation.', 'danger');
+            return;
+          }
+          renderRecommendation(result.data);
+        })
+        .catch(function() {
+          toggleLoading(false);
+          results.classList.add('d-none');
+          applyBtn.disabled = true;
+          setFeedback('Failed to generate recommendation.', 'danger');
+        });
+    }
+
+    if (refreshBtn) {
+      refreshBtn.addEventListener('click', fetchRecommendation);
+    }
+
+    if (applyBtn) {
+      applyBtn.addEventListener('click', function() {
+        applyBtn.disabled = true;
+        fetch(endpoint, {
+          method: 'POST',
+          headers: {
+            'X-CSRFToken': getCsrfToken(),
+            'X-Requested-With': 'XMLHttpRequest',
+          },
+        })
+          .then(function(response) {
+            return response.json().then(function(data) {
+              return { ok: response.ok, data: data };
+            });
+          })
+          .then(function(result) {
+            if (result.ok && result.data.success) {
+              window.location.href = result.data.redirect;
+              return;
+            }
+            setFeedback(result.data.error || 'Failed to apply recommendation.', 'danger');
+            applyBtn.disabled = false;
+          })
+          .catch(function() {
+            setFeedback('Failed to apply recommendation.', 'danger');
+            applyBtn.disabled = false;
+          });
+      });
+    }
+
+    fetchRecommendation();
+  }
+
   var form = document.getElementById('add-ticket-type-form');
   if (!form) return;
 
