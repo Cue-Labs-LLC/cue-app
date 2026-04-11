@@ -45,12 +45,11 @@
                         <th><a href="?sort=-lifetime_value&search={{ search_query }}&segment={{ segment_filter }}">Lifetime Value <i class="bi bi-arrow-down-up"></i></a></th>
                         <th class="d-none d-sm-table-cell"><a href="?sort=-last_order_date&search={{ search_query }}&segment={{ segment_filter }}">Last Order <i class="bi bi-arrow-down-up"></i></a></th>
                         <th class="d-none d-sm-table-cell">Total Orders</th>
-                        <th></th>
                     </tr>
                 </thead>
                 <tbody>
                     {% for customer in page_obj %}
-                    <tr>
+                    <tr style="cursor: pointer;" onclick="window.location='{% url 'tickets:customer_detail' customer.id %}'">
                         <td><strong>{{ customer.name }}</strong></td>
                         <td>{{ customer.email }}</td>
                         <td class="d-none d-sm-table-cell">{{ customer.phone|default:"-" }}</td>
@@ -64,7 +63,6 @@
                         <td><span class="revenue">${{ customer.lifetime_value|currency }}</span></td>
                         <td class="d-none d-sm-table-cell">{{ customer.last_order_date|date:"M d, Y"|default:"-" }}</td>
                         <td class="d-none d-sm-table-cell">{{ customer.order_count }}</td>
-                        <td><a href="{% url 'tickets:customer_detail' customer.id %}" class="btn btn-sm btn-outline-secondary">View</a></td>
                     </tr>
                     {% endfor %}
                 </tbody>
