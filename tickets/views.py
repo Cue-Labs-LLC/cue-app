@@ -64,7 +64,11 @@ from .services.segmentation.segment_definitions import (
 from .services.cohort_analysis.repeat_customer_calculator import RepeatCustomerCalculator
 from .services.cohort_analysis.cohort_retention_calculator import CohortRetentionCalculator
 from .utils import get_organization, require_org, require_organizer, require_host, require_admin, require_owner, clear_org_cache, next_order_number, generate_qr_b64
-from .feature_flags import direct_ticketing_enabled, browse_events_enabled
+from .feature_flags import (
+    direct_ticketing_enabled,
+    smart_pricing_recommendations_enabled,
+    browse_events_enabled,
+)
 
 from django.core.cache import cache as django_cache
 
@@ -3970,6 +3974,8 @@ def forecast_api(request):
 @require_http_methods(["GET", "POST"])
 def event_pricing_recommendation(request, event_id):
     """Get or apply smart pricing recommendations for a direct-ticketing event."""
+    if not smart_pricing_recommendations_enabled(request.user):
+        raise Http404()
     org = get_organization(request)
     event = get_object_or_404(Event.objects.filter(organization=org), id=event_id)
     recommender = SmartPricingRecommender(org)

@@ -101,6 +101,7 @@
         </form>
 
         {% if direct_ticketing_enabled %}
+        {% if smart_pricing_recommendations_enabled %}
         <div class="card mb-4 pricing-reco-card" id="pricing-recommendation-card"
              data-endpoint="{% url 'tickets:event_pricing_recommendation' event.id %}">
             <div class="card-header d-flex justify-content-between align-items-center">
@@ -195,6 +196,7 @@
                 </div>
             </div>
         </div>
+        {% endif %}
 
         {# Ticket Types card #}
         <div class="card mb-4">

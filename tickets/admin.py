@@ -16,6 +16,7 @@ from .models import (
     OrganizerWaitlist,
     PipedreamCalendarConnection,
     OrganizationAPIKey,
+    FeatureFlagSettings,
 )
 
 
@@ -641,9 +642,44 @@ class OrganizationAdmin(admin.ModelAdmin):
     prepopulated_fields = {'slug': ('name',)}
     fieldsets = (
         ('Basic', {'fields': ('name', 'slug', 'rfm_recalc_in_progress')}),
+        ('Feature Flags', {'fields': ('waitlist_feature_enabled',)}),
         ('Stripe Connect', {'fields': ('stripe_account_id', 'stripe_onboarding_complete')}),
         ('Metadata', {'fields': ('id', 'created_at', 'updated_at'), 'classes': ('collapse',)}),
     )
+
+
+@admin.register(FeatureFlagSettings)
+class FeatureFlagSettingsAdmin(admin.ModelAdmin):
+    list_display = [
+        'direct_ticketing_enabled',
+        'browse_events_enabled',
+        'smart_pricing_recommendations_enabled',
+    ]
+    readonly_fields = ['singleton_enforcer']
+    fieldsets = (
+        ('Global Feature Flags', {
+            'fields': (
+                'direct_ticketing_enabled',
+                'browse_events_enabled',
+                'smart_pricing_recommendations_enabled',
+            ),
+            'description': 'Global feature toggles for the app. Waitlist remains organization-scoped on each Organization record.',
+        }),
+    )
+
+    def has_add_permission(self, request):
+        if FeatureFlagSettings.objects.exists():
+            return False
+        return super().has_add_permission(request)
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+    def changelist_view(self, request, extra_context=None):
+        settings_obj = FeatureFlagSettings.get_solo()
+        from django.shortcuts import redirect
+        from django.urls import reverse
+        return redirect(reverse('admin:tickets_featureflagsettings_change', args=[settings_obj.pk]))
 
 
 @admin.register(Payout)

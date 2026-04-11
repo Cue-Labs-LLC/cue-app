@@ -187,6 +187,35 @@ class OrganizationAPIKey(BaseModel):
         return f"{self.key[:14]}...{self.key[-4:]}"
 
 
+class FeatureFlagSettings(models.Model):
+    """Singleton model for global feature flags managed from Django admin."""
+
+    singleton_enforcer = models.BooleanField(default=True, unique=True, editable=False)
+    direct_ticketing_enabled = models.BooleanField(
+        default=True,
+        help_text='Enable direct ticket selling flows for allowed users.',
+    )
+    browse_events_enabled = models.BooleanField(
+        default=False,
+        help_text='Expose the public Browse Events experience.',
+    )
+    smart_pricing_recommendations_enabled = models.BooleanField(
+        default=False,
+        help_text='Enable Smart Pricing Recommendations on direct-ticketing events.',
+    )
+
+    class Meta:
+        verbose_name = 'Feature Flag Settings'
+        verbose_name_plural = 'Feature Flag Settings'
+
+    def __str__(self):
+        return 'Feature Flag Settings'
+
+    @classmethod
+    def get_solo(cls):
+        return cls.objects.get_or_create(singleton_enforcer=True)[0]
+
+
 class UserProfile(models.Model):
     """OneToOne profile linking a user to an organization."""
 

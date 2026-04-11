@@ -1,11 +1,26 @@
 """Feature flags for gating functionality by user."""
 
+from .models import FeatureFlagSettings
+
+
+def _global_feature_flags():
+    return FeatureFlagSettings.get_solo()
+
 
 def direct_ticketing_enabled(user):
     """Return True for any superuser."""
     if not user or not getattr(user, 'is_authenticated', False) or not user.is_authenticated:
         return False
-    return getattr(user, 'is_superuser', False)
+    return getattr(user, 'is_superuser', False) and _global_feature_flags().direct_ticketing_enabled
+
+
+def smart_pricing_recommendations_enabled(user):
+    """Return True when Smart Pricing Recommendations are enabled for the user."""
+    if not user or not getattr(user, 'is_authenticated', False) or not user.is_authenticated:
+        return False
+    if not getattr(user, 'is_superuser', False):
+        return False
+    return _global_feature_flags().smart_pricing_recommendations_enabled
 
 
 def waitlist_enabled(organization):
@@ -17,4 +32,4 @@ def waitlist_enabled(organization):
 
 def browse_events_enabled():
     """Return True to make the public Browse Events page accessible."""
-    return False
+    return _global_feature_flags().browse_events_enabled

@@ -11,7 +11,7 @@ from .models import (
     UploadedFile, TicketOrder, Customer, Event,
     Venue, CSVFormat, Ticket, TicketTier,
     Organization, UserProfile, OrganizationInvitation, ChatMessage,
-    SaleableTicketType, SaleableTicketTypeTier, StripeCheckoutSession,
+    SaleableTicketType, SaleableTicketTypeTier, StripeCheckoutSession, FeatureFlagSettings,
     SurveyInvitation, SurveyResponse, SurveyAnswer, SurveyQuestion, Payout,
     ExternalSurveyResponse,
 )
@@ -2549,6 +2549,10 @@ class EventDeleteViewTests(TestCase):
 class SmartPricingRecommendationTests(TestCase):
     def setUp(self):
         self.client = Client()
+        flags = FeatureFlagSettings.get_solo()
+        flags.smart_pricing_recommendations_enabled = True
+        flags.direct_ticketing_enabled = True
+        flags.save(update_fields=['smart_pricing_recommendations_enabled', 'direct_ticketing_enabled'])
         self.org = Organization.objects.create(name='Pricing Org', slug='pricing-org')
         self.user = User.objects.create_superuser(
             username='pricing-admin',
@@ -2716,6 +2720,13 @@ class SmartPricingRecommendationTests(TestCase):
 
         self.assertEqual(response.status_code, 404)
 
+    def test_pricing_recommendation_endpoint_hidden_when_flag_disabled(self):
+        flags = FeatureFlagSettings.get_solo()
+        flags.smart_pricing_recommendations_enabled = False
+        flags.save(update_fields=['smart_pricing_recommendations_enabled'])
+        response = self.client.get(self.recommendation_url, HTTP_X_REQUESTED_WITH='XMLHttpRequest')
+        self.assertEqual(response.status_code, 404)
+
     def test_apply_recommendation_creates_ticket_type_and_tiers(self):
         self._make_paid_history_event(
             name='Spring Show',
@@ -2743,3 +2754,36 @@ class SmartPricingRecommendationTests(TestCase):
             SaleableTicketTypeTier.objects.filter(ticket_type__event=self.target_event).count(),
             2,
         )
+
+
+class FeatureFlagSettingsTests(TestCase):
+    def test_global_feature_flags_default_and_toggle(self):
+        from .feature_flags import (
+            browse_events_enabled,
+            direct_ticketing_enabled,
+            smart_pricing_recommendations_enabled,
+        )
+
+        user = User.objects.create_superuser(
+            username='flag-admin',
+            email='flags@example.com',
+            password='testpass123',
+        )
+        flags = FeatureFlagSettings.get_solo()
+
+        self.assertTrue(direct_ticketing_enabled(user))
+        self.assertFalse(browse_events_enabled())
+        self.assertFalse(smart_pricing_recommendations_enabled(user))
+
+        flags.direct_ticketing_enabled = False
+        flags.browse_events_enabled = True
+        flags.smart_pricing_recommendations_enabled = True
+        flags.save(update_fields=[
+            'direct_ticketing_enabled',
+            'browse_events_enabled',
+            'smart_pricing_recommendations_enabled',
+        ])
+
+        self.assertFalse(direct_ticketing_enabled(user))
+        self.assertTrue(browse_events_enabled())
+        self.assertTrue(smart_pricing_recommendations_enabled(user))
