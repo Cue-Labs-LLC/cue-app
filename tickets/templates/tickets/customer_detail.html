@@ -101,6 +101,34 @@
 </div>
 {% endif %}
 
+{% if customer.behavior_profile %}
+<div class="card mb-4">
+    <div class="card-header"><h5 class="mb-0">Behavior Profile</h5></div>
+    <div class="card-body">
+        <div class="d-flex flex-wrap align-items-center gap-3 mb-3">
+            <span class="badge bg-{{ behavior_profile_badge_color }} fs-6">{{ customer.behavior_profile }}</span>
+            {% if customer.behavior_profile_reason %}
+            <span class="text-muted small">{{ customer.behavior_profile_reason }}</span>
+            {% endif %}
+        </div>
+        <div class="row g-3">
+            <div class="col-md-4">
+                <div class="small text-muted">{{ behavior_metric_labels.days_since_last_order }}</div>
+                <div class="fw-semibold">{% if customer.days_since_last_order is not None %}{{ customer.days_since_last_order }}{% else %}&mdash;{% endif %}</div>
+            </div>
+            <div class="col-md-4">
+                <div class="small text-muted">{{ behavior_metric_labels.avg_days_between_orders }}</div>
+                <div class="fw-semibold">{% if customer.avg_days_between_orders is not None %}{{ customer.avg_days_between_orders }}{% else %}&mdash;{% endif %}</div>
+            </div>
+            <div class="col-md-4">
+                <div class="small text-muted">{{ behavior_metric_labels.days_to_second_order }}</div>
+                <div class="fw-semibold">{% if customer.days_to_second_order is not None %}{{ customer.days_to_second_order }}{% else %}&mdash;{% endif %}</div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endif %}
+
 <div class="stats-grid">
     <div class="stat-card stat-card--accent">
         <div class="stat-label">Total Orders</div>

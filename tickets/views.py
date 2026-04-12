@@ -56,7 +56,11 @@ from .csv_processor import CSVProcessor
 from .services.forecasting.preview import generate_forecast_preview
 from .services.pricing import SmartPricingRecommender
 from .services.churn_detection.churn_calculator import ChurnDetectionService, THRESHOLD_OPTIONS
-from .services.segmentation.rfm_calculator import RFMCalculator
+from .services.segmentation import (
+    BEHAVIOR_PROFILE_BADGE_COLORS,
+    BEHAVIOR_PROFILE_DESCRIPTIONS,
+    BEHAVIOR_PROFILE_ORDER,
+)
 from .services.segmentation.segment_definitions import (
     SEGMENT_BADGE_COLORS,
     SEGMENT_DESCRIPTIONS,
@@ -82,6 +86,11 @@ RFM_MONETARY_LABELS = {
     3: "Moderate spender",
     2: "Low spender",
     1: "Minimal spend",
+}
+BEHAVIOR_METRIC_LABELS = {
+    "days_since_last_order": "Days since last order",
+    "avg_days_between_orders": "Average days between orders",
+    "days_to_second_order": "Days to second order",
 }
 
 from .services.cohort_analysis.repeat_customer_calculator import RepeatCustomerCalculator
@@ -1999,11 +2008,67 @@ def _parse_churn_days(request):
     return days
 
 
+def _normalized_customer_group_stats(org, field_name, ordered_labels, badge_colors):
+    value_expr = f'{field_name}'
+    customer_rows = (
+        Customer.objects.filter(organization=org)
+        .exclude(email__endswith='@placeholder.local')
+        .annotate(
+            group_name=Case(
+                When(**{f'{value_expr}': ''}, then=Value('Dormant')),
+                When(**{f'{value_expr}__isnull': True}, then=Value('Dormant')),
+                default=F(value_expr),
+                output_field=CharField(),
+            )
+        )
+        .values('group_name')
+        .annotate(
+            count=Count('id'),
+            total_ltv=Sum('lifetime_value'),
+            avg_gap=Avg('avg_days_between_orders'),
+        )
+    )
+    order_rows = (
+        TicketOrder.objects.filter(customer__organization=org, is_in_person=False)
+        .annotate(
+            group_name=Case(
+                When(**{f'customer__{value_expr}': ''}, then=Value('Dormant')),
+                When(**{f'customer__{value_expr}__isnull': True}, then=Value('Dormant')),
+                default=F(f'customer__{value_expr}'),
+                output_field=CharField(),
+            )
+        )
+        .values('group_name')
+        .annotate(total_orders=Count('id'))
+    )
+
+    customer_map = {row['group_name'] or 'Dormant': row for row in customer_rows}
+    order_map = {row['group_name'] or 'Dormant': row['total_orders'] for row in order_rows}
+    total_customers = sum(row['count'] for row in customer_map.values())
+    stats = []
+    for name in ordered_labels:
+        row = customer_map.get(name, {'count': 0, 'total_ltv': Decimal('0'), 'avg_gap': None})
+        count = row['count']
+        total_ltv = row.get('total_ltv') or Decimal('0')
+        total_orders = order_map.get(name, 0)
+        avg_gap = row.get('avg_gap')
+        stats.append({
+            'segment': name,
+            'count': count,
+            'pct': round((100.0 * count / total_customers), 1) if total_customers else 0,
+            'avg_ltv': (total_ltv / count) if count else Decimal('0'),
+            'avg_orders': round((total_orders / count), 1) if count else 0,
+            'avg_gap': round(avg_gap, 1) if avg_gap is not None else None,
+            'badge_color': badge_colors.get(name, 'secondary'),
+        })
+    return stats, total_customers
+
+
 @login_required
 @require_org
 @require_host
 def customer_segments(request):
-    """Analytics page: segment distribution (donut), avg LTV per segment (bar), table with links."""
+    """Analytics page for RFM segments and purchase-pattern behavior profiles."""
     org = get_organization(request)
     segment_order = list(SEGMENT_BADGE_COLORS.keys())
 
@@ -2019,64 +2084,46 @@ def customer_segments(request):
             "m_range": _format_range(m_range),
         })
 
-    # Query 1: count + total_ltv per segment (normalize null/blank to Dormant)
-    seg_data = (
-        Customer.objects.filter(organization=org).exclude(email__endswith='@placeholder.local')
-        .annotate(
-            seg=Case(
-                When(rfm_segment='', then=Value('Dormant')),
-                When(rfm_segment__isnull=True, then=Value('Dormant')),
-                default=F('rfm_segment'),
-                output_field=CharField(),
-            )
-        )
-        .values('seg')
-        .annotate(count=Count('id'), total_ltv=Sum('lifetime_value'))
+    segment_stats, total_customers = _normalized_customer_group_stats(
+        org,
+        'rfm_segment',
+        segment_order,
+        SEGMENT_BADGE_COLORS,
     )
-    seg_map = {r['seg'] or 'Dormant': r for r in seg_data}
-
-    # Query 2: total orders per segment
-    order_data = (
-        TicketOrder.objects.filter(customer__organization=org, is_in_person=False)
-        .annotate(
-            seg=Case(
-                When(customer__rfm_segment='', then=Value('Dormant')),
-                When(customer__rfm_segment__isnull=True, then=Value('Dormant')),
-                default=F('customer__rfm_segment'),
-                output_field=CharField(),
-            )
-        )
-        .values('seg')
-        .annotate(total_orders=Count('id'))
-    )
-    order_map = {r['seg'] or 'Dormant': r['total_orders'] for r in order_data}
-
-    total_customers = sum(r['count'] for r in seg_map.values())
-    segment_stats = []
-    for seg in segment_order:
-        d = seg_map.get(seg, {'count': 0, 'total_ltv': Decimal('0')})
-        count = d['count']
-        total_ltv = d.get('total_ltv') or Decimal('0')
-        total_orders = order_map.get(seg, 0)
-        pct = (100.0 * count / total_customers) if total_customers else 0
-        avg_ltv = (total_ltv / count) if count else Decimal('0')
-        avg_orders = (total_orders / count) if count else 0
-        segment_stats.append({
-            'segment': seg,
-            'count': count,
-            'pct': round(pct, 1),
-            'avg_ltv': avg_ltv,
-            'avg_orders': round(avg_orders, 1),
-            'badge_color': SEGMENT_BADGE_COLORS.get(seg, 'secondary'),
-        })
     segment_stats_json = json.dumps([
         {'segment': s['segment'], 'count': s['count'], 'avg_ltv': float(s['avg_ltv'])}
         for s in segment_stats
     ])
+    behavior_stats, _ = _normalized_customer_group_stats(
+        org,
+        'behavior_profile',
+        BEHAVIOR_PROFILE_ORDER,
+        BEHAVIOR_PROFILE_BADGE_COLORS,
+    )
+    behavior_stats_json = json.dumps([
+        {
+            'segment': s['segment'],
+            'count': s['count'],
+            'avg_ltv': float(s['avg_ltv']),
+            'avg_gap': s['avg_gap'],
+        }
+        for s in behavior_stats
+    ])
+    behavior_definitions = [
+        {
+            'segment': name,
+            'description': BEHAVIOR_PROFILE_DESCRIPTIONS.get(name, ''),
+            'badge_color': BEHAVIOR_PROFILE_BADGE_COLORS.get(name, 'secondary'),
+        }
+        for name in BEHAVIOR_PROFILE_ORDER
+    ]
     context = {
         'segment_stats': segment_stats,
         'segment_stats_json': segment_stats_json,
         'segment_definitions': segment_definitions,
+        'behavior_stats': behavior_stats,
+        'behavior_stats_json': behavior_stats_json,
+        'behavior_definitions': behavior_definitions,
         'total_customers': total_customers,
         'rfm_recalc_in_progress': org.rfm_recalc_in_progress,
     }
@@ -2341,6 +2388,9 @@ def customer_detail(request, customer_id):
     segment_badge_color = SEGMENT_BADGE_COLORS.get(
         (customer.rfm_segment or '').strip(), 'secondary'
     )
+    behavior_profile_badge_color = BEHAVIOR_PROFILE_BADGE_COLORS.get(
+        (customer.behavior_profile or '').strip(), 'secondary'
+    )
     rfm_recency_label = RFM_RECENCY_LABELS.get(customer.rfm_recency_score)
     rfm_frequency_label = RFM_FREQUENCY_LABELS.get(customer.rfm_frequency_score)
     rfm_monetary_label = RFM_MONETARY_LABELS.get(customer.rfm_monetary_score)
@@ -2360,9 +2410,11 @@ def customer_detail(request, customer_id):
         'events_attended': events_attended,
         'page_obj': page_obj,
         'segment_badge_color': segment_badge_color,
+        'behavior_profile_badge_color': behavior_profile_badge_color,
         'rfm_recency_label': rfm_recency_label,
         'rfm_frequency_label': rfm_frequency_label,
         'rfm_monetary_label': rfm_monetary_label,
+        'behavior_metric_labels': BEHAVIOR_METRIC_LABELS,
         'assigned_tags': assigned_tags,
         'available_tags': available_tags,
         'org_tags': org_tags,

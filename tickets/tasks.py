@@ -198,13 +198,13 @@ def send_order_confirmation_email_task(self, order_id):
 @shared_task(bind=True, max_retries=2, default_retry_delay=30)
 def recalculate_rfm_task(self, organization_id):
     from tickets.models import Organization
-    from tickets.services.segmentation.rfm_calculator import RFMCalculator
+    from tickets.services.segmentation import recalculate_customer_segments
 
     org = Organization.objects.get(id=organization_id)
     try:
         org.rfm_recalc_in_progress = True
         org.save(update_fields=["rfm_recalc_in_progress"])
-        RFMCalculator(org).calculate_all()
+        recalculate_customer_segments(org)
     except Exception as exc:
         logger.exception("RFM recalc failed for org %s", organization_id)
         raise self.retry(exc=exc)
@@ -339,7 +339,7 @@ def process_csv_task(self, uploaded_file_id, manual_prices=None, tier_definition
     """
     from tickets.models import UploadedFile
     from tickets.csv_processor import CSVProcessor
-    from tickets.services.segmentation.rfm_calculator import RFMCalculator
+    from tickets.services.segmentation import recalculate_customer_segments
     from tickets.views import _invalidate_event_list_cache
 
     try:
@@ -402,7 +402,7 @@ def process_csv_task(self, uploaded_file_id, manual_prices=None, tier_definition
 
     if results['success_count'] > 0:
         try:
-            RFMCalculator(uploaded_file.organization).calculate_all()
+            recalculate_customer_segments(uploaded_file.organization)
         except Exception:
             logger.exception("RFM recalc after CSV import failed for %s", uploaded_file_id)
         _invalidate_event_list_cache(uploaded_file.organization)

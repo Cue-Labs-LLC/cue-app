@@ -2113,6 +2113,238 @@ class TestRFMCalculator(TestCase):
         self.assertGreaterEqual(c2.rfm_recency_score, c1.rfm_recency_score)
 
 
+class TestCustomerBehaviorProfiler(TestCase):
+    """Tests for layered customer behavior profiling."""
+
+    def setUp(self):
+        self.org = Organization.objects.create(name='Behavior Org', slug='behavior-org')
+        self.venue = Venue.objects.create(organization=self.org, name='Venue', city='City')
+        self.event = Event.objects.create(
+            organization=self.org,
+            name='Event',
+            venue=self.venue,
+            start_date=date(2025, 1, 1),
+        )
+        self.csv_format = CSVFormat.objects.create(
+            organization=self.org, name='Fmt', column_mapping={'order_number': 'Order ID'},
+        )
+        self.upload = UploadedFile.objects.create(
+            organization=self.org, csv_format=self.csv_format, filename='test.csv', status='completed',
+        )
+
+    def _make_customer(self, email, lifetime_value=Decimal('0.00'), last_order_date=None):
+        return Customer.objects.create(
+            organization=self.org,
+            email=email,
+            name=email,
+            lifetime_value=lifetime_value,
+            last_order_date=last_order_date,
+        )
+
+    def _make_order(self, customer, total, days_ago, order_num=None):
+        TicketOrder.objects.create(
+            customer=customer,
+            event=self.event,
+            uploaded_file=self.upload,
+            order_number=order_num or str(uuid.uuid4())[:20],
+            order_date=timezone.now() - timedelta(days=days_ago),
+            total_amount=Decimal(str(total)),
+        )
+
+    def test_profiles_recent_single_order_as_first_time_recent(self):
+        from tickets.services.segmentation.behavior_profiles import CustomerBehaviorProfiler
+
+        customer = self._make_customer(
+            'first@example.com',
+            lifetime_value=Decimal('60.00'),
+            last_order_date=date.today() - timedelta(days=14),
+        )
+        self._make_order(customer, 60, days_ago=14)
+
+        CustomerBehaviorProfiler(self.org).calculate_all()
+        customer.refresh_from_db()
+
+        self.assertEqual(customer.behavior_profile, 'First-Time Recent')
+        self.assertIn(customer.days_since_last_order, (14, 15))
+        self.assertIsNone(customer.avg_days_between_orders)
+
+    def test_profiles_fast_repeat_from_short_gaps(self):
+        from tickets.services.segmentation.behavior_profiles import CustomerBehaviorProfiler
+
+        customer = self._make_customer(
+            'fast@example.com',
+            lifetime_value=Decimal('180.00'),
+            last_order_date=date.today() - timedelta(days=12),
+        )
+        for days_ago in [40, 24, 12]:
+            self._make_order(customer, 60, days_ago=days_ago)
+
+        CustomerBehaviorProfiler(self.org).calculate_all()
+        customer.refresh_from_db()
+
+        self.assertEqual(customer.behavior_profile, 'Fast Repeat')
+        self.assertEqual(customer.avg_days_between_orders, 14)
+        self.assertEqual(customer.days_to_second_order, 16)
+
+    def test_profiles_high_value_occasional_when_value_is_high(self):
+        from tickets.services.segmentation.behavior_profiles import CustomerBehaviorProfiler
+
+        high_value = self._make_customer(
+            'high@example.com',
+            lifetime_value=Decimal('500.00'),
+            last_order_date=date.today() - timedelta(days=50),
+        )
+        for days_ago in [140, 50]:
+            self._make_order(high_value, 250, days_ago=days_ago)
+
+        baseline = self._make_customer(
+            'baseline@example.com',
+            lifetime_value=Decimal('40.00'),
+            last_order_date=date.today() - timedelta(days=20),
+        )
+        for days_ago in [35, 20]:
+            self._make_order(baseline, 20, days_ago=days_ago)
+
+        CustomerBehaviorProfiler(self.org).calculate_all()
+        high_value.refresh_from_db()
+
+        self.assertEqual(high_value.behavior_profile, 'High-Value Occasional')
+
+    def test_profiles_slowing_down_when_customer_falls_behind_typical_cadence(self):
+        from tickets.services.segmentation.behavior_profiles import CustomerBehaviorProfiler
+
+        customer = self._make_customer(
+            'slow@example.com',
+            lifetime_value=Decimal('240.00'),
+            last_order_date=date.today() - timedelta(days=80),
+        )
+        for days_ago in [100, 90, 80]:
+            self._make_order(customer, 80, days_ago=days_ago)
+
+        CustomerBehaviorProfiler(self.org).calculate_all()
+        customer.refresh_from_db()
+
+        self.assertEqual(customer.behavior_profile, 'Slowing Down')
+        self.assertEqual(customer.avg_days_between_orders, 10)
+
+    def test_profiles_inactive_repeat_for_long_inactivity(self):
+        from tickets.services.segmentation.behavior_profiles import CustomerBehaviorProfiler
+
+        customer = self._make_customer(
+            'inactive@example.com',
+            lifetime_value=Decimal('120.00'),
+            last_order_date=date.today() - timedelta(days=220),
+        )
+        for days_ago in [260, 220]:
+            self._make_order(customer, 60, days_ago=days_ago)
+
+        CustomerBehaviorProfiler(self.org).calculate_all()
+        customer.refresh_from_db()
+
+        self.assertEqual(customer.behavior_profile, 'Inactive Repeat')
+        self.assertIn(customer.days_since_last_order, (220, 221))
+
+    def test_placeholder_customers_remain_unprofiled(self):
+        from tickets.services.segmentation.behavior_profiles import CustomerBehaviorProfiler
+
+        placeholder = self._make_customer('ghost@placeholder.local')
+        CustomerBehaviorProfiler(self.org).calculate_all()
+        placeholder.refresh_from_db()
+
+        self.assertEqual(placeholder.behavior_profile, '')
+        self.assertEqual(placeholder.behavior_profile_reason, '')
+        self.assertIsNone(placeholder.days_since_last_order)
+
+
+class CustomerSegmentationViewTests(TestCase):
+    def setUp(self):
+        self.client = Client()
+        self.org = Organization.objects.create(name='Segment Org', slug='segment-org')
+        self.user = User.objects.create_user(
+            username='segmentuser',
+            email='segment@test.com',
+            password='testpass123',
+        )
+        UserProfile.objects.create(user=self.user, organization=self.org, org_role=UserProfile.OrgRole.OWNER)
+        self.client.login(username='segment@test.com', password='testpass123')
+        self.client.get(reverse('tickets:home'))
+
+        self.venue = Venue.objects.create(organization=self.org, name='Venue', city='City')
+        self.event = Event.objects.create(
+            organization=self.org,
+            name='Event',
+            venue=self.venue,
+            start_date=date(2025, 1, 1),
+        )
+        self.csv_format = CSVFormat.objects.create(
+            organization=self.org, name='Fmt', column_mapping={'order_number': 'Order ID'},
+        )
+        self.upload = UploadedFile.objects.create(
+            organization=self.org, csv_format=self.csv_format, filename='test.csv', status='completed',
+        )
+
+    def test_customer_segments_includes_behavior_stats(self):
+        customer = Customer.objects.create(
+            organization=self.org,
+            email='profiled@example.com',
+            name='Profiled Customer',
+            lifetime_value=Decimal('180.00'),
+            last_order_date=date.today() - timedelta(days=12),
+            rfm_segment='Loyal',
+            behavior_profile='Fast Repeat',
+            behavior_profile_reason='Returns quickly after each purchase and is currently active.',
+            days_since_last_order=12,
+            avg_days_between_orders=14,
+            days_to_second_order=16,
+        )
+        TicketOrder.objects.create(
+            customer=customer,
+            event=self.event,
+            uploaded_file=self.upload,
+            order_number='SEG-001',
+            order_date=timezone.now() - timedelta(days=12),
+            total_amount=Decimal('90.00'),
+        )
+
+        response = self.client.get(reverse('tickets:customer_segments'))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('behavior_stats', response.context)
+        self.assertTrue(any(row['segment'] == 'Fast Repeat' for row in response.context['behavior_stats']))
+        self.assertContains(response, 'Behavior profiles')
+        self.assertContains(response, 'Fast Repeat')
+
+    def test_customer_detail_shows_behavior_profile_metrics(self):
+        customer = Customer.objects.create(
+            organization=self.org,
+            email='detail@example.com',
+            name='Detail Customer',
+            lifetime_value=Decimal('200.00'),
+            last_order_date=date.today() - timedelta(days=8),
+            rfm_segment='VIP',
+            behavior_profile='Steady Repeat',
+            behavior_profile_reason='Shows a consistent repeat cadence without large gaps.',
+            days_since_last_order=8,
+            avg_days_between_orders=32,
+            days_to_second_order=21,
+        )
+        TicketOrder.objects.create(
+            customer=customer,
+            event=self.event,
+            uploaded_file=self.upload,
+            order_number='DET-001',
+            order_date=timezone.now() - timedelta(days=8),
+            total_amount=Decimal('100.00'),
+        )
+
+        response = self.client.get(reverse('tickets:customer_detail', args=[customer.id]))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'Behavior Profile')
+        self.assertContains(response, 'Steady Repeat')
+        self.assertContains(response, 'Average days between orders')
+
+
 class EventCachedStatsTest(TestCase):
     """Tests for Event cached stat fields and net_revenue calculation."""
 

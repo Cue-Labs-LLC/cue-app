@@ -28,10 +28,11 @@
 
 {% if segment_stats %}
 <script type="application/json" id="segment-stats-data">{{ segment_stats_json|safe }}</script>
+<script type="application/json" id="behavior-stats-data">{{ behavior_stats_json|safe }}</script>
 <div class="row mb-4 g-3">
     <div class="col-md-6">
         <div class="card h-100">
-            <div class="card-header"><h5 class="mb-0">Segment distribution</h5></div>
+            <div class="card-header"><h5 class="mb-0">RFM segment distribution</h5></div>
             <div class="card-body d-flex align-items-center justify-content-center">
                 <div class="chart-container" style="height: 280px; width: 100%; max-width: 320px;">
                     <canvas id="segmentDonutChart"></canvas>
@@ -41,10 +42,33 @@
     </div>
     <div class="col-md-6">
         <div class="card h-100">
-            <div class="card-header"><h5 class="mb-0">Avg LTV by segment</h5></div>
+            <div class="card-header"><h5 class="mb-0">Avg LTV by RFM segment</h5></div>
             <div class="card-body">
                 <div class="chart-container" style="height: 280px;">
                     <canvas id="segmentBarChart"></canvas>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="row mb-4 g-3">
+    <div class="col-md-6">
+        <div class="card h-100">
+            <div class="card-header"><h5 class="mb-0">Behavior profile distribution</h5></div>
+            <div class="card-body d-flex align-items-center justify-content-center">
+                <div class="chart-container" style="height: 280px; width: 100%; max-width: 320px;">
+                    <canvas id="behaviorDonutChart"></canvas>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-6">
+        <div class="card h-100">
+            <div class="card-header"><h5 class="mb-0">Avg LTV by behavior profile</h5></div>
+            <div class="card-body">
+                <div class="chart-container" style="height: 280px;">
+                    <canvas id="behaviorBarChart"></canvas>
                 </div>
             </div>
         </div>
@@ -100,6 +124,7 @@
 </div>
 
 <div class="card">
+    <div class="card-header"><h5 class="mb-0">RFM segments</h5></div>
     <div class="card-body p-0">
         {% if segment_stats %}
         <div class="table-responsive">
@@ -143,15 +168,93 @@
     </div>
 </div>
 
+<div class="card mt-4">
+    <div class="card-header"><h5 class="mb-0">Behavior profiles</h5></div>
+    <div class="card-body">
+        <p class="text-muted small mb-3">These profiles explain customer buying cadence and repeat behavior on top of the core RFM segment.</p>
+        <dl class="mb-4">
+            {% for defn in behavior_definitions %}
+            <dt class="mb-1">
+                <span class="badge bg-{{ defn.badge_color }}">{{ defn.segment }}</span>
+            </dt>
+            <dd class="mb-3 ms-0">{{ defn.description }}</dd>
+            {% endfor %}
+        </dl>
+        <div class="table-responsive">
+            <table class="table table-hover mb-0">
+                <thead>
+                    <tr>
+                        <th>Profile</th>
+                        <th>Count</th>
+                        <th>% of total</th>
+                        <th>Avg LTV</th>
+                        <th>Avg orders</th>
+                        <th>Avg days between orders</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for row in behavior_stats %}
+                    <tr>
+                        <td><span class="badge bg-{{ row.badge_color }}">{{ row.segment }}</span></td>
+                        <td>{{ row.count|intcomma }}</td>
+                        <td>{{ row.pct }}%</td>
+                        <td><span class="revenue">${{ row.avg_ltv|currency }}</span></td>
+                        <td>{{ row.avg_orders }}</td>
+                        <td>{% if row.avg_gap is not None %}{{ row.avg_gap }}{% else %}&mdash;{% endif %}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
 {% if segment_stats %}
 <script>
 (function() {
-    var el = document.getElementById('segment-stats-data');
-    if (!el) return;
-    var data = JSON.parse(el.textContent);
-    if (!data.length) return;
+    function renderCharts(dataElementId, donutChartId, barChartId, colors) {
+        var el = document.getElementById(dataElementId);
+        if (!el) return;
+        var data = JSON.parse(el.textContent);
+        if (!data.length) return;
 
-    var colors = {
+        var bg = data.map(function(d) { return colors[d.segment] || 'rgb(108, 117, 125)'; });
+        var bgAlpha = data.map(function(d) {
+            var c = colors[d.segment] || 'rgb(108, 117, 125)';
+            return c.replace('rgb', 'rgba').replace(')', ', 0.7)');
+        });
+
+        var donutCtx = document.getElementById(donutChartId);
+        if (donutCtx) {
+            new Chart(donutCtx.getContext('2d'), {
+                type: 'doughnut',
+                data: {
+                    labels: data.map(function(d) { return d.segment; }),
+                    datasets: [{ data: data.map(function(d) { return d.count; }), backgroundColor: bgAlpha, borderColor: bg, borderWidth: 1 }]
+                },
+                options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'right' } } }
+            });
+        }
+
+        var barCtx = document.getElementById(barChartId);
+        if (barCtx) {
+            new Chart(barCtx.getContext('2d'), {
+                type: 'bar',
+                data: {
+                    labels: data.map(function(d) { return d.segment; }),
+                    datasets: [{ label: 'Avg LTV', data: data.map(function(d) { return d.avg_ltv; }), backgroundColor: bgAlpha, borderColor: bg, borderWidth: 1, borderRadius: 4 }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: { tooltip: { callbacks: { label: function(c) { return '$' + Number(c.parsed.y).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); } } } },
+                    scales: { y: { beginAtZero: true, title: { display: true, text: 'Avg LTV ($)' } } }
+                }
+            });
+        }
+    }
+
+    var rfmColors = {
         'VIP': 'rgb(220, 53, 69)',
         'Loyal': 'rgb(25, 135, 84)',
         'Big Spender': 'rgb(13, 202, 240)',
@@ -161,40 +264,19 @@
         'Lapsed': 'rgb(253, 126, 20)',
         'Dormant': 'rgb(108, 117, 125)'
     };
-    var bg = data.map(function(d) { return colors[d.segment] || 'rgb(108, 117, 125)'; });
-    var bgAlpha = data.map(function(d) {
-        var c = colors[d.segment] || 'rgb(108, 117, 125)';
-        return c.replace('rgb', 'rgba').replace(')', ', 0.7)');
-    });
+    var behaviorColors = {
+        'Fast Repeat': 'rgb(25, 135, 84)',
+        'Steady Repeat': 'rgb(13, 110, 253)',
+        'Occasional Repeat': 'rgb(13, 202, 240)',
+        'High-Value Occasional': 'rgb(220, 53, 69)',
+        'Slowing Down': 'rgb(255, 193, 7)',
+        'Inactive Repeat': 'rgb(108, 117, 125)',
+        'First-Time Recent': 'rgb(111, 66, 193)',
+        'Dormant': 'rgb(173, 181, 189)'
+    };
 
-    var donutCtx = document.getElementById('segmentDonutChart');
-    if (donutCtx) {
-        new Chart(donutCtx.getContext('2d'), {
-            type: 'doughnut',
-            data: {
-                labels: data.map(function(d) { return d.segment; }),
-                datasets: [{ data: data.map(function(d) { return d.count; }), backgroundColor: bgAlpha, borderColor: bg, borderWidth: 1 }]
-            },
-            options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'right' } } }
-        });
-    }
-
-    var barCtx = document.getElementById('segmentBarChart');
-    if (barCtx) {
-        new Chart(barCtx.getContext('2d'), {
-            type: 'bar',
-            data: {
-                labels: data.map(function(d) { return d.segment; }),
-                datasets: [{ label: 'Avg LTV', data: data.map(function(d) { return d.avg_ltv; }), backgroundColor: bgAlpha, borderColor: bg, borderWidth: 1, borderRadius: 4 }]
-            },
-            options: {
-                responsive: true,
-                maintainAspectRatio: false,
-                plugins: { tooltip: { callbacks: { label: function(c) { return '$' + Number(c.parsed.y).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); } } } },
-                scales: { y: { beginAtZero: true, title: { display: true, text: 'Avg LTV ($)' } } }
-            }
-        });
-    }
+    renderCharts('segment-stats-data', 'segmentDonutChart', 'segmentBarChart', rfmColors);
+    renderCharts('behavior-stats-data', 'behaviorDonutChart', 'behaviorBarChart', behaviorColors);
 })();
 </script>
 {% endif %}
