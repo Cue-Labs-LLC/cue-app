@@ -8,7 +8,7 @@ from django.utils import timezone
 from decimal import Decimal
 from rest_framework.authtoken.models import Token
 from .models import (
-    UploadedFile, TicketOrder, Customer, Event,
+    UploadedFile, TicketOrder, Customer, CustomerTag, Event,
     Venue, CSVFormat, Ticket, TicketTier,
     Organization, UserProfile, OrganizationInvitation, ChatMessage,
     SaleableTicketType, SaleableTicketTypeTier, StripeCheckoutSession, FeatureFlagSettings,
@@ -2787,3 +2787,124 @@ class FeatureFlagSettingsTests(TestCase):
         self.assertFalse(direct_ticketing_enabled(user))
         self.assertTrue(browse_events_enabled())
         self.assertTrue(smart_pricing_recommendations_enabled(user))
+
+
+class CustomerTagManagementTests(TestCase):
+    def setUp(self):
+        self.client = Client()
+        self.org = Organization.objects.create(name='Tag Test Org', slug='tag-test-org')
+        self.user = User.objects.create_user(
+            username='taguser',
+            email='tag@test.com',
+            password='testpass123',
+        )
+        UserProfile.objects.create(user=self.user, organization=self.org, org_role=UserProfile.OrgRole.OWNER)
+        self.client.login(username='tag@test.com', password='testpass123')
+        # Seed session with org
+        self.client.get(reverse('tickets:home'))
+
+        self.customer = Customer.objects.create(
+            organization=self.org,
+            email='customer@example.com',
+            name='Test Customer',
+        )
+
+    # ---- tag create ----
+
+    def test_tag_create_happy_path(self):
+        resp = self.client.post(reverse('tickets:customer_tag_create'), {
+            'name': 'VIP',
+            'color': 'purple',
+        })
+        self.assertRedirects(resp, reverse('tickets:customer_tag_list'))
+        self.assertTrue(CustomerTag.objects.filter(organization=self.org, name='VIP').exists())
+
+    def test_tag_create_duplicate_name_rejected(self):
+        CustomerTag.objects.create(organization=self.org, name='Press', color='blue')
+        resp = self.client.post(reverse('tickets:customer_tag_create'), {
+            'name': 'Press',
+            'color': 'green',
+        })
+        self.assertRedirects(resp, reverse('tickets:customer_tag_list'))
+        self.assertEqual(CustomerTag.objects.filter(organization=self.org, name='Press').count(), 1)
+
+    # ---- tag delete ----
+
+    def test_tag_delete_removes_from_customers(self):
+        tag = CustomerTag.objects.create(organization=self.org, name='Comp', color='red')
+        self.customer.tags.add(tag)
+        self.assertEqual(self.customer.tags.count(), 1)
+
+        self.client.post(reverse('tickets:customer_tag_delete', args=[tag.id]))
+
+        self.assertFalse(CustomerTag.objects.filter(id=tag.id).exists())
+        self.assertEqual(self.customer.tags.count(), 0)
+
+    # ---- tag add ----
+
+    def test_tag_add_to_customer(self):
+        tag = CustomerTag.objects.create(organization=self.org, name='VIP', color='blue')
+        resp = self.client.post(
+            reverse('tickets:customer_tag_add', args=[self.customer.id]),
+            {'tag_id': str(tag.id)},
+        )
+        self.assertRedirects(resp, reverse('tickets:customer_detail', args=[self.customer.id]))
+        self.assertIn(tag, self.customer.tags.all())
+
+    def test_tag_add_idempotent(self):
+        tag = CustomerTag.objects.create(organization=self.org, name='VIP', color='blue')
+        self.customer.tags.add(tag)
+        self.client.post(
+            reverse('tickets:customer_tag_add', args=[self.customer.id]),
+            {'tag_id': str(tag.id)},
+        )
+        self.assertEqual(self.customer.tags.count(), 1)
+
+    def test_tag_add_cross_tenant_blocked(self):
+        other_org = Organization.objects.create(name='Other Org', slug='other-org')
+        other_tag = CustomerTag.objects.create(organization=other_org, name='Outsider', color='red')
+        resp = self.client.post(
+            reverse('tickets:customer_tag_add', args=[self.customer.id]),
+            {'tag_id': str(other_tag.id)},
+        )
+        self.assertEqual(resp.status_code, 404)
+        self.assertEqual(self.customer.tags.count(), 0)
+
+    # ---- tag remove ----
+
+    def test_tag_remove_from_customer(self):
+        tag = CustomerTag.objects.create(organization=self.org, name='VIP', color='blue')
+        self.customer.tags.add(tag)
+        resp = self.client.post(
+            reverse('tickets:customer_tag_remove', args=[self.customer.id, tag.id]),
+        )
+        self.assertRedirects(resp, reverse('tickets:customer_detail', args=[self.customer.id]))
+        self.assertNotIn(tag, self.customer.tags.all())
+
+    # ---- customer list tag filter ----
+
+    def test_customer_list_tag_filter(self):
+        tag = CustomerTag.objects.create(organization=self.org, name='VIP', color='blue')
+        tagged = Customer.objects.create(
+            organization=self.org, email='tagged@example.com', name='Tagged'
+        )
+        tagged.tags.add(tag)
+
+        resp = self.client.get(reverse('tickets:customer_list'), {'tag': str(tag.id)})
+        self.assertEqual(resp.status_code, 200)
+        customers_in_page = list(resp.context['page_obj'])
+        self.assertIn(tagged, customers_in_page)
+        self.assertNotIn(self.customer, customers_in_page)
+
+    def test_customer_list_bad_tag_uuid_graceful(self):
+        resp = self.client.get(reverse('tickets:customer_list'), {'tag': 'notauuid'})
+        self.assertEqual(resp.status_code, 200)
+
+    # ---- customer detail ----
+
+    def test_customer_detail_shows_tags(self):
+        tag = CustomerTag.objects.create(organization=self.org, name='Press', color='green')
+        self.customer.tags.add(tag)
+        resp = self.client.get(reverse('tickets:customer_detail', args=[self.customer.id]))
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn(tag, resp.context['assigned_tags'])

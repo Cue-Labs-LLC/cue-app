@@ -63,8 +63,13 @@
                         </a>
                     </li>
                     <li>
-                        <a href="{% url 'tickets:customer_list' %}" class="sidebar-link{% if '/customers/' in request.path and '/customers/ltv-by-market/' not in request.path %} active{% endif %}">
+                        <a href="{% url 'tickets:customer_list' %}" class="sidebar-link{% if '/customers/' in request.path and '/customers/ltv-by-market/' not in request.path and '/customers/tags/' not in request.path %} active{% endif %}">
                             <i class="bi bi-people"></i> Customers
+                        </a>
+                    </li>
+                    <li>
+                        <a href="{% url 'tickets:customer_tag_list' %}" class="sidebar-link{% if '/customers/tags/' in request.path %} active{% endif %}">
+                            <i class="bi bi-tags"></i> Tags
                         </a>
                     </li>
                     <li>

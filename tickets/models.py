@@ -584,6 +584,9 @@ class Customer(BaseModel):
     rfm_monetary_score = models.IntegerField(null=True, blank=True, db_index=True)
     rfm_segment = models.CharField(max_length=30, blank=True, db_index=True)
     rfm_updated_at = models.DateTimeField(null=True, blank=True)
+    tags = models.ManyToManyField('CustomerTag', blank=True, related_name='customers')
+    sms_opt_in = models.BooleanField(default=False)
+    sms_opt_in_date = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         ordering = ['-lifetime_value', 'name']
@@ -622,6 +625,35 @@ class Customer(BaseModel):
         """Override save to normalize email."""
         self.email = self.clean_email()
         super().save(*args, **kwargs)
+
+
+class CustomerTag(BaseModel):
+    """Organization-scoped label for customers (e.g. 'VIP', 'Press', 'Comp List')."""
+    organization = models.ForeignKey(
+        Organization,
+        on_delete=models.CASCADE,
+        related_name='customer_tags',
+    )
+    name = models.CharField(max_length=50)
+    color = models.CharField(
+        max_length=20,
+        default='blue',
+        choices=[
+            ('blue', 'Blue'),
+            ('green', 'Green'),
+            ('red', 'Red'),
+            ('yellow', 'Yellow'),
+            ('purple', 'Purple'),
+            ('orange', 'Orange'),
+        ],
+    )
+
+    class Meta:
+        unique_together = [('organization', 'name')]
+        ordering = ['name']
+
+    def __str__(self):
+        return self.name
 
 
 class Venue(BaseModel):

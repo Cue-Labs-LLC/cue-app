@@ -6,7 +6,7 @@ from django.db.models import Sum, Count
 from django import forms
 from .models import (
     Organization, UserProfile, OrganizationInvitation, EmailOTP, PhoneOTP,
-    CSVFormat, UploadedFile, Customer, Event, ScannerSession, EventExpense, EventTalent, TicketOrder, Ticket, TicketTier, Venue,
+    CSVFormat, UploadedFile, Customer, CustomerTag, Event, ScannerSession, EventExpense, EventTalent, TicketOrder, Ticket, TicketTier, Venue,
     CustomField, CustomFieldOption, EventCustomFieldValue,
     IncomeSource, EventIncome,
     SurveyQuestion, SurveyInvitation, SurveyResponse, SurveyAnswer,
@@ -134,12 +134,19 @@ class CustomerAdmin(admin.ModelAdmin):
     list_display = ['name', 'email', 'phone', 'organization', 'lifetime_value_display', 'last_order_date', 'order_count', 'created_at']
     list_filter = ['organization', 'last_order_date', 'created_at']
     search_fields = ['name', 'email', 'phone']
-    readonly_fields = ['id', 'lifetime_value', 'last_order_date', 'created_at', 'updated_at']
+    readonly_fields = ['id', 'lifetime_value', 'last_order_date', 'sms_opt_in_date', 'created_at', 'updated_at']
     date_hierarchy = 'created_at'
     
+    filter_horizontal = ('tags',)
     fieldsets = (
         ('Customer Information', {
             'fields': ('name', 'email', 'phone')
+        }),
+        ('Tags', {
+            'fields': ('tags',)
+        }),
+        ('SMS Marketing', {
+            'fields': ('sms_opt_in', 'sms_opt_in_date')
         }),
         ('Lifetime Value', {
             'fields': ('lifetime_value', 'last_order_date')
@@ -179,6 +186,18 @@ class CustomerAdmin(admin.ModelAdmin):
             if profile and profile.organization_id:
                 obj.organization = profile.organization
         super().save_model(request, obj, form, change)
+
+
+@admin.register(CustomerTag)
+class CustomerTagAdmin(admin.ModelAdmin):
+    list_display = ['name', 'color', 'organization', 'customer_count', 'created_at']
+    list_filter = ['organization', 'color']
+    search_fields = ['name']
+    readonly_fields = ['id', 'created_at', 'updated_at']
+
+    def customer_count(self, obj):
+        return obj.customers.count()
+    customer_count.short_description = 'Customers'
 
 
 @admin.register(Venue)

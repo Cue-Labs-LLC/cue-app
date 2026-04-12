@@ -82,6 +82,11 @@ urlpatterns = [
     # Customers
     path('customers/', views.customer_list, name='customer_list'),
     path('customers/ltv-by-market/', views.customer_ltv_by_market, name='customer_ltv_by_market'),
+    path('customers/tags/', views.customer_tag_list, name='customer_tag_list'),
+    path('customers/tags/create/', views.customer_tag_create, name='customer_tag_create'),
+    path('customers/tags/<uuid:tag_id>/delete/', views.customer_tag_delete, name='customer_tag_delete'),
+    path('customers/<uuid:customer_id>/tags/add/', views.customer_tag_add, name='customer_tag_add'),
+    path('customers/<uuid:customer_id>/tags/<uuid:tag_id>/remove/', views.customer_tag_remove, name='customer_tag_remove'),
     path('customers/<uuid:customer_id>/', views.customer_detail, name='customer_detail'),
     # Analytics - Segments
     path('analytics/segments/', views.customer_segments, name='customer_segments'),

@@ -1,0 +1,75 @@
+{% extends 'tickets/base.html' %}
+
+{% block title %}Customer Tags{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1>Customer Tags</h1>
+</div>
+
+<div class="card mb-4">
+    <div class="card-header"><h5 class="mb-0">Create New Tag</h5></div>
+    <div class="card-body">
+        <form method="post" action="{% url 'tickets:customer_tag_create' %}" class="d-flex flex-wrap gap-2 align-items-end">
+            {% csrf_token %}
+            <div>
+                <label class="form-label mb-1">Name</label>
+                <input type="text" name="name" class="form-control" style="max-width: 220px;" placeholder="e.g. VIP, Press, Comp List" maxlength="50" required>
+            </div>
+            <div>
+                <label class="form-label mb-1">Color</label>
+                <select name="color" class="form-select" style="max-width: 140px;">
+                    <option value="blue">Blue</option>
+                    <option value="green">Green</option>
+                    <option value="red">Red</option>
+                    <option value="yellow">Yellow</option>
+                    <option value="purple">Purple</option>
+                    <option value="orange">Orange</option>
+                </select>
+            </div>
+            <button type="submit" class="btn btn-primary">Create Tag</button>
+        </form>
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-body p-0">
+        {% if tags %}
+        <div class="table-responsive">
+            <table class="table table-hover mb-0">
+                <thead>
+                    <tr>
+                        <th>Tag</th>
+                        <th>Color</th>
+                        <th>Customers</th>
+                        <th></th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for tag in tags %}
+                    <tr>
+                        <td>
+                            <span class="badge {% if tag.color == 'blue' %}bg-primary{% elif tag.color == 'green' %}bg-success{% elif tag.color == 'red' %}bg-danger{% elif tag.color == 'yellow' %}bg-warning text-dark{% elif tag.color == 'orange' %}bg-warning text-dark{% elif tag.color == 'purple' %}badge-purple{% else %}bg-secondary{% endif %}">{{ tag.name }}</span>
+                        </td>
+                        <td>{{ tag.get_color_display }}</td>
+                        <td>{{ tag.customer_count }}</td>
+                        <td class="text-end">
+                            <form method="post" action="{% url 'tickets:customer_tag_delete' tag.id %}" class="d-inline" onsubmit="return confirm('Delete tag &quot;{{ tag.name }}&quot;? This will remove it from {{ tag.customer_count }} customer{{ tag.customer_count|pluralize }}.')">
+                                {% csrf_token %}
+                                <button type="submit" class="btn btn-sm btn-outline-danger">Delete{% if tag.customer_count %} ({{ tag.customer_count }}){% endif %}</button>
+                            </form>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% else %}
+        <div class="empty-state">
+            <i class="bi bi-tags d-block"></i>
+            <p>No tags yet. Create your first tag above.</p>
+        </div>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}

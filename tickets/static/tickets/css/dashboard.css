@@ -2356,3 +2356,9 @@ gmp-place-autocomplete#venue-address-autocomplete {
     background: var(--bs-secondary-bg);
     border-color: var(--bs-border-color);
 }
+
+/* Customer tag colors */
+.badge-purple {
+    background-color: #7c3aed;
+    color: #fff;
+}

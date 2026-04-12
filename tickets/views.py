@@ -30,7 +30,7 @@ from django.utils.text import slugify
 
 from .models import (
     Organization, UserProfile, OrganizationInvitation,
-    CSVFormat, UploadedFile, Customer, Event, EventExpense, EventTalent, TicketOrder, Ticket, Venue,
+    CSVFormat, UploadedFile, Customer, CustomerTag, Event, EventExpense, EventTalent, TicketOrder, Ticket, Venue,
     CustomField, CustomFieldOption, EventCustomFieldValue, IncomeSource, EventIncome,
     SurveyQuestion, SurveyInvitation, SurveyResponse, SurveyAnswer,
     PipedreamCalendarConnection, OrganizationAPIKey,
@@ -1815,7 +1815,7 @@ def upload_delete(request, file_id):
 @require_org
 @require_host
 def customer_list(request):
-    """Display list of all customers with LTV and optional segment filter."""
+    """Display list of all customers with LTV and optional segment/tag filter."""
     org = get_organization(request)
     customers = Customer.objects.filter(organization=org).exclude(email__endswith='@placeholder.local')
 
@@ -1823,6 +1823,15 @@ def customer_list(request):
     segment_filter = request.GET.get('segment', '').strip()
     if segment_filter:
         customers = customers.filter(rfm_segment=segment_filter)
+
+    # Tag filter — validate UUID to avoid ValueError on bad input
+    tag_filter = request.GET.get('tag', '').strip()
+    if tag_filter:
+        try:
+            _uuid.UUID(tag_filter)
+            customers = customers.filter(tags__id=tag_filter)
+        except ValueError:
+            tag_filter = ''
 
     # Search
     search_query = request.GET.get('search', '')
@@ -1842,6 +1851,9 @@ def customer_list(request):
     elif sort_by == '-lifetime_value':
         customers = customers.order_by('-lifetime_value')
 
+    # prefetch_related must go AFTER the OR search chain to avoid Django dropping it
+    customers = customers.prefetch_related('tags')
+
     # Pagination
     paginator = Paginator(customers, 50)
     page_number = request.GET.get('page')
@@ -1857,14 +1869,18 @@ def customer_list(request):
                 'description': desc,
                 'badge_color': SEGMENT_BADGE_COLORS.get(segment_filter, 'secondary'),
             }
+
+    org_tags = CustomerTag.objects.filter(organization=org)
     context = {
         'page_obj': page_obj,
         'search_query': search_query,
         'sort_by': sort_by,
         'segment_filter': segment_filter,
+        'tag_filter': tag_filter,
         'segment_choices': segment_choices,
         'segment_badge_colors': SEGMENT_BADGE_COLORS,
         'current_segment_definition': current_segment_definition,
+        'org_tags': org_tags,
     }
     return render(request, 'tickets/customer_list.html', context)
 
@@ -2217,6 +2233,13 @@ def customer_detail(request, customer_id):
     segment_badge_color = SEGMENT_BADGE_COLORS.get(
         (customer.rfm_segment or '').strip(), 'secondary'
     )
+
+    # Tags: current tags + available org tags not yet assigned
+    assigned_tags = customer.tags.all()
+    assigned_tag_ids = set(assigned_tags.values_list('id', flat=True))
+    org_tags = CustomerTag.objects.filter(organization=org)
+    available_tags = [t for t in org_tags if t.id not in assigned_tag_ids]
+
     context = {
         'customer': customer,
         'total_orders': total_orders,
@@ -2226,8 +2249,117 @@ def customer_detail(request, customer_id):
         'events_attended': events_attended,
         'page_obj': page_obj,
         'segment_badge_color': segment_badge_color,
+        'assigned_tags': assigned_tags,
+        'available_tags': available_tags,
+        'org_tags': org_tags,
     }
     return render(request, 'tickets/customer_detail.html', context)
+
+
+# Customer Tag Views
+
+TAG_COLOR_CLASSES = {
+    'blue': 'bg-primary',
+    'green': 'bg-success',
+    'red': 'bg-danger',
+    'yellow': 'bg-warning text-dark',
+    'orange': 'bg-warning text-dark',
+    'purple': 'badge-purple',
+}
+
+
+@login_required
+@require_org
+@require_host
+def customer_tag_list(request):
+    """List all org tags with customer counts."""
+    org = get_organization(request)
+    tags = CustomerTag.objects.filter(organization=org).annotate(
+        customer_count=Count('customers')
+    )
+    context = {
+        'tags': tags,
+        'tag_color_classes': TAG_COLOR_CLASSES,
+    }
+    return render(request, 'tickets/customer_tags.html', context)
+
+
+@login_required
+@require_org
+@require_host
+@require_http_methods(['POST'])
+def customer_tag_create(request):
+    """Create a new tag for the org."""
+    org = get_organization(request)
+    name = request.POST.get('name', '').strip()
+    color = request.POST.get('color', 'blue')
+
+    valid_colors = [c[0] for c in CustomerTag._meta.get_field('color').choices]
+    if color not in valid_colors:
+        color = 'blue'
+
+    if not name:
+        messages.error(request, 'Tag name is required.')
+        return redirect('tickets:customer_tag_list')
+
+    if len(name) > 50:
+        messages.error(request, 'Tag name must be 50 characters or fewer.')
+        return redirect('tickets:customer_tag_list')
+
+    if CustomerTag.objects.filter(organization=org, name__iexact=name).exists():
+        messages.error(request, f'A tag named "{name}" already exists.')
+        return redirect('tickets:customer_tag_list')
+
+    CustomerTag.objects.create(organization=org, name=name, color=color)
+    messages.success(request, f'Tag "{name}" created.')
+    return redirect('tickets:customer_tag_list')
+
+
+@login_required
+@require_org
+@require_host
+@require_http_methods(['POST'])
+def customer_tag_delete(request, tag_id):
+    """Delete a tag (removes it from all customers via M2M cascade)."""
+    org = get_organization(request)
+    tag = get_object_or_404(CustomerTag.objects.filter(organization=org), id=tag_id)
+    name = tag.name
+    tag.delete()
+    messages.success(request, f'Tag "{name}" deleted.')
+    return redirect('tickets:customer_tag_list')
+
+
+@login_required
+@require_org
+@require_host
+@require_http_methods(['POST'])
+def customer_tag_add(request, customer_id):
+    """Add a tag to a customer. Validates org ownership. Idempotent."""
+    org = get_organization(request)
+    customer = get_object_or_404(Customer.objects.filter(organization=org), id=customer_id)
+    tag_id = request.POST.get('tag_id', '').strip()
+
+    try:
+        _uuid.UUID(tag_id)
+    except ValueError:
+        return redirect('tickets:customer_detail', customer_id=customer_id)
+
+    tag = get_object_or_404(CustomerTag.objects.filter(organization=org), id=tag_id)
+    customer.tags.add(tag)
+    return redirect('tickets:customer_detail', customer_id=customer_id)
+
+
+@login_required
+@require_org
+@require_host
+@require_http_methods(['POST'])
+def customer_tag_remove(request, customer_id, tag_id):
+    """Remove a tag from a customer. Validates org ownership."""
+    org = get_organization(request)
+    customer = get_object_or_404(Customer.objects.filter(organization=org), id=customer_id)
+    tag = get_object_or_404(CustomerTag.objects.filter(organization=org), id=tag_id)
+    customer.tags.remove(tag)
+    return redirect('tickets:customer_detail', customer_id=customer_id)
 
 
 # Event Management Views

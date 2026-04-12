@@ -4,8 +4,9 @@
 {% block title %}Customers{% endblock %}
 
 {% block content %}
-<div class="page-header">
+<div class="page-header d-flex align-items-center justify-content-between">
     <h1>Customers</h1>
+    <a href="{% url 'tickets:customer_tag_list' %}" class="btn btn-outline-secondary btn-sm"><i class="bi bi-tags"></i> Manage Tags</a>
 </div>
 
 {% if current_segment_definition %}
@@ -24,8 +25,16 @@
             <option value="{{ seg }}" {% if segment_filter == seg %}selected{% endif %}>{{ seg }}</option>
             {% endfor %}
         </select>
+        {% if org_tags %}
+        <select name="tag" class="form-select" style="max-width: 160px;">
+            <option value="">All tags</option>
+            {% for tag in org_tags %}
+            <option value="{{ tag.id }}" {% if tag_filter == tag.id|stringformat:'s' %}selected{% endif %}>{{ tag.name }}</option>
+            {% endfor %}
+        </select>
+        {% endif %}
         <button type="submit" class="btn btn-outline-secondary"><i class="bi bi-search"></i></button>
-        {% if search_query or segment_filter %}
+        {% if search_query or segment_filter or tag_filter %}
         <a href="{% url 'tickets:customer_list' %}" class="btn btn-outline-secondary">Clear</a>
         {% endif %}
     </form>
@@ -38,13 +47,14 @@
             <table class="table table-hover mb-0">
                 <thead>
                     <tr>
-                        <th><a href="?sort=name&search={{ search_query }}&segment={{ segment_filter }}">Name <i class="bi bi-arrow-down-up"></i></a></th>
-                        <th><a href="?sort=email&search={{ search_query }}&segment={{ segment_filter }}">Email <i class="bi bi-arrow-down-up"></i></a></th>
+                        <th><a href="?sort=name&search={{ search_query }}&segment={{ segment_filter }}&tag={{ tag_filter }}">Name <i class="bi bi-arrow-down-up"></i></a></th>
+                        <th><a href="?sort=email&search={{ search_query }}&segment={{ segment_filter }}&tag={{ tag_filter }}">Email <i class="bi bi-arrow-down-up"></i></a></th>
                         <th class="d-none d-sm-table-cell">Phone</th>
                         <th>Segment</th>
-                        <th><a href="?sort=-lifetime_value&search={{ search_query }}&segment={{ segment_filter }}">Lifetime Value <i class="bi bi-arrow-down-up"></i></a></th>
-                        <th class="d-none d-sm-table-cell"><a href="?sort=-last_order_date&search={{ search_query }}&segment={{ segment_filter }}">Last Order <i class="bi bi-arrow-down-up"></i></a></th>
+                        <th><a href="?sort=-lifetime_value&search={{ search_query }}&segment={{ segment_filter }}&tag={{ tag_filter }}">Lifetime Value <i class="bi bi-arrow-down-up"></i></a></th>
+                        <th class="d-none d-sm-table-cell"><a href="?sort=-last_order_date&search={{ search_query }}&segment={{ segment_filter }}&tag={{ tag_filter }}">Last Order <i class="bi bi-arrow-down-up"></i></a></th>
                         <th class="d-none d-sm-table-cell">Total Orders</th>
+                        <th class="d-none d-md-table-cell">Tags</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -63,6 +73,11 @@
                         <td><span class="revenue">${{ customer.lifetime_value|currency }}</span></td>
                         <td class="d-none d-sm-table-cell">{{ customer.last_order_date|date:"M d, Y"|default:"-" }}</td>
                         <td class="d-none d-sm-table-cell">{{ customer.order_count }}</td>
+                        <td class="d-none d-md-table-cell">
+                            {% for tag in customer.tags.all %}
+                            <span class="badge {% if tag.color == 'blue' %}bg-primary{% elif tag.color == 'green' %}bg-success{% elif tag.color == 'red' %}bg-danger{% elif tag.color == 'yellow' %}bg-warning text-dark{% elif tag.color == 'orange' %}bg-warning text-dark{% elif tag.color == 'purple' %}badge-purple{% else %}bg-secondary{% endif %} me-1">{{ tag.name }}</span>
+                            {% endfor %}
+                        </td>
                     </tr>
                     {% endfor %}
                 </tbody>
@@ -74,11 +89,11 @@
             <nav>
                 <ul class="pagination mb-0">
                     {% if page_obj.has_previous %}
-                    <li class="page-item"><a class="page-link" href="?page={{ page_obj.previous_page_number }}&search={{ search_query }}&sort={{ sort_by }}&segment={{ segment_filter }}">Previous</a></li>
+                    <li class="page-item"><a class="page-link" href="?page={{ page_obj.previous_page_number }}&search={{ search_query }}&sort={{ sort_by }}&segment={{ segment_filter }}&tag={{ tag_filter }}">Previous</a></li>
                     {% endif %}
                     <li class="page-item active"><span class="page-link">{{ page_obj.number }} / {{ page_obj.paginator.num_pages }}</span></li>
                     {% if page_obj.has_next %}
-                    <li class="page-item"><a class="page-link" href="?page={{ page_obj.next_page_number }}&search={{ search_query }}&sort={{ sort_by }}&segment={{ segment_filter }}">Next</a></li>
+                    <li class="page-item"><a class="page-link" href="?page={{ page_obj.next_page_number }}&search={{ search_query }}&sort={{ sort_by }}&segment={{ segment_filter }}&tag={{ tag_filter }}">Next</a></li>
                     {% endif %}
                 </ul>
             </nav>

@@ -41,6 +41,41 @@
     </div>
 </div>
 
+<div class="card mb-4">
+    <div class="card-header d-flex justify-content-between align-items-center">
+        <h5 class="mb-0">Tags</h5>
+    </div>
+    <div class="card-body">
+        <div class="d-flex flex-wrap align-items-center gap-2">
+            {% for tag in assigned_tags %}
+            <form method="post" action="{% url 'tickets:customer_tag_remove' customer.id tag.id %}" class="d-inline m-0">
+                {% csrf_token %}
+                <button type="submit" class="badge {% if tag.color == 'blue' %}bg-primary{% elif tag.color == 'green' %}bg-success{% elif tag.color == 'red' %}bg-danger{% elif tag.color == 'yellow' %}bg-warning text-dark{% elif tag.color == 'orange' %}bg-warning text-dark{% elif tag.color == 'purple' %}badge-purple{% else %}bg-secondary{% endif %} border-0 text-decoration-none" style="cursor:pointer; font-size:0.85em;">
+                    {{ tag.name }} <i class="bi bi-x"></i>
+                </button>
+            </form>
+            {% empty %}
+            <span class="text-muted small">No tags assigned.</span>
+            {% endfor %}
+
+            {% if available_tags %}
+            <form method="post" action="{% url 'tickets:customer_tag_add' customer.id %}" class="d-inline-flex align-items-center gap-1 m-0">
+                {% csrf_token %}
+                <select name="tag_id" class="form-select form-select-sm" style="max-width: 160px;">
+                    <option value="">Add tag...</option>
+                    {% for tag in available_tags %}
+                    <option value="{{ tag.id }}">{{ tag.name }}</option>
+                    {% endfor %}
+                </select>
+                <button type="submit" class="btn btn-sm btn-outline-secondary">Add</button>
+            </form>
+            {% elif not org_tags %}
+            <a href="{% url 'tickets:customer_tag_list' %}" class="btn btn-sm btn-outline-secondary"><i class="bi bi-plus"></i> Create tags</a>
+            {% endif %}
+        </div>
+    </div>
+</div>
+
 {% if customer.rfm_segment or customer.rfm_recency_score is not None %}
 <div class="card mb-4">
     <div class="card-header"><h5 class="mb-0">RFM Segment</h5></div>
