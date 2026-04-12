@@ -91,6 +91,8 @@ urlpatterns = [
     # Analytics - Segments
     path('analytics/segments/', views.customer_segments, name='customer_segments'),
     path('analytics/segments/recalculate/', views.recalculate_segments, name='recalculate_segments'),
+    path('analytics/churn/', views.churn_overview, name='churn_overview'),
+    path('analytics/churn/bulk-tag/', views.churn_bulk_tag, name='churn_bulk_tag'),
     path('analytics/repeat-customers/', views.repeat_customers, name='repeat_customers'),
     path('analytics/cohort-retention/', views.cohort_retention, name='cohort_retention'),
     path('analytics/profitability/', views.profitability_overview, name='profitability_overview'),

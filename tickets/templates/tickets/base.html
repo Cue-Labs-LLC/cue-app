@@ -127,6 +127,11 @@
                             </a>
                         </li>
                         <li>
+                            <a href="{% url 'tickets:churn_overview' %}" class="sidebar-link{% if '/analytics/churn/' in request.path %} active{% endif %}">
+                                <i class="bi bi-person-dash"></i> Churn Detection
+                            </a>
+                        </li>
+                        <li>
                             <a href="{% url 'tickets:repeat_customers' %}" class="sidebar-link{% if '/analytics/repeat-customers/' in request.path %} active{% endif %}">
                                 <i class="bi bi-arrow-repeat"></i> Repeat Customers
                             </a>

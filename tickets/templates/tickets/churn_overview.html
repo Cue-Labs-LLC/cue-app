@@ -1,0 +1,245 @@
+{% extends 'tickets/base.html' %}
+{% load tickets_extras humanize %}
+
+{% block title %}Churn Detection{% endblock %}
+
+{% block extra_head %}
+<script defer src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1>Churn Detection</h1>
+        <p class="text-muted mb-0">Customers who went quiet.</p>
+    </div>
+    <a href="{% url 'tickets:customer_tag_list' %}" class="btn btn-outline-secondary">
+        <i class="bi bi-tags"></i> Manage Tags
+    </a>
+</div>
+
+<div class="d-flex flex-wrap gap-2 mb-4">
+    {% for option in threshold_options %}
+    <a href="?days={{ option }}" class="btn {% if days == option %}btn-primary{% else %}btn-outline-secondary{% endif %}">
+        {{ option }} days
+    </a>
+    {% endfor %}
+</div>
+
+{% if stats.total_count %}
+<script type="application/json" id="churn-segment-data">{{ segment_breakdown_json|safe }}</script>
+
+<div class="row mb-4 g-3">
+    <div class="col-md-4">
+        <div class="stat-card stat-card--accent">
+            <div class="stat-label">Churned Customers</div>
+            <div class="stat-value">{{ stats.total_count|intcomma }}</div>
+        </div>
+    </div>
+    <div class="col-md-4">
+        <div class="stat-card stat-card--info">
+            <div class="stat-label">Revenue at Risk</div>
+            <div class="stat-value">${{ stats.total_ltv_at_risk|currency }}</div>
+        </div>
+    </div>
+    <div class="col-md-4">
+        <div class="stat-card stat-card--success">
+            <div class="stat-label">Avg LTV</div>
+            <div class="stat-value">${{ stats.avg_ltv|currency }}</div>
+        </div>
+    </div>
+</div>
+
+<div class="row mb-4 g-3">
+    <div class="col-lg-4">
+        <div class="card h-100">
+            <div class="card-header">
+                <h5 class="mb-0">Segment Breakdown</h5>
+            </div>
+            <div class="card-body d-flex align-items-center justify-content-center">
+                <div class="chart-container" style="height: 260px; width: 100%; max-width: 320px;">
+                    <canvas id="churnSegmentChart"></canvas>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div class="col-lg-8">
+        <div class="card h-100">
+            <div class="card-header">
+                <h5 class="mb-0">Customers to Win Back</h5>
+            </div>
+            <div class="card-body">
+                <div class="d-flex flex-wrap gap-2">
+                    {% for row in segment_breakdown %}
+                    <span class="badge bg-{{ row.badge_color }}">{{ row.segment }}: {{ row.count }}</span>
+                    {% endfor %}
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<form method="post" action="{% url 'tickets:churn_bulk_tag' %}" id="bulkTagForm" class="card mb-3 d-none">
+    {% csrf_token %}
+    <input type="hidden" name="days" value="{{ days }}">
+    <div class="card-body d-flex flex-wrap align-items-center gap-2">
+        <strong id="selectedCount">0 selected</strong>
+        <select name="tag_id" class="form-select" style="max-width: 240px;" required>
+            <option value="">Tag selected customers as...</option>
+            {% for tag in org_tags %}
+            <option value="{{ tag.id }}">{{ tag.name }}</option>
+            {% endfor %}
+        </select>
+        <button type="submit" class="btn btn-primary" {% if not org_tags %}disabled{% endif %}>Apply Tag</button>
+        {% if not org_tags %}
+        <span class="text-muted small">Create a tag first to run win-back tagging.</span>
+        {% endif %}
+    </div>
+</form>
+
+<div class="card">
+    <div class="card-body p-0">
+        <div class="table-responsive">
+            <table class="table table-hover mb-0">
+                <thead>
+                    <tr>
+                        <th style="width: 48px;"><input type="checkbox" id="selectAllRows" aria-label="Select all customers on this page"></th>
+                        <th>Name</th>
+                        <th>Email</th>
+                        <th>Segment</th>
+                        <th class="d-none d-sm-table-cell">Last Purchase</th>
+                        <th>Orders</th>
+                        <th>LTV</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for customer in page_obj %}
+                    <tr>
+                        <td>
+                            <input type="checkbox" class="churn-checkbox" value="{{ customer.id }}" aria-label="Select {{ customer.name }}">
+                        </td>
+                        <td>
+                            <a href="{% url 'tickets:customer_detail' customer.id %}">{{ customer.name }}</a>
+                        </td>
+                        <td>{{ customer.email }}</td>
+                        <td>
+                            {% with segment=customer.rfm_segment|default:"Dormant" %}
+                            <span class="badge bg-{{ segment_badge_colors|get_item:segment }}">{{ segment }}</span>
+                            {% endwith %}
+                        </td>
+                        <td class="d-none d-sm-table-cell">{{ customer.last_order_date|date:"M d, Y" }}</td>
+                        <td>{{ customer.order_count }}</td>
+                        <td><span class="revenue">${{ customer.lifetime_value|currency }}</span></td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+
+        {% if page_obj.has_other_pages %}
+        <div class="d-flex justify-content-center py-3">
+            <nav>
+                <ul class="pagination mb-0">
+                    {% if page_obj.has_previous %}
+                    <li class="page-item"><a class="page-link" href="?days={{ days }}&page={{ page_obj.previous_page_number }}">Previous</a></li>
+                    {% endif %}
+                    <li class="page-item active"><span class="page-link">{{ page_obj.number }} / {{ page_obj.paginator.num_pages }}</span></li>
+                    {% if page_obj.has_next %}
+                    <li class="page-item"><a class="page-link" href="?days={{ days }}&page={{ page_obj.next_page_number }}">Next</a></li>
+                    {% endif %}
+                </ul>
+            </nav>
+        </div>
+        {% endif %}
+    </div>
+</div>
+
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    var isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+    var textColor = isDark ? '#adb5bd' : '#495057';
+    var dataEl = document.getElementById('churn-segment-data');
+    if (dataEl && window.Chart) {
+        var chartData = JSON.parse(dataEl.textContent);
+        var colors = {
+            'VIP': 'rgb(220, 53, 69)',
+            'Loyal': 'rgb(25, 135, 84)',
+            'Big Spender': 'rgb(13, 202, 240)',
+            'New': 'rgb(13, 110, 253)',
+            'Promising': 'rgb(13, 110, 253)',
+            'At-Risk': 'rgb(255, 193, 7)',
+            'Lapsed': 'rgb(253, 126, 20)',
+            'Dormant': 'rgb(108, 117, 125)'
+        };
+        new Chart(document.getElementById('churnSegmentChart').getContext('2d'), {
+            type: 'doughnut',
+            data: {
+                labels: chartData.map(function(row) { return row.segment; }),
+                datasets: [{
+                    data: chartData.map(function(row) { return row.count; }),
+                    backgroundColor: chartData.map(function(row) {
+                        var color = colors[row.segment] || 'rgb(108, 117, 125)';
+                        return color.replace('rgb', 'rgba').replace(')', ', 0.7)');
+                    }),
+                    borderColor: chartData.map(function(row) { return colors[row.segment] || 'rgb(108, 117, 125)'; }),
+                    borderWidth: 1
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {
+                    legend: {
+                        position: 'bottom',
+                        labels: { color: textColor }
+                    }
+                }
+            }
+        });
+    }
+
+    var form = document.getElementById('bulkTagForm');
+    var countEl = document.getElementById('selectedCount');
+    var selectAll = document.getElementById('selectAllRows');
+    var checkboxes = Array.prototype.slice.call(document.querySelectorAll('.churn-checkbox'));
+
+    function syncForm() {
+        form.querySelectorAll('input[name="customer_ids"]').forEach(function(input) {
+            input.remove();
+        });
+        var selected = checkboxes.filter(function(checkbox) { return checkbox.checked; });
+        selected.forEach(function(checkbox) {
+            var input = document.createElement('input');
+            input.type = 'hidden';
+            input.name = 'customer_ids';
+            input.value = checkbox.value;
+            form.appendChild(input);
+        });
+        countEl.textContent = selected.length + ' selected';
+        form.classList.toggle('d-none', selected.length === 0);
+        if (selectAll) {
+            selectAll.checked = checkboxes.length > 0 && selected.length === checkboxes.length;
+        }
+    }
+
+    if (selectAll) {
+        selectAll.addEventListener('change', function() {
+            checkboxes.forEach(function(checkbox) {
+                checkbox.checked = selectAll.checked;
+            });
+            syncForm();
+        });
+    }
+
+    checkboxes.forEach(function(checkbox) {
+        checkbox.addEventListener('change', syncForm);
+    });
+});
+</script>
+{% else %}
+<div class="empty-state">
+    <i class="bi bi-person-check d-block"></i>
+    <p>No churned customers in the last {{ days }} days. Your audience is active.</p>
+</div>
+{% endif %}
+{% endblock %}

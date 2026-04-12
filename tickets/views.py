@@ -55,6 +55,7 @@ from .forms import (
 from .csv_processor import CSVProcessor
 from .services.forecasting.preview import generate_forecast_preview
 from .services.pricing import SmartPricingRecommender
+from .services.churn_detection.churn_calculator import ChurnDetectionService, THRESHOLD_OPTIONS
 from .services.segmentation.rfm_calculator import RFMCalculator
 from .services.segmentation.segment_definitions import (
     SEGMENT_BADGE_COLORS,
@@ -1986,6 +1987,18 @@ def _format_range(min_max):
     return f"{lo}-{hi}"
 
 
+def _parse_churn_days(request):
+    """Return a validated churn threshold from the query string."""
+    raw_days = request.GET.get('days', '').strip()
+    try:
+        days = int(raw_days or 90)
+    except (TypeError, ValueError):
+        days = 90
+    if days not in THRESHOLD_OPTIONS:
+        days = 90
+    return days
+
+
 @login_required
 @require_org
 @require_host
@@ -2068,6 +2081,79 @@ def customer_segments(request):
         'rfm_recalc_in_progress': org.rfm_recalc_in_progress,
     }
     return render(request, 'tickets/customer_segments.html', context)
+
+
+@login_required
+@require_org
+@require_host
+def churn_overview(request):
+    """Analytics page for churned customers and win-back tagging."""
+    org = get_organization(request)
+    days = _parse_churn_days(request)
+    result = ChurnDetectionService(org).calculate(days_threshold=days)
+
+    paginator = Paginator(result['customers'], 25)
+    page_obj = paginator.get_page(request.GET.get('page'))
+
+    segment_breakdown = []
+    for row in result['stats']['segment_breakdown']:
+        segment = row['seg'] or 'Dormant'
+        segment_breakdown.append({
+            'segment': segment,
+            'count': row['count'],
+            'badge_color': SEGMENT_BADGE_COLORS.get(segment, 'secondary'),
+            'description': SEGMENT_DESCRIPTIONS.get(segment, ''),
+        })
+
+    context = {
+        'page_obj': page_obj,
+        'stats': result['stats'],
+        'days': days,
+        'threshold_options': THRESHOLD_OPTIONS,
+        'org_tags': CustomerTag.objects.filter(organization=org),
+        'segment_breakdown': segment_breakdown,
+        'segment_breakdown_json': json.dumps([
+            {'segment': row['segment'], 'count': row['count']}
+            for row in segment_breakdown
+        ]),
+        'segment_badge_colors': SEGMENT_BADGE_COLORS,
+    }
+    return render(request, 'tickets/churn_overview.html', context)
+
+
+@login_required
+@require_org
+@require_host
+@require_http_methods(['POST'])
+def churn_bulk_tag(request):
+    """Apply an existing org tag to the selected churned customers."""
+    org = get_organization(request)
+    tag_id = request.POST.get('tag_id', '').strip()
+    days = request.POST.get('days', '').strip()
+    customer_ids = request.POST.getlist('customer_ids')
+
+    try:
+        _uuid.UUID(tag_id)
+    except ValueError:
+        messages.error(request, 'Select a valid tag.')
+        return redirect(f"{reverse('tickets:churn_overview')}?days={_parse_churn_days(request)}")
+
+    try:
+        redirect_days = int(days or 90)
+    except (TypeError, ValueError):
+        redirect_days = 90
+    if redirect_days not in THRESHOLD_OPTIONS:
+        redirect_days = 90
+
+    tag = get_object_or_404(CustomerTag.objects.filter(organization=org), id=tag_id)
+    customers = Customer.objects.filter(organization=org, id__in=customer_ids)
+
+    tagged_count = customers.count()
+    for customer in customers:
+        customer.tags.add(tag)
+
+    messages.success(request, f'Tagged {tagged_count} customers as "{tag.name}".')
+    return redirect(f"{reverse('tickets:churn_overview')}?days={redirect_days}")
 
 
 @login_required

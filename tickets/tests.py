@@ -2908,3 +2908,229 @@ class CustomerTagManagementTests(TestCase):
         resp = self.client.get(reverse('tickets:customer_detail', args=[self.customer.id]))
         self.assertEqual(resp.status_code, 200)
         self.assertIn(tag, resp.context['assigned_tags'])
+
+
+class ChurnDetectionTests(TestCase):
+    def setUp(self):
+        self.client = Client()
+        self.org = Organization.objects.create(name='Churn Org', slug='churn-org')
+        self.user = User.objects.create_user(
+            username='churnuser',
+            email='churn@test.com',
+            password='testpass123',
+        )
+        UserProfile.objects.create(user=self.user, organization=self.org, org_role=UserProfile.OrgRole.OWNER)
+        self.client.login(username='churn@test.com', password='testpass123')
+        self.client.get(reverse('tickets:home'))
+
+        self.csv_format = CSVFormat.objects.create(
+            organization=self.org,
+            name='Churn Format',
+            column_mapping={'order_number': 'Order ID'},
+        )
+        self.upload = UploadedFile.objects.create(
+            organization=self.org,
+            csv_format=self.csv_format,
+            filename='churn.csv',
+            status='completed',
+        )
+        self.venue = Venue.objects.create(organization=self.org, name='Churn Venue', city='Los Angeles')
+        self.event = Event.objects.create(
+            organization=self.org,
+            name='Churn Event',
+            venue=self.venue,
+            start_date=date.today() - timedelta(days=120),
+            start_time=time(20, 0),
+        )
+
+    def _create_customer_with_orders(
+        self,
+        email,
+        name,
+        order_days_ago,
+        lifetime_value,
+        order_count=2,
+        is_in_person=False,
+        rfm_segment='At-Risk',
+        organization=None,
+    ):
+        organization = organization or self.org
+        customer = Customer.objects.create(
+            organization=organization,
+            email=email,
+            name=name,
+            lifetime_value=lifetime_value,
+            last_order_date=date.today() - timedelta(days=order_days_ago),
+            rfm_segment=rfm_segment,
+        )
+        upload = self.upload
+        event = self.event
+        if organization != self.org:
+            csv_format = CSVFormat.objects.create(
+                organization=organization,
+                name=f'Format {name}',
+                column_mapping={'order_number': 'Order ID'},
+            )
+            upload = UploadedFile.objects.create(
+                organization=organization,
+                csv_format=csv_format,
+                filename=f'{name}.csv',
+                status='completed',
+            )
+            venue = Venue.objects.create(organization=organization, name=f'Venue {name}', city='Oakland')
+            event = Event.objects.create(
+                organization=organization,
+                name=f'Event {name}',
+                venue=venue,
+                start_date=date.today() - timedelta(days=order_days_ago),
+                start_time=time(20, 0),
+            )
+
+        for idx in range(order_count):
+            TicketOrder.objects.create(
+                customer=customer,
+                event=event,
+                uploaded_file=upload,
+                order_number=f'{name}-{idx}-{uuid.uuid4().hex[:6]}',
+                order_date=timezone.now() - timedelta(days=order_days_ago + idx),
+                total_amount=lifetime_value / order_count,
+                is_in_person=is_in_person,
+            )
+        return customer
+
+    def test_churn_overview_filters_to_multi_order_online_customers_past_threshold(self):
+        qualifying = self._create_customer_with_orders(
+            email='qualifying@example.com',
+            name='Qualifying',
+            order_days_ago=120,
+            lifetime_value=Decimal('240.00'),
+            order_count=3,
+            rfm_segment='Loyal',
+        )
+        self._create_customer_with_orders(
+            email='recent@example.com',
+            name='Recent',
+            order_days_ago=20,
+            lifetime_value=Decimal('120.00'),
+            order_count=3,
+        )
+        self._create_customer_with_orders(
+            email='oneorder@example.com',
+            name='One Order',
+            order_days_ago=120,
+            lifetime_value=Decimal('90.00'),
+            order_count=1,
+        )
+        self._create_customer_with_orders(
+            email='inperson@example.com',
+            name='In Person',
+            order_days_ago=120,
+            lifetime_value=Decimal('180.00'),
+            order_count=3,
+            is_in_person=True,
+        )
+
+        response = self.client.get(reverse('tickets:churn_overview'))
+
+        self.assertEqual(response.status_code, 200)
+        page_customers = list(response.context['page_obj'])
+        self.assertEqual(page_customers, [qualifying])
+        self.assertEqual(response.context['stats']['total_count'], 1)
+        self.assertEqual(response.context['stats']['total_ltv_at_risk'], Decimal('240.00'))
+
+    def test_churn_overview_honors_valid_days_parameter_and_defaults_invalid(self):
+        customer = self._create_customer_with_orders(
+            email='threshold@example.com',
+            name='Threshold Customer',
+            order_days_ago=75,
+            lifetime_value=Decimal('150.00'),
+            order_count=2,
+        )
+
+        response_60 = self.client.get(reverse('tickets:churn_overview'), {'days': 60})
+        response_invalid = self.client.get(reverse('tickets:churn_overview'), {'days': '999'})
+
+        self.assertIn(customer, list(response_60.context['page_obj']))
+        self.assertEqual(response_60.context['days'], 60)
+        self.assertNotIn(customer, list(response_invalid.context['page_obj']))
+        self.assertEqual(response_invalid.context['days'], 90)
+
+    def test_churn_overview_is_org_scoped(self):
+        other_org = Organization.objects.create(name='Other Churn Org', slug='other-churn-org')
+        self._create_customer_with_orders(
+            email='other@example.com',
+            name='Other Org Customer',
+            order_days_ago=120,
+            lifetime_value=Decimal('300.00'),
+            order_count=3,
+            organization=other_org,
+        )
+
+        response = self.client.get(reverse('tickets:churn_overview'))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(list(response.context['page_obj']), [])
+
+    def test_churn_bulk_tag_adds_tag_to_selected_customers_only(self):
+        first = self._create_customer_with_orders(
+            email='first@example.com',
+            name='First',
+            order_days_ago=120,
+            lifetime_value=Decimal('200.00'),
+            order_count=2,
+        )
+        second = self._create_customer_with_orders(
+            email='second@example.com',
+            name='Second',
+            order_days_ago=120,
+            lifetime_value=Decimal('300.00'),
+            order_count=2,
+        )
+        unselected = self._create_customer_with_orders(
+            email='unselected@example.com',
+            name='Unselected',
+            order_days_ago=120,
+            lifetime_value=Decimal('110.00'),
+            order_count=2,
+        )
+        tag = CustomerTag.objects.create(organization=self.org, name='Win-Back', color='green')
+
+        response = self.client.post(reverse('tickets:churn_bulk_tag'), {
+            'tag_id': str(tag.id),
+            'days': '60',
+            'customer_ids': [str(first.id), str(second.id)],
+        })
+
+        self.assertRedirects(response, f"{reverse('tickets:churn_overview')}?days=60")
+        self.assertIn(tag, first.tags.all())
+        self.assertIn(tag, second.tags.all())
+        self.assertNotIn(tag, unselected.tags.all())
+
+    def test_churn_bulk_tag_ignores_cross_org_customer_ids(self):
+        local_customer = self._create_customer_with_orders(
+            email='local@example.com',
+            name='Local',
+            order_days_ago=120,
+            lifetime_value=Decimal('140.00'),
+            order_count=2,
+        )
+        other_org = Organization.objects.create(name='Cross Org', slug='cross-org')
+        other_customer = self._create_customer_with_orders(
+            email='cross@example.com',
+            name='Cross',
+            order_days_ago=120,
+            lifetime_value=Decimal('180.00'),
+            order_count=2,
+            organization=other_org,
+        )
+        tag = CustomerTag.objects.create(organization=self.org, name='Re-engage', color='blue')
+
+        response = self.client.post(reverse('tickets:churn_bulk_tag'), {
+            'tag_id': str(tag.id),
+            'days': '90',
+            'customer_ids': [str(local_customer.id), str(other_customer.id)],
+        })
+
+        self.assertRedirects(response, f"{reverse('tickets:churn_overview')}?days=90")
+        self.assertIn(tag, local_customer.tags.all())
+        self.assertNotIn(tag, other_customer.tags.all())
