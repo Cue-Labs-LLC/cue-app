@@ -61,6 +61,28 @@ from .services.segmentation.segment_definitions import (
     SEGMENT_DESCRIPTIONS,
     SEGMENT_RULES,
 )
+RFM_RECENCY_LABELS = {
+    5: "Bought very recently",
+    4: "Bought recently",
+    3: "Bought a few months ago",
+    2: "Hasn't bought in a while",
+    1: "Hasn't bought in a long time",
+}
+RFM_FREQUENCY_LABELS = {
+    5: "Very frequent buyer",
+    4: "Frequent buyer",
+    3: "Repeat buyer",
+    2: "Occasional buyer",
+    1: "One-time buyer",
+}
+RFM_MONETARY_LABELS = {
+    5: "Top spender",
+    4: "High spender",
+    3: "Moderate spender",
+    2: "Low spender",
+    1: "Minimal spend",
+}
+
 from .services.cohort_analysis.repeat_customer_calculator import RepeatCustomerCalculator
 from .services.cohort_analysis.cohort_retention_calculator import CohortRetentionCalculator
 from .utils import get_organization, require_org, require_organizer, require_host, require_admin, require_owner, clear_org_cache, next_order_number, generate_qr_b64
@@ -2233,6 +2255,9 @@ def customer_detail(request, customer_id):
     segment_badge_color = SEGMENT_BADGE_COLORS.get(
         (customer.rfm_segment or '').strip(), 'secondary'
     )
+    rfm_recency_label = RFM_RECENCY_LABELS.get(customer.rfm_recency_score)
+    rfm_frequency_label = RFM_FREQUENCY_LABELS.get(customer.rfm_frequency_score)
+    rfm_monetary_label = RFM_MONETARY_LABELS.get(customer.rfm_monetary_score)
 
     # Tags: current tags + available org tags not yet assigned
     assigned_tags = customer.tags.all()
@@ -2249,6 +2274,9 @@ def customer_detail(request, customer_id):
         'events_attended': events_attended,
         'page_obj': page_obj,
         'segment_badge_color': segment_badge_color,
+        'rfm_recency_label': rfm_recency_label,
+        'rfm_frequency_label': rfm_frequency_label,
+        'rfm_monetary_label': rfm_monetary_label,
         'assigned_tags': assigned_tags,
         'available_tags': available_tags,
         'org_tags': org_tags,
