@@ -891,6 +891,51 @@
         @keyframes spin {
             to { transform: rotate(360deg); }
         }
+
+        /* ── FORM CONTROLS (dark theme) ── */
+        .form-control {
+            background: var(--surface-2);
+            border: 1px solid var(--border-mid);
+            border-radius: var(--radius);
+            color: var(--text);
+            font-family: var(--font-body);
+            font-size: 0.9rem;
+            padding: 10px 12px;
+            transition: border-color 0.15s;
+        }
+        .form-control:focus {
+            background: var(--surface-2);
+            border-color: var(--border-strong);
+            color: var(--text);
+            box-shadow: none;
+            outline: none;
+        }
+        .form-control::placeholder { color: var(--text-3); }
+
+        /* ── INTL-TEL-INPUT (dark theme) ── */
+        .iti { width: 100%; }
+        .iti__tel-input {
+            background: var(--surface-2) !important;
+            border-color: var(--border-mid) !important;
+            color: var(--text) !important;
+        }
+        .iti__tel-input:focus { border-color: var(--border-strong) !important; }
+        .iti__flag-container { background: transparent; }
+        .iti__selected-country {
+            background: var(--surface-2) !important;
+            border-right: 1px solid var(--border-mid);
+        }
+        .iti__selected-country:hover { background: var(--surface-3) !important; }
+        .iti__selected-dial-code { color: var(--text-2); }
+        .iti__dropdown-content {
+            background: var(--surface);
+            border: 1px solid var(--border-mid);
+            border-radius: var(--radius);
+        }
+        .iti__country.iti__highlight,
+        .iti__country:hover { background: var(--surface-2); }
+        .iti__country-name,
+        .iti__dial-code { color: var(--text-2); }
     </style>
 
     {% include 'tickets/buy/_facebook_pixel.html' %}
