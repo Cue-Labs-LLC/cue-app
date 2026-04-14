@@ -25,15 +25,32 @@ def organization_context(request):
         'is_org_owner': False,
         'is_org_admin': False,
         'is_org_host': False,
+        'user_orgs': [],
     }
     if request.user.is_authenticated:
         try:
+            from .models import OrganizationMembership, UserProfile
             profile = request.user.profile
             ctx['user_role'] = profile.role          # actual DB role — never overridden
-            ctx['org_role'] = profile.org_role
-            ctx['is_org_owner'] = profile.is_org_owner
-            ctx['is_org_admin'] = profile.is_org_admin
-            ctx['is_org_host'] = profile.is_org_host
+
+            # Fetch all memberships in one query; derive active org role and switcher list
+            user_memberships = list(
+                OrganizationMembership.objects
+                .filter(user=request.user)
+                .select_related('organization')
+                .order_by('organization__name')
+            )
+            ctx['user_orgs'] = user_memberships
+            active_org_role = next(
+                (m.org_role for m in user_memberships if org and m.organization_id == org.pk),
+                profile.org_role,  # legacy fallback for users not yet in membership table
+            )
+            ctx['org_role'] = active_org_role
+            ctx['is_org_owner'] = active_org_role == UserProfile.OrgRole.OWNER
+            ctx['is_org_admin'] = active_org_role in (UserProfile.OrgRole.OWNER, UserProfile.OrgRole.ADMIN)
+            ctx['is_org_host'] = active_org_role in (
+                UserProfile.OrgRole.OWNER, UserProfile.OrgRole.ADMIN, UserProfile.OrgRole.HOST
+            )
             if profile.is_organizer:
                 view_mode = request.session.get('_view_mode', 'organizer')
                 ctx['view_mode'] = view_mode

@@ -72,12 +72,20 @@ def get_organization(request):
             org = None
 
     if org is None and org_id != '':
-        # Slow path: DB lookup
+        # Slow path: check membership table first (multi-org), fall back to legacy profile.organization
+        from .models import OrganizationMembership
         profile, _ = UserProfile.objects.select_related('organization').get_or_create(
             user=request.user,
             defaults={'organization_id': None},
         )
-        org = profile.organization
+        first_membership = (
+            OrganizationMembership.objects
+            .filter(user=request.user)
+            .select_related('organization')
+            .order_by('created_at')
+            .first()
+        )
+        org = first_membership.organization if first_membership else profile.organization
         request.session['_org_id'] = str(org.pk) if org else ''
 
     request._cached_org = org
@@ -145,7 +153,7 @@ def _org_role_required(min_check):
         def _wrapped(request, *args, **kwargs):
             if request.user.is_superuser:
                 return view_func(request, *args, **kwargs)
-            from .models import UserProfile
+            from .models import UserProfile, OrganizationMembership
             from django.http import HttpResponseForbidden
             try:
                 profile = request.user.profile
@@ -154,6 +162,16 @@ def _org_role_required(min_check):
             # Respect session view mode
             if request.session.get('_view_mode') == 'attendee':
                 return HttpResponseForbidden('Access denied.')
+            # Resolve role from active org's membership (in-memory only, no .save())
+            active_org = get_organization(request)
+            if active_org is not None:
+                try:
+                    membership = OrganizationMembership.objects.get(
+                        user=request.user, organization=active_org
+                    )
+                    profile.org_role = membership.org_role  # in-memory only, no .save()
+                except OrganizationMembership.DoesNotExist:
+                    pass  # fall through to legacy profile.org_role
             if not min_check(profile):
                 return HttpResponseForbidden('Access denied.')
             return view_func(request, *args, **kwargs)

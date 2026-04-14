@@ -5,7 +5,7 @@ from django.db import models
 from django.db.models import Sum, Count
 from django import forms
 from .models import (
-    Organization, UserProfile, OrganizationInvitation, EmailOTP, PhoneOTP,
+    Organization, UserProfile, OrganizationMembership, OrganizationInvitation, EmailOTP, PhoneOTP,
     CSVFormat, UploadedFile, Customer, CustomerTag, Event, ScannerSession, EventExpense, EventTalent, TicketOrder, Ticket, TicketTier, Venue,
     CustomField, CustomFieldOption, EventCustomFieldValue,
     IncomeSource, EventIncome,
@@ -653,12 +653,30 @@ class EventCustomFieldValueAdmin(admin.ModelAdmin):
         return qs.none()
 
 
+class OrganizationMembershipInline(admin.TabularInline):
+    model = OrganizationMembership
+    extra = 0
+    fields = ['user', 'org_role', 'created_at']
+    readonly_fields = ['created_at']
+    autocomplete_fields = ['user']
+
+
+@admin.register(OrganizationMembership)
+class OrganizationMembershipAdmin(admin.ModelAdmin):
+    list_display = ['user', 'organization', 'org_role', 'created_at']
+    list_filter = ['org_role', 'organization']
+    search_fields = ['user__email', 'user__first_name', 'user__last_name', 'organization__name']
+    readonly_fields = ['id', 'created_at', 'updated_at']
+    autocomplete_fields = ['user', 'organization']
+
+
 @admin.register(Organization)
 class OrganizationAdmin(admin.ModelAdmin):
     list_display = ['name', 'slug', 'stripe_onboarding_complete', 'created_at']
     search_fields = ['name', 'slug']
     readonly_fields = ['id', 'created_at', 'updated_at']
     prepopulated_fields = {'slug': ('name',)}
+    inlines = [OrganizationMembershipInline]
     fieldsets = (
         ('Basic', {'fields': ('name', 'slug', 'rfm_recalc_in_progress')}),
         ('Feature Flags', {'fields': ('waitlist_feature_enabled',)}),

@@ -39,6 +39,8 @@ urlpatterns = [
 
     # Public explore (no login)
     path('explore/', views.explore, name='explore'),
+    # org/switch/ must come before org/<slug:slug>/ to avoid slug matching 'switch'
+    path('org/switch/', views.org_switch, name='org_switch'),
     path('org/<slug:slug>/', views.public_org_profile, name='public_org_profile'),
 
     # Organization (no-org flow)
@@ -47,7 +49,7 @@ urlpatterns = [
     path('members/', views.member_list, name='member_list'),
     path('members/invite/', views.member_invite, name='member_invite'),
     path('members/revoke/<uuid:token>/', views.invite_revoke, name='invite_revoke'),
-    path('members/<int:profile_id>/role/', views.member_role_update, name='member_role_update'),
+    path('members/<uuid:membership_id>/role/', views.member_role_update, name='member_role_update'),
     path('invite/<uuid:token>/', views.invite_accept, name='invite_accept'),
 
     # Public attendee paths (no auth required)

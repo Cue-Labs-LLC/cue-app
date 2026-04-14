@@ -321,6 +321,35 @@ class UserProfile(models.Model):
         return self.org_role in (self.OrgRole.OWNER, self.OrgRole.ADMIN, self.OrgRole.HOST)
 
 
+class OrganizationMembership(BaseModel):
+    """Per-organization role for a user. Supports multi-org: one row per user+org pair."""
+    user = models.ForeignKey(
+        'auth.User',
+        on_delete=models.CASCADE,
+        related_name='org_memberships',
+    )
+    organization = models.ForeignKey(
+        Organization,
+        on_delete=models.CASCADE,
+        related_name='memberships',
+    )
+    org_role = models.CharField(
+        max_length=20,
+        choices=UserProfile.OrgRole.choices,
+        null=True,
+        blank=True,
+        db_index=True,
+    )
+
+    class Meta:
+        unique_together = ('user', 'organization')
+        verbose_name = 'Organization membership'
+        verbose_name_plural = 'Organization memberships'
+
+    def __str__(self):
+        return f"{self.user.get_username()} @ {self.organization.name} ({self.org_role})"
+
+
 class OrganizationInvitation(BaseModel):
     """Invitation for a user to join an organization by email."""
     class Status(models.TextChoices):

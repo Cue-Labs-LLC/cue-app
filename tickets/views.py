@@ -29,7 +29,7 @@ from django.utils.http import url_has_allowed_host_and_scheme
 from django.utils.text import slugify
 
 from .models import (
-    Organization, UserProfile, OrganizationInvitation,
+    Organization, UserProfile, OrganizationMembership, OrganizationInvitation,
     CSVFormat, UploadedFile, Customer, CustomerTag, Event, EventExpense, EventTalent, TicketOrder, Ticket, Venue,
     CustomField, CustomFieldOption, EventCustomFieldValue, IncomeSource, EventIncome,
     SurveyQuestion, SurveyInvitation, SurveyResponse, SurveyAnswer,
@@ -1237,9 +1237,6 @@ def create_organization(request):
         user=request.user,
         defaults={'organization_id': None},
     )
-    if profile.organization_id and not request.user.is_superuser:
-        # Already has an org, redirect home
-        return redirect('tickets:home')
     if request.method == 'POST':
         form = OrganizationForm(request.POST)
         if form.is_valid():
@@ -1251,12 +1248,20 @@ def create_organization(request):
                 slug = f"{base_slug}-{counter}"
                 counter += 1
             org.slug = slug
-            org.save()
-            profile.organization = org
-            profile.role = UserProfile.Role.ORGANIZER
-            profile.org_role = UserProfile.OrgRole.OWNER
-            profile.save(update_fields=['organization', 'role', 'org_role'])
+            with transaction.atomic():
+                org.save()
+                OrganizationMembership.objects.create(
+                    user=request.user,
+                    organization=org,
+                    org_role=UserProfile.OrgRole.OWNER,
+                )
+                profile.role = UserProfile.Role.ORGANIZER
+                profile.org_role = UserProfile.OrgRole.OWNER
+                if profile.organization_id is None:
+                    profile.organization = org
+                profile.save(update_fields=['organization', 'role', 'org_role'])
             clear_org_cache(request)
+            request.session['_org_id'] = str(org.pk)
             messages.success(request, f"Organization '{org.name}' created. You can now use the app.")
             return redirect('tickets:home')
     else:
@@ -1270,8 +1275,8 @@ def member_list(request):
     """List organization members and pending invites; show invite form."""
     org = get_organization(request)
     members = (
-        UserProfile.objects.filter(organization=org)
-        .select_related('user')
+        OrganizationMembership.objects.filter(organization=org)
+        .select_related('user', 'user__profile')
         .order_by('user__email')
     )
     now = django_tz.now()
@@ -1311,7 +1316,7 @@ def member_invite(request):
     email = form.cleaned_data['email'].strip().lower()
     role = UserProfile.Role.ORGANIZER
     org_role = form.cleaned_data['org_role']
-    if UserProfile.objects.filter(
+    if OrganizationMembership.objects.filter(
         organization=org,
         user__email__iexact=email,
     ).exists():
@@ -1374,15 +1379,24 @@ def invite_accept(request, token):
         user=request.user,
         defaults={'organization_id': None},
     )
-    profile.organization = invitation.organization
-    profile.role = invitation.role
-    profile.org_role = invitation.org_role
-    profile.save(update_fields=['organization', 'role', 'org_role'])
-    invitation.status = OrganizationInvitation.Status.ACCEPTED
-    invitation.accepted_at = django_tz.now()
-    invitation.accepted_by = request.user
-    invitation.save(update_fields=['status', 'accepted_at', 'accepted_by'])
+    with transaction.atomic():
+        OrganizationMembership.objects.update_or_create(
+            user=request.user,
+            organization=invitation.organization,
+            defaults={'org_role': invitation.org_role},
+        )
+        if invitation.role == UserProfile.Role.ORGANIZER:
+            profile.role = UserProfile.Role.ORGANIZER
+        if profile.organization_id is None:
+            profile.organization = invitation.organization
+            profile.org_role = invitation.org_role
+        profile.save(update_fields=['organization', 'role', 'org_role'])
+        invitation.status = OrganizationInvitation.Status.ACCEPTED
+        invitation.accepted_at = django_tz.now()
+        invitation.accepted_by = request.user
+        invitation.save(update_fields=['status', 'accepted_at', 'accepted_by'])
     clear_org_cache(request)
+    request.session['_org_id'] = str(invitation.organization.pk)
     messages.success(request, f"You've joined {invitation.organization.name}. Welcome!")
     if profile.is_organizer:
         return redirect('tickets:home')
@@ -6923,37 +6937,53 @@ def user_profile(request):
 @require_org
 @require_owner
 @require_http_methods(["POST"])
-def member_role_update(request, profile_id):
-    """Owner updates the system role and org role of an org member."""
+def member_role_update(request, membership_id):
+    """Owner updates the org role of an org member."""
     org = get_organization(request)
-    profile = get_object_or_404(
-        UserProfile.objects.select_related('user').filter(organization=org),
-        id=profile_id,
+    membership = get_object_or_404(
+        OrganizationMembership.objects.select_related('user', 'user__profile').filter(organization=org),
+        id=membership_id,
     )
-    if profile.user == request.user:
+    if membership.user == request.user:
         messages.error(request, 'You cannot change your own role.')
         return redirect('tickets:member_list')
-    new_role = request.POST.get('role', '').strip()
     new_org_role = request.POST.get('org_role', '').strip()
-    valid_roles = [r[0] for r in UserProfile.Role.choices]
     valid_org_roles = [r[0] for r in UserProfile.OrgRole.choices]
-    update_fields = []
-    if new_role and new_role not in valid_roles:
-        messages.error(request, 'Invalid role.')
-        return redirect('tickets:member_list')
     if new_org_role and new_org_role not in valid_org_roles:
         messages.error(request, 'Invalid org role.')
         return redirect('tickets:member_list')
-    if new_role:
-        profile.role = new_role
-        update_fields.append('role')
     if new_org_role:
-        profile.org_role = new_org_role
-        update_fields.append('org_role')
-    if update_fields:
-        profile.save(update_fields=update_fields)
-        messages.success(request, 'Member roles updated.')
+        membership.org_role = new_org_role
+        membership.save(update_fields=['org_role'])
+        # Legacy sync: keep profile.org_role in sync if this is the user's primary org
+        try:
+            profile = membership.user.profile
+            if profile.organization_id == org.pk:
+                profile.org_role = new_org_role
+                profile.save(update_fields=['org_role'])
+        except UserProfile.DoesNotExist:
+            pass
+        messages.success(request, 'Member role updated.')
     return redirect('tickets:member_list')
+
+
+@login_required
+@require_http_methods(["POST"])
+def org_switch(request):
+    """Switch the active organization for the current user."""
+    org_id = request.POST.get('org_id', '').strip()
+    membership = get_object_or_404(
+        OrganizationMembership.objects.select_related('organization'),
+        user=request.user,
+        organization_id=org_id,
+    )
+    clear_org_cache(request)
+    request.session['_org_id'] = str(membership.organization_id)
+    messages.success(request, f"Switched to {membership.organization.name}.")
+    next_url = request.POST.get('next', '')
+    if next_url and url_has_allowed_host_and_scheme(next_url, allowed_hosts={request.get_host()}):
+        return redirect(next_url)
+    return redirect('tickets:home')
 
 
 # ---------------------------------------------------------------------------

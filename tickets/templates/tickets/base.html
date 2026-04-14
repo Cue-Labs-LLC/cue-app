@@ -28,6 +28,36 @@
     <div class="app-layout">
         <!-- Sidebar -->
         <aside class="sidebar" id="sidebar">
+            {% if user_orgs %}
+            <div style="position:relative;">
+            <div class="sidebar-brand-switcher" id="orgSwitcherToggle" role="button" tabindex="0" style="text-decoration:none;cursor:pointer;display:flex;align-items:center;gap:10px;padding:12px 16px;border-radius:8px;">
+                {% if org and org.photo %}
+                <img src="{{ org.photo.url }}" alt="{{ org_name }}" class="sidebar-brand-avatar">
+                {% else %}
+                <div class="sidebar-brand-avatar sidebar-brand-avatar--initial">{{ org_name|make_list|first|upper }}</div>
+                {% endif %}
+                <span class="sidebar-brand-text">{{ org_name }}</span>
+            </div>
+            <div class="sidebar-org-menu" id="orgSwitcherMenu" style="display:none;position:absolute;top:100%;left:8px;right:8px;z-index:200;background:var(--bg-sidebar);border:1px solid var(--border);border-radius:8px;box-shadow:var(--shadow-lg);overflow:hidden;">
+                {% for membership in user_orgs %}
+                <form method="post" action="{% url 'tickets:org_switch' %}" style="margin:0;">
+                    {% csrf_token %}
+                    <input type="hidden" name="org_id" value="{{ membership.organization.pk }}">
+                    <input type="hidden" name="next" value="{{ request.path }}">
+                    <button type="submit" class="sidebar-link" style="width:100%;border:none;background:none;cursor:pointer;text-align:left;display:flex;align-items:center;gap:8px;padding:8px 12px;">
+                        {% if membership.organization == org %}<i class="bi bi-check2" style="color:var(--accent);flex-shrink:0;"></i>{% else %}<i class="bi bi-building" style="opacity:0.4;flex-shrink:0;"></i>{% endif %}
+                        <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{{ membership.organization.name }}</span>
+                    </button>
+                </form>
+                {% endfor %}
+                <div style="border-top:1px solid var(--border);margin:4px 0;"></div>
+                <a href="{% url 'tickets:create_organization' %}" class="sidebar-link" style="display:flex;align-items:center;gap:8px;padding:8px 12px;">
+                    <i class="bi bi-plus-circle" style="opacity:0.6;flex-shrink:0;"></i>
+                    <span>New Organization</span>
+                </a>
+            </div>
+            </div>
+            {% else %}
             <a href="{% if view_mode == 'attendee' %}{% url 'tickets:attendee_dashboard' %}{% else %}{% url 'tickets:home' %}{% endif %}" class="sidebar-brand" style="text-decoration:none">
                 {% if org and org.photo %}
                 <img src="{{ org.photo.url }}" alt="{{ org_name }}" class="sidebar-brand-avatar">
@@ -36,6 +66,7 @@
                 {% endif %}
                 <span class="sidebar-brand-text">{{ org_name }}</span>
             </a>
+            {% endif %}
 
             <div class="sidebar-section">
                 <ul class="sidebar-nav">
@@ -548,6 +579,26 @@
     if (userToggle && userMenu) {
         userToggle.addEventListener('click', function() {
             userMenu.style.display = userMenu.style.display === 'none' ? 'block' : 'none';
+        });
+    }
+
+    var orgToggle = document.getElementById('orgSwitcherToggle');
+    var orgMenu = document.getElementById('orgSwitcherMenu');
+
+    if (orgToggle && orgMenu) {
+        orgToggle.addEventListener('click', function() {
+            orgMenu.style.display = orgMenu.style.display === 'none' ? 'block' : 'none';
+        });
+        orgToggle.addEventListener('keydown', function(e) {
+            if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                orgMenu.style.display = orgMenu.style.display === 'none' ? 'block' : 'none';
+            }
+        });
+        document.addEventListener('click', function(e) {
+            if (!orgToggle.contains(e.target) && !orgMenu.contains(e.target)) {
+                orgMenu.style.display = 'none';
+            }
         });
     }
 

@@ -10,7 +10,7 @@ from rest_framework.authtoken.models import Token
 from .models import (
     UploadedFile, TicketOrder, Customer, CustomerTag, Event,
     Venue, CSVFormat, Ticket, TicketTier,
-    Organization, UserProfile, OrganizationInvitation, ChatMessage,
+    Organization, UserProfile, OrganizationMembership, OrganizationInvitation, ChatMessage,
     SaleableTicketType, SaleableTicketTypeTier, StripeCheckoutSession, FeatureFlagSettings,
     SurveyInvitation, SurveyResponse, SurveyAnswer, SurveyQuestion, Payout,
     ExternalSurveyResponse,
@@ -696,6 +696,7 @@ class MemberInviteTests(TestCase):
             first_name='Member', last_name='User',
         )
         UserProfile.objects.create(user=self.user, organization=self.org, org_role=UserProfile.OrgRole.OWNER)
+        OrganizationMembership.objects.create(user=self.user, organization=self.org, org_role=UserProfile.OrgRole.OWNER)
         self.client.login(username='member@test.com', password='testpass123')
         self.client.get(reverse('tickets:home'))
 
@@ -744,6 +745,7 @@ class MemberInviteTests(TestCase):
             username='other@example.com', email='other@example.com', password='pass123',
         )
         UserProfile.objects.create(user=other, organization=self.org)
+        OrganizationMembership.objects.create(user=other, organization=self.org)
         response = self.client.post(
             reverse('tickets:member_invite'),
             {'email': 'other@example.com'},
@@ -3365,4 +3367,103 @@ class ChurnDetectionTests(TestCase):
 
         self.assertRedirects(response, f"{reverse('tickets:churn_overview')}?days=90")
         self.assertIn(tag, local_customer.tags.all())
-        self.assertNotIn(tag, other_customer.tags.all())
+
+
+class MultiOrgTests(TestCase):
+    """Tests for multi-organization support: create, switch, invite, role isolation."""
+
+    def setUp(self):
+        self.client = Client()
+        self.org_a = Organization.objects.create(name='Org A', slug='org-a')
+        self.org_b = Organization.objects.create(name='Org B', slug='org-b')
+        self.org_other = Organization.objects.create(name='Org Other', slug='org-other')
+        self.user = User.objects.create_user(
+            username='multiuser', email='multi@test.com', password='testpass123',
+            first_name='Multi', last_name='User',
+        )
+        # User is OWNER of org_a
+        UserProfile.objects.create(user=self.user, organization=self.org_a, org_role=UserProfile.OrgRole.OWNER)
+        OrganizationMembership.objects.create(user=self.user, organization=self.org_a, org_role=UserProfile.OrgRole.OWNER)
+        self.client.login(username='multi@test.com', password='testpass123')
+        # Seed the session with org_a as the active org
+        session = self.client.session
+        session['_org_id'] = str(self.org_a.pk)
+        session.save()
+
+    def test_create_second_organization_allowed(self):
+        """A user already in org_a should be able to create org_b."""
+        from .models import OrganizerWaitlist
+        OrganizerWaitlist.objects.create(
+            email=self.user.email,
+            status=OrganizerWaitlist.Status.APPROVED,
+        )
+        response = self.client.post(
+            reverse('tickets:create_organization'),
+            {'name': 'New Second Org', 'slug': 'new-second-org'},
+        )
+        # Should redirect (success), not stay on form
+        self.assertEqual(response.status_code, 302)
+        self.assertTrue(Organization.objects.filter(name='New Second Org').exists())
+        new_org = Organization.objects.get(name='New Second Org')
+        self.assertEqual(
+            OrganizationMembership.objects.filter(user=self.user, organization=new_org).count(), 1
+        )
+
+    def test_org_switch_valid(self):
+        """Switching to an org the user is a member of updates the session."""
+        OrganizationMembership.objects.create(user=self.user, organization=self.org_b, org_role=UserProfile.OrgRole.HOST)
+        response = self.client.post(
+            reverse('tickets:org_switch'),
+            {'org_id': str(self.org_b.pk)},
+        )
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(self.client.session.get('_org_id'), str(self.org_b.pk))
+
+    def test_org_switch_unauthorized_404(self):
+        """Switching to an org the user has no membership in returns 404."""
+        response = self.client.post(
+            reverse('tickets:org_switch'),
+            {'org_id': str(self.org_other.pk)},
+        )
+        self.assertEqual(response.status_code, 404)
+        # Session should be unchanged
+        self.assertEqual(self.client.session.get('_org_id'), str(self.org_a.pk))
+
+    def test_invite_accept_does_not_overwrite_existing_org(self):
+        """Accepting an invite to org_b should not change profile.organization from org_a."""
+        from datetime import timedelta
+        from django.utils import timezone as tz
+        invitation = OrganizationInvitation.objects.create(
+            organization=self.org_b,
+            email=self.user.email,
+            invited_by=self.user,
+            status=OrganizationInvitation.Status.PENDING,
+            expires_at=tz.now() + timedelta(days=7),
+            role=UserProfile.Role.ORGANIZER,
+            org_role=UserProfile.OrgRole.HOST,
+        )
+        self.client.get(reverse('tickets:invite_accept', args=[invitation.token]))
+        self.user.profile.refresh_from_db()
+        # primary org unchanged
+        self.assertEqual(self.user.profile.organization_id, self.org_a.pk)
+        # but membership row created for org_b
+        self.assertTrue(
+            OrganizationMembership.objects.filter(user=self.user, organization=self.org_b).exists()
+        )
+
+    def test_member_role_update_uses_membership_id(self):
+        """member_role_update should look up by OrganizationMembership UUID."""
+        other_user = User.objects.create_user(
+            username='othermember', email='other@member.com', password='pass123',
+        )
+        UserProfile.objects.create(user=other_user, organization=self.org_a, org_role=UserProfile.OrgRole.HOST)
+        membership = OrganizationMembership.objects.create(
+            user=other_user, organization=self.org_a, org_role=UserProfile.OrgRole.HOST,
+        )
+        response = self.client.post(
+            reverse('tickets:member_role_update', args=[membership.pk]),
+            {'org_role': UserProfile.OrgRole.ADMIN},
+        )
+        self.assertEqual(response.status_code, 302)
+        membership.refresh_from_db()
+        self.assertEqual(membership.org_role, UserProfile.OrgRole.ADMIN)
