@@ -9,7 +9,7 @@
     <!-- Open Graph / link preview -->
     <meta property="og:type" content="website">
     <meta property="og:title" content="{{ event.name }}">
-    <meta property="og:description" content="{{ event.summary|default:event.description|truncatechars:200 }}">
+    <meta property="og:description" content="{{ event.start_date|date:'D, M j, Y' }}{% if event.start_time %} · {{ event.start_time|time:'g:i A' }}{% endif %}{% if event.venue %} · {{ event.venue.name }}{% if event.venue.city %}, {{ event.venue.city }}{% endif %}{% if event.venue.state %}, {{ event.venue.state }}{% endif %}{% endif %}">
     <meta property="og:url" content="{{ request.scheme }}://{{ request.get_host }}{% url 'tickets:public_event_buy' public_id=event.public_id %}">
     {% if event.flyer %}
     <meta property="og:image" content="{{ request.scheme }}://{{ request.get_host }}{{ event.flyer.url }}">
@@ -19,7 +19,7 @@
     <!-- Twitter/iMessage card -->
     <meta name="twitter:card" content="summary_large_image">
     <meta name="twitter:title" content="{{ event.name }}">
-    <meta name="twitter:description" content="{{ event.summary|default:event.description|truncatechars:200 }}">
+    <meta name="twitter:description" content="{{ event.start_date|date:'D, M j, Y' }}{% if event.start_time %} · {{ event.start_time|time:'g:i A' }}{% endif %}{% if event.venue %} · {{ event.venue.name }}{% if event.venue.city %}, {{ event.venue.city }}{% endif %}{% if event.venue.state %}, {{ event.venue.state }}{% endif %}{% endif %}">
     {% if event.flyer %}
     <meta name="twitter:image" content="{{ request.scheme }}://{{ request.get_host }}{{ event.flyer.url }}">
     {% endif %}
