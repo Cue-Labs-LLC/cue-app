@@ -69,7 +69,7 @@
 </div>
 {% else %}
 <div class="empty-state">
-    <i class="bi bi-clipboard-data" style="font-size: 2.5rem; color: var(--color-muted);"></i>
+    <i class="bi bi-clipboard-data d-block"></i>
     <h3>No surveys uploaded yet</h3>
     <p>Upload a Typeform (or compatible) CSV export to start analyzing attendee feedback.</p>
     <a href="{% url 'tickets:survey_upload_create' %}" class="btn btn-primary">

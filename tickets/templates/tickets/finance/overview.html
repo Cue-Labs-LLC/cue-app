@@ -58,7 +58,7 @@
     <div class="card-body">
         {% if not has_stripe_account %}
         <div class="empty-state">
-            <i class="bi bi-bank fs-1 text-muted"></i>
+            <i class="bi bi-bank text-muted"></i>
             <p class="mt-2 mb-3">Connect your bank account to receive payouts from ticket sales.</p>
             <form method="post" action="{% url 'tickets:stripe_connect_onboard' %}">
                 {% csrf_token %}
@@ -250,7 +250,7 @@
     {% else %}
     <div class="card-body">
         <div class="empty-state">
-            <i class="bi bi-arrow-left-right fs-2 text-muted"></i>
+            <i class="bi bi-arrow-left-right text-muted"></i>
             <p class="mt-2 mb-0 text-muted">No payouts yet.</p>
         </div>
     </div>
