@@ -6,6 +6,24 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{{ event.name }} - Buy Tickets</title>
 
+    <!-- Open Graph / link preview -->
+    <meta property="og:type" content="website">
+    <meta property="og:title" content="{{ event.name }}">
+    <meta property="og:description" content="{{ event.summary|default:event.description|truncatechars:200 }}">
+    <meta property="og:url" content="{{ request.scheme }}://{{ request.get_host }}{% url 'tickets:public_event_buy' public_id=event.public_id %}">
+    {% if event.flyer %}
+    <meta property="og:image" content="{{ request.scheme }}://{{ request.get_host }}{{ event.flyer.url }}">
+    <meta property="og:image:width" content="1200">
+    <meta property="og:image:height" content="630">
+    {% endif %}
+    <!-- Twitter/iMessage card -->
+    <meta name="twitter:card" content="summary_large_image">
+    <meta name="twitter:title" content="{{ event.name }}">
+    <meta name="twitter:description" content="{{ event.summary|default:event.description|truncatechars:200 }}">
+    {% if event.flyer %}
+    <meta name="twitter:image" content="{{ request.scheme }}://{{ request.get_host }}{{ event.flyer.url }}">
+    {% endif %}
+
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link rel="preload" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@700;900&family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;1,9..40,300&display=swap" as="style" onload="this.rel='stylesheet'">
