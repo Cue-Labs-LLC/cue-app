@@ -726,6 +726,52 @@ class PayoutAdmin(admin.ModelAdmin):
     search_fields = ['organization__name', 'stripe_transfer_id']
     readonly_fields = ['stripe_transfer_id', 'created_at', 'updated_at']
     ordering = ['-created_at']
+    actions = ['sync_with_stripe']
+
+    def get_queryset(self, request):
+        return super().get_queryset(request).select_related('organization', 'initiated_by')
+
+    @admin.action(description='Sync status from Stripe')
+    def sync_with_stripe(self, request, queryset):
+        import stripe as stripe_lib
+
+        status_map = {
+            'in_transit': Payout.Status.IN_TRANSIT,
+            'paid':       Payout.Status.COMPLETED,
+            'failed':     Payout.Status.FAILED,
+            'canceled':   Payout.Status.FAILED,
+        }
+        updated = 0
+        skipped = 0
+        errors = 0
+
+        for payout in queryset:
+            org = payout.organization
+            if not org.stripe_account_id or not payout.stripe_payout_id:
+                skipped += 1
+                continue
+            try:
+                stripe_payout = stripe_lib.Payout.retrieve(
+                    payout.stripe_payout_id,
+                    stripe_account=org.stripe_account_id,
+                )
+            except stripe_lib.error.StripeError:
+                errors += 1
+                continue
+
+            stripe_status = stripe_payout.get('status') if isinstance(stripe_payout, dict) else getattr(stripe_payout, 'status', None)
+            new_status = status_map.get(stripe_status)
+            if new_status and payout.status != new_status:
+                payout.status = new_status
+                payout.save(update_fields=['status'])
+                updated += 1
+
+        if updated:
+            self.message_user(request, f'{updated} payout(s) updated from Stripe.')
+        if skipped:
+            self.message_user(request, f'{skipped} payout(s) skipped (no Stripe IDs).', level='warning')
+        if errors:
+            self.message_user(request, f'{errors} payout(s) failed to sync (Stripe API error).', level='error')
 
 
 @admin.register(UserProfile)
