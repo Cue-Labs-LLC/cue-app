@@ -1950,24 +1950,28 @@ class EmailCompleteProfileViewTest(TestCase):
         response = self.client.get(reverse('tickets:email_complete_profile'))
         self.assertEqual(response.status_code, 200)
 
-    def test_post_creates_user_and_sets_phone(self):
-        """Valid POST creates User + UserProfile with phone_number set."""
+    def test_post_sends_verification_and_stashes_profile_data(self):
+        """Valid POST triggers phone verification and stashes profile data in session."""
+        from unittest.mock import patch
         session = self.client.session
         session['pending_signup_email'] = 'newuser@example.com'
         session.save()
-        response = self.client.post(reverse('tickets:email_complete_profile'), {
-            'first_name': 'Jane',
-            'last_name': 'Doe',
-            'phone_number': '+12125551234',
-            'email_display': 'newuser@example.com',
-            'gender': 'female',
-            'terms_accepted': True,
-        })
-        self.assertRedirects(response, reverse('tickets:attendee_dashboard'), fetch_redirect_response=False)
-        user = User.objects.get(email='newuser@example.com')
-        self.assertEqual(user.first_name, 'Jane')
-        profile = UserProfile.objects.get(user=user)
-        self.assertEqual(profile.phone_number, '+12125551234')
+        with patch('tickets.sms.start_phone_verification', return_value=True) as mock_verify:
+            response = self.client.post(reverse('tickets:email_complete_profile'), {
+                'first_name': 'Jane',
+                'last_name': 'Doe',
+                'phone_number': '+12125551234',
+                'email_display': 'newuser@example.com',
+                'gender': 'female',
+                'terms_accepted': True,
+            })
+        mock_verify.assert_called_once_with('+12125551234')
+        self.assertRedirects(response, reverse('tickets:verify_phone_after_profile'), fetch_redirect_response=False)
+        profile_data = self.client.session.get('pending_email_profile_data')
+        self.assertIsNotNone(profile_data)
+        self.assertEqual(profile_data['first_name'], 'Jane')
+        self.assertEqual(profile_data['phone_number'], '+12125551234')
+        self.assertFalse(User.objects.filter(email='newuser@example.com').exists())
 
     def test_post_empty_phone_rejected(self):
         """Empty phone must return a form error and not create a User."""
