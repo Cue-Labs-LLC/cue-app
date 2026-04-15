@@ -1,104 +1,143 @@
 {% extends 'tickets/base.html' %}
-{% load crispy_forms_tags %}
 
 {% block title %}Organization Profile{% endblock %}
 
 {% block content %}
 <div class="page-header">
-    <h1>Organization Profile</h1>
-    <p class="text-body-secondary mb-0">Your organization's public-facing identity — photo, description, and website.</p>
+    <div>
+        <h1>Organization Profile</h1>
+        <p class="page-header-subtitle">Your organization's public-facing identity — photo, description, and website.</p>
+    </div>
+    <div class="page-header-actions">
+        <a href="{% url 'tickets:public_org_profile' org.slug %}" target="_blank" rel="noopener noreferrer"
+           class="btn btn-outline-secondary btn-sm">
+            <i class="bi bi-box-arrow-up-right"></i> View public page
+        </a>
+    </div>
 </div>
 
-<div class="row g-4 align-items-start">
+<div style="display: grid; grid-template-columns: 220px 1fr; gap: 20px; align-items: start;">
 
     <!-- Preview card -->
-    <div class="col-lg-3">
-        <div class="card">
-            <div class="card-body text-center py-4">
-                {% if org.photo %}
-                <img src="{{ org.photo.url }}" alt="{{ org.name }}"
-                     class="rounded-circle mb-3"
-                     style="width: 80px; height: 80px; object-fit: cover; border: 2px solid var(--bs-border-color);">
-                {% else %}
-                <div class="rounded-circle d-flex align-items-center justify-content-center mx-auto mb-3"
-                     style="width: 80px; height: 80px; background: var(--bs-secondary-bg); border: 2px solid var(--bs-border-color); font-size: 2rem; color: var(--bs-secondary-color);">
-                    <i class="bi bi-building"></i>
-                </div>
-                {% endif %}
-
-                <div class="fw-semibold mb-1">{{ org.name }}</div>
-
-                {% if org.description %}
-                <p class="text-body-secondary small mb-2" style="overflow: hidden; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical;">
-                    {{ org.description }}
-                </p>
-                {% endif %}
-
-                {% if org.website %}
-                <a href="{{ org.website }}" target="_blank" rel="noopener noreferrer"
-                   class="small text-break">
-                    <i class="bi bi-link-45deg"></i>
-                    {{ org.website|truncatechars:40 }}
-                </a>
-                {% endif %}
+    <div class="card">
+        <div class="card-body" style="text-align: center; padding: 24px 16px;">
+            {% if org.photo %}
+            <img src="{{ org.photo.url }}" alt="{{ org.name }}"
+                 style="width: 80px; height: 80px; border-radius: 50%; object-fit: cover; border: 1px solid var(--bs-border-color); margin: 0 auto 14px; display: block;">
+            {% else %}
+            <div style="width: 80px; height: 80px; border-radius: 50%; background: var(--bs-secondary-bg); border: 1px solid var(--bs-border-color); display: flex; align-items: center; justify-content: center; font-size: 2rem; color: var(--text-tertiary); margin: 0 auto 14px;">
+                <i class="bi bi-building"></i>
             </div>
+            {% endif %}
+
+            <div style="font-weight: 600; margin-bottom: 4px;">{{ org.name }}</div>
+
+            {% if org.description %}
+            <p style="font-size: 0.8rem; color: var(--text-secondary); margin-bottom: 8px; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical;">
+                {{ org.description }}
+            </p>
+            {% endif %}
+
+            {% if org.website %}
+            <a href="{{ org.website }}" target="_blank" rel="noopener noreferrer"
+               style="font-size: 0.8rem; word-break: break-all; color: var(--text-secondary); text-decoration: none;">
+                <i class="bi bi-link-45deg"></i>
+                {{ org.website|truncatechars:40 }}
+            </a>
+            {% endif %}
         </div>
     </div>
 
     <!-- Edit form -->
-    <div class="col-lg-9">
-        <div class="card">
-            <div class="card-header">
-                <h5 class="mb-0">Edit Profile</h5>
-            </div>
-            <div class="card-body">
-                <form method="post" enctype="multipart/form-data" novalidate>
-                    {% csrf_token %}
+    <div class="card">
+        <div class="card-header">
+            <h5>Edit Profile</h5>
+        </div>
+        <div class="card-body">
+            <form method="post" enctype="multipart/form-data" novalidate>
+                {% csrf_token %}
 
-                    <div class="mb-3">
-                        <label class="form-label" for="{{ form.photo.id_for_label }}">Organization photo</label>
-                        {{ form.photo }}
-                        {% if form.photo.errors %}
-                            {% for error in form.photo.errors %}
-                            <div class="invalid-feedback d-block">{{ error }}</div>
-                            {% endfor %}
-                        {% endif %}
-                        <div class="form-text">Accepted formats: JPG, PNG, GIF, WebP. Used as your org's logo or avatar.</div>
-                    </div>
+                <div class="mb-3">
+                    <label class="form-label">Organization photo</label>
 
-                    <div class="mb-3">
-                        <label class="form-label" for="{{ form.description.id_for_label }}">Description</label>
-                        <textarea name="description" id="{{ form.description.id_for_label }}"
-                                  class="form-control{% if form.description.errors %} is-invalid{% endif %}"
-                                  rows="3" maxlength="500"
-                                  placeholder="Tell attendees a bit about your organization…">{{ form.description.value|default:'' }}</textarea>
-                        {% if form.description.errors %}
-                            {% for error in form.description.errors %}
-                            <div class="invalid-feedback">{{ error }}</div>
-                            {% endfor %}
-                        {% endif %}
-                        <div class="form-text d-flex justify-content-between">
-                            <span>Max 500 characters.</span>
-                            <span id="desc-count">{{ org.description|length }}/500</span>
+                    {# Hidden native file input — form still submits this #}
+                    <div style="display: none;">{{ form.photo }}</div>
+
+                    {# Custom upload zone #}
+                    <div id="photo-upload-zone"
+                         style="position: relative; display: flex; align-items: center; gap: 16px; padding: 14px 16px; border: 1px dashed var(--bs-border-color); border-radius: 6px; cursor: pointer; transition: border-color 0.15s, background 0.15s;"
+                         onclick="document.getElementById('{{ form.photo.id_for_label }}').click()">
+
+                        {# Thumbnail #}
+                        <div id="photo-thumb-wrap" style="flex-shrink: 0;">
+                            {% if org.photo %}
+                            <img id="photo-thumb" src="{{ org.photo.url }}" alt=""
+                                 style="width: 52px; height: 52px; border-radius: 6px; object-fit: cover; border: 1px solid var(--bs-border-color); display: block;">
+                            {% else %}
+                            <div id="photo-thumb-placeholder"
+                                 style="width: 52px; height: 52px; border-radius: 6px; background: var(--bs-secondary-bg); border: 1px solid var(--bs-border-color); display: flex; align-items: center; justify-content: center; color: var(--text-tertiary); font-size: 1.4rem;">
+                                <i class="bi bi-image"></i>
+                            </div>
+                            {% endif %}
                         </div>
+
+                        {# Text #}
+                        <div style="flex: 1; min-width: 0;">
+                            <div id="photo-upload-label" style="font-size: 0.85rem; font-weight: 500; margin-bottom: 2px;">
+                                {% if org.photo %}Change photo{% else %}Upload photo{% endif %}
+                            </div>
+                            <div id="photo-upload-hint" style="font-size: 0.75rem; color: var(--text-tertiary);">
+                                {% if org.photo %}
+                                {{ org.photo.name|slice:"30:" }}… · Click to replace
+                                {% else %}
+                                JPG, PNG, GIF or WebP
+                                {% endif %}
+                            </div>
+                        </div>
+
+                        {# Upload icon #}
+                        <i class="bi bi-cloud-arrow-up" style="font-size: 1.2rem; color: var(--text-tertiary); flex-shrink: 0;"></i>
                     </div>
 
-                    <div class="mb-4">
-                        <label class="form-label" for="{{ form.website.id_for_label }}">Website</label>
-                        <input type="url" name="website" id="{{ form.website.id_for_label }}"
-                               class="form-control{% if form.website.errors %} is-invalid{% endif %}"
-                               value="{{ form.website.value|default:'' }}"
-                               placeholder="https://yourwebsite.com">
-                        {% if form.website.errors %}
-                            {% for error in form.website.errors %}
-                            <div class="invalid-feedback">{{ error }}</div>
-                            {% endfor %}
-                        {% endif %}
-                    </div>
+                    {% if form.photo.errors %}
+                        {% for error in form.photo.errors %}
+                        <div class="invalid-feedback d-block">{{ error }}</div>
+                        {% endfor %}
+                    {% endif %}
+                </div>
 
-                    <button type="submit" class="btn btn-primary">Save changes</button>
-                </form>
-            </div>
+                <div class="mb-3">
+                    <label class="form-label" for="{{ form.description.id_for_label }}">Description</label>
+                    <textarea name="description" id="{{ form.description.id_for_label }}"
+                              class="form-control{% if form.description.errors %} is-invalid{% endif %}"
+                              rows="3" maxlength="500"
+                              placeholder="Tell attendees a bit about your organization…">{{ form.description.value|default:'' }}</textarea>
+                    {% if form.description.errors %}
+                        {% for error in form.description.errors %}
+                        <div class="invalid-feedback">{{ error }}</div>
+                        {% endfor %}
+                    {% endif %}
+                    <div class="form-text" style="display: flex; justify-content: space-between;">
+                        <span>Max 500 characters.</span>
+                        <span id="desc-count">{{ org.description|length }}/500</span>
+                    </div>
+                </div>
+
+                <div class="mb-4">
+                    <label class="form-label" for="{{ form.website.id_for_label }}">Website</label>
+                    <input type="url" name="website" id="{{ form.website.id_for_label }}"
+                           class="form-control{% if form.website.errors %} is-invalid{% endif %}"
+                           value="{{ form.website.value|default:'' }}"
+                           placeholder="https://yourwebsite.com">
+                    {% if form.website.errors %}
+                        {% for error in form.website.errors %}
+                        <div class="invalid-feedback">{{ error }}</div>
+                        {% endfor %}
+                    {% endif %}
+                </div>
+
+                <button type="submit" class="btn btn-primary">Save changes</button>
+            </form>
         </div>
     </div>
 
@@ -108,12 +147,57 @@
 {% block extra_js %}
 <script>
 document.addEventListener('DOMContentLoaded', function () {
+    // Description character counter
     var textarea = document.getElementById('{{ form.description.id_for_label }}');
     var counter  = document.getElementById('desc-count');
-    if (!textarea || !counter) return;
-    textarea.addEventListener('input', function () {
-        counter.textContent = this.value.length + '/500';
-    });
+    if (textarea && counter) {
+        textarea.addEventListener('input', function () {
+            counter.textContent = this.value.length + '/500';
+        });
+    }
+
+    // Photo upload zone
+    var zone      = document.getElementById('photo-upload-zone');
+    var fileInput = document.getElementById('{{ form.photo.id_for_label }}');
+    var thumb     = document.getElementById('photo-thumb');
+    var thumbPlaceholder = document.getElementById('photo-thumb-placeholder');
+    var uploadLabel = document.getElementById('photo-upload-label');
+    var uploadHint  = document.getElementById('photo-upload-hint');
+
+    if (zone && fileInput) {
+        // Hover effect
+        zone.addEventListener('mouseenter', function () {
+            zone.style.borderColor = 'var(--bs-border-color-translucent, rgba(255,255,255,0.25))';
+            zone.style.background  = 'rgba(255,255,255,0.03)';
+        });
+        zone.addEventListener('mouseleave', function () {
+            zone.style.borderColor = '';
+            zone.style.background  = '';
+        });
+
+        // Live preview on file select
+        fileInput.addEventListener('change', function () {
+            var file = this.files[0];
+            if (!file) return;
+            var reader = new FileReader();
+            reader.onload = function (e) {
+                // Replace placeholder with real img if needed
+                if (!thumb) {
+                    thumb = document.createElement('img');
+                    thumb.id = 'photo-thumb';
+                    thumb.alt = '';
+                    thumb.style.cssText = 'width:52px;height:52px;border-radius:6px;object-fit:cover;border:1px solid var(--bs-border-color);display:block;';
+                    var wrap = document.getElementById('photo-thumb-wrap');
+                    if (thumbPlaceholder) thumbPlaceholder.replaceWith(thumb);
+                    else wrap.appendChild(thumb);
+                }
+                thumb.src = e.target.result;
+                if (uploadLabel) uploadLabel.textContent = 'Change photo';
+                if (uploadHint)  uploadHint.textContent  = file.name + ' · Click to replace';
+            };
+            reader.readAsDataURL(file);
+        });
+    }
 });
 </script>
 {% endblock %}

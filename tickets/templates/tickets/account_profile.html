@@ -10,7 +10,7 @@
         width: 72px;
         height: 72px;
         border-radius: 50%;
-        background: var(--surface-3);
+        background: linear-gradient(135deg, var(--surface-3) 0%, var(--surface-2) 100%);
         border: 1px solid var(--border-mid);
         color: var(--text);
         display: flex;
@@ -21,6 +21,45 @@
         font-weight: 800;
         letter-spacing: -0.02em;
         flex-shrink: 0;
+    }
+
+    .profile-layout {
+        display: grid;
+        grid-template-columns: 260px 1fr;
+        gap: 12px;
+        align-items: start;
+    }
+
+    .name-row {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 14px;
+        margin-bottom: 14px;
+    }
+
+    /* intl-tel-input wrapper — always stretch to container */
+    .iti { width: 100%; }
+
+    @media (max-width: 640px) {
+        .profile-layout {
+            grid-template-columns: 1fr;
+            gap: 16px;
+        }
+        .name-row {
+            grid-template-columns: 1fr;
+        }
+        .profile-avatar {
+            width: 88px;
+            height: 88px;
+            font-size: 32px;
+        }
+        .form-control, .form-select {
+            padding: 13px 13px;
+            font-size: 1rem;
+        }
+        .a-card-body {
+            padding: 16px;
+        }
     }
 
     .form-label {
@@ -102,7 +141,7 @@
     <p class="page-subtitle">View and update your personal information.</p>
 </div>
 
-<div style="display: grid; grid-template-columns: 260px 1fr; gap: 12px; align-items: start;">
+<div class="profile-layout">
 
     <!-- Identity card -->
     <div class="a-card" style="animation: fadeUp 0.4s 0.05s ease both;">
@@ -160,7 +199,7 @@
             <form method="post" novalidate>
                 {% csrf_token %}
 
-                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-bottom: 14px;">
+                <div class="name-row">
                     <div>
                         <label class="form-label" for="id_first_name">First name</label>
                         <input type="text" name="first_name" id="id_first_name" maxlength="150"
