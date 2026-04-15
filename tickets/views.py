@@ -5444,6 +5444,27 @@ def buy_redirect(request, event_id):
     return redirect('tickets:public_event_buy', public_id=event.public_id, permanent=True)
 
 
+def _build_public_event_preview_context(event, *, suffix):
+    """Build consistent title/description metadata for public event link previews."""
+    preview_parts = [event.start_date.strftime('%a, %b %-d, %Y')]
+
+    if event.start_time:
+        preview_parts.append(event.start_time.strftime('%-I:%M %p'))
+
+    if event.venue:
+        venue_label = event.venue.name
+        locality_parts = [part for part in [event.venue.city, event.venue.state] if part]
+        if locality_parts:
+            venue_label = f"{venue_label}, {', '.join(locality_parts)}"
+        preview_parts.append(venue_label)
+
+    preview_description = ' · '.join(preview_parts)
+    return {
+        'preview_description': preview_description,
+        'preview_title': f"{event.name} · {preview_description} · {suffix}" if preview_description else f"{event.name} · {suffix}",
+    }
+
+
 def public_event_buy(request, public_id):
     """Public ticket selector page. POST stores cart in session and redirects to checkout."""
     event = get_object_or_404(
@@ -5455,9 +5476,23 @@ def public_event_buy(request, public_id):
     if eff == EVENT_STATUS_DRAFT:
         raise Http404()
     if eff == EVENT_STATUS_ENDED:
-        return render(request, 'tickets/buy/sales_ended.html', {'event': event})
+        return render(
+            request,
+            'tickets/buy/sales_ended.html',
+            {
+                'event': event,
+                **_build_public_event_preview_context(event, suffix='Ticket Sales Ended'),
+            },
+        )
     if eff == EVENT_STATUS_CANCELLED:
-        return render(request, 'tickets/buy/event_cancelled.html', {'event': event})
+        return render(
+            request,
+            'tickets/buy/event_cancelled.html',
+            {
+                'event': event,
+                **_build_public_event_preview_context(event, suffix='Event Cancelled'),
+            },
+        )
 
     wl_feature_on = event.organization.waitlist_feature_enabled
     if wl_feature_on:
@@ -5622,6 +5657,7 @@ def public_event_buy(request, public_id):
         'attendee_count': attendee_count,
         'wl_held_tt_id': wl_held_tt_id,
         'user_is_authenticated': request.user.is_authenticated,
+        **_build_public_event_preview_context(event, suffix='Buy Tickets'),
     })
 
 

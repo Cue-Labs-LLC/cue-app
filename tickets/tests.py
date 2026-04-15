@@ -3461,3 +3461,142 @@ class MultiOrgTests(TestCase):
         self.assertEqual(response.status_code, 302)
         membership.refresh_from_db()
         self.assertEqual(membership.org_role, UserProfile.OrgRole.ADMIN)
+
+
+class PublicEventPreviewMetadataTests(TestCase):
+    def setUp(self):
+        self.client = Client()
+        self.org = Organization.objects.create(name='Preview Org', slug='preview-org')
+        self.venue = Venue.objects.create(
+            organization=self.org,
+            name='The Echo',
+            city='Los Angeles',
+            state='CA',
+        )
+
+    def _build_description(self, event):
+        parts = [event.start_date.strftime('%a, %b %-d, %Y')]
+        if event.start_time:
+            parts.append(event.start_time.strftime('%-I:%M %p'))
+        venue_parts = [part for part in [event.venue.city, event.venue.state] if part]
+        venue_label = event.venue.name
+        if venue_parts:
+            venue_label = f"{venue_label}, {', '.join(venue_parts)}"
+        parts.append(venue_label)
+        return ' · '.join(parts)
+
+    def test_live_public_event_metadata_includes_date_time_and_venue(self):
+        event = Event.objects.create(
+            organization=self.org,
+            name='Warehouse Session',
+            venue=self.venue,
+            start_date=date(2026, 4, 18),
+            start_time=time(20, 0),
+            ticketing_type='direct',
+            status='live',
+        )
+
+        response = self.client.get(reverse('tickets:public_event_buy', args=[event.public_id]))
+
+        self.assertEqual(response.status_code, 200)
+        expected_description = self._build_description(event)
+        self.assertContains(
+            response,
+            f'<title>{event.name} · {expected_description} · Buy Tickets</title>',
+            html=True,
+        )
+        self.assertContains(
+            response,
+            f'<meta name="description" content="{expected_description}">',
+            html=True,
+        )
+        self.assertContains(
+            response,
+            f'<meta property="og:description" content="{expected_description}">',
+            html=True,
+        )
+        self.assertContains(
+            response,
+            f'<meta name="twitter:description" content="{expected_description}">',
+            html=True,
+        )
+
+    def test_live_public_event_metadata_omits_missing_optional_fields_cleanly(self):
+        venue = Venue.objects.create(
+            organization=self.org,
+            name='Secret Room',
+            city='',
+            state='',
+        )
+        event = Event.objects.create(
+            organization=self.org,
+            name='Afterhours',
+            venue=venue,
+            start_date=date(2026, 5, 2),
+            ticketing_type='direct',
+            status='live',
+        )
+
+        response = self.client.get(reverse('tickets:public_event_buy', args=[event.public_id]))
+
+        self.assertEqual(response.status_code, 200)
+        expected_description = self._build_description(event)
+        self.assertContains(
+            response,
+            f'<meta name="description" content="{expected_description}">',
+            html=True,
+        )
+        self.assertNotContains(response, ' ·  · ')
+        self.assertNotContains(response, 'Secret Room, , ')
+
+    def test_ended_public_event_metadata_uses_preview_description(self):
+        event = Event.objects.create(
+            organization=self.org,
+            name='Past Headliner',
+            venue=self.venue,
+            start_date=date(2026, 3, 1),
+            start_time=time(21, 30),
+            ticketing_type='direct',
+            status='ended',
+        )
+
+        response = self.client.get(reverse('tickets:public_event_buy', args=[event.public_id]))
+
+        self.assertEqual(response.status_code, 200)
+        expected_description = self._build_description(event)
+        self.assertContains(
+            response,
+            f'<title>{event.name} · {expected_description} · Ticket Sales Ended</title>',
+            html=True,
+        )
+        self.assertContains(
+            response,
+            f'<meta property="og:description" content="{expected_description}">',
+            html=True,
+        )
+
+    def test_cancelled_public_event_metadata_uses_preview_description(self):
+        event = Event.objects.create(
+            organization=self.org,
+            name='Canceled Night',
+            venue=self.venue,
+            start_date=date(2026, 6, 20),
+            start_time=time(22, 0),
+            ticketing_type='direct',
+            status='cancelled',
+        )
+
+        response = self.client.get(reverse('tickets:public_event_buy', args=[event.public_id]))
+
+        self.assertEqual(response.status_code, 200)
+        expected_description = self._build_description(event)
+        self.assertContains(
+            response,
+            f'<title>{event.name} · {expected_description} · Event Cancelled</title>',
+            html=True,
+        )
+        self.assertContains(
+            response,
+            f'<meta name="twitter:description" content="{expected_description}">',
+            html=True,
+        )
