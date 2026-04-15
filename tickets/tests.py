@@ -2780,6 +2780,64 @@ class EventDeleteViewTests(TestCase):
         self.assertFalse(Customer.objects.filter(id=self.customer.id).exists())
 
 
+class EventEditViewTests(TestCase):
+    """Regression coverage for the event edit page render paths."""
+
+    def setUp(self):
+        self.client = Client()
+        self.org = Organization.objects.create(name='Event Edit Org', slug='event-edit-org')
+        self.user = User.objects.create_user(
+            username='eventedituser',
+            email='eventedit@example.com',
+            password='testpass123'
+        )
+        UserProfile.objects.create(
+            user=self.user,
+            organization=self.org,
+            org_role=UserProfile.OrgRole.OWNER,
+        )
+        self.client.login(username='eventedit@example.com', password='testpass123')
+        self.client.get(reverse('tickets:home'))
+
+        self.venue = Venue.objects.create(
+            organization=self.org,
+            name='Edit Venue',
+            city='Los Angeles',
+        )
+
+    def test_direct_event_edit_page_renders(self):
+        event = Event.objects.create(
+            organization=self.org,
+            name='Direct Event',
+            venue=self.venue,
+            start_date=date(2026, 4, 30),
+            start_time=time(20, 0, 0),
+            ticketing_type='direct',
+            status='live',
+        )
+
+        response = self.client.get(reverse('tickets:event_edit', args=[event.id]))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'Ticket Types')
+        self.assertContains(response, 'Promo Codes')
+
+    def test_external_event_edit_page_renders(self):
+        event = Event.objects.create(
+            organization=self.org,
+            name='External Event',
+            venue=self.venue,
+            start_date=date(2026, 5, 2),
+            start_time=time(19, 30, 0),
+            ticketing_type='external',
+        )
+
+        response = self.client.get(reverse('tickets:event_edit', args=[event.id]))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'Talent Lineup (optional)')
+
+
 class SmartPricingRecommendationTests(TestCase):
     def setUp(self):
         self.client = Client()

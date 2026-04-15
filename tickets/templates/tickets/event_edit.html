@@ -78,8 +78,6 @@
                 </p>
             </div>
         </div>
-        {% endif %}
-
         <form method="post" enctype="multipart/form-data">
             {% csrf_token %}
             <div class="card mb-3">
@@ -321,8 +319,6 @@
                 {% endif %}
             </div>
         </div>
-        {% endif %}{# /smart_pricing_recommendations_enabled #}
-
         {% else %}
         <form method="post">
             {% csrf_token %}
