@@ -2,6 +2,26 @@
 
 {% block title %}Organization Profile{% endblock %}
 
+{% block extra_head %}
+<style>
+    .org-profile-layout {
+        display: grid;
+        grid-template-columns: 220px 1fr;
+        gap: 20px;
+        align-items: start;
+    }
+    @media (max-width: 640px) {
+        .org-profile-layout {
+            grid-template-columns: 1fr;
+            gap: 16px;
+        }
+        .org-profile-preview {
+            display: none;
+        }
+    }
+</style>
+{% endblock %}
+
 {% block content %}
 <div class="page-header">
     <div>
@@ -16,10 +36,10 @@
     </div>
 </div>
 
-<div style="display: grid; grid-template-columns: 220px 1fr; gap: 20px; align-items: start;">
+<div class="org-profile-layout">
 
-    <!-- Preview card -->
-    <div class="card">
+    <!-- Preview card (hidden on mobile — upload zone shows photo inline) -->
+    <div class="card org-profile-preview">
         <div class="card-body" style="text-align: center; padding: 24px 16px;">
             {% if org.photo %}
             <img src="{{ org.photo.url }}" alt="{{ org.name }}"
@@ -33,7 +53,7 @@
             <div style="font-weight: 600; margin-bottom: 4px;">{{ org.name }}</div>
 
             {% if org.description %}
-            <p style="font-size: 0.8rem; color: var(--text-secondary); margin-bottom: 8px; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical;">
+            <p style="font-size: 0.8rem; color: var(--text-secondary); margin-bottom: 8px; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 3; line-clamp: 3; -webkit-box-orient: vertical;">
                 {{ org.description }}
             </p>
             {% endif %}
