@@ -74,6 +74,12 @@
                     {% if ticket_formset.non_form_errors %}
                     <div class="alert alert-danger mx-3 mt-3 py-2">{{ ticket_formset.non_form_errors }}</div>
                     {% endif %}
+                    {% for tt_form in ticket_formset %}{% if tt_form.errors %}
+                    <div class="alert alert-danger mx-3 mt-3 py-2">
+                        <strong>{% if tt_form.name.value %}{{ tt_form.name.value }}{% else %}Ticket type {{ forloop.counter }}{% endif %}:</strong>
+                        {% for field, errors in tt_form.errors.items %}{{ errors|join:", " }}{% if not forloop.last %}; {% endif %}{% endfor %}
+                    </div>
+                    {% endif %}{% endfor %}
                     {# Hidden formset rows — submitted with the main form #}
                     <div id="tt-hidden-formset" class="d-none">
                         {% for tt_form in ticket_formset %}
@@ -399,7 +405,7 @@ document.addEventListener('DOMContentLoaded', function () {
             }
             document.getElementById('add_name').classList.remove('is-invalid');
 
-            var price = document.getElementById('add_price').value;
+            var price = document.getElementById('add_price').value || '0';
             var description = document.getElementById('add_description').value;
             var quantityLimit = document.getElementById('add_quantity_limit').value;
             var order = document.getElementById('add_order').value || '0';
