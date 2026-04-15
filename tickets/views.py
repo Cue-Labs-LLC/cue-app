@@ -431,6 +431,7 @@ def unified_verify_view(request):
         return redirect('tickets:attendee_dashboard')
     session_data = request.session.get('verify_unified')
     if not session_data:
+        messages.info(request, 'This verification step has already completed or expired. Please start again.')
         return redirect('tickets:login')
     phone = session_data['phone']
     is_new = session_data.get('is_new', False)
@@ -1046,7 +1047,7 @@ def verify_otp_view(request):
         return redirect('tickets:attendee_dashboard')
     session_data = request.session.get("verify_signup")
     if not session_data:
-        messages.error(request, 'No pending verification. Please sign up first.')
+        messages.info(request, 'This verification step has already completed or expired. Please start again.')
         return redirect('tickets:signup')
     phone = session_data["phone"]
     if request.method == "POST":
@@ -1082,6 +1083,7 @@ def resend_otp_view(request):
         return redirect('tickets:attendee_dashboard')
     session_data = request.session.get("verify_signup")
     if not session_data:
+        messages.info(request, 'This verification step has already completed or expired. Please start again.')
         return redirect('tickets:signup')
     if not start_phone_verification(session_data["phone"]):
         messages.error(request, 'Could not resend the code. Please try again.')
@@ -6851,8 +6853,11 @@ def attendee_verify_otp_view(request, org_slug):
     AuthUser = get_user_model()
 
     org = get_object_or_404(Organization, slug=org_slug)
+    if request.user.is_authenticated:
+        return redirect('tickets:attendee_dashboard')
     session_data = request.session.get("verify_org_signup")
     if not session_data:
+        messages.info(request, 'This verification step has already completed or expired. Please start again.')
         return redirect('tickets:attendee_signup', org_slug=org_slug)
     phone = session_data["phone"]
 
@@ -6919,8 +6924,11 @@ def phone_login_verify_view(request):
     from .sms import check_phone_verification
     AuthUser = get_user_model()
 
+    if request.user.is_authenticated:
+        return redirect('tickets:attendee_dashboard')
     session_data = request.session.get("verify_login")
     if not session_data:
+        messages.info(request, 'This verification step has already completed or expired. Please start again.')
         return redirect('tickets:phone_login')
     phone = session_data["phone"]
 

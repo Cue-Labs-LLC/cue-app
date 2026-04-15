@@ -1,9 +1,11 @@
 import uuid
 from datetime import date, time, datetime, timedelta
 from unittest.mock import patch, MagicMock
-from django.test import TestCase, Client
+from django.contrib.auth.models import AnonymousUser, User
+from django.contrib.messages.storage.fallback import FallbackStorage
+from django.contrib.sessions.middleware import SessionMiddleware
+from django.test import TestCase, Client, RequestFactory
 from django.urls import reverse
-from django.contrib.auth.models import User
 from django.utils import timezone
 from decimal import Decimal
 from rest_framework.authtoken.models import Token
@@ -2985,6 +2987,93 @@ class EventCustomerTicketLimitTests(TestCase):
 
         self.assertEqual(response.status_code, 400)
         self.assertIn('You can only purchase up to 2 tickets for this event.', response.json()['error'])
+
+
+class OTPVerifyFlowTests(TestCase):
+    """Regression coverage for stale or already-consumed OTP verify sessions."""
+
+    def setUp(self):
+        self.client = Client()
+        self.factory = RequestFactory()
+        self.org = Organization.objects.create(name='OTP Org', slug='otp-org')
+        self.user = User.objects.create_user(
+            username='otp-user',
+            email='otp@example.com',
+            password='testpass123',
+        )
+        UserProfile.objects.create(
+            user=self.user,
+            organization=self.org,
+            role=UserProfile.Role.ATTENDEE,
+            phone_number='+15555550123',
+        )
+
+    def _build_request(self, path):
+        request = self.factory.get(path)
+        SessionMiddleware(lambda request: None).process_request(request)
+        request.session.save()
+        request.user = AnonymousUser()
+        setattr(request, '_messages', FallbackStorage(request))
+        return request
+
+    def test_unified_verify_missing_session_redirects_with_message(self):
+        response = self.client.get(reverse('tickets:unified_verify'))
+
+        self.assertRedirects(response, reverse('tickets:login'))
+        messages = list(response.wsgi_request._messages)
+        self.assertTrue(any('already completed or expired' in str(message) for message in messages))
+
+    @patch('tickets.sms.check_phone_verification', return_value=False)
+    def test_unified_verify_post_with_code_reaches_invalid_code_branch(self, mock_check):
+        session = self.client.session
+        session['verify_unified'] = {'phone': '+15555550123', 'is_new': False}
+        session.save()
+
+        response = self.client.post(reverse('tickets:unified_verify'), {'otp_code': '123456'})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'Incorrect or expired code. Please try again.')
+        self.assertNotContains(response, 'This field is required.')
+        mock_check.assert_called_once_with('+15555550123', '123456')
+
+    def test_phone_login_verify_missing_session_redirects_with_message(self):
+        from .views import phone_login_verify_view
+
+        request = self._build_request('/login/phone/verify/')
+        response = phone_login_verify_view(request)
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.url, reverse('tickets:phone_login'))
+        messages = list(request._messages)
+        self.assertTrue(any('already completed or expired' in str(message) for message in messages))
+
+    def test_signup_verify_missing_session_redirects_with_message(self):
+        from .views import verify_otp_view
+
+        request = self._build_request('/signup/verify/')
+        response = verify_otp_view(request)
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.url, reverse('tickets:signup'))
+        messages = list(request._messages)
+        self.assertTrue(any('already completed or expired' in str(message) for message in messages))
+
+    def test_attendee_verify_missing_session_redirects_with_message(self):
+        response = self.client.get(reverse('tickets:attendee_verify_otp', args=[self.org.slug]))
+
+        self.assertRedirects(response, reverse('tickets:attendee_signup', args=[self.org.slug]))
+        messages = list(response.wsgi_request._messages)
+        self.assertTrue(any('already completed or expired' in str(message) for message in messages))
+
+    def test_phone_login_verify_authenticated_user_redirects_to_dashboard(self):
+        from .views import phone_login_verify_view
+
+        request = self._build_request('/login/phone/verify/')
+        request.user = self.user
+        response = phone_login_verify_view(request)
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.url, reverse('tickets:attendee_dashboard'))
 
 
 class SmartPricingRecommendationTests(TestCase):

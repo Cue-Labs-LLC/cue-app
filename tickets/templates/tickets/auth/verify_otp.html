@@ -37,3 +37,56 @@
     </div>
 </div>
 {% endblock %}
+
+{% block extra_js %}
+<script>
+document.addEventListener('DOMContentLoaded', function () {
+    var verifyForm = document.querySelector('form[action$="/signup/verify/"]');
+    var resendForm = document.querySelector('form[action$="/signup/resend-otp/"]');
+    var submitted = false;
+
+    function disableForm(form, loadingText) {
+        if (!form) return;
+        form.querySelectorAll('button, input, select, textarea').forEach(function (el) {
+            if (el.tagName === 'BUTTON' && loadingText) {
+                el.dataset.originalText = el.dataset.originalText || el.innerHTML;
+                el.innerHTML = loadingText;
+            }
+            if (el.tagName === 'BUTTON' || el.type === 'submit') {
+                el.disabled = true;
+            }
+        });
+    }
+
+    if (verifyForm) {
+        verifyForm.addEventListener('submit', function (event) {
+            if (submitted) {
+                event.preventDefault();
+                return;
+            }
+            submitted = true;
+            disableForm(verifyForm, 'Verifying...');
+            disableForm(resendForm);
+        });
+    }
+
+    if (resendForm) {
+        resendForm.addEventListener('submit', function (event) {
+            if (submitted) {
+                event.preventDefault();
+                return;
+            }
+            submitted = true;
+            disableForm(verifyForm);
+            disableForm(resendForm, 'Sending...');
+        });
+    }
+
+    window.addEventListener('pageshow', function (event) {
+        if (event.persisted) {
+            window.location.reload();
+        }
+    });
+});
+</script>
+{% endblock %}
