@@ -1064,12 +1064,13 @@ class SaleableTicketTypeForm(forms.ModelForm):
 
     class Meta:
         model = SaleableTicketType
-        fields = ['name', 'description', 'price', 'quantity_limit', 'is_active', 'sale_start', 'sale_end', 'order', 'is_password_protected', 'password', 'unlocks_after', 'waitlist_enabled']
+        fields = ['name', 'description', 'price', 'quantity_limit', 'max_per_customer', 'is_active', 'sale_start', 'sale_end', 'order', 'is_password_protected', 'password', 'unlocks_after', 'waitlist_enabled']
         widgets = {
             'name': forms.TextInput(attrs={'class': 'form-control', 'placeholder': 'e.g. General Admission'}),
             'description': forms.Textarea(attrs={'rows': 2, 'class': 'form-control', 'placeholder': 'Short buyer-facing copy (optional)'}),
             'price': forms.NumberInput(attrs={'class': 'form-control', 'step': '0.01', 'min': '0', 'placeholder': '0.00'}),
             'quantity_limit': forms.NumberInput(attrs={'class': 'form-control', 'min': '1', 'placeholder': 'Leave blank for unlimited'}),
+            'max_per_customer': forms.NumberInput(attrs={'class': 'form-control', 'min': '1', 'placeholder': 'Leave blank for unlimited'}),
             'is_active': forms.CheckboxInput(attrs={'class': 'form-check-input'}),
             'sale_start': forms.DateTimeInput(attrs={'type': 'datetime-local', 'class': 'form-control'}),
             'sale_end': forms.DateTimeInput(attrs={'type': 'datetime-local', 'class': 'form-control'}),
@@ -1087,20 +1088,24 @@ class SaleableTicketTypeForm(forms.ModelForm):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.fields['quantity_limit'].required = False
+        self.fields['max_per_customer'].required = False
         self.fields['description'].required = False
         self.fields['sale_start'].required = False
         self.fields['sale_end'].required = False
         self.fields['unlocks_after'].required = False
         self.fields['price'].help_text = 'Display price shown to buyers (fee-inclusive). Fallback when no tiers are configured. Your gross = Display Price minus the 8% + $0.99 service fee.'
+        self.fields['quantity_limit'].help_text = 'Total tickets available for this ticket type.'
+        self.fields['max_per_customer'].help_text = 'Optional cumulative cap per customer for this ticket type.'
         submit_label = 'Update Ticket Type' if (self.instance and self.instance.pk) else 'Create Ticket Type'
         self.helper = FormHelper()
         self.helper.layout = Layout(
             Field('name'),
             Field('description'),
             Row(
-                Column('price', css_class='form-group col-md-4 mb-0'),
-                Column('quantity_limit', css_class='form-group col-md-4 mb-0'),
-                Column('order', css_class='form-group col-md-4 mb-0'),
+                Column('price', css_class='form-group col-md-3 mb-0'),
+                Column('quantity_limit', css_class='form-group col-md-3 mb-0'),
+                Column('max_per_customer', css_class='form-group col-md-3 mb-0'),
+                Column('order', css_class='form-group col-md-3 mb-0'),
             ),
             Row(
                 Column('sale_start', css_class='form-group col-md-6 mb-0'),
@@ -1170,7 +1175,7 @@ class DirectEventForm(forms.ModelForm):
 
     class Meta:
         model = Event
-        fields = ['name', 'summary', 'start_date', 'start_time', 'end_date', 'end_time', 'description', 'capacity', 'max_tickets_per_customer', 'flyer', 'facebook_pixel_id', 'venue']
+        fields = ['name', 'summary', 'start_date', 'start_time', 'end_date', 'end_time', 'description', 'capacity', 'flyer', 'facebook_pixel_id', 'venue']
         widgets = {
             'name': forms.TextInput(attrs={'class': 'form-control', 'placeholder': 'e.g., Familiar Faces'}),
             'summary': forms.TextInput(attrs={'class': 'form-control', 'placeholder': 'Short tagline shown on the ticket page (optional)'}),
@@ -1180,7 +1185,6 @@ class DirectEventForm(forms.ModelForm):
             'end_time': forms.TimeInput(attrs={'type': 'time', 'class': 'form-control'}),
             'description': forms.Textarea(attrs={'rows': 3, 'class': 'form-control', 'placeholder': 'Optional event description'}),
             'capacity': forms.NumberInput(attrs={'class': 'form-control', 'placeholder': 'e.g., 500', 'min': '1'}),
-            'max_tickets_per_customer': forms.NumberInput(attrs={'class': 'form-control', 'placeholder': 'Unlimited', 'min': '1'}),
             'facebook_pixel_id': forms.TextInput(attrs={'class': 'form-control', 'placeholder': 'e.g., 1234567890123456'}),
         }
 
@@ -1193,8 +1197,6 @@ class DirectEventForm(forms.ModelForm):
         self.fields['summary'].required = False
         self.fields['description'].required = False
         self.fields['capacity'].required = False
-        self.fields['max_tickets_per_customer'].required = False
-        self.fields['max_tickets_per_customer'].help_text = 'Optional cumulative cap per customer across all purchases for this event.'
         self.fields['start_time'].required = True
         self.fields['end_date'].required = True
         self.fields['end_time'].required = True
@@ -1227,8 +1229,7 @@ class DirectEventForm(forms.ModelForm):
             Field('description'),
             Row(
                 Column('venue', css_class='form-group col-md-6 mb-0'),
-                Column('capacity', css_class='form-group col-md-3 mb-0'),
-                Column('max_tickets_per_customer', css_class='form-group col-md-3 mb-0'),
+                Column('capacity', css_class='form-group col-md-6 mb-0'),
             ),
             Field('facebook_pixel_id'),
         )
@@ -1282,12 +1283,13 @@ class DirectEventForm(forms.ModelForm):
 class SaleableTicketTypeInlineForm(forms.ModelForm):
     class Meta:
         model = SaleableTicketType
-        fields = ['name', 'description', 'price', 'quantity_limit', 'order', 'unlocks_after']
+        fields = ['name', 'description', 'price', 'quantity_limit', 'max_per_customer', 'order', 'unlocks_after']
         widgets = {
             'name':           forms.TextInput(attrs={'class': 'form-control', 'placeholder': 'e.g. General Admission'}),
             'description':    forms.TextInput(attrs={'class': 'form-control', 'placeholder': 'Short description (optional)'}),
             'price':          forms.NumberInput(attrs={'class': 'form-control', 'step': '0.01', 'min': '0', 'placeholder': '0.00'}),
             'quantity_limit': forms.NumberInput(attrs={'class': 'form-control', 'min': '1', 'placeholder': 'Unlimited'}),
+            'max_per_customer': forms.NumberInput(attrs={'class': 'form-control', 'min': '1', 'placeholder': 'Unlimited'}),
             'order':          forms.NumberInput(attrs={'class': 'form-control', 'min': '0', 'style': 'width:65px;'}),
             'unlocks_after':  forms.Select(attrs={'class': 'form-select form-select-sm'}),
         }
@@ -1307,21 +1309,22 @@ class PublicTicketPurchaseForm(forms.Form):
     Field names: qty_<uuid_hex> (no hyphens so they're valid HTML names).
     """
 
-    def __init__(self, ticket_types, *args, per_customer_remaining=None, **kwargs):
+    def __init__(self, ticket_types, *args, per_ticket_remaining=None, **kwargs):
         super().__init__(*args, **kwargs)
         self._ticket_types = ticket_types
-        self._per_customer_remaining = per_customer_remaining
+        self._per_ticket_remaining = per_ticket_remaining or {}
         for tt in ticket_types:
             active_tier = tt.get_active_tier()  # tiers already prefetched by caller
             remaining = active_tier.remaining_capacity() if active_tier else tt.remaining_quantity()
             max_val = 10 if remaining is None else min(10, remaining)
-            if per_customer_remaining is not None:
-                max_val = min(max_val, max(0, per_customer_remaining))
+            per_ticket_cap = self._per_ticket_remaining.get(str(tt.id))
+            if per_ticket_cap is not None:
+                max_val = min(max_val, max(0, per_ticket_cap))
             max_error = None
-            if per_customer_remaining is not None:
+            if per_ticket_cap is not None:
                 max_error = (
-                    f'You can only add up to {per_customer_remaining} more ticket'
-                    f'{"s" if per_customer_remaining != 1 else ""} for this event.'
+                    f'You can only add up to {per_ticket_cap} more {tt.name} ticket'
+                    f'{"s" if per_ticket_cap != 1 else ""} for this event.'
                 )
             field_name = f'qty_{tt.id.hex}'
             self.fields[field_name] = forms.IntegerField(
@@ -1347,11 +1350,6 @@ class PublicTicketPurchaseForm(forms.Form):
         )
         if total < 1:
             raise forms.ValidationError('Please select at least 1 ticket.')
-        if self._per_customer_remaining is not None and total > self._per_customer_remaining:
-            raise forms.ValidationError(
-                f'You can only add up to {self._per_customer_remaining} more ticket'
-                f'{"s" if self._per_customer_remaining != 1 else ""} for this event.'
-            )
         return cleaned_data
 
     def get_line_items(self):

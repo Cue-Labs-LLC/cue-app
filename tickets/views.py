@@ -5171,6 +5171,7 @@ def saleable_ticket_type_data(request, event_id, ticket_type_id):
         'description': tt.description or '',
         'price': str(tt.price),
         'quantity_limit': tt.quantity_limit if tt.quantity_limit is not None else '',
+        'max_per_customer': tt.max_per_customer if tt.max_per_customer is not None else '',
         'order': tt.order,
         'sale_start': fmt_dt(tt.sale_start),
         'sale_end': fmt_dt(tt.sale_end),
@@ -5446,23 +5447,24 @@ def buy_redirect(request, event_id):
     return redirect('tickets:public_event_buy', public_id=event.public_id, permanent=True)
 
 
-def _customer_event_ticket_count(event, customer_email):
-    """Count non-refunded tickets already owned by this customer for the event."""
+def _customer_ticket_type_ticket_count(ticket_type, customer_email):
+    """Count non-refunded tickets already owned for this ticket type."""
     if not customer_email:
         return 0
     return Ticket.objects.filter(
-        ticket_order__event=event,
+        ticket_order__event=ticket_type.event,
         ticket_order__refunded_at__isnull=True,
         ticket_order__customer__email=customer_email.strip().lower(),
+        ticket_type=ticket_type.name,
     ).count()
 
 
-def _pending_customer_event_ticket_count(event, customer_email, *, exclude_session_id=None):
-    """Count tickets held in other pending checkout sessions for this event/email."""
+def _pending_customer_ticket_type_ticket_count(ticket_type, customer_email, *, exclude_session_id=None):
+    """Count tickets held in other pending checkout sessions for this ticket type/email."""
     if not customer_email:
         return 0
     pending_sessions = StripeCheckoutSession.objects.filter(
-        event=event,
+        event=ticket_type.event,
         buyer_email=customer_email.strip().lower(),
         status=StripeCheckoutSession.Status.PENDING,
     )
@@ -5471,19 +5473,23 @@ def _pending_customer_event_ticket_count(event, customer_email, *, exclude_sessi
 
     total = 0
     for session in pending_sessions.only('line_items_snapshot'):
-        total += sum(int(item.get('quantity', 0) or 0) for item in session.line_items_snapshot)
+        total += sum(
+            int(item.get('quantity', 0) or 0)
+            for item in session.line_items_snapshot
+            if str(item.get('saleable_ticket_type_id')) == str(ticket_type.id)
+        )
     return total
 
 
-def _customer_event_limit_error(event, customer_email, requested_qty, *, exclude_session_id=None):
-    """Return a buyer-facing cap error message, or None when within the event limit."""
-    limit = event.max_tickets_per_customer
+def _customer_ticket_type_limit_error(ticket_type, customer_email, requested_qty, *, exclude_session_id=None):
+    """Return a buyer-facing cap error message, or None when within the ticket-type limit."""
+    limit = ticket_type.max_per_customer
     if not limit or not customer_email:
         return None
 
-    owned = _customer_event_ticket_count(event, customer_email)
-    pending = _pending_customer_event_ticket_count(
-        event,
+    owned = _customer_ticket_type_ticket_count(ticket_type, customer_email)
+    pending = _pending_customer_ticket_type_ticket_count(
+        ticket_type,
         customer_email,
         exclude_session_id=exclude_session_id,
     )
@@ -5491,10 +5497,61 @@ def _customer_event_limit_error(event, customer_email, requested_qty, *, exclude
         return None
 
     return (
-        f'You can only purchase up to {limit} ticket'
+        f'You can only purchase up to {limit} {ticket_type.name} ticket'
         f'{"s" if limit != 1 else ""} for this event. '
         f'You already have {owned} confirmed and {pending} pending.'
     )
+
+
+def _ticket_type_remaining_by_customer(ticket_types, customer_email):
+    """Return remaining per-customer quantity by saleable ticket type id.
+
+    Only counts confirmed (non-refunded) tickets, not pending checkout sessions.
+    Pending sessions are intentionally excluded here: stale abandoned sessions would
+    otherwise permanently set remaining=0 and break the buy-page quantity selector.
+    Checkout-time validation (_customer_ticket_type_limit_error) still checks pending
+    sessions to prevent simultaneous double-payment.
+    """
+    remaining = {}
+    if not customer_email:
+        return remaining
+    for ticket_type in ticket_types:
+        if not ticket_type.max_per_customer:
+            continue
+        owned = _customer_ticket_type_ticket_count(ticket_type, customer_email)
+        remaining[str(ticket_type.id)] = max(0, ticket_type.max_per_customer - owned)
+    return remaining
+
+
+def _cart_ticket_type_limit_error(event, customer_email, cart, *, exclude_session_id=None):
+    """Return the first ticket-type customer-cap error for the cart, if any."""
+    if not customer_email:
+        return None
+
+    ticket_type_ids = [
+        str(item.get('saleable_ticket_type_id'))
+        for item in cart
+        if item.get('saleable_ticket_type_id')
+    ]
+    ticket_types = {
+        str(ticket_type.id): ticket_type
+        for ticket_type in SaleableTicketType.objects.filter(event=event, id__in=ticket_type_ids)
+    }
+
+    for item in cart:
+        ticket_type = ticket_types.get(str(item.get('saleable_ticket_type_id')))
+        if not ticket_type:
+            continue
+        requested_qty = int(item.get('quantity', 0) or 0)
+        limit_error = _customer_ticket_type_limit_error(
+            ticket_type,
+            customer_email,
+            requested_qty,
+            exclude_session_id=exclude_session_id,
+        )
+        if limit_error:
+            return limit_error
+    return None
 
 
 def _build_public_event_preview_context(event, *, suffix):
@@ -5592,36 +5649,31 @@ def public_event_buy(request, public_id):
 
     all_types = available_types + locked_types
     buyer_email = request.user.email.strip().lower() if request.user.is_authenticated and request.user.email else ''
-    per_customer_remaining = None
-    if event.max_tickets_per_customer and buyer_email:
-        owned = _customer_event_ticket_count(event, buyer_email)
-        pending = _pending_customer_event_ticket_count(event, buyer_email)
-        per_customer_remaining = max(0, event.max_tickets_per_customer - owned - pending)
+    per_ticket_remaining = _ticket_type_remaining_by_customer(all_types, buyer_email)
 
     if request.method == 'POST':
         form = PublicTicketPurchaseForm(
             all_types,
             request.POST,
-            per_customer_remaining=per_customer_remaining,
+            per_ticket_remaining=per_ticket_remaining,
         )
         if form.is_valid():
             line_items = form.get_line_items()
-            requested_qty = sum(qty for _, qty in line_items)
-            limit_error = _customer_event_limit_error(event, buyer_email, requested_qty)
+            snapshot = []
+            for tt, qty in line_items:
+                active_tier = tt.get_active_tier()
+                snapshot.append({
+                    'saleable_ticket_type_id': str(tt.id),
+                    'name': tt.name,
+                    'price': str(active_tier.price if active_tier else tt.price),
+                    'quantity': qty,
+                    'tier_id': str(active_tier.id) if active_tier else None,
+                    'tier_name': active_tier.name if active_tier else None,
+                })
+            limit_error = _cart_ticket_type_limit_error(event, buyer_email, snapshot)
             if limit_error:
                 form.add_error(None, limit_error)
             else:
-                snapshot = []
-                for tt, qty in line_items:
-                    active_tier = tt.get_active_tier()
-                    snapshot.append({
-                        'saleable_ticket_type_id': str(tt.id),
-                        'name': tt.name,
-                        'price': str(active_tier.price if active_tier else tt.price),
-                        'quantity': qty,
-                        'tier_id': str(active_tier.id) if active_tier else None,
-                        'tier_name': active_tier.name if active_tier else None,
-                    })
                 request.session[f'cart_{event.id}'] = snapshot
                 return redirect('tickets:checkout_payment', public_id=public_id)
     else:
@@ -5631,11 +5683,13 @@ def public_event_buy(request, public_id):
         ref = request.GET.get('ref')
         if ref:
             request.session[f'tracking_ref_{event.id}'] = ref
-        form = PublicTicketPurchaseForm(all_types, per_customer_remaining=per_customer_remaining)
+        form = PublicTicketPurchaseForm(all_types, per_ticket_remaining=per_ticket_remaining)
 
-    all_pairs       = list(zip(all_types, form))
-    available_pairs = all_pairs[:len(available_types)]
-    locked_pairs    = all_pairs[len(available_types):]
+    all_bound_fields = list(form)
+    all_caps         = [per_ticket_remaining.get(str(tt.id)) for tt in all_types]
+    all_pairs        = list(zip(all_types, all_bound_fields, all_caps))
+    available_pairs  = all_pairs[:len(available_types)]
+    locked_pairs     = all_pairs[len(available_types):]
 
     view_event_id = str(_uuid.uuid4())
     pixel_id = event.facebook_pixel_id
@@ -5990,7 +6044,7 @@ def checkout_payment(request, public_id):
                 'stripe_publishable_key': django_settings.STRIPE_PUBLISHABLE_KEY,
                 'error': 'Could not retrieve your account details. Please log in and try again.',
             })
-        limit_error = _customer_event_limit_error(event, buyer_email, requested_qty)
+        limit_error = _cart_ticket_type_limit_error(event, buyer_email, cart)
         if limit_error:
             return render(request, 'tickets/buy/checkout_payment.html', {
                 'event': event,
@@ -6165,8 +6219,7 @@ def create_payment_intent(request, public_id):
     buyer_email = request.user.email.strip().lower()
     if not buyer_name or not buyer_email:
         return JsonResponse({'error': 'Could not retrieve your account details. Please log in and try again.'}, status=400)
-    requested_qty = sum(int(item['quantity']) for item in cart)
-    limit_error = _customer_event_limit_error(event, buyer_email, requested_qty)
+    limit_error = _cart_ticket_type_limit_error(event, buyer_email, cart)
     if limit_error:
         return JsonResponse({'error': limit_error}, status=400)
 
@@ -6626,16 +6679,15 @@ def _fulfill_payment_intent(payment_intent):
             email=email.lower(),
             defaults={'organization': org, 'name': name},
         )
-        requested_qty = sum(int(item.get('quantity', 0) or 0) for item in session_obj.line_items_snapshot)
-        limit_error = _customer_event_limit_error(
+        limit_error = _cart_ticket_type_limit_error(
             event,
             email,
-            requested_qty,
+            session_obj.line_items_snapshot,
             exclude_session_id=session_obj.id,
         )
         if limit_error:
             logger.warning(
-                "Stripe webhook: customer ticket cap exceeded for session %s event %s email %s; refunding payment",
+                "Stripe webhook: customer ticket-type cap exceeded for session %s event %s email %s; refunding payment",
                 session_obj.id, event.id, email,
             )
             try:

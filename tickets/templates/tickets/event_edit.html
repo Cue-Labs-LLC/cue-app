@@ -209,7 +209,7 @@
                         <thead>
                             <tr>
                                 <th>Ticket Type</th><th>Display&nbsp;Price / Gross</th><th>Sold</th>
-                                <th class="d-none d-md-table-cell">Limit</th><th>Revenue</th>
+                                <th class="d-none d-md-table-cell">Inventory</th><th class="d-none d-md-table-cell">Max / Customer</th><th>Revenue</th>
                                 <th class="d-none d-md-table-cell">Unlocks After</th>
 
                                 <th class="d-none d-md-table-cell">Status</th><th></th>
@@ -222,6 +222,7 @@
                                 <td>{% with at=tt.get_active_tier %}{% if at %}${{ at.price|currency }}<br><small class="text-muted">{{ at.name }}</small>{% else %}${{ tt.price|currency }}{% endif %}{% endwith %}<br><small class="text-muted">Gross: ${{ tt.gross_price|currency }}</small></td>
                                 <td>{{ tt.quantity_sold }}</td>
                                 <td class="d-none d-md-table-cell">{% if tt.quantity_limit %}{{ tt.quantity_limit }}{% else %}<span class="text-muted">&infin;</span>{% endif %}</td>
+                                <td class="d-none d-md-table-cell">{% if tt.max_per_customer %}{{ tt.max_per_customer }}{% else %}<span class="text-muted">&infin;</span>{% endif %}</td>
                                 <td>${{ tt.effective_price|currency }} &times; {{ tt.quantity_sold }}</td>
                                 <td class="d-none d-md-table-cell">
                                     {% if tt.unlocks_after %}<span class="text-muted small">{{ tt.unlocks_after.name }}</span>{% else %}<span class="text-muted">-</span>{% endif %}
@@ -254,8 +255,8 @@
                         </tbody>
                         <tfoot>
                             <tr class="table-light">
-                                <td colspan="4"><strong>Total Revenue</strong></td>
-                                <td colspan="5"><strong>${{ direct_total_revenue|currency }}</strong></td>
+                                <td colspan="5"><strong>Total Revenue</strong></td>
+                                <td colspan="4"><strong>${{ direct_total_revenue|currency }}</strong></td>
                             </tr>
                         </tfoot>
                     </table>
@@ -822,6 +823,7 @@ document.addEventListener('DOMContentLoaded', function () {
             _editGross.value = _dc > 0 ? (Math.round((_dc - 99) / 1.08) / 100).toFixed(2) : '';
           }
           document.getElementById('edit_quantity_limit').value = d.quantity_limit;
+          document.getElementById('edit_max_per_customer').value = d.max_per_customer;
           document.getElementById('edit_order').value = d.order;
           document.getElementById('edit_sale_start').value = d.sale_start;
           document.getElementById('edit_sale_end').value = d.sale_end;
@@ -985,9 +987,14 @@ document.addEventListener('DOMContentLoaded', function () {
               </div>
             </div>
             <div class="col-md-4">
-              <label class="form-label fw-semibold">Quantity Limit</label>
+              <label class="form-label fw-semibold">Inventory Limit</label>
               <input type="number" name="quantity_limit" class="form-control" min="1" placeholder="Unlimited">
               <div class="invalid-feedback" id="err-quantity_limit"></div>
+            </div>
+            <div class="col-md-4">
+              <label class="form-label fw-semibold">Max Per Customer</label>
+              <input type="number" name="max_per_customer" class="form-control" min="1" placeholder="Unlimited">
+              <div class="invalid-feedback" id="err-max_per_customer"></div>
             </div>
             <div class="col-md-4">
               <label class="form-label fw-semibold">Order</label>
@@ -1098,9 +1105,14 @@ document.addEventListener('DOMContentLoaded', function () {
               </div>
             </div>
             <div class="col-md-4">
-              <label class="form-label fw-semibold">Quantity Limit</label>
+              <label class="form-label fw-semibold">Inventory Limit</label>
               <input type="number" name="quantity_limit" id="edit_quantity_limit" class="form-control" min="1" placeholder="Unlimited">
               <div class="invalid-feedback" id="edit-err-quantity_limit"></div>
+            </div>
+            <div class="col-md-4">
+              <label class="form-label fw-semibold">Max Per Customer</label>
+              <input type="number" name="max_per_customer" id="edit_max_per_customer" class="form-control" min="1" placeholder="Unlimited">
+              <div class="invalid-feedback" id="edit-err-max_per_customer"></div>
             </div>
             <div class="col-md-4">
               <label class="form-label fw-semibold">Order</label>

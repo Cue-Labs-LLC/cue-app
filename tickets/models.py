@@ -1312,6 +1312,11 @@ class SaleableTicketType(BaseModel):
         blank=True,
         help_text="Max tickets available; null = unlimited",
     )
+    max_per_customer = models.PositiveIntegerField(
+        null=True,
+        blank=True,
+        help_text="Max tickets a single customer can purchase for this ticket type; null = unlimited",
+    )
     quantity_sold = models.PositiveIntegerField(default=0)
     is_active = models.BooleanField(default=True, help_text="Hidden from public page when False")
     is_password_protected = models.BooleanField(

@@ -88,9 +88,10 @@
                              data-description="{{ tt_form.description.value|default:'' }}"
                              data-price="{{ tt_form.price.value|default:'' }}"
                              data-quantity-limit="{{ tt_form.quantity_limit.value|default:'' }}"
+                             data-max-per-customer="{{ tt_form.max_per_customer.value|default:'' }}"
                              data-order="{{ tt_form.order.value|default:'0' }}">
                             {{ tt_form.name }}{{ tt_form.description }}{{ tt_form.price }}
-                            {{ tt_form.quantity_limit }}{{ tt_form.order }}{{ tt_form.unlocks_after }}
+                            {{ tt_form.quantity_limit }}{{ tt_form.max_per_customer }}{{ tt_form.order }}{{ tt_form.unlocks_after }}
                             {{ tt_form.DELETE }}{{ tt_form.id }}
                         </div>
                         {% endfor %}
@@ -98,7 +99,7 @@
                     <template id="tt-hidden-row-template">
                         <div class="tt-hidden-row" data-idx="__prefix__">
                             {{ ticket_formset.empty_form.name }}{{ ticket_formset.empty_form.description }}{{ ticket_formset.empty_form.price }}
-                            {{ ticket_formset.empty_form.quantity_limit }}{{ ticket_formset.empty_form.order }}{{ ticket_formset.empty_form.unlocks_after }}
+                            {{ ticket_formset.empty_form.quantity_limit }}{{ ticket_formset.empty_form.max_per_customer }}{{ ticket_formset.empty_form.order }}{{ ticket_formset.empty_form.unlocks_after }}
                             {{ ticket_formset.empty_form.DELETE }}{{ ticket_formset.empty_form.id }}
                         </div>
                     </template>
@@ -112,7 +113,8 @@
                                 <tr>
                                     <th>Ticket Name</th>
                                     <th>Display&nbsp;Price / You&nbsp;Receive</th>
-                                    <th>Quantity Limit</th>
+                                    <th>Inventory</th>
+                                    <th>Max / Customer</th>
                                     <th></th>
                                 </tr>
                             </thead>
@@ -278,20 +280,22 @@ document.addEventListener('DOMContentLoaded', function () {
         displayWrapper.classList.toggle('d-none', !visible);
     }
 
-    function addDisplayRow(idx, name, description, price, quantityLimit, order) {
+    function addDisplayRow(idx, name, description, price, quantityLimit, maxPerCustomer, order) {
         var displayCents = Math.round((parseFloat(price) || 0) * 100);
         var grossCents = grossFromDisplayCents(displayCents);
         var priceHtml = displayCents > 0
             ? formatMoney(displayCents) + '<br><small class="text-muted">You receive: ' + formatMoney(grossCents) + '</small>'
             : '<span class="text-muted">Free</span>';
-        var limitHtml = quantityLimit ? quantityLimit : '<span class="text-muted">&infin;</span>';
+        var inventoryHtml = quantityLimit ? quantityLimit : '<span class="text-muted">&infin;</span>';
+        var perCustomerHtml = maxPerCustomer ? maxPerCustomer : '<span class="text-muted">&infin;</span>';
         var tr = document.createElement('tr');
         tr.dataset.idx = String(idx);
         tr.innerHTML =
             '<td><strong>' + escHtml(name) + '</strong>' +
                 (description ? '<br><small class="text-muted">' + escHtml(description) + '</small>' : '') + '</td>' +
             '<td>' + priceHtml + '</td>' +
-            '<td>' + limitHtml + '</td>' +
+            '<td>' + inventoryHtml + '</td>' +
+            '<td>' + perCustomerHtml + '</td>' +
             '<td><div class="d-flex gap-1">' +
                 '<button type="button" class="btn btn-sm btn-outline-secondary tt-edit-btn" data-idx="' + idx + '" data-bs-toggle="modal" data-bs-target="#addTicketTypeModal"><i class="bi bi-pencil"></i></button>' +
                 '<button type="button" class="btn btn-sm btn-outline-danger tt-remove-btn" data-idx="' + idx + '"><i class="bi bi-trash"></i></button>' +
@@ -319,7 +323,7 @@ document.addEventListener('DOMContentLoaded', function () {
         var idx = row.dataset.idx;
         var name = row.dataset.name;
         if (!name) return; // skip empty rows
-        addDisplayRow(idx, name, row.dataset.description, row.dataset.price, row.dataset.quantityLimit, row.dataset.order);
+        addDisplayRow(idx, name, row.dataset.description, row.dataset.price, row.dataset.quantityLimit, row.dataset.maxPerCustomer, row.dataset.order);
     });
 
     // Wire price <-> gross calculator in modal
@@ -362,6 +366,7 @@ document.addEventListener('DOMContentLoaded', function () {
             var c = Math.round((parseFloat(priceVal) || 0) * 100);
             if (addGross) addGross.value = c > 0 ? (grossFromDisplayCents(c) / 100).toFixed(2) : '';
             document.getElementById('add_quantity_limit').value = row.querySelector('[name$="-quantity_limit"]').value;
+            document.getElementById('add_max_per_customer').value = row.querySelector('[name$="-max_per_customer"]').value;
             document.getElementById('add_order').value = row.querySelector('[name$="-order"]').value;
             document.getElementById('add-tt-modal-title').textContent = 'Edit Ticket Type';
             document.getElementById('add-tt-submit').textContent = 'Save Changes';
@@ -408,6 +413,7 @@ document.addEventListener('DOMContentLoaded', function () {
             var price = document.getElementById('add_price').value || '0';
             var description = document.getElementById('add_description').value;
             var quantityLimit = document.getElementById('add_quantity_limit').value;
+            var maxPerCustomer = document.getElementById('add_max_per_customer').value;
             var order = document.getElementById('add_order').value || '0';
 
             if (editingIdx !== null) {
@@ -418,12 +424,13 @@ document.addEventListener('DOMContentLoaded', function () {
                     setHiddenField(row, 'description', description);
                     setHiddenField(row, 'price', price);
                     setHiddenField(row, 'quantity_limit', quantityLimit);
+                    setHiddenField(row, 'max_per_customer', maxPerCustomer);
                     setHiddenField(row, 'order', order);
                 }
                 // Update display row
                 var displayRow = displayTbody.querySelector('tr[data-idx="' + editingIdx + '"]');
                 if (displayRow) displayRow.remove();
-                addDisplayRow(editingIdx, name, description, price, quantityLimit, order);
+                addDisplayRow(editingIdx, name, description, price, quantityLimit, maxPerCustomer, order);
             } else {
                 // Add new hidden row
                 var idx = getTotalForms();
@@ -440,11 +447,12 @@ document.addEventListener('DOMContentLoaded', function () {
                     setHiddenField(newRow, 'description', description);
                     setHiddenField(newRow, 'price', price);
                     setHiddenField(newRow, 'quantity_limit', quantityLimit);
+                    setHiddenField(newRow, 'max_per_customer', maxPerCustomer);
                     setHiddenField(newRow, 'order', order);
                     hiddenFormset.appendChild(clone);
                 }
                 setTotalForms(idx + 1);
-                addDisplayRow(idx, name, description, price, quantityLimit, order);
+                addDisplayRow(idx, name, description, price, quantityLimit, maxPerCustomer, order);
             }
 
             var bsModal = bootstrap.Modal.getInstance(modal);
@@ -558,11 +566,15 @@ document.addEventListener('DOMContentLoaded', function () {
               </div>
               <div class="form-text text-muted">After 8% + $0.99 service fee</div>
             </div>
-            <div class="col-md-6">
-              <label class="form-label fw-semibold">Quantity Limit</label>
+            <div class="col-md-4">
+              <label class="form-label fw-semibold">Inventory Limit</label>
               <input type="number" id="add_quantity_limit" class="form-control" min="1" placeholder="Unlimited">
             </div>
-            <div class="col-md-6">
+            <div class="col-md-4">
+              <label class="form-label fw-semibold">Max Per Customer</label>
+              <input type="number" id="add_max_per_customer" class="form-control" min="1" placeholder="Unlimited">
+            </div>
+            <div class="col-md-4">
               <label class="form-label fw-semibold">Order</label>
               <input type="number" id="add_order" class="form-control" min="0" value="0">
             </div>

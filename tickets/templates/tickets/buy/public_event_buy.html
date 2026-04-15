@@ -350,6 +350,14 @@
             letter-spacing: 0.01em;
         }
 
+        .ticket-limit-note {
+            font-family: var(--font-body);
+            font-size: 11px;
+            color: var(--text-3);
+            margin-top: 4px;
+            letter-spacing: 0.01em;
+        }
+
         .sold-out-badge {
             font-family: var(--font-mono);
             font-size: 10px;
@@ -1126,7 +1134,7 @@
           </div>
           {% endif %}
 
-          {% for tt, bound_field in available_pairs %}
+          {% for tt, bound_field, per_cap in available_pairs %}
           {% with at=tt.get_active_tier ep=tt.effective_price %}
           <div class="ticket-card{% if tt.is_sold_out and tt.id|stringformat:"s" != wl_held_tt_id %} sold-out{% endif %}" data-price="{{ ep }}" data-ticket-id="{{ tt.id }}">
               <div class="ticket-info">
@@ -1152,6 +1160,8 @@
               <div class="qty-control">
                   {% if tt.is_sold_out and tt.id|stringformat:"s" != wl_held_tt_id %}
                   <span class="sold-out-badge">Sold Out</span>
+                  {% elif tt.max_per_customer and per_cap == 0 %}
+                  <span class="sold-out-badge">Limit Reached</span>
                   {% else %}
                   <button type="button" class="qty-btn qty-btn--minus" aria-label="Decrease quantity">&minus;</button>
                   {{ bound_field }}
@@ -1183,7 +1193,7 @@
           {% endwith %}
           {% endfor %}
 
-          {% for tt, bound_field in locked_pairs %}
+          {% for tt, bound_field, per_cap in locked_pairs %}
           {% with at=tt.get_active_tier ep=tt.effective_price %}
           <div class="ticket-card" id="locked-card-{{ tt.id.hex }}"
                data-unlock-url="{% url 'tickets:unlock_ticket_type' event.public_id tt.id %}"
@@ -1211,9 +1221,13 @@
                   {% endif %}
               </div>
               <div class="qty-control">
+                  {% if tt.max_per_customer and per_cap == 0 %}
+                  <span class="sold-out-badge">Limit Reached</span>
+                  {% else %}
                   <button type="button" class="qty-btn qty-btn--minus" aria-label="Decrease quantity">&minus;</button>
                   {{ bound_field }}
                   <button type="button" class="qty-btn qty-btn--plus" aria-label="Increase quantity">+</button>
+                  {% endif %}
               </div>
           </div>
           {% endwith %}
@@ -1343,6 +1357,20 @@ document.addEventListener('DOMContentLoaded', function() {
             if (next === current) return;
             inp.value = next;
             inp.dispatchEvent(new Event('input', { bubbles: true }));
+        });
+    });
+
+    document.querySelectorAll('input[type=number]').forEach(function(inp) {
+        inp.addEventListener('change', function() {
+            var min = parseInt(inp.min, 10) || 0;
+            var max = inp.max !== '' ? parseInt(inp.max, 10) : Infinity;
+            var val = parseInt(inp.value, 10);
+            if (isNaN(val)) val = min;
+            var clamped = Math.min(Math.max(val, min), max);
+            if (clamped !== val) {
+                inp.value = clamped;
+                inp.dispatchEvent(new Event('input', { bubbles: true }));
+            }
         });
     });
 })();

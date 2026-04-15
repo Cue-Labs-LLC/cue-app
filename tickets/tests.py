@@ -2840,8 +2840,8 @@ class EventEditViewTests(TestCase):
         self.assertContains(response, 'Talent Lineup (optional)')
 
 
-class EventCustomerTicketLimitTests(TestCase):
-    """Regression coverage for event-level max tickets per customer."""
+class TicketTypeCustomerLimitTests(TestCase):
+    """Regression coverage for ticket-type-level max tickets per customer."""
 
     def setUp(self):
         self.client = Client()
@@ -2874,13 +2874,13 @@ class EventCustomerTicketLimitTests(TestCase):
             start_time=time(20, 0, 0),
             ticketing_type='direct',
             status='live',
-            max_tickets_per_customer=2,
         )
         self.ticket_type = SaleableTicketType.objects.create(
             event=self.event,
             name='General Admission',
             price=Decimal('25.00'),
             quantity_limit=100,
+            max_per_customer=2,
         )
 
     def _grant_existing_tickets(self, qty, *, total_amount='25.00'):
@@ -2929,7 +2929,7 @@ class EventCustomerTicketLimitTests(TestCase):
         )
 
         self.assertEqual(response.status_code, 200)
-        self.assertContains(response, 'You can only add up to 1 more ticket for this event.')
+        self.assertContains(response, 'You can only add up to 1 more General Admission ticket for this event.')
 
     def test_free_checkout_blocks_customer_above_limit(self):
         self.ticket_type.price = Decimal('0.00')
@@ -2940,7 +2940,7 @@ class EventCustomerTicketLimitTests(TestCase):
         response = self.client.post(reverse('tickets:checkout_payment', args=[self.event.public_id]))
 
         self.assertEqual(response.status_code, 200)
-        self.assertContains(response, 'You can only purchase up to 2 tickets for this event.')
+        self.assertContains(response, 'You can only purchase up to 2 General Admission tickets for this event.')
         self.assertEqual(TicketOrder.objects.filter(event=self.event).count(), 1)
 
     def test_create_payment_intent_blocks_customer_above_limit(self):
@@ -2954,7 +2954,7 @@ class EventCustomerTicketLimitTests(TestCase):
         )
 
         self.assertEqual(response.status_code, 400)
-        self.assertIn('You can only purchase up to 2 tickets for this event.', response.json()['error'])
+        self.assertIn('You can only purchase up to 2 General Admission tickets for this event.', response.json()['error'])
         self.assertEqual(StripeCheckoutSession.objects.filter(event=self.event).count(), 0)
 
     def test_create_payment_intent_counts_other_pending_sessions_against_limit(self):
@@ -2986,7 +2986,89 @@ class EventCustomerTicketLimitTests(TestCase):
         )
 
         self.assertEqual(response.status_code, 400)
-        self.assertIn('You can only purchase up to 2 tickets for this event.', response.json()['error'])
+        self.assertIn('You can only purchase up to 2 General Admission tickets for this event.', response.json()['error'])
+
+    def test_saleable_ticket_type_data_exposes_max_per_customer(self):
+        response = self.client.get(
+            reverse('tickets:saleable_ticket_type_data', args=[self.event.id, self.ticket_type.id]),
+            HTTP_X_REQUESTED_WITH='XMLHttpRequest',
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()['max_per_customer'], 2)
+
+    def test_buy_page_max_attr_matches_remaining(self):
+        """Fresh buyer with no purchases: qty input should have max equal to max_per_customer."""
+        self.ticket_type.max_per_customer = 1
+        self.ticket_type.save(update_fields=['max_per_customer'])
+
+        response = self.client.get(
+            reverse('tickets:public_event_buy', args=[self.event.public_id])
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'max="1"')
+
+    def test_buy_page_limit_reached_at_max(self):
+        """Buyer who already owns max tickets should see 'Limit Reached' badge, not buttons."""
+        self.ticket_type.max_per_customer = 1
+        self.ticket_type.save(update_fields=['max_per_customer'])
+        self._grant_existing_tickets(1)
+
+        response = self.client.get(
+            reverse('tickets:public_event_buy', args=[self.event.public_id])
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'Limit Reached')
+
+    def test_buy_page_anonymous_no_cap_applied(self):
+        """Anonymous visitors should not have a per-customer cap applied (max stays at default)."""
+        self.client.logout()
+        self.ticket_type.max_per_customer = 1
+        self.ticket_type.save(update_fields=['max_per_customer'])
+
+        response = self.client.get(
+            reverse('tickets:public_event_buy', args=[self.event.public_id])
+        )
+
+        self.assertEqual(response.status_code, 200)
+        # No per-customer cap: max should be 10 (default), not 1
+        self.assertNotContains(response, 'Limit Reached')
+        self.assertContains(response, 'max="10"')
+
+    def test_ticket_type_remaining_excludes_pending(self):
+        """Stale PENDING sessions must not be counted when computing buy-page remaining."""
+        from tickets.views import _ticket_type_remaining_by_customer
+
+        self.ticket_type.max_per_customer = 1
+        self.ticket_type.save(update_fields=['max_per_customer'])
+        StripeCheckoutSession.objects.create(
+            event=self.event,
+            organization=self.org,
+            stripe_session_id='pi_stale_remaining_test',
+            stripe_payment_intent_id='pi_stale_remaining_test',
+            buyer_email=self.user.email,
+            buyer_name=self.user.get_full_name(),
+            status=StripeCheckoutSession.Status.PENDING,
+            line_items_snapshot=[{
+                'saleable_ticket_type_id': str(self.ticket_type.id),
+                'name': self.ticket_type.name,
+                'price': '25.00',
+                'quantity': 1,
+                'tier_id': None,
+                'tier_name': None,
+            }],
+            amount_total_cents=2500,
+            platform_fee_cents=0,
+        )
+
+        remaining = _ticket_type_remaining_by_customer(
+            [self.ticket_type], self.user.email
+        )
+
+        # Pending session must not count; user has 0 confirmed tickets so remaining = 1
+        self.assertEqual(remaining[str(self.ticket_type.id)], 1)
 
 
 class OTPVerifyFlowTests(TestCase):
@@ -3172,6 +3254,7 @@ class SmartPricingRecommendationTests(TestCase):
                 'ticket_type-0-description': '',
                 'ticket_type-0-price': '35.00',
                 'ticket_type-0-quantity_limit': '',
+                'ticket_type-0-max_per_customer': '4',
                 'ticket_type-0-order': '0',
                 'ticket_type-0-unlocks_after': '',
             },
@@ -3180,6 +3263,7 @@ class SmartPricingRecommendationTests(TestCase):
         self.assertEqual(response.status_code, 302)
         event = Event.objects.get(name='New Direct Event')
         self.assertEqual(event.capacity, 350)
+        self.assertEqual(event.saleable_ticket_types.get(name='General Admission').max_per_customer, 4)
 
     def test_direct_event_form_defaults_capacity_from_venue(self):
         from .forms import DirectEventForm
