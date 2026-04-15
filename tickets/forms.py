@@ -1302,6 +1302,21 @@ class SaleableTicketTypeInlineForm(forms.ModelForm):
             'unlocks_after':  forms.Select(attrs={'class': 'form-select form-select-sm'}),
         }
 
+    def _post_clean(self):
+        """
+        During direct-event creation, `unlocks_after` is temporarily repurposed to
+        carry a draft row index rather than a real SaleableTicketType instance.
+        Avoid assigning that draft value onto the FK during model validation; the
+        create view resolves it in a second pass after all ticket types are saved.
+        """
+        unlocks_after_value = None
+        unlocks_after_field = self.fields.get('unlocks_after')
+        if unlocks_after_field is not None and not isinstance(unlocks_after_field, forms.ModelChoiceField):
+            unlocks_after_value = self.cleaned_data.pop('unlocks_after', None)
+        super()._post_clean()
+        if unlocks_after_field is not None and not isinstance(unlocks_after_field, forms.ModelChoiceField):
+            self.cleaned_data['unlocks_after'] = unlocks_after_value
+
 
 DirectTicketTypeFormSet = modelformset_factory(
     SaleableTicketType,

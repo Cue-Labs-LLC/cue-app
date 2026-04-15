@@ -89,9 +89,13 @@
                              data-price="{{ tt_form.price.value|default:'' }}"
                              data-quantity-limit="{{ tt_form.quantity_limit.value|default:'' }}"
                              data-max-per-customer="{{ tt_form.max_per_customer.value|default:'' }}"
-                             data-order="{{ tt_form.order.value|default:'0' }}">
+                             data-order="{{ tt_form.order.value|default:'0' }}"
+                             data-unlocks-after="{{ tt_form.unlocks_after.value|default:'' }}">
                             {{ tt_form.name }}{{ tt_form.description }}{{ tt_form.price }}
-                            {{ tt_form.quantity_limit }}{{ tt_form.max_per_customer }}{{ tt_form.order }}{{ tt_form.unlocks_after }}
+                            {{ tt_form.quantity_limit }}{{ tt_form.max_per_customer }}{{ tt_form.order }}
+                            <input type="hidden"
+                                   name="{{ tt_form.prefix }}-unlocks_after"
+                                   value="{{ tt_form.unlocks_after.value|default:'' }}">
                             {{ tt_form.DELETE }}{{ tt_form.id }}
                         </div>
                         {% endfor %}
@@ -99,7 +103,10 @@
                     <template id="tt-hidden-row-template">
                         <div class="tt-hidden-row" data-idx="__prefix__">
                             {{ ticket_formset.empty_form.name }}{{ ticket_formset.empty_form.description }}{{ ticket_formset.empty_form.price }}
-                            {{ ticket_formset.empty_form.quantity_limit }}{{ ticket_formset.empty_form.max_per_customer }}{{ ticket_formset.empty_form.order }}{{ ticket_formset.empty_form.unlocks_after }}
+                            {{ ticket_formset.empty_form.quantity_limit }}{{ ticket_formset.empty_form.max_per_customer }}{{ ticket_formset.empty_form.order }}
+                            <input type="hidden"
+                                   name="ticket_type-__prefix__-unlocks_after"
+                                   value="">
                             {{ ticket_formset.empty_form.DELETE }}{{ ticket_formset.empty_form.id }}
                         </div>
                     </template>
@@ -115,6 +122,7 @@
                                     <th>Display&nbsp;Price / You&nbsp;Receive</th>
                                     <th>Inventory</th>
                                     <th>Max / Customer</th>
+                                    <th>Unlocks After</th>
                                     <th></th>
                                 </tr>
                             </thead>
@@ -280,7 +288,43 @@ document.addEventListener('DOMContentLoaded', function () {
         displayWrapper.classList.toggle('d-none', !visible);
     }
 
-    function addDisplayRow(idx, name, description, price, quantityLimit, maxPerCustomer, order) {
+    function getDraftTicketOptions(excludeIdx) {
+        var options = [{ value: '', label: '- None -' }];
+        hiddenFormset.querySelectorAll('.tt-hidden-row').forEach(function (row) {
+            var idx = row.dataset.idx;
+            var deleteInput = row.querySelector('[name$="-DELETE"]');
+            var isDeleted = deleteInput && deleteInput.checked;
+            if (isDeleted || idx === String(excludeIdx)) return;
+            var nameValue = row.querySelector('[name$="-name"]').value.trim();
+            if (!nameValue) return;
+            options.push({ value: idx, label: nameValue });
+        });
+        return options;
+    }
+
+    function syncUnlockSelect(excludeIdx, selectedValue) {
+        var select = document.getElementById('add_unlocks_after');
+        if (!select) return;
+        select.innerHTML = '';
+        getDraftTicketOptions(excludeIdx).forEach(function (option) {
+            var el = document.createElement('option');
+            el.value = option.value;
+            el.textContent = option.label;
+            if (String(option.value) === String(selectedValue || '')) el.selected = true;
+            select.appendChild(el);
+        });
+        if (!select.value) select.value = '';
+    }
+
+    function getUnlockLabel(unlocksAfter) {
+        if (!unlocksAfter) return '<span class="text-muted">-</span>';
+        var unlockRow = getHiddenRow(unlocksAfter);
+        if (!unlockRow) return '<span class="text-muted">-</span>';
+        var unlockName = unlockRow.querySelector('[name$="-name"]').value.trim();
+        return unlockName ? escHtml(unlockName) : '<span class="text-muted">-</span>';
+    }
+
+    function addDisplayRow(idx, name, description, price, quantityLimit, maxPerCustomer, order, unlocksAfter) {
         var displayCents = Math.round((parseFloat(price) || 0) * 100);
         var grossCents = grossFromDisplayCents(displayCents);
         var priceHtml = displayCents > 0
@@ -288,6 +332,7 @@ document.addEventListener('DOMContentLoaded', function () {
             : '<span class="text-muted">Free</span>';
         var inventoryHtml = quantityLimit ? quantityLimit : '<span class="text-muted">&infin;</span>';
         var perCustomerHtml = maxPerCustomer ? maxPerCustomer : '<span class="text-muted">&infin;</span>';
+        var unlockHtml = getUnlockLabel(unlocksAfter);
         var tr = document.createElement('tr');
         tr.dataset.idx = String(idx);
         tr.innerHTML =
@@ -296,11 +341,33 @@ document.addEventListener('DOMContentLoaded', function () {
             '<td>' + priceHtml + '</td>' +
             '<td>' + inventoryHtml + '</td>' +
             '<td>' + perCustomerHtml + '</td>' +
+            '<td>' + unlockHtml + '</td>' +
             '<td><div class="d-flex gap-1">' +
                 '<button type="button" class="btn btn-sm btn-outline-secondary tt-edit-btn" data-idx="' + idx + '" data-bs-toggle="modal" data-bs-target="#addTicketTypeModal"><i class="bi bi-pencil"></i></button>' +
                 '<button type="button" class="btn btn-sm btn-outline-danger tt-remove-btn" data-idx="' + idx + '"><i class="bi bi-trash"></i></button>' +
             '</div></td>';
         displayTbody.appendChild(tr);
+        refreshEmpty();
+    }
+
+    function rebuildDisplayTable() {
+        displayTbody.innerHTML = '';
+        hiddenFormset.querySelectorAll('.tt-hidden-row').forEach(function (row) {
+            var deleteInput = row.querySelector('[name$="-DELETE"]');
+            if (deleteInput && deleteInput.checked) return;
+            var name = row.querySelector('[name$="-name"]').value.trim();
+            if (!name) return;
+            addDisplayRow(
+                row.dataset.idx,
+                name,
+                row.querySelector('[name$="-description"]').value,
+                row.querySelector('[name$="-price"]').value,
+                row.querySelector('[name$="-quantity_limit"]').value,
+                row.querySelector('[name$="-max_per_customer"]').value,
+                row.querySelector('[name$="-order"]').value,
+                row.querySelector('[name$="-unlocks_after"]').value
+            );
+        });
         refreshEmpty();
     }
 
@@ -319,12 +386,7 @@ document.addEventListener('DOMContentLoaded', function () {
     }
 
     // Populate display table from server-rendered hidden rows (handles validation resubmit)
-    hiddenFormset.querySelectorAll('.tt-hidden-row').forEach(function (row) {
-        var idx = row.dataset.idx;
-        var name = row.dataset.name;
-        if (!name) return; // skip empty rows
-        addDisplayRow(idx, name, row.dataset.description, row.dataset.price, row.dataset.quantityLimit, row.dataset.maxPerCustomer, row.dataset.order);
-    });
+    rebuildDisplayTable();
 
     // Wire price <-> gross calculator in modal
     var addPrice = document.getElementById('add_price');
@@ -368,31 +430,45 @@ document.addEventListener('DOMContentLoaded', function () {
             document.getElementById('add_quantity_limit').value = row.querySelector('[name$="-quantity_limit"]').value;
             document.getElementById('add_max_per_customer').value = row.querySelector('[name$="-max_per_customer"]').value;
             document.getElementById('add_order').value = row.querySelector('[name$="-order"]').value;
+            syncUnlockSelect(editingIdx, row.querySelector('[name$="-unlocks_after"]').value);
             document.getElementById('add-tt-modal-title').textContent = 'Edit Ticket Type';
             document.getElementById('add-tt-submit').textContent = 'Save Changes';
         }
 
         // "Remove" button on display row
         var removeBtn = e.target.closest('.tt-remove-btn');
-        if (removeBtn) {
-            var idx = removeBtn.dataset.idx;
-            var hiddenRow = getHiddenRow(idx);
-            if (hiddenRow) {
-                var deleteInput = hiddenRow.querySelector('[name$="-DELETE"]');
+            if (removeBtn) {
+                var idx = removeBtn.dataset.idx;
+                var hiddenRow = getHiddenRow(idx);
+                if (hiddenRow) {
+                    var deleteInput = hiddenRow.querySelector('[name$="-DELETE"]');
                 if (deleteInput) deleteInput.checked = true;
             }
-            var displayRow = displayTbody.querySelector('tr[data-idx="' + idx + '"]');
-            if (displayRow) displayRow.remove();
-            refreshEmpty();
+            hiddenFormset.querySelectorAll('.tt-hidden-row').forEach(function (row) {
+                var unlockInput = row.querySelector('[name$="-unlocks_after"]');
+                if (unlockInput && unlockInput.value === String(idx)) {
+                    unlockInput.value = '';
+                    row.dataset.unlocksAfter = '';
+                    var displayRow = displayTbody.querySelector('tr[data-idx="' + row.dataset.idx + '"]');
+                    if (displayRow) {
+                        row.dataset.unlocksAfter = '';
+                    }
+                }
+            });
+            rebuildDisplayTable();
         }
     });
 
     // Reset modal on close
     if (modal) {
+        modal.addEventListener('show.bs.modal', function () {
+            if (editingIdx === null) syncUnlockSelect(null, '');
+        });
         modal.addEventListener('hidden.bs.modal', function () {
             editingIdx = null;
             addForm.reset();
             if (pwField) pwField.classList.add('d-none');
+            syncUnlockSelect(null, '');
             document.getElementById('add-tt-modal-title').textContent = 'Add Ticket Type';
             document.getElementById('add-tt-submit').textContent = 'Add Ticket Type';
             addForm.querySelectorAll('.is-invalid').forEach(function (el) { el.classList.remove('is-invalid'); });
@@ -415,6 +491,7 @@ document.addEventListener('DOMContentLoaded', function () {
             var quantityLimit = document.getElementById('add_quantity_limit').value;
             var maxPerCustomer = document.getElementById('add_max_per_customer').value;
             var order = document.getElementById('add_order').value || '0';
+            var unlocksAfter = document.getElementById('add_unlocks_after').value || '';
 
             if (editingIdx !== null) {
                 // Update existing hidden row
@@ -426,11 +503,11 @@ document.addEventListener('DOMContentLoaded', function () {
                     setHiddenField(row, 'quantity_limit', quantityLimit);
                     setHiddenField(row, 'max_per_customer', maxPerCustomer);
                     setHiddenField(row, 'order', order);
+                    setHiddenField(row, 'unlocks_after', unlocksAfter);
+                    row.dataset.unlocksAfter = unlocksAfter;
                 }
                 // Update display row
-                var displayRow = displayTbody.querySelector('tr[data-idx="' + editingIdx + '"]');
-                if (displayRow) displayRow.remove();
-                addDisplayRow(editingIdx, name, description, price, quantityLimit, maxPerCustomer, order);
+                rebuildDisplayTable();
             } else {
                 // Add new hidden row
                 var idx = getTotalForms();
@@ -449,10 +526,12 @@ document.addEventListener('DOMContentLoaded', function () {
                     setHiddenField(newRow, 'quantity_limit', quantityLimit);
                     setHiddenField(newRow, 'max_per_customer', maxPerCustomer);
                     setHiddenField(newRow, 'order', order);
+                    setHiddenField(newRow, 'unlocks_after', unlocksAfter);
+                    newRow.dataset.unlocksAfter = unlocksAfter;
                     hiddenFormset.appendChild(clone);
                 }
                 setTotalForms(idx + 1);
-                addDisplayRow(idx, name, description, price, quantityLimit, maxPerCustomer, order);
+                rebuildDisplayTable();
             }
 
             var bsModal = bootstrap.Modal.getInstance(modal);
@@ -577,6 +656,13 @@ document.addEventListener('DOMContentLoaded', function () {
             <div class="col-md-4">
               <label class="form-label fw-semibold">Order</label>
               <input type="number" id="add_order" class="form-control" min="0" value="0">
+            </div>
+            <div class="col-12">
+              <label class="form-label fw-semibold">Unlocks After</label>
+              <select id="add_unlocks_after" class="form-select">
+                <option value="">- None -</option>
+              </select>
+              <div class="form-text text-muted">Show this ticket only after another ticket type sells out.</div>
             </div>
             <div class="col-12">
               <div class="form-check">

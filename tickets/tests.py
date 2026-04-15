@@ -3269,6 +3269,47 @@ class SmartPricingRecommendationTests(TestCase):
         self.assertEqual(event.capacity, 350)
         self.assertEqual(event.saleable_ticket_types.get(name='General Admission').max_per_customer, 4)
 
+    def test_direct_event_create_persists_unlocks_after_relationship(self):
+        response = self.client.post(
+            reverse('tickets:event_create', args=['direct']),
+            {
+                'name': 'Unlock Ladder Event',
+                'summary': '',
+                'start_date': (date.today() + timedelta(days=14)).isoformat(),
+                'start_time': '20:00',
+                'end_date': (date.today() + timedelta(days=14)).isoformat(),
+                'end_time': '23:00',
+                'description': '',
+                'capacity': '350',
+                'venue': str(self.venue.id),
+                'facebook_pixel_id': '',
+                'ticket_type-TOTAL_FORMS': '2',
+                'ticket_type-INITIAL_FORMS': '0',
+                'ticket_type-MIN_NUM_FORMS': '0',
+                'ticket_type-MAX_NUM_FORMS': '1000',
+                'ticket_type-0-name': 'Early Bird',
+                'ticket_type-0-description': '',
+                'ticket_type-0-price': '20.00',
+                'ticket_type-0-quantity_limit': '50',
+                'ticket_type-0-max_per_customer': '',
+                'ticket_type-0-order': '0',
+                'ticket_type-0-unlocks_after': '',
+                'ticket_type-1-name': 'General Admission',
+                'ticket_type-1-description': '',
+                'ticket_type-1-price': '35.00',
+                'ticket_type-1-quantity_limit': '200',
+                'ticket_type-1-max_per_customer': '',
+                'ticket_type-1-order': '1',
+                'ticket_type-1-unlocks_after': '0',
+            },
+        )
+
+        self.assertEqual(response.status_code, 302)
+        event = Event.objects.get(name='Unlock Ladder Event')
+        early_bird = event.saleable_ticket_types.get(name='Early Bird')
+        ga = event.saleable_ticket_types.get(name='General Admission')
+        self.assertEqual(ga.unlocks_after_id, early_bird.id)
+
     def test_direct_event_form_defaults_capacity_from_venue(self):
         from .forms import DirectEventForm
 
