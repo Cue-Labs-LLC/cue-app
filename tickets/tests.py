@@ -2838,6 +2838,155 @@ class EventEditViewTests(TestCase):
         self.assertContains(response, 'Talent Lineup (optional)')
 
 
+class EventCustomerTicketLimitTests(TestCase):
+    """Regression coverage for event-level max tickets per customer."""
+
+    def setUp(self):
+        self.client = Client()
+        self.org = Organization.objects.create(name='Customer Limit Org', slug='customer-limit-org')
+        self.user = User.objects.create_user(
+            username='limituser',
+            email='limit@example.com',
+            password='testpass123',
+            first_name='Limit',
+            last_name='Buyer',
+        )
+        UserProfile.objects.create(
+            user=self.user,
+            organization=self.org,
+            org_role=UserProfile.OrgRole.OWNER,
+        )
+        self.client.login(username='limit@example.com', password='testpass123')
+        self.client.get(reverse('tickets:home'))
+
+        self.venue = Venue.objects.create(
+            organization=self.org,
+            name='Limit Venue',
+            city='Los Angeles',
+        )
+        self.event = Event.objects.create(
+            organization=self.org,
+            name='Limited Event',
+            venue=self.venue,
+            start_date=date.today() + timedelta(days=7),
+            start_time=time(20, 0, 0),
+            ticketing_type='direct',
+            status='live',
+            max_tickets_per_customer=2,
+        )
+        self.ticket_type = SaleableTicketType.objects.create(
+            event=self.event,
+            name='General Admission',
+            price=Decimal('25.00'),
+            quantity_limit=100,
+        )
+
+    def _grant_existing_tickets(self, qty, *, total_amount='25.00'):
+        customer, _ = Customer.objects.get_or_create(
+            email=self.user.email,
+            defaults={
+                'organization': self.org,
+                'name': self.user.get_full_name(),
+            },
+        )
+        order = TicketOrder.objects.create(
+            customer=customer,
+            event=self.event,
+            order_number=f'LIMIT-{uuid.uuid4().hex[:10]}',
+            order_date=timezone.now(),
+            total_amount=Decimal(total_amount),
+        )
+        Ticket.objects.bulk_create([
+            Ticket(
+                ticket_order=order,
+                ticket_type=self.ticket_type.name,
+                price=Decimal('25.00'),
+            )
+            for _ in range(qty)
+        ])
+        return order
+
+    def _set_cart(self, *, qty, price='25.00'):
+        session = self.client.session
+        session[f'cart_{self.event.id}'] = [{
+            'saleable_ticket_type_id': str(self.ticket_type.id),
+            'name': self.ticket_type.name,
+            'price': price,
+            'quantity': qty,
+            'tier_id': None,
+            'tier_name': None,
+        }]
+        session.save()
+
+    def test_public_event_buy_blocks_customer_above_limit(self):
+        self._grant_existing_tickets(1)
+
+        response = self.client.post(
+            reverse('tickets:public_event_buy', args=[self.event.public_id]),
+            {f'qty_{self.ticket_type.id.hex}': '2'},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'You can only add up to 1 more ticket for this event.')
+
+    def test_free_checkout_blocks_customer_above_limit(self):
+        self.ticket_type.price = Decimal('0.00')
+        self.ticket_type.save(update_fields=['price'])
+        self._grant_existing_tickets(1, total_amount='0.00')
+        self._set_cart(qty=2, price='0.00')
+
+        response = self.client.post(reverse('tickets:checkout_payment', args=[self.event.public_id]))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'You can only purchase up to 2 tickets for this event.')
+        self.assertEqual(TicketOrder.objects.filter(event=self.event).count(), 1)
+
+    def test_create_payment_intent_blocks_customer_above_limit(self):
+        self._grant_existing_tickets(1)
+        self._set_cart(qty=2)
+
+        response = self.client.post(
+            reverse('tickets:create_payment_intent', args=[self.event.public_id]),
+            data='{}',
+            content_type='application/json',
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('You can only purchase up to 2 tickets for this event.', response.json()['error'])
+        self.assertEqual(StripeCheckoutSession.objects.filter(event=self.event).count(), 0)
+
+    def test_create_payment_intent_counts_other_pending_sessions_against_limit(self):
+        StripeCheckoutSession.objects.create(
+            event=self.event,
+            organization=self.org,
+            stripe_session_id='pi_pending_limit_test',
+            stripe_payment_intent_id='pi_pending_limit_test',
+            buyer_email=self.user.email,
+            buyer_name=self.user.get_full_name(),
+            status=StripeCheckoutSession.Status.PENDING,
+            line_items_snapshot=[{
+                'saleable_ticket_type_id': str(self.ticket_type.id),
+                'name': self.ticket_type.name,
+                'price': '25.00',
+                'quantity': 1,
+                'tier_id': None,
+                'tier_name': None,
+            }],
+            amount_total_cents=2500,
+            platform_fee_cents=0,
+        )
+        self._set_cart(qty=2)
+
+        response = self.client.post(
+            reverse('tickets:create_payment_intent', args=[self.event.public_id]),
+            data='{}',
+            content_type='application/json',
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('You can only purchase up to 2 tickets for this event.', response.json()['error'])
+
+
 class SmartPricingRecommendationTests(TestCase):
     def setUp(self):
         self.client = Client()

@@ -804,6 +804,11 @@ class Event(AuditBaseModel):
         blank=True,
         help_text="Total ticket capacity for the event (optional)"
     )
+    max_tickets_per_customer = models.PositiveIntegerField(
+        null=True,
+        blank=True,
+        help_text="Optional cumulative cap on how many tickets one customer can buy for this event.",
+    )
     ticket_link = models.URLField(max_length=500, blank=True)
     ticketing_type = models.CharField(
         max_length=20,
