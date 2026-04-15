@@ -4012,3 +4012,211 @@ class PublicEventPreviewMetadataTests(TestCase):
             f'<meta name="twitter:title" content="{self._build_social_title(event)}">',
             html=True,
         )
+
+
+class AccountCreationAndLoginTests(TestCase):
+    """End-to-end tests for the email-based signup and login flows.
+
+    All OTP delivery is mocked so no real SMS/email is sent.
+    Each test drives the full multi-step flow entirely through the
+    Django test client, asserting DB state and redirects at every step.
+    """
+
+    def setUp(self):
+        self.client = Client()
+
+    # ------------------------------------------------------------------
+    # Account creation (email signup → phone verification → dashboard)
+    # ------------------------------------------------------------------
+
+    @patch('tickets.sms.start_email_verification', return_value=True)
+    def test_new_account_step1_email_sends_otp_and_advances(self, mock_email_otp):
+        """POSTing a new email triggers OTP send and redirects to verify step."""
+        response = self.client.post(
+            reverse('tickets:email_login'),
+            {'email': 'newuser@example.com'},
+        )
+        mock_email_otp.assert_called_once_with('newuser@example.com')
+        self.assertRedirects(
+            response,
+            reverse('tickets:email_verify'),
+            fetch_redirect_response=False,
+        )
+        session = self.client.session
+        self.assertEqual(session['verify_email']['email'], 'newuser@example.com')
+        self.assertTrue(session['verify_email']['is_new'])
+
+    @patch('tickets.sms.check_email_verification', return_value=True)
+    def test_new_account_step2_valid_otp_advances_to_profile(self, mock_check):
+        """A correct OTP on a new-user session moves to profile-completion."""
+        session = self.client.session
+        session['verify_email'] = {'email': 'newuser@example.com', 'is_new': True}
+        session.save()
+
+        response = self.client.post(
+            reverse('tickets:email_verify'),
+            {'otp_code': '123456'},
+        )
+        mock_check.assert_called_once_with('newuser@example.com', '123456')
+        self.assertRedirects(
+            response,
+            reverse('tickets:email_complete_profile'),
+            fetch_redirect_response=False,
+        )
+        self.assertEqual(
+            self.client.session.get('pending_signup_email'),
+            'newuser@example.com',
+        )
+
+    @patch('tickets.sms.start_phone_verification', return_value=True)
+    def test_new_account_step3_profile_form_advances_to_phone_verify(self, mock_phone_otp):
+        """Submitting the profile form triggers phone OTP and stashes profile data."""
+        session = self.client.session
+        session['pending_signup_email'] = 'newuser@example.com'
+        session.save()
+
+        response = self.client.post(
+            reverse('tickets:email_complete_profile'),
+            {
+                'first_name': 'Jane',
+                'last_name': 'Doe',
+                'phone_number': '+12125550100',
+                'email_display': 'newuser@example.com',
+                'gender': 'female',
+                'terms_accepted': True,
+            },
+        )
+        mock_phone_otp.assert_called_once_with('+12125550100')
+        self.assertRedirects(
+            response,
+            reverse('tickets:verify_phone_after_profile'),
+            fetch_redirect_response=False,
+        )
+        profile_data = self.client.session.get('pending_email_profile_data')
+        self.assertIsNotNone(profile_data)
+        self.assertEqual(profile_data['first_name'], 'Jane')
+        self.assertEqual(profile_data['phone_number'], '+12125550100')
+        # Account should NOT exist yet
+        self.assertFalse(User.objects.filter(email='newuser@example.com').exists())
+
+    @patch('tickets.sms.check_phone_verification', return_value=True)
+    def test_new_account_step4_phone_otp_creates_user_and_logs_in(self, mock_check):
+        """A correct phone OTP creates the User + UserProfile and logs the user in."""
+        session = self.client.session
+        session['pending_email_profile_data'] = {
+            'email': 'newuser@example.com',
+            'first_name': 'Jane',
+            'last_name': 'Doe',
+            'phone_number': '+12125550100',
+            'gender': 'female',
+            'marketing_opt_in': False,
+        }
+        session.save()
+
+        response = self.client.post(
+            reverse('tickets:verify_phone_after_profile'),
+            {'otp_code': '654321'},
+        )
+        mock_check.assert_called_once_with('+12125550100', '654321')
+
+        # User and profile must now exist
+        self.assertTrue(User.objects.filter(email='newuser@example.com').exists())
+        user = User.objects.get(email='newuser@example.com')
+        self.assertEqual(user.first_name, 'Jane')
+        self.assertTrue(hasattr(user, 'profile'))
+        self.assertEqual(user.profile.phone_number, '+12125550100')
+        self.assertEqual(user.profile.role, UserProfile.Role.ATTENDEE)
+
+        # Session data should be cleaned up
+        self.assertIsNone(self.client.session.get('pending_email_profile_data'))
+
+        # User should now be authenticated and redirected to attendee dashboard
+        self.assertRedirects(
+            response,
+            reverse('tickets:attendee_dashboard'),
+            fetch_redirect_response=False,
+        )
+
+    # ------------------------------------------------------------------
+    # Login (existing user — email OTP flow)
+    # ------------------------------------------------------------------
+
+    @patch('tickets.sms.start_email_verification', return_value=True)
+    def test_existing_user_login_step1_email_sends_otp(self, mock_email_otp):
+        """POSTing a known email triggers OTP send and is_new=False in session."""
+        User.objects.create_user(
+            username='existing',
+            email='existing@example.com',
+            password='unused',
+        )
+        response = self.client.post(
+            reverse('tickets:email_login'),
+            {'email': 'existing@example.com'},
+        )
+        mock_email_otp.assert_called_once_with('existing@example.com')
+        self.assertRedirects(
+            response,
+            reverse('tickets:email_verify'),
+            fetch_redirect_response=False,
+        )
+        session = self.client.session
+        self.assertFalse(session['verify_email']['is_new'])
+
+    @patch('tickets.sms.check_email_verification', return_value=True)
+    def test_existing_user_login_step2_valid_otp_logs_in_and_redirects(self, mock_check):
+        """A correct OTP for an existing attendee logs them in and sends to dashboard."""
+        user = User.objects.create_user(
+            username='existing',
+            email='existing@example.com',
+            password='unused',
+        )
+        UserProfile.objects.create(
+            user=user,
+            role=UserProfile.Role.ATTENDEE,
+            phone_number='+12125550200',
+        )
+
+        session = self.client.session
+        session['verify_email'] = {'email': 'existing@example.com', 'is_new': False}
+        session.save()
+
+        response = self.client.post(
+            reverse('tickets:email_verify'),
+            {'otp_code': '999888'},
+        )
+        mock_check.assert_called_once_with('existing@example.com', '999888')
+        self.assertRedirects(
+            response,
+            reverse('tickets:attendee_dashboard'),
+            fetch_redirect_response=False,
+        )
+        # Confirm the session now belongs to the logged-in user
+        self.assertEqual(
+            int(self.client.session['_auth_user_id']),
+            user.pk,
+        )
+
+    # ------------------------------------------------------------------
+    # Guard: already-authenticated users are bounced away
+    # ------------------------------------------------------------------
+
+    def test_authenticated_user_visiting_login_redirects_to_dashboard(self):
+        """A logged-in attendee hitting /login/email/ is sent to their dashboard."""
+        user = User.objects.create_user(
+            username='loggedin',
+            email='loggedin@example.com',
+            password='unused',
+        )
+        UserProfile.objects.create(
+            user=user,
+            role=UserProfile.Role.ATTENDEE,
+            phone_number='+12125550300',
+        )
+        self.client.force_login(user)
+
+        response = self.client.get(reverse('tickets:email_login'))
+        self.assertRedirects(
+            response,
+            reverse('tickets:attendee_dashboard'),
+            fetch_redirect_response=False,
+        )
