@@ -7,11 +7,11 @@
     <title>{{ preview_title }}</title>
     <meta name="description" content="{{ preview_description }}">
     <meta property="og:type" content="website">
-    <meta property="og:title" content="{{ event.name }}">
+    <meta property="og:title" content="{{ social_preview_title }}">
     <meta property="og:description" content="{{ preview_description }}">
     <meta property="og:url" content="{{ request.scheme }}://{{ request.get_host }}{% url 'tickets:public_event_buy' public_id=event.public_id %}">
     <meta name="twitter:card" content="summary_large_image">
-    <meta name="twitter:title" content="{{ event.name }}">
+    <meta name="twitter:title" content="{{ social_preview_title }}">
     <meta name="twitter:description" content="{{ preview_description }}">
     <link rel="preload" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" as="style" onload="this.rel='stylesheet'">
     <noscript><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css"></noscript>

@@ -3485,6 +3485,9 @@ class PublicEventPreviewMetadataTests(TestCase):
         parts.append(venue_label)
         return ' · '.join(parts)
 
+    def _build_social_title(self, event):
+        return f"{event.name} · {self._build_description(event)}"
+
     def test_live_public_event_metadata_includes_date_time_and_venue(self):
         event = Event.objects.create(
             organization=self.org,
@@ -3517,7 +3520,17 @@ class PublicEventPreviewMetadataTests(TestCase):
         )
         self.assertContains(
             response,
+            f'<meta property="og:title" content="{self._build_social_title(event)}">',
+            html=True,
+        )
+        self.assertContains(
+            response,
             f'<meta name="twitter:description" content="{expected_description}">',
+            html=True,
+        )
+        self.assertContains(
+            response,
+            f'<meta name="twitter:title" content="{self._build_social_title(event)}">',
             html=True,
         )
 
@@ -3544,6 +3557,11 @@ class PublicEventPreviewMetadataTests(TestCase):
         self.assertContains(
             response,
             f'<meta name="description" content="{expected_description}">',
+            html=True,
+        )
+        self.assertContains(
+            response,
+            f'<meta property="og:title" content="{self._build_social_title(event)}">',
             html=True,
         )
         self.assertNotContains(response, ' ·  · ')
@@ -3574,6 +3592,11 @@ class PublicEventPreviewMetadataTests(TestCase):
             f'<meta property="og:description" content="{expected_description}">',
             html=True,
         )
+        self.assertContains(
+            response,
+            f'<meta property="og:title" content="{self._build_social_title(event)}">',
+            html=True,
+        )
 
     def test_cancelled_public_event_metadata_uses_preview_description(self):
         event = Event.objects.create(
@@ -3598,5 +3621,10 @@ class PublicEventPreviewMetadataTests(TestCase):
         self.assertContains(
             response,
             f'<meta name="twitter:description" content="{expected_description}">',
+            html=True,
+        )
+        self.assertContains(
+            response,
+            f'<meta name="twitter:title" content="{self._build_social_title(event)}">',
             html=True,
         )

@@ -9,7 +9,7 @@
 
     <!-- Open Graph / link preview -->
     <meta property="og:type" content="website">
-    <meta property="og:title" content="{{ event.name }}">
+    <meta property="og:title" content="{{ social_preview_title }}">
     <meta property="og:description" content="{{ preview_description }}">
     <meta property="og:url" content="{{ request.scheme }}://{{ request.get_host }}{% url 'tickets:public_event_buy' public_id=event.public_id %}">
     {% if event.flyer %}
@@ -19,7 +19,7 @@
     {% endif %}
     <!-- Twitter/iMessage card -->
     <meta name="twitter:card" content="summary_large_image">
-    <meta name="twitter:title" content="{{ event.name }}">
+    <meta name="twitter:title" content="{{ social_preview_title }}">
     <meta name="twitter:description" content="{{ preview_description }}">
     {% if event.flyer %}
     <meta name="twitter:image" content="{{ request.scheme }}://{{ request.get_host }}{{ event.flyer.url }}">

@@ -5459,9 +5459,11 @@ def _build_public_event_preview_context(event, *, suffix):
         preview_parts.append(venue_label)
 
     preview_description = ' · '.join(preview_parts)
+    social_preview_title = f"{event.name} · {preview_description}" if preview_description else event.name
     return {
         'preview_description': preview_description,
-        'preview_title': f"{event.name} · {preview_description} · {suffix}" if preview_description else f"{event.name} · {suffix}",
+        'social_preview_title': social_preview_title,
+        'preview_title': f"{social_preview_title} · {suffix}" if suffix else social_preview_title,
     }
 
 
