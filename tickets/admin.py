@@ -688,7 +688,6 @@ class OrganizationAdmin(admin.ModelAdmin):
 @admin.register(FeatureFlagSettings)
 class FeatureFlagSettingsAdmin(admin.ModelAdmin):
     list_display = [
-        'direct_ticketing_enabled',
         'browse_events_enabled',
         'smart_pricing_recommendations_enabled',
     ]
@@ -696,7 +695,6 @@ class FeatureFlagSettingsAdmin(admin.ModelAdmin):
     fieldsets = (
         ('Global Feature Flags', {
             'fields': (
-                'direct_ticketing_enabled',
                 'browse_events_enabled',
                 'smart_pricing_recommendations_enabled',
             ),

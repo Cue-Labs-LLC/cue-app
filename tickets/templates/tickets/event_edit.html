@@ -55,7 +55,6 @@
 <div class="row">
     <div class="col-12">
         {% if ticketing_type == 'direct' %}
-{% if direct_ticketing_enabled %}
         {# Flyer drag-and-drop card #}
         <div class="card mb-4" id="event-flyer-card">
             <div class="card-header"><h5 class="mb-0">Event Flyer</h5></div>
@@ -100,7 +99,6 @@
             </div>
         </form>
 
-        {% if direct_ticketing_enabled %}
         {% if smart_pricing_recommendations_enabled %}
         <div class="card mb-4 pricing-reco-card" id="pricing-recommendation-card"
              data-endpoint="{% url 'tickets:event_pricing_recommendation' event.id %}">
@@ -323,7 +321,7 @@
                 {% endif %}
             </div>
         </div>
-        {% endif %}{# /direct_ticketing_enabled #}
+        {% endif %}{# /smart_pricing_recommendations_enabled #}
 
         {% else %}
         <form method="post">
@@ -505,7 +503,7 @@ document.addEventListener('DOMContentLoaded', function() {
 {% endif %}
 
 
-{% if ticketing_type == 'direct' and direct_ticketing_enabled %}
+{% if ticketing_type == 'direct' %}
 document.addEventListener('DOMContentLoaded', function() {
     function showAlert(type, message) {
         var div = document.createElement('div');
@@ -946,7 +944,7 @@ document.addEventListener('DOMContentLoaded', function () {
 {% endblock %}
 
 {% block modals %}
-{% if ticketing_type == 'direct' and direct_ticketing_enabled %}
+{% if ticketing_type == 'direct' %}
 {# Add Ticket Type Modal #}
 <div class="modal fade" id="addTicketTypeModal" tabindex="-1" aria-labelledby="addTicketTypeModalLabel" aria-hidden="true">
   <div class="modal-dialog modal-lg">

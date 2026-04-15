@@ -1,6 +1,5 @@
 from .utils import get_organization
 from .feature_flags import (
-    direct_ticketing_enabled as direct_ticketing_enabled_flag,
     smart_pricing_recommendations_enabled as smart_pricing_recommendations_enabled_flag,
     waitlist_enabled as wl_enabled,
     browse_events_enabled as browse_events_enabled_flag,
@@ -73,7 +72,6 @@ def feature_flags_context(request):
     """Inject feature flag values into every template context."""
     org = get_organization(request)
     return {
-        'direct_ticketing_enabled': direct_ticketing_enabled_flag(request.user),
         'smart_pricing_recommendations_enabled': smart_pricing_recommendations_enabled_flag(request.user),
         'waitlist_feature_enabled': wl_enabled(org),
         'browse_events_enabled': browse_events_enabled_flag(),

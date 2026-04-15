@@ -191,10 +191,6 @@ class FeatureFlagSettings(models.Model):
     """Singleton model for global feature flags managed from Django admin."""
 
     singleton_enforcer = models.BooleanField(default=True, unique=True, editable=False)
-    direct_ticketing_enabled = models.BooleanField(
-        default=True,
-        help_text='Enable direct ticket selling flows for allowed users.',
-    )
     browse_events_enabled = models.BooleanField(
         default=False,
         help_text='Expose the public Browse Events experience.',

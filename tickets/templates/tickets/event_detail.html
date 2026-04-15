@@ -27,7 +27,7 @@
     <div>
         <h1 class="d-flex flex-wrap align-items-center gap-1" style="line-height: 1.4;">
             {{ event.name }}
-            {% if event.ticketing_type == 'direct' and direct_ticketing_enabled %}
+            {% if event.ticketing_type == 'direct' %}
                 {% with eff=event.effective_status %}
                 {% if eff == 'draft' %}
                 <span class="badge bg-warning text-dark ms-2" style="font-size: 0.6em; vertical-align: middle;">Draft</span>
@@ -71,7 +71,7 @@
         {% endif %}
 
         <!-- Primary status-change actions: always visible (most important on mobile) -->
-        {% if event.ticketing_type == 'direct' and direct_ticketing_enabled %}
+        {% if event.ticketing_type == 'direct' %}
             {% with eff=event.effective_status %}
             {% if eff == 'draft' %}
             <form method="post" action="{% url 'tickets:event_publish' event.id %}" class="d-inline">
@@ -104,7 +104,7 @@
         <a href="{% url 'tickets:event_edit' event.id %}" class="btn btn-outline-secondary btn-sm" style="min-height: 44px; display: inline-flex; align-items: center;"><i class="bi bi-pencil"></i><span class="ms-1">Edit</span></a>
 
         <!-- Delete: desktop only (goes in mobile ⋮) -->
-        {% if event.ticketing_type != 'direct' or not direct_ticketing_enabled or event.effective_status == 'draft' %}
+        {% if event.ticketing_type != 'direct' or event.effective_status == 'draft' %}
         <a href="{% url 'tickets:event_delete' event.id %}" class="btn btn-outline-danger btn-sm d-none d-sm-inline-flex"><i class="bi bi-trash"></i> Delete</a>
         {% endif %}
 
@@ -117,7 +117,7 @@
             </button>
             <ul class="dropdown-menu dropdown-menu-end">
                 <!-- Cancel Event at top for live direct events -->
-                {% if event.ticketing_type == 'direct' and direct_ticketing_enabled and event.effective_status == 'live' %}
+                {% if event.ticketing_type == 'direct' and event.effective_status == 'live' %}
                 <li>
                     <button type="button" class="dropdown-item text-danger" data-bs-toggle="modal" data-bs-target="#cancelEventModal">
                         <i class="bi bi-x-circle me-2"></i>Cancel Event
@@ -127,7 +127,7 @@
                 {% endif %}
 
                 <!-- View Ticket Page: live/ended direct events only (draft returns 404) -->
-                {% if event.ticketing_type == 'direct' and direct_ticketing_enabled and event.effective_status != 'draft' %}
+                {% if event.ticketing_type == 'direct' and event.effective_status != 'draft' %}
                 <li><a class="dropdown-item" href="{% url 'tickets:public_event_buy' event.public_id %}" target="_blank" rel="noopener noreferrer"><i class="bi bi-box-arrow-up-right me-2"></i>View Ticket Page</a></li>
                 <li><hr class="dropdown-divider"></li>
                 {% elif event.ticket_link %}
@@ -146,7 +146,7 @@
                 {% endif %}
 
                 <!-- Delete: only if event is deletable -->
-                {% if event.ticketing_type != 'direct' or not direct_ticketing_enabled or event.effective_status == 'draft' %}
+                {% if event.ticketing_type != 'direct' or event.effective_status == 'draft' %}
                 <li><hr class="dropdown-divider"></li>
                 <li><a class="dropdown-item text-danger" href="{% url 'tickets:event_delete' event.id %}"><i class="bi bi-trash me-2"></i>Delete</a></li>
                 {% endif %}
@@ -161,7 +161,7 @@
 </p>
 {% endif %}
 
-{% if event.ticketing_type == 'direct' and direct_ticketing_enabled and event.effective_status == 'draft' %}
+{% if event.ticketing_type == 'direct' and event.effective_status == 'draft' %}
 <div class="alert alert-warning">
     <i class="bi bi-eye-slash"></i> This event is <strong>Draft</strong> - the public ticket page returns a 404. Click <strong>Publish</strong> to make it live.
 </div>
@@ -285,7 +285,7 @@
 </div>
 {% endif %}
 
-{% if event.ticketing_type == 'direct' and direct_ticketing_enabled %}
+{% if event.ticketing_type == 'direct' %}
 {% if public_buy_url and event.effective_status == 'live' %}
 <div class="card mb-4">
     <div class="card-header">
@@ -313,7 +313,7 @@
 {% endif %}
 {% endif %}
 
-{% if event.ticketing_type == 'direct' and direct_ticketing_enabled %}
+{% if event.ticketing_type == 'direct' %}
 <div class="card mb-4">
     <div class="card-header d-flex justify-content-between align-items-center">
         <h5 class="mb-0"><i class="bi bi-link-45deg me-2"></i>Tracking Links</h5>
@@ -1249,7 +1249,7 @@ document.addEventListener('DOMContentLoaded', function() {
 
 });
 </script>
-{% if event.ticketing_type == 'direct' and direct_ticketing_enabled and public_buy_url %}
+{% if event.ticketing_type == 'direct' and public_buy_url %}
 <script>
 function copyPublicUrl() {
     const input = document.getElementById('public-url');
@@ -1290,7 +1290,7 @@ function copyScannnerPin() {
 </script>
 {% endif %}
 
-{% if event.ticketing_type == 'direct' and direct_ticketing_enabled and event.effective_status == 'live' %}
+{% if event.ticketing_type == 'direct' and event.effective_status == 'live' %}
 <div class="modal fade" id="cancelEventModal" tabindex="-1" aria-labelledby="cancelEventModalLabel" aria-hidden="true">
     <div class="modal-dialog">
         <div class="modal-content">

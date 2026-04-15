@@ -97,7 +97,6 @@ from .services.cohort_analysis.repeat_customer_calculator import RepeatCustomerC
 from .services.cohort_analysis.cohort_retention_calculator import CohortRetentionCalculator
 from .utils import get_organization, require_org, require_organizer, require_host, require_admin, require_owner, clear_org_cache, next_order_number, generate_qr_b64
 from .feature_flags import (
-    direct_ticketing_enabled,
     smart_pricing_recommendations_enabled,
     browse_events_enabled,
 )
@@ -1495,7 +1494,6 @@ def home(request):
         'total_orders': total_orders,
         'total_revenue': total_revenue,
         'total_tickets': total_tickets,
-        'direct_ticketing_enabled': direct_ticketing_enabled(request.user),
     }
     return render(request, 'tickets/home.html', context)
 
@@ -3664,8 +3662,6 @@ def event_create(request, ticketing_type):
     from .models import TICKETING_TYPE_DIRECT, TICKETING_TYPE_EXTERNAL
     if ticketing_type not in (TICKETING_TYPE_DIRECT, TICKETING_TYPE_EXTERNAL):
         return redirect('tickets:event_type_select')
-    if ticketing_type == TICKETING_TYPE_DIRECT and not direct_ticketing_enabled(request.user):
-        return redirect('tickets:event_type_select')
     org = get_organization(request)
 
     if ticketing_type == TICKETING_TYPE_DIRECT:
@@ -5055,8 +5051,7 @@ def chat_conversations(request):
 @require_http_methods(["GET", "POST"])
 def saleable_ticket_type_create(request, event_id):
     """Create a new SaleableTicketType for an event."""
-    if not direct_ticketing_enabled(request.user):
-        raise Http404()
+
     org = get_organization(request)
     event = get_object_or_404(Event.objects.filter(organization=org), id=event_id)
 
@@ -5102,8 +5097,7 @@ def saleable_ticket_type_create(request, event_id):
 @require_http_methods(["GET", "POST"])
 def saleable_ticket_type_edit(request, event_id, ticket_type_id):
     """Edit an existing SaleableTicketType."""
-    if not direct_ticketing_enabled(request.user):
-        raise Http404()
+
     org = get_organization(request)
     event = get_object_or_404(Event.objects.filter(organization=org), id=event_id)
     tt = get_object_or_404(SaleableTicketType.objects.filter(event=event), id=ticket_type_id)
@@ -5159,8 +5153,7 @@ def saleable_ticket_type_edit(request, event_id, ticket_type_id):
 @require_http_methods(["GET"])
 def saleable_ticket_type_data(request, event_id, ticket_type_id):
     """Return JSON field values for a SaleableTicketType (used to populate the edit modal)."""
-    if not direct_ticketing_enabled(request.user):
-        raise Http404()
+
     org = get_organization(request)
     event = get_object_or_404(Event.objects.filter(organization=org), id=event_id)
     tt = get_object_or_404(SaleableTicketType.objects.filter(event=event), id=ticket_type_id)
@@ -5193,8 +5186,7 @@ def saleable_ticket_type_data(request, event_id, ticket_type_id):
 @require_http_methods(["POST"])
 def saleable_ticket_type_toggle(request, event_id, ticket_type_id):
     """Toggle is_active on a SaleableTicketType."""
-    if not direct_ticketing_enabled(request.user):
-        raise Http404()
+
     org = get_organization(request)
     event = get_object_or_404(Event.objects.filter(organization=org), id=event_id)
     tt = get_object_or_404(SaleableTicketType.objects.filter(event=event), id=ticket_type_id)
@@ -5211,8 +5203,7 @@ def saleable_ticket_type_toggle(request, event_id, ticket_type_id):
 @require_http_methods(["GET", "POST"])
 def saleable_ticket_type_delete(request, event_id, ticket_type_id):
     """Delete a SaleableTicketType (only if no tickets sold)."""
-    if not direct_ticketing_enabled(request.user):
-        raise Http404()
+
     org = get_organization(request)
     event = get_object_or_404(Event.objects.filter(organization=org), id=event_id)
     tt = get_object_or_404(SaleableTicketType.objects.filter(event=event), id=ticket_type_id)
@@ -5239,8 +5230,7 @@ def saleable_ticket_type_delete(request, event_id, ticket_type_id):
 @require_http_methods(["POST"])
 def event_publish(request, event_id):
     """Transition a direct event from Draft → Live."""
-    if not direct_ticketing_enabled(request.user):
-        raise Http404()
+
     org = get_organization(request)
     event = get_object_or_404(Event.objects.filter(organization=org, deleted_at__isnull=True), id=event_id)
     if event.status != EVENT_STATUS_DRAFT:
@@ -5259,8 +5249,7 @@ def event_publish(request, event_id):
 @require_http_methods(["POST"])
 def event_end_sales(request, event_id):
     """Transition a direct event from Live → Ended (terminal, irreversible)."""
-    if not direct_ticketing_enabled(request.user):
-        raise Http404()
+
     org = get_organization(request)
     event = get_object_or_404(Event.objects.filter(organization=org, deleted_at__isnull=True), id=event_id)
     if event.status != EVENT_STATUS_LIVE:
@@ -5282,8 +5271,7 @@ def event_cancel(request, event_id):
     from django.conf import settings as django_settings
     import stripe as stripe_lib
 
-    if not direct_ticketing_enabled(request.user):
-        raise Http404()
+
 
     org = get_organization(request)
     event = get_object_or_404(
@@ -5395,8 +5383,7 @@ def event_flyer_upload(request, event_id):
             pass
     # #endregion
     from .models import TICKETING_TYPE_DIRECT
-    if not direct_ticketing_enabled(request.user):
-        raise Http404()
+
     org = get_organization(request)
     event = get_object_or_404(Event.objects.filter(organization=org), id=event_id)
     if event.ticketing_type != TICKETING_TYPE_DIRECT:

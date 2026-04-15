@@ -2785,8 +2785,7 @@ class SmartPricingRecommendationTests(TestCase):
         self.client = Client()
         flags = FeatureFlagSettings.get_solo()
         flags.smart_pricing_recommendations_enabled = True
-        flags.direct_ticketing_enabled = True
-        flags.save(update_fields=['smart_pricing_recommendations_enabled', 'direct_ticketing_enabled'])
+        flags.save(update_fields=['smart_pricing_recommendations_enabled'])
         self.org = Organization.objects.create(name='Pricing Org', slug='pricing-org')
         self.user = User.objects.create_superuser(
             username='pricing-admin',
@@ -2994,7 +2993,6 @@ class FeatureFlagSettingsTests(TestCase):
     def test_global_feature_flags_default_and_toggle(self):
         from .feature_flags import (
             browse_events_enabled,
-            direct_ticketing_enabled,
             smart_pricing_recommendations_enabled,
         )
 
@@ -3005,20 +3003,16 @@ class FeatureFlagSettingsTests(TestCase):
         )
         flags = FeatureFlagSettings.get_solo()
 
-        self.assertTrue(direct_ticketing_enabled(user))
         self.assertFalse(browse_events_enabled())
         self.assertFalse(smart_pricing_recommendations_enabled(user))
 
-        flags.direct_ticketing_enabled = False
         flags.browse_events_enabled = True
         flags.smart_pricing_recommendations_enabled = True
         flags.save(update_fields=[
-            'direct_ticketing_enabled',
             'browse_events_enabled',
             'smart_pricing_recommendations_enabled',
         ])
 
-        self.assertFalse(direct_ticketing_enabled(user))
         self.assertTrue(browse_events_enabled())
         self.assertTrue(smart_pricing_recommendations_enabled(user))
 
