@@ -15,7 +15,9 @@
     <script defer src="https://cdn.jsdelivr.net/npm/intl-tel-input@23/build/js/intlTelInput.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js" defer></script>
     {% if not is_free %}
+    {% if not e2e_test_mode %}
     <script src="https://js.stripe.com/v3/" defer></script>
+    {% endif %}
     {% endif %}
     <style>
         :root {
@@ -641,8 +643,9 @@ document.addEventListener('DOMContentLoaded', function () {
 
 {% if not is_free %}
 <script type="application/json" id="checkout-config">
-{"publishableKey": "{{ stripe_publishable_key }}", "paymentIntentUrl": "{% url 'tickets:create_payment_intent' event.public_id %}", "successUrl": "{% url 'tickets:checkout_success' %}", "savedPmId": "{% if saved_pm %}{{ saved_pm.id }}{% endif %}", "grandTotalCents": {{ grand_total_cents }}, "currency": "{{ stripe_currency }}"}
+{"publishableKey": "{{ stripe_publishable_key }}", "paymentIntentUrl": "{% url 'tickets:create_payment_intent' event.public_id %}", "successUrl": "{% url 'tickets:checkout_success' %}", "savedPmId": "{% if saved_pm %}{{ saved_pm.id }}{% endif %}", "grandTotalCents": {{ grand_total_cents }}, "currency": "{{ stripe_currency }}", "e2eTestMode": {{ e2e_test_mode|yesno:"true,false" }}, "e2eFulfillUrl": "{% url 'tickets:e2e_complete_payment' event.public_id %}"}
 </script>
+{% if not e2e_test_mode %}
 <script>
 // Apple Pay / Payment Request Button
 document.addEventListener('DOMContentLoaded', function () {
@@ -712,25 +715,30 @@ document.addEventListener('DOMContentLoaded', function () {
     });
 });
 </script>
+{% endif %}
 <script>
 document.addEventListener('DOMContentLoaded', function () {
     var configEl = document.getElementById('checkout-config');
     var config = JSON.parse(configEl.textContent);
-
-    var stripe = Stripe(config.publishableKey);
-    var elements = stripe.elements();
-    var cardElement = elements.create('card', {
-        style: {
-            base: {
-                fontSize: '15px',
-                fontFamily: "'DM Sans', system-ui, sans-serif",
-                color: '#FFFFFF',
-                iconColor: '#FFFFFF',
-                '::placeholder': { color: '#D4D0CB' },
+    var stripe = null;
+    var elements = null;
+    var cardElement = null;
+    if (!config.e2eTestMode) {
+        stripe = Stripe(config.publishableKey);
+        elements = stripe.elements();
+        cardElement = elements.create('card', {
+            style: {
+                base: {
+                    fontSize: '15px',
+                    fontFamily: "'DM Sans', system-ui, sans-serif",
+                    color: '#FFFFFF',
+                    iconColor: '#FFFFFF',
+                    '::placeholder': { color: '#D4D0CB' },
+                },
+                invalid: { color: '#D97060' },
             },
-            invalid: { color: '#D97060' },
-        },
-    });
+        });
+    }
 
     var usingSavedPm = !!config.savedPmId;
     var newCardSection = document.getElementById('new-card-section');
@@ -739,12 +747,14 @@ document.addEventListener('DOMContentLoaded', function () {
     var saveCardCheckbox = document.getElementById('save-card-checkbox');
     var useNewCardBtn = document.getElementById('use-new-card-btn');
 
-    cardElement.mount('#card-element');
+    if (cardElement) {
+        cardElement.mount('#card-element');
 
-    cardElement.on('change', function (event) {
-        var errorEl = document.getElementById('card-errors');
-        if (errorEl) errorEl.textContent = event.error ? event.error.message : '';
-    });
+        cardElement.on('change', function (event) {
+            var errorEl = document.getElementById('card-errors');
+            if (errorEl) errorEl.textContent = event.error ? event.error.message : '';
+        });
+    }
 
     if (useNewCardBtn) {
         useNewCardBtn.addEventListener('click', function () {
@@ -805,6 +815,27 @@ document.addEventListener('DOMContentLoaded', function () {
                 payBtn.disabled = false;
                 payBtn.classList.remove('is-processing');
                 return;
+            }
+
+            if (config.e2eTestMode) {
+                return fetch(config.e2eFulfillUrl, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'X-CSRFToken': getCookie('csrftoken'),
+                    },
+                    body: JSON.stringify({ session_id: data.session_id }),
+                })
+                .then(function (res) { return res.json(); })
+                .then(function (fulfillData) {
+                    if (fulfillData.error) {
+                        errorEl.textContent = fulfillData.error;
+                        payBtn.disabled = false;
+                        payBtn.classList.remove('is-processing');
+                        return;
+                    }
+                    window.location.href = config.successUrl + '?session_id=' + data.session_id;
+                });
             }
 
             var paymentMethodArg;

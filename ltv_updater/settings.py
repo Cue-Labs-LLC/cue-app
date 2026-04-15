@@ -248,6 +248,7 @@ SESSION_SAVE_EVERY_REQUEST = True         # refresh the 30-day window on each re
 TWILIO_ACCOUNT_SID       = os.environ.get('TWILIO_ACCOUNT_SID', '')
 TWILIO_AUTH_TOKEN        = os.environ.get('TWILIO_AUTH_TOKEN', '')
 TWILIO_VERIFY_SERVICE_SID = os.environ.get('TWILIO_VERIFY_SERVICE_SID', '')
+E2E_TEST_MODE = os.environ.get('E2E_TEST_MODE', 'False') == 'True'
 
 # Absolute URL for building links in emails (survey invitations, etc.)
 SITE_URL = os.environ.get('SITE_URL', 'http://localhost:8000')

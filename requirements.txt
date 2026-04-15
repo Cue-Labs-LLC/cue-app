@@ -26,3 +26,4 @@ qrcode[pil]>=8.0
 twilio>=9.0.0
 django-debug-toolbar
 sentry-sdk[django]
+playwright>=1.40

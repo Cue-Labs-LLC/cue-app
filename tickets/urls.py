@@ -195,6 +195,7 @@ urlpatterns = [
     re_path(r'^e/(?P<public_id>[A-Za-z0-9]{10})/waitlist/activate/(?P<hold_token>[0-9a-f-]{36})/$', views.activate_waitlist_hold, name='activate_waitlist_hold'),
     re_path(r'^e/(?P<public_id>[A-Za-z0-9]{10})/checkout/$', views.checkout_payment, name='checkout_payment'),
     re_path(r'^e/(?P<public_id>[A-Za-z0-9]{10})/payment-intent/$', views.create_payment_intent, name='create_payment_intent'),
+    re_path(r'^e/(?P<public_id>[A-Za-z0-9]{10})/test-fulfill/$', views.e2e_complete_payment, name='e2e_complete_payment'),
     re_path(r'^e/(?P<public_id>[A-Za-z0-9]{10})/apply-promo/$', views.validate_promo_code, name='validate_promo_code'),
     # Redirect old /buy/<uuid>/ links to new short /e/<public_id>/
     path('buy/<uuid:event_id>/', views.buy_redirect, name='buy_redirect'),

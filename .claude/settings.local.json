@@ -23,7 +23,17 @@
       "Bash(.venv/bin/python manage.py migrate 2>&1)",
       "Bash(.venv/bin/python manage.py check 2>&1)",
       "Bash(.venv/bin/python manage.py test tickets --verbosity=1 2>&1)",
-      "Bash(xargs git:*)"
+      "Bash(xargs git:*)",
+      "Bash(sqlite3:*)",
+      "Skill(plan-eng-review)",
+      "Bash(.venv/bin/python:*)",
+      "Bash(git add:*)",
+      "Bash(git commit -m 'fix: update Sentry profiling to new SDK API \\(profile_session_sample_rate\\):*)",
+      "Bash(git push:*)",
+      "mcp__175163cd-70f6-4a87-bb97-1648aaead43c__ZohoProjects_getMyIssues",
+      "Bash(echo \"EXIT: $?\")",
+      "Bash(git commit -m ' *)",
+      "Bash(~/.claude/skills/gstack/bin/gstack-learnings-search --limit 10)"
     ]
   },
   "enabledPlugins": {

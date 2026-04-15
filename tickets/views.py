@@ -119,6 +119,11 @@ WINDOW_CHOICES = [
 ]
 
 
+def _is_e2e_test_mode():
+    from django.conf import settings as django_settings
+    return getattr(django_settings, 'E2E_TEST_MODE', False)
+
+
 def _quarter_bounds(year, q):
     """Return (first_day, last_day) for the given quarter (1–4)."""
     start_month = (q - 1) * 3 + 1
@@ -6189,6 +6194,7 @@ def checkout_payment(request, public_id):
         'initcheckout_event_id': initcheckout_event_id,
         'grand_total_cents': grand_total_cents,
         'stripe_currency': django_settings.STRIPE_CURRENCY,
+        'e2e_test_mode': _is_e2e_test_mode(),
     })
 
 
@@ -6196,7 +6202,6 @@ def checkout_payment(request, public_id):
 def create_payment_intent(request, public_id):
     """JSON endpoint - creates a Stripe PaymentIntent and a StripeCheckoutSession record."""
     from django.conf import settings as django_settings
-    import stripe as stripe_lib
 
     event = get_object_or_404(
         Event.objects.select_related('organization'),
@@ -6281,93 +6286,99 @@ def create_payment_intent(request, public_id):
     fee_cents = extract_fee_from_display_cents(discounted_subtotal_cents)
     charge_cents = discounted_subtotal_cents  # Display price is fee-inclusive; buyer pays display total
 
-    stripe_lib.api_key = django_settings.STRIPE_SECRET_KEY
-
     profile_pk = None
     stripe_customer_id = None
     payment_method_id = use_saved_pm or None
+    if _is_e2e_test_mode():
+        pi_id = f"pi_e2e_{_uuid.uuid4().hex}"
+        client_secret = f"{pi_id}_secret_e2e"
+    else:
+        import stripe as stripe_lib
 
-    # Resolve or create a Stripe Customer for authenticated users
-    if request.user.is_authenticated:
-        try:
-            profile = request.user.profile
-            profile_pk = profile.pk
-            if profile.stripe_customer_id:
-                stripe_customer_id = profile.stripe_customer_id
-            else:
-                cus = stripe_lib.Customer.create(email=buyer_email, name=buyer_name)
-                stripe_customer_id = cus.id
-                UserProfile.objects.filter(pk=profile_pk).update(stripe_customer_id=stripe_customer_id)
-        except Exception as e:
-            logger.error("Stripe Customer.create failed: %s", e)
-            # non-fatal - card saving skipped, payment proceeds
+        stripe_lib.api_key = django_settings.STRIPE_SECRET_KEY
 
-    def _payment_intent_create_kwargs():
-        md = {
-            'event_id': str(event.id),
-            'org_id': str(event.organization_id),
-        }
-        if save_card and stripe_customer_id:
-            md['user_id'] = str(request.user.pk)
-        kw = {
-            'amount': charge_cents,
-            'currency': django_settings.STRIPE_CURRENCY,
-            'metadata': md,
-        }
-        if stripe_customer_id:
-            kw['customer'] = stripe_customer_id
-        if save_card and stripe_customer_id:
-            kw['setup_future_usage'] = 'off_session'
-        if payment_method_id:
-            kw['payment_method'] = payment_method_id
-        return kw
-
-    pi = None
-    for attempt in range(2):
-        try:
-            pi = stripe_lib.PaymentIntent.create(**_payment_intent_create_kwargs())
-            break
-        except stripe_lib.error.InvalidRequestError as e:
-            code = getattr(e, 'code', None)
-            param = getattr(e, 'param', None)
-            if attempt == 0 and code == 'resource_missing' and param == 'customer' and profile_pk:
-                # e.g. DB has a test-mode cus_ while prod uses live keys (or customer deleted in Stripe)
-                logger.warning(
-                    "Stripe customer not found for PaymentIntent; resetting profile Stripe IDs and retrying: %s",
-                    e,
-                )
-                UserProfile.objects.filter(pk=profile_pk).update(
-                    stripe_customer_id=None,
-                    stripe_pm_id=None,
-                    stripe_pm_brand='',
-                    stripe_pm_last4='',
-                )
-                payment_method_id = None
-                try:
+        # Resolve or create a Stripe Customer for authenticated users
+        if request.user.is_authenticated:
+            try:
+                profile = request.user.profile
+                profile_pk = profile.pk
+                if profile.stripe_customer_id:
+                    stripe_customer_id = profile.stripe_customer_id
+                else:
                     cus = stripe_lib.Customer.create(email=buyer_email, name=buyer_name)
                     stripe_customer_id = cus.id
                     UserProfile.objects.filter(pk=profile_pk).update(stripe_customer_id=stripe_customer_id)
-                except Exception as cus_exc:
-                    logger.error("Stripe Customer.create after stale ID clear failed: %s", cus_exc)
-                    stripe_customer_id = None
-                continue
-            if attempt == 0 and code == 'resource_missing' and param == 'payment_method':
-                if profile_pk:
+            except Exception as e:
+                logger.error("Stripe Customer.create failed: %s", e)
+                # non-fatal - card saving skipped, payment proceeds
+
+        def _payment_intent_create_kwargs():
+            md = {
+                'event_id': str(event.id),
+                'org_id': str(event.organization_id),
+            }
+            if save_card and stripe_customer_id:
+                md['user_id'] = str(request.user.pk)
+            kw = {
+                'amount': charge_cents,
+                'currency': django_settings.STRIPE_CURRENCY,
+                'metadata': md,
+            }
+            if stripe_customer_id:
+                kw['customer'] = stripe_customer_id
+            if save_card and stripe_customer_id:
+                kw['setup_future_usage'] = 'off_session'
+            if payment_method_id:
+                kw['payment_method'] = payment_method_id
+            return kw
+
+        pi = None
+        for attempt in range(2):
+            try:
+                pi = stripe_lib.PaymentIntent.create(**_payment_intent_create_kwargs())
+                break
+            except stripe_lib.error.InvalidRequestError as e:
+                code = getattr(e, 'code', None)
+                param = getattr(e, 'param', None)
+                if attempt == 0 and code == 'resource_missing' and param == 'customer' and profile_pk:
+                    logger.warning(
+                        "Stripe customer not found for PaymentIntent; resetting profile Stripe IDs and retrying: %s",
+                        e,
+                    )
                     UserProfile.objects.filter(pk=profile_pk).update(
+                        stripe_customer_id=None,
                         stripe_pm_id=None,
                         stripe_pm_brand='',
                         stripe_pm_last4='',
                     )
-                payment_method_id = None
-                continue
-            logger.error("PaymentIntent creation failed: %s", e)
-            return JsonResponse({'error': 'Could not initiate payment. Please try again.'}, status=500)
-        except Exception as e:
-            logger.error("PaymentIntent creation failed: %s", e)
-            return JsonResponse({'error': 'Could not initiate payment. Please try again.'}, status=500)
+                    payment_method_id = None
+                    try:
+                        cus = stripe_lib.Customer.create(email=buyer_email, name=buyer_name)
+                        stripe_customer_id = cus.id
+                        UserProfile.objects.filter(pk=profile_pk).update(stripe_customer_id=stripe_customer_id)
+                    except Exception as cus_exc:
+                        logger.error("Stripe Customer.create after stale ID clear failed: %s", cus_exc)
+                        stripe_customer_id = None
+                    continue
+                if attempt == 0 and code == 'resource_missing' and param == 'payment_method':
+                    if profile_pk:
+                        UserProfile.objects.filter(pk=profile_pk).update(
+                            stripe_pm_id=None,
+                            stripe_pm_brand='',
+                            stripe_pm_last4='',
+                        )
+                    payment_method_id = None
+                    continue
+                logger.error("PaymentIntent creation failed: %s", e)
+                return JsonResponse({'error': 'Could not initiate payment. Please try again.'}, status=500)
+            except Exception as e:
+                logger.error("PaymentIntent creation failed: %s", e)
+                return JsonResponse({'error': 'Could not initiate payment. Please try again.'}, status=500)
 
-    if pi is None:
-        return JsonResponse({'error': 'Could not initiate payment. Please try again.'}, status=500)
+        if pi is None:
+            return JsonResponse({'error': 'Could not initiate payment. Please try again.'}, status=500)
+        pi_id = pi.id
+        client_secret = pi.client_secret
 
     tracking_ref = request.session.get(f'tracking_ref_{event.id}')
     tracking_link_obj = None
@@ -6377,8 +6388,8 @@ def create_payment_intent(request, public_id):
     session_record = StripeCheckoutSession.objects.create(
         event=event,
         organization=event.organization,
-        stripe_session_id=pi.id,
-        stripe_payment_intent_id=pi.id,
+        stripe_session_id=pi_id,
+        stripe_payment_intent_id=pi_id,
         buyer_email=buyer_email,
         buyer_name=buyer_name,
         status=StripeCheckoutSession.Status.PENDING,
@@ -6392,9 +6403,46 @@ def create_payment_intent(request, public_id):
     )
 
     return JsonResponse({
-        'client_secret': pi.client_secret,
+        'client_secret': client_secret,
         'session_id': str(session_record.id),
     })
+
+
+@require_http_methods(["POST"])
+def e2e_complete_payment(request, public_id):
+    """Test-only endpoint that fulfills a pending checkout session without Stripe."""
+    if not _is_e2e_test_mode():
+        raise Http404()
+
+    event = get_object_or_404(
+        Event.objects.select_related('organization'),
+        public_id=public_id,
+    )
+
+    try:
+        data = json.loads(request.body)
+    except (ValueError, TypeError):
+        return JsonResponse({'error': 'Invalid request.'}, status=400)
+
+    session_id = (data.get('session_id') or '').strip()
+    if not session_id:
+        return JsonResponse({'error': 'Missing session id.'}, status=400)
+
+    session_obj = get_object_or_404(
+        StripeCheckoutSession.objects.filter(event=event),
+        id=session_id,
+    )
+
+    _fulfill_payment_intent({
+        'id': session_obj.stripe_session_id,
+        'amount_received': session_obj.amount_total_cents,
+    })
+
+    session_obj.refresh_from_db()
+    if session_obj.status != StripeCheckoutSession.Status.COMPLETED:
+        return JsonResponse({'error': 'Could not complete checkout.'}, status=500)
+
+    return JsonResponse({'ok': True, 'session_id': str(session_obj.id)})
 
 
 def checkout_success(request):

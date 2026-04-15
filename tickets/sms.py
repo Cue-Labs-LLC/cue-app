@@ -3,6 +3,7 @@ import logging
 from django.conf import settings
 
 logger = logging.getLogger(__name__)
+E2E_OTP_CODE = '000000'
 
 
 def start_phone_verification(phone: str) -> bool:
@@ -10,6 +11,9 @@ def start_phone_verification(phone: str) -> bool:
 
     Returns True on success, False on failure (e.g. invalid number, Twilio error).
     """
+    if getattr(settings, 'E2E_TEST_MODE', False):
+        logger.info("E2E test mode: accepting phone verification start for %s", phone)
+        return True
     try:
         from twilio.rest import Client
         client = Client(settings.TWILIO_ACCOUNT_SID, settings.TWILIO_AUTH_TOKEN)
@@ -27,6 +31,8 @@ def start_phone_verification(phone: str) -> bool:
 
 def check_phone_verification(phone: str, code: str) -> bool:
     """Check a Twilio Verify code. Returns True if the code is approved."""
+    if getattr(settings, 'E2E_TEST_MODE', False):
+        return code == E2E_OTP_CODE
     try:
         from twilio.rest import Client
         client = Client(settings.TWILIO_ACCOUNT_SID, settings.TWILIO_AUTH_TOKEN)
@@ -43,6 +49,9 @@ def start_email_verification(email: str) -> bool:
 
     Returns True on success, False on failure.
     """
+    if getattr(settings, 'E2E_TEST_MODE', False):
+        logger.info("E2E test mode: accepting email verification start for %s", email)
+        return True
     try:
         from twilio.rest import Client
         client = Client(settings.TWILIO_ACCOUNT_SID, settings.TWILIO_AUTH_TOKEN)
@@ -60,6 +69,8 @@ def start_email_verification(email: str) -> bool:
 
 def check_email_verification(email: str, code: str) -> bool:
     """Check a Twilio Verify email code. Returns True if the code is approved."""
+    if getattr(settings, 'E2E_TEST_MODE', False):
+        return code == E2E_OTP_CODE
     try:
         from twilio.rest import Client
         client = Client(settings.TWILIO_ACCOUNT_SID, settings.TWILIO_AUTH_TOKEN)

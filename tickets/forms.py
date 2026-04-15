@@ -102,6 +102,7 @@ class AttendeePhoneForm(forms.Form):
             'class': 'form-control',
             'placeholder': 'Enter your phone number',
             'type': 'tel',
+            'data-testid': 'phone-number-input',
         }),
         help_text='Select your country and enter your number',
     )
@@ -166,6 +167,7 @@ class OTPVerificationForm(forms.Form):
             'pattern': '[0-9]{6}',
             'autocomplete': 'one-time-code',
             'autofocus': True,
+            'data-testid': 'otp-code-input',
         })
     )
 
@@ -189,12 +191,15 @@ class ProfileCompletionForm(forms.Form):
 
     first_name = forms.CharField(max_length=150, widget=forms.TextInput(attrs={
         'class': 'form-control', 'placeholder': 'First name', 'autofocus': True,
+        'data-testid': 'first-name-input',
     }))
     last_name = forms.CharField(max_length=150, widget=forms.TextInput(attrs={
         'class': 'form-control', 'placeholder': 'Last name',
+        'data-testid': 'last-name-input',
     }))
     email = forms.EmailField(widget=forms.EmailInput(attrs={
         'class': 'form-control', 'placeholder': 'Email address',
+        'data-testid': 'email-input',
     }))
     gender = forms.ChoiceField(
         choices=[('', 'Select gender'), ('male', 'Male'), ('female', 'Female'), ('other', 'Other')],
@@ -261,9 +266,11 @@ class EmailProfileCompletionForm(forms.Form):
 
     first_name = forms.CharField(max_length=150, widget=forms.TextInput(attrs={
         'class': 'form-control', 'placeholder': 'First name', 'autofocus': True,
+        'data-testid': 'first-name-input',
     }))
     last_name = forms.CharField(max_length=150, widget=forms.TextInput(attrs={
         'class': 'form-control', 'placeholder': 'Last name',
+        'data-testid': 'last-name-input',
     }))
     phone_number = forms.CharField(
         max_length=20,
@@ -271,6 +278,7 @@ class EmailProfileCompletionForm(forms.Form):
             'class': 'form-control',
             'placeholder': 'Enter your phone number',
             'type': 'tel',
+            'data-testid': 'phone-number-input',
         }),
         help_text='Select your country and enter your number',
         required=True,
@@ -279,7 +287,7 @@ class EmailProfileCompletionForm(forms.Form):
     email_display = forms.CharField(
         label='Email address',
         disabled=True,
-        widget=forms.TextInput(attrs={'class': 'form-control'}),
+        widget=forms.TextInput(attrs={'class': 'form-control', 'data-testid': 'email-input'}),
     )
     gender = forms.ChoiceField(
         choices=[('', 'Select gender'), ('male', 'Male'), ('female', 'Female'), ('other', 'Other')],
