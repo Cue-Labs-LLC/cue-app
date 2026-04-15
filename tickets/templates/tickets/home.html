@@ -10,7 +10,7 @@
         <p class="page-header-subtitle">Overview of your events and customers</p>
     </div>
     <div class="page-header-actions">
-        <a href="{% url 'tickets:event_type_select' %}" class="btn btn-primary">
+        <a href="{% url 'tickets:event_type_select' %}" class="btn btn-primary d-block d-sm-inline-flex justify-content-center">
             <i class="bi bi-plus-lg"></i> Create Event
         </a>
     </div>
@@ -131,18 +131,35 @@
                                     </ul>
                                 </div>
                             </div>
-                            <!-- Mobile: full-width btn-group -->
-                            <div class="btn-group d-sm-none" role="group" aria-label="Event actions">
-                                <a href="{% url 'tickets:event_detail' event.id %}" class="btn btn-sm btn-outline-secondary btn-icon" title="Event analytics"><i class="bi bi-bar-chart-line"></i></a>
-                                <a href="{% url 'tickets:event_edit' event.id %}" class="btn btn-sm btn-outline-secondary btn-icon" title="Edit event"><i class="bi bi-pencil"></i></a>
-                                {% if event.ticketing_type != 'direct' or not direct_ticketing_enabled or event.effective_status == 'draft' %}
-                                <a href="{% url 'tickets:event_delete' event.id %}" class="btn btn-sm btn-outline-danger btn-icon" title="Delete event"><i class="bi bi-trash"></i></a>
-                                {% endif %}
-                                {% if event.ticketing_type == 'direct' and direct_ticketing_enabled %}
-                                <a href="{% url 'tickets:public_event_buy' event.public_id %}" class="btn btn-sm btn-outline-secondary btn-icon" title="View ticket page" target="_blank" rel="noopener noreferrer"><i class="bi bi-box-arrow-up-right"></i></a>
-                                {% elif event.ticket_link %}
-                                <a href="{{ event.ticket_link }}" class="btn btn-sm btn-outline-secondary btn-icon" title="View ticket link" target="_blank" rel="noopener noreferrer"><i class="bi bi-box-arrow-up-right"></i></a>
-                                {% endif %}
+                            <!-- Mobile: View + overflow menu -->
+                            <div class="d-flex d-sm-none align-items-center" style="min-height: 44px;">
+                                <a href="{% url 'tickets:event_detail' event.id %}"
+                                   class="btn btn-sm btn-outline-secondary flex-fill"
+                                   style="min-height: 44px; display: flex; align-items: center; justify-content: center;">
+                                    View
+                                </a>
+                                <div class="dropdown ms-2">
+                                    <button class="event-row-dots-btn dropdown-toggle"
+                                            data-bs-toggle="dropdown" aria-expanded="false"
+                                            aria-label="More actions"
+                                            style="min-height: 44px; min-width: 44px;">
+                                        <i class="bi bi-three-dots-vertical"></i>
+                                    </button>
+                                    <ul class="dropdown-menu dropdown-menu-end">
+                                        <li><a class="dropdown-item" href="{% url 'tickets:event_edit' event.id %}"><i class="bi bi-pencil me-2"></i>Edit</a></li>
+                                        {% if event.ticketing_type != 'direct' or not direct_ticketing_enabled or event.effective_status == 'draft' %}
+                                        <li><hr class="dropdown-divider"></li>
+                                        <li><a class="dropdown-item text-danger" href="{% url 'tickets:event_delete' event.id %}"><i class="bi bi-trash me-2"></i>Delete</a></li>
+                                        {% endif %}
+                                        {% if event.ticketing_type == 'direct' and direct_ticketing_enabled %}
+                                        <li><hr class="dropdown-divider"></li>
+                                        <li><a class="dropdown-item" href="{% url 'tickets:public_event_buy' event.public_id %}" target="_blank" rel="noopener noreferrer"><i class="bi bi-box-arrow-up-right me-2"></i>View Ticket Page</a></li>
+                                        {% elif event.ticket_link %}
+                                        <li><hr class="dropdown-divider"></li>
+                                        <li><a class="dropdown-item" href="{{ event.ticket_link }}" target="_blank" rel="noopener noreferrer"><i class="bi bi-box-arrow-up-right me-2"></i>View Ticket Page</a></li>
+                                        {% endif %}
+                                    </ul>
+                                </div>
                             </div>
                         </td>
                     </tr>

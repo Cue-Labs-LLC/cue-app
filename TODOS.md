@@ -1,5 +1,21 @@
 # TODOS
 
+## Mobile: Event Detail Meta Strip Wrapping
+
+**What:** The `detail-meta` strip below the event name (venue · date · capacity) can wrap to 2+ lines on mobile at 390px when event names are long or all three items are present.
+
+**Why:** Long event names push the meta strip down and it wraps mid-token (e.g., "Jan 15, 2025 ·" on one line, "7:00 PM" on the next). Looks sloppy on small screens.
+
+**Pros:** Small effort. Improve readability for any event with a long name or all three metadata items.
+
+**Cons:** Requires deciding what to truncate or omit on mobile (capacity is lowest priority).
+
+**Context:** Discovered during design review of event detail mobile declutter (plan: merry-zooming-lobster). The `detail-meta` / `detail-meta-item` / `detail-meta-divider` CSS classes are in `dashboard.css`. Fix candidates: truncate venue name, hide capacity on mobile, or use a 2-line layout (date on line 1, venue on line 2).
+
+**Depends on:** Event detail mobile declutter shipped.
+
+---
+
 ## Multi-Org: Member Removal
 
 **What:** Add `member_remove` view that deletes an `OrganizationMembership` row for a given user+org.

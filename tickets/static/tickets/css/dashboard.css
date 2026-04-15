@@ -508,9 +508,9 @@ a:hover {
 .stat-card {
     background: var(--bg-surface);
     border: 1px solid var(--border);
+    border-top: 2px solid var(--border);
     border-radius: var(--radius);
-    padding: 20px;
-    border-left: 3px solid var(--border);
+    padding: 18px 20px 20px;
     transition: box-shadow 0.15s ease;
 }
 
@@ -518,11 +518,11 @@ a:hover {
     box-shadow: var(--shadow-sm);
 }
 
-.stat-card--accent { border-left-color: var(--accent); }
-.stat-card--success { border-left-color: var(--success); }
-.stat-card--info { border-left-color: var(--info); }
-.stat-card--warning { border-left-color: var(--warning); }
-.stat-card--danger { border-left-color: var(--danger); }
+.stat-card--accent { border-top-color: var(--accent); }
+.stat-card--success { border-top-color: var(--success); }
+.stat-card--info { border-top-color: var(--info); }
+.stat-card--warning { border-top-color: var(--warning); }
+.stat-card--danger { border-top-color: var(--danger); }
 
 .stat-label {
     font-size: 10px;
@@ -1407,7 +1407,17 @@ code {
 
 @media (max-width: 575px) {
     .stats-grid {
-        grid-template-columns: 1fr;
+        grid-template-columns: repeat(2, 1fr);
+        gap: 10px;
+        margin-bottom: 16px;
+    }
+
+    .stat-card {
+        padding: 12px 14px 14px;
+    }
+
+    .stat-value {
+        font-size: 1.25rem;
     }
 
     .page-header {
@@ -2041,9 +2051,13 @@ gmp-place-autocomplete#venue-address-autocomplete {
     /* Actions footer - class-based so column count doesn't matter */
     .event-list-table tbody td.event-actions-cell {
         display: block;
-        padding: 8px 12px;
+        padding: 8px 12px 10px;
         border-top: 1px solid var(--border-light);
         background: var(--bg-inset);
+    }
+
+    .event-list-table tbody td.event-actions-cell .d-flex {
+        gap: 8px;
     }
 
     .event-list-table tbody td.event-actions-cell .btn-group {
@@ -2056,7 +2070,7 @@ gmp-place-autocomplete#venue-address-autocomplete {
     .event-list-table tbody td.event-actions-cell .btn-group .btn {
         flex: 1;
         border-radius: var(--radius-sm) !important;
-        min-height: 34px;
+        min-height: 38px;
         font-size: 13px;
     }
 }
