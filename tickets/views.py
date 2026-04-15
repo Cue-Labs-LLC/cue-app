@@ -14,9 +14,9 @@ from django.contrib.auth.decorators import login_required
 from django.urls import reverse, reverse_lazy
 from django.db.models import (
     Sum, Count, Avg, Max, Q, Subquery, OuterRef, Prefetch,
-    Case, When, Value, F, CharField, Exists,
+    Case, When, Value, F, CharField, Exists, ExpressionWrapper, DecimalField,
 )
-from django.db.models.functions import Coalesce, Greatest, TruncDate
+from django.db.models.functions import Coalesce, Greatest, TruncDate, Cast
 from django.db import models
 from django.core.paginator import Paginator
 from django.core.files.uploadedfile import InMemoryUploadedFile
@@ -3034,10 +3034,21 @@ def event_detail(request, event_id):
     survey_results = stats['survey_results']
 
     # Paginate orders - select_related + annotate to avoid N+1 in template
+    _platform_fee_subq = Subquery(
+        StripeCheckoutSession.objects.filter(ticket_order=OuterRef('pk')).values('platform_fee_cents')[:1],
+        output_field=DecimalField(max_digits=10, decimal_places=2),
+    )
     orders_qs = event.ticket_orders.select_related(
         'customer', 'uploaded_file'
     ).annotate(
-        tickets_count=Count('tickets')
+        tickets_count=Count('tickets'),
+        gross_total=ExpressionWrapper(
+            F('total_amount') - Cast(
+                Coalesce(_platform_fee_subq, 0),
+                output_field=DecimalField(max_digits=10, decimal_places=2),
+            ) * Decimal('0.01'),
+            output_field=DecimalField(max_digits=10, decimal_places=2),
+        ),
     ).order_by('-order_date')
     paginator = Paginator(orders_qs, 100)
     page_number = request.GET.get('page')

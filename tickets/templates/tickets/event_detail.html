@@ -515,7 +515,7 @@
                         <th>Order Number</th>
                         <th>Date</th>
                         <th>Quantity</th>
-                        <th>Total</th>
+                        <th>Gross Total</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -534,7 +534,7 @@
                         <td><a href="{% url 'tickets:order_detail' order.id %}"><strong>{{ order.display_order_number }}</strong></a></td>
                         <td>{{ order.order_date|date:"M d, Y H:i" }}</td>
                         <td>{{ order.tickets_count }}</td>
-                        <td>${{ order.total_amount }}</td>
+                        <td>${{ order.gross_total|floatformat:2 }}</td>
                     </tr>
                     {% endfor %}
                 </tbody>
