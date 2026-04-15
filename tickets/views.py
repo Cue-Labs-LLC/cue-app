@@ -7,6 +7,7 @@ import random
 import uuid as _uuid
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal
+from django import forms as django_forms
 from django.shortcuts import render, redirect, get_object_or_404
 from django.contrib import messages
 from django.contrib.auth import views as auth_views
@@ -122,6 +123,45 @@ WINDOW_CHOICES = [
 def _is_e2e_test_mode():
     from django.conf import settings as django_settings
     return getattr(django_settings, 'E2E_TEST_MODE', False)
+
+
+def _configure_direct_create_unlock_fields(ticket_formset):
+    """Use draft row indexes for unlock relationships before SaleableTicketTypes exist."""
+    draft_choices = [('', '- None -')]
+    active_rows = []
+    for idx, form_item in enumerate(ticket_formset.forms):
+        if form_item.is_bound:
+            raw_name = form_item.data.get(f'{form_item.prefix}-name', '')
+            raw_delete = form_item.data.get(f'{form_item.prefix}-DELETE')
+            is_deleted = str(raw_delete).lower() in ('on', 'true', '1')
+        else:
+            raw_name = form_item.initial.get('name', '') or getattr(form_item.instance, 'name', '')
+            is_deleted = False
+        if raw_name and str(raw_name).strip() and not is_deleted:
+            active_rows.append((str(idx), str(raw_name).strip()))
+
+    draft_choices.extend(active_rows)
+
+    for idx, form_item in enumerate(ticket_formset.forms):
+        current_choices = [choice for choice in draft_choices if choice[0] != str(idx)]
+        selected = (
+            form_item.data.get(f'{form_item.prefix}-unlocks_after')
+            if form_item.is_bound
+            else form_item.initial.get('unlocks_after', '')
+        ) or ''
+        if selected and not any(value == selected for value, _ in current_choices):
+            current_choices.append((selected, selected))
+        form_item.fields['unlocks_after'] = django_forms.ChoiceField(
+            required=False,
+            choices=current_choices,
+            widget=django_forms.Select(attrs={'class': 'form-select form-select-sm'}),
+        )
+
+    ticket_formset.empty_form.fields['unlocks_after'] = django_forms.ChoiceField(
+        required=False,
+        choices=[('', '- None -')],
+        widget=django_forms.Select(attrs={'class': 'form-select form-select-sm'}),
+    )
 
 
 def _quarter_bounds(year, q):
@@ -3679,11 +3719,7 @@ def event_create(request, ticketing_type):
                 queryset=SaleableTicketType.objects.none(),
                 prefix='ticket_type',
             )
-            for form_item in ticket_formset.forms:
-                form_item.fields['unlocks_after'].queryset = SaleableTicketType.objects.none()
-                form_item.fields['unlocks_after'].empty_label = '- None -'
-            ticket_formset.empty_form.fields['unlocks_after'].queryset = SaleableTicketType.objects.none()
-            ticket_formset.empty_form.fields['unlocks_after'].empty_label = '- None -'
+            _configure_direct_create_unlock_fields(ticket_formset)
             if form.is_valid() and ticket_formset.is_valid():
                 valid_tts = [
                     f for f in ticket_formset.forms
@@ -3702,13 +3738,26 @@ def event_create(request, ticketing_type):
                     event.venue = venue
                     event.ticketing_type = TICKETING_TYPE_DIRECT
                     event.save()
-                    instances = ticket_formset.save(commit=False)
-                    for tt in instances:
-                        if tt.name and tt.name.strip():
-                            tt.event = event
-                            tt.save()
-                    for tt in ticket_formset.deleted_objects:
-                        tt.delete()
+                    created_by_index = {}
+                    for idx, tt_form in enumerate(ticket_formset.forms):
+                        if tt_form not in valid_tts:
+                            continue
+                        tt = tt_form.save(commit=False)
+                        tt.event = event
+                        tt.unlocks_after = None
+                        tt.save()
+                        created_by_index[str(idx)] = tt
+                    for idx, tt_form in enumerate(ticket_formset.forms):
+                        if tt_form not in valid_tts:
+                            continue
+                        unlock_index = (tt_form.cleaned_data.get('unlocks_after') or '').strip()
+                        if not unlock_index:
+                            continue
+                        unlock_target = created_by_index.get(unlock_index)
+                        current_tt = created_by_index.get(str(idx))
+                        if unlock_target and current_tt and unlock_target.pk != current_tt.pk:
+                            current_tt.unlocks_after = unlock_target
+                            current_tt.save(update_fields=['unlocks_after'])
                     _invalidate_event_list_cache(org)
                     messages.success(request, f"Event '{event.name}' created successfully.")
                     # TODO: re-enable when calendar sync is ready
@@ -3721,11 +3770,7 @@ def event_create(request, ticketing_type):
                 queryset=SaleableTicketType.objects.none(),
                 prefix='ticket_type',
             )
-            for form_item in ticket_formset.forms:
-                form_item.fields['unlocks_after'].queryset = SaleableTicketType.objects.none()
-                form_item.fields['unlocks_after'].empty_label = '- None -'
-            ticket_formset.empty_form.fields['unlocks_after'].queryset = SaleableTicketType.objects.none()
-            ticket_formset.empty_form.fields['unlocks_after'].empty_label = '- None -'
+            _configure_direct_create_unlock_fields(ticket_formset)
         no_venues = not Venue.objects.filter(organization=org).exists()
         venue_capacities = {
             str(v.id): v.capacity
