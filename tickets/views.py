@@ -537,6 +537,7 @@ def unified_resend_view(request):
     return redirect('tickets:unified_verify')
 
 
+@never_cache
 @require_http_methods(["GET", "POST"])
 def complete_profile_view(request):
     """Step 3 (new users only): collect name, email, gender, marketing opt-in."""
@@ -751,6 +752,7 @@ def email_resend_view(request):
     return redirect('tickets:email_verify')
 
 
+@never_cache
 @require_http_methods(["GET", "POST"])
 def email_complete_profile_view(request):
     """Step 3 (email path, new users only): collect name, phone, gender, marketing opt-in."""
@@ -8047,4 +8049,5 @@ def survey_analytics(request):
 
 def csrf_failure(request, reason=''):
     """Custom CSRF failure view - renders the branded 403 template."""
+    logger.warning("CSRF failure: %s", reason)
     return render(request, '403.html', {'reason': reason, 'csrf_token_missing': True}, status=403)
