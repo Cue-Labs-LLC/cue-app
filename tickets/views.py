@@ -5757,6 +5757,7 @@ def public_event_buy(request, public_id):
                 EventDailyPageView.objects.filter(event=event, date=today).update(
                     view_count=F('view_count') + 1
                 )
+        django_cache.delete(_event_stats_cache_key(event.pk))
         ref = request.GET.get('ref')
         if ref:
             request.session[f'tracking_ref_{event.id}'] = ref
