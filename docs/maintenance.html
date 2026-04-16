@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<!--
+  Cue — Static maintenance/catch-all error page
+  ──────────────────────────────────────────────
+  Fully self-contained: no external fonts, scripts, or stylesheets.
+  Intended to be served when the Django app is unreachable (502/503).
+
+  To use with Render:
+    1. Deploy this file publicly (e.g. GitHub Pages, Cloudflare Pages,
+       or a separate Render static site at a known URL).
+    2. In your Render web service → Settings → Custom Error Pages,
+       paste the public URL of this file.
+    Render will proxy requests through this page when your service is down.
+-->
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Cue — Be Right Back</title>
+    <meta name="robots" content="noindex">
+    <style>
+        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+        :root {
+            --bg:          #0F0E0D;
+            --surface:     #191817;
+            --border:      rgba(255,255,255,0.07);
+            --border-mid:  rgba(255,255,255,0.11);
+            --text:        #EDE8E3;
+            --text-2:      #7A7672;
+            --text-3:      #4A4846;
+            --accent:      #00FF87;
+            /* System font stack — no network requests needed */
+            --font-display:'Arial Narrow', 'Helvetica Neue Condensed', Arial, sans-serif;
+            --font-body:   -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+        }
+
+        html, body { height: 100%; }
+
+        body {
+            background: var(--bg);
+            color: var(--text);
+            font-family: var(--font-body);
+            font-weight: 300;
+            -webkit-font-smoothing: antialiased;
+            display: flex;
+            flex-direction: column;
+        }
+
+        /* Neon accent bar */
+        body::before {
+            content: '';
+            position: fixed;
+            top: 0; left: 0; right: 0;
+            height: 2px;
+            background: var(--accent);
+            box-shadow: 0 0 10px rgba(0,255,135,0.28);
+            z-index: 100;
+        }
+
+        .e-nav {
+            display: flex;
+            align-items: center;
+            padding: 0 clamp(20px, 4vw, 48px);
+            height: 54px;
+            border-bottom: 1px solid var(--border);
+            flex-shrink: 0;
+            margin-top: 2px;
+        }
+
+        .e-brand {
+            display: flex;
+            align-items: center;
+            gap: 9px;
+            text-decoration: none;
+            color: var(--text);
+        }
+        .e-brand-dot {
+            width: 7px;
+            height: 7px;
+            border-radius: 50%;
+            background: var(--accent);
+            flex-shrink: 0;
+            box-shadow: 0 0 8px rgba(0,255,135,0.22);
+            /* Gentle pulse so the page feels alive */
+            animation: pulse 3s ease-in-out infinite;
+        }
+        @keyframes pulse {
+            0%, 100% { box-shadow: 0 0 8px rgba(0,255,135,0.22); }
+            50%       { box-shadow: 0 0 16px rgba(0,255,135,0.5); }
+        }
+        .e-brand-name {
+            font-family: var(--font-display);
+            font-weight: 900;
+            font-size: 1.5rem;
+            letter-spacing: 0.12em;
+            text-transform: uppercase;
+            line-height: 1;
+        }
+
+        .e-main {
+            flex: 1;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: clamp(32px, 6vh, 80px) clamp(20px, 4vw, 48px);
+            position: relative;
+            overflow: hidden;
+        }
+
+        /* Animated dots — the only decoration we need */
+        .e-ambient {
+            position: absolute;
+            inset: 0;
+            pointer-events: none;
+            overflow: hidden;
+        }
+        .e-ambient::before,
+        .e-ambient::after {
+            content: '';
+            position: absolute;
+            border-radius: 50%;
+            background: radial-gradient(circle, rgba(0,255,135,0.04) 0%, transparent 70%);
+        }
+        .e-ambient::before {
+            width: 600px; height: 600px;
+            top: -200px; right: -200px;
+        }
+        .e-ambient::after {
+            width: 400px; height: 400px;
+            bottom: -150px; left: -100px;
+            background: radial-gradient(circle, rgba(0,255,135,0.025) 0%, transparent 70%);
+        }
+
+        .e-content {
+            position: relative;
+            max-width: 480px;
+            width: 100%;
+            animation: content-up 0.5s ease forwards;
+        }
+
+        @keyframes content-up {
+            from { opacity: 0; transform: translateY(20px); }
+            to   { opacity: 1; transform: translateY(0); }
+        }
+
+        .e-eyebrow {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            font-size: 0.68rem;
+            font-weight: 400;
+            letter-spacing: 0.14em;
+            text-transform: uppercase;
+            color: var(--text-3);
+            margin-bottom: 20px;
+        }
+        .e-eyebrow::before {
+            content: '';
+            display: block;
+            width: 22px;
+            height: 1px;
+            background: var(--text-3);
+            flex-shrink: 0;
+        }
+
+        .e-title {
+            font-size: clamp(1.8rem, 4vw, 2.4rem);
+            font-weight: 500;
+            letter-spacing: -0.025em;
+            line-height: 1.15;
+            color: var(--text);
+            margin-bottom: 14px;
+        }
+
+        .e-body {
+            font-size: 0.9rem;
+            color: var(--text-2);
+            line-height: 1.7;
+            margin-bottom: 36px;
+        }
+
+        /* Status indicator */
+        .e-status {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 0.75rem;
+            color: var(--text-3);
+            letter-spacing: 0.06em;
+            padding: 8px 14px;
+            border: 1px solid var(--border);
+            border-radius: 3px;
+            background: var(--surface);
+        }
+        .e-status-dot {
+            width: 6px;
+            height: 6px;
+            border-radius: 50%;
+            background: var(--accent);
+            animation: blink 1.4s ease-in-out infinite;
+        }
+        @keyframes blink {
+            0%, 100% { opacity: 1; }
+            50%       { opacity: 0.3; }
+        }
+    </style>
+</head>
+<body>
+
+<nav class="e-nav">
+    <a href="/" class="e-brand">
+        <span class="e-brand-dot"></span>
+        <span class="e-brand-name">Cue</span>
+    </a>
+</nav>
+
+<main class="e-main">
+    <div class="e-ambient"></div>
+    <div class="e-content">
+        <p class="e-eyebrow">Temporarily offline</p>
+        <h1 class="e-title">We'll be right back</h1>
+        <p class="e-body">Cue is undergoing maintenance. We're working on it — check back in a few minutes.</p>
+        <div class="e-status">
+            <span class="e-status-dot"></span>
+            Working on it
+        </div>
+    </div>
+</main>
+
+</body>
+</html>
