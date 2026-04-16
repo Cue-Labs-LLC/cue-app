@@ -68,6 +68,29 @@
     .stat-section .stats-grid,
     .stat-section--traffic .stats-grid { grid-template-columns: repeat(2, 1fr); gap: 10px; }
 }
+.ticket-allocation-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 16px;
+}
+.ticket-allocation-item {
+    padding: 8px 4px 0;
+    min-height: 280px;
+}
+.ticket-allocation-chart {
+    position: relative;
+    height: 180px;
+}
+.ticket-allocation-meta {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    margin-top: 14px;
+    font-size: 13px;
+}
+.ticket-allocation-meta span {
+    color: var(--text-secondary);
+}
 </style>
 {% endblock %}
 
@@ -382,7 +405,40 @@
 </div>
 {% endif %}
 
-{% if ticket_type_breakdown %}
+{% if event.ticketing_type == 'direct' and ticket_type_allocation_charts %}
+<div class="card mb-4">
+    <div class="card-header">
+        <h5>Ticket Allocation</h5>
+    </div>
+    <div class="card-body">
+        <div class="ticket-allocation-grid">
+            {% for chart in ticket_type_allocation_charts %}
+            <div class="ticket-allocation-item">
+                <h6 class="mb-3">{{ chart.label }}</h6>
+                <div class="ticket-allocation-chart">
+                    <canvas id="ticketAllocationChart{{ forloop.counter0 }}"></canvas>
+                </div>
+                <div class="ticket-allocation-meta">
+                    <div>
+                        <span>Sold</span>
+                        <strong class="d-block">{{ chart.sold|intcomma }}</strong>
+                    </div>
+                    <div class="text-end">
+                        {% if chart.is_unlimited %}
+                        <span>Allocation</span>
+                        <strong class="d-block">Unlimited</strong>
+                        {% else %}
+                        <span>Allocated</span>
+                        <strong class="d-block">{{ chart.allocated|intcomma }}</strong>
+                        {% endif %}
+                    </div>
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+    </div>
+</div>
+{% elif ticket_type_breakdown %}
 <div class="card mb-4">
     <div class="card-header">
         <h5>Ticket Breakdown</h5>
@@ -1122,7 +1178,83 @@ document.addEventListener('DOMContentLoaded', function() {
 });
 </script>
 {% endif %}
-{% if ticket_type_breakdown %}
+{% if event.ticketing_type == 'direct' and ticket_type_allocation_charts %}
+<script type="application/json" id="ticket-allocation-data">{{ ticket_type_allocation_charts_json|safe }}</script>
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    var el = document.getElementById('ticket-allocation-data');
+    if (!el) return;
+    var charts = JSON.parse(el.textContent);
+    if (!charts.length) return;
+
+    var isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+    var textColor = isDark ? '#e0e0e0' : '#555';
+    var soldColor = 'rgba(25, 135, 84, 0.82)';
+    var soldBorder = 'rgba(25, 135, 84, 1)';
+    var remainingColor = isDark ? 'rgba(255,255,255,0.12)' : 'rgba(108,117,125,0.18)';
+    var remainingBorder = isDark ? 'rgba(255,255,255,0.24)' : 'rgba(108,117,125,0.36)';
+    var unlimitedColor = 'rgba(13, 110, 253, 0.78)';
+    var unlimitedBorder = 'rgba(13, 110, 253, 1)';
+
+    charts.forEach(function(chart, index) {
+        var canvas = document.getElementById('ticketAllocationChart' + index);
+        if (!canvas) return;
+
+        var isUnlimited = chart.is_unlimited;
+        var sold = Number(chart.sold || 0);
+        var allocated = Number(chart.allocated || 0);
+        var remaining = Number(chart.remaining || 0);
+        var labels = isUnlimited ? ['Sold'] : ['Sold', 'Remaining'];
+        var values = isUnlimited ? [sold || 1] : [sold, remaining];
+        var bgColors = isUnlimited ? [unlimitedColor] : [soldColor, remainingColor];
+        var bdColors = isUnlimited ? [unlimitedBorder] : [soldBorder, remainingBorder];
+
+        new Chart(canvas.getContext('2d'), {
+            type: 'doughnut',
+            data: {
+                labels: labels,
+                datasets: [{
+                    data: values,
+                    backgroundColor: bgColors,
+                    borderColor: bdColors,
+                    borderWidth: 1,
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                cutout: '68%',
+                plugins: {
+                    legend: {
+                        position: 'bottom',
+                        labels: {
+                            color: textColor,
+                            boxWidth: 12,
+                            padding: 12,
+                            font: { size: 12 },
+                        }
+                    },
+                    tooltip: {
+                        callbacks: {
+                            label: function(context) {
+                                if (isUnlimited) {
+                                    return chart.label + ': ' + sold + ' sold, unlimited allocation';
+                                }
+                                if (context.dataIndex === 0) {
+                                    return 'Sold: ' + sold + ' of ' + allocated;
+                                }
+                                return 'Remaining: ' + remaining + ' of ' + allocated;
+                            }
+                        }
+                    }
+                }
+            }
+        });
+    });
+});
+</script>
+{% endif %}
+{% if event.ticketing_type != 'direct' and ticket_type_breakdown %}
 <script type="application/json" id="ticket-breakdown-data">{{ ticket_type_breakdown_json|safe }}</script>
 <script>
 document.addEventListener('DOMContentLoaded', function() {

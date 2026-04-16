@@ -2836,7 +2836,22 @@ def _compute_event_stats(event):
 
     # Ticket type breakdown
     saleable_ticket_types_list = list(event.saleable_ticket_types.all())
+    ticket_type_allocation_charts = []
     if event.ticketing_type == 'direct':
+        for tt in saleable_ticket_types_list:
+            sold = tt.quantity_sold or 0
+            allocated = tt.quantity_limit
+            is_unlimited = allocated is None
+            remaining = None if is_unlimited else max(allocated - sold, 0)
+            percent_sold = None if is_unlimited or allocated == 0 else round(min(sold / allocated * 100, 100))
+            ticket_type_allocation_charts.append({
+                'label': tt.name,
+                'sold': sold,
+                'allocated': allocated,
+                'remaining': remaining,
+                'percent_sold': percent_sold,
+                'is_unlimited': is_unlimited,
+            })
         ticket_type_breakdown = [
             {'label': tt.name, 'count': tt.quantity_sold}
             for tt in saleable_ticket_types_list
@@ -2996,6 +3011,7 @@ def _compute_event_stats(event):
         'profit': profit,
         'margin_pct': margin_pct,
         'ticket_type_breakdown': ticket_type_breakdown,
+        'ticket_type_allocation_charts': ticket_type_allocation_charts,
         'saleable_ticket_types_list': saleable_ticket_types_list,
         'sales_over_time': sales_over_time,
         'page_views_over_time': page_views_over_time,
@@ -3086,6 +3102,7 @@ def event_detail(request, event_id):
     profit = stats['profit']
     margin_pct = stats['margin_pct']
     ticket_type_breakdown = stats['ticket_type_breakdown']
+    ticket_type_allocation_charts = stats.get('ticket_type_allocation_charts', [])
     saleable_ticket_types_list = stats['saleable_ticket_types_list']
     survey_invitations_count = stats['survey_invitations_count']
     survey_responses_count = stats['survey_responses_count']
@@ -3132,6 +3149,7 @@ def event_detail(request, event_id):
     category_labels = dict(EventExpense.CATEGORY_CHOICES)
 
     ticket_type_breakdown_json = json.dumps(ticket_type_breakdown)
+    ticket_type_allocation_charts_json = json.dumps(ticket_type_allocation_charts)
 
     sales_over_time_json = json.dumps([
         {
@@ -3183,6 +3201,8 @@ def event_detail(request, event_id):
         'survey_results': survey_results,
         'ticket_type_breakdown': ticket_type_breakdown,
         'ticket_type_breakdown_json': ticket_type_breakdown_json,
+        'ticket_type_allocation_charts': ticket_type_allocation_charts,
+        'ticket_type_allocation_charts_json': ticket_type_allocation_charts_json,
         'sales_over_time_json': sales_over_time_json,
         'page_views_over_time_json': page_views_over_time_json,
         'has_page_view_data': bool(stats['page_views_over_time']),
