@@ -2700,6 +2700,153 @@ class EventDetailCacheTest(TestCase):
         self.assertContains(response, '$35.00')
 
 
+class EventDetailAllocationChartTest(TestCase):
+    """Tests for event detail per-ticket-type allocation charts."""
+
+    def setUp(self):
+        from django.core.cache import cache as django_cache
+
+        self.client = Client()
+        self.org = Organization.objects.create(name='Allocation Org', slug='allocation-org')
+        self.user = User.objects.create_user(
+            username='allocation',
+            email='allocation@example.com',
+            password='testpass123',
+        )
+        UserProfile.objects.create(
+            user=self.user,
+            organization=self.org,
+            org_role=UserProfile.OrgRole.OWNER,
+        )
+        self.venue = Venue.objects.create(
+            organization=self.org,
+            name='Allocation Venue',
+            city='Los Angeles',
+        )
+        self.event = Event.objects.create(
+            organization=self.org,
+            name='Allocation Event',
+            venue=self.venue,
+            start_date=date.today() + timedelta(days=7),
+            ticketing_type='direct',
+            status='live',
+        )
+        django_cache.clear()
+
+    def tearDown(self):
+        from django.core.cache import cache as django_cache
+
+        django_cache.clear()
+
+    def _login(self):
+        self.assertTrue(self.client.login(username='allocation@example.com', password='testpass123'))
+        self.client.get(reverse('tickets:home'))
+
+    def test_compute_event_stats_returns_direct_allocation_chart_data(self):
+        from tickets.views import _compute_event_stats
+
+        SaleableTicketType.objects.create(
+            event=self.event,
+            name='General Admission',
+            price=Decimal('25.00'),
+            quantity_limit=100,
+            quantity_sold=25,
+        )
+        SaleableTicketType.objects.create(
+            event=self.event,
+            name='VIP',
+            price=Decimal('75.00'),
+            quantity_limit=None,
+            quantity_sold=3,
+        )
+
+        stats = _compute_event_stats(self.event)
+
+        self.assertEqual(
+            stats['ticket_type_allocation_charts'],
+            [
+                {
+                    'label': 'General Admission',
+                    'sold': 25,
+                    'allocated': 100,
+                    'remaining': 75,
+                    'percent_sold': 25,
+                    'is_unlimited': False,
+                },
+                {
+                    'label': 'VIP',
+                    'sold': 3,
+                    'allocated': None,
+                    'remaining': None,
+                    'percent_sold': None,
+                    'is_unlimited': True,
+                },
+            ],
+        )
+
+    def test_direct_event_detail_renders_one_allocation_canvas_per_ticket_type(self):
+        SaleableTicketType.objects.create(
+            event=self.event,
+            name='General Admission',
+            price=Decimal('25.00'),
+            quantity_limit=100,
+            quantity_sold=25,
+        )
+        SaleableTicketType.objects.create(
+            event=self.event,
+            name='VIP',
+            price=Decimal('75.00'),
+            quantity_limit=50,
+            quantity_sold=0,
+        )
+        self._login()
+
+        response = self.client.get(reverse('tickets:event_detail', args=[self.event.pk]))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'Ticket Allocation')
+        self.assertContains(response, 'id="ticketAllocationChart0"')
+        self.assertContains(response, 'id="ticketAllocationChart1"')
+        self.assertNotContains(response, 'id="ticketBreakdownChart"')
+        payload = json.loads(response.context['ticket_type_allocation_charts_json'])
+        self.assertEqual(len(payload), 2)
+        self.assertEqual(payload[0]['label'], 'General Admission')
+        self.assertEqual(payload[1]['sold'], 0)
+
+    def test_non_direct_event_keeps_combined_ticket_breakdown_chart(self):
+        external_event = Event.objects.create(
+            organization=self.org,
+            name='Imported Event',
+            venue=self.venue,
+            start_date=date.today() + timedelta(days=8),
+        )
+        customer = Customer.objects.create(
+            organization=self.org,
+            email='imported@example.com',
+            name='Imported Buyer',
+        )
+        order = TicketOrder.objects.create(
+            event=external_event,
+            customer=customer,
+            order_number=str(uuid.uuid4())[:12],
+            total_amount=Decimal('50.00'),
+            order_date=timezone.now(),
+        )
+        Ticket.objects.create(
+            ticket_order=order,
+            ticket_type='General Admission',
+            price=Decimal('50.00'),
+        )
+        self._login()
+
+        response = self.client.get(reverse('tickets:event_detail', args=[external_event.pk]))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'Ticket Breakdown')
+        self.assertContains(response, 'id="ticketBreakdownChart"')
+        self.assertNotContains(response, 'Ticket Allocation')
+
+
 class EventDailyPageViewTest(TestCase):
     """Tests for daily public buy-page views and event detail chart context."""
 
