@@ -12,6 +12,63 @@
 <link rel="stylesheet" href="https://releases.transloadit.com/uppy/v3.27.3/uppy.min.css">
 <script src="https://releases.transloadit.com/uppy/v3.27.3/uppy.min.js" defer></script>
 {% endif %}
+<style>
+/* -- Event Detail: Header action heights + dropdown z-index -- */
+.page-header-actions .btn {
+    min-height: 44px;
+    display: inline-flex;
+    align-items: center;
+}
+@media (min-width: 576px) {
+    .page-header-actions .btn { min-height: 32px; }
+}
+/* Ensure dropdown opens above stat sections below the page-header */
+.page-header {
+    position: relative;
+    z-index: 20;
+}
+/* End Sales form inside dropdown-item */
+.page-header-actions .dropdown-menu form { margin: 0; }
+
+/* -- Event Detail: Grouped Stat Sections ---- */
+.stat-sections { margin-bottom: 24px; }
+.stat-section { margin-bottom: 6px; }
+.stat-section-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 10px;
+}
+.stat-section-label {
+    font-size: 9px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.14em;
+    color: var(--text-secondary);
+    white-space: nowrap;
+    flex-shrink: 0;
+}
+.stat-section-rule {
+    flex: 1;
+    height: 1px;
+    background: var(--border-light);
+}
+.stat-section .stats-grid {
+    margin-bottom: 0;
+    grid-template-columns: repeat(3, 1fr);
+}
+.stat-section--traffic .stats-grid {
+    grid-template-columns: repeat(2, 1fr);
+}
+@media (max-width: 767px) {
+    .stat-section .stats-grid { grid-template-columns: repeat(3, 1fr); }
+    .stat-section--traffic .stats-grid { grid-template-columns: repeat(2, 1fr); }
+}
+@media (max-width: 575px) {
+    .stat-section .stats-grid,
+    .stat-section--traffic .stats-grid { grid-template-columns: repeat(2, 1fr); gap: 10px; }
+}
+</style>
 {% endblock %}
 
 {% block content %}
@@ -56,7 +113,7 @@
     <div class="page-header-actions">
         <!-- Prev/next navigation: desktop only -->
         {% if prev_event_id or next_event_id %}
-        <div class="d-none d-sm-flex gap-1 me-1">
+        <div class="d-none d-sm-flex gap-1">
             <a href="{% if prev_event_id %}{% url 'tickets:event_detail' prev_event_id %}{% else %}#{% endif %}"
                class="btn btn-outline-secondary btn-sm{% if not prev_event_id %} disabled{% endif %}"
                title="{{ prev_event_name|default:'' }}">
@@ -70,43 +127,50 @@
         </div>
         {% endif %}
 
-        <!-- Primary status-change actions: always visible (most important on mobile) -->
-        {% if event.ticketing_type == 'direct' %}
-            {% with eff=event.effective_status %}
-            {% if eff == 'draft' %}
-            <form method="post" action="{% url 'tickets:event_publish' event.id %}" class="d-inline">
-                {% csrf_token %}
-                <button type="submit" class="btn btn-success btn-sm" style="min-height: 44px;"><i class="bi bi-broadcast"></i> Publish</button>
-            </form>
-            {% elif eff == 'live' %}
-            <form method="post" action="{% url 'tickets:event_end_sales' event.id %}" class="d-inline"
-                  onsubmit="return confirm('End sales for this event? This cannot be undone.');">
-                {% csrf_token %}
-                <button type="submit" class="btn btn-outline-secondary btn-sm" style="min-height: 44px;"><i class="bi bi-stop-circle"></i> End Sales</button>
-            </form>
-            <!-- Cancel Event: desktop only (destructive, low-frequency — goes in mobile ⋮) -->
-            <button type="button" class="btn btn-danger btn-sm d-none d-sm-inline-flex" data-bs-toggle="modal" data-bs-target="#cancelEventModal">
-                <i class="bi bi-x-circle"></i> Cancel Event
-            </button>
-            {% endif %}
-            {% endwith %}
+        <!-- View Ticket Page: desktop visible button -->
+        {% if event.ticketing_type == 'direct' and event.effective_status != 'draft' %}
+        <a href="{% url 'tickets:public_event_buy' event.public_id %}" target="_blank" rel="noopener noreferrer"
+           class="btn btn-outline-secondary btn-sm d-none d-sm-inline-flex">
+            <i class="bi bi-box-arrow-up-right"></i><span class="ms-1">View Ticket Page</span>
+        </a>
+        {% elif event.ticket_link %}
+        <a href="{{ event.ticket_link }}" target="_blank" rel="noopener noreferrer"
+           class="btn btn-outline-secondary btn-sm d-none d-sm-inline-flex">
+            <i class="bi bi-box-arrow-up-right"></i><span class="ms-1">View Ticket Page</span>
+        </a>
         {% endif %}
 
-        <!-- Secondary actions: desktop only -->
-        <a href="{% url 'tickets:event_export_csv' event.id %}" class="btn btn-outline-secondary btn-sm d-none d-sm-inline-flex"><i class="bi bi-download"></i> Export CSV</a>
-        {% if org_has_custom_fields %}
-        <button type="button" class="btn btn-outline-secondary btn-sm d-none d-sm-inline-flex" data-bs-toggle="modal" data-bs-target="#customFieldsModal">
-            <i class="bi bi-sliders"></i> Custom Fields
-        </button>
+        <!-- Publish: draft direct events only -->
+        {% if event.ticketing_type == 'direct' and event.effective_status == 'draft' %}
+        <form method="post" action="{% url 'tickets:event_publish' event.id %}" class="d-inline">
+            {% csrf_token %}
+            <button type="submit" class="btn btn-primary btn-sm"><i class="bi bi-broadcast"></i> Publish</button>
+        </form>
         {% endif %}
 
         <!-- Edit: always visible -->
-        <a href="{% url 'tickets:event_edit' event.id %}" class="btn btn-outline-secondary btn-sm" style="min-height: 44px; display: inline-flex; align-items: center;"><i class="bi bi-pencil"></i><span class="ms-1">Edit</span></a>
+        <a href="{% url 'tickets:event_edit' event.id %}" class="btn btn-outline-secondary btn-sm"><i class="bi bi-pencil"></i><span class="ms-1">Edit</span></a>
 
-        <!-- Delete: desktop only (goes in mobile ⋮) -->
-        {% if event.ticketing_type != 'direct' or event.effective_status == 'draft' %}
-        <a href="{% url 'tickets:event_delete' event.id %}" class="btn btn-outline-danger btn-sm d-none d-sm-inline-flex"><i class="bi bi-trash"></i> Delete</a>
-        {% endif %}
+        <!-- Desktop secondary actions: hidden on mobile -->
+        <div class="dropdown d-none d-sm-flex">
+            <button class="btn btn-outline-secondary btn-sm dropdown-toggle dropdown-toggle-split" style="width: 36px; padding-left: 6px; padding-right: 6px;" data-bs-toggle="dropdown" aria-expanded="false" aria-label="More actions">
+                <i class="bi bi-three-dots"></i>
+            </button>
+            <ul class="dropdown-menu dropdown-menu-end">
+                <li><a class="dropdown-item" href="{% url 'tickets:event_export_csv' event.id %}"><i class="bi bi-download me-2"></i>Export CSV</a></li>
+                {% if org_has_custom_fields %}
+                <li>
+                    <button type="button" class="dropdown-item" data-bs-toggle="modal" data-bs-target="#customFieldsModal">
+                        <i class="bi bi-sliders me-2"></i>Custom Fields
+                    </button>
+                </li>
+                {% endif %}
+                {% if event.ticketing_type != 'direct' or event.effective_status == 'draft' %}
+                <li><hr class="dropdown-divider"></li>
+                <li><a class="dropdown-item text-danger" href="{% url 'tickets:event_delete' event.id %}"><i class="bi bi-trash me-2"></i>Delete</a></li>
+                {% endif %}
+            </ul>
+        </div>
 
         <!-- Mobile overflow menu: hidden on ≥576px -->
         <div class="dropdown d-sm-none">
@@ -116,23 +180,11 @@
                 <i class="bi bi-three-dots-vertical"></i>
             </button>
             <ul class="dropdown-menu dropdown-menu-end">
-                <!-- Cancel Event at top for live direct events -->
-                {% if event.ticketing_type == 'direct' and event.effective_status == 'live' %}
-                <li>
-                    <button type="button" class="dropdown-item text-danger" data-bs-toggle="modal" data-bs-target="#cancelEventModal">
-                        <i class="bi bi-x-circle me-2"></i>Cancel Event
-                    </button>
-                </li>
-                <li><hr class="dropdown-divider"></li>
-                {% endif %}
-
-                <!-- View Ticket Page: live/ended direct events only (draft returns 404) -->
+                <!-- View Ticket Page -->
                 {% if event.ticketing_type == 'direct' and event.effective_status != 'draft' %}
                 <li><a class="dropdown-item" href="{% url 'tickets:public_event_buy' event.public_id %}" target="_blank" rel="noopener noreferrer"><i class="bi bi-box-arrow-up-right me-2"></i>View Ticket Page</a></li>
-                <li><hr class="dropdown-divider"></li>
                 {% elif event.ticket_link %}
                 <li><a class="dropdown-item" href="{{ event.ticket_link }}" target="_blank" rel="noopener noreferrer"><i class="bi bi-box-arrow-up-right me-2"></i>View Ticket Page</a></li>
-                <li><hr class="dropdown-divider"></li>
                 {% endif %}
 
                 <!-- Utility actions -->
@@ -185,34 +237,79 @@
 </div>
 {% endif %}
 
-<div class="stats-grid">
-    <div class="stat-card stat-card--accent">
-        <div class="stat-label">Total Orders</div>
-        <div class="stat-value">{{ total_orders }}</div>
+<div class="stat-sections">
+<!-- Sales metrics -->
+<div class="stat-section">
+    <div class="stat-section-header">
+        <span class="stat-section-label">Sales</span>
+        <span class="stat-section-rule"></span>
     </div>
-    <div class="stat-card stat-card--success">
-        <div class="stat-label">Total Revenue</div>
-        <div class="stat-value">${{ total_revenue|currency }}</div>
-        {% if total_additional_income > 0 %}
-        <div class="stat-detail" style="font-size: 0.75rem; margin-top: 4px;">Tickets: ${{ net_ticket_revenue|currency }} + Other: ${{ total_additional_income|currency }}</div>
-        {% endif %}
+    <div class="stats-grid">
+        <div class="stat-card stat-card--accent">
+            <div class="stat-label">Orders</div>
+            <div class="stat-value">{{ total_orders }}</div>
+        </div>
+        <div class="stat-card stat-card--info">
+            <div class="stat-label">Tickets</div>
+            <div class="stat-value">{{ total_tickets }}</div>
+        </div>
+        <div class="stat-card stat-card--warning">
+            <div class="stat-label">Customers</div>
+            <div class="stat-value">{{ total_customers }}</div>
+        </div>
     </div>
-    <div class="stat-card stat-card--info">
-        <div class="stat-label">Total Tickets</div>
-        <div class="stat-value">{{ total_tickets }}</div>
+</div>
+
+{% if event.ticketing_type == 'direct' %}
+<!-- Ticket page traffic metrics -->
+<div class="stat-section stat-section--traffic">
+    <div class="stat-section-header">
+        <span class="stat-section-label">Ticket Page</span>
+        <span class="stat-section-rule"></span>
     </div>
-    <div class="stat-card stat-card--warning">
-        <div class="stat-label">Customers</div>
-        <div class="stat-value">{{ total_customers }}</div>
+    <div class="stats-grid">
+        <div class="stat-card stat-card--info">
+            <div class="stat-label">Page Views</div>
+            <div class="stat-value">{{ event.public_buy_page_views }}</div>
+        </div>
+        <div class="stat-card stat-card--accent">
+            <div class="stat-label">Conversion Rate</div>
+            {% if conversion_rate_pct is not None %}
+            <div class="stat-value">{{ conversion_rate_pct }}%</div>
+            <div class="stat-detail" style="font-size: 0.75rem; margin-top: 4px;">{{ total_orders }} orders / {{ event.public_buy_page_views }} views</div>
+            {% else %}
+            <div class="stat-value" style="color: var(--text-tertiary);">—</div>
+            <div class="stat-detail" style="font-size: 0.75rem; margin-top: 4px;">No page views yet</div>
+            {% endif %}
+        </div>
     </div>
-    <div class="stat-card stat-card--danger">
-        <div class="stat-label">Total Expenses</div>
-        <div class="stat-value">${{ total_expenses|currency }}</div>
+</div>
+{% endif %}
+
+<!-- Financial metrics -->
+<div class="stat-section">
+    <div class="stat-section-header">
+        <span class="stat-section-label">Financials</span>
+        <span class="stat-section-rule"></span>
     </div>
-    <div class="stat-card {% if profit >= 0 %}stat-card--success{% else %}stat-card--danger{% endif %}">
-        <div class="stat-label">Profit / Loss</div>
-        <div class="stat-value"{% if profit < 0 %} style="color: var(--danger, #dc3545);"{% endif %}>${{ profit|currency }}{% if margin_pct != None %} <small style="font-size:0.6em;">({{ margin_pct|floatformat:1 }}%)</small>{% endif %}</div>
+    <div class="stats-grid">
+        <div class="stat-card stat-card--success">
+            <div class="stat-label">Revenue</div>
+            <div class="stat-value">${{ total_revenue|currency }}</div>
+            {% if total_additional_income > 0 %}
+            <div class="stat-detail" style="font-size: 0.75rem; margin-top: 4px;">Tickets: ${{ net_ticket_revenue|currency }} + Other: ${{ total_additional_income|currency }}</div>
+            {% endif %}
+        </div>
+        <div class="stat-card stat-card--danger">
+            <div class="stat-label">Expenses</div>
+            <div class="stat-value">${{ total_expenses|currency }}</div>
+        </div>
+        <div class="stat-card {% if profit >= 0 %}stat-card--success{% else %}stat-card--danger{% endif %}">
+            <div class="stat-label">Profit / Loss</div>
+            <div class="stat-value"{% if profit < 0 %} style="color: var(--danger);"{% endif %}>${{ profit|currency }}{% if margin_pct != None %} <small style="font-size:0.6em;">({{ margin_pct|floatformat:1 }}%)</small>{% endif %}</div>
+        </div>
     </div>
+</div>
 </div>
 
 <!-- AI Event Summary -->
@@ -315,12 +412,6 @@
                 <i class="bi bi-box-arrow-up-right"></i> Open
             </a>
         </div>
-        <p class="mb-0 mt-2 text-muted small">Ticket page views: {{ event.public_buy_page_views }}</p>
-        {% if conversion_rate_pct is not None %}
-        <p class="mb-0 mt-1 text-muted small">Conversion rate: {{ conversion_rate_pct }}% ({{ total_orders }} orders / {{ event.public_buy_page_views }} views)</p>
-        {% else %}
-        <p class="mb-0 mt-1 text-muted small">Conversion rate: - (no page views yet)</p>
-        {% endif %}
     </div>
 </div>
 {% endif %}
@@ -677,6 +768,25 @@
             <p class="mb-0 text-muted">Surveys have been sent but no responses yet.</p>
         </div>
         {% endif %}
+    </div>
+</div>
+{% endif %}
+
+{% if event.ticketing_type == 'direct' and event.effective_status == 'live' %}
+<div class="card mb-4" style="border-color: var(--danger, #dc3545);">
+    <div class="card-header" style="border-bottom-color: var(--danger, #dc3545);">
+        <h5 class="mb-0 text-danger"><i class="bi bi-exclamation-triangle me-2"></i>Danger Zone</h5>
+    </div>
+    <div class="card-body">
+        <div class="d-flex align-items-start justify-content-between gap-3 flex-wrap">
+            <div>
+                <strong>Cancel Event</strong>
+                <p class="text-muted small mb-0">Stop sales and refund all completed orders. This cannot be undone.</p>
+            </div>
+            <button type="button" class="btn btn-danger btn-sm" data-bs-toggle="modal" data-bs-target="#cancelEventModal">
+                Cancel Event
+            </button>
+        </div>
     </div>
 </div>
 {% endif %}

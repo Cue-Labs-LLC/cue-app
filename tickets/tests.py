@@ -4415,6 +4415,79 @@ class AccountCreationAndLoginTests(TestCase):
             fetch_redirect_response=False,
         )
 
+    # ------------------------------------------------------------------
+    # CSRF / cache-control correctness
+    # ------------------------------------------------------------------
+
+    def test_login_view_no_cache(self):
+        """GET /login/ must include Cache-Control: no-store to prevent CSRF token mismatch on account switch."""
+        response = self.client.get(reverse('tickets:login'))
+        self.assertIn('no-store', response.get('Cache-Control', ''))
+
+    def test_email_login_view_no_cache(self):
+        """GET /login/email/ must include Cache-Control: no-store."""
+        response = self.client.get(reverse('tickets:email_login'))
+        self.assertIn('no-store', response.get('Cache-Control', ''))
+
+    def test_invite_accept_logout_is_post_form(self):
+        """invite_accept.html email_mismatch branch must render a POST form for logout, not a GET link."""
+        from tickets.models import Organization, UserProfile, OrganizationInvitation
+        from django.utils import timezone
+        import datetime
+        import uuid
+        org = Organization.objects.create(name='Test Org')
+        user = User.objects.create_user(username='inviteuser', email='inviteuser@example.com', password='x')
+        UserProfile.objects.create(user=user, role=UserProfile.Role.ORGANIZER, organization=org)
+        invitation = OrganizationInvitation.objects.create(
+            organization=org,
+            email='other@example.com',
+            invited_by=user,
+            token=uuid.uuid4(),
+            expires_at=timezone.now() + datetime.timedelta(days=7),
+        )
+        self.client.force_login(user)
+        response = self.client.get(reverse('tickets:invite_accept', args=[invitation.token]))
+        self.assertEqual(response.status_code, 200)
+        content = response.content.decode()
+        logout_url = reverse('tickets:logout')
+        # Must be a POST form, not a bare anchor
+        self.assertIn(f'action="{logout_url}"', content)
+        self.assertIn('method="post"', content)
+        self.assertNotIn(f'href="{logout_url}"', content)
+
+    def test_no_csrf_403_after_account_switch(self):
+        """Logging out and submitting the login form as a new user must not produce a 403.
+
+        Regression for: browser-cached /login/ page has stale CSRF token after
+        logout rotates the CSRF cookie. @never_cache prevents caching so the
+        next GET always yields a fresh token.
+        """
+        # Load login page to seed the CSRF cookie
+        self.client.get(reverse('tickets:login'))
+        csrf_token = self.client.cookies.get('csrftoken')
+        self.assertIsNotNone(csrf_token, 'CSRF cookie must be set after visiting /login/')
+
+        # Logout (rotates CSRF cookie server-side)
+        self.client.post(
+            reverse('tickets:logout'),
+            HTTP_X_CSRFTOKEN=csrf_token.value,
+        )
+
+        # Re-fetch /login/ — with @never_cache the response is always fresh
+        response = self.client.get(reverse('tickets:login'))
+        new_csrf = self.client.cookies.get('csrftoken')
+        self.assertIsNotNone(new_csrf)
+
+        # Submit login form with the fresh CSRF token using CSRF enforcement
+        enforcing_client = Client(enforce_csrf_checks=True)
+        enforcing_client.cookies['csrftoken'] = new_csrf.value
+        response = enforcing_client.post(
+            reverse('tickets:login'),
+            {'phone_number': '+15555550001'},
+            HTTP_X_CSRFTOKEN=new_csrf.value,
+        )
+        self.assertNotEqual(response.status_code, 403, 'Login after account switch must not produce a CSRF 403')
+
 
 class AuthViewsCacheControlTests(TestCase):
     """Regression: all unauthenticated auth views must return Cache-Control: no-store.
@@ -4436,12 +4509,6 @@ class AuthViewsCacheControlTests(TestCase):
             response.get('Cache-Control', ''),
             f'{url_name} is missing Cache-Control: no-store — add @never_cache to the view',
         )
-
-    def test_login_view_returns_no_store(self):
-        self._assert_no_store('login')
-
-    def test_email_login_view_returns_no_store(self):
-        self._assert_no_store('email_login')
 
     def test_unified_verify_view_returns_no_store(self):
         self._assert_no_store(
