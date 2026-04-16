@@ -22,6 +22,7 @@ from django.db import models
 from django.core.paginator import Paginator
 from django.core.files.uploadedfile import InMemoryUploadedFile
 from django.http import JsonResponse, Http404, HttpResponse, HttpResponseBadRequest
+from django.views.decorators.cache import never_cache
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
 from django.db import connection, IntegrityError, transaction
@@ -438,6 +439,7 @@ def _sync_event_to_google_calendar(event):
 
 # Authentication Views
 
+@never_cache
 def unified_login_view(request):
     """Step 1: enter phone number - handles both login and new signup."""
     from .sms import start_phone_verification
@@ -466,6 +468,7 @@ def unified_login_view(request):
     return render(request, 'tickets/auth/login.html', {'form': form})
 
 
+@never_cache
 @require_http_methods(["GET", "POST"])
 def unified_verify_view(request):
     """Step 2: verify OTP - log in existing user or send new user to profile completion."""
@@ -647,6 +650,7 @@ def resend_email_after_profile_view(request):
     return redirect('tickets:verify_email_after_profile')
 
 
+@never_cache
 @require_http_methods(["GET", "POST"])
 def email_login_view(request):
     """Step 1 (email path): enter email address - handles both login and new signup."""
@@ -677,6 +681,7 @@ def email_login_view(request):
     return render(request, 'tickets/auth/login_email.html', {'form': form})
 
 
+@never_cache
 @require_http_methods(["GET", "POST"])
 def email_verify_view(request):
     """Step 2 (email path): verify OTP - log in existing user or send new user to profile completion."""

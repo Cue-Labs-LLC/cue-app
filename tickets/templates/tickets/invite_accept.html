@@ -13,7 +13,10 @@
                 <a href="{% url 'tickets:home' %}" class="btn btn-primary">Go to dashboard</a>
                 {% elif email_mismatch %}
                 <p class="text-muted">This invitation was sent to <strong>{{ invitation.email }}</strong>. Please log in with that email to accept.</p>
-                <a href="{% url 'tickets:logout' %}" class="btn btn-outline-secondary">Log out</a>
+                <form method="post" action="{% url 'tickets:logout' %}" class="d-inline">
+                    {% csrf_token %}
+                    <button type="submit" class="btn btn-outline-secondary">Log out</button>
+                </form>
                 <a href="{% url 'tickets:home' %}" class="btn btn-primary">Go to dashboard</a>
                 {% endif %}
             </div>
