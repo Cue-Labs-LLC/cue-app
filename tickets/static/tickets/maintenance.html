@@ -1,15 +1,23 @@
 <!DOCTYPE html>
+<!--
+  Cue — Static maintenance/catch-all error page
+  ──────────────────────────────────────────────
+  Fully self-contained: no external fonts, scripts, or stylesheets.
+  Intended to be served when the Django app is unreachable (502/503).
+
+  To use with Render:
+    1. Deploy this file publicly (e.g. GitHub Pages, Cloudflare Pages,
+       or a separate Render static site at a known URL).
+    2. In your Render web service → Settings → Custom Error Pages,
+       paste the public URL of this file.
+    Render will proxy requests through this page when your service is down.
+-->
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>500 · Cue</title>
-    <!-- Fonts loaded non-blocking — system fallbacks keep this page functional on server errors -->
-    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='5' fill='%230F0E0D'/%3E%3Cpath d='M6 11a1 1 0 0 1 1-1h18a1 1 0 0 1 1 1v3a2 2 0 0 0 0 4v3a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1v-3a2 2 0 0 0 0-4v-3z' fill='%2300FF87'/%3E%3Cline x1='13' y1='10' x2='13' y2='22' stroke='%230F0E0D' stroke-width='1.5' stroke-dasharray='2 2'/%3E%3C/svg%3E">
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link rel="preload" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:ital,wght@0,900;1,900&family=DM+Sans:opsz,wght@9..40,300;9..40,400;9..40,500&display=swap" as="style" onload="this.rel='stylesheet'">
-    <noscript><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:ital,wght@0,900;1,900&family=DM+Sans:opsz,wght@9..40,300;9..40,400;9..40,500&display=swap"></noscript>
+    <title>Cue — Be Right Back</title>
+    <meta name="robots" content="noindex">
     <style>
         *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -22,9 +30,9 @@
             --text-2:      #7A7672;
             --text-3:      #4A4846;
             --accent:      #00FF87;
-            --warning:     #C49A3C;
-            --font-display:'Barlow Condensed', 'Arial Narrow', sans-serif;
-            --font-body:   'DM Sans', system-ui, sans-serif;
+            /* System font stack — no network requests needed */
+            --font-display:'Arial Narrow', 'Helvetica Neue Condensed', Arial, sans-serif;
+            --font-body:   -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
         }
 
         html, body { height: 100%; }
@@ -39,6 +47,7 @@
             flex-direction: column;
         }
 
+        /* Neon accent bar */
         body::before {
             content: '';
             position: fixed;
@@ -73,12 +82,18 @@
             background: var(--accent);
             flex-shrink: 0;
             box-shadow: 0 0 8px rgba(0,255,135,0.22);
+            /* Gentle pulse so the page feels alive */
+            animation: pulse 3s ease-in-out infinite;
+        }
+        @keyframes pulse {
+            0%, 100% { box-shadow: 0 0 8px rgba(0,255,135,0.22); }
+            50%       { box-shadow: 0 0 16px rgba(0,255,135,0.5); }
         }
         .e-brand-name {
             font-family: var(--font-display);
             font-weight: 900;
             font-size: 1.5rem;
-            letter-spacing: 0.05em;
+            letter-spacing: 0.12em;
             text-transform: uppercase;
             line-height: 1;
         }
@@ -93,43 +108,43 @@
             overflow: hidden;
         }
 
-        .e-ghost {
+        /* Animated dots — the only decoration we need */
+        .e-ambient {
             position: absolute;
-            font-family: var(--font-display);
-            font-weight: 900;
-            font-style: italic;
-            font-size: clamp(220px, 36vw, 480px);
-            color: rgba(196,154,60,0.05);
-            letter-spacing: -0.04em;
-            user-select: none;
+            inset: 0;
             pointer-events: none;
-            line-height: 0.85;
-            top: 50%;
-            left: 50%;
-            transform: translate(-50%, -50%);
-            opacity: 0;
-            animation: ghost-in 1s ease 0.1s forwards;
+            overflow: hidden;
         }
-
-        @keyframes ghost-in {
-            from { opacity: 0; filter: blur(6px); }
-            to   { opacity: 1; filter: blur(0); }
+        .e-ambient::before,
+        .e-ambient::after {
+            content: '';
+            position: absolute;
+            border-radius: 50%;
+            background: radial-gradient(circle, rgba(0,255,135,0.04) 0%, transparent 70%);
+        }
+        .e-ambient::before {
+            width: 600px; height: 600px;
+            top: -200px; right: -200px;
+        }
+        .e-ambient::after {
+            width: 400px; height: 400px;
+            bottom: -150px; left: -100px;
+            background: radial-gradient(circle, rgba(0,255,135,0.025) 0%, transparent 70%);
         }
 
         .e-content {
             position: relative;
             max-width: 480px;
             width: 100%;
-            opacity: 0;
-            animation: content-up 0.45s ease 0.05s forwards;
+            animation: content-up 0.5s ease forwards;
         }
 
         @keyframes content-up {
-            from { opacity: 0; transform: translateY(18px); }
+            from { opacity: 0; transform: translateY(20px); }
             to   { opacity: 1; transform: translateY(0); }
         }
 
-        .e-code {
+        .e-eyebrow {
             display: flex;
             align-items: center;
             gap: 10px;
@@ -140,7 +155,7 @@
             color: var(--text-3);
             margin-bottom: 20px;
         }
-        .e-code::before {
+        .e-eyebrow::before {
             content: '';
             display: block;
             width: 22px;
@@ -165,59 +180,50 @@
             margin-bottom: 36px;
         }
 
-        .e-actions { display: flex; gap: 10px; flex-wrap: wrap; }
-
-        .e-btn {
+        /* Status indicator */
+        .e-status {
             display: inline-flex;
             align-items: center;
-            gap: 7px;
-            font-size: 0.72rem;
-            font-weight: 400;
-            letter-spacing: 0.1em;
-            text-transform: uppercase;
-            text-decoration: none;
-            padding: 10px 20px;
-            min-height: 44px;
+            gap: 8px;
+            font-size: 0.75rem;
+            color: var(--text-3);
+            letter-spacing: 0.06em;
+            padding: 8px 14px;
+            border: 1px solid var(--border);
             border-radius: 3px;
-            border: 1px solid transparent;
-            cursor: pointer;
-            transition: opacity 0.15s, transform 0.1s;
-            background: none;
+            background: var(--surface);
         }
-        .e-btn:active { transform: scale(0.98); }
-
-        .e-btn--primary {
-            background: var(--text);
-            border-color: var(--text);
-            color: var(--bg);
+        .e-status-dot {
+            width: 6px;
+            height: 6px;
+            border-radius: 50%;
+            background: var(--accent);
+            animation: blink 1.4s ease-in-out infinite;
         }
-        .e-btn--primary:hover { opacity: 0.86; }
-
-        .e-btn--ghost {
-            border-color: var(--border-mid);
-            color: var(--text-2);
+        @keyframes blink {
+            0%, 100% { opacity: 1; }
+            50%       { opacity: 0.3; }
         }
-        .e-btn--ghost:hover { color: var(--text); border-color: rgba(255,255,255,0.2); }
     </style>
 </head>
 <body>
 
 <nav class="e-nav">
-    <a href="/" class="e-brand" aria-label="Go to Cue homepage">
+    <a href="/" class="e-brand">
         <span class="e-brand-dot"></span>
         <span class="e-brand-name">Cue</span>
     </a>
 </nav>
 
 <main class="e-main">
-    <span class="e-ghost">500</span>
+    <div class="e-ambient"></div>
     <div class="e-content">
-        <p class="e-code">Error 500</p>
-        <h1 class="e-title">Something went wrong</h1>
-        <p class="e-body">An unexpected error occurred on our end. It's been logged and we'll look into it. Try refreshing — if it keeps happening, come back in a few minutes.</p>
-        <div class="e-actions">
-            <a href="javascript:location.reload()" class="e-btn e-btn--primary">Refresh page</a>
-            <a href="/" class="e-btn e-btn--ghost">Go to dashboard</a>
+        <p class="e-eyebrow">Temporarily offline</p>
+        <h1 class="e-title">We'll be right back</h1>
+        <p class="e-body">Cue is undergoing maintenance or experiencing a brief outage. We're working on it — check back in a few minutes.</p>
+        <div class="e-status">
+            <span class="e-status-dot"></span>
+            Working on it
         </div>
     </div>
 </main>

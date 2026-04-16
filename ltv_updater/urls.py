@@ -29,9 +29,25 @@ urlpatterns = [
     path('', include(('tickets.urls', 'tickets'))),
 ]
 
+# Custom error handlers — Django discovers 400/403/404/500.html templates
+# automatically, but explicit assignments ensure correct view signatures
+# and allow future context injection per handler.
+handler400 = 'django.views.defaults.bad_request'
+handler403 = 'django.views.defaults.permission_denied'
+handler404 = 'django.views.defaults.page_not_found'
+handler500 = 'django.views.defaults.server_error'
+
 if settings.DEBUG:
     import debug_toolbar
     urlpatterns = [path('__debug__/', include(debug_toolbar.urls))] + urlpatterns
+
+    from django.shortcuts import render as _render
+    urlpatterns += [
+        path('__errors__/400/', lambda r: _render(r, '400.html', status=400)),
+        path('__errors__/403/', lambda r: _render(r, '403.html', status=403)),
+        path('__errors__/404/', lambda r: _render(r, '404.html', status=404)),
+        path('__errors__/500/', lambda r: _render(r, '500.html', status=500)),
+    ]
 
 # Serve media files in development only
 # In production, static files are served by WhiteNoise
