@@ -4414,3 +4414,55 @@ class AccountCreationAndLoginTests(TestCase):
             reverse('tickets:attendee_dashboard'),
             fetch_redirect_response=False,
         )
+
+
+class AuthViewsCacheControlTests(TestCase):
+    """Regression: all unauthenticated auth views must return Cache-Control: no-store.
+
+    Missing @never_cache caused 403 CSRF failures after account switch — browsers
+    served bfcached pages with stale CSRF tokens that no longer matched the rotated
+    CSRF cookie.
+    """
+
+    def _assert_no_store(self, url_name, session_data=None):
+        if session_data:
+            session = self.client.session
+            for key, value in session_data.items():
+                session[key] = value
+            session.save()
+        response = self.client.get(reverse(f'tickets:{url_name}'))
+        self.assertIn(
+            'no-store',
+            response.get('Cache-Control', ''),
+            f'{url_name} is missing Cache-Control: no-store — add @never_cache to the view',
+        )
+
+    def test_login_view_returns_no_store(self):
+        self._assert_no_store('login')
+
+    def test_email_login_view_returns_no_store(self):
+        self._assert_no_store('email_login')
+
+    def test_unified_verify_view_returns_no_store(self):
+        self._assert_no_store(
+            'unified_verify',
+            {'verify_unified': {'phone': '+15550001234', 'is_new': False}},
+        )
+
+    def test_email_verify_view_returns_no_store(self):
+        self._assert_no_store(
+            'email_verify',
+            {'verify_email': {'email': 'test@example.com', 'is_new': False}},
+        )
+
+    def test_complete_profile_view_returns_no_store(self):
+        self._assert_no_store(
+            'complete_profile',
+            {'pending_signup_phone': '+15550001234'},
+        )
+
+    def test_email_complete_profile_view_returns_no_store(self):
+        self._assert_no_store(
+            'email_complete_profile',
+            {'pending_signup_email': 'test@example.com'},
+        )
