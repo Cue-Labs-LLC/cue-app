@@ -24,7 +24,7 @@ from django.core.files.uploadedfile import InMemoryUploadedFile
 from django.http import JsonResponse, Http404, HttpResponse, HttpResponseBadRequest
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
-from django.db import connection, transaction
+from django.db import connection, IntegrityError, transaction
 from django.utils import timezone as django_tz
 from django.utils.http import url_has_allowed_host_and_scheme
 from django.utils.text import slugify
@@ -36,7 +36,7 @@ from .models import (
     SurveyQuestion, SurveyInvitation, SurveyResponse, SurveyAnswer,
     PipedreamCalendarConnection, OrganizationAPIKey,
     SaleableTicketType, SaleableTicketTypeTier, StripeCheckoutSession, Payout, PromoCode,
-    ExternalSurveyUpload, ExternalSurveyResponse,
+    ExternalSurveyUpload, ExternalSurveyResponse, EventDailyPageView,
     WaitlistEntry, OrganizerWaitlist,
     ScannerSession, generate_unique_scanner_pin, TrackingLink, _generate_tracking_token,
     EVENT_STATUS_DRAFT, EVENT_STATUS_LIVE, EVENT_STATUS_ENDED, EVENT_STATUS_CANCELLED,
@@ -2856,6 +2856,11 @@ def _compute_event_stats(event):
         .annotate(count=Count('id'), revenue=Sum('total_amount'))
         .order_by('date')
     )
+    page_views_over_time = list(
+        EventDailyPageView.objects.filter(event=event)
+        .order_by('date')
+        .values('date', 'view_count')
+    )
 
     # Survey results — internal (SurveyResponse/SurveyAnswer)
     survey_invitations_count = SurveyInvitation.objects.filter(event=event).count()
@@ -2986,6 +2991,7 @@ def _compute_event_stats(event):
         'ticket_type_breakdown': ticket_type_breakdown,
         'saleable_ticket_types_list': saleable_ticket_types_list,
         'sales_over_time': sales_over_time,
+        'page_views_over_time': page_views_over_time,
         'survey_invitations_count': survey_invitations_count,
         'survey_responses_count': survey_responses_count,
         'survey_results': survey_results,
@@ -3128,6 +3134,13 @@ def event_detail(request, event_id):
         }
         for row in stats['sales_over_time']
     ])
+    page_views_over_time_json = json.dumps([
+        {
+            'date': row['date'].isoformat(),
+            'views': row['view_count'],
+        }
+        for row in stats['page_views_over_time']
+    ])
 
     active_scanner_sessions = ScannerSession.objects.filter(event=event, is_active=True).count()
 
@@ -3164,6 +3177,9 @@ def event_detail(request, event_id):
         'ticket_type_breakdown': ticket_type_breakdown,
         'ticket_type_breakdown_json': ticket_type_breakdown_json,
         'sales_over_time_json': sales_over_time_json,
+        'page_views_over_time_json': page_views_over_time_json,
+        'has_page_view_data': bool(stats['page_views_over_time']),
+        'show_page_views_chart': event.ticketing_type == 'direct',
         'prev_event_id': prev_event.id if prev_event else None,
         'next_event_id': next_event.id if next_event else None,
         'prev_event_name': prev_event.name if prev_event else None,
@@ -5730,6 +5746,17 @@ def public_event_buy(request, public_id):
         Event.objects.filter(pk=event.pk).update(
             public_buy_page_views=F('public_buy_page_views') + 1
         )
+        today = django_tz.localdate()
+        rows = EventDailyPageView.objects.filter(event=event, date=today).update(
+            view_count=F('view_count') + 1
+        )
+        if rows == 0:
+            try:
+                EventDailyPageView.objects.create(event=event, date=today, view_count=1)
+            except IntegrityError:
+                EventDailyPageView.objects.filter(event=event, date=today).update(
+                    view_count=F('view_count') + 1
+                )
         ref = request.GET.get('ref')
         if ref:
             request.session[f'tracking_ref_{event.id}'] = ref

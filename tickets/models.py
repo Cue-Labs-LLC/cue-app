@@ -1546,6 +1546,27 @@ class TrackingLink(BaseModel):
         return f"{self.name} ({self.token})"
 
 
+class EventDailyPageView(BaseModel):
+    """Daily public buy-page view counts for an event."""
+    event = models.ForeignKey(
+        'Event',
+        on_delete=models.CASCADE,
+        related_name='daily_page_views',
+    )
+    date = models.DateField(db_index=True)
+    view_count = models.PositiveIntegerField(default=0)
+
+    class Meta:
+        unique_together = [('event', 'date')]
+        ordering = ['date']
+        indexes = [
+            models.Index(fields=['event', 'date']),
+        ]
+
+    def __str__(self):
+        return f"{self.event.name} - {self.date}: {self.view_count}"
+
+
 class StripeCheckoutSession(BaseModel):
     """One row per Stripe Checkout Session - idempotency anchor for webhook processing."""
 

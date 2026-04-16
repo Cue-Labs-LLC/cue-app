@@ -1,4 +1,5 @@
 import uuid
+import json
 from datetime import date, time, datetime, timedelta
 from unittest.mock import patch, MagicMock
 from django.contrib.auth.models import AnonymousUser, User
@@ -15,7 +16,7 @@ from .models import (
     Organization, UserProfile, OrganizationMembership, OrganizationInvitation, ChatMessage,
     SaleableTicketType, SaleableTicketTypeTier, StripeCheckoutSession, FeatureFlagSettings,
     SurveyInvitation, SurveyResponse, SurveyAnswer, SurveyQuestion, Payout,
-    ExternalSurveyResponse,
+    ExternalSurveyResponse, EventDailyPageView,
 )
 
 
@@ -2697,6 +2698,158 @@ class EventDetailCacheTest(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, 'fragment.csv')
         self.assertContains(response, '$35.00')
+
+
+class EventDailyPageViewTest(TestCase):
+    """Tests for daily public buy-page views and event detail chart context."""
+
+    def setUp(self):
+        from django.core.cache import cache as django_cache
+
+        self.client = Client()
+        self.org = Organization.objects.create(name='Daily Views Org', slug='daily-views-org')
+        self.user = User.objects.create_user(
+            username='dailyviews',
+            email='dailyviews@example.com',
+            password='testpass123',
+        )
+        UserProfile.objects.create(
+            user=self.user,
+            organization=self.org,
+            org_role=UserProfile.OrgRole.OWNER,
+        )
+        self.venue = Venue.objects.create(
+            organization=self.org,
+            name='Daily Views Venue',
+            city='Los Angeles',
+        )
+        self.event = Event.objects.create(
+            organization=self.org,
+            name='Daily Views Event',
+            venue=self.venue,
+            start_date=date.today() + timedelta(days=7),
+            ticketing_type='direct',
+            status='live',
+        )
+        SaleableTicketType.objects.create(
+            event=self.event,
+            name='General Admission',
+            price=Decimal('25.00'),
+            quantity_limit=100,
+        )
+        django_cache.clear()
+
+    def tearDown(self):
+        from django.core.cache import cache as django_cache
+
+        django_cache.clear()
+
+    def _login(self):
+        self.assertTrue(self.client.login(username='dailyviews@example.com', password='testpass123'))
+        self.client.get(reverse('tickets:home'))
+
+    def test_first_page_view_creates_record(self):
+        response = self.client.get(reverse('tickets:public_event_buy', args=[self.event.public_id]))
+
+        self.assertEqual(response.status_code, 200)
+        row = EventDailyPageView.objects.get(event=self.event, date=timezone.localdate())
+        self.assertEqual(row.view_count, 1)
+
+    def test_subsequent_page_view_increments_count(self):
+        url = reverse('tickets:public_event_buy', args=[self.event.public_id])
+
+        self.client.get(url)
+        self.client.get(url)
+
+        row = EventDailyPageView.objects.get(event=self.event, date=timezone.localdate())
+        self.assertEqual(row.view_count, 2)
+
+    def test_stats_page_views_empty(self):
+        from tickets.views import _compute_event_stats
+
+        stats = _compute_event_stats(self.event)
+
+        self.assertEqual(stats['page_views_over_time'], [])
+
+    def test_stats_page_views_populated(self):
+        from django.core.cache import cache as django_cache
+        from tickets.views import _compute_event_stats
+
+        first_date = date(2026, 1, 1)
+        second_date = date(2026, 1, 2)
+        EventDailyPageView.objects.create(event=self.event, date=first_date, view_count=3)
+        EventDailyPageView.objects.create(event=self.event, date=second_date, view_count=7)
+        django_cache.clear()
+
+        stats = _compute_event_stats(self.event)
+
+        self.assertEqual(
+            stats['page_views_over_time'],
+            [
+                {'date': first_date, 'view_count': 3},
+                {'date': second_date, 'view_count': 7},
+            ],
+        )
+
+    def test_event_detail_has_page_view_data_true(self):
+        EventDailyPageView.objects.create(event=self.event, date=timezone.localdate(), view_count=4)
+        self._login()
+
+        response = self.client.get(reverse('tickets:event_detail', args=[self.event.pk]))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIs(response.context['has_page_view_data'], True)
+
+    def test_event_detail_has_page_view_data_false(self):
+        self._login()
+
+        response = self.client.get(reverse('tickets:event_detail', args=[self.event.pk]))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIs(response.context['has_page_view_data'], False)
+        self.assertIs(response.context['show_page_views_chart'], True)
+
+    def test_views_button_rendered_with_data(self):
+        EventDailyPageView.objects.create(event=self.event, date=timezone.localdate(), view_count=4)
+        self._login()
+
+        response = self.client.get(reverse('tickets:event_detail', args=[self.event.pk]))
+
+        self.assertContains(response, 'id="btnPageViews"')
+
+    def test_views_button_rendered_without_data(self):
+        self._login()
+
+        response = self.client.get(reverse('tickets:event_detail', args=[self.event.pk]))
+
+        self.assertContains(response, 'id="btnPageViews"')
+
+    def test_page_views_json_empty_without_data(self):
+        self._login()
+
+        response = self.client.get(reverse('tickets:event_detail', args=[self.event.pk]))
+        payload = json.loads(response.context['page_views_over_time_json'])
+
+        self.assertEqual(payload, [])
+        self.assertContains(response, 'id="page-views-data"')
+
+    def test_page_views_empty_state_rendered_without_data(self):
+        self._login()
+
+        response = self.client.get(reverse('tickets:event_detail', args=[self.event.pk]))
+
+        self.assertContains(response, 'id="pageViewsEmptyState"')
+        self.assertContains(response, 'No page views recorded yet.')
+
+    def test_page_views_json_serializable(self):
+        view_date = date(2026, 1, 3)
+        EventDailyPageView.objects.create(event=self.event, date=view_date, view_count=9)
+        self._login()
+
+        response = self.client.get(reverse('tickets:event_detail', args=[self.event.pk]))
+        payload = json.loads(response.context['page_views_over_time_json'])
+
+        self.assertEqual(payload, [{'date': view_date.isoformat(), 'views': 9}])
 
 
 class EventDeleteViewTests(TestCase):

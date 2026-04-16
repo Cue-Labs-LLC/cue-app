@@ -4,7 +4,7 @@
 {% block title %}{{ event.name }} - Event Details{% endblock %}
 
 {% block extra_head %}
-{% if ticket_type_breakdown or total_orders %}
+{% if ticket_type_breakdown or total_orders or event.ticketing_type == 'direct' %}
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js" defer></script>
 {% endif %}
 <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js" defer></script>
@@ -255,19 +255,32 @@
 </div>
 {% endwith %}
 
-{% if total_orders %}
+{% if total_orders or event.ticketing_type == 'direct' %}
 <script type="application/json" id="sales-over-time-data">{{ sales_over_time_json|safe }}</script>
+{% if show_page_views_chart %}
+<script type="application/json" id="page-views-data">{{ page_views_over_time_json|safe }}</script>
+{% endif %}
 <div class="card mb-4">
     <div class="card-header d-flex align-items-center justify-content-between">
         <h5 class="mb-0" id="salesChartTitle">Tickets</h5>
         <div class="btn-group btn-group-sm" role="group" aria-label="Chart view">
             <button type="button" class="btn btn-primary active" id="btnSalesCount">Tickets</button>
             <button type="button" class="btn btn-outline-secondary" id="btnSalesRevenue">Revenue</button>
+            {% if show_page_views_chart %}
+            <button type="button" class="btn btn-outline-secondary" id="btnPageViews">Views</button>
+            {% endif %}
         </div>
     </div>
     <div class="card-body" style="position: relative; height: 260px;">
         <canvas id="salesCountChart"></canvas>
         <canvas id="salesRevenueChart" style="display:none;"></canvas>
+        {% if show_page_views_chart %}
+        <canvas id="pageViewsChart" style="display:none;"></canvas>
+        <div class="empty-state" id="pageViewsEmptyState" style="display:none;">
+            <i class="bi bi-graph-up"></i>
+            <p>No page views recorded yet.</p>
+        </div>
+        {% endif %}
     </div>
 </div>
 {% endif %}
@@ -1083,7 +1096,6 @@ document.addEventListener('DOMContentLoaded', function () {
     var el = document.getElementById('sales-over-time-data');
     if (!el) return;
     var data = JSON.parse(el.textContent);
-    if (!data.length) return;
     var isDark = document.documentElement.getAttribute('data-theme') === 'dark';
     var gridColor = isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)';
     var labelColor = isDark ? '#adb5bd' : '#6c757d';
@@ -1126,24 +1138,36 @@ document.addEventListener('DOMContentLoaded', function () {
         });
     }
 
-    var countChart = makeChart('salesCountChart', data.map(function (d) { return d.count; }), 'rgb(13,110,253)', '');
+    var countChart = data.length ? makeChart('salesCountChart', data.map(function (d) { return d.count; }), 'rgb(13,110,253)', '') : null;
     var revenueChart = null;
+    var viewsChart = null;
 
     var btnCount = document.getElementById('btnSalesCount');
     var btnRevenue = document.getElementById('btnSalesRevenue');
+    var btnViews = document.getElementById('btnPageViews');
     var canvasCount = document.getElementById('salesCountChart');
     var canvasRevenue = document.getElementById('salesRevenueChart');
+    var canvasViews = document.getElementById('pageViewsChart');
+    var viewsEmptyState = document.getElementById('pageViewsEmptyState');
     var title = document.getElementById('salesChartTitle');
+    var pvEl = document.getElementById('page-views-data');
+    var viewsData = pvEl ? JSON.parse(pvEl.textContent) : [];
 
     btnRevenue.addEventListener('click', function () {
         canvasCount.style.display = 'none';
         canvasRevenue.style.display = 'block';
+        if (canvasViews) canvasViews.style.display = 'none';
+        if (viewsEmptyState) viewsEmptyState.style.display = 'none';
         btnRevenue.classList.replace('btn-outline-secondary', 'btn-success');
         btnRevenue.classList.add('active');
         btnCount.classList.replace('btn-primary', 'btn-outline-secondary');
         btnCount.classList.remove('active');
+        if (btnViews) {
+            btnViews.classList.replace('btn-warning', 'btn-outline-secondary');
+            btnViews.classList.remove('active');
+        }
         title.textContent = 'Revenue';
-        if (!revenueChart) {
+        if (!revenueChart && data.length) {
             revenueChart = makeChart('salesRevenueChart', data.map(function (d) { return d.revenue; }), 'rgb(25,135,84)', '$');
         }
     });
@@ -1151,12 +1175,62 @@ document.addEventListener('DOMContentLoaded', function () {
     btnCount.addEventListener('click', function () {
         canvasRevenue.style.display = 'none';
         canvasCount.style.display = 'block';
+        if (canvasViews) canvasViews.style.display = 'none';
+        if (viewsEmptyState) viewsEmptyState.style.display = 'none';
         btnCount.classList.replace('btn-outline-secondary', 'btn-primary');
         btnCount.classList.add('active');
         btnRevenue.classList.replace('btn-success', 'btn-outline-secondary');
         btnRevenue.classList.remove('active');
+        if (btnViews) {
+            btnViews.classList.replace('btn-warning', 'btn-outline-secondary');
+            btnViews.classList.remove('active');
+        }
         title.textContent = 'Tickets';
     });
+
+    if (btnViews) {
+        btnViews.addEventListener('click', function () {
+            canvasCount.style.display = 'none';
+            canvasRevenue.style.display = 'none';
+            canvasViews.style.display = viewsData.length ? 'block' : 'none';
+            if (viewsEmptyState) viewsEmptyState.style.display = viewsData.length ? 'none' : 'flex';
+            btnCount.classList.replace('btn-primary', 'btn-outline-secondary');
+            btnCount.classList.remove('active');
+            btnRevenue.classList.replace('btn-success', 'btn-outline-secondary');
+            btnRevenue.classList.remove('active');
+            btnViews.classList.replace('btn-outline-secondary', 'btn-warning');
+            btnViews.classList.add('active');
+            title.textContent = 'Views';
+            if (!viewsChart && viewsData.length) {
+                var viewLabels = viewsData.map(function (d) { return d.date; });
+                var viewCounts = viewsData.map(function (d) { return d.views; });
+                viewsChart = new Chart(document.getElementById('pageViewsChart'), {
+                    type: 'line',
+                    data: {
+                        labels: viewLabels,
+                        datasets: [{
+                            data: viewCounts,
+                            borderColor: 'rgb(253,126,20)',
+                            backgroundColor: 'rgba(253,126,20,0.10)',
+                            borderWidth: 2,
+                            pointRadius: viewLabels.length > 60 ? 0 : 3,
+                            fill: true,
+                            tension: 0.3,
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        plugins: { legend: { display: false } },
+                        scales: {
+                            x: { grid: { color: gridColor }, ticks: { color: labelColor, maxTicksLimit: 10 } },
+                            y: { beginAtZero: true, grid: { color: gridColor }, ticks: { color: labelColor, precision: 0 } }
+                        }
+                    }
+                });
+            }
+        });
+    }
 });
 </script>
 <script>
