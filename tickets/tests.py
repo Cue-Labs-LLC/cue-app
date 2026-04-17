@@ -2784,7 +2784,7 @@ class EventDetailAllocationChartTest(TestCase):
             ],
         )
 
-    def test_direct_event_detail_renders_one_allocation_canvas_per_ticket_type(self):
+    def test_direct_event_detail_renders_allocation_rows_per_ticket_type(self):
         SaleableTicketType.objects.create(
             event=self.event,
             name='General Admission',
@@ -2805,13 +2805,13 @@ class EventDetailAllocationChartTest(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, 'Ticket Allocation')
-        self.assertContains(response, 'id="ticketAllocationChart0"')
-        self.assertContains(response, 'id="ticketAllocationChart1"')
+        self.assertContains(response, 'General Admission')
+        self.assertContains(response, 'VIP')
         self.assertNotContains(response, 'id="ticketBreakdownChart"')
-        payload = json.loads(response.context['ticket_type_allocation_charts_json'])
-        self.assertEqual(len(payload), 2)
-        self.assertEqual(payload[0]['label'], 'General Admission')
-        self.assertEqual(payload[1]['sold'], 0)
+        charts = response.context['ticket_type_allocation_charts']
+        self.assertEqual(len(charts), 2)
+        self.assertEqual(charts[0]['label'], 'General Admission')
+        self.assertEqual(charts[1]['sold'], 0)
 
     def test_non_direct_event_keeps_combined_ticket_breakdown_chart(self):
         external_event = Event.objects.create(
@@ -4680,3 +4680,87 @@ class AuthViewsCacheControlTests(TestCase):
             'email_complete_profile',
             {'pending_signup_email': 'test@example.com'},
         )
+
+
+class EventDetailNewReturningTest(TestCase):
+    """Tests for new vs returning customer classification in _compute_event_stats."""
+
+    def setUp(self):
+        from django.core.cache import cache as django_cache
+        self.org = Organization.objects.create(name='NR Test Org', slug='nr-test-org')
+        self.venue = Venue.objects.create(organization=self.org, name='Venue', city='City')
+        self.event = Event.objects.create(
+            organization=self.org, name='NR Event', venue=self.venue,
+            start_date=date(2025, 9, 1),
+        )
+        self.event2 = Event.objects.create(
+            organization=self.org, name='NR Prior Event', venue=self.venue,
+            start_date=date(2025, 8, 1),
+        )
+        django_cache.clear()
+
+    def tearDown(self):
+        from django.core.cache import cache as django_cache
+        django_cache.clear()
+
+    def _make_order(self, event, email, amount='50.00', order_date=None, is_in_person=False):
+        customer, _ = Customer.objects.get_or_create(
+            organization=self.org, email=email, defaults={'name': email},
+        )
+        return TicketOrder.objects.create(
+            event=event, customer=customer,
+            order_number=str(uuid.uuid4())[:12],
+            total_amount=Decimal(amount),
+            order_date=order_date or timezone.now(),
+            is_in_person=is_in_person,
+        )
+
+    def test_new_customer(self):
+        """A customer whose only order is at this event is classified as new."""
+        from tickets.views import _compute_event_stats
+        self._make_order(self.event, 'new@example.com')
+        stats = _compute_event_stats(self.event)
+        self.assertEqual(stats['new_customers_count'], 1)
+        self.assertEqual(stats['returning_customers_count'], 0)
+
+    def test_returning_customer(self):
+        """A customer with a prior order at a different event is classified as returning."""
+        from tickets.views import _compute_event_stats
+        earlier = timezone.now() - timedelta(days=30)
+        self._make_order(self.event2, 'returning@example.com', order_date=earlier)
+        self._make_order(self.event, 'returning@example.com')
+        stats = _compute_event_stats(self.event)
+        self.assertEqual(stats['new_customers_count'], 0)
+        self.assertEqual(stats['returning_customers_count'], 1)
+
+    def test_in_person_order_excluded_from_classification(self):
+        """In-person orders are excluded; a customer with only in-person orders at this
+        event has no online presence and is not counted in the new/returning breakdown."""
+        from tickets.views import _compute_event_stats
+        self._make_order(self.event, 'inperson@example.com', is_in_person=True)
+        stats = _compute_event_stats(self.event)
+        # total_customers counts all orders; new/returning only counts online
+        self.assertEqual(stats['new_customers_count'], 0)
+        self.assertEqual(stats['returning_customers_count'], 0)
+
+    def test_zero_customers(self):
+        """Event with no orders returns zero for both counts."""
+        from tickets.views import _compute_event_stats
+        stats = _compute_event_stats(self.event)
+        self.assertEqual(stats['new_customers_count'], 0)
+        self.assertEqual(stats['returning_customers_count'], 0)
+
+    def test_new_plus_returning_equals_online_customer_count(self):
+        """new + returning equals the number of distinct online customers."""
+        from tickets.views import _compute_event_stats
+        earlier = timezone.now() - timedelta(days=30)
+        self._make_order(self.event2, 'r1@example.com', order_date=earlier)
+        self._make_order(self.event, 'r1@example.com')   # returning
+        self._make_order(self.event, 'n1@example.com')   # new
+        self._make_order(self.event, 'n2@example.com')   # new
+        self._make_order(self.event, 'ip@example.com', is_in_person=True)  # excluded
+        stats = _compute_event_stats(self.event)
+        online_total = stats['new_customers_count'] + stats['returning_customers_count']
+        self.assertEqual(stats['new_customers_count'], 2)
+        self.assertEqual(stats['returning_customers_count'], 1)
+        self.assertEqual(online_total, 3)

@@ -14,7 +14,7 @@ from django.contrib.auth import views as auth_views
 from django.contrib.auth.decorators import login_required
 from django.urls import reverse, reverse_lazy
 from django.db.models import (
-    Sum, Count, Avg, Max, Q, Subquery, OuterRef, Prefetch,
+    Sum, Count, Avg, Max, Min, Q, Subquery, OuterRef, Prefetch,
     Case, When, Value, F, CharField, Exists, ExpressionWrapper, DecimalField,
 )
 from django.db.models.functions import Coalesce, Greatest, TruncDate, Cast
@@ -2801,6 +2801,33 @@ def _compute_event_stats(event):
     ticket_revenue = event_stats['total_revenue']
     total_customers = event_stats['total_customers']
 
+    # New vs returning customers (online orders only, matching RepeatCustomerCalculator)
+    if total_customers > 0:
+        event_first = dict(
+            TicketOrder.objects.filter(event=event, is_in_person=False)
+            .values('customer_id')
+            .annotate(first=Min('order_date'))
+            .values_list('customer_id', 'first')
+        )
+        org_first = dict(
+            TicketOrder.objects.filter(
+                customer_id__in=event_first.keys(),
+                customer__organization=event.organization,
+                is_in_person=False,
+            )
+            .values('customer_id')
+            .annotate(first=Min('order_date'))
+            .values_list('customer_id', 'first')
+        )
+        new_customers_count = sum(
+            1 for cid, dt in event_first.items()
+            if org_first.get(cid) == dt
+        )
+        returning_customers_count = len(event_first) - new_customers_count
+    else:
+        new_customers_count = 0
+        returning_customers_count = 0
+
     # Use cached counts from Event — maintained by refresh_event_stats() in signals.py.
     # Avoids 2 queries to the Ticket table on every page load.
     total_tickets = event.cached_ticket_count
@@ -3002,6 +3029,8 @@ def _compute_event_stats(event):
         'net_ticket_revenue': net_ticket_revenue,
         'total_tickets': total_tickets,
         'total_customers': total_customers,
+        'new_customers_count': new_customers_count,
+        'returning_customers_count': returning_customers_count,
         'total_additional_income': total_additional_income,
         'additional_income_lines': additional_income_lines,
         'total_revenue': total_revenue,
@@ -3093,6 +3122,8 @@ def event_detail(request, event_id):
     net_ticket_revenue = stats['net_ticket_revenue']
     total_tickets = stats['total_tickets']
     total_customers = stats['total_customers']
+    new_customers_count = stats['new_customers_count']
+    returning_customers_count = stats['returning_customers_count']
     total_additional_income = stats['total_additional_income']
     additional_income_lines = stats['additional_income_lines']
     total_revenue = stats['total_revenue']
@@ -3183,6 +3214,8 @@ def event_detail(request, event_id):
         'total_revenue': total_revenue,
         'total_tickets': total_tickets,
         'total_customers': total_customers,
+        'new_customers_count': new_customers_count,
+        'returning_customers_count': returning_customers_count,
         'total_expenses': total_expenses,
         'profit': profit,
         'margin_pct': margin_pct,
