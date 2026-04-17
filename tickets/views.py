@@ -14,7 +14,7 @@ from django.contrib.auth import views as auth_views
 from django.contrib.auth.decorators import login_required
 from django.urls import reverse, reverse_lazy
 from django.db.models import (
-    Sum, Count, Avg, Max, Q, Subquery, OuterRef, Prefetch,
+    Sum, Count, Avg, Max, Min, Q, Subquery, OuterRef, Prefetch,
     Case, When, Value, F, CharField, Exists, ExpressionWrapper, DecimalField,
 )
 from django.db.models.functions import Coalesce, Greatest, TruncDate, Cast
@@ -237,9 +237,40 @@ def _invalidate_event_list_cache(org):
         pass
 
 
+EVENT_STATS_CACHE_VERSION = 2
+
+EVENT_STATS_REQUIRED_KEYS = frozenset({
+    'total_orders',
+    'ticket_revenue',
+    'ticket_fees',
+    'net_ticket_revenue',
+    'total_tickets',
+    'total_customers',
+    'new_customers_count',
+    'returning_customers_count',
+    'total_additional_income',
+    'additional_income_lines',
+    'total_revenue',
+    'total_expenses',
+    'expenses',
+    'expenses_by_category',
+    'profit',
+    'margin_pct',
+    'ticket_type_breakdown',
+    'ticket_type_allocation_charts',
+    'saleable_ticket_types_list',
+    'sales_over_time',
+    'page_views_over_time',
+    'survey_invitations_count',
+    'survey_responses_count',
+    'survey_results',
+    'attendee_segments',
+})
+
+
 def _event_stats_cache_key(event_id):
     """Cache key for _compute_event_stats() results. Invalidated via django_cache.delete()."""
-    return f'event_stats:{event_id}'
+    return f'event_stats:v{EVENT_STATS_CACHE_VERSION}:{event_id}'
 
 
 def _event_upload_stats_cache_key(event_id):
@@ -2788,7 +2819,7 @@ def _compute_event_stats(event):
     """
     cache_key = _event_stats_cache_key(event.pk)
     cached = django_cache.get(cache_key)
-    if cached is not None:
+    if isinstance(cached, dict) and EVENT_STATS_REQUIRED_KEYS.issubset(cached):
         return cached
 
     # Core order stats
@@ -2800,6 +2831,33 @@ def _compute_event_stats(event):
     total_orders = event_stats['total_orders']
     ticket_revenue = event_stats['total_revenue']
     total_customers = event_stats['total_customers']
+
+    # New vs returning customers (online orders only, matching RepeatCustomerCalculator)
+    if total_customers > 0:
+        event_first = dict(
+            TicketOrder.objects.filter(event=event, is_in_person=False)
+            .values('customer_id')
+            .annotate(first=Min('order_date'))
+            .values_list('customer_id', 'first')
+        )
+        org_first = dict(
+            TicketOrder.objects.filter(
+                customer_id__in=event_first.keys(),
+                customer__organization=event.organization,
+                is_in_person=False,
+            )
+            .values('customer_id')
+            .annotate(first=Min('order_date'))
+            .values_list('customer_id', 'first')
+        )
+        new_customers_count = sum(
+            1 for cid, dt in event_first.items()
+            if org_first.get(cid) == dt
+        )
+        returning_customers_count = len(event_first) - new_customers_count
+    else:
+        new_customers_count = 0
+        returning_customers_count = 0
 
     # Use cached counts from Event — maintained by refresh_event_stats() in signals.py.
     # Avoids 2 queries to the Ticket table on every page load.
@@ -2836,7 +2894,22 @@ def _compute_event_stats(event):
 
     # Ticket type breakdown
     saleable_ticket_types_list = list(event.saleable_ticket_types.all())
+    ticket_type_allocation_charts = []
     if event.ticketing_type == 'direct':
+        for tt in saleable_ticket_types_list:
+            sold = tt.quantity_sold or 0
+            allocated = tt.quantity_limit
+            is_unlimited = allocated is None
+            remaining = None if is_unlimited else max(allocated - sold, 0)
+            percent_sold = None if is_unlimited or allocated == 0 else round(min(sold / allocated * 100, 100))
+            ticket_type_allocation_charts.append({
+                'label': tt.name,
+                'sold': sold,
+                'allocated': allocated,
+                'remaining': remaining,
+                'percent_sold': percent_sold,
+                'is_unlimited': is_unlimited,
+            })
         ticket_type_breakdown = [
             {'label': tt.name, 'count': tt.quantity_sold}
             for tt in saleable_ticket_types_list
@@ -2987,6 +3060,8 @@ def _compute_event_stats(event):
         'net_ticket_revenue': net_ticket_revenue,
         'total_tickets': total_tickets,
         'total_customers': total_customers,
+        'new_customers_count': new_customers_count,
+        'returning_customers_count': returning_customers_count,
         'total_additional_income': total_additional_income,
         'additional_income_lines': additional_income_lines,
         'total_revenue': total_revenue,
@@ -2996,6 +3071,7 @@ def _compute_event_stats(event):
         'profit': profit,
         'margin_pct': margin_pct,
         'ticket_type_breakdown': ticket_type_breakdown,
+        'ticket_type_allocation_charts': ticket_type_allocation_charts,
         'saleable_ticket_types_list': saleable_ticket_types_list,
         'sales_over_time': sales_over_time,
         'page_views_over_time': page_views_over_time,
@@ -3077,6 +3153,8 @@ def event_detail(request, event_id):
     net_ticket_revenue = stats['net_ticket_revenue']
     total_tickets = stats['total_tickets']
     total_customers = stats['total_customers']
+    new_customers_count = stats['new_customers_count']
+    returning_customers_count = stats['returning_customers_count']
     total_additional_income = stats['total_additional_income']
     additional_income_lines = stats['additional_income_lines']
     total_revenue = stats['total_revenue']
@@ -3086,6 +3164,7 @@ def event_detail(request, event_id):
     profit = stats['profit']
     margin_pct = stats['margin_pct']
     ticket_type_breakdown = stats['ticket_type_breakdown']
+    ticket_type_allocation_charts = stats.get('ticket_type_allocation_charts', [])
     saleable_ticket_types_list = stats['saleable_ticket_types_list']
     survey_invitations_count = stats['survey_invitations_count']
     survey_responses_count = stats['survey_responses_count']
@@ -3132,6 +3211,7 @@ def event_detail(request, event_id):
     category_labels = dict(EventExpense.CATEGORY_CHOICES)
 
     ticket_type_breakdown_json = json.dumps(ticket_type_breakdown)
+    ticket_type_allocation_charts_json = json.dumps(ticket_type_allocation_charts)
 
     sales_over_time_json = json.dumps([
         {
@@ -3165,6 +3245,8 @@ def event_detail(request, event_id):
         'total_revenue': total_revenue,
         'total_tickets': total_tickets,
         'total_customers': total_customers,
+        'new_customers_count': new_customers_count,
+        'returning_customers_count': returning_customers_count,
         'total_expenses': total_expenses,
         'profit': profit,
         'margin_pct': margin_pct,
@@ -3183,6 +3265,8 @@ def event_detail(request, event_id):
         'survey_results': survey_results,
         'ticket_type_breakdown': ticket_type_breakdown,
         'ticket_type_breakdown_json': ticket_type_breakdown_json,
+        'ticket_type_allocation_charts': ticket_type_allocation_charts,
+        'ticket_type_allocation_charts_json': ticket_type_allocation_charts_json,
         'sales_over_time_json': sales_over_time_json,
         'page_views_over_time_json': page_views_over_time_json,
         'has_page_view_data': bool(stats['page_views_over_time']),
