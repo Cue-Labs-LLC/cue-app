@@ -847,6 +847,14 @@ class Event(AuditBaseModel):
         default='',
         help_text="Facebook Pixel ID for conversion tracking on the public ticketing flow.",
     )
+    show_social_proof = models.BooleanField(
+        default=True,
+        help_text="Display attendee avatars and count on the public buy page.",
+    )
+    show_attendee_count = models.BooleanField(
+        default=True,
+        help_text="Show the exact number of others (e.g. '+ 5 others'). When off, shows '+ others' without a count.",
+    )
     public_buy_page_views = models.PositiveIntegerField(
         default=0,
         help_text="Number of times the public ticket page (/e/<id>/) was loaded.",
