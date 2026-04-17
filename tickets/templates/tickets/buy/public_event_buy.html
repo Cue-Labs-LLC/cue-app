@@ -1037,7 +1037,7 @@
                 {% elif attendee_count <= 6 %}
                     <strong>{{ attendee_preview.0.first_name }}</strong>, <strong>{{ attendee_preview.1.first_name }}</strong>{% if attendee_count > 2 %}{% if event.show_attendee_count %} + {{ attendee_count|add:"-2" }} others{% else %} + others{% endif %}{% endif %} are going
                 {% else %}
-                    {% if event.show_attendee_count %}<strong>{{ attendee_count }}</strong> people are going{% else %}Others are going{% endif %}
+                    + Others are going
                 {% endif %}
             </span>
         </div>
