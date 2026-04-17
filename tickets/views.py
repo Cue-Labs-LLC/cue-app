@@ -2863,12 +2863,12 @@ def _compute_event_stats(event):
     # Avoids 2 queries to the Ticket table on every page load.
     total_tickets = event.cached_ticket_count
 
-    # Platform fee calculation — only for direct ticketing
+    # Platform fee — use actual Stripe fees recorded per order (direct ticketing only)
     if event.ticketing_type == 'direct':
-        ticket_fees = (
-            event.cached_paid_ticket_sum * Decimal('0.10')
-            + Decimal('0.99') * event.cached_paid_ticket_count
-        ) / Decimal('1.10')
+        fee_agg = StripeCheckoutSession.objects.filter(
+            ticket_order__event=event
+        ).aggregate(total_fees=Coalesce(Sum('platform_fee_cents'), 0))
+        ticket_fees = Decimal(fee_agg['total_fees']) / Decimal('100')
     else:
         ticket_fees = Decimal('0.00')
     net_ticket_revenue = ticket_revenue - ticket_fees
