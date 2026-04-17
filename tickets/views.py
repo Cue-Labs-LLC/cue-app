@@ -5882,7 +5882,7 @@ def public_event_buy(request, public_id):
                     and not coming_soon_types)
     min_ticket_price = min((tt.effective_price for tt in all_types), default=None)
 
-    # Social proof: up to 6 distinct confirmed attendees + total count
+    # Social proof: up to 6 distinct confirmed attendees + total ticket count
     _preview_orders = (
         TicketOrder.objects
         .filter(event=event, refunded_at__isnull=True, is_in_person=False)
@@ -5909,9 +5909,11 @@ def public_event_buy(request, public_id):
             if len(attendee_preview) >= 6:
                 break
 
-    attendee_count = TicketOrder.objects.filter(
-        event=event, refunded_at__isnull=True, is_in_person=False
-    ).values('customer_id').distinct().count()
+    attendee_count = Ticket.objects.filter(
+        ticket_order__event=event,
+        ticket_order__refunded_at__isnull=True,
+        ticket_order__is_in_person=False,
+    ).count()
 
     # Sold-out ticket types that have waitlist enabled (for the "sold out" section)
     if wl_feature_on:
