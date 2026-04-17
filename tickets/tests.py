@@ -2784,7 +2784,7 @@ class EventDetailAllocationChartTest(TestCase):
             ],
         )
 
-    def test_direct_event_detail_renders_one_allocation_canvas_per_ticket_type(self):
+    def test_direct_event_detail_renders_allocation_rows_per_ticket_type(self):
         SaleableTicketType.objects.create(
             event=self.event,
             name='General Admission',
@@ -2805,13 +2805,13 @@ class EventDetailAllocationChartTest(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, 'Ticket Allocation')
-        self.assertContains(response, 'id="ticketAllocationChart0"')
-        self.assertContains(response, 'id="ticketAllocationChart1"')
+        self.assertContains(response, 'General Admission')
+        self.assertContains(response, 'VIP')
         self.assertNotContains(response, 'id="ticketBreakdownChart"')
-        payload = json.loads(response.context['ticket_type_allocation_charts_json'])
-        self.assertEqual(len(payload), 2)
-        self.assertEqual(payload[0]['label'], 'General Admission')
-        self.assertEqual(payload[1]['sold'], 0)
+        charts = response.context['ticket_type_allocation_charts']
+        self.assertEqual(len(charts), 2)
+        self.assertEqual(charts[0]['label'], 'General Admission')
+        self.assertEqual(charts[1]['sold'], 0)
 
     def test_non_direct_event_keeps_combined_ticket_breakdown_chart(self):
         external_event = Event.objects.create(
