@@ -2595,6 +2595,24 @@ class EventDetailCacheTest(TestCase):
         self.assertEqual(len(ctx), 0, f"Expected 0 queries on cache hit, got {len(ctx)}")
         self.assertIsNotNone(result)
 
+    def test_incomplete_stats_cache_payload_is_recomputed(self):
+        """Regression: legacy cached stats without newer keys should not 500 event_detail."""
+        from tickets.views import _compute_event_stats, _event_stats_cache_key
+        from django.core.cache import cache as django_cache
+
+        django_cache.set(
+            _event_stats_cache_key(self.event.pk),
+            {'total_orders': 999},
+            300,
+        )
+
+        result = _compute_event_stats(self.event)
+
+        self.assertEqual(result['total_orders'], 0)
+        self.assertIn('new_customers_count', result)
+        self.assertIn('returning_customers_count', result)
+        self.assertIn('attendee_segments', result)
+
     def test_expense_change_invalidates_cache(self):
         """Saving or deleting an EventExpense clears the event_stats cache."""
         from tickets.views import _compute_event_stats, _event_stats_cache_key
