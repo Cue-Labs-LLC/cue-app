@@ -237,9 +237,40 @@ def _invalidate_event_list_cache(org):
         pass
 
 
+EVENT_STATS_CACHE_VERSION = 2
+
+EVENT_STATS_REQUIRED_KEYS = frozenset({
+    'total_orders',
+    'ticket_revenue',
+    'ticket_fees',
+    'net_ticket_revenue',
+    'total_tickets',
+    'total_customers',
+    'new_customers_count',
+    'returning_customers_count',
+    'total_additional_income',
+    'additional_income_lines',
+    'total_revenue',
+    'total_expenses',
+    'expenses',
+    'expenses_by_category',
+    'profit',
+    'margin_pct',
+    'ticket_type_breakdown',
+    'ticket_type_allocation_charts',
+    'saleable_ticket_types_list',
+    'sales_over_time',
+    'page_views_over_time',
+    'survey_invitations_count',
+    'survey_responses_count',
+    'survey_results',
+    'attendee_segments',
+})
+
+
 def _event_stats_cache_key(event_id):
     """Cache key for _compute_event_stats() results. Invalidated via django_cache.delete()."""
-    return f'event_stats:{event_id}'
+    return f'event_stats:v{EVENT_STATS_CACHE_VERSION}:{event_id}'
 
 
 def _event_upload_stats_cache_key(event_id):
@@ -2788,7 +2819,7 @@ def _compute_event_stats(event):
     """
     cache_key = _event_stats_cache_key(event.pk)
     cached = django_cache.get(cache_key)
-    if cached is not None:
+    if isinstance(cached, dict) and EVENT_STATS_REQUIRED_KEYS.issubset(cached):
         return cached
 
     # Core order stats
