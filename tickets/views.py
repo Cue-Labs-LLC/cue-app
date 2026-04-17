@@ -6685,16 +6685,21 @@ def _handle_stripe_payout_event(event):
     payout.paid     → advance to COMPLETED (funds arrived at bank)
     payout.failed   → advance to FAILED
     """
+    def _stripe_value(obj, key, default=None):
+        if isinstance(obj, dict):
+            return obj.get(key, default)
+        return getattr(obj, key, default)
+
     stripe_payout_obj = event['data']['object']
-    connected_account_id = event.get('account')
-    stripe_payout_id = stripe_payout_obj.get('id')
-    stripe_payout_status = stripe_payout_obj.get('status')  # pending, in_transit, paid, failed, canceled
-    stripe_payout_amount = stripe_payout_obj.get('amount')
-    payout_metadata = stripe_payout_obj.get('metadata') or {}
-    local_payout_id = payout_metadata.get('payout_id')
+    connected_account_id = _stripe_value(event, 'account')
+    stripe_payout_id = _stripe_value(stripe_payout_obj, 'id')
+    stripe_payout_status = _stripe_value(stripe_payout_obj, 'status')  # pending, in_transit, paid, failed, canceled
+    stripe_payout_amount = _stripe_value(stripe_payout_obj, 'amount')
+    payout_metadata = _stripe_value(stripe_payout_obj, 'metadata', {}) or {}
+    local_payout_id = _stripe_value(payout_metadata, 'payout_id')
 
     if not connected_account_id:
-        logger.warning("Stripe payout webhook missing 'account' field: %s", event.get('id'))
+        logger.warning("Stripe payout webhook missing 'account' field: %s", _stripe_value(event, 'id'))
         return
 
     try:

@@ -1451,6 +1451,40 @@ class FinancePayoutTests(TestCase):
         self.assertEqual(second.status, Payout.Status.COMPLETED)
 
     @patch('stripe.Webhook.construct_event')
+    def test_connect_webhook_accepts_stripe_object_event(self, mock_construct):
+        payout = Payout.objects.create(
+            organization=self.org,
+            amount=Decimal('80.00'),
+            status=Payout.Status.PENDING,
+            stripe_payout_id='po_stripe_object',
+        )
+        mock_construct.return_value = MagicMock(
+            id='evt_stripe_object',
+            account=self.org.stripe_account_id,
+            __getitem__=lambda obj, key: {
+                'type': 'payout.paid',
+                'data': {
+                    'object': MagicMock(
+                        id='po_stripe_object',
+                        status='paid',
+                        metadata={'payout_id': str(payout.id), 'org_id': str(self.org.id)},
+                    ),
+                },
+            }[key],
+        )
+
+        response = self.client.post(
+            self.connect_webhook_url,
+            data='{}',
+            content_type='application/json',
+            HTTP_STRIPE_SIGNATURE='sig_test',
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payout.refresh_from_db()
+        self.assertEqual(payout.status, Payout.Status.COMPLETED)
+
+    @patch('stripe.Webhook.construct_event')
     def test_connect_webhook_matches_by_metadata_when_payout_id_not_yet_saved(self, mock_construct):
         other = Payout.objects.create(
             organization=self.org,
