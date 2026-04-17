@@ -33,64 +33,58 @@
 /* -- Event Detail: Grouped Stat Sections ---- */
 .stat-sections { margin-bottom: 24px; }
 .stat-section { margin-bottom: 6px; }
-.stat-section-header {
-    display: flex;
+.stat-section .stats-grid { margin-bottom: 0; }
+.ta-list { display: flex; flex-direction: column; }
+.ta-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1.2fr) minmax(0, 2fr) auto;
     align-items: center;
-    gap: 10px;
-    margin-bottom: 10px;
+    gap: 14px;
+    padding: 10px 16px;
+    border-bottom: 1px solid var(--border-light);
+    transition: background 0.12s;
 }
-.stat-section-label {
-    font-size: 9px;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.14em;
+.ta-row:last-child { border-bottom: none; }
+.ta-row:hover { background: var(--bg-inset); }
+.ta-name {
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--text-primary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.ta-bar-wrap {
+    height: 10px;
+    background: var(--border);
+    border-radius: 999px;
+    overflow: hidden;
+}
+.ta-bar-fill {
+    height: 100%;
+    border-radius: 999px;
+    max-width: 100%;
+    background: rgba(25, 135, 84, 0.85);
+}
+.ta-bar--unlimited { background: rgba(13, 110, 253, 0.65); }
+.ta-row--soldout .ta-bar-fill { background: var(--success, #6A9E7F); }
+.ta-count {
+    font-size: 12px;
     color: var(--text-secondary);
     white-space: nowrap;
-    flex-shrink: 0;
-}
-.stat-section-rule {
-    flex: 1;
-    height: 1px;
-    background: var(--border-light);
-}
-.stat-section .stats-grid {
-    margin-bottom: 0;
-    grid-template-columns: repeat(3, 1fr);
-}
-.stat-section--traffic .stats-grid {
-    grid-template-columns: repeat(2, 1fr);
-}
-@media (max-width: 767px) {
-    .stat-section .stats-grid { grid-template-columns: repeat(3, 1fr); }
-    .stat-section--traffic .stats-grid { grid-template-columns: repeat(2, 1fr); }
-}
-@media (max-width: 575px) {
-    .stat-section .stats-grid,
-    .stat-section--traffic .stats-grid { grid-template-columns: repeat(2, 1fr); gap: 10px; }
-}
-.ticket-allocation-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-    gap: 16px;
-}
-.ticket-allocation-item {
-    padding: 8px 4px 0;
-    min-height: 280px;
-}
-.ticket-allocation-chart {
-    position: relative;
-    height: 180px;
-}
-.ticket-allocation-meta {
+    font-variant-numeric: tabular-nums;
+    text-align: right;
     display: flex;
-    justify-content: space-between;
-    gap: 12px;
-    margin-top: 14px;
-    font-size: 13px;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 1px;
 }
-.ticket-allocation-meta span {
-    color: var(--text-secondary);
+.ta-pct {
+    font-size: 10px;
+    color: var(--text-tertiary, rgba(255,255,255,0.3));
+    line-height: 1;
 }
+
 </style>
 {% endblock %}
 
@@ -261,36 +255,14 @@
 {% endif %}
 
 <div class="stat-sections">
-<!-- Sales metrics -->
+<!-- Row 1: Sales + traffic -->
 <div class="stat-section">
-    <div class="stat-section-header">
-        <span class="stat-section-label">Sales</span>
-        <span class="stat-section-rule"></span>
-    </div>
     <div class="stats-grid">
-        <div class="stat-card stat-card--accent">
-            <div class="stat-label">Orders</div>
-            <div class="stat-value">{{ total_orders }}</div>
-        </div>
         <div class="stat-card stat-card--info">
             <div class="stat-label">Tickets</div>
             <div class="stat-value">{{ total_tickets }}</div>
         </div>
-        <div class="stat-card stat-card--warning">
-            <div class="stat-label">Customers</div>
-            <div class="stat-value">{{ total_customers }}</div>
-        </div>
-    </div>
-</div>
-
-{% if event.ticketing_type == 'direct' %}
-<!-- Ticket page traffic metrics -->
-<div class="stat-section stat-section--traffic">
-    <div class="stat-section-header">
-        <span class="stat-section-label">Ticket Page</span>
-        <span class="stat-section-rule"></span>
-    </div>
-    <div class="stats-grid">
+        {% if event.ticketing_type == 'direct' %}
         <div class="stat-card stat-card--info">
             <div class="stat-label">Page Views</div>
             <div class="stat-value">{{ event.public_buy_page_views }}</div>
@@ -305,16 +277,24 @@
             <div class="stat-detail" style="font-size: 0.75rem; margin-top: 4px;">No page views yet</div>
             {% endif %}
         </div>
+        {% else %}
+        <div class="stat-card stat-card--accent">
+            <div class="stat-label">Orders</div>
+            <div class="stat-value">{{ total_orders }}</div>
+        </div>
+        {% endif %}
+        <div class="stat-card stat-card--warning">
+            <div class="stat-label">Customers</div>
+            <div class="stat-value">{{ total_customers }}</div>
+            {% if new_customers_count or returning_customers_count %}
+            <div class="stat-detail" style="font-size: 0.75rem; margin-top: 4px;">{{ new_customers_count }} new · {{ returning_customers_count }} returning</div>
+            {% endif %}
+        </div>
     </div>
 </div>
-{% endif %}
 
-<!-- Financial metrics -->
+<!-- Row 2: Financial summary -->
 <div class="stat-section">
-    <div class="stat-section-header">
-        <span class="stat-section-label">Financials</span>
-        <span class="stat-section-rule"></span>
-    </div>
     <div class="stats-grid">
         <div class="stat-card stat-card--success">
             <div class="stat-label">Revenue</div>
@@ -335,8 +315,8 @@
 </div>
 </div>
 
-<!-- AI Event Summary -->
 {% with event_end=event.end_date|default:event.start_date %}
+{% if event.ticketing_type != 'direct' or event_end < today %}
 <div class="card mb-4" id="ai-summary-card">
     <div class="card-header d-flex justify-content-between align-items-center">
         <h5 class="mb-0"><i class="bi bi-stars"></i> AI Event Summary</h5>
@@ -373,7 +353,20 @@
         {% endif %}
     </div>
 </div>
+{% endif %}
 {% endwith %}
+
+<!-- Tab navigation -->
+<nav class="nav nav-tabs" id="eventDetailTabs" role="tablist">
+    <button class="nav-link active" id="tab-overview-btn" data-bs-toggle="tab" data-bs-target="#tab-overview" type="button" role="tab">Overview</button>
+    <button class="nav-link" id="tab-orders-btn" data-bs-toggle="tab" data-bs-target="#tab-orders" type="button" role="tab">Orders{% if total_orders %} ({{ total_orders }}){% endif %}</button>
+    <button class="nav-link" id="tab-finance-btn" data-bs-toggle="tab" data-bs-target="#tab-finance" type="button" role="tab">Finance</button>
+    <button class="nav-link" id="tab-manage-btn" data-bs-toggle="tab" data-bs-target="#tab-manage" type="button" role="tab">Manage</button>
+</nav>
+<div class="tab-content">
+
+<!-- ===== TAB 1: Overview ===== -->
+<div class="tab-pane fade show active" id="tab-overview" role="tabpanel">
 
 {% if total_orders or event.ticketing_type == 'direct' %}
 <script type="application/json" id="sales-over-time-data">{{ sales_over_time_json|safe }}</script>
@@ -410,30 +403,30 @@
     <div class="card-header">
         <h5>Ticket Allocation</h5>
     </div>
-    <div class="card-body">
-        <div class="ticket-allocation-grid">
+    <div class="card-body p-0">
+        <div class="ta-list">
             {% for chart in ticket_type_allocation_charts %}
-            <div class="ticket-allocation-item">
-                <h6 class="mb-3">{{ chart.label }}</h6>
-                <div class="ticket-allocation-chart">
-                    <canvas id="ticketAllocationChart{{ forloop.counter0 }}"></canvas>
+            {% if chart.is_unlimited %}
+            <div class="ta-row">
+                <span class="ta-name">{{ chart.label }}</span>
+                <div class="ta-bar-wrap">
+                    <div class="ta-bar-fill ta-bar--unlimited" style="width:100%"></div>
                 </div>
-                <div class="ticket-allocation-meta">
-                    <div>
-                        <span>Sold</span>
-                        <strong class="d-block">{{ chart.sold|intcomma }}</strong>
-                    </div>
-                    <div class="text-end">
-                        {% if chart.is_unlimited %}
-                        <span>Allocation</span>
-                        <strong class="d-block">Unlimited</strong>
-                        {% else %}
-                        <span>Allocated</span>
-                        <strong class="d-block">{{ chart.allocated|intcomma }}</strong>
-                        {% endif %}
-                    </div>
-                </div>
+                <span class="ta-count">{{ chart.sold|intcomma }} sold</span>
             </div>
+            {% else %}
+            {% widthratio chart.sold chart.allocated 100 as pct %}
+            <div class="ta-row{% if chart.remaining == 0 %} ta-row--soldout{% endif %}">
+                <span class="ta-name">{{ chart.label }}</span>
+                <div class="ta-bar-wrap">
+                    <div class="ta-bar-fill" style="width:{{ pct }}%"></div>
+                </div>
+                <span class="ta-count">
+                    {{ chart.sold|intcomma }} / {{ chart.allocated|intcomma }}
+                    <span class="ta-pct">{{ pct }}%</span>
+                </span>
+            </div>
+            {% endif %}
             {% endfor %}
         </div>
     </div>
@@ -450,6 +443,248 @@
     </div>
 </div>
 {% endif %}
+
+{% if survey_results or survey_invitations_count > 0 %}
+<div class="card mb-4">
+    <div class="card-header d-flex justify-content-between align-items-center">
+        <h5>Survey Results</h5>
+        <span class="text-muted" style="font-size: 0.85rem;">{{ survey_responses_count }} / {{ survey_invitations_count }} responses</span>
+    </div>
+    <div class="card-body">
+        {% if survey_results %}
+        <div class="row mb-3">
+            {% if survey_results.avg_star_rating %}
+            <div class="col-md-4 mb-3 mb-md-0">
+                <div class="text-center">
+                    <div style="font-size: 2rem; font-weight: 700; color: #f5a623;">{{ survey_results.avg_star_rating }}</div>
+                    <div style="color: #f5a623; font-size: 1.2rem;">
+                        {% for i in "12345" %}
+                            {% if forloop.counter <= survey_results.avg_star_rating %}<i class="bi bi-star-fill"></i>{% else %}<i class="bi bi-star"></i>{% endif %}
+                        {% endfor %}
+                    </div>
+                    <div class="text-muted" style="font-size: 0.85rem;">Average Rating</div>
+                </div>
+            </div>
+            {% endif %}
+            {% if survey_results.nps_score != None %}
+            <div class="col-md-4 mb-3 mb-md-0">
+                <div class="text-center">
+                    <div style="font-size: 2rem; font-weight: 700; {% if survey_results.nps_score >= 50 %}color: #198754;{% elif survey_results.nps_score >= 0 %}color: #f5a623;{% else %}color: #dc3545;{% endif %}">{{ survey_results.nps_score }}</div>
+                    <div class="text-muted" style="font-size: 0.85rem;">NPS Score ({{ survey_results.nps_total }} responses)</div>
+                </div>
+            </div>
+            {% endif %}
+            <div class="col-md-4">
+                <div class="text-center">
+                    <div style="font-size: 2rem; font-weight: 700; color: #1a1a2e;">{{ survey_responses_count }}</div>
+                    <div class="text-muted" style="font-size: 0.85rem;">Total Responses</div>
+                </div>
+            </div>
+        </div>
+
+        {% if survey_results.recent_comments %}
+        <h6 class="mt-3 mb-2">Recent Comments</h6>
+        <ul class="list-unstyled mb-0">
+            {% for comment in survey_results.recent_comments %}
+            <li class="py-2 {% if not forloop.last %}border-bottom{% endif %}">
+                <i class="bi bi-chat-quote text-muted me-1"></i> {{ comment.text_answer }}
+                <div class="text-muted" style="font-size: 0.8rem;">{{ comment.response__customer__name }} ({{ comment.response__customer__email }})</div>
+            </li>
+            {% endfor %}
+        </ul>
+        {% endif %}
+
+        {% else %}
+        <div class="empty-state" style="padding: 16px;">
+            <p class="mb-0 text-muted">Surveys have been sent but no responses yet.</p>
+        </div>
+        {% endif %}
+    </div>
+</div>
+{% endif %}
+
+{% if not total_orders and event.ticketing_type != 'direct' %}
+<div class="empty-state" style="padding: 48px 0;">
+    <i class="bi bi-bar-chart fs-2 text-muted"></i>
+    <p class="text-muted mt-2 mb-0">No data yet. Upload a CSV to see sales analytics.</p>
+</div>
+{% endif %}
+
+</div><!-- /tab-overview -->
+
+<!-- ===== TAB 2: Orders ===== -->
+<div class="tab-pane fade" id="tab-orders" role="tabpanel">
+
+<div class="card mb-4">
+    <div class="card-header">
+        <h5>Recent Orders</h5>
+    </div>
+    <div class="card-body p-0">
+        {% if page_obj %}
+        <div class="table-responsive">
+            <table class="table table-hover mb-0">
+                <thead>
+                    <tr>
+                        <th>Customer</th>
+                        <th>Status</th>
+                        <th>Order Number</th>
+                        <th>Date</th>
+                        <th>Quantity</th>
+                        <th>Gross Total</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for order in page_obj %}
+                    <tr>
+                        <td><a href="{% url 'tickets:customer_detail' order.customer.id %}">{{ order.customer.name }}</a></td>
+                        <td>
+                            {% if order.refunded_at %}
+                            <span class="badge bg-danger">Refunded</span>
+                            {% elif order.checked_in_at %}
+                            <span class="badge bg-success">Checked in</span>
+                            {% else %}
+                            <span class="badge bg-primary">Paid</span>
+                            {% endif %}
+                        </td>
+                        <td><a href="{% url 'tickets:order_detail' order.id %}"><strong>{{ order.display_order_number }}</strong></a></td>
+                        <td>{{ order.order_date|date:"M d, Y H:i" }}</td>
+                        <td>{{ order.tickets_count }}</td>
+                        <td>${{ order.gross_total|floatformat:2 }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+
+        {% if page_obj.has_other_pages %}
+        <div class="d-flex justify-content-center py-3">
+            <nav>
+                <ul class="pagination mb-0">
+                    {% if page_obj.has_previous %}
+                    <li class="page-item"><a class="page-link" href="?page={{ page_obj.previous_page_number }}">Previous</a></li>
+                    {% endif %}
+                    <li class="page-item active"><span class="page-link">{{ page_obj.number }} / {{ page_obj.paginator.num_pages }}</span></li>
+                    {% if page_obj.has_next %}
+                    <li class="page-item"><a class="page-link" href="?page={{ page_obj.next_page_number }}">Next</a></li>
+                    {% endif %}
+                </ul>
+            </nav>
+        </div>
+        {% endif %}
+        {% else %}
+        <div class="empty-state" style="padding: 32px;">
+            <p class="mb-0">No orders found for this event.</p>
+        </div>
+        {% endif %}
+    </div>
+</div>
+
+</div><!-- /tab-orders -->
+
+<!-- ===== TAB 3: Finance ===== -->
+<div class="tab-pane fade" id="tab-finance" role="tabpanel">
+
+<div class="card mb-4">
+    <div class="card-header d-flex justify-content-between align-items-center">
+        <h5>Additional Income</h5>
+        {% if income_sources %}
+        <a href="{% url 'tickets:event_income_create' event.id %}" class="btn btn-sm btn-primary"><i class="bi bi-plus-lg"></i> Add Income</a>
+        {% else %}
+        <a href="{% url 'tickets:income_source_list' %}" class="btn btn-sm btn-primary">Define income sources first</a>
+        {% endif %}
+    </div>
+    <div class="card-body p-0">
+        {% if additional_income_lines %}
+        <div class="table-responsive">
+            <table class="table table-hover mb-0">
+                <thead>
+                    <tr>
+                        <th>Source</th>
+                        <th>Amount</th>
+                        <th>Date</th>
+                        <th></th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for line in additional_income_lines %}
+                    <tr>
+                        <td>{{ line.income_source.name }}</td>
+                        <td><strong>${{ line.amount|currency }}</strong></td>
+                        <td>{% if line.income_date %}{{ line.income_date|date:"M d, Y" }}{% else %}<span class="text-muted">&mdash;</span>{% endif %}</td>
+                        <td>
+                            <div class="d-flex gap-1">
+                                <a href="{% url 'tickets:event_income_edit' event.id line.id %}" class="btn btn-sm btn-outline-secondary"><i class="bi bi-pencil"></i></a>
+                                <a href="{% url 'tickets:event_income_delete' event.id line.id %}" class="btn btn-sm btn-outline-danger"><i class="bi bi-trash"></i></a>
+                            </div>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% else %}
+        <div class="empty-state" style="padding: 32px;">
+            <p class="mb-2">No additional income (e.g. Bar Splits, Merch) recorded. Add income source types in <a href="{% url 'tickets:income_source_list' %}">Income Sources</a>, then add amounts here.</p>
+        </div>
+        {% endif %}
+    </div>
+</div>
+
+<div class="card mb-4">
+    <div class="card-header d-flex justify-content-between align-items-center">
+        <h5>Expenses</h5>
+        <a href="{% url 'tickets:expense_create' event.id %}" class="btn btn-sm btn-primary"><i class="bi bi-plus-lg"></i> Add Expense</a>
+    </div>
+    <div class="card-body p-0">
+        {% if expenses %}
+        {% if expenses_by_category %}
+        <div class="px-3 pt-3 pb-2">
+            {% for cat in expenses_by_category %}
+            <span class="badge bg-secondary me-1 mb-1">{{ category_labels|get_item:cat.category }} &mdash; ${{ cat.total|currency }}</span>
+            {% endfor %}
+        </div>
+        {% endif %}
+        <div class="table-responsive">
+            <table class="table table-hover mb-0">
+                <thead>
+                    <tr>
+                        <th>Category</th>
+                        <th>Description</th>
+                        <th>Amount</th>
+                        <th>Date</th>
+                        <th></th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for expense in expenses %}
+                    <tr>
+                        <td>{{ expense.get_category_display }}</td>
+                        <td>{{ expense.description }}</td>
+                        <td><strong>${{ expense.amount|currency }}</strong></td>
+                        <td>{% if expense.expense_date %}{{ expense.expense_date|date:"M d, Y" }}{% else %}<span class="text-muted">&mdash;</span>{% endif %}</td>
+                        <td>
+                            <div class="d-flex gap-1">
+                                <a href="{% url 'tickets:expense_edit' event.id expense.id %}" class="btn btn-sm btn-outline-secondary"><i class="bi bi-pencil"></i></a>
+                                <a href="{% url 'tickets:expense_delete' event.id expense.id %}" class="btn btn-sm btn-outline-danger"><i class="bi bi-trash"></i></a>
+                            </div>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% else %}
+        <div class="empty-state" style="padding: 32px;">
+            <p class="mb-2">No expenses recorded for this event.</p>
+        </div>
+        {% endif %}
+    </div>
+</div>
+
+</div><!-- /tab-finance -->
+
+<!-- ===== TAB 4: Manage ===== -->
+<div class="tab-pane fade" id="tab-manage" role="tabpanel">
 
 {% if event.ticketing_type == 'direct' %}
 {% if public_buy_url and event.effective_status == 'live' %}
@@ -590,103 +825,6 @@
 </div>
 {% endif %}
 
-<div class="card mb-4">
-    <div class="card-header d-flex justify-content-between align-items-center">
-        <h5>Additional Income</h5>
-        {% if income_sources %}
-        <a href="{% url 'tickets:event_income_create' event.id %}" class="btn btn-sm btn-primary"><i class="bi bi-plus-lg"></i> Add Income</a>
-        {% else %}
-        <a href="{% url 'tickets:income_source_list' %}" class="btn btn-sm btn-primary">Define income sources first</a>
-        {% endif %}
-    </div>
-    <div class="card-body p-0">
-        {% if additional_income_lines %}
-        <div class="table-responsive">
-            <table class="table table-hover mb-0">
-                <thead>
-                    <tr>
-                        <th>Source</th>
-                        <th>Amount</th>
-                        <th>Date</th>
-                        <th></th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {% for line in additional_income_lines %}
-                    <tr>
-                        <td>{{ line.income_source.name }}</td>
-                        <td><strong>${{ line.amount|currency }}</strong></td>
-                        <td>{% if line.income_date %}{{ line.income_date|date:"M d, Y" }}{% else %}<span class="text-muted">&mdash;</span>{% endif %}</td>
-                        <td>
-                            <div class="d-flex gap-1">
-                                <a href="{% url 'tickets:event_income_edit' event.id line.id %}" class="btn btn-sm btn-outline-secondary"><i class="bi bi-pencil"></i></a>
-                                <a href="{% url 'tickets:event_income_delete' event.id line.id %}" class="btn btn-sm btn-outline-danger"><i class="bi bi-trash"></i></a>
-                            </div>
-                        </td>
-                    </tr>
-                    {% endfor %}
-                </tbody>
-            </table>
-        </div>
-        {% else %}
-        <div class="empty-state" style="padding: 32px;">
-            <p class="mb-2">No additional income (e.g. Bar Splits, Merch) recorded. Add income source types in <a href="{% url 'tickets:income_source_list' %}">Income Sources</a>, then add amounts here.</p>
-        </div>
-        {% endif %}
-    </div>
-</div>
-
-<div class="card mb-4">
-    <div class="card-header d-flex justify-content-between align-items-center">
-        <h5>Expenses</h5>
-        <a href="{% url 'tickets:expense_create' event.id %}" class="btn btn-sm btn-primary"><i class="bi bi-plus-lg"></i> Add Expense</a>
-    </div>
-    <div class="card-body p-0">
-        {% if expenses %}
-        {% if expenses_by_category %}
-        <div class="px-3 pt-3 pb-2">
-            {% for cat in expenses_by_category %}
-            <span class="badge bg-secondary me-1 mb-1">{{ category_labels|get_item:cat.category }} &mdash; ${{ cat.total|currency }}</span>
-            {% endfor %}
-        </div>
-        {% endif %}
-        <div class="table-responsive">
-            <table class="table table-hover mb-0">
-                <thead>
-                    <tr>
-                        <th>Category</th>
-                        <th>Description</th>
-                        <th>Amount</th>
-                        <th>Date</th>
-                        <th></th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {% for expense in expenses %}
-                    <tr>
-                        <td>{{ expense.get_category_display }}</td>
-                        <td>{{ expense.description }}</td>
-                        <td><strong>${{ expense.amount|currency }}</strong></td>
-                        <td>{% if expense.expense_date %}{{ expense.expense_date|date:"M d, Y" }}{% else %}<span class="text-muted">&mdash;</span>{% endif %}</td>
-                        <td>
-                            <div class="d-flex gap-1">
-                                <a href="{% url 'tickets:expense_edit' event.id expense.id %}" class="btn btn-sm btn-outline-secondary"><i class="bi bi-pencil"></i></a>
-                                <a href="{% url 'tickets:expense_delete' event.id expense.id %}" class="btn btn-sm btn-outline-danger"><i class="bi bi-trash"></i></a>
-                            </div>
-                        </td>
-                    </tr>
-                    {% endfor %}
-                </tbody>
-            </table>
-        </div>
-        {% else %}
-        <div class="empty-state" style="padding: 32px;">
-            <p class="mb-2">No expenses recorded for this event.</p>
-        </div>
-        {% endif %}
-    </div>
-</div>
-
 {% if event.ticketing_type != 'direct' %}
 <div id="event-uploads-card" data-url="{% url 'tickets:event_uploads_summary' event.id %}">
     <div class="card mb-4">
@@ -700,130 +838,6 @@
                 <span>Loading uploads…</span>
             </div>
         </div>
-    </div>
-</div>
-{% endif %}
-
-<div class="card mb-4">
-    <div class="card-header">
-        <h5>Recent Orders</h5>
-    </div>
-    <div class="card-body p-0">
-        {% if page_obj %}
-        <div class="table-responsive">
-            <table class="table table-hover mb-0">
-                <thead>
-                    <tr>
-                        <th>Customer</th>
-                        <th>Status</th>
-                        <th>Order Number</th>
-                        <th>Date</th>
-                        <th>Quantity</th>
-                        <th>Gross Total</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {% for order in page_obj %}
-                    <tr>
-                        <td><a href="{% url 'tickets:customer_detail' order.customer.id %}">{{ order.customer.name }}</a></td>
-                        <td>
-                            {% if order.refunded_at %}
-                            <span class="badge bg-danger">Refunded</span>
-                            {% elif order.checked_in_at %}
-                            <span class="badge bg-success">Checked in</span>
-                            {% else %}
-                            <span class="badge bg-primary">Paid</span>
-                            {% endif %}
-                        </td>
-                        <td><a href="{% url 'tickets:order_detail' order.id %}"><strong>{{ order.display_order_number }}</strong></a></td>
-                        <td>{{ order.order_date|date:"M d, Y H:i" }}</td>
-                        <td>{{ order.tickets_count }}</td>
-                        <td>${{ order.gross_total|floatformat:2 }}</td>
-                    </tr>
-                    {% endfor %}
-                </tbody>
-            </table>
-        </div>
-
-        {% if page_obj.has_other_pages %}
-        <div class="d-flex justify-content-center py-3">
-            <nav>
-                <ul class="pagination mb-0">
-                    {% if page_obj.has_previous %}
-                    <li class="page-item"><a class="page-link" href="?page={{ page_obj.previous_page_number }}">Previous</a></li>
-                    {% endif %}
-                    <li class="page-item active"><span class="page-link">{{ page_obj.number }} / {{ page_obj.paginator.num_pages }}</span></li>
-                    {% if page_obj.has_next %}
-                    <li class="page-item"><a class="page-link" href="?page={{ page_obj.next_page_number }}">Next</a></li>
-                    {% endif %}
-                </ul>
-            </nav>
-        </div>
-        {% endif %}
-        {% else %}
-        <div class="empty-state" style="padding: 32px;">
-            <p class="mb-0">No orders found for this event.</p>
-        </div>
-        {% endif %}
-    </div>
-</div>
-
-
-{% if survey_results or survey_invitations_count > 0 %}
-<div class="card mb-4">
-    <div class="card-header d-flex justify-content-between align-items-center">
-        <h5>Survey Results</h5>
-        <span class="text-muted" style="font-size: 0.85rem;">{{ survey_responses_count }} / {{ survey_invitations_count }} responses</span>
-    </div>
-    <div class="card-body">
-        {% if survey_results %}
-        <div class="row mb-3">
-            {% if survey_results.avg_star_rating %}
-            <div class="col-md-4 mb-3 mb-md-0">
-                <div class="text-center">
-                    <div style="font-size: 2rem; font-weight: 700; color: #f5a623;">{{ survey_results.avg_star_rating }}</div>
-                    <div style="color: #f5a623; font-size: 1.2rem;">
-                        {% for i in "12345" %}
-                            {% if forloop.counter <= survey_results.avg_star_rating %}<i class="bi bi-star-fill"></i>{% else %}<i class="bi bi-star"></i>{% endif %}
-                        {% endfor %}
-                    </div>
-                    <div class="text-muted" style="font-size: 0.85rem;">Average Rating</div>
-                </div>
-            </div>
-            {% endif %}
-            {% if survey_results.nps_score != None %}
-            <div class="col-md-4 mb-3 mb-md-0">
-                <div class="text-center">
-                    <div style="font-size: 2rem; font-weight: 700; {% if survey_results.nps_score >= 50 %}color: #198754;{% elif survey_results.nps_score >= 0 %}color: #f5a623;{% else %}color: #dc3545;{% endif %}">{{ survey_results.nps_score }}</div>
-                    <div class="text-muted" style="font-size: 0.85rem;">NPS Score ({{ survey_results.nps_total }} responses)</div>
-                </div>
-            </div>
-            {% endif %}
-            <div class="col-md-4">
-                <div class="text-center">
-                    <div style="font-size: 2rem; font-weight: 700; color: #1a1a2e;">{{ survey_responses_count }}</div>
-                    <div class="text-muted" style="font-size: 0.85rem;">Total Responses</div>
-                </div>
-            </div>
-        </div>
-
-        {% if survey_results.recent_comments %}
-        <h6 class="mt-3 mb-2">Recent Comments</h6>
-        <ul class="list-unstyled mb-0">
-            {% for comment in survey_results.recent_comments %}
-            <li class="py-2 {% if not forloop.last %}border-bottom{% endif %}">
-                <i class="bi bi-chat-quote text-muted me-1"></i> {{ comment.text_answer }}
-                <div class="text-muted" style="font-size: 0.8rem;">{{ comment.response__customer__name }} ({{ comment.response__customer__email }})</div>
-            </li>
-            {% endfor %}
-        </ul>
-        {% endif %}
-
-        {% else %}
-        <div class="empty-state" style="padding: 16px;">
-            <p class="mb-0 text-muted">Surveys have been sent but no responses yet.</p>
-        </div>
-        {% endif %}
     </div>
 </div>
 {% endif %}
@@ -846,6 +860,10 @@
     </div>
 </div>
 {% endif %}
+
+</div><!-- /tab-manage -->
+
+</div><!-- /tab-content -->
 
 <a href="{% url 'tickets:event_list' %}" class="btn btn-outline-secondary"><i class="bi bi-arrow-left"></i> Back to Events</a>
 
@@ -958,6 +976,27 @@
 {% endblock %}
 
 {% block extra_js %}
+<script>
+(function() {
+    var tabs = document.getElementById('eventDetailTabs');
+    if (!tabs) return;
+    var params = new URLSearchParams(window.location.search);
+    var activeTab = params.get('tab');
+    if (activeTab) {
+        var btn = tabs.querySelector('[data-bs-target="#tab-' + activeTab + '"]');
+        if (btn) { new bootstrap.Tab(btn).show(); }
+    }
+    tabs.addEventListener('shown.bs.tab', function(e) {
+        var target = e.target.getAttribute('data-bs-target');
+        if (!target) return;
+        var tabName = target.replace('#tab-', '');
+        var url = new URL(window.location);
+        if (tabName === 'overview') { url.searchParams.delete('tab'); }
+        else { url.searchParams.set('tab', tabName); }
+        history.replaceState(null, '', url.toString());
+    });
+})();
+</script>
 {% if event.ticketing_type != 'direct' %}
 <script>
 document.addEventListener('DOMContentLoaded', function() {
@@ -1174,82 +1213,6 @@ document.addEventListener('DOMContentLoaded', function() {
         resetToForm();
         document.getElementById('csvFormatSelect').classList.remove('is-invalid');
         submitBtn = document.getElementById('csvUploadSubmitBtn');
-    });
-});
-</script>
-{% endif %}
-{% if event.ticketing_type == 'direct' and ticket_type_allocation_charts %}
-<script type="application/json" id="ticket-allocation-data">{{ ticket_type_allocation_charts_json|safe }}</script>
-<script>
-document.addEventListener('DOMContentLoaded', function() {
-    var el = document.getElementById('ticket-allocation-data');
-    if (!el) return;
-    var charts = JSON.parse(el.textContent);
-    if (!charts.length) return;
-
-    var isDark = document.documentElement.getAttribute('data-theme') === 'dark';
-    var textColor = isDark ? '#e0e0e0' : '#555';
-    var soldColor = 'rgba(25, 135, 84, 0.82)';
-    var soldBorder = 'rgba(25, 135, 84, 1)';
-    var remainingColor = isDark ? 'rgba(255,255,255,0.12)' : 'rgba(108,117,125,0.18)';
-    var remainingBorder = isDark ? 'rgba(255,255,255,0.24)' : 'rgba(108,117,125,0.36)';
-    var unlimitedColor = 'rgba(13, 110, 253, 0.78)';
-    var unlimitedBorder = 'rgba(13, 110, 253, 1)';
-
-    charts.forEach(function(chart, index) {
-        var canvas = document.getElementById('ticketAllocationChart' + index);
-        if (!canvas) return;
-
-        var isUnlimited = chart.is_unlimited;
-        var sold = Number(chart.sold || 0);
-        var allocated = Number(chart.allocated || 0);
-        var remaining = Number(chart.remaining || 0);
-        var labels = isUnlimited ? ['Sold'] : ['Sold', 'Remaining'];
-        var values = isUnlimited ? [sold || 1] : [sold, remaining];
-        var bgColors = isUnlimited ? [unlimitedColor] : [soldColor, remainingColor];
-        var bdColors = isUnlimited ? [unlimitedBorder] : [soldBorder, remainingBorder];
-
-        new Chart(canvas.getContext('2d'), {
-            type: 'doughnut',
-            data: {
-                labels: labels,
-                datasets: [{
-                    data: values,
-                    backgroundColor: bgColors,
-                    borderColor: bdColors,
-                    borderWidth: 1,
-                }]
-            },
-            options: {
-                responsive: true,
-                maintainAspectRatio: false,
-                cutout: '68%',
-                plugins: {
-                    legend: {
-                        position: 'bottom',
-                        labels: {
-                            color: textColor,
-                            boxWidth: 12,
-                            padding: 12,
-                            font: { size: 12 },
-                        }
-                    },
-                    tooltip: {
-                        callbacks: {
-                            label: function(context) {
-                                if (isUnlimited) {
-                                    return chart.label + ': ' + sold + ' sold, unlimited allocation';
-                                }
-                                if (context.dataIndex === 0) {
-                                    return 'Sold: ' + sold + ' of ' + allocated;
-                                }
-                                return 'Remaining: ' + remaining + ' of ' + allocated;
-                            }
-                        }
-                    }
-                }
-            }
-        });
     });
 });
 </script>
