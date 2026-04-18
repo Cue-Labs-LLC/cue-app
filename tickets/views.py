@@ -237,7 +237,7 @@ def _invalidate_event_list_cache(org):
         pass
 
 
-EVENT_STATS_CACHE_VERSION = 2
+EVENT_STATS_CACHE_VERSION = 3
 
 EVENT_STATS_REQUIRED_KEYS = frozenset({
     'total_orders',
@@ -2837,39 +2837,39 @@ def _compute_event_stats(event):
     if isinstance(cached, dict) and EVENT_STATS_REQUIRED_KEYS.issubset(cached):
         return cached
 
-    # Core order stats
+    # Core order stats — total_customers excludes in-person placeholder customers
+    # to match the customers list page which excludes @placeholder.local emails.
     event_stats = event.ticket_orders.aggregate(
         total_orders=Count('id'),
         total_revenue=Coalesce(Sum('total_amount'), Decimal('0.00')),
-        total_customers=Count('customer', distinct=True),
+        total_customers=Count('customer', filter=Q(is_in_person=False), distinct=True),
     )
     total_orders = event_stats['total_orders']
     ticket_revenue = event_stats['total_revenue']
     total_customers = event_stats['total_customers']
 
-    # New vs returning customers (online orders only, matching RepeatCustomerCalculator)
+    # New vs returning customers (online orders only).
+    # A customer is "returning" if they have any online order at a *different* event
+    # in this org. Using event exclusion rather than date comparison avoids fragile
+    # datetime equality and guarantees returning=0 for an org's first event.
     if total_customers > 0:
-        event_first = dict(
+        online_customer_ids = set(
             TicketOrder.objects.filter(event=event, is_in_person=False)
-            .values('customer_id')
-            .annotate(first=Min('order_date'))
-            .values_list('customer_id', 'first')
+            .values_list('customer_id', flat=True)
+            .distinct()
         )
-        org_first = dict(
+        returning_customer_ids = set(
             TicketOrder.objects.filter(
-                customer_id__in=event_first.keys(),
+                customer_id__in=online_customer_ids,
                 customer__organization=event.organization,
                 is_in_person=False,
             )
-            .values('customer_id')
-            .annotate(first=Min('order_date'))
-            .values_list('customer_id', 'first')
+            .exclude(event=event)
+            .values_list('customer_id', flat=True)
+            .distinct()
         )
-        new_customers_count = sum(
-            1 for cid, dt in event_first.items()
-            if org_first.get(cid) == dt
-        )
-        returning_customers_count = len(event_first) - new_customers_count
+        returning_customers_count = len(returning_customer_ids)
+        new_customers_count = len(online_customer_ids) - returning_customers_count
     else:
         new_customers_count = 0
         returning_customers_count = 0
