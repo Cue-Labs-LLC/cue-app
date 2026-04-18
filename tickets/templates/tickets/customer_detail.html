@@ -169,7 +169,7 @@
                         <td><strong>{{ order.display_order_number }}</strong></td>
                         <td>{{ order.order_date|date:"M d, Y H:i" }}</td>
                         <td>{{ order.event.name }}</td>
-                        <td><strong>${{ order.total_amount|currency }}</strong></td>
+                        <td><strong>${{ order.net_amount|currency }}</strong></td>
                         <td>{{ order.tickets_count }}</td>
                     </tr>
                     {% endfor %}

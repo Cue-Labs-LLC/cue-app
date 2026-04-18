@@ -642,11 +642,18 @@ class Customer(BaseModel):
         return self.email
 
     def calculate_lifetime_value(self):
-        """Calculate LTV from all associated ticket orders (excludes refunded)."""
-        result = self.ticket_orders.filter(refunded_at__isnull=True).aggregate(
-            total=Sum('total_amount')
+        """Calculate LTV from all associated ticket orders (excludes refunded).
+
+        For direct ticketing orders, subtracts platform fees so LTV reflects
+        what the organizer actually receives, not the gross amount the customer paid.
+        """
+        orders = self.ticket_orders.filter(refunded_at__isnull=True)
+        total = orders.aggregate(total=Sum('total_amount'))['total'] or Decimal('0.00')
+        fees_cents = (
+            StripeCheckoutSession.objects.filter(ticket_order__in=orders)
+            .aggregate(total=Sum('platform_fee_cents'))['total'] or 0
         )
-        return result['total'] or Decimal('0.00')
+        return total - Decimal(fees_cents) / 100
 
     def update_lifetime_value(self):
         """Recalculate and save LTV."""
