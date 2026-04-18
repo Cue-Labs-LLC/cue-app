@@ -6257,7 +6257,8 @@ def checkout_payment(request, public_id):
             org = event.organization
             customer, _ = Customer.objects.get_or_create(
                 email=buyer_email,
-                defaults={'organization': org, 'name': buyer_name},
+                organization=org,
+                defaults={'name': buyer_name},
             )
             # Resolve promo code for free-after-discount orders
             promo_code_obj = None
@@ -6911,7 +6912,8 @@ def _fulfill_payment_intent(payment_intent):
 
         customer, _ = Customer.objects.get_or_create(
             email=email.lower(),
-            defaults={'organization': org, 'name': name},
+            organization=org,
+            defaults={'name': name},
         )
         limit_error = _cart_ticket_type_limit_error(
             event,
