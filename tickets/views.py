@@ -445,6 +445,19 @@ def _annotate_events(queryset):
         total_tickets=F('cached_ticket_count'),
         paid_ticket_sum=F('cached_paid_ticket_sum'),
         paid_ticket_count=F('cached_paid_ticket_count'),
+        # Actual platform fees from completed Stripe sessions (direct ticketing only)
+        platform_fees_cents=Coalesce(
+            Subquery(
+                StripeCheckoutSession.objects.filter(
+                    ticket_order__event=OuterRef('pk')
+                )
+                .values('ticket_order__event')
+                .annotate(total=Sum('platform_fee_cents'))
+                .values('total')[:1],
+                output_field=models.IntegerField(),
+            ),
+            0,
+        ),
     )
 
 
@@ -1536,7 +1549,7 @@ def home(request):
     # Compute net_revenue (after fees for direct events, gross for external)
     for ev in page_obj.object_list:
         if ev.ticketing_type == 'direct':
-            fees = (ev.paid_ticket_sum * Decimal('0.10') + Decimal('0.99') * ev.paid_ticket_count) / Decimal('1.10')
+            fees = Decimal(ev.platform_fees_cents) / Decimal('100')
         else:
             fees = Decimal('0.00')
         # computed_total_revenue = ticket_revenue + additional_income (signal-maintained)
@@ -1566,8 +1579,13 @@ def home(request):
     additional_agg = EventIncome.objects.filter(
         event__organization=org, deleted_at__isnull=True
     ).aggregate(total=Coalesce(Sum('amount'), Decimal('0.00')))
+    direct_fees_agg = StripeCheckoutSession.objects.filter(
+        event__organization=org,
+        ticket_order__isnull=False,
+    ).aggregate(total_fees=Coalesce(Sum('platform_fee_cents'), 0))
+    direct_fees = Decimal(direct_fees_agg['total_fees']) / Decimal('100')
     total_orders = order_agg['total_orders']
-    total_revenue = order_agg['total_revenue'] + (additional_agg['total'] or Decimal('0.00'))
+    total_revenue = order_agg['total_revenue'] + (additional_agg['total'] or Decimal('0.00')) - direct_fees
     total_tickets = Ticket.objects.filter(ticket_order__event__organization=org).count()
     
     context = {
@@ -2694,12 +2712,9 @@ def event_list(request):
 
     # Compute net_revenue for each event on this page.
     # Fees apply to direct ticketing events only; external/CSV events are shown at gross.
-    # computed_total_revenue = ticket_revenue + additional_income (signal-maintained),
-    # so net_revenue = total_revenue - fees is algebraically equivalent to the old formula
-    # ticket_revenue - fees + total_additional_income. See signals.refresh_event_stats.
     for ev in page_obj.object_list:
         if ev.ticketing_type == 'direct':
-            fees = (ev.paid_ticket_sum * Decimal('0.10') + Decimal('0.99') * ev.paid_ticket_count) / Decimal('1.10')
+            fees = Decimal(ev.platform_fees_cents) / Decimal('100')
         else:
             fees = Decimal('0.00')
         ev.net_revenue = ev.total_revenue - fees
