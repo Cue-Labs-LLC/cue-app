@@ -94,13 +94,13 @@ class Command(BaseCommand):
                 order.save(update_fields=['customer'])
 
                 donors_to_update.add(old_customer.pk)
-                new_customer.update_ltv()
+                new_customer.update_lifetime_value()
                 fixed += 1
 
             # Recalculate LTV for customers who lost orders
             for pk in donors_to_update:
                 try:
-                    Customer.objects.get(pk=pk).update_ltv()
+                    Customer.objects.get(pk=pk).update_lifetime_value()
                 except Customer.DoesNotExist:
                     pass
 
