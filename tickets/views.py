@@ -2476,10 +2476,24 @@ def customer_detail(request, customer_id):
     org = get_organization(request)
     customer = get_object_or_404(Customer.objects.filter(organization=org), id=customer_id)
     
-    # Order statistics - single aggregate instead of 5 separate queries
-    order_stats = customer.ticket_orders.aggregate(
+    # Subquery for platform fee — zero for non-direct (CSV) orders
+    _fee_subq = Subquery(
+        StripeCheckoutSession.objects.filter(ticket_order=OuterRef('pk'))
+        .values('platform_fee_cents')[:1],
+        output_field=DecimalField(max_digits=10, decimal_places=2),
+    )
+    _net_amount = ExpressionWrapper(
+        F('total_amount') - Cast(
+            Coalesce(_fee_subq, 0),
+            output_field=DecimalField(max_digits=10, decimal_places=2),
+        ) * Decimal('0.01'),
+        output_field=DecimalField(max_digits=10, decimal_places=2),
+    )
+
+    # Order statistics — avg uses net amount (after platform fees) to match LTV
+    order_stats = customer.ticket_orders.annotate(net_amount=_net_amount).aggregate(
         total_orders=Count('id'),
-        avg_order_value=Coalesce(Avg('total_amount'), Decimal('0.00')),
+        avg_order_value=Coalesce(Avg('net_amount'), Decimal('0.00')),
         last_order_date=Max('order_date'),
     )
     total_orders = order_stats['total_orders']
@@ -2492,9 +2506,10 @@ def customer_detail(request, customer_id):
         ticket_orders__customer=customer
     ).select_related('venue').distinct()
 
-    # Paginate orders - select_related + annotate to avoid N+1 in template
+    # Paginate orders — annotate net_amount so the template shows post-fee totals
     orders = customer.ticket_orders.select_related('event').annotate(
-        tickets_count=Count('tickets')
+        tickets_count=Count('tickets'),
+        net_amount=_net_amount,
     ).order_by('-order_date')
     paginator = Paginator(orders, 20)
     page_number = request.GET.get('page')
