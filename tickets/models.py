@@ -592,7 +592,7 @@ class Customer(BaseModel):
         on_delete=models.CASCADE,
         related_name='customers',
     )
-    email = models.EmailField(unique=True, db_index=True)
+    email = models.EmailField(db_index=True)
     name = models.CharField(max_length=200)
     phone = models.CharField(max_length=50, blank=True)
     lifetime_value = models.DecimalField(
@@ -624,6 +624,12 @@ class Customer(BaseModel):
             models.Index(fields=['email']),
             models.Index(fields=['lifetime_value']),
             models.Index(fields=['last_order_date']),
+        ]
+        constraints = [
+            models.UniqueConstraint(
+                fields=['organization', 'email'],
+                name='customer_org_email_unique',
+            ),
         ]
 
     def __str__(self):
