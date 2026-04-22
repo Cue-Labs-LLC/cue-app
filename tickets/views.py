@@ -4903,6 +4903,28 @@ def profitability_overview(request):
         'profit': [m['profit'] for m in monthly_profit_chart],
     }
 
+    # Quarterly aggregation for chart - bucket events by calendar quarter
+    quarter_buckets_profit = {}
+    for r in chart_events:
+        d = r['event'].start_date
+        q = (d.month - 1) // 3 + 1
+        sort_key = f'{d.year}-Q{q}'
+        label = f'Q{q} {d.year}'
+        m = quarter_buckets_profit.setdefault(sort_key, {
+            'label': label, 'sort_key': sort_key,
+            'revenue': 0.0, 'expenses': 0.0, 'profit': 0.0,
+        })
+        m['revenue'] += float(r['revenue'])
+        m['expenses'] += float(r['expenses'])
+        m['profit'] += float(r['profit'])
+    quarterly_profit_chart = sorted(quarter_buckets_profit.values(), key=lambda x: x['sort_key'])
+    quarter_chart_data = {
+        'labels': [m['label'] for m in quarterly_profit_chart],
+        'revenue': [m['revenue'] for m in quarterly_profit_chart],
+        'expenses': [m['expenses'] for m in quarterly_profit_chart],
+        'profit': [m['profit'] for m in quarterly_profit_chart],
+    }
+
     # Per-event chart data - ordered earliest → most recent
     event_chart_events = [r for r in reversed(event_rows) if r['revenue'] > 0 or r['expenses'] > 0]
     event_chart_data = {
@@ -4925,6 +4947,7 @@ def profitability_overview(request):
         'summary_margin': summary_margin,
         'chart_data_json': json.dumps(chart_data),
         'event_chart_data_json': json.dumps(event_chart_data),
+        'quarter_chart_data_json': json.dumps(quarter_chart_data),
         'market_chart_data_json': json.dumps(market_chart_data),
         'summary_paid_ticket_sum': float(summary_paid_ticket_sum),
         'summary_paid_ticket_count': summary_paid_ticket_count,
