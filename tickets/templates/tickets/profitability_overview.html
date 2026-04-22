@@ -76,6 +76,7 @@
         <div class="d-flex flex-wrap align-items-center gap-2">
             <div class="chart-control-group" id="granularityGroup">
                 <button type="button" class="chart-control-btn active" id="btnByMonth">By Month</button>
+                <button type="button" class="chart-control-btn" id="btnByQuarter">By Quarter</button>
                 <button type="button" class="chart-control-btn" id="btnByEvent">By Event</button>
             </div>
             <div class="chart-control-group" id="marketSortGroup" style="display:none!important;">
@@ -221,6 +222,7 @@
 {% block extra_js %}
 <script type="application/json" id="profitChartData">{{ chart_data_json|safe }}</script>
 <script type="application/json" id="eventChartData">{{ event_chart_data_json|safe }}</script>
+<script type="application/json" id="quarterChartData">{{ quarter_chart_data_json|safe }}</script>
 <script type="application/json" id="marketChartData">{{ market_chart_data_json|safe }}</script>
 <script>
 document.addEventListener('DOMContentLoaded', function() {
@@ -228,11 +230,13 @@ document.addEventListener('DOMContentLoaded', function() {
     if (!dataEl) return;
     var data = JSON.parse(dataEl.textContent);
     var eventData = JSON.parse(document.getElementById('eventChartData').textContent);
+    var quarterData = JSON.parse(document.getElementById('quarterChartData').textContent);
     var mktData = JSON.parse(document.getElementById('marketChartData').textContent);
 
     var hasMonthData = data.labels && data.labels.length > 0;
     var hasEventData = eventData.labels && eventData.labels.length > 0;
-    if (!hasMonthData && !hasEventData) return;
+    var hasQuarterData = quarterData.labels && quarterData.labels.length > 0;
+    if (!hasMonthData && !hasEventData && !hasQuarterData) return;
 
     var isDark = document.documentElement.getAttribute('data-theme') === 'dark';
     var textColor = isDark ? '#adb5bd' : '#666';
@@ -261,6 +265,7 @@ document.addEventListener('DOMContentLoaded', function() {
     var marketSortGroup = document.getElementById('marketSortGroup');
     var granularityGroup = document.getElementById('granularityGroup');
     var btnByMonth = document.getElementById('btnByMonth');
+    var btnByQuarter = document.getElementById('btnByQuarter');
     var btnByEvent = document.getElementById('btnByEvent');
     var btnSortDesc = document.getElementById('btnSortDesc');
     var btnSortAsc = document.getElementById('btnSortAsc');
@@ -277,9 +282,9 @@ document.addEventListener('DOMContentLoaded', function() {
     }
 
     function buildConfigs(granularity) {
-        var d = granularity === 'event' ? eventData : data;
-        var labels = granularity === 'event' ? d.labels : d.labels.map(fmtMonth);
-        var suffix = granularity === 'event' ? 'by Event' : 'by Month';
+        var d = granularity === 'event' ? eventData : granularity === 'quarter' ? quarterData : data;
+        var labels = granularity === 'event' ? d.labels : granularity === 'quarter' ? d.labels : d.labels.map(fmtMonth);
+        var suffix = granularity === 'event' ? 'by Event' : granularity === 'quarter' ? 'by Quarter' : 'by Month';
         var scaleOpts = makeScaleOpts(granularity === 'event');
         return {
             revexp: {
@@ -357,6 +362,7 @@ document.addEventListener('DOMContentLoaded', function() {
     function switchGranularity(granularity) {
         currentGranularity = granularity;
         btnByMonth.classList.toggle('active', granularity === 'month');
+        btnByQuarter.classList.toggle('active', granularity === 'quarter');
         btnByEvent.classList.toggle('active', granularity === 'event');
         renderChart(currentKey, granularity);
     }
@@ -375,6 +381,7 @@ document.addEventListener('DOMContentLoaded', function() {
     btnPL.addEventListener('click', function() { switchChart('pl'); });
     btnMarket.addEventListener('click', function() { switchChart('market'); });
     btnByMonth.addEventListener('click', function() { switchGranularity('month'); });
+    btnByQuarter.addEventListener('click', function() { switchGranularity('quarter'); });
     btnByEvent.addEventListener('click', function() { switchGranularity('event'); });
     btnSortDesc.addEventListener('click', function() { applyMarketSort(false); });
     btnSortAsc.addEventListener('click', function() { applyMarketSort(true); });
