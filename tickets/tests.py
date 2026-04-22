@@ -4270,7 +4270,7 @@ class PublicEventPreviewMetadataTests(TestCase):
             organization=self.org,
             name='Warehouse Session',
             venue=self.venue,
-            start_date=date(2026, 4, 18),
+            start_date=date.today() + timedelta(days=30),
             start_time=time(20, 0),
             ticketing_type='direct',
             status='live',
