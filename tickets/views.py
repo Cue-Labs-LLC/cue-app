@@ -4833,6 +4833,18 @@ def profitability_overview(request):
         .order_by('-start_date')
     )
 
+    # Pre-fetch actual Stripe platform fees per event in one query (direct ticketing only)
+    stripe_fees_qs = (
+        StripeCheckoutSession.objects
+        .filter(ticket_order__event__in=events_qs, ticket_order__event__ticketing_type='direct')
+        .values('ticket_order__event_id')
+        .annotate(total_cents=Coalesce(Sum('platform_fee_cents'), 0))
+    )
+    stripe_fees_by_event = {
+        row['ticket_order__event_id']: Decimal(row['total_cents']) / Decimal('100')
+        for row in stripe_fees_qs
+    }
+
     # Summary stats (computed_total_revenue = ticket_revenue + additional_income, signal-maintained)
     summary_revenue = Decimal('0.00')
     summary_expenses = Decimal('0.00')
@@ -4842,7 +4854,7 @@ def profitability_overview(request):
     event_rows = []
     for e in events:
         total_revenue = e.computed_total_revenue
-        fees = (e.paid_ticket_sum * Decimal('0.10') + Decimal('0.99') * e.paid_ticket_count) / Decimal('1.10')
+        fees = stripe_fees_by_event.get(e.pk, Decimal('0.00'))
         net_revenue = total_revenue - fees
         profit = net_revenue - e.total_expenses
         margin = (profit / net_revenue * 100) if net_revenue > 0 else None
