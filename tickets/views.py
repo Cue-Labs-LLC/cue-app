@@ -2476,10 +2476,24 @@ def customer_detail(request, customer_id):
     org = get_organization(request)
     customer = get_object_or_404(Customer.objects.filter(organization=org), id=customer_id)
     
-    # Order statistics - single aggregate instead of 5 separate queries
-    order_stats = customer.ticket_orders.aggregate(
+    # Subquery for platform fee — zero for non-direct (CSV) orders
+    _fee_subq = Subquery(
+        StripeCheckoutSession.objects.filter(ticket_order=OuterRef('pk'))
+        .values('platform_fee_cents')[:1],
+        output_field=DecimalField(max_digits=10, decimal_places=2),
+    )
+    _net_amount = ExpressionWrapper(
+        F('total_amount') - Cast(
+            Coalesce(_fee_subq, 0),
+            output_field=DecimalField(max_digits=10, decimal_places=2),
+        ) * Decimal('0.01'),
+        output_field=DecimalField(max_digits=10, decimal_places=2),
+    )
+
+    # Order statistics — avg uses net amount (after platform fees) to match LTV
+    order_stats = customer.ticket_orders.annotate(net_amount=_net_amount).aggregate(
         total_orders=Count('id'),
-        avg_order_value=Coalesce(Avg('total_amount'), Decimal('0.00')),
+        avg_order_value=Coalesce(Avg('net_amount'), Decimal('0.00')),
         last_order_date=Max('order_date'),
     )
     total_orders = order_stats['total_orders']
@@ -2492,9 +2506,10 @@ def customer_detail(request, customer_id):
         ticket_orders__customer=customer
     ).select_related('venue').distinct()
 
-    # Paginate orders - select_related + annotate to avoid N+1 in template
+    # Paginate orders — annotate net_amount so the template shows post-fee totals
     orders = customer.ticket_orders.select_related('event').annotate(
-        tickets_count=Count('tickets')
+        tickets_count=Count('tickets'),
+        net_amount=_net_amount,
     ).order_by('-order_date')
     paginator = Paginator(orders, 20)
     page_number = request.GET.get('page')
@@ -4833,6 +4848,18 @@ def profitability_overview(request):
         .order_by('-start_date')
     )
 
+    # Pre-fetch actual Stripe platform fees per event in one query (direct ticketing only)
+    stripe_fees_qs = (
+        StripeCheckoutSession.objects
+        .filter(ticket_order__event__in=events_qs, ticket_order__event__ticketing_type='direct')
+        .values('ticket_order__event_id')
+        .annotate(total_cents=Coalesce(Sum('platform_fee_cents'), 0))
+    )
+    stripe_fees_by_event = {
+        row['ticket_order__event_id']: Decimal(row['total_cents']) / Decimal('100')
+        for row in stripe_fees_qs
+    }
+
     # Summary stats (computed_total_revenue = ticket_revenue + additional_income, signal-maintained)
     summary_revenue = Decimal('0.00')
     summary_expenses = Decimal('0.00')
@@ -4842,7 +4869,7 @@ def profitability_overview(request):
     event_rows = []
     for e in events:
         total_revenue = e.computed_total_revenue
-        fees = (e.paid_ticket_sum * Decimal('0.10') + Decimal('0.99') * e.paid_ticket_count) / Decimal('1.10')
+        fees = stripe_fees_by_event.get(e.pk, Decimal('0.00'))
         net_revenue = total_revenue - fees
         profit = net_revenue - e.total_expenses
         margin = (profit / net_revenue * 100) if net_revenue > 0 else None
