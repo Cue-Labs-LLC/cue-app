@@ -666,6 +666,9 @@ document.addEventListener('DOMContentLoaded', function () {
             },
         }, opts || {}, { text: text })).showToast();
     };
+    document.querySelectorAll('[data-bs-toggle="tooltip"]').forEach(function (el) {
+        new bootstrap.Tooltip(el);
+    });
     {% if messages %}
     {% for message in messages %}
     window.showCueToast("{{ message|escapejs }}", "{% if 'error' in message.tags %}error{% elif 'success' in message.tags %}success{% elif 'warning' in message.tags %}warning{% else %}info{% endif %}");
