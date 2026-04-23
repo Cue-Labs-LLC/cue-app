@@ -538,6 +538,12 @@
         {% if is_free %}
         <form method="post" id="checkout-form">
             {% csrf_token %}
+            <div class="checkbox-row" style="margin-bottom:14px;">
+                <input type="checkbox" class="form-check-input" id="sms-opt-in-checkbox" name="sms_opt_in" value="1">
+                <label for="sms-opt-in-checkbox" style="font-size:0.75rem; color:var(--text-2); line-height:1.4;">
+                    Yes, I'd like to receive promotional texts from {{ event.organization.name }} about upcoming events and ticket offers. Msg &amp; data rates may apply. Reply STOP to opt out.
+                </label>
+            </div>
             <button type="submit" class="btn-pay">
                 <i class="bi bi-ticket-perforated"></i> Get Tickets
             </button>
@@ -580,6 +586,12 @@
         </div>
         {% endif %}
 
+        <div class="checkbox-row" style="margin-bottom:14px;">
+            <input type="checkbox" class="form-check-input" id="sms-opt-in-checkbox">
+            <label for="sms-opt-in-checkbox" style="font-size:0.75rem; color:var(--text-2); line-height:1.4;">
+                Yes, I'd like to receive promotional texts from {{ event.organization.name }} about upcoming events and ticket offers. Msg &amp; data rates may apply. Reply STOP to opt out.
+            </label>
+        </div>
         <button type="button" id="pay-btn" class="btn-pay">
             <span id="pay-btn-label"><i class="bi bi-lock"></i> Pay ${{ grand_total|currency }}</span>
             <span id="pay-btn-processing" aria-live="polite"><i class="bi bi-arrow-repeat spin"></i><span class="processing-text">Processing...</span></span>
@@ -687,7 +699,7 @@ document.addEventListener('DOMContentLoaded', function () {
         fetch(config.paymentIntentUrl, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', 'X-CSRFToken': getCookie('csrftoken') },
-            body: JSON.stringify({ fbp: getCookie('_fbp') || '', fbc: getCookie('_fbc') || '' }),
+            body: JSON.stringify({ fbp: getCookie('_fbp') || '', fbc: getCookie('_fbc') || '', sms_opt_in: (document.getElementById('sms-opt-in-checkbox') || {}).checked || false }),
         })
         .then(function (res) { return res.json(); })
         .then(function (data) {
@@ -792,8 +804,10 @@ document.addEventListener('DOMContentLoaded', function () {
 
         var fbp = getCookie('_fbp') || '';
         var fbc = getCookie('_fbc') || '';
+        var smsOptInCheckbox = document.getElementById('sms-opt-in-checkbox');
         var body = {
             save_card: saveCardCheckbox ? saveCardCheckbox.checked : false,
+            sms_opt_in: smsOptInCheckbox ? smsOptInCheckbox.checked : false,
             fbp: fbp,
             fbc: fbc,
         };
