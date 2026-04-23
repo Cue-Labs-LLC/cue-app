@@ -6318,6 +6318,11 @@ def checkout_payment(request, public_id):
                 organization=org,
                 defaults={'name': buyer_name},
             )
+            sms_opt_in = request.POST.get('sms_opt_in') == '1'
+            if sms_opt_in and not customer.sms_opt_in:
+                customer.sms_opt_in = True
+                customer.sms_opt_in_date = django_tz.now()
+                customer.save(update_fields=['sms_opt_in', 'sms_opt_in_date'])
             # Resolve promo code for free-after-discount orders
             promo_code_obj = None
             discount_amount_val = None
@@ -6470,6 +6475,7 @@ def create_payment_intent(request, public_id):
 
     save_card    = bool(data.get('save_card', False))
     use_saved_pm = (data.get('use_saved_pm') or '').strip()
+    sms_opt_in   = bool(data.get('sms_opt_in', False))
     _capi_client_ip = request.META.get('HTTP_X_FORWARDED_FOR', request.META.get('REMOTE_ADDR', '')).split(',')[0].strip()
     fb_browser_data = {
         'fbp': data.get('fbp', ''),
@@ -6640,6 +6646,7 @@ def create_payment_intent(request, public_id):
         discount_cents=discount_cents,
         fb_browser_data=fb_browser_data,
         tracking_link=tracking_link_obj,
+        sms_opt_in=sms_opt_in,
     )
 
     return JsonResponse({
@@ -6973,6 +6980,10 @@ def _fulfill_payment_intent(payment_intent):
             organization=org,
             defaults={'name': name},
         )
+        if session_obj.sms_opt_in and not customer.sms_opt_in:
+            customer.sms_opt_in = True
+            customer.sms_opt_in_date = django_tz.now()
+            customer.save(update_fields=['sms_opt_in', 'sms_opt_in_date'])
         limit_error = _cart_ticket_type_limit_error(
             event,
             email,

@@ -1644,6 +1644,7 @@ class StripeCheckoutSession(BaseModel):
         on_delete=models.SET_NULL,
         related_name='checkout_sessions',
     )
+    sms_opt_in = models.BooleanField(default=False)
     fulfilled_at = models.DateTimeField(null=True, blank=True)
     # Populated from the charge's balance_transaction.available_on at webhook time.
     # Null means the payment pre-dates this field — treat as already settled.
