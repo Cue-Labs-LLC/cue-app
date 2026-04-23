@@ -584,6 +584,20 @@
 <!-- ===== TAB 3: Finance ===== -->
 <div class="tab-pane fade" id="tab-finance" role="tabpanel">
 
+{% if event.ticketing_type == 'direct' and max_revenue_potential is not None %}
+<div class="stat-section">
+  <div class="stats-grid">
+    <div class="stat-card stat-card--info">
+      <div class="stat-label">
+        Max Revenue Potential
+        <i class="bi bi-info-circle ms-1" data-bs-toggle="tooltip" title="Based on ticket capacity &times; price for ticket types with a set capacity limit"></i>
+      </div>
+      <div class="stat-value">${{ max_revenue_potential|currency }}</div>
+    </div>
+  </div>
+</div>
+{% endif %}
+
 <div class="card mb-4">
     <div class="card-header d-flex justify-content-between align-items-center">
         <h5>Additional Income</h5>

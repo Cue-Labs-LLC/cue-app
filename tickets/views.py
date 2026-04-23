@@ -3309,6 +3309,14 @@ def event_detail(request, event_id):
     if event.ticketing_type != 'direct':
         context['upload_form'] = EventCSVUploadForm(organization=org)
     if event.ticketing_type == 'direct':
+        _mrp_total = Decimal('0.00')
+        _mrp_has_limit = False
+        for _tt in saleable_ticket_types_list:
+            if _tt.is_active and _tt.quantity_limit is not None:
+                _mrp_has_limit = True
+                _mrp_total += _tt.price * _tt.quantity_limit
+        context['max_revenue_potential'] = _mrp_total if _mrp_has_limit else None
+
         sessions = list(
             StripeCheckoutSession.objects.filter(event=event)
             .select_related('ticket_order')
