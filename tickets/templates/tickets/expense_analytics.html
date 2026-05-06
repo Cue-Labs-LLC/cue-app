@@ -503,11 +503,11 @@ document.addEventListener('DOMContentLoaded', function () {
         return {
             type: chartType,
             data: { labels: labels, datasets: rawDatasets },
-            options: makeOptions(granularity === 'event', useStacked)
+            options: makeOptions(granularity === 'event', useStacked, showCategories)
         };
     }
 
-    function makeOptions(rotateX, stacked) {
+    function makeOptions(rotateX, stacked, showLegend) {
         var xOpts = {
             stacked: stacked,
             ticks: { color: textColor, maxRotation: rotateX ? 45 : 0, minRotation: rotateX ? 20 : 0 },
@@ -526,7 +526,7 @@ document.addEventListener('DOMContentLoaded', function () {
             maintainAspectRatio: false,
             plugins: {
                 legend: {
-                    display: stacked && granularity !== 'category',
+                    display: (showLegend || stacked) && granularity !== 'category',
                     position: 'bottom',
                     labels: { color: textColor, boxWidth: 12, padding: 16 }
                 },
