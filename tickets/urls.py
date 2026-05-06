@@ -98,6 +98,7 @@ urlpatterns = [
     path('analytics/repeat-customers/', views.repeat_customers, name='repeat_customers'),
     path('analytics/cohort-retention/', views.cohort_retention, name='cohort_retention'),
     path('analytics/profitability/', views.profitability_overview, name='profitability_overview'),
+    path('analytics/expenses/', views.expense_analytics, name='expense_analytics'),
     # External Survey
     path('analytics/surveys/', views.survey_upload_list, name='survey_upload_list'),
     path('analytics/surveys/upload/', views.survey_upload_create, name='survey_upload_create'),
