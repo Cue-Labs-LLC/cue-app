@@ -17,7 +17,7 @@ from django.db.models import (
     Sum, Count, Avg, Max, Min, Q, Subquery, OuterRef, Prefetch,
     Case, When, Value, F, CharField, Exists, ExpressionWrapper, DecimalField,
 )
-from django.db.models.functions import Coalesce, Greatest, TruncDate, Cast
+from django.db.models.functions import Coalesce, Greatest, TruncDate, Cast, TruncMonth, TruncQuarter
 from django.db import models
 from django.core.paginator import Paginator
 from django.core.files.uploadedfile import InMemoryUploadedFile
@@ -4985,6 +4985,228 @@ def profitability_overview(request):
         'window_choices': WINDOW_CHOICES,
     }
     return render(request, 'tickets/profitability_overview.html', context)
+
+
+# ---------------------------------------------------------------------------
+# Expense Analytics
+# ---------------------------------------------------------------------------
+
+@login_required
+@require_host
+@require_org
+def expense_analytics(request):
+    """Configurable chart page: org-wide expense breakdown by time, event, and category."""
+    from decimal import Decimal
+
+    org = get_organization(request)
+    start_date, end_date, active_window = _parse_window(request)
+
+    selected_cats = request.GET.getlist('cat')
+    selected_event_id = request.GET.get('event', '')
+
+    # Base queryset — org-scoped, soft-delete safe
+    qs = EventExpense.objects.filter(
+        event__organization=org,
+        deleted_at__isnull=True,
+    ).select_related('event')
+
+    # Time-series views: scope by expense_date (exclude null-date expenses)
+    qs_dated = qs.filter(expense_date__isnull=False)
+    if start_date:
+        qs_dated = qs_dated.filter(expense_date__gte=start_date)
+    if end_date:
+        qs_dated = qs_dated.filter(expense_date__lte=end_date)
+
+    # Event/category views: scope by event start_date (include null-date expenses)
+    qs_event = qs
+    if start_date:
+        qs_event = qs_event.filter(event__start_date__gte=start_date)
+    if end_date:
+        qs_event = qs_event.filter(event__start_date__lte=end_date)
+
+    if selected_cats:
+        qs_dated = qs_dated.filter(category__in=selected_cats)
+        qs_event = qs_event.filter(category__in=selected_cats)
+    if selected_event_id:
+        try:
+            import uuid
+            uuid.UUID(selected_event_id)
+            qs_dated = qs_dated.filter(event__id=selected_event_id)
+            qs_event = qs_event.filter(event__id=selected_event_id)
+        except (ValueError, AttributeError):
+            selected_event_id = ''
+
+    cat_label_map = dict(EventExpense.CATEGORY_CHOICES)
+
+    def _pivot_to_chartjs(rows, bucket_key, bucket_fmt):
+        """Pivot {bucket, category, total} rows into Chart.js stacked dataset format."""
+        buckets = []
+        seen = set()
+        for r in rows:
+            b = bucket_fmt(r[bucket_key])
+            if b not in seen:
+                seen.add(b)
+                buckets.append(b)
+
+        totals = {}  # {bucket: {cat: amount}}
+        for r in rows:
+            b = bucket_fmt(r[bucket_key])
+            totals.setdefault(b, {})[r['category']] = float(r['total'])
+
+        datasets = []
+        for cat, label in EventExpense.CATEGORY_CHOICES:
+            if any(cat in totals.get(b, {}) for b in buckets):
+                datasets.append({
+                    'key': cat,
+                    'label': label,
+                    'data': [totals.get(b, {}).get(cat, 0) for b in buckets],
+                })
+        return {'labels': buckets, 'datasets': datasets}
+
+    # --- Monthly data ---
+    monthly_rows = list(
+        qs_dated
+        .annotate(month=TruncMonth('expense_date'))
+        .values('month', 'category')
+        .annotate(total=Sum('amount'))
+        .order_by('month', 'category')
+    )
+    monthly_data = _pivot_to_chartjs(
+        monthly_rows, 'month', lambda d: d.strftime('%Y-%m')
+    )
+
+    # --- Quarterly data ---
+    quarterly_rows = list(
+        qs_dated
+        .annotate(quarter=TruncQuarter('expense_date'))
+        .values('quarter', 'category')
+        .annotate(total=Sum('amount'))
+        .order_by('quarter', 'category')
+    )
+
+    def _quarter_label(d):
+        return f"Q{((d.month - 1) // 3) + 1} {d.year}"
+
+    def _quarter_sort_key(label):
+        # "Q2 2025" → "2025-Q2" for correct sort
+        parts = label.split()
+        return f"{parts[1]}-{parts[0]}"
+
+    quarterly_data = _pivot_to_chartjs(
+        quarterly_rows, 'quarter', _quarter_label
+    )
+    # Re-sort labels chronologically (pivot preserves insertion order which is already sorted)
+    quarterly_data['labels'] = sorted(quarterly_data['labels'], key=_quarter_sort_key)
+    # Re-align dataset data to sorted labels
+    if quarterly_data['labels']:
+        raw_totals = {}
+        for r in quarterly_rows:
+            label = _quarter_label(r['quarter'])
+            raw_totals.setdefault(label, {})[r['category']] = float(r['total'])
+        for ds in quarterly_data['datasets']:
+            ds['data'] = [raw_totals.get(lbl, {}).get(ds['key'], 0) for lbl in quarterly_data['labels']]
+
+    # --- Event data ---
+    event_rows_raw = list(
+        qs_event
+        .values('event__id', 'event__name', 'event__start_date', 'category')
+        .annotate(total=Sum('amount'))
+        .order_by('event__start_date', 'event__name', 'category')
+    )
+
+    seen_events = {}
+    for r in event_rows_raw:
+        eid = str(r['event__id'])
+        if eid not in seen_events:
+            seen_events[eid] = {
+                'label': r['event__name'],
+                'start_date': r['event__start_date'] or '',
+            }
+    event_id_order = sorted(seen_events.keys(), key=lambda k: (seen_events[k]['start_date'] or '', seen_events[k]['label']))
+
+    event_totals = {}
+    for r in event_rows_raw:
+        eid = str(r['event__id'])
+        event_totals.setdefault(eid, {})[r['category']] = float(r['total'])
+
+    event_data = {
+        'labels': [seen_events[eid]['label'] for eid in event_id_order],
+        'datasets': [
+            {
+                'key': cat,
+                'label': label,
+                'data': [event_totals.get(eid, {}).get(cat, 0) for eid in event_id_order],
+            }
+            for cat, label in EventExpense.CATEGORY_CHOICES
+            if any(cat in event_totals.get(eid, {}) for eid in event_id_order)
+        ],
+    }
+
+    # --- Category totals ---
+    cat_rows = list(
+        qs_event
+        .values('category')
+        .annotate(total=Sum('amount'))
+        .order_by('-total')
+    )
+    category_totals_data = {
+        'labels': [cat_label_map.get(r['category'], r['category']) for r in cat_rows],
+        'keys': [r['category'] for r in cat_rows],
+        'data': [float(r['total']) for r in cat_rows],
+    }
+
+    # --- Summary stats ---
+    agg = qs_event.aggregate(
+        total=Coalesce(Sum('amount'), Decimal('0.00')),
+        count=Count('id'),
+    )
+    summary_total = agg['total']
+    summary_count = agg['count']
+
+    largest_cat = cat_rows[0] if cat_rows else None
+    largest_cat_label = cat_label_map.get(largest_cat['category']) if largest_cat else None
+    largest_cat_amount = largest_cat['total'] if largest_cat else Decimal('0.00')
+
+    most_expensive_event = (
+        qs_event
+        .values('event__name')
+        .annotate(total=Sum('amount'))
+        .order_by('-total')
+        .first()
+    )
+
+    # --- Event filter dropdown ---
+    filter_events_qs = Event.objects.filter(organization=org)
+    if start_date:
+        filter_events_qs = filter_events_qs.filter(start_date__gte=start_date)
+    if end_date:
+        filter_events_qs = filter_events_qs.filter(start_date__lte=end_date)
+    filter_events = list(filter_events_qs.order_by('-start_date').values('id', 'name', 'start_date'))
+
+    has_data = bool(cat_rows)
+
+    context = {
+        'monthly_data_json': json.dumps(monthly_data, default=str),
+        'quarterly_data_json': json.dumps(quarterly_data, default=str),
+        'event_data_json': json.dumps(event_data, default=str),
+        'category_totals_json': json.dumps(category_totals_data, default=str),
+        'summary_total': summary_total,
+        'summary_count': summary_count,
+        'largest_cat_label': largest_cat_label,
+        'largest_cat_amount': largest_cat_amount,
+        'most_expensive_event_name': most_expensive_event['event__name'] if most_expensive_event else None,
+        'most_expensive_event_total': most_expensive_event['total'] if most_expensive_event else Decimal('0.00'),
+        'active_window': active_window,
+        'window_start': start_date or '',
+        'window_end': end_date or '',
+        'window_choices': WINDOW_CHOICES,
+        'category_choices': EventExpense.CATEGORY_CHOICES,
+        'selected_cats': selected_cats,
+        'filter_events': filter_events,
+        'selected_event_id': selected_event_id,
+        'has_data': has_data,
+    }
+    return render(request, 'tickets/expense_analytics.html', context)
 
 
 # ---------------------------------------------------------------------------
