@@ -4586,7 +4586,7 @@ def expense_create(request, event_id):
             messages.success(request, f'Expense "${expense.description}" added.')
             return redirect('tickets:event_detail', event_id=event.id)
     else:
-        form = EventExpenseForm()
+        form = EventExpenseForm(initial={'expense_date': event.start_date})
 
     return render(request, 'tickets/expense_form.html', {
         'form': form,
@@ -5018,12 +5018,12 @@ def expense_analytics(request):
         deleted_at__isnull=True,
     ).select_related('event')
 
-    # Time-series views: scope by expense_date (exclude null-date expenses)
-    qs_dated = qs.filter(expense_date__isnull=False)
+    # Time-series views: use expense_date when set, fall back to event start_date
+    qs_dated = qs.annotate(effective_date=Coalesce(F('expense_date'), F('event__start_date')))
     if start_date:
-        qs_dated = qs_dated.filter(expense_date__gte=start_date)
+        qs_dated = qs_dated.filter(effective_date__gte=start_date)
     if end_date:
-        qs_dated = qs_dated.filter(expense_date__lte=end_date)
+        qs_dated = qs_dated.filter(effective_date__lte=end_date)
 
     # Event/category views: scope by event start_date (include null-date expenses)
     qs_event = qs
@@ -5074,7 +5074,7 @@ def expense_analytics(request):
     # --- Monthly data ---
     monthly_rows = list(
         qs_dated
-        .annotate(month=TruncMonth('expense_date'))
+        .annotate(month=TruncMonth('effective_date'))
         .values('month', 'category')
         .annotate(total=Sum('amount'))
         .order_by('month', 'category')
@@ -5086,7 +5086,7 @@ def expense_analytics(request):
     # --- Quarterly data ---
     quarterly_rows = list(
         qs_dated
-        .annotate(quarter=TruncQuarter('expense_date'))
+        .annotate(quarter=TruncQuarter('effective_date'))
         .values('quarter', 'category')
         .annotate(total=Sum('amount'))
         .order_by('quarter', 'category')
