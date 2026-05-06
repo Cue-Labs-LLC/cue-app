@@ -5127,7 +5127,7 @@ def expense_analytics(request):
         eid = str(r['event__id'])
         if eid not in seen_events:
             seen_events[eid] = {
-                'label': r['event__name'],
+                'label': '{} ({})'.format(r['event__name'], r['event__start_date'].strftime('%b %d')) if r['event__start_date'] else r['event__name'],
                 'start_date': r['event__start_date'] or '',
             }
     event_id_order = sorted(seen_events.keys(), key=lambda k: (seen_events[k]['start_date'] or '', seen_events[k]['label']))

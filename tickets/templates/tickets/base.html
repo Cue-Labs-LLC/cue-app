@@ -130,6 +130,11 @@
                             <i class="bi bi-cash-stack"></i> Profitability
                         </a>
                     </li>
+                    <li>
+                        <a href="{% url 'tickets:expense_analytics' %}" class="sidebar-link{% if '/analytics/expenses/' in request.path %} active{% endif %}">
+                            <i class="bi bi-receipt-cutoff"></i> Expenses
+                        </a>
+                    </li>
                 </ul>
             </div>
             {% endif %}
@@ -174,11 +179,6 @@
                         <li>
                             <a href="{% url 'tickets:survey_upload_list' %}" class="sidebar-link{% if '/analytics/surveys/' in request.path %} active{% endif %}">
                                 <i class="bi bi-clipboard-data"></i> Survey Insights
-                            </a>
-                        </li>
-                        <li>
-                            <a href="{% url 'tickets:expense_analytics' %}" class="sidebar-link{% if '/analytics/expenses/' in request.path %} active{% endif %}">
-                                <i class="bi bi-receipt-cutoff"></i> Expense Analytics
                             </a>
                         </li>
                     </ul>
