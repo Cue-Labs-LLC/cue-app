@@ -25,6 +25,8 @@ from .models import (
     Customer,
     Event,
     EventCustomFieldValue,
+    EventExpense,
+    EventIncome,
     OrganizationAPIKey,
     SaleableTicketType,
     ScannerSession,
@@ -220,6 +222,532 @@ def agent_upcoming_events(request):
         'generated_at': timezone.now().isoformat(),
         'event_count': len(data),
         'events': data,
+    })
+    response['Cache-Control'] = 'no-store, no-cache, must-revalidate'
+    return response
+
+
+@api_view(['GET'])
+@authentication_classes([OrganizationAPIKeyAuthentication])
+@permission_classes([IsOrganizationAPIKeyAuthenticated])
+def agent_events(request):
+    """
+    GET /api/v1/events/
+    Returns all events for the org with per-event ticket count and revenue summary.
+    Query params:
+        status  str  upcoming|past|all (default: all)
+        limit   int  (default 20, max 100)
+    """
+    org = request.auth.organization
+    today = timezone.localdate()
+
+    status_filter = request.query_params.get('status', 'all')
+    try:
+        limit = min(int(request.query_params.get('limit', 20)), 100)
+    except (ValueError, TypeError):
+        limit = 20
+
+    qs = Event.objects.filter(organization=org, deleted_at__isnull=True)
+    if status_filter == 'upcoming':
+        qs = qs.filter(start_date__gte=today)
+    elif status_filter == 'past':
+        qs = qs.filter(start_date__lt=today)
+
+    orders_sq = (
+        TicketOrder.objects
+        .filter(event=OuterRef('pk'), refunded_at__isnull=True)
+        .values('event')
+        .annotate(c=Count('id'))
+        .values('c')
+    )
+    revenue_sq = (
+        TicketOrder.objects
+        .filter(event=OuterRef('pk'), refunded_at__isnull=True)
+        .values('event')
+        .annotate(s=Sum('total_amount'))
+        .values('s')
+    )
+    expense_sq = (
+        EventExpense.objects
+        .filter(event=OuterRef('pk'), deleted_at__isnull=True)
+        .values('event')
+        .annotate(s=Sum('amount'))
+        .values('s')
+    )
+    income_sq = (
+        EventIncome.objects
+        .filter(event=OuterRef('pk'), deleted_at__isnull=True)
+        .values('event')
+        .annotate(s=Sum('amount'))
+        .values('s')
+    )
+
+    events = (
+        qs
+        .select_related('venue')
+        .annotate(
+            ticket_count=Coalesce(Subquery(orders_sq, output_field=IntegerField()), 0),
+            ticket_revenue=Coalesce(
+                Subquery(revenue_sq, output_field=DecimalField(max_digits=12, decimal_places=2)),
+                Decimal('0.00'),
+            ),
+            total_expenses=Coalesce(
+                Subquery(expense_sq, output_field=DecimalField(max_digits=12, decimal_places=2)),
+                Decimal('0.00'),
+            ),
+            additional_income=Coalesce(
+                Subquery(income_sq, output_field=DecimalField(max_digits=12, decimal_places=2)),
+                Decimal('0.00'),
+            ),
+        )
+        .order_by('-start_date', '-start_time')[:limit]
+    )
+
+    data = []
+    for event in events:
+        venue = event.venue
+        total_revenue = event.ticket_revenue + event.additional_income
+        data.append({
+            'id': str(event.id),
+            'name': event.name,
+            'summary': event.summary,
+            'start_date': event.start_date.isoformat(),
+            'start_time': event.start_time.isoformat() if event.start_time else None,
+            'end_date': event.end_date.isoformat() if event.end_date else None,
+            'status': 'upcoming' if event.start_date >= today else 'past',
+            'venue': {
+                'name': venue.name,
+                'city': venue.city,
+                'state': venue.state,
+            },
+            'tickets_sold': event.ticket_count,
+            'ticket_revenue': str(event.ticket_revenue),
+            'additional_income': str(event.additional_income),
+            'total_revenue': str(total_revenue),
+            'total_expenses': str(event.total_expenses),
+            'net_profit': str(total_revenue - event.total_expenses),
+        })
+
+    response = Response({
+        'organization': org.name,
+        'generated_at': timezone.now().isoformat(),
+        'event_count': len(data),
+        'events': data,
+    })
+    response['Cache-Control'] = 'no-store, no-cache, must-revalidate'
+    return response
+
+
+@api_view(['GET'])
+@authentication_classes([OrganizationAPIKeyAuthentication])
+@permission_classes([IsOrganizationAPIKeyAuthenticated])
+def agent_event_detail(request, event_id):
+    """
+    GET /api/v1/events/<uuid:event_id>/
+    Full event detail with attendance breakdown, financials, and ticket types.
+    """
+    org = request.auth.organization
+    today = timezone.localdate()
+    event = get_object_or_404(
+        Event.objects.filter(organization=org, deleted_at__isnull=True).select_related('venue'),
+        id=event_id,
+    )
+    venue = event.venue
+
+    orders_qs = TicketOrder.objects.filter(event=event, refunded_at__isnull=True)
+    agg = orders_qs.aggregate(
+        total_orders=Count('id'),
+        checked_in=Count('id', filter=Q(checked_in_at__isnull=False)),
+        ticket_revenue=Coalesce(Sum('total_amount'), Decimal('0.00')),
+    )
+
+    attended_customer_ids = set(orders_qs.values_list('customer_id', flat=True))
+    prior_customer_ids = set(
+        TicketOrder.objects
+        .filter(
+            customer_id__in=attended_customer_ids,
+            event__organization=org,
+            refunded_at__isnull=True,
+        )
+        .exclude(event=event)
+        .values_list('customer_id', flat=True)
+        .distinct()
+    )
+    returning_count = len(prior_customer_ids & attended_customer_ids)
+    new_count = len(attended_customer_ids - prior_customer_ids)
+
+    expenses = list(
+        EventExpense.objects
+        .filter(event=event, deleted_at__isnull=True)
+        .values('category', 'description', 'amount', 'expense_date')
+        .order_by('-expense_date')
+    )
+    total_expenses = sum(e['amount'] for e in expenses)
+
+    income_lines = list(
+        EventIncome.objects
+        .filter(event=event, deleted_at__isnull=True)
+        .select_related('income_source')
+        .order_by('income_source__order')
+    )
+    total_additional_income = sum(i.amount for i in income_lines)
+
+    ticket_types = list(
+        event.saleable_ticket_types.filter(is_active=True).order_by('order', 'name')
+    )
+
+    ticket_revenue = agg['ticket_revenue']
+    total_revenue = ticket_revenue + total_additional_income
+
+    response = Response({
+        'id': str(event.id),
+        'name': event.name,
+        'summary': event.summary,
+        'description': event.description,
+        'start_date': event.start_date.isoformat(),
+        'start_time': event.start_time.isoformat() if event.start_time else None,
+        'end_date': event.end_date.isoformat() if event.end_date else None,
+        'end_time': event.end_time.isoformat() if event.end_time else None,
+        'timezone': event.timezone,
+        'status': 'upcoming' if event.start_date >= today else 'past',
+        'venue': {
+            'name': venue.name,
+            'city': venue.city,
+            'state': venue.state,
+            'street_address': venue.street_address,
+            'postal_code': venue.postal_code,
+            'country': venue.country,
+            'capacity': venue.capacity,
+        },
+        'attendance': {
+            'total_orders': agg['total_orders'],
+            'checked_in': agg['checked_in'],
+            'new_customers': new_count,
+            'returning_customers': returning_count,
+        },
+        'financials': {
+            'ticket_revenue': str(ticket_revenue),
+            'additional_income': str(total_additional_income),
+            'total_revenue': str(total_revenue),
+            'total_expenses': str(total_expenses),
+            'net_profit': str(total_revenue - total_expenses),
+            'income': [
+                {
+                    'source': i.income_source.name,
+                    'amount': str(i.amount),
+                    'date': i.income_date.isoformat() if i.income_date else None,
+                }
+                for i in income_lines
+            ],
+            'expenses': [
+                {
+                    'category': e['category'],
+                    'description': e['description'],
+                    'amount': str(e['amount']),
+                    'date': e['expense_date'].isoformat() if e['expense_date'] else None,
+                }
+                for e in expenses
+            ],
+        },
+        'ticket_types': [
+            {
+                'name': tt.name,
+                'price': str(tt.price),
+                'quantity_limit': tt.quantity_limit,
+                'quantity_sold': tt.quantity_sold,
+                'remaining': tt.remaining_quantity(),
+            }
+            for tt in ticket_types
+        ],
+    })
+    response['Cache-Control'] = 'no-store, no-cache, must-revalidate'
+    return response
+
+
+@api_view(['GET'])
+@authentication_classes([OrganizationAPIKeyAuthentication])
+@permission_classes([IsOrganizationAPIKeyAuthenticated])
+def agent_customers(request):
+    """
+    GET /api/v1/customers/
+    Returns paginated customers with LTV and RFM segment.
+    Query params:
+        segment  str   RFM segment name (e.g. Champions, At Risk)
+        limit    int   (default 50, max 200)
+        page     int   (default 1)
+    """
+    org = request.auth.organization
+
+    segment = request.query_params.get('segment', '').strip()
+    try:
+        limit = min(int(request.query_params.get('limit', 50)), 200)
+    except (ValueError, TypeError):
+        limit = 50
+    try:
+        page = max(int(request.query_params.get('page', 1)), 1)
+    except (ValueError, TypeError):
+        page = 1
+
+    order_count_sq = (
+        TicketOrder.objects
+        .filter(customer=OuterRef('pk'), refunded_at__isnull=True)
+        .values('customer')
+        .annotate(c=Count('id'))
+        .values('c')
+    )
+
+    qs = Customer.objects.filter(organization=org)
+    if segment:
+        qs = qs.filter(rfm_segment=segment)
+
+    qs = qs.annotate(
+        order_count=Coalesce(Subquery(order_count_sq, output_field=IntegerField()), 0),
+    ).order_by('-lifetime_value')
+
+    total = qs.count()
+    offset = (page - 1) * limit
+    customers = qs[offset: offset + limit]
+
+    data = [
+        {
+            'id': str(c.id),
+            'email': c.email,
+            'name': c.name,
+            'lifetime_value': str(c.lifetime_value),
+            'rfm_segment': c.rfm_segment or None,
+            'behavior_profile': c.behavior_profile or None,
+            'order_count': c.order_count,
+            'last_order_date': c.last_order_date.isoformat() if c.last_order_date else None,
+        }
+        for c in customers
+    ]
+
+    response = Response({
+        'organization': org.name,
+        'generated_at': timezone.now().isoformat(),
+        'total': total,
+        'page': page,
+        'limit': limit,
+        'customers': data,
+    })
+    response['Cache-Control'] = 'no-store, no-cache, must-revalidate'
+    return response
+
+
+@api_view(['GET'])
+@authentication_classes([OrganizationAPIKeyAuthentication])
+@permission_classes([IsOrganizationAPIKeyAuthenticated])
+def agent_customer_detail(request, customer_id):
+    """
+    GET /api/v1/customers/<uuid:customer_id>/
+    Customer profile with recent order history.
+    """
+    org = request.auth.organization
+    customer = get_object_or_404(Customer.objects.filter(organization=org), id=customer_id)
+
+    orders = (
+        TicketOrder.objects
+        .filter(customer=customer)
+        .select_related('event', 'event__venue')
+        .order_by('-order_date')[:20]
+    )
+
+    response = Response({
+        'id': str(customer.id),
+        'email': customer.email,
+        'name': customer.name,
+        'phone': customer.phone or None,
+        'lifetime_value': str(customer.lifetime_value),
+        'rfm_segment': customer.rfm_segment or None,
+        'rfm_recency_score': customer.rfm_recency_score,
+        'rfm_frequency_score': customer.rfm_frequency_score,
+        'rfm_monetary_score': customer.rfm_monetary_score,
+        'behavior_profile': customer.behavior_profile or None,
+        'days_since_last_order': customer.days_since_last_order,
+        'avg_days_between_orders': customer.avg_days_between_orders,
+        'last_order_date': customer.last_order_date.isoformat() if customer.last_order_date else None,
+        'sms_opt_in': customer.sms_opt_in,
+        'recent_orders': [
+            {
+                'id': str(o.id),
+                'order_number': o.display_order_number,
+                'event': o.event.name,
+                'event_date': o.event.start_date.isoformat(),
+                'order_date': o.order_date.isoformat(),
+                'total_amount': str(o.total_amount),
+                'refunded': o.refunded_at is not None,
+                'checked_in': o.checked_in_at is not None,
+            }
+            for o in orders
+        ],
+    })
+    response['Cache-Control'] = 'no-store, no-cache, must-revalidate'
+    return response
+
+
+@api_view(['GET'])
+@authentication_classes([OrganizationAPIKeyAuthentication])
+@permission_classes([IsOrganizationAPIKeyAuthenticated])
+def agent_analytics_segments(request):
+    """
+    GET /api/v1/analytics/segments/
+    RFM segment distribution for the org's customer base.
+    """
+    org = request.auth.organization
+
+    all_customers = Customer.objects.filter(organization=org)
+    total = all_customers.count()
+
+    segments = list(
+        all_customers
+        .exclude(rfm_segment='')
+        .values('rfm_segment')
+        .annotate(count=Count('id'))
+        .order_by('-count')
+    )
+
+    unscored = all_customers.filter(rfm_segment='').count()
+
+    data = [
+        {
+            'segment': s['rfm_segment'],
+            'count': s['count'],
+            'pct': round(s['count'] / total * 100, 1) if total else 0,
+        }
+        for s in segments
+    ]
+
+    response = Response({
+        'organization': org.name,
+        'generated_at': timezone.now().isoformat(),
+        'total_customers': total,
+        'unscored_customers': unscored,
+        'segments': data,
+    })
+    response['Cache-Control'] = 'no-store, no-cache, must-revalidate'
+    return response
+
+
+@api_view(['GET'])
+@authentication_classes([OrganizationAPIKeyAuthentication])
+@permission_classes([IsOrganizationAPIKeyAuthenticated])
+def agent_analytics_revenue(request):
+    """
+    GET /api/v1/analytics/revenue/
+    Revenue summary for the org across different time windows.
+    """
+    from datetime import timedelta
+
+    org = request.auth.organization
+    now = timezone.now()
+
+    base_qs = TicketOrder.objects.filter(
+        customer__organization=org,
+        refunded_at__isnull=True,
+    )
+
+    def _revenue(days=None):
+        qs = base_qs
+        if days:
+            qs = qs.filter(order_date__gte=now - timedelta(days=days))
+        return qs.aggregate(s=Coalesce(Sum('total_amount'), Decimal('0.00')))['s']
+
+    event_count = Event.objects.filter(organization=org, deleted_at__isnull=True).count()
+
+    # Additional income (non-ticket)
+    additional_income_sq = (
+        EventIncome.objects
+        .filter(event__organization=org, deleted_at__isnull=True)
+        .aggregate(s=Coalesce(Sum('amount'), Decimal('0.00')))['s']
+    )
+
+    ticket_revenue_all = _revenue()
+    total_revenue_all = ticket_revenue_all + additional_income_sq
+
+    response = Response({
+        'organization': org.name,
+        'generated_at': timezone.now().isoformat(),
+        'event_count': event_count,
+        'ticket_revenue': {
+            'last_30_days': str(_revenue(30)),
+            'last_90_days': str(_revenue(90)),
+            'last_365_days': str(_revenue(365)),
+            'all_time': str(ticket_revenue_all),
+        },
+        'total_revenue_all_time': str(total_revenue_all),
+    })
+    response['Cache-Control'] = 'no-store, no-cache, must-revalidate'
+    return response
+
+
+@api_view(['GET'])
+@authentication_classes([OrganizationAPIKeyAuthentication])
+@permission_classes([IsOrganizationAPIKeyAuthenticated])
+def agent_orders(request):
+    """
+    GET /api/v1/orders/
+    Returns recent ticket orders for the org, optionally filtered by event.
+    Query params:
+        event_id  uuid  filter to a specific event
+        limit     int   (default 50, max 200)
+        page      int   (default 1)
+    """
+    org = request.auth.organization
+
+    event_id = request.query_params.get('event_id')
+    try:
+        limit = min(int(request.query_params.get('limit', 50)), 200)
+    except (ValueError, TypeError):
+        limit = 50
+    try:
+        page = max(int(request.query_params.get('page', 1)), 1)
+    except (ValueError, TypeError):
+        page = 1
+
+    qs = (
+        TicketOrder.objects
+        .filter(customer__organization=org)
+        .select_related('customer', 'event', 'event__venue')
+        .order_by('-order_date')
+    )
+
+    if event_id:
+        qs = qs.filter(event_id=event_id)
+
+    total = qs.count()
+    offset = (page - 1) * limit
+    orders = qs[offset: offset + limit]
+
+    data = [
+        {
+            'id': str(o.id),
+            'order_number': o.display_order_number,
+            'order_date': o.order_date.isoformat(),
+            'customer': {
+                'id': str(o.customer.id),
+                'name': o.customer.name,
+                'email': o.customer.email,
+            },
+            'event': {
+                'id': str(o.event.id),
+                'name': o.event.name,
+                'start_date': o.event.start_date.isoformat(),
+                'venue_city': o.event.venue.city,
+            },
+            'total_amount': str(o.total_amount),
+            'refunded': o.refunded_at is not None,
+            'checked_in': o.checked_in_at is not None,
+        }
+        for o in orders
+    ]
+
+    response = Response({
+        'organization': org.name,
+        'generated_at': timezone.now().isoformat(),
+        'total': total,
+        'page': page,
+        'limit': limit,
+        'orders': data,
     })
     response['Cache-Control'] = 'no-store, no-cache, must-revalidate'
     return response
