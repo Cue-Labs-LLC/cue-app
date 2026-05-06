@@ -494,7 +494,7 @@ document.addEventListener('DOMContentLoaded', function () {
             ? data.labels.map(fmtMonth)
             : data.labels;
 
-        var useStacked = breakdown === 'category';
+        var useStacked = breakdown === 'category' && chartType === 'bar';
         var rawDatasets = useStacked
             ? applyColors(data.datasets)
             : rollupTotal(data.datasets, data.labels);
