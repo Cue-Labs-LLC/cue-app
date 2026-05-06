@@ -5177,7 +5177,7 @@ def expense_analytics(request):
 
     most_expensive_event = (
         qs_event
-        .values('event__name')
+        .values('event__id', 'event__name', 'event__start_date')
         .annotate(total=Sum('amount'))
         .order_by('-total')
         .first()
@@ -5203,6 +5203,7 @@ def expense_analytics(request):
         'largest_cat_label': largest_cat_label,
         'largest_cat_amount': largest_cat_amount,
         'most_expensive_event_name': most_expensive_event['event__name'] if most_expensive_event else None,
+        'most_expensive_event_date': most_expensive_event['event__start_date'] if most_expensive_event else None,
         'most_expensive_event_total': most_expensive_event['total'] if most_expensive_event else Decimal('0.00'),
         'active_window': active_window,
         'window_start': start_date or '',

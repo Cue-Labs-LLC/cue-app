@@ -185,7 +185,9 @@
     <div class="stat-card">
         <div class="stat-label">Most Expensive Event</div>
         <div class="stat-value" style="font-size: 1rem; line-height: 1.3;">{% if most_expensive_event_name %}{{ most_expensive_event_name }}{% else %}&mdash;{% endif %}</div>
-        {% if most_expensive_event_name %}<div class="stat-meta">${{ most_expensive_event_total|currency }}</div>{% endif %}
+        {% if most_expensive_event_name %}
+        <div class="stat-meta">${{ most_expensive_event_total|currency }}{% if most_expensive_event_date %} &middot; {{ most_expensive_event_date|date:"M j, Y" }}{% endif %}</div>
+        {% endif %}
     </div>
 </div>
 
