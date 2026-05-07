@@ -18,6 +18,7 @@ from django.db.models import Count, DecimalField, IntegerField, OuterRef, Q, Sub
 from django.db.models.functions import Coalesce
 from django.utils import timezone
 from mcp.server.fastmcp import FastMCP
+from mcp.server.transport_security import TransportSecuritySettings
 
 from .models import (
     Customer,
@@ -35,7 +36,10 @@ logger = logging.getLogger(__name__)
 
 _current_org: contextvars.ContextVar = contextvars.ContextVar("mcp_org", default=None)
 
-mcp = FastMCP("cue")
+mcp = FastMCP(
+    "cue",
+    transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=False),
+)
 
 
 def _dump(data) -> str:
