@@ -159,6 +159,18 @@ def _generate_api_key():
     return f"cue_live_{secrets.token_hex(16)}"
 
 
+def _generate_client_id():
+    return f"cue_client_{secrets.token_hex(16)}"
+
+
+def _generate_auth_code():
+    return secrets.token_urlsafe(32)
+
+
+def _generate_access_token():
+    return f"cue_at_{secrets.token_urlsafe(32)}"
+
+
 class OrganizationAPIKey(BaseModel):
     """Per-organization API key for external AI agent access."""
     organization = models.ForeignKey(
@@ -185,6 +197,56 @@ class OrganizationAPIKey(BaseModel):
     @property
     def masked_key(self):
         return f"{self.key[:14]}...{self.key[-4:]}"
+
+
+class OAuthClient(BaseModel):
+    """OAuth 2.0 public client registered by an MCP client (e.g. Claude Desktop)."""
+    client_id = models.CharField(max_length=100, unique=True, default=_generate_client_id, db_index=True)
+    client_name = models.CharField(max_length=200)
+    redirect_uris = models.JSONField(default=list, help_text="Allowed redirect URIs — exact match enforced.")
+    is_public = models.BooleanField(default=True)
+
+    class Meta:
+        ordering = ['-created_at']
+        verbose_name = 'OAuth client'
+        verbose_name_plural = 'OAuth clients'
+
+    def __str__(self):
+        return f"{self.client_name} ({self.client_id})"
+
+
+class OAuthAuthorizationCode(BaseModel):
+    """Short-lived (10-minute) authorization code issued after user consent. One-time use."""
+    client = models.ForeignKey(OAuthClient, on_delete=models.CASCADE, related_name='auth_codes')
+    organization = models.ForeignKey(Organization, on_delete=models.CASCADE, related_name='oauth_auth_codes')
+    code = models.CharField(max_length=100, unique=True, default=_generate_auth_code, db_index=True)
+    code_challenge = models.CharField(max_length=200)
+    redirect_uri = models.URLField(max_length=500)
+    expires_at = models.DateTimeField()
+    used = models.BooleanField(default=False)
+
+    class Meta:
+        ordering = ['-created_at']
+        indexes = [models.Index(fields=['code', 'used'])]
+        verbose_name = 'OAuth authorization code'
+        verbose_name_plural = 'OAuth authorization codes'
+
+
+class OAuthAccessToken(BaseModel):
+    """Long-lived (30-day) bearer token issued after PKCE code exchange. Accepted at /mcp."""
+    client = models.ForeignKey(OAuthClient, on_delete=models.CASCADE, related_name='access_tokens')
+    organization = models.ForeignKey(Organization, on_delete=models.CASCADE, related_name='oauth_access_tokens')
+    token = models.CharField(max_length=200, unique=True, default=_generate_access_token, db_index=True)
+    expires_at = models.DateTimeField()
+
+    class Meta:
+        ordering = ['-created_at']
+        indexes = [models.Index(fields=['token', 'expires_at'])]
+        verbose_name = 'OAuth access token'
+        verbose_name_plural = 'OAuth access tokens'
+
+    def __str__(self):
+        return f"{self.organization.name} — {self.client.client_name}"
 
 
 class FeatureFlagSettings(models.Model):

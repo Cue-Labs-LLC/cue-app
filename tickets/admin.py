@@ -16,6 +16,8 @@ from .models import (
     OrganizerWaitlist,
     PipedreamCalendarConnection,
     OrganizationAPIKey,
+    OAuthClient,
+    OAuthAccessToken,
     FeatureFlagSettings,
 )
 
@@ -1001,6 +1003,20 @@ class OrganizationAPIKeyAdmin(admin.ModelAdmin):
     list_filter = ('is_active', 'organization')
     search_fields = ('name', 'organization__name')
     readonly_fields = ('key', 'masked_key', 'last_used_at', 'created_at', 'updated_at')
+
+
+@admin.register(OAuthClient)
+class OAuthClientAdmin(admin.ModelAdmin):
+    list_display = ['client_name', 'client_id', 'created_at']
+    readonly_fields = ['client_id', 'created_at', 'updated_at']
+    search_fields = ['client_name', 'client_id']
+
+
+@admin.register(OAuthAccessToken)
+class OAuthAccessTokenAdmin(admin.ModelAdmin):
+    list_display = ['client', 'organization', 'expires_at', 'created_at']
+    readonly_fields = ['token', 'created_at', 'updated_at']
+    list_filter = ['organization', 'client']
 
 
 @admin.register(OrganizerWaitlist)
