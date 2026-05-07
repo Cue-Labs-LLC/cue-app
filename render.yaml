@@ -5,7 +5,7 @@ services:
     runtime: python
     plan: starter
     buildCommand: pip install -r requirements.txt && python manage.py collectstatic --noinput && python manage.py migrate --noinput && python manage.py create_initial_superuser
-    startCommand: gunicorn ltv_updater.wsgi:application --workers 4 --timeout 120 --preload
+    startCommand: gunicorn ltv_updater.asgi:application -k uvicorn.workers.UvicornWorker --workers 4 --timeout 120 --preload
     envVars:
       - key: PYTHON_VERSION
         value: 3.12.0
@@ -57,25 +57,6 @@ services:
     ipAllowList:
       - source: 0.0.0.0/0
         description: Allow web and worker services to connect
-
-  # MCP HTTP server — exposes Cue event/customer data as MCP tools via a remote URL.
-  # After deploy, set CUE_API_KEY in the Render dashboard (Settings → API Keys in the Cue app).
-  # The MCP endpoint is available at: https://cue-mcp.onrender.com/mcp
-  - type: web
-    name: cue-mcp
-    runtime: python
-    plan: starter
-    buildCommand: pip install -r mcp_server/requirements.txt
-    startCommand: python mcp_server/server.py
-    envVars:
-      - key: PYTHON_VERSION
-        value: 3.12.0
-      - key: TRANSPORT
-        value: streamable-http
-      - key: CUE_BASE_URL
-        value: https://cueup.co
-      - key: CUE_API_KEY
-        sync: false
 
   # Celery background worker (sends invite emails, OTP, surveys, etc.).
   # Set SENDGRID_API_KEY, DEFAULT_FROM_EMAIL (must be a verified sender in SendGrid), and SITE_URL (e.g. https://your-app.onrender.com) in the Render dashboard for this service so emails are sent and links point to your deployed app.
