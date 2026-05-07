@@ -40,7 +40,6 @@ mcp = FastMCP(
     "cue",
     transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=False),
     stateless_http=True,
-    streamable_http_path="/",
 )
 
 

@@ -9,7 +9,7 @@ django.setup()
 
 from django.core.asgi import get_asgi_application
 from starlette.applications import Starlette
-from starlette.routing import Mount
+from starlette.routing import Mount, Route
 from starlette.types import Receive, Scope, Send
 
 from tickets.mcp_app import build_mcp_app, mcp as fastmcp_instance
@@ -38,7 +38,7 @@ async def _django_catchall(scope: Scope, receive: Receive, send: Send) -> None:
 application = Starlette(
     lifespan=lifespan,
     routes=[
-        Mount("/mcp", app=_mcp_app),
+        Route("/mcp", _mcp_app, methods=["GET", "POST", "DELETE", "OPTIONS"]),
         Mount("/", app=_django_catchall),
     ],
 )
