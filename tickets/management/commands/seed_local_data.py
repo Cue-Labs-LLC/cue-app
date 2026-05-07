@@ -1,0 +1,631 @@
+"""
+Local development seed command.
+
+Populates a fresh database with one organization, an owner user, supporting users,
+venues, events, customers, orders/tickets, RFM segments, expenses, surveys,
+direct-ticketing products, Stripe checkout sessions, promo codes, and tracking
+links — enough to click through every dashboard and analytics page.
+
+Refuses to run unless DEBUG=True. Refuses to run if data already exists, unless
+--force is passed.
+
+Login after seeding:
+    Email:  info@cueup.co  /  password123
+    Phone:  +15555550199  (fake; set E2E_TEST_MODE=True to use OTP code 000000 locally)
+"""
+import random
+import string
+import uuid
+from datetime import timedelta
+from decimal import Decimal
+
+from django.conf import settings
+from django.contrib.auth import get_user_model
+from django.core.management.base import BaseCommand, CommandError
+from django.db import transaction
+from django.utils import timezone
+from django.utils.text import slugify
+
+from tickets.models import (
+    CSVFormat,
+    Customer,
+    CustomerTag,
+    Event,
+    EventExpense,
+    EventIncome,
+    EVENT_STATUS_CANCELLED,
+    EVENT_STATUS_DRAFT,
+    EVENT_STATUS_ENDED,
+    EVENT_STATUS_LIVE,
+    IncomeSource,
+    OrderCounter,
+    Organization,
+    OrganizationMembership,
+    PromoCode,
+    SaleableTicketType,
+    SaleableTicketTypeTier,
+    StripeCheckoutSession,
+    SurveyInvitation,
+    SurveyQuestion,
+    Ticket,
+    TicketOrder,
+    TICKETING_TYPE_DIRECT,
+    TICKETING_TYPE_EXTERNAL,
+    TrackingLink,
+    UploadedFile,
+    UserProfile,
+    Venue,
+    WaitlistEntry,
+    _generate_tracking_token,
+)
+from tickets.services.segmentation import recalculate_customer_segments
+
+User = get_user_model()
+
+OWNER_EMAIL = "info@cueup.co"
+OWNER_PHONE = "+15555550199"
+OWNER_PASSWORD = "password123"
+
+FIRST_NAMES = [
+    "Maya", "Jordan", "Avery", "Quinn", "Reese", "Logan", "Skyler", "Rowan",
+    "Hayden", "Marlowe", "Ezra", "Kai", "Sasha", "Indigo", "Wren", "Soren",
+    "Iris", "Otis", "Naya", "Theo", "Lila", "Cy", "Vera", "Dash",
+]
+LAST_NAMES = [
+    "Cole", "Nguyen", "Park", "Okafor", "Reyes", "Khan", "Levine", "Brooks",
+    "Tanaka", "Ortiz", "Mancini", "Chen", "Rivera", "Solis", "Patel",
+    "Bauer", "Holm", "Vaziri", "Singh", "Diaz",
+]
+
+
+def _gen_name(rng):
+    return f"{rng.choice(FIRST_NAMES)} {rng.choice(LAST_NAMES)}"
+
+
+def _decimal(value):
+    return Decimal(str(value)).quantize(Decimal("0.01"))
+
+
+class Command(BaseCommand):
+    help = "Seed the local DB with demo data for development. DEBUG-only."
+
+    def add_arguments(self, parser):
+        parser.add_argument(
+            "--force",
+            action="store_true",
+            help="Seed even if data already exists (still requires DEBUG=True).",
+        )
+        parser.add_argument(
+            "--if-empty",
+            action="store_true",
+            help="No-op (exit 0) when DB already has customers/events. Safe for setup scripts.",
+        )
+
+    def handle(self, *args, **options):
+        if not settings.DEBUG:
+            raise CommandError("Refusing to seed: DEBUG is False.")
+
+        force = options["force"]
+        already_populated = Customer.objects.exists() or Event.objects.exists()
+        if already_populated and not force:
+            if options["if_empty"]:
+                self.stdout.write("DB already populated — skipping seed.")
+                return
+            raise CommandError(
+                "DB already has data (customers/events present). "
+                "Drop db.sqlite3 and re-run migrate, pass --force, or pass --if-empty to skip."
+            )
+
+        rng = random.Random(42)
+        now = timezone.now()
+        today = now.date()
+
+        with transaction.atomic():
+            org = self._create_org()
+            owner, staff_users = self._create_users(org)
+            venues = self._create_venues(org)
+            csv_formats = self._create_csv_formats(org, owner)
+            uploads = self._create_uploads(org, csv_formats, owner)
+            tags = self._create_tags(org)
+            customers = self._create_customers(org, tags, rng)
+            events = self._create_events(org, venues, owner, today, rng)
+            promo_codes = self._create_promo_codes(org, events, now)
+            self._create_orders_and_tickets(events, customers, uploads, promo_codes, owner, today, rng)
+            self._create_direct_ticketing(events, now, rng)
+            self._create_stripe_sessions(org, events, customers, now, rng)
+            self._create_tracking_links(org, events, rng)
+            self._create_expenses_and_income(org, events, owner, rng)
+            self._create_surveys(org, events, customers, owner, rng)
+
+            for customer in Customer.objects.filter(organization=org):
+                customer.update_lifetime_value()
+
+            recalculate_customer_segments(org)
+
+        self._print_summary(org)
+
+    # ------------------------------------------------------------------
+    # Builders
+    # ------------------------------------------------------------------
+
+    def _create_org(self):
+        org = Organization.objects.create(
+            name="Familiar Faces",
+            slug="familiar-faces",
+            description="Independent music + nightlife collective. Local seed data.",
+            website="https://cueup.co",
+            waitlist_feature_enabled=True,
+        )
+        self.stdout.write(self.style.SUCCESS(f"Org: {org.name}"))
+        return org
+
+    def _create_users(self, org):
+        owner = User.objects.create_user(
+            username="owen",
+            email=OWNER_EMAIL,
+            password=OWNER_PASSWORD,
+            first_name="Owen",
+            last_name="Barton",
+            is_staff=True,
+            is_superuser=True,
+        )
+        UserProfile.objects.create(
+            user=owner,
+            organization=org,
+            role=UserProfile.Role.ORGANIZER,
+            org_role=UserProfile.OrgRole.OWNER,
+            phone_number=OWNER_PHONE,
+            marketing_opt_in=True,
+            terms_accepted_at=timezone.now(),
+        )
+        OrganizationMembership.objects.create(
+            user=owner, organization=org, org_role=UserProfile.OrgRole.OWNER
+        )
+
+        staff = []
+        for username, role, phone in [
+            ("ada-host", UserProfile.OrgRole.HOST, "+13105550101"),
+            ("ben-doorman", UserProfile.OrgRole.DOORMAN, "+13105550102"),
+            ("cleo-admin", UserProfile.OrgRole.ADMIN, "+13105550103"),
+        ]:
+            user = User.objects.create_user(
+                username=username,
+                email=f"{username}@cueup.co",
+                password=OWNER_PASSWORD,
+                first_name=username.split("-")[0].capitalize(),
+            )
+            UserProfile.objects.create(
+                user=user,
+                organization=org,
+                role=UserProfile.Role.ORGANIZER,
+                org_role=role,
+                phone_number=phone,
+                terms_accepted_at=timezone.now(),
+            )
+            OrganizationMembership.objects.create(user=user, organization=org, org_role=role)
+            staff.append(user)
+
+        self.stdout.write(self.style.SUCCESS(f"Users: 1 owner + {len(staff)} staff"))
+        return owner, staff
+
+    def _create_venues(self, org):
+        data = [
+            ("The Echo", "Los Angeles", "1822 Sunset Blvd", "CA", "90026", 350),
+            ("Baby's All Right", "Brooklyn", "146 Broadway", "NY", "11211", 280),
+            ("Mohawk", "Austin", "912 Red River St", "TX", "78701", 800),
+        ]
+        venues = []
+        for name, city, street, state, postal, capacity in data:
+            venues.append(
+                Venue.objects.create(
+                    organization=org,
+                    name=name,
+                    city=city,
+                    street_address=street,
+                    state=state,
+                    postal_code=postal,
+                    country="USA",
+                    capacity=capacity,
+                )
+            )
+        return venues
+
+    def _create_csv_formats(self, org, owner):
+        formats = []
+        formats.append(
+            CSVFormat.objects.create(
+                organization=org,
+                name="Basic Eventbrite Export",
+                description="Standard Eventbrite-style export.",
+                is_default=True,
+                column_mapping={
+                    "order_number": "Order #",
+                    "customer_name": ["First Name", "Last Name"],
+                    "customer_email": "Email",
+                    "event_name": "Event Name",
+                    "event_date": "Event Date",
+                    "ticket_type": "Ticket Type",
+                    "ticket_price": "Ticket Price",
+                    "order_date": "Order Date",
+                },
+                created_by=owner,
+            )
+        )
+        formats.append(
+            CSVFormat.objects.create(
+                organization=org,
+                name="Tiered Pricing Export",
+                description="Manual-pricing format with tiered pricing.",
+                requires_manual_pricing=True,
+                uses_tiers=True,
+                column_mapping={
+                    "order_number": "Confirmation #",
+                    "customer_email": "Buyer Email",
+                    "customer_name": "Buyer",
+                    "ticket_type": "Type",
+                    "quantity": "Qty",
+                },
+                created_by=owner,
+            )
+        )
+        return formats
+
+    def _create_uploads(self, org, formats, owner):
+        uploads = []
+        uploads.append(
+            UploadedFile.objects.create(
+                organization=org,
+                csv_format=formats[0],
+                filename="echo-feb-export.csv",
+                description="Eventbrite export from Feb show",
+                source="Eventbrite",
+                status="completed",
+                total_rows=120,
+                processed_rows=120,
+                metadata={"row_errors": 0, "duplicates_skipped": 4},
+                created_by=owner,
+            )
+        )
+        uploads.append(
+            UploadedFile.objects.create(
+                organization=org,
+                csv_format=formats[1],
+                filename="mohawk-march-export.csv",
+                description="Manual-pricing export, Austin show",
+                source="Custom",
+                status="completed",
+                total_rows=240,
+                processed_rows=240,
+                metadata={"row_errors": 1, "duplicates_skipped": 0},
+                created_by=owner,
+            )
+        )
+        return uploads
+
+    def _create_tags(self, org):
+        names_colors = [
+            ("VIP", "red"), ("Press", "purple"), ("Comp", "yellow"),
+            ("Repeat", "green"), ("Industry", "blue"),
+            ("Plus One", "orange"), ("Influencer", "purple"),
+        ]
+        return [
+            CustomerTag.objects.create(organization=org, name=n, color=c)
+            for n, c in names_colors
+        ]
+
+    def _create_customers(self, org, tags, rng):
+        customers = []
+        for i in range(120):
+            name = _gen_name(rng)
+            email = f"{slugify(name)}.{i:03d}@example.test"
+            sms_opt = rng.random() < 0.55
+            phone = ""
+            if rng.random() < 0.6:
+                phone = f"+1213555{4000 + i:04d}"
+            cust = Customer.objects.create(
+                organization=org,
+                email=email,
+                name=name,
+                phone=phone,
+                sms_opt_in=sms_opt,
+                sms_opt_in_date=timezone.now() if sms_opt else None,
+            )
+            if rng.random() < 0.18:
+                cust.tags.add(rng.choice(tags))
+            if rng.random() < 0.05:
+                cust.tags.add(tags[0])  # VIP
+            customers.append(cust)
+        self.stdout.write(self.style.SUCCESS(f"Customers: {len(customers)}"))
+        return customers
+
+    def _create_events(self, org, venues, owner, today, rng):
+        specs = [
+            # (name, days_offset, status, ticketing, capacity, summary)
+            ("Late Bloom — Winter", -120, EVENT_STATUS_ENDED, TICKETING_TYPE_EXTERNAL, 320, "Sold out winter showcase."),
+            ("Open Decks Vol. 4",   -45,  EVENT_STATUS_ENDED, TICKETING_TYPE_EXTERNAL, 280, "Local DJs spinning all night."),
+            ("Bloom — Spring Edition",  14, EVENT_STATUS_LIVE, TICKETING_TYPE_DIRECT,   400, "Six-act bill at The Echo."),
+            ("Daylight: Brooklyn Pop-Up", 60, EVENT_STATUS_LIVE, TICKETING_TYPE_DIRECT,  300, "Day-into-night warehouse party."),
+            ("Solstice Festival",         110, EVENT_STATUS_DRAFT, TICKETING_TYPE_DIRECT, 800, "TBA lineup. Save the date."),
+            ("Postponed: Acoustic Sessions", -10, EVENT_STATUS_CANCELLED, TICKETING_TYPE_EXTERNAL, 150, "Cancelled due to artist illness."),
+        ]
+        events = []
+        for i, (name, offset, status, ticketing, cap, summary) in enumerate(specs):
+            start_date = today + timedelta(days=offset)
+            venue = venues[i % len(venues)]
+            event = Event.objects.create(
+                organization=org,
+                name=name,
+                summary=summary,
+                description=f"{summary}\n\nFollow @familiar.faces for the lineup and last-minute drops.",
+                venue=venue,
+                start_date=start_date,
+                start_time=timezone.now().time().replace(microsecond=0),
+                capacity=cap,
+                max_tickets_per_customer=8,
+                ticketing_type=ticketing,
+                status=status,
+                timezone="America/Los_Angeles",
+                scanner_pin=f"{100000 + i + 1}",
+                created_by=owner,
+                public_buy_page_views=rng.randint(50, 1500) if status == EVENT_STATUS_LIVE else 0,
+            )
+            events.append(event)
+        self.stdout.write(self.style.SUCCESS(f"Events: {len(events)}"))
+        return events
+
+    def _create_promo_codes(self, org, events, now):
+        codes = []
+        live_or_past = [e for e in events if e.status in (EVENT_STATUS_LIVE, EVENT_STATUS_ENDED)]
+        if not live_or_past:
+            return codes
+        codes.append(PromoCode.objects.create(
+            organization=org, event=live_or_past[0], code="EARLY20",
+            discount_type=PromoCode.PERCENTAGE, discount_value=_decimal(20),
+            max_uses=100, times_used=14, expires_at=now + timedelta(days=30),
+        ))
+        codes.append(PromoCode.objects.create(
+            organization=org, event=live_or_past[1 % len(live_or_past)], code="FRIENDS5",
+            discount_type=PromoCode.FIXED, discount_value=_decimal(5),
+            times_used=8,
+        ))
+        codes.append(PromoCode.objects.create(
+            organization=org, event=live_or_past[-1], code="PRESS",
+            discount_type=PromoCode.PERCENTAGE, discount_value=_decimal(100),
+            max_uses=20, times_used=3,
+        ))
+        return codes
+
+    def _create_orders_and_tickets(self, events, customers, uploads, promos, owner, today, rng):
+        ticket_types = [
+            ("General Admission", 25, 35),
+            ("Tier 2", 35, 45),
+            ("VIP", 60, 95),
+            ("Comp", 0, 0),
+        ]
+        orders_count = 0
+        tickets_count = 0
+        for event in events:
+            if event.status == EVENT_STATUS_DRAFT:
+                continue
+            if event.status == EVENT_STATUS_CANCELLED:
+                num_orders = 5
+            else:
+                num_orders = rng.randint(28, 55)
+            upload = uploads[0] if event.ticketing_type == TICKETING_TYPE_EXTERNAL else None
+            for _ in range(num_orders):
+                customer = rng.choice(customers)
+                qty = rng.choices([1, 2, 3, 4, 5, 6], weights=[35, 30, 15, 10, 6, 4])[0]
+                tt_name, tt_low, tt_high = rng.choice(ticket_types)
+                price = _decimal(rng.randint(tt_low, tt_high)) if tt_high else _decimal(0)
+                total = price * qty
+                # Spread order_date across the 8 weeks before the event
+                days_before = rng.randint(2, 56)
+                order_dt = timezone.make_aware(timezone.datetime.combine(
+                    event.start_date - timedelta(days=days_before),
+                    timezone.datetime.min.time(),
+                )) + timedelta(hours=rng.randint(8, 22), minutes=rng.randint(0, 59))
+                refunded_at = order_dt + timedelta(days=rng.randint(1, 14)) if rng.random() < 0.05 else None
+                in_person = rng.random() < 0.10 and event.status == EVENT_STATUS_ENDED
+                checked_in_at = None
+                if event.status == EVENT_STATUS_ENDED and rng.random() < 0.7:
+                    checked_in_at = timezone.make_aware(timezone.datetime.combine(
+                        event.start_date, timezone.datetime.min.time()
+                    )) + timedelta(hours=rng.randint(19, 23), minutes=rng.randint(0, 59))
+                promo = None
+                discount = None
+                if promos and rng.random() < 0.12:
+                    promo = rng.choice([p for p in promos if p.event_id == event.id] or [None])
+                    if promo:
+                        if promo.discount_type == PromoCode.PERCENTAGE:
+                            discount = (total * promo.discount_value / 100).quantize(Decimal("0.01"))
+                        else:
+                            discount = min(total, promo.discount_value)
+                        total = max(_decimal(0), total - discount)
+                order = TicketOrder.objects.create(
+                    customer=customer,
+                    event=event,
+                    uploaded_file=upload,
+                    order_number=f"ORD-{OrderCounter.next():06d}",
+                    external_order_number=f"EB-{rng.randint(100000, 999999)}" if upload else "",
+                    order_date=order_dt,
+                    total_amount=total,
+                    refunded_at=refunded_at,
+                    is_in_person=in_person,
+                    checked_in_at=checked_in_at,
+                    checked_in_by=owner if checked_in_at else None,
+                    promo_code=promo,
+                    discount_amount=discount,
+                    created_by=owner,
+                )
+                orders_count += 1
+                for _ in range(qty):
+                    Ticket.objects.create(
+                        ticket_order=order,
+                        ticket_type=tt_name,
+                        price=price,
+                    )
+                    tickets_count += 1
+        self.stdout.write(self.style.SUCCESS(f"Orders: {orders_count} | Tickets: {tickets_count}"))
+
+    def _create_direct_ticketing(self, events, now, rng):
+        live_direct = [e for e in events if e.ticketing_type == TICKETING_TYPE_DIRECT and e.status == EVENT_STATUS_LIVE]
+        for i, event in enumerate(live_direct):
+            ga = SaleableTicketType.objects.create(
+                event=event, name="General Admission", price=_decimal(30),
+                quantity_limit=200, max_per_customer=6, quantity_sold=rng.randint(40, 120),
+                order=1, sale_start=now - timedelta(days=14),
+                description="Standing room. First come, first served.",
+            )
+            vip = SaleableTicketType.objects.create(
+                event=event, name="VIP Lounge", price=_decimal(85),
+                quantity_limit=40, max_per_customer=4, quantity_sold=rng.randint(8, 30),
+                order=2, sale_start=now - timedelta(days=14),
+                description="Reserved table + welcome drink.",
+            )
+            if i == 0:
+                # Tiered pricing on first live direct event
+                SaleableTicketTypeTier.objects.create(
+                    ticket_type=ga, name="Early Bird", price=_decimal(20), allotment=60, quantity_sold=60, order=1,
+                )
+                SaleableTicketTypeTier.objects.create(
+                    ticket_type=ga, name="Advance", price=_decimal(28), allotment=80, quantity_sold=40, order=2,
+                )
+                SaleableTicketTypeTier.objects.create(
+                    ticket_type=ga, name="Door", price=_decimal(35), allotment=60, quantity_sold=0, order=3,
+                )
+            # Waitlist entry on the VIP type
+            WaitlistEntry.objects.create(
+                ticket_type=vip,
+                email="waiting@example.test",
+                name="Hopeful Friend",
+                position=1,
+            )
+
+    def _create_stripe_sessions(self, org, events, customers, now, rng):
+        live_direct = [e for e in events if e.ticketing_type == TICKETING_TYPE_DIRECT and e.status == EVENT_STATUS_LIVE]
+        if not live_direct:
+            return
+        # Pick distinct orders so the OneToOne on ticket_order doesn't collide.
+        candidate_orders = list(
+            TicketOrder.objects.filter(event__in=live_direct)
+            .order_by("?")[:12]
+        )
+        for order in candidate_orders[:8]:
+            event = order.event
+            customer = order.customer
+            qty = max(1, order.tickets.count())
+            unit_cents = rng.choice([3000, 5000, 8500])
+            amount_cents = unit_cents * qty
+            fee_cents = max(150, int(amount_cents * 0.029) + 30)
+            StripeCheckoutSession.objects.create(
+                event=event,
+                organization=org,
+                stripe_session_id=f"cs_test_seed_{uuid.uuid4().hex[:24]}",
+                stripe_payment_intent_id=f"pi_test_seed_{uuid.uuid4().hex[:24]}",
+                buyer_email=customer.email,
+                buyer_name=customer.name,
+                status=StripeCheckoutSession.Status.COMPLETED,
+                line_items_snapshot=[{
+                    "name": "General Admission",
+                    "price": f"{unit_cents/100:.2f}",
+                    "quantity": qty,
+                }],
+                amount_total_cents=amount_cents,
+                platform_fee_cents=fee_cents,
+                ticket_order=order,
+                fulfilled_at=now - timedelta(days=rng.randint(0, 10)),
+                available_on=now - timedelta(days=rng.randint(0, 5)),
+                sms_opt_in=rng.random() < 0.5,
+            )
+
+    def _create_tracking_links(self, org, events, rng):
+        names = ["Instagram Story", "Newsletter", "Influencer Drop", "Door List"]
+        live_direct = [e for e in events if e.ticketing_type == TICKETING_TYPE_DIRECT]
+        for event in live_direct:
+            for n in rng.sample(names, k=2):
+                TrackingLink.objects.create(
+                    organization=org,
+                    event=event,
+                    name=n,
+                    token=_generate_tracking_token(),
+                    click_count=rng.randint(20, 800),
+                )
+
+    def _create_expenses_and_income(self, org, events, owner, rng):
+        sources = []
+        for i, n in enumerate(["Bar Splits", "Merch", "Sponsorship"]):
+            sources.append(IncomeSource.objects.create(organization=org, name=n, order=i))
+
+        expense_specs = [
+            ("talent",    "Headliner fee",       (1500, 3500)),
+            ("venue",     "Venue rental",        (800, 2500)),
+            ("marketing", "Instagram ads",       (200, 600)),
+            ("staffing",  "Security + door",     (300, 800)),
+            ("production","Sound engineer",      (400, 900)),
+        ]
+        for event in events:
+            if event.status not in (EVENT_STATUS_ENDED, EVENT_STATUS_LIVE):
+                continue
+            chosen = rng.sample(expense_specs, k=rng.randint(3, 5))
+            for cat, desc, (lo, hi) in chosen:
+                EventExpense.objects.create(
+                    event=event, category=cat, description=desc,
+                    amount=_decimal(rng.randint(lo, hi)),
+                    expense_date=event.start_date - timedelta(days=rng.randint(1, 21)),
+                    created_by=owner,
+                )
+            for src in rng.sample(sources, k=2):
+                EventIncome.objects.create(
+                    event=event, income_source=src,
+                    amount=_decimal(rng.randint(150, 1200)),
+                    income_date=event.start_date,
+                    created_by=owner,
+                )
+
+    def _create_surveys(self, org, events, customers, owner, rng):
+        past = [e for e in events if e.status == EVENT_STATUS_ENDED]
+        if not past:
+            return
+        SurveyQuestion.objects.create(
+            organization=org, event=past[0],
+            question_text="How would you rate tonight overall?",
+            question_type="star_rating", position=1, is_required=True,
+        )
+        SurveyQuestion.objects.create(
+            organization=org, event=past[0],
+            question_text="How likely are you to recommend us to a friend?",
+            question_type="nps", position=2,
+        )
+        for cust in rng.sample(customers, k=12):
+            event = rng.choice(past)
+            SurveyInvitation.objects.get_or_create(
+                event=event,
+                customer=cust,
+                defaults={
+                    "organization": org,
+                    "email": cust.email,
+                    "sent_at": timezone.now() - timedelta(days=rng.randint(1, 30)),
+                },
+            )
+
+    # ------------------------------------------------------------------
+    # Output
+    # ------------------------------------------------------------------
+
+    def _print_summary(self, org):
+        from tickets.models import Event, Customer, TicketOrder, Ticket
+        self.stdout.write("")
+        self.stdout.write(self.style.SUCCESS("Seed complete."))
+        self.stdout.write(f"  Organization: {org.name}")
+        self.stdout.write(f"  Events: {Event.objects.filter(organization=org).count()}")
+        self.stdout.write(f"  Venues: {Venue.objects.filter(organization=org).count()}")
+        self.stdout.write(f"  Customers: {Customer.objects.filter(organization=org).count()}")
+        self.stdout.write(f"  Orders: {TicketOrder.objects.filter(event__organization=org).count()}")
+        self.stdout.write(f"  Tickets: {Ticket.objects.filter(ticket_order__event__organization=org).count()}")
+        self.stdout.write("")
+        self.stdout.write(self.style.WARNING("Login:"))
+        self.stdout.write(f"  Email:  {OWNER_EMAIL}  /  {OWNER_PASSWORD}")
+        self.stdout.write(f"  Phone:  {OWNER_PHONE}")
+        self.stdout.write("  (Phone OTP needs E2E_TEST_MODE=True or real Twilio creds; test code is 000000.)")
+        self.stdout.write("")
+        self.stdout.write("Start the dev server: python manage.py runserver")
