@@ -295,7 +295,7 @@ def agent_events(request):
                 Subquery(expense_sq, output_field=DecimalField(max_digits=12, decimal_places=2)),
                 Decimal('0.00'),
             ),
-            additional_income=Coalesce(
+            additional_income_total=Coalesce(
                 Subquery(income_sq, output_field=DecimalField(max_digits=12, decimal_places=2)),
                 Decimal('0.00'),
             ),
@@ -306,7 +306,7 @@ def agent_events(request):
     data = []
     for event in events:
         venue = event.venue
-        total_revenue = event.ticket_revenue + event.additional_income
+        total_revenue = event.ticket_revenue + event.additional_income_total
         data.append({
             'id': str(event.id),
             'name': event.name,
@@ -322,7 +322,7 @@ def agent_events(request):
             },
             'tickets_sold': event.ticket_count,
             'ticket_revenue': str(event.ticket_revenue),
-            'additional_income': str(event.additional_income),
+            'additional_income': str(event.additional_income_total),
             'total_revenue': str(total_revenue),
             'total_expenses': str(event.total_expenses),
             'net_profit': str(total_revenue - event.total_expenses),
