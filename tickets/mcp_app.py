@@ -64,7 +64,7 @@ class OrgAuthMiddleware:
         site_url = getattr(settings, 'SITE_URL', 'https://cueup.co').rstrip('/')
         www_auth = f'Bearer resource_metadata="{site_url}/.well-known/oauth-protected-resource"'
 
-        headers = {k.lower(): v.decode("latin-1") for k, v in scope.get("headers", [])}
+        headers = {k.lower().decode("latin-1"): v.decode("latin-1") for k, v in scope.get("headers", [])}
         auth = headers.get("authorization", "")
 
         if not auth.lower().startswith("bearer "):
