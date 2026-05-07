@@ -9,7 +9,7 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('tickets', '0103_customer_email_unique_per_org'),
+        ('tickets', '0104_stripecheckoutsession_sms_opt_in'),
     ]
 
     operations = [
