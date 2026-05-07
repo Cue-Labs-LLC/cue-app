@@ -39,6 +39,7 @@ _current_org: contextvars.ContextVar = contextvars.ContextVar("mcp_org", default
 mcp = FastMCP(
     "cue",
     transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=False),
+    stateless_http=True,
 )
 
 
