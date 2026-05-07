@@ -22,6 +22,13 @@ urlpatterns = [
 
     # Agent / External API (API key auth, no user session)
     path('v1/events/upcoming/', api_views.agent_upcoming_events, name='api_agent_upcoming_events'),
+    path('v1/events/', api_views.agent_events, name='api_agent_events'),
+    path('v1/events/<uuid:event_id>/', api_views.agent_event_detail, name='api_agent_event_detail'),
+    path('v1/customers/', api_views.agent_customers, name='api_agent_customers'),
+    path('v1/customers/<uuid:customer_id>/', api_views.agent_customer_detail, name='api_agent_customer_detail'),
+    path('v1/analytics/segments/', api_views.agent_analytics_segments, name='api_agent_analytics_segments'),
+    path('v1/analytics/revenue/', api_views.agent_analytics_revenue, name='api_agent_analytics_revenue'),
+    path('v1/orders/', api_views.agent_orders, name='api_agent_orders'),
 
     # Stripe Terminal
     path('stripe/connection-token/', api_views.stripe_connection_token, name='api_stripe_connection_token'),
