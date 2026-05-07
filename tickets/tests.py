@@ -4816,3 +4816,335 @@ class EventDetailNewReturningTest(TestCase):
         self.assertEqual(stats['new_customers_count'], 2)
         self.assertEqual(stats['returning_customers_count'], 1)
         self.assertEqual(online_total, 3)
+
+
+# ---------------------------------------------------------------------------
+# Shared seed for MCP/Agent API tests
+# ---------------------------------------------------------------------------
+
+def _seed_agent_fixtures(test):
+    """Seed an org, two events, customers, orders, an EventIncome, and an EventExpense.
+
+    The EventIncome row is critical: it forces the income subquery to return a
+    non-null value, which is what surfaces the annotation-collision regression.
+    """
+    from .models import EventExpense, EventIncome, IncomeSource, OrganizationAPIKey
+
+    test.org = Organization.objects.create(name='Agent Org', slug='agent-org')
+    test.other_org = Organization.objects.create(name='Other Org', slug='other-org')
+
+    test.venue = Venue.objects.create(
+        organization=test.org, name='The Hall', city='Portland', state='OR',
+        street_address='123 Main St', postal_code='97201', country='US',
+    )
+    today = timezone.localdate()
+    test.upcoming_event = Event.objects.create(
+        organization=test.org, name='Upcoming Show', venue=test.venue,
+        start_date=today + timedelta(days=14), start_time=time(20, 0),
+        summary='Upcoming summary',
+    )
+    test.past_event = Event.objects.create(
+        organization=test.org, name='Past Show', venue=test.venue,
+        start_date=today - timedelta(days=14), start_time=time(20, 0),
+        summary='Past summary',
+    )
+
+    test.top_customer = Customer.objects.create(
+        organization=test.org, email='top@example.com', name='Top Buyer',
+        lifetime_value=Decimal('500.00'), rfm_segment='Champions',
+    )
+    test.other_customer = Customer.objects.create(
+        organization=test.org, email='other@example.com', name='Other Buyer',
+        lifetime_value=Decimal('50.00'), rfm_segment='At Risk',
+    )
+
+    test.past_order = TicketOrder.objects.create(
+        customer=test.top_customer, event=test.past_event,
+        order_number='ORD-PAST-1',
+        order_date=timezone.now() - timedelta(days=30),
+        total_amount=Decimal('250.00'),
+    )
+    test.upcoming_order = TicketOrder.objects.create(
+        customer=test.top_customer, event=test.upcoming_event,
+        order_number='ORD-UP-1',
+        order_date=timezone.now() - timedelta(days=2),
+        total_amount=Decimal('250.00'),
+    )
+    TicketOrder.objects.create(
+        customer=test.other_customer, event=test.past_event,
+        order_number='ORD-PAST-2',
+        order_date=timezone.now() - timedelta(days=29),
+        total_amount=Decimal('50.00'),
+    )
+
+    EventExpense.objects.create(
+        event=test.past_event, category='venue',
+        description='Venue rental', amount=Decimal('75.00'),
+        expense_date=today - timedelta(days=15),
+    )
+    test.income_source = IncomeSource.objects.create(
+        organization=test.org, name='Bar Splits', order=1,
+    )
+    EventIncome.objects.create(
+        event=test.past_event, income_source=test.income_source,
+        amount=Decimal('100.00'),
+    )
+
+    test.api_key = OrganizationAPIKey.objects.create(
+        organization=test.org, name='Test Key',
+    )
+    test.other_api_key = OrganizationAPIKey.objects.create(
+        organization=test.other_org, name='Other Key',
+    )
+
+
+class MCPToolsTests(TestCase):
+    """Regression coverage for the MCP tool functions in tickets.mcp_app.
+
+    Drives the async functions directly via async_to_sync — no FastMCP server.
+    """
+
+    def setUp(self):
+        from asgiref.sync import async_to_sync
+        from tickets import mcp_app
+
+        _seed_agent_fixtures(self)
+        self._mcp = mcp_app
+        self._async_to_sync = async_to_sync
+        self._token = mcp_app._current_org.set(self.org)
+
+    def tearDown(self):
+        self._mcp._current_org.reset(self._token)
+
+    def _call(self, fn, *args, **kwargs):
+        return json.loads(self._async_to_sync(fn)(*args, **kwargs))
+
+    # --- list_events: regression test for annotation collision -------------
+
+    def test_list_events_includes_additional_income(self):
+        result = self._call(self._mcp.list_events, status='all', limit=10)
+        self.assertEqual(result['event_count'], 2)
+        by_id = {e['id']: e for e in result['events']}
+        past = by_id[str(self.past_event.id)]
+        self.assertEqual(Decimal(past['additional_income']), Decimal('100'))
+        self.assertEqual(Decimal(past['ticket_revenue']), Decimal('300'))
+        self.assertEqual(Decimal(past['total_revenue']), Decimal('400'))
+        self.assertEqual(Decimal(past['total_expenses']), Decimal('75'))
+        self.assertEqual(Decimal(past['net_profit']), Decimal('325'))
+        upcoming = by_id[str(self.upcoming_event.id)]
+        self.assertEqual(Decimal(upcoming['additional_income']), Decimal('0'))
+
+    def test_list_events_status_filter(self):
+        upcoming = self._call(self._mcp.list_events, status='upcoming', limit=10)
+        past = self._call(self._mcp.list_events, status='past', limit=10)
+        self.assertEqual([e['id'] for e in upcoming['events']], [str(self.upcoming_event.id)])
+        self.assertEqual([e['id'] for e in past['events']], [str(self.past_event.id)])
+
+    def test_list_events_respects_org_scope(self):
+        Event.objects.create(
+            organization=self.other_org, name='Foreign Event', venue=self.venue,
+            start_date=timezone.localdate() + timedelta(days=5),
+        )
+        result = self._call(self._mcp.list_events, status='all', limit=20)
+        names = {e['name'] for e in result['events']}
+        self.assertNotIn('Foreign Event', names)
+
+    # --- list_upcoming_events ----------------------------------------------
+
+    def test_list_upcoming_events(self):
+        result = self._call(self._mcp.list_upcoming_events, limit=10)
+        names = [e['name'] for e in result['events']]
+        self.assertEqual(names, ['Upcoming Show'])
+
+    # --- get_event ---------------------------------------------------------
+
+    def test_get_event_returns_full_payload(self):
+        result = self._call(self._mcp.get_event, event_id=str(self.past_event.id))
+        self.assertEqual(result['name'], 'Past Show')
+        self.assertEqual(Decimal(result['financials']['additional_income']), Decimal('100'))
+        self.assertEqual(Decimal(result['financials']['ticket_revenue']), Decimal('300'))
+        self.assertEqual(Decimal(result['financials']['total_revenue']), Decimal('400'))
+        self.assertIsInstance(result['attendance']['new_customers'], int)
+        self.assertIsInstance(result['attendance']['returning_customers'], int)
+
+    def test_get_event_returns_error_for_unknown_id(self):
+        unknown = self._call(self._mcp.get_event, event_id=str(uuid.uuid4()))
+        self.assertEqual(unknown, {'error': 'Event not found'})
+        invalid = self._call(self._mcp.get_event, event_id='not-a-uuid')
+        self.assertEqual(invalid, {'error': 'Invalid event_id'})
+
+    # --- list_customers ----------------------------------------------------
+
+    def test_list_customers_orders_by_ltv(self):
+        result = self._call(self._mcp.list_customers, segment='', limit=50, page=1)
+        self.assertEqual(result['total'], 2)
+        self.assertEqual(result['customers'][0]['email'], 'top@example.com')
+
+    def test_list_customers_segment_filter(self):
+        result = self._call(self._mcp.list_customers, segment='Champions', limit=50, page=1)
+        self.assertEqual(result['total'], 1)
+        self.assertEqual(result['customers'][0]['email'], 'top@example.com')
+
+    # --- get_customer ------------------------------------------------------
+
+    def test_get_customer_returns_recent_orders(self):
+        result = self._call(self._mcp.get_customer, customer_id=str(self.top_customer.id))
+        self.assertEqual(result['email'], 'top@example.com')
+        order_numbers = [o['order_number'] for o in result['recent_orders']]
+        self.assertIn('ORD-UP-1', order_numbers)
+        self.assertIn('ORD-PAST-1', order_numbers)
+
+    # --- get_rfm_segments / get_revenue_summary / list_orders --------------
+
+    def test_get_rfm_segments(self):
+        result = self._call(self._mcp.get_rfm_segments)
+        self.assertEqual(result['total_customers'], 2)
+        segs = {s['segment']: s['count'] for s in result['segments']}
+        self.assertEqual(segs.get('Champions'), 1)
+        self.assertEqual(segs.get('At Risk'), 1)
+
+    def test_get_revenue_summary(self):
+        result = self._call(self._mcp.get_revenue_summary)
+        self.assertEqual(Decimal(result['ticket_revenue']['all_time']), Decimal('550'))
+        self.assertEqual(Decimal(result['total_revenue_all_time']), Decimal('650'))
+        self.assertEqual(result['event_count'], 2)
+
+    def test_list_orders_filters_by_event(self):
+        result = self._call(self._mcp.list_orders, event_id=str(self.past_event.id), limit=50, page=1)
+        self.assertEqual(result['total'], 2)
+        for o in result['orders']:
+            self.assertEqual(o['event']['id'], str(self.past_event.id))
+
+    def test_list_orders_pagination(self):
+        page1 = self._call(self._mcp.list_orders, event_id='', limit=1, page=1)
+        page2 = self._call(self._mcp.list_orders, event_id='', limit=1, page=2)
+        self.assertEqual(page1['total'], 3)
+        self.assertEqual(len(page1['orders']), 1)
+        self.assertEqual(len(page2['orders']), 1)
+        self.assertNotEqual(page1['orders'][0]['id'], page2['orders'][0]['id'])
+
+
+class AgentAPITests(TestCase):
+    """Regression coverage for /api/v1/* agent endpoints (OrganizationAPIKey auth)."""
+
+    def setUp(self):
+        _seed_agent_fixtures(self)
+        self.client = Client()
+        self.auth = {'HTTP_AUTHORIZATION': f'Bearer {self.api_key.key}'}
+        self.other_auth = {'HTTP_AUTHORIZATION': f'Bearer {self.other_api_key.key}'}
+
+    # --- agent_events: regression test for annotation collision ------------
+
+    def test_agent_events_includes_additional_income(self):
+        response = self.client.get('/api/v1/events/', **self.auth)
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body['event_count'], 2)
+        past = next(e for e in body['events'] if e['id'] == str(self.past_event.id))
+        self.assertEqual(Decimal(past['additional_income']), Decimal('100'))
+        self.assertEqual(Decimal(past['ticket_revenue']), Decimal('300'))
+        self.assertEqual(Decimal(past['total_revenue']), Decimal('400'))
+        self.assertEqual(Decimal(past['total_expenses']), Decimal('75'))
+        self.assertEqual(Decimal(past['net_profit']), Decimal('325'))
+
+    def test_agent_events_status_filter(self):
+        upcoming = self.client.get('/api/v1/events/?status=upcoming', **self.auth).json()
+        past = self.client.get('/api/v1/events/?status=past', **self.auth).json()
+        self.assertEqual([e['id'] for e in upcoming['events']], [str(self.upcoming_event.id)])
+        self.assertEqual([e['id'] for e in past['events']], [str(self.past_event.id)])
+
+    def test_agent_events_requires_api_key(self):
+        response = self.client.get('/api/v1/events/')
+        self.assertIn(response.status_code, (401, 403))
+
+    def test_agent_events_rejects_revoked_key(self):
+        self.api_key.is_active = False
+        self.api_key.save(update_fields=['is_active'])
+        response = self.client.get('/api/v1/events/', **self.auth)
+        self.assertIn(response.status_code, (401, 403))
+
+    def test_agent_events_org_isolation(self):
+        Event.objects.create(
+            organization=self.other_org, name='Foreign Event', venue=self.venue,
+            start_date=timezone.localdate() + timedelta(days=5),
+        )
+        body = self.client.get('/api/v1/events/', **self.auth).json()
+        names = {e['name'] for e in body['events']}
+        self.assertNotIn('Foreign Event', names)
+
+    def test_agent_events_sets_no_cache_header(self):
+        response = self.client.get('/api/v1/events/', **self.auth)
+        self.assertIn('no-store', response['Cache-Control'])
+
+    # --- agent_event_detail ------------------------------------------------
+
+    def test_agent_event_detail_returns_financials(self):
+        url = f'/api/v1/events/{self.past_event.id}/'
+        body = self.client.get(url, **self.auth).json()
+        self.assertEqual(body['name'], 'Past Show')
+        self.assertEqual(Decimal(body['financials']['additional_income']), Decimal('100'))
+        self.assertEqual(Decimal(body['financials']['ticket_revenue']), Decimal('300'))
+        self.assertEqual(Decimal(body['financials']['total_revenue']), Decimal('400'))
+        self.assertEqual(Decimal(body['financials']['total_expenses']), Decimal('75'))
+        self.assertEqual(len(body['financials']['income']), 1)
+        self.assertEqual(body['financials']['income'][0]['source'], 'Bar Splits')
+
+    def test_agent_event_detail_404_for_other_org(self):
+        other_event = Event.objects.create(
+            organization=self.other_org, name='Foreign Event', venue=self.venue,
+            start_date=timezone.localdate() + timedelta(days=5),
+        )
+        response = self.client.get(f'/api/v1/events/{other_event.id}/', **self.auth)
+        self.assertEqual(response.status_code, 404)
+
+    # --- agent_upcoming_events --------------------------------------------
+
+    def test_agent_upcoming_events(self):
+        body = self.client.get('/api/v1/events/upcoming/', **self.auth).json()
+        names = [e['name'] for e in body['events']]
+        self.assertEqual(names, ['Upcoming Show'])
+
+    # --- agent_customers --------------------------------------------------
+
+    def test_agent_customers_paginated(self):
+        body = self.client.get('/api/v1/customers/?limit=1&page=1', **self.auth).json()
+        self.assertEqual(body['total'], 2)
+        self.assertEqual(len(body['customers']), 1)
+        self.assertEqual(body['customers'][0]['email'], 'top@example.com')
+
+    def test_agent_customer_detail(self):
+        body = self.client.get(f'/api/v1/customers/{self.top_customer.id}/', **self.auth).json()
+        self.assertEqual(body['email'], 'top@example.com')
+        order_numbers = [o['order_number'] for o in body['recent_orders']]
+        self.assertIn('ORD-UP-1', order_numbers)
+
+    # --- agent_analytics --------------------------------------------------
+
+    def test_agent_analytics_segments(self):
+        body = self.client.get('/api/v1/analytics/segments/', **self.auth).json()
+        self.assertEqual(body['total_customers'], 2)
+        segs = {s['segment']: s['count'] for s in body['segments']}
+        self.assertEqual(segs.get('Champions'), 1)
+        self.assertEqual(segs.get('At Risk'), 1)
+
+    def test_agent_analytics_revenue(self):
+        body = self.client.get('/api/v1/analytics/revenue/', **self.auth).json()
+        self.assertEqual(Decimal(body['ticket_revenue']['all_time']), Decimal('550'))
+        self.assertEqual(Decimal(body['total_revenue_all_time']), Decimal('650'))
+        self.assertEqual(body['event_count'], 2)
+
+    # --- agent_orders -----------------------------------------------------
+
+    def test_agent_orders_filter_by_event(self):
+        body = self.client.get(
+            f'/api/v1/orders/?event_id={self.past_event.id}', **self.auth
+        ).json()
+        self.assertEqual(body['total'], 2)
+        for o in body['orders']:
+            self.assertEqual(o['event']['id'], str(self.past_event.id))
+
+    def test_agent_orders_pagination(self):
+        page1 = self.client.get('/api/v1/orders/?limit=1&page=1', **self.auth).json()
+        page2 = self.client.get('/api/v1/orders/?limit=1&page=2', **self.auth).json()
+        self.assertEqual(page1['total'], 3)
+        self.assertNotEqual(page1['orders'][0]['id'], page2['orders'][0]['id'])

@@ -244,7 +244,7 @@ async def list_events(status: str = "all", limit: int = 20) -> str:
             ticket_count=Coalesce(Subquery(orders_sq, output_field=IntegerField()), 0),
             ticket_revenue=Coalesce(Subquery(revenue_sq, output_field=DecimalField(max_digits=12, decimal_places=2)), Decimal("0.00")),
             total_expenses=Coalesce(Subquery(expense_sq, output_field=DecimalField(max_digits=12, decimal_places=2)), Decimal("0.00")),
-            additional_income=Coalesce(Subquery(income_sq, output_field=DecimalField(max_digits=12, decimal_places=2)), Decimal("0.00")),
+            additional_income_total=Coalesce(Subquery(income_sq, output_field=DecimalField(max_digits=12, decimal_places=2)), Decimal("0.00")),
         )
         .order_by("-start_date", "-start_time")[:limit]
     )
@@ -252,7 +252,7 @@ async def list_events(status: str = "all", limit: int = 20) -> str:
     data = []
     for event in events:
         venue = event.venue
-        total_revenue = event.ticket_revenue + event.additional_income
+        total_revenue = event.ticket_revenue + event.additional_income_total
         data.append({
             "id": str(event.id),
             "name": event.name,
@@ -264,7 +264,7 @@ async def list_events(status: str = "all", limit: int = 20) -> str:
             "venue": {"name": venue.name, "city": venue.city, "state": venue.state},
             "tickets_sold": event.ticket_count,
             "ticket_revenue": str(event.ticket_revenue),
-            "additional_income": str(event.additional_income),
+            "additional_income": str(event.additional_income_total),
             "total_revenue": str(total_revenue),
             "total_expenses": str(event.total_expenses),
             "net_profit": str(total_revenue - event.total_expenses),
