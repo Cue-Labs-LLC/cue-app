@@ -1,23 +1,27 @@
 """
-Cue MCP Server — exposes Cue event/customer data as MCP tools for Claude and other AI clients.
+Cue MCP Server (stdio mode) — local process for Claude Code / Claude Desktop.
 
-Supports two transports (set via TRANSPORT env var):
-  stdio            — local process, for Claude Code / Claude Desktop stdio config (default)
-  streamable-http  — HTTP server, for a hosted remote MCP URL at /mcp
+For the hosted remote MCP endpoint, the MCP server is embedded directly in the
+Cue Django app at https://cueup.co/mcp. Connect any MCP client by pointing it
+at that URL with your API key in the Authorization header:
+
+    Claude Desktop:
+      { "mcpServers": { "cue": { "url": "https://cueup.co/mcp",
+          "headers": { "Authorization": "Bearer cue_live_..." } } } }
+
+    Claude Code:
+      claude mcp add cue --transport http https://cueup.co/mcp \\
+        --header "Authorization: Bearer cue_live_..." --scope user
+
+This file provides a local stdio-mode alternative (no server needed):
+
+    claude mcp add cue <path/to/.venv/bin/python3> <path/to/server.py> \\
+      --scope user -e CUE_API_KEY=cue_live_... -e CUE_BASE_URL=https://cueup.co
 
 Configuration (env vars):
     CUE_API_KEY   Bearer API key from Cue Settings → API Keys (cue_live_...)
     CUE_BASE_URL  Base URL of your Cue instance (default: https://cueup.co)
-    TRANSPORT     "stdio" or "streamable-http" (default: stdio)
-    PORT          HTTP port when using streamable-http transport (default: 8000)
-
-Stdio setup (local, Claude Code):
-    claude mcp add cue <path/to/.venv/bin/python3> <path/to/server.py> \\
-      --scope user -e CUE_API_KEY=cue_live_... -e CUE_BASE_URL=https://cueup.co
-
-Remote URL setup (after deploying to Render):
-    Claude Desktop: { "mcpServers": { "cue": { "url": "https://cue-mcp.onrender.com/mcp" } } }
-    Claude Code: claude mcp add cue --transport http https://cue-mcp.onrender.com/mcp --scope user
+    TRANSPORT     "stdio" (default — use https://cueup.co/mcp for HTTP instead)
 """
 
 import json
