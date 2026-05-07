@@ -1,0 +1,49 @@
+{% extends 'tickets/base.html' %}
+
+{% block title %}Authorize Access — Cue{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center mt-5">
+  <div class="col-md-6 col-lg-5">
+    <div class="card">
+      <div class="card-header">
+        <h5 class="mb-0">Authorize Access</h5>
+      </div>
+      <div class="card-body p-4">
+        <p class="mb-1">
+          <strong>{{ client.client_name }}</strong> is requesting access to your Cue data.
+        </p>
+        <p class="text-body-secondary small mb-4">Organization: <strong>{{ org.name }}</strong></p>
+
+        <div class="border rounded p-3 mb-4 small">
+          <p class="fw-semibold mb-2">{{ client.client_name }} will be able to:</p>
+          <ul class="mb-0 ps-3">
+            <li>Read your events, ticket types, and attendance data</li>
+            <li>Read your customers and their lifetime value</li>
+            <li>Read your orders and revenue analytics</li>
+            <li>Read your RFM customer segments</li>
+          </ul>
+        </div>
+
+        <form method="post">
+          {% csrf_token %}
+          <input type="hidden" name="client_id" value="{{ client.client_id }}">
+          <input type="hidden" name="redirect_uri" value="{{ redirect_uri }}">
+          <input type="hidden" name="code_challenge" value="{{ code_challenge }}">
+          <input type="hidden" name="code_challenge_method" value="S256">
+          <input type="hidden" name="state" value="{{ state }}">
+          <input type="hidden" name="response_type" value="code">
+          <div class="d-grid gap-2">
+            <button type="submit" name="action" value="approve" class="btn btn-primary">
+              Allow Access
+            </button>
+            <button type="submit" name="action" value="deny" class="btn btn-outline-secondary">
+              Deny
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}

@@ -13,6 +13,7 @@ from datetime import timedelta
 from decimal import Decimal
 
 from asgiref.sync import sync_to_async
+from django.conf import settings
 from django.db.models import Count, DecimalField, IntegerField, OuterRef, Q, Subquery, Sum
 from django.db.models.functions import Coalesce
 from django.utils import timezone
@@ -24,6 +25,7 @@ from .models import (
     EventCustomFieldValue,
     EventExpense,
     EventIncome,
+    OAuthAccessToken,
     OrganizationAPIKey,
     SaleableTicketType,
     TicketOrder,
@@ -55,55 +57,75 @@ class OrgAuthMiddleware:
             await self.app(scope, receive, send)
             return
 
+        site_url = getattr(settings, 'SITE_URL', 'https://cueup.co').rstrip('/')
+        www_auth = f'Bearer resource_metadata="{site_url}/.well-known/oauth-protected-resource"'
+
         headers = {k.lower(): v.decode("latin-1") for k, v in scope.get("headers", [])}
         auth = headers.get("authorization", "")
 
         if not auth.lower().startswith("bearer "):
-            await self._reject(send, 401, "Authorization header required (Bearer cue_live_...)")
+            await self._reject(send, 401, "Authorization header required", www_auth)
             return
 
-        raw_key = auth[7:]
-        if not raw_key.startswith("cue_live_"):
-            await self._reject(send, 401, "Invalid API key format")
-            return
+        raw_token = auth[7:]
 
-        try:
-            api_key = await sync_to_async(
-                lambda: OrganizationAPIKey.objects.select_related("organization").get(
-                    key=raw_key, is_active=True
+        if raw_token.startswith("cue_live_"):
+            try:
+                api_key = await sync_to_async(
+                    lambda: OrganizationAPIKey.objects.select_related("organization").get(
+                        key=raw_token, is_active=True
+                    )
+                )()
+            except OrganizationAPIKey.DoesNotExist:
+                await self._reject(send, 401, "Invalid or revoked API key", www_auth)
+                return
+            except Exception:
+                logger.exception("MCP auth lookup failed")
+                await self._reject(send, 500, "Authentication error")
+                return
+            await sync_to_async(
+                lambda: OrganizationAPIKey.objects.filter(pk=api_key.pk).update(
+                    last_used_at=timezone.now()
                 )
             )()
-        except OrganizationAPIKey.DoesNotExist:
-            await self._reject(send, 401, "Invalid or revoked API key")
-            return
-        except Exception:
-            logger.exception("MCP auth lookup failed")
-            await self._reject(send, 500, "Authentication error")
+            org = api_key.organization
+
+        elif raw_token.startswith("cue_at_"):
+            try:
+                access_token = await sync_to_async(
+                    lambda: OAuthAccessToken.objects.select_related("organization").get(
+                        token=raw_token, expires_at__gt=timezone.now()
+                    )
+                )()
+            except OAuthAccessToken.DoesNotExist:
+                await self._reject(send, 401, "Invalid or expired access token", www_auth)
+                return
+            except Exception:
+                logger.exception("MCP OAuth token lookup failed")
+                await self._reject(send, 500, "Authentication error")
+                return
+            org = access_token.organization
+
+        else:
+            await self._reject(send, 401, "Unrecognized token format", www_auth)
             return
 
-        await sync_to_async(
-            lambda: OrganizationAPIKey.objects.filter(pk=api_key.pk).update(
-                last_used_at=timezone.now()
-            )
-        )()
-
-        token = _current_org.set(api_key.organization)
+        token = _current_org.set(org)
         try:
             await self.app(scope, receive, send)
         finally:
             _current_org.reset(token)
 
     @staticmethod
-    async def _reject(send, status: int, message: str):
+    async def _reject(send, status: int, message: str, www_authenticate: str | None = None):
         body = json.dumps({"error": message}).encode()
-        await send({
-            "type": "http.response.start",
-            "status": status,
-            "headers": [
-                (b"content-type", b"application/json"),
-                (b"content-length", str(len(body)).encode()),
-            ],
-        })
+        headers = [
+            (b"content-type", b"application/json"),
+            (b"content-length", str(len(body)).encode()),
+        ]
+        if www_authenticate:
+            headers.append((b"www-authenticate", www_authenticate.encode()))
+        await send({"type": "http.response.start", "status": status, "headers": headers})
         await send({"type": "http.response.body", "body": body})
 
 

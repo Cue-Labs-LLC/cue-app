@@ -19,6 +19,7 @@ from django.urls import path, include
 from django.conf import settings
 from django.conf.urls.static import static
 from tickets import views as tickets_views
+from tickets import oauth_views
 
 urlpatterns = [
     path('admin/', admin.site.urls),
@@ -26,6 +27,12 @@ urlpatterns = [
     path('.well-known/apple-developer-merchantid-domain-association',
          tickets_views.apple_pay_domain_association,
          name='apple_pay_domain_association'),
+    path('.well-known/oauth-authorization-server',
+         oauth_views.oauth_server_metadata,
+         name='oauth_server_metadata'),
+    path('.well-known/oauth-protected-resource',
+         oauth_views.oauth_protected_resource_metadata,
+         name='oauth_protected_resource_metadata'),
     path('', include(('tickets.urls', 'tickets'))),
 ]
 

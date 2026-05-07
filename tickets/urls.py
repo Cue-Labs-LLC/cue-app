@@ -1,10 +1,17 @@
 from django.urls import path, re_path
 from django.views.generic import RedirectView
 from . import views
+from . import oauth_views
 
 app_name = 'tickets'
 
 urlpatterns = [
+    # OAuth 2.0 endpoints (for MCP / Claude Desktop Connectors)
+    path('oauth/authorize/', oauth_views.oauth_authorize, name='oauth_authorize'),
+    path('oauth/token/', oauth_views.oauth_token, name='oauth_token'),
+    path('oauth/clients/register/', oauth_views.oauth_register_client, name='oauth_register_client'),
+    path('oauth/revoke/', oauth_views.oauth_revoke, name='oauth_revoke'),
+
     # Authentication - unified phone-first entry point
     path('login/', views.unified_login_view, name='login'),
     path('login/verify/', views.unified_verify_view, name='unified_verify'),
