@@ -236,6 +236,7 @@ def oauth_token(request):
         'token_type': 'Bearer',
         'expires_in': 30 * 24 * 3600,
         'scope': 'mcp',
+        'resource': f'{_site_url()}/mcp',
     })
 
 
