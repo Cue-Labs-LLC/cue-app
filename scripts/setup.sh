@@ -25,6 +25,9 @@ pip install -r requirements.txt
 echo "==> Running migrations"
 python manage.py migrate
 
+echo "==> Seeding local demo data (skips if already populated)"
+python manage.py seed_local_data --if-empty
+
 echo "==> Running Django system check"
 python manage.py check
 
