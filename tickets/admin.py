@@ -342,15 +342,19 @@ class ScannerSessionAdmin(admin.ModelAdmin):
 
 @admin.register(EventExpense)
 class EventExpenseAdmin(admin.ModelAdmin):
-    list_display = ['description', 'category', 'amount', 'expense_date', 'get_event', 'get_organization', 'created_at']
-    list_filter = ['event__organization', 'category', 'expense_date', 'created_at']
-    search_fields = ['description', 'notes', 'event__name']
+    list_display = ['description', 'category', 'source', 'amount', 'expense_date', 'get_event', 'get_organization', 'created_at']
+    list_filter = ['event__organization', 'category', 'source', 'expense_date', 'created_at']
+    search_fields = ['description', 'notes', 'external_id', 'event__name']
     readonly_fields = ['id', 'created_at', 'updated_at']
     date_hierarchy = 'expense_date'
 
     fieldsets = (
         ('Expense Information', {
-            'fields': ('event', 'category', 'description', 'amount', 'expense_date', 'notes')
+            'fields': ('event', 'category', 'source', 'description', 'amount', 'expense_date', 'notes')
+        }),
+        ('External Source', {
+            'fields': ('external_id', 'external_metadata'),
+            'classes': ('collapse',)
         }),
         ('Metadata', {
             'fields': ('id', 'created_at', 'updated_at'),
@@ -674,15 +678,32 @@ class OrganizationMembershipAdmin(admin.ModelAdmin):
 
 @admin.register(Organization)
 class OrganizationAdmin(admin.ModelAdmin):
-    list_display = ['name', 'slug', 'stripe_onboarding_complete', 'created_at']
+    list_display = ['name', 'slug', 'stripe_onboarding_complete', 'meta_ads_account_name', 'created_at']
     search_fields = ['name', 'slug']
-    readonly_fields = ['id', 'created_at', 'updated_at']
+    readonly_fields = [
+        'id',
+        'created_at',
+        'updated_at',
+        'meta_ads_user_id',
+        'meta_ads_account_id',
+        'meta_ads_account_name',
+        'meta_ads_token_expires_at',
+    ]
     prepopulated_fields = {'slug': ('name',)}
     inlines = [OrganizationMembershipInline]
     fieldsets = (
         ('Basic', {'fields': ('name', 'slug', 'rfm_recalc_in_progress')}),
         ('Feature Flags', {'fields': ('waitlist_feature_enabled',)}),
         ('Stripe Connect', {'fields': ('stripe_account_id', 'stripe_onboarding_complete')}),
+        ('Meta Ads', {
+            'fields': (
+                'meta_ads_user_id',
+                'meta_ads_account_id',
+                'meta_ads_account_name',
+                'meta_ads_token_expires_at',
+            ),
+            'classes': ('collapse',),
+        }),
         ('Metadata', {'fields': ('id', 'created_at', 'updated_at'), 'classes': ('collapse',)}),
     )
 

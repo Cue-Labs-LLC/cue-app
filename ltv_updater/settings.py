@@ -262,6 +262,11 @@ STRIPE_CURRENCY        = os.environ.get('STRIPE_CURRENCY', 'usd')
 STRIPE_TERMINAL_LOCATION_ID = os.environ.get('STRIPE_TERMINAL_LOCATION_ID', '')
 APPLE_PAY_DOMAIN_ASSOCIATION = os.environ.get('APPLE_PAY_DOMAIN_ASSOCIATION', '')
 
+# Meta Ads integration
+FACEBOOK_APP_ID = os.environ.get('FACEBOOK_APP_ID', '')
+FACEBOOK_APP_SECRET = os.environ.get('FACEBOOK_APP_SECRET', '')
+FACEBOOK_GRAPH_API_VERSION = os.environ.get('FACEBOOK_GRAPH_API_VERSION', 'v21.0')
+
 # Email backend configuration — SendGrid SMTP for all environments
 EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
 EMAIL_HOST = 'smtp.sendgrid.net'

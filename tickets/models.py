@@ -97,6 +97,11 @@ class Organization(BaseModel):
         max_length=255, blank=True, default='',
         help_text='Meta Conversions API access token for server-side event reporting.',
     )
+    meta_ads_access_token = models.CharField(max_length=512, blank=True, default='')
+    meta_ads_user_id = models.CharField(max_length=64, blank=True, default='')
+    meta_ads_account_id = models.CharField(max_length=64, blank=True, default='')
+    meta_ads_account_name = models.CharField(max_length=255, blank=True, default='')
+    meta_ads_token_expires_at = models.DateTimeField(null=True, blank=True)
     waitlist_feature_enabled = models.BooleanField(
         default=False,
         help_text='Enable the waitlist feature for this organization.',
@@ -1025,6 +1030,11 @@ class ScannerSession(BaseModel):
 
 class EventExpense(AuditBaseModel):
     """Expense line item for an event."""
+    SOURCE_CHOICES = [
+        ('manual', 'Manual'),
+        ('meta_ads', 'Meta Ads'),
+    ]
+
     CATEGORY_CHOICES = [
         ('talent', 'Talent / Artist Fees'),
         ('venue', 'Venue Rental'),
@@ -1043,6 +1053,9 @@ class EventExpense(AuditBaseModel):
     amount = models.DecimalField(max_digits=10, decimal_places=2)
     expense_date = models.DateField(null=True, blank=True, db_index=True)
     notes = models.TextField(blank=True)
+    source = models.CharField(max_length=20, choices=SOURCE_CHOICES, default='manual', db_index=True)
+    external_id = models.CharField(max_length=100, blank=True, default='')
+    external_metadata = models.JSONField(default=dict, blank=True)
 
     class Meta:
         ordering = ['-expense_date', '-created_at']
@@ -1050,6 +1063,13 @@ class EventExpense(AuditBaseModel):
             models.Index(fields=['event', 'category']),
             models.Index(fields=['event', '-expense_date']),
             models.Index(fields=['event', 'deleted_at']),
+        ]
+        constraints = [
+            models.UniqueConstraint(
+                fields=['event', 'source', 'external_id'],
+                condition=models.Q(source='meta_ads', deleted_at__isnull=True),
+                name='uniq_active_meta_expense_per_campaign',
+            ),
         ]
 
     def __str__(self):
