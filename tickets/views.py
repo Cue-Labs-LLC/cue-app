@@ -105,6 +105,8 @@ from .feature_flags import (
 
 from django.core.cache import cache as django_cache
 
+from .cache_utils import safe_cache_delete, safe_cache_get, safe_cache_set
+
 import logging
 logger = logging.getLogger(__name__)
 
@@ -2848,7 +2850,7 @@ def _compute_event_stats(event):
     that bypass signals).
     """
     cache_key = _event_stats_cache_key(event.pk)
-    cached = django_cache.get(cache_key)
+    cached = safe_cache_get(cache_key)
     if isinstance(cached, dict) and EVENT_STATS_REQUIRED_KEYS.issubset(cached):
         return cached
 
@@ -3110,10 +3112,7 @@ def _compute_event_stats(event):
         'survey_results': survey_results,
         'attendee_segments': attendee_segments,
     }
-    try:
-        django_cache.set(cache_key, result, 300)
-    except Exception:
-        pass
+    safe_cache_set(cache_key, result, timeout=300)
     return result
 
 
@@ -6144,7 +6143,7 @@ def public_event_buy(request, public_id):
                 EventDailyPageView.objects.filter(event=event, date=today).update(
                     view_count=F('view_count') + 1
                 )
-        django_cache.delete(_event_stats_cache_key(event.pk))
+        safe_cache_delete(_event_stats_cache_key(event.pk))
         ref = request.GET.get('ref')
         if ref:
             request.session[f'tracking_ref_{event.id}'] = ref

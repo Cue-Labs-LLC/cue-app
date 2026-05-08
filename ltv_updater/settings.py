@@ -314,6 +314,18 @@ else:
 CELERY_ACCEPT_CONTENT = ['json']
 CELERY_TASK_SERIALIZER = 'json'
 CELERY_RESULT_SERIALIZER = 'json'
+# Bound Redis client count so Celery can't exhaust Render Redis (~50 client cap).
+# Combined with the cache pool below (4 workers × max_connections=5 = 20),
+# this caps total Redis clients at roughly 35.
+CELERY_BROKER_POOL_LIMIT = 10
+CELERY_BROKER_TRANSPORT_OPTIONS = {
+    'max_connections': 10,
+    'socket_keepalive': True,
+}
+CELERY_RESULT_BACKEND_TRANSPORT_OPTIONS = {
+    'max_connections': 5,
+    'socket_keepalive': True,
+}
 
 # Cache framework — Redis when available, in-memory fallback for dev
 if _CELERY_BROKER_URL:
