@@ -213,7 +213,6 @@
                     </button>
                 </li>
                 {% endif %}
-
                 <!-- Delete: only if event is deletable -->
                 {% if event.ticketing_type != 'direct' or event.effective_status == 'draft' %}
                 <li><hr class="dropdown-divider"></li>
@@ -361,6 +360,7 @@
     <button class="nav-link active" id="tab-overview-btn" data-bs-toggle="tab" data-bs-target="#tab-overview" type="button" role="tab">Overview</button>
     <button class="nav-link" id="tab-orders-btn" data-bs-toggle="tab" data-bs-target="#tab-orders" type="button" role="tab">Orders{% if total_orders %} ({{ total_orders }}){% endif %}</button>
     <button class="nav-link" id="tab-finance-btn" data-bs-toggle="tab" data-bs-target="#tab-finance" type="button" role="tab">Finance</button>
+    <button class="nav-link" id="tab-marketing-btn" data-bs-toggle="tab" data-bs-target="#tab-marketing" type="button" role="tab">Marketing</button>
     <button class="nav-link" id="tab-manage-btn" data-bs-toggle="tab" data-bs-target="#tab-manage" type="button" role="tab">Manage</button>
 </nav>
 <div class="tab-content">
@@ -697,7 +697,90 @@
 
 </div><!-- /tab-finance -->
 
-<!-- ===== TAB 4: Manage ===== -->
+<!-- ===== TAB 4: Marketing ===== -->
+<div class="tab-pane fade" id="tab-marketing" role="tabpanel">
+
+<div class="card mb-4">
+    <div class="card-header d-flex justify-content-between align-items-center">
+        <h5 class="mb-0">Meta Ads</h5>
+        {% if is_org_admin %}
+            {% if org.meta_ads_access_token and org.meta_ads_account_id %}
+            <button type="button"
+                    class="btn btn-sm btn-primary"
+                    data-bs-toggle="modal"
+                    data-bs-target="#metaAdsMatchModal"
+                    data-match-url="{% url 'tickets:event_meta_ads_match' event.id %}?format=json"
+                    data-apply-url="{% url 'tickets:event_meta_ads_apply' event.id %}">
+                <i class="bi bi-megaphone"></i> Match Meta Ads campaign
+            </button>
+            {% else %}
+            <a href="{% url 'tickets:meta_ads_settings' %}" class="btn btn-sm btn-primary">
+                <i class="bi bi-facebook"></i> Connect Meta Ads
+            </a>
+            {% endif %}
+        {% endif %}
+    </div>
+    <div class="card-body">
+        {% if org.meta_ads_access_token and org.meta_ads_account_id %}
+        <p class="text-body-secondary mb-3">
+            Connected account: <strong>{{ org.meta_ads_account_name|default:org.meta_ads_account_id }}</strong>
+        </p>
+        {% if meta_ads_expenses %}
+        <div class="table-responsive mb-3">
+            <table class="table table-hover mb-0">
+                <thead>
+                    <tr>
+                        <th>Linked Campaign</th>
+                        <th>Spend</th>
+                        <th></th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for meta_ads_expense in meta_ads_expenses %}
+                    <tr>
+                        <td>
+                            <strong>{{ meta_ads_expense.external_metadata.campaign_name|default:meta_ads_expense.description }}</strong>
+                            {% if meta_ads_expense.external_id %}
+                            <div class="text-body-secondary small">{{ meta_ads_expense.external_id }}</div>
+                            {% endif %}
+                        </td>
+                        <td><strong>${{ meta_ads_expense.amount|currency }}</strong></td>
+                        <td class="text-end">
+                            <div class="d-inline-flex gap-1">
+                                <form method="post" action="{% url 'tickets:event_meta_ads_refresh' event.id meta_ads_expense.id %}" class="d-inline">
+                                    {% csrf_token %}
+                                    <button type="submit" class="btn btn-sm btn-outline-secondary">Refresh</button>
+                                </form>
+                                <form method="post" action="{% url 'tickets:event_meta_ads_remove' event.id meta_ads_expense.id %}" class="d-inline" onsubmit="return confirm('Remove this linked Meta Ads campaign from the event?');">
+                                    {% csrf_token %}
+                                    <button type="submit" class="btn btn-sm btn-outline-danger">Remove</button>
+                                </form>
+                            </div>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% endif %}
+        <p class="mb-0">
+            Use campaign matching to find Meta campaigns for this event, pull lifetime campaign spend, and save it as a marketing expense.
+        </p>
+        {% else %}
+        <div class="empty-state" style="padding: 24px;">
+            <i class="bi bi-megaphone"></i>
+            <p class="mb-2">Connect Meta Ads to match campaigns and pull campaign spend into this event.</p>
+            {% if is_org_admin %}
+            <a href="{% url 'tickets:meta_ads_settings' %}" class="btn btn-primary">Connect Meta Ads</a>
+            {% endif %}
+        </div>
+        {% endif %}
+    </div>
+</div>
+
+</div><!-- /tab-marketing -->
+
+<!-- ===== TAB 5: Manage ===== -->
 <div class="tab-pane fade" id="tab-manage" role="tabpanel">
 
 {% if event.ticketing_type == 'direct' %}
@@ -987,6 +1070,38 @@
 </div>
 {% endif %}
 
+{% if is_org_admin and org.meta_ads_access_token and org.meta_ads_account_id %}
+<div class="modal fade" id="metaAdsMatchModal" tabindex="-1" aria-labelledby="metaAdsMatchModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-xl modal-dialog-scrollable">
+        <div class="modal-content">
+            <div class="modal-header">
+                <div>
+                    <h5 class="modal-title" id="metaAdsMatchModalLabel">Match Meta Ads campaign</h5>
+                    <div class="text-body-secondary small">{{ event.name }}</div>
+                </div>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <div id="metaAdsMatchLoading" class="py-5 text-center">
+                    <div class="spinner-border text-primary" role="status" aria-hidden="true"></div>
+                    <p class="text-body-secondary mt-3 mb-0">Ranking campaigns...</p>
+                </div>
+                <div id="metaAdsMatchError" class="alert alert-danger d-none mb-0"></div>
+                <div id="metaAdsMatchResults" class="row g-3"></div>
+                <div id="metaAdsMatchEmpty" class="empty-state d-none" style="padding: 32px;">
+                    <i class="bi bi-megaphone"></i>
+                    <p class="mb-2">No matching campaigns found.</p>
+                    <a href="{% url 'tickets:expense_create' event.id %}" class="btn btn-primary">Add expense manually</a>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Close</button>
+            </div>
+        </div>
+    </div>
+</div>
+{% endif %}
+
 {% endblock %}
 
 {% block extra_js %}
@@ -1011,6 +1126,118 @@
     });
 })();
 </script>
+{% if is_org_admin and org.meta_ads_access_token and org.meta_ads_account_id %}
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    var modalEl = document.getElementById('metaAdsMatchModal');
+    if (!modalEl) return;
+
+    var loaded = false;
+    var loadingEl = document.getElementById('metaAdsMatchLoading');
+    var errorEl = document.getElementById('metaAdsMatchError');
+    var resultsEl = document.getElementById('metaAdsMatchResults');
+    var emptyEl = document.getElementById('metaAdsMatchEmpty');
+
+    modalEl.addEventListener('show.bs.modal', function(event) {
+        var trigger = event.relatedTarget;
+        if (!trigger || loaded) return;
+
+        loadingEl.classList.remove('d-none');
+        errorEl.classList.add('d-none');
+        emptyEl.classList.add('d-none');
+        resultsEl.innerHTML = '';
+
+        fetch(trigger.getAttribute('data-match-url'), {
+            headers: { 'X-Requested-With': 'XMLHttpRequest' }
+        })
+        .then(function(response) {
+            return response.json().then(function(data) {
+                return { ok: response.ok, data: data };
+            });
+        })
+        .then(function(result) {
+            loadingEl.classList.add('d-none');
+            if (!result.ok || !result.data.success) {
+                errorEl.textContent = result.data.error || 'Could not match Meta campaigns.';
+                errorEl.classList.remove('d-none');
+                return;
+            }
+
+            loaded = true;
+            var candidates = result.data.candidates || [];
+            if (!candidates.length) {
+                emptyEl.classList.remove('d-none');
+                return;
+            }
+            resultsEl.innerHTML = candidates.map(function(candidate) {
+                return renderMetaAdsCandidate(candidate, trigger.getAttribute('data-apply-url'));
+            }).join('');
+        })
+        .catch(function() {
+            loadingEl.classList.add('d-none');
+            errorEl.textContent = 'Could not match Meta campaigns. Please try again.';
+            errorEl.classList.remove('d-none');
+        });
+    });
+
+    function renderMetaAdsCandidate(candidate, applyUrl) {
+        var name = escapeHtml(candidate.campaign_name || candidate.campaign_id);
+        var objective = escapeHtml(candidate.objective || 'No objective');
+        var startTime = escapeHtml(candidate.start_time || 'Unknown');
+        var stopTime = escapeHtml(candidate.stop_time || 'Not set');
+        var reasoning = escapeHtml(candidate.reasoning || '');
+        var campaignId = escapeHtml(candidate.campaign_id || '');
+        var confidence = Number(candidate.confidence_pct || 0);
+        var confidenceClass = escapeHtml(candidate.confidence_class || 'bg-secondary');
+
+        return '' +
+            '<div class="col-12 col-lg-4">' +
+                '<div class="card h-100">' +
+                    '<div class="card-body d-flex flex-column">' +
+                        '<div class="mb-3">' +
+                            '<h6 class="mb-1">' + name + '</h6>' +
+                            '<div class="small text-body-secondary">' + objective + '</div>' +
+                        '</div>' +
+                        '<div class="small mb-3">' +
+                            '<div><strong>Start:</strong> ' + startTime + '</div>' +
+                            '<div><strong>Stop:</strong> ' + stopTime + '</div>' +
+                        '</div>' +
+                        '<div class="mb-3">' +
+                            '<div class="d-flex justify-content-between small mb-1">' +
+                                '<span>Confidence</span>' +
+                                '<strong>' + confidence + '%</strong>' +
+                            '</div>' +
+                            '<div class="progress" style="height: 8px;">' +
+                                '<div class="progress-bar ' + confidenceClass + '" role="progressbar" style="width: ' + confidence + '%;" aria-valuenow="' + confidence + '" aria-valuemin="0" aria-valuemax="100"></div>' +
+                            '</div>' +
+                        '</div>' +
+                        '<p class="text-body-secondary small flex-grow-1">' + reasoning + '</p>' +
+                        '<form method="post" action="' + escapeHtml(applyUrl) + '">' +
+                            '<input type="hidden" name="csrfmiddlewaretoken" value="{{ csrf_token }}">' +
+                            '<input type="hidden" name="campaign_id" value="' + campaignId + '">' +
+                            '<button type="submit" class="btn btn-primary w-100">' +
+                                '<i class="bi bi-check2-circle me-1"></i> Apply this campaign' +
+                            '</button>' +
+                        '</form>' +
+                    '</div>' +
+                '</div>' +
+            '</div>';
+    }
+
+    function escapeHtml(value) {
+        return String(value).replace(/[&<>"']/g, function(char) {
+            return {
+                '&': '&amp;',
+                '<': '&lt;',
+                '>': '&gt;',
+                '"': '&quot;',
+                "'": '&#039;'
+            }[char];
+        });
+    }
+});
+</script>
+{% endif %}
 {% if event.ticketing_type != 'direct' %}
 <script>
 document.addEventListener('DOMContentLoaded', function() {

@@ -1,0 +1,71 @@
+{% extends 'tickets/base.html' %}
+
+{% block title %}Match Meta Ads - {{ event.name }}{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1>Match Meta Ads campaign</h1>
+        <p class="text-body-secondary mb-0">{{ event.name }}{% if account_name %} - {{ account_name }}{% endif %}</p>
+    </div>
+    <div class="page-header-actions">
+        <a href="{% url 'tickets:event_detail' event.id %}" class="btn btn-outline-secondary btn-sm">
+            <i class="bi bi-arrow-left"></i><span class="ms-1">Back to event</span>
+        </a>
+    </div>
+</div>
+
+{% if candidates %}
+<div class="row g-3">
+    {% for item in candidates %}
+    <div class="col-12 col-lg-4">
+        <div class="card h-100">
+            <div class="card-body d-flex flex-column">
+                <div class="mb-3">
+                    <h2 class="h5 mb-1">{{ item.campaign.name|default:item.campaign.id }}</h2>
+                    <div class="small text-body-secondary">
+                        {{ item.campaign.objective|default:"No objective" }}
+                    </div>
+                </div>
+
+                <div class="small mb-3">
+                    <div><strong>Start:</strong> {{ item.campaign.start_time|default:item.campaign.created_time|default:"Unknown" }}</div>
+                    <div><strong>Stop:</strong> {{ item.campaign.stop_time|default:"Not set" }}</div>
+                </div>
+
+                <div class="mb-3">
+                    <div class="d-flex justify-content-between small mb-1">
+                        <span>Confidence</span>
+                        <strong>{{ item.confidence_pct }}%</strong>
+                    </div>
+                    <div class="progress" style="height: 8px;">
+                        <div class="progress-bar {{ item.confidence_class }}" role="progressbar" style="width: {{ item.confidence_pct }}%;" aria-valuenow="{{ item.confidence_pct }}" aria-valuemin="0" aria-valuemax="100"></div>
+                    </div>
+                </div>
+
+                <p class="text-body-secondary small flex-grow-1">{{ item.reasoning }}</p>
+
+                <form method="post" action="{% url 'tickets:event_meta_ads_apply' event.id %}">
+                    {% csrf_token %}
+                    <input type="hidden" name="campaign_id" value="{{ item.campaign.id }}">
+                    <button type="submit" class="btn btn-primary w-100">
+                        <i class="bi bi-check2-circle me-1"></i> Apply this campaign
+                    </button>
+                </form>
+            </div>
+        </div>
+    </div>
+    {% endfor %}
+</div>
+{% else %}
+<div class="empty-state">
+    <i class="bi bi-megaphone"></i>
+    <h2>No matching campaigns found</h2>
+    <p>Connect a different ad account or add the marketing expense manually.</p>
+    <div class="d-flex flex-wrap justify-content-center gap-2">
+        <a href="{% url 'tickets:meta_ads_settings' %}" class="btn btn-outline-secondary">Meta Ads settings</a>
+        <a href="{% url 'tickets:expense_create' event.id %}" class="btn btn-primary">Add expense</a>
+    </div>
+</div>
+{% endif %}
+{% endblock %}

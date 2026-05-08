@@ -1,0 +1,88 @@
+{% extends 'tickets/base.html' %}
+
+{% block title %}Meta Ads{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1>Meta Ads</h1>
+        <p class="text-body-secondary mb-0">Connect Meta Ads Insights so campaign spend can be attached to events.</p>
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-body">
+        {% if not facebook_configured %}
+        <div class="alert alert-warning mb-4">
+            <i class="bi bi-exclamation-triangle me-2"></i>
+            Meta Ads is not configured. Add <code>FACEBOOK_APP_ID</code> and <code>FACEBOOK_APP_SECRET</code>.
+        </div>
+        {% endif %}
+
+        {% if not org.meta_ads_access_token %}
+        <h2 class="h5 mb-2">Connect Facebook</h2>
+        <p class="text-body-secondary mb-3">
+            Cue will request read-only ads access, list your ad accounts, and pull lifetime campaign spend for selected events.
+        </p>
+        <p class="small text-body-secondary mb-4">
+            Valid OAuth Redirect URI: <code class="user-select-all">{{ callback_url }}</code>
+        </p>
+        <form method="post" action="{% url 'tickets:meta_ads_connect' %}">
+            {% csrf_token %}
+            <button type="submit" class="btn btn-primary" {% if not facebook_configured %}disabled{% endif %}>
+                <i class="bi bi-facebook me-1"></i> Connect Meta Ads
+            </button>
+        </form>
+        {% elif not org.meta_ads_account_id %}
+        <h2 class="h5 mb-2">Choose an ad account</h2>
+        <p class="text-body-secondary mb-3">Select the Meta ad account Cue should search for event campaign spend.</p>
+        {% if accounts %}
+        <form method="post" action="{% url 'tickets:meta_ads_select_account' %}">
+            {% csrf_token %}
+            <div class="mb-3">
+                <label for="account_id" class="form-label">Ad account</label>
+                <select name="account_id" id="account_id" class="form-select" required>
+                    <option value="">Choose account</option>
+                    {% for account in accounts %}
+                    <option value="{{ account.id }}">{{ account.name }} ({{ account.id }}){% if account.currency %} - {{ account.currency }}{% endif %}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <button type="submit" class="btn btn-primary">Save account</button>
+        </form>
+        {% else %}
+        <div class="empty-state">
+            <i class="bi bi-megaphone"></i>
+            <p>No Meta ad accounts were found for this Facebook user.</p>
+        </div>
+        {% endif %}
+        <form method="post" action="{% url 'tickets:meta_ads_disconnect' %}" class="mt-3">
+            {% csrf_token %}
+            <button type="submit" class="btn btn-outline-danger">Disconnect</button>
+        </form>
+        {% else %}
+        <div class="d-flex flex-column flex-md-row justify-content-between gap-3">
+            <div>
+                <h2 class="h5 mb-2">Connected</h2>
+                <p class="mb-1"><strong>Ad account:</strong> {{ org.meta_ads_account_name|default:org.meta_ads_account_id }}</p>
+                {% if org.meta_ads_token_expires_at %}
+                <p class="text-body-secondary mb-0"><strong>Token expires:</strong> {{ org.meta_ads_token_expires_at|date:"M j, Y g:i A" }}</p>
+                {% endif %}
+            </div>
+            <div class="d-flex align-items-start gap-2">
+                <a href="{% url 'tickets:meta_ads_select_account' %}" class="btn btn-outline-secondary">
+                    <i class="bi bi-arrow-repeat me-1"></i> Change account
+                </a>
+                <form method="post" action="{% url 'tickets:meta_ads_disconnect' %}" onsubmit="return confirm('Disconnect Meta Ads from this organization?');">
+                    {% csrf_token %}
+                    <button type="submit" class="btn btn-outline-danger">Disconnect</button>
+                </form>
+            </div>
+        </div>
+        <p class="small text-body-secondary mt-4 mb-0">
+            Valid OAuth Redirect URI: <code class="user-select-all">{{ callback_url }}</code>
+        </p>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}
