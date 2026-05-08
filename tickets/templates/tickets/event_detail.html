@@ -235,20 +235,15 @@
 </div>
 {% endif %}
 
-{% if event.ticket_link or event.talent_lineup.exists or custom_field_values_display %}
+{% if event.ticket_link or event.talent_lineup.exists %}
 <div class="card mb-4 event-details-card" style="border-top: 2px solid var(--accent);">
     <div class="card-body py-3" style="font-size: 13px;">
         {% if event.ticket_link %}
         <p class="mb-1"><i class="bi bi-ticket-perforated"></i> <a href="{{ event.ticket_link }}" target="_blank" rel="noopener noreferrer">Ticket Link</a></p>
         {% endif %}
         {% if event.talent_lineup.exists %}
-        <p class="mb-1"><strong>Talent:</strong> {% for t in event.talent_lineup.all %}{{ t.name }}{% if not forloop.last %}, {% endif %}{% endfor %}</p>
+        <p class="mb-0"><strong>Talent:</strong> {% for t in event.talent_lineup.all %}{{ t.name }}{% if not forloop.last %}, {% endif %}{% endfor %}</p>
         {% endif %}
-        {% for val in custom_field_values_display %}
-            {% if val.custom_field_option %}
-        <p class="mb-0"><strong>{{ val.custom_field.name }}:</strong> {{ val.custom_field_option.label }}</p>
-            {% endif %}
-        {% endfor %}
     </div>
 </div>
 {% endif %}
@@ -935,6 +930,34 @@
                 <span>Loading uploads…</span>
             </div>
         </div>
+    </div>
+</div>
+{% endif %}
+
+{% if org_has_custom_fields %}
+<div class="card mb-4">
+    <div class="card-header d-flex justify-content-between align-items-center">
+        <h5 class="mb-0"><i class="bi bi-sliders me-2"></i>Custom Fields</h5>
+        <button type="button" class="btn btn-sm btn-outline-primary" data-bs-toggle="modal" data-bs-target="#customFieldsModal">
+            <i class="bi bi-pencil"></i> Edit
+        </button>
+    </div>
+    <div class="card-body">
+        {% if custom_field_values_display %}
+        <dl class="row mb-0">
+            {% for val in custom_field_values_display %}
+                {% if val.custom_field_option %}
+                <dt class="col-sm-4 col-md-3 fw-medium">{{ val.custom_field.name }}</dt>
+                <dd class="col-sm-8 col-md-9 mb-2">{{ val.custom_field_option.label }}</dd>
+                {% endif %}
+            {% endfor %}
+        </dl>
+        {% else %}
+        <div class="empty-state py-3">
+            <i class="bi bi-sliders fs-2 text-muted"></i>
+            <p class="text-muted mb-0 mt-2">No custom field values set yet.</p>
+        </div>
+        {% endif %}
     </div>
 </div>
 {% endif %}
