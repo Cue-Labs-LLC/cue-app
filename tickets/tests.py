@@ -2954,6 +2954,25 @@ class EventDailyPageViewTest(TestCase):
         row = EventDailyPageView.objects.get(event=self.event, date=timezone.localdate())
         self.assertEqual(row.view_count, 1)
 
+    def test_public_event_buy_survives_redis_outage(self):
+        from unittest.mock import patch
+
+        from redis.exceptions import ConnectionError as RedisConnectionError
+
+        url = reverse('tickets:public_event_buy', args=[self.event.public_id])
+        boom = RedisConnectionError('max number of clients reached')
+
+        with patch('tickets.cache_utils.django_cache') as mock_cache:
+            mock_cache.get.side_effect = boom
+            mock_cache.set.side_effect = boom
+            mock_cache.delete.side_effect = boom
+
+            response = self.client.get(url)
+
+        self.assertEqual(response.status_code, 200)
+        row = EventDailyPageView.objects.get(event=self.event, date=timezone.localdate())
+        self.assertEqual(row.view_count, 1)
+
     def test_subsequent_page_view_increments_count(self):
         url = reverse('tickets:public_event_buy', args=[self.event.public_id])
 
