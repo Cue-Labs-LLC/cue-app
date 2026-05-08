@@ -24,9 +24,6 @@
         <p class="text-body-secondary mb-3">
             Cue will request read-only ads access, list your ad accounts, and pull lifetime campaign spend for selected events.
         </p>
-        <p class="small text-body-secondary mb-4">
-            Valid OAuth Redirect URI: <code class="user-select-all">{{ callback_url }}</code>
-        </p>
         <form method="post" action="{% url 'tickets:meta_ads_connect' %}">
             {% csrf_token %}
             <button type="submit" class="btn btn-primary" {% if not facebook_configured %}disabled{% endif %}>
@@ -79,9 +76,6 @@
                 </form>
             </div>
         </div>
-        <p class="small text-body-secondary mt-4 mb-0">
-            Valid OAuth Redirect URI: <code class="user-select-all">{{ callback_url }}</code>
-        </p>
         {% endif %}
     </div>
 </div>
