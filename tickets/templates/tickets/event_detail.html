@@ -796,7 +796,7 @@
     <div class="card-body">
         {% if mailchimp_connection %}
         <p class="text-body-secondary mb-3">
-            Connected account: <strong>{{ mailchimp_connection.account_name|default:mailchimp_connection.account_id }}</strong>
+            Connected account: <strong>{{ org.mailchimp_account_name|default:org.mailchimp_login_email|default:org.mailchimp_account_id }}</strong>
         </p>
         {% if mailchimp_campaigns %}
         <div class="table-responsive mb-3">

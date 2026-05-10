@@ -39,7 +39,7 @@ from .models import (
     CSVFormat, UploadedFile, Customer, CustomerTag, Event, EventExpense, EventEmailCampaign, EventTalent, TicketOrder, Ticket, Venue,
     CustomField, CustomFieldOption, EventCustomFieldValue, IncomeSource, EventIncome,
     SurveyQuestion, SurveyInvitation, SurveyResponse, SurveyAnswer,
-    PipedreamCalendarConnection, PipedreamConnectedAccount, OrganizationAPIKey,
+    PipedreamCalendarConnection, OrganizationAPIKey,
     SaleableTicketType, SaleableTicketTypeTier, StripeCheckoutSession, Payout, PromoCode,
     ExternalSurveyUpload, ExternalSurveyResponse, EventDailyPageView,
     WaitlistEntry, OrganizerWaitlist,
@@ -109,16 +109,14 @@ from .services.meta_ads import (
 )
 from .services.meta_campaign_matcher import MetaCampaignMatcher
 from .services.mailchimp import (
+    MailchimpAPIError,
+    MailchimpClient,
+    build_authorize_url,
+    exchange_code_for_token,
+    get_oauth_metadata,
     normalize_campaign_report,
 )
 from .services.mailchimp_campaign_matcher import MailchimpCampaignMatcher
-from .services.pipedream_connect import (
-    PipedreamConnectClient,
-    PipedreamConnectError,
-    PipedreamMailchimpClient,
-    account_display_name,
-    external_user_id_for_org,
-)
 from .utils import get_organization, require_org, require_organizer, require_host, require_admin, require_owner, clear_org_cache, next_order_number, generate_qr_b64
 from .feature_flags import (
     smart_pricing_recommendations_enabled,
@@ -3302,25 +3300,16 @@ def _get_active_mailchimp_campaign_or_404(org, event_id, email_campaign_id):
 
 
 def _get_mailchimp_connection(org):
-    return PipedreamConnectedAccount.objects.filter(
-        organization=org,
-        app_slug=settings.PIPEDREAM_MAILCHIMP_APP_SLUG,
-        deleted_at__isnull=True,
-    ).first()
-
-
-def _mailchimp_connected_or_redirect(org, message_text):
-    connection = _get_mailchimp_connection(org)
-    if not connection:
-        messages.error(message_text)
-    return connection
+    if org.mailchimp_access_token and org.mailchimp_dc:
+        return org
+    return None
 
 
 def _save_mailchimp_campaign_from_report(event, report, user=None, match_confidence=None, match_reasoning=''):
     normalized = normalize_campaign_report(report)
     external_id = normalized['external_id']
     if not external_id:
-        raise PipedreamConnectError('Mailchimp report did not include a campaign ID.')
+        raise MailchimpAPIError('Mailchimp report did not include a campaign ID.')
 
     defaults = {
         'campaign_title': normalized['campaign_title'][:300],
@@ -4636,12 +4625,9 @@ def mailchimp_settings(request):
     """Show Mailchimp connection state for the current org."""
     org = get_organization(request)
     return render(request, 'tickets/settings_mailchimp.html', {
+        'org': org,
         'mailchimp_connection': _get_mailchimp_connection(org),
-        'pipedream_configured': bool(
-            settings.PIPEDREAM_CLIENT_ID
-            and settings.PIPEDREAM_CLIENT_SECRET
-            and settings.PIPEDREAM_PROJECT_ID
-        ),
+        'mailchimp_configured': bool(settings.MAILCHIMP_CLIENT_ID and settings.MAILCHIMP_CLIENT_SECRET),
     })
 
 
@@ -4650,24 +4636,16 @@ def mailchimp_settings(request):
 @require_admin
 @require_http_methods(["POST"])
 def mailchimp_connect(request):
-    """Start Pipedream Connect Link for Mailchimp report access."""
+    """Start direct Mailchimp OAuth for report access."""
     org = get_organization(request)
-    if not settings.PIPEDREAM_CLIENT_ID or not settings.PIPEDREAM_CLIENT_SECRET or not settings.PIPEDREAM_PROJECT_ID:
-        messages.error(request, 'Pipedream Connect is not configured. Add PIPEDREAM_CLIENT_ID, PIPEDREAM_CLIENT_SECRET, and PIPEDREAM_PROJECT_ID.')
+    if not settings.MAILCHIMP_CLIENT_ID or not settings.MAILCHIMP_CLIENT_SECRET:
+        messages.error(request, 'Mailchimp OAuth is not configured. Add MAILCHIMP_CLIENT_ID and MAILCHIMP_CLIENT_SECRET.')
         return redirect('tickets:mailchimp_settings')
 
     callback_url = request.build_absolute_uri(reverse('tickets:mailchimp_callback'))
-    try:
-        client = PipedreamConnectClient()
-        token_payload = client.create_connect_token(
-            external_user_id_for_org(org),
-            success_redirect_uri=callback_url,
-            error_redirect_uri=callback_url,
-        )
-        return redirect(client.build_connect_link(token_payload, settings.PIPEDREAM_MAILCHIMP_APP_SLUG))
-    except PipedreamConnectError as exc:
-        messages.error(request, f'Could not start Mailchimp connection: {exc}')
-        return redirect('tickets:mailchimp_settings')
+    state = secrets.token_urlsafe(32)
+    request.session['mailchimp_oauth_state'] = state
+    return redirect(build_authorize_url(callback_url, state))
 
 
 @login_required
@@ -4675,65 +4653,59 @@ def mailchimp_connect(request):
 @require_admin
 @require_http_methods(["GET"])
 def mailchimp_callback(request):
-    """Refresh Pipedream account state after a Mailchimp Connect Link flow."""
+    """Persist direct Mailchimp OAuth credentials after authorization."""
     org = get_organization(request)
     if request.GET.get('error'):
         messages.error(request, request.GET.get('error_description') or request.GET.get('error') or 'Mailchimp authorization was cancelled.')
         return redirect('tickets:mailchimp_settings')
 
-    app_slug = settings.PIPEDREAM_MAILCHIMP_APP_SLUG
-    external_user_id = external_user_id_for_org(org)
+    expected_state = request.session.get('mailchimp_oauth_state')
+    state = request.GET.get('state')
+    if not expected_state or not state or state != expected_state:
+        messages.error(request, 'Mailchimp authorization could not be verified. Please try connecting again.')
+        return redirect('tickets:mailchimp_settings')
+    request.session.pop('mailchimp_oauth_state', None)
+
+    code = request.GET.get('code')
+    if not code:
+        messages.error(request, 'Mailchimp did not return an authorization code. Please try connecting again.')
+        return redirect('tickets:mailchimp_settings')
+
+    callback_url = request.build_absolute_uri(reverse('tickets:mailchimp_callback'))
     try:
-        accounts = PipedreamConnectClient().list_accounts(external_user_id, app_slug)
-    except PipedreamConnectError as exc:
+        access_token = exchange_code_for_token(code, callback_url)
+        metadata = get_oauth_metadata(access_token)
+        dc = metadata.get('dc')
+        if not dc:
+            raise MailchimpAPIError('Mailchimp did not return an account data center.')
+        account_root = MailchimpClient(access_token, dc).get_account_root()
+    except MailchimpAPIError as exc:
         messages.error(request, f'Could not verify Mailchimp connection: {exc}')
         return redirect('tickets:mailchimp_settings')
 
-    accounts = [
-        account for account in accounts
-        if (
-            (account.get('app') or {}).get('name_slug') in ('', None, app_slug)
-            or account.get('app_slug') in ('', None, app_slug)
-        )
-        and (account.get('external_id') in ('', None, external_user_id) or account.get('external_user_id') in ('', None, external_user_id))
-        and not account.get('dead')
-    ]
-    if not accounts:
-        messages.error(request, 'Mailchimp connection was not found in Pipedream. Please try connecting again.')
-        return redirect('tickets:mailchimp_settings')
-
-    accounts.sort(key=lambda account: account.get('created_at') or '', reverse=True)
-    account = accounts[0]
-    connection = PipedreamConnectedAccount.objects.filter(
-        organization=org,
-        app_slug=app_slug,
-        deleted_at__isnull=True,
-    ).first()
-    created = connection is None
-    if created:
-        connection = PipedreamConnectedAccount.objects.create(
-            organization=org,
-            app_slug=app_slug,
-            external_user_id=external_user_id,
-            account_id=account.get('id', ''),
-            account_name=account_display_name(account),
-            healthy=bool(account.get('healthy', True)),
-            connected_at=parse_datetime(account.get('created_at')) if account.get('created_at') else django_tz.now(),
-            last_checked_at=django_tz.now(),
-            external_metadata=account,
-            created_by=request.user,
-        )
-    else:
-        connection.external_user_id = external_user_id
-        connection.account_id = account.get('id', '')
-        connection.account_name = account_display_name(account)
-        connection.healthy = bool(account.get('healthy', True))
-        connection.connected_at = parse_datetime(account.get('created_at')) if account.get('created_at') else connection.connected_at
-        connection.last_checked_at = django_tz.now()
-        connection.external_metadata = account
-        connection.updated_by = request.user
-        connection.version += 1
-        connection.save()
+    login = metadata.get('login') or {}
+    org.mailchimp_access_token = access_token
+    org.mailchimp_dc = dc
+    org.mailchimp_account_id = str(
+        account_root.get('account_id')
+        or metadata.get('account_id')
+        or metadata.get('user_id')
+        or ''
+    )
+    org.mailchimp_account_name = str(
+        account_root.get('account_name')
+        or metadata.get('accountname')
+        or metadata.get('account_name')
+        or ''
+    )
+    org.mailchimp_login_email = str(login.get('email') or metadata.get('login_email') or account_root.get('email') or '')
+    org.save(update_fields=[
+        'mailchimp_access_token',
+        'mailchimp_dc',
+        'mailchimp_account_id',
+        'mailchimp_account_name',
+        'mailchimp_login_email',
+    ])
 
     messages.success(request, 'Mailchimp connected.')
     return redirect('tickets:mailchimp_settings')
@@ -4746,16 +4718,19 @@ def mailchimp_callback(request):
 def mailchimp_disconnect(request):
     """Disconnect Mailchimp from the current org."""
     org = get_organization(request)
-    connection = _get_mailchimp_connection(org)
-    if connection:
-        try:
-            PipedreamConnectClient().delete_account(connection.account_id)
-        except PipedreamConnectError as exc:
-            logger.warning("Pipedream Mailchimp disconnect failed for org=%s account=%s: %s", org.id, connection.account_id, exc)
-            messages.warning(request, 'Could not disconnect the account in Pipedream, but Cue removed the local connection.')
-        connection.updated_by = request.user
-        connection.save(update_fields=['updated_by'])
-        connection.delete()
+    if _get_mailchimp_connection(org):
+        org.mailchimp_access_token = ''
+        org.mailchimp_dc = ''
+        org.mailchimp_account_id = ''
+        org.mailchimp_account_name = ''
+        org.mailchimp_login_email = ''
+        org.save(update_fields=[
+            'mailchimp_access_token',
+            'mailchimp_dc',
+            'mailchimp_account_id',
+            'mailchimp_account_name',
+            'mailchimp_login_email',
+        ])
         messages.success(request, 'Mailchimp disconnected.')
     else:
         messages.info(request, 'Mailchimp was not connected.')
@@ -5359,10 +5334,10 @@ def event_mailchimp_match(request, event_id):
         return redirect('tickets:mailchimp_settings')
 
     try:
-        client = PipedreamMailchimpClient(connection)
+        client = MailchimpClient(connection.mailchimp_access_token, connection.mailchimp_dc)
         reports = client.list_campaign_reports()
         match_result = MailchimpCampaignMatcher(org).rank(event, reports)
-    except PipedreamConnectError as exc:
+    except MailchimpAPIError as exc:
         if wants_json:
             return JsonResponse({'success': False, 'error': f'Could not load Mailchimp campaigns: {exc}'}, status=502)
         messages.error(request, f'Could not load Mailchimp campaigns: {exc}')
@@ -5401,7 +5376,7 @@ def event_mailchimp_match(request, event_id):
     if wants_json:
         return JsonResponse({
             'success': True,
-            'account_name': connection.account_name,
+            'account_name': connection.mailchimp_account_name or connection.mailchimp_login_email,
             'candidates': [
                 {
                     'campaign_id': item['report'].get('id'),
@@ -5421,7 +5396,7 @@ def event_mailchimp_match(request, event_id):
     return render(request, 'tickets/event_mailchimp_match.html', {
         'event': event,
         'candidates': candidates,
-        'account_name': connection.account_name,
+        'account_name': connection.mailchimp_account_name or connection.mailchimp_login_email,
     })
 
 
@@ -5444,7 +5419,7 @@ def event_mailchimp_apply(request, event_id):
         return redirect('tickets:event_mailchimp_match', event_id=event.id)
 
     try:
-        client = PipedreamMailchimpClient(connection)
+        client = MailchimpClient(connection.mailchimp_access_token, connection.mailchimp_dc)
         reports = client.list_campaign_reports()
         if not any(str(item.get('id')) == campaign_id for item in reports):
             messages.error(request, 'The selected Mailchimp campaign was not found in this account.')
@@ -5459,7 +5434,7 @@ def event_mailchimp_apply(request, event_id):
             match_confidence=confidence,
             match_reasoning=reasoning,
         )
-    except PipedreamConnectError as exc:
+    except MailchimpAPIError as exc:
         messages.error(request, f'Could not pull campaign results from Mailchimp: {exc}')
         return redirect('tickets:event_mailchimp_match', event_id=event.id)
 
@@ -5490,7 +5465,7 @@ def event_mailchimp_refresh_all(request, event_id):
             deleted_at__isnull=True,
         ).exclude(external_id='')
     )
-    client = PipedreamMailchimpClient(connection)
+    client = MailchimpClient(connection.mailchimp_access_token, connection.mailchimp_dc)
     had_error = False
     refreshed_campaigns = []
 
@@ -5499,7 +5474,7 @@ def event_mailchimp_refresh_all(request, event_id):
             report = client.get_campaign_report(email_campaign.external_id)
             refreshed, _created = _save_mailchimp_campaign_from_report(event, report, user=request.user)
             refreshed_campaigns.append(refreshed)
-        except PipedreamConnectError as exc:
+        except MailchimpAPIError as exc:
             had_error = True
             logger.warning(
                 "Mailchimp bulk refresh failed for org=%s event=%s email_campaign=%s campaign=%s: %s",
@@ -5536,9 +5511,9 @@ def event_mailchimp_refresh(request, event_id, email_campaign_id):
         return redirect('tickets:mailchimp_settings')
 
     try:
-        report = PipedreamMailchimpClient(connection).get_campaign_report(email_campaign.external_id)
+        report = MailchimpClient(connection.mailchimp_access_token, connection.mailchimp_dc).get_campaign_report(email_campaign.external_id)
         refreshed, _created = _save_mailchimp_campaign_from_report(event, report, user=request.user)
-    except PipedreamConnectError as exc:
+    except MailchimpAPIError as exc:
         logger.warning(
             "Mailchimp row refresh failed for org=%s event=%s email_campaign=%s campaign=%s: %s",
             org.id,

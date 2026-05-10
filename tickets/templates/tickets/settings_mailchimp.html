@@ -12,21 +12,21 @@
 
 <div class="card">
     <div class="card-body">
-        {% if not pipedream_configured %}
+        {% if not mailchimp_configured %}
         <div class="alert alert-warning mb-4">
             <i class="bi bi-exclamation-triangle me-2"></i>
-            Pipedream Connect is not configured. Add <code>PIPEDREAM_CLIENT_ID</code>, <code>PIPEDREAM_CLIENT_SECRET</code>, and <code>PIPEDREAM_PROJECT_ID</code>.
+            Mailchimp OAuth is not configured. Add <code>MAILCHIMP_CLIENT_ID</code> and <code>MAILCHIMP_CLIENT_SECRET</code>.
         </div>
         {% endif %}
 
         {% if not mailchimp_connection %}
         <h2 class="h5 mb-2">Connect Mailchimp</h2>
         <p class="text-body-secondary mb-3">
-            Cue uses Pipedream Connect to authenticate Mailchimp and read campaign report summaries without storing Mailchimp credentials.
+            Cue uses Mailchimp OAuth to read campaign report summaries for this organization.
         </p>
         <form method="post" action="{% url 'tickets:mailchimp_connect' %}">
             {% csrf_token %}
-            <button type="submit" class="btn btn-primary" {% if not pipedream_configured %}disabled{% endif %}>
+            <button type="submit" class="btn btn-primary" {% if not mailchimp_configured %}disabled{% endif %}>
                 <i class="bi bi-envelope-paper me-1"></i> Connect Mailchimp
             </button>
         </form>
@@ -34,7 +34,8 @@
         <div class="d-flex flex-column flex-md-row justify-content-between gap-3">
             <div>
                 <h2 class="h5 mb-2">Connected</h2>
-                <p class="mb-1"><strong>Account:</strong> {{ mailchimp_connection.account_name|default:mailchimp_connection.account_id }}</p>
+                <p class="mb-1"><strong>Account:</strong> {{ org.mailchimp_account_name|default:org.mailchimp_login_email|default:org.mailchimp_account_id }}</p>
+                <p class="text-body-secondary small mb-0">Data center: {{ org.mailchimp_dc }}</p>
             </div>
             <form method="post" action="{% url 'tickets:mailchimp_disconnect' %}" onsubmit="return confirm('Disconnect Mailchimp from this organization?');">
                 {% csrf_token %}

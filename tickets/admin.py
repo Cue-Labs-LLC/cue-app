@@ -14,7 +14,7 @@ from .models import (
     ExternalSurveyUpload, ExternalSurveyResponse,
     SaleableTicketType, SaleableTicketTypeTier,
     OrganizerWaitlist,
-    PipedreamCalendarConnection, PipedreamConnectedAccount,
+    PipedreamCalendarConnection,
     OrganizationAPIKey,
     OAuthClient,
     OAuthAccessToken,
@@ -716,6 +716,10 @@ class OrganizationAdmin(admin.ModelAdmin):
         'meta_ads_account_id',
         'meta_ads_account_name',
         'meta_ads_token_expires_at',
+        'mailchimp_account_id',
+        'mailchimp_account_name',
+        'mailchimp_login_email',
+        'mailchimp_dc',
     ]
     prepopulated_fields = {'slug': ('name',)}
     inlines = [OrganizationMembershipInline]
@@ -729,6 +733,15 @@ class OrganizationAdmin(admin.ModelAdmin):
                 'meta_ads_account_id',
                 'meta_ads_account_name',
                 'meta_ads_token_expires_at',
+            ),
+            'classes': ('collapse',),
+        }),
+        ('Mailchimp', {
+            'fields': (
+                'mailchimp_account_id',
+                'mailchimp_account_name',
+                'mailchimp_login_email',
+                'mailchimp_dc',
             ),
             'classes': ('collapse',),
         }),
@@ -1044,15 +1057,6 @@ class PipedreamCalendarConnectionAdmin(admin.ModelAdmin):
     list_display = ['organization', 'webhook_url', 'created_at', 'updated_at']
     search_fields = ['organization__name', 'webhook_url']
     readonly_fields = ['id', 'created_at', 'updated_at']
-
-
-@admin.register(PipedreamConnectedAccount)
-class PipedreamConnectedAccountAdmin(admin.ModelAdmin):
-    list_display = ['organization', 'app_slug', 'account_name', 'account_id', 'healthy', 'connected_at']
-    list_filter = ['app_slug', 'healthy', 'organization']
-    search_fields = ['organization__name', 'external_user_id', 'account_id', 'account_name']
-    readonly_fields = ['id', 'created_at', 'updated_at', 'deleted_at']
-    autocomplete_fields = ['organization']
 
 
 @admin.register(OrganizationAPIKey)

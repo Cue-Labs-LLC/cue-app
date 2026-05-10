@@ -1,8 +1,108 @@
 from datetime import timezone as py_timezone
 from decimal import Decimal, InvalidOperation
+from urllib.parse import urlencode
 
+import requests
+from django.conf import settings
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
+
+
+AUTHORIZE_URL = "https://login.mailchimp.com/oauth2/authorize"
+TOKEN_URL = "https://login.mailchimp.com/oauth2/token"
+METADATA_URL = "https://login.mailchimp.com/oauth2/metadata"
+
+
+class MailchimpAPIError(Exception):
+    """Raised when Mailchimp OAuth or Marketing API calls fail."""
+
+
+def build_authorize_url(redirect_uri: str, state: str) -> str:
+    params = {
+        'response_type': 'code',
+        'client_id': settings.MAILCHIMP_CLIENT_ID,
+        'redirect_uri': redirect_uri,
+        'state': state,
+    }
+    return f"{AUTHORIZE_URL}?{urlencode(params)}"
+
+
+def exchange_code_for_token(code: str, redirect_uri: str) -> str:
+    payload = {
+        "grant_type": "authorization_code",
+        "client_id": settings.MAILCHIMP_CLIENT_ID,
+        "client_secret": settings.MAILCHIMP_CLIENT_SECRET,
+        "redirect_uri": redirect_uri,
+        "code": code,
+    }
+    data = _request_oauth("POST", TOKEN_URL, data=payload)
+    access_token = data.get("access_token")
+    if not access_token:
+        raise MailchimpAPIError("Mailchimp did not return an access token.")
+    return access_token
+
+
+def get_oauth_metadata(access_token: str) -> dict:
+    return _request_oauth(
+        "GET",
+        METADATA_URL,
+        headers={"Authorization": f"OAuth {access_token}"},
+    )
+
+
+class MailchimpClient:
+    """Small direct client for Mailchimp Marketing API report endpoints."""
+
+    def __init__(self, access_token: str, dc: str, timeout: int = 30):
+        self.access_token = access_token
+        self.dc = dc
+        self.timeout = timeout
+        self.base_url = f"https://{dc}.api.mailchimp.com/3.0"
+
+    def get_account_root(self) -> dict:
+        return self._request("GET", "/")
+
+    def list_campaign_reports(self, limit: int = 200) -> list[dict]:
+        reports = []
+        offset = 0
+        page_size = min(100, max(1, limit))
+        while len(reports) < limit:
+            count = min(page_size, limit - len(reports))
+            payload = self._request("GET", "/reports", params={"count": count, "offset": offset})
+            page = payload.get("reports") or []
+            reports.extend(page)
+            offset += len(page)
+            total_items = payload.get("total_items")
+            if not page or len(page) < count or (total_items is not None and offset >= total_items):
+                break
+        return reports[:limit]
+
+    def get_campaign_report(self, campaign_id: str) -> dict:
+        return self._request("GET", f"/reports/{campaign_id}")
+
+    def _request(self, method: str, path: str, params: dict | None = None) -> dict:
+        url = f"{self.base_url}{path}"
+        headers = {
+            "Accept": "application/json",
+            "Authorization": f"Bearer {self.access_token}",
+        }
+        try:
+            response = requests.request(
+                method,
+                url,
+                params=params,
+                headers=headers,
+                timeout=self.timeout,
+            )
+        except requests.RequestException as exc:
+            raise MailchimpAPIError(f"Mailchimp request failed: {exc}") from exc
+
+        if response.status_code < 200 or response.status_code >= 300:
+            raise MailchimpAPIError(_extract_error_message(response))
+        try:
+            return response.json()
+        except ValueError as exc:
+            raise MailchimpAPIError("Mailchimp returned an invalid JSON response.") from exc
 
 
 def normalize_campaign_report(report: dict) -> dict:
@@ -69,3 +169,39 @@ def _to_decimal(value, default: str) -> Decimal:
         return Decimal(str(value if value is not None else default)).quantize(Decimal(default))
     except (InvalidOperation, TypeError, ValueError):
         return Decimal(default)
+
+
+def _request_oauth(method: str, url: str, data: dict | None = None, headers: dict | None = None) -> dict:
+    try:
+        response = requests.request(
+            method,
+            url,
+            data=data,
+            headers=headers or {},
+            timeout=30,
+        )
+    except requests.RequestException as exc:
+        raise MailchimpAPIError(f"Mailchimp OAuth request failed: {exc}") from exc
+
+    if response.status_code < 200 or response.status_code >= 300:
+        raise MailchimpAPIError(_extract_error_message(response))
+    try:
+        return response.json()
+    except ValueError as exc:
+        raise MailchimpAPIError("Mailchimp returned an invalid JSON response.") from exc
+
+
+def _extract_error_message(response) -> str:
+    try:
+        payload = response.json()
+    except ValueError:
+        return f"Mailchimp API error ({response.status_code})."
+
+    return (
+        payload.get("detail")
+        or payload.get("message")
+        or payload.get("error_description")
+        or payload.get("error")
+        or payload.get("title")
+        or f"Mailchimp API error ({response.status_code})."
+    )
