@@ -218,6 +218,11 @@
                                 <i class="bi bi-megaphone"></i> Meta Ads
                             </a>
                         </li>
+                        <li>
+                            <a href="{% url 'tickets:mailchimp_settings' %}" class="sidebar-link{% if '/settings/mailchimp/' in request.path %} active{% endif %}">
+                                <i class="bi bi-envelope-paper"></i> Mailchimp
+                            </a>
+                        </li>
                         {% if request.user.is_superuser %}
                         <li>
                             <a href="{% url 'tickets:settings_google_calendar' %}" class="sidebar-link{% if '/settings/google-calendar/' in request.path %} active{% endif %}">

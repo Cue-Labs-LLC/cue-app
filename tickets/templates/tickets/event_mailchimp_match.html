@@ -1,0 +1,77 @@
+{% extends 'tickets/base.html' %}
+
+{% block title %}Match Mailchimp - {{ event.name }}{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1>Match Mailchimp campaign</h1>
+        <p class="text-body-secondary mb-0">{{ event.name }}{% if account_name %} - {{ account_name }}{% endif %}</p>
+    </div>
+    <div class="page-header-actions">
+        <a href="{% url 'tickets:event_detail' event.id %}" class="btn btn-outline-secondary btn-sm">
+            <i class="bi bi-arrow-left"></i><span class="ms-1">Back to event</span>
+        </a>
+    </div>
+</div>
+
+{% if candidates %}
+<div class="card">
+    <div class="card-body p-0">
+        <div class="table-responsive">
+            <table class="table table-hover mb-0">
+                <thead>
+                    <tr>
+                        <th>Campaign</th>
+                        <th>Sent</th>
+                        <th>Emails</th>
+                        <th>Confidence</th>
+                        <th>Reason</th>
+                        <th></th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for item in candidates %}
+                    <tr>
+                        <td>
+                            <strong>{{ item.report.campaign_title|default:item.report.id }}</strong>
+                            <div class="small text-body-secondary">{{ item.report.subject_line|default:"No subject" }}</div>
+                        </td>
+                        <td>{{ item.report.send_time|default:"Unknown" }}</td>
+                        <td>{{ item.report.emails_sent|default:0 }}</td>
+                        <td style="min-width: 130px;">
+                            <div class="d-flex justify-content-between small mb-1">
+                                <span>{{ item.confidence_pct }}%</span>
+                            </div>
+                            <div class="progress" style="height: 8px;">
+                                <div class="progress-bar {{ item.confidence_class }}" role="progressbar" style="width: {{ item.confidence_pct }}%;" aria-valuenow="{{ item.confidence_pct }}" aria-valuemin="0" aria-valuemax="100"></div>
+                            </div>
+                        </td>
+                        <td class="small text-body-secondary">{{ item.reasoning }}</td>
+                        <td class="text-end">
+                            <form method="post" action="{% url 'tickets:event_mailchimp_apply' event.id %}">
+                                {% csrf_token %}
+                                <input type="hidden" name="campaign_id" value="{{ item.report.id }}">
+                                <input type="hidden" name="confidence" value="{{ item.confidence }}">
+                                <input type="hidden" name="reasoning" value="{{ item.reasoning }}">
+                                <button type="submit" class="btn btn-sm btn-primary">
+                                    <i class="bi bi-check2-circle me-1"></i> Apply
+                                </button>
+                            </form>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+{% else %}
+<div class="empty-state">
+    <i class="bi bi-envelope-paper"></i>
+    <h2>No matching campaigns found</h2>
+    <p>Connect a different Mailchimp account or keep this event unlinked.</p>
+    <a href="{% url 'tickets:mailchimp_settings' %}" class="btn btn-outline-secondary">Mailchimp settings</a>
+</div>
+{% endif %}
+{% endblock %}

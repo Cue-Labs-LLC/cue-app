@@ -1,0 +1,47 @@
+{% extends 'tickets/base.html' %}
+
+{% block title %}Mailchimp{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1>Mailchimp</h1>
+        <p class="text-body-secondary mb-0">Connect Mailchimp so email campaign results can be attached to events.</p>
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-body">
+        {% if not pipedream_configured %}
+        <div class="alert alert-warning mb-4">
+            <i class="bi bi-exclamation-triangle me-2"></i>
+            Pipedream Connect is not configured. Add <code>PIPEDREAM_CLIENT_ID</code>, <code>PIPEDREAM_CLIENT_SECRET</code>, and <code>PIPEDREAM_PROJECT_ID</code>.
+        </div>
+        {% endif %}
+
+        {% if not mailchimp_connection %}
+        <h2 class="h5 mb-2">Connect Mailchimp</h2>
+        <p class="text-body-secondary mb-3">
+            Cue uses Pipedream Connect to authenticate Mailchimp and read campaign report summaries without storing Mailchimp credentials.
+        </p>
+        <form method="post" action="{% url 'tickets:mailchimp_connect' %}">
+            {% csrf_token %}
+            <button type="submit" class="btn btn-primary" {% if not pipedream_configured %}disabled{% endif %}>
+                <i class="bi bi-envelope-paper me-1"></i> Connect Mailchimp
+            </button>
+        </form>
+        {% else %}
+        <div class="d-flex flex-column flex-md-row justify-content-between gap-3">
+            <div>
+                <h2 class="h5 mb-2">Connected</h2>
+                <p class="mb-1"><strong>Account:</strong> {{ mailchimp_connection.account_name|default:mailchimp_connection.account_id }}</p>
+            </div>
+            <form method="post" action="{% url 'tickets:mailchimp_disconnect' %}" onsubmit="return confirm('Disconnect Mailchimp from this organization?');">
+                {% csrf_token %}
+                <button type="submit" class="btn btn-outline-danger">Disconnect</button>
+            </form>
+        </div>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}
