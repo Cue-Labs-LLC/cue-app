@@ -6,7 +6,7 @@ from django.db.models import Sum, Count
 from django import forms
 from .models import (
     Organization, UserProfile, OrganizationMembership, OrganizationInvitation, EmailOTP, PhoneOTP,
-    CSVFormat, UploadedFile, Customer, CustomerTag, Event, ScannerSession, EventExpense, EventTalent, TicketOrder, Ticket, TicketTier, Venue,
+    CSVFormat, UploadedFile, Customer, CustomerTag, Event, ScannerSession, EventExpense, EventEmailCampaign, EventTalent, TicketOrder, Ticket, TicketTier, Venue,
     CustomField, CustomFieldOption, EventCustomFieldValue,
     IncomeSource, EventIncome,
     SurveyQuestion, SurveyInvitation, SurveyResponse, SurveyAnswer,
@@ -14,7 +14,7 @@ from .models import (
     ExternalSurveyUpload, ExternalSurveyResponse,
     SaleableTicketType, SaleableTicketTypeTier,
     OrganizerWaitlist,
-    PipedreamCalendarConnection,
+    PipedreamCalendarConnection, PipedreamConnectedAccount,
     OrganizationAPIKey,
     OAuthClient,
     OAuthAccessToken,
@@ -361,6 +361,34 @@ class EventExpenseAdmin(admin.ModelAdmin):
             'classes': ('collapse',)
         }),
     )
+
+    def get_event(self, obj):
+        return obj.event.name if obj.event_id else ''
+    get_event.short_description = 'Event'
+    get_event.admin_order_field = 'event__name'
+
+    def get_organization(self, obj):
+        return obj.event.organization if obj.event_id else ''
+    get_organization.short_description = 'Organization'
+    get_organization.admin_order_field = 'event__organization'
+
+    def get_queryset(self, request):
+        qs = super().get_queryset(request)
+        if request.user.is_superuser:
+            return qs.select_related('event', 'event__organization')
+        profile = getattr(request.user, 'profile', None)
+        if profile and profile.organization_id:
+            return qs.filter(event__organization=profile.organization).select_related('event', 'event__organization')
+        return qs.none()
+
+
+@admin.register(EventEmailCampaign)
+class EventEmailCampaignAdmin(admin.ModelAdmin):
+    list_display = ['campaign_title', 'source', 'emails_sent', 'unique_opens', 'unique_clicks', 'ecommerce_revenue', 'get_event', 'get_organization', 'send_time']
+    list_filter = ['event__organization', 'source', 'send_time', 'created_at']
+    search_fields = ['campaign_title', 'subject_line', 'external_id', 'event__name']
+    readonly_fields = ['id', 'created_at', 'updated_at', 'last_synced_at']
+    date_hierarchy = 'send_time'
 
     def get_event(self, obj):
         return obj.event.name if obj.event_id else ''
@@ -1016,6 +1044,15 @@ class PipedreamCalendarConnectionAdmin(admin.ModelAdmin):
     list_display = ['organization', 'webhook_url', 'created_at', 'updated_at']
     search_fields = ['organization__name', 'webhook_url']
     readonly_fields = ['id', 'created_at', 'updated_at']
+
+
+@admin.register(PipedreamConnectedAccount)
+class PipedreamConnectedAccountAdmin(admin.ModelAdmin):
+    list_display = ['organization', 'app_slug', 'account_name', 'account_id', 'healthy', 'connected_at']
+    list_filter = ['app_slug', 'healthy', 'organization']
+    search_fields = ['organization__name', 'external_user_id', 'account_id', 'account_name']
+    readonly_fields = ['id', 'created_at', 'updated_at', 'deleted_at']
+    autocomplete_fields = ['organization']
 
 
 @admin.register(OrganizationAPIKey)

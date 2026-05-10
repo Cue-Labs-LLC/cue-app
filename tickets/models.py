@@ -160,6 +160,40 @@ class PipedreamCalendarConnection(BaseModel):
         return f"Pipedream calendar: {self.organization.name}"
 
 
+class PipedreamConnectedAccount(AuditBaseModel):
+    """Pipedream Connect account reference scoped to one organization."""
+    organization = models.ForeignKey(
+        Organization,
+        on_delete=models.CASCADE,
+        related_name='pipedream_connected_accounts',
+    )
+    app_slug = models.CharField(max_length=100, db_index=True)
+    external_user_id = models.CharField(max_length=255, db_index=True)
+    account_id = models.CharField(max_length=100, db_index=True)
+    account_name = models.CharField(max_length=255, blank=True, default='')
+    healthy = models.BooleanField(default=True)
+    connected_at = models.DateTimeField(null=True, blank=True)
+    last_checked_at = models.DateTimeField(null=True, blank=True)
+    external_metadata = models.JSONField(default=dict, blank=True)
+
+    class Meta:
+        ordering = ['app_slug', '-connected_at', '-created_at']
+        indexes = [
+            models.Index(fields=['organization', 'app_slug']),
+            models.Index(fields=['external_user_id', 'app_slug']),
+        ]
+        constraints = [
+            models.UniqueConstraint(
+                fields=['organization', 'app_slug'],
+                condition=models.Q(deleted_at__isnull=True),
+                name='uniq_active_pipedream_account',
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.app_slug}: {self.account_name or self.account_id}"
+
+
 def _generate_api_key():
     return f"cue_live_{secrets.token_hex(16)}"
 
@@ -1074,6 +1108,55 @@ class EventExpense(AuditBaseModel):
 
     def __str__(self):
         return f"{self.get_category_display()} - {self.description} (${self.amount})"
+
+
+class EventEmailCampaign(AuditBaseModel):
+    """Email marketing campaign results linked to an event."""
+    SOURCE_CHOICES = [
+        ('mailchimp', 'Mailchimp'),
+    ]
+
+    event = models.ForeignKey(Event, on_delete=models.CASCADE, related_name='email_campaigns')
+    source = models.CharField(max_length=20, choices=SOURCE_CHOICES, default='mailchimp', db_index=True)
+    external_id = models.CharField(max_length=100)
+    campaign_title = models.CharField(max_length=300)
+    subject_line = models.CharField(max_length=500, blank=True, default='')
+    send_time = models.DateTimeField(null=True, blank=True, db_index=True)
+    archive_url = models.URLField(max_length=500, blank=True, default='')
+    emails_sent = models.PositiveIntegerField(default=0)
+    opens = models.PositiveIntegerField(default=0)
+    unique_opens = models.PositiveIntegerField(default=0)
+    open_rate = models.DecimalField(max_digits=7, decimal_places=4, default=Decimal('0.0000'))
+    clicks = models.PositiveIntegerField(default=0)
+    unique_clicks = models.PositiveIntegerField(default=0)
+    click_rate = models.DecimalField(max_digits=7, decimal_places=4, default=Decimal('0.0000'))
+    bounces = models.PositiveIntegerField(default=0)
+    unsubscribes = models.PositiveIntegerField(default=0)
+    abuse_reports = models.PositiveIntegerField(default=0)
+    ecommerce_orders = models.PositiveIntegerField(default=0)
+    ecommerce_revenue = models.DecimalField(max_digits=10, decimal_places=2, default=Decimal('0.00'))
+    match_confidence = models.DecimalField(max_digits=4, decimal_places=3, default=Decimal('0.000'))
+    match_reasoning = models.TextField(blank=True, default='')
+    last_synced_at = models.DateTimeField(null=True, blank=True)
+    external_metadata = models.JSONField(default=dict, blank=True)
+
+    class Meta:
+        ordering = ['-send_time', '-created_at']
+        indexes = [
+            models.Index(fields=['event', 'source']),
+            models.Index(fields=['source', 'external_id']),
+            models.Index(fields=['event', 'deleted_at']),
+        ]
+        constraints = [
+            models.UniqueConstraint(
+                fields=['event', 'source', 'external_id'],
+                condition=models.Q(source='mailchimp', deleted_at__isnull=True),
+                name='uniq_active_email_campaign',
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.get_source_display()} - {self.campaign_title}"
 
 
 class IncomeSource(BaseModel):

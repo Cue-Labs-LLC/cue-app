@@ -267,6 +267,13 @@ FACEBOOK_APP_ID = os.environ.get('FACEBOOK_APP_ID', '')
 FACEBOOK_APP_SECRET = os.environ.get('FACEBOOK_APP_SECRET', '')
 FACEBOOK_GRAPH_API_VERSION = os.environ.get('FACEBOOK_GRAPH_API_VERSION', 'v21.0')
 
+# Pipedream Connect integration
+PIPEDREAM_CLIENT_ID = os.environ.get('PIPEDREAM_CLIENT_ID', '')
+PIPEDREAM_CLIENT_SECRET = os.environ.get('PIPEDREAM_CLIENT_SECRET', '')
+PIPEDREAM_PROJECT_ID = os.environ.get('PIPEDREAM_PROJECT_ID', '')
+PIPEDREAM_ENVIRONMENT = os.environ.get('PIPEDREAM_ENVIRONMENT', 'development')
+PIPEDREAM_MAILCHIMP_APP_SLUG = os.environ.get('PIPEDREAM_MAILCHIMP_APP_SLUG', 'mailchimp')
+
 # Email backend configuration — SendGrid SMTP for all environments
 EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
 EMAIL_HOST = 'smtp.sendgrid.net'
