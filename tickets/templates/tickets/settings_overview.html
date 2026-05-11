@@ -1,0 +1,78 @@
+{% extends 'tickets/base.html' %}
+
+{% block title %}Settings{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1>Settings</h1>
+        <p class="page-header-subtitle">Manage organization setup, imports, access, and integrations.</p>
+    </div>
+</div>
+
+<div class="hub-grid">
+    <a href="{% url 'tickets:format_list' %}" class="hub-link">
+        <span class="hub-link-icon"><i class="bi bi-file-earmark-spreadsheet"></i></span>
+        <span class="hub-link-title">CSV Formats</span>
+        <p class="hub-link-copy">Configure import mappings for ticketing platform exports.</p>
+    </a>
+    <a href="{% url 'tickets:venue_list' %}" class="hub-link">
+        <span class="hub-link-icon"><i class="bi bi-geo-alt"></i></span>
+        <span class="hub-link-title">Venues</span>
+        <p class="hub-link-copy">Maintain venues used when creating and reporting on events.</p>
+    </a>
+    <a href="{% url 'tickets:customer_tag_list' %}" class="hub-link">
+        <span class="hub-link-icon"><i class="bi bi-tags"></i></span>
+        <span class="hub-link-title">Customer Tags</span>
+        <p class="hub-link-copy">Create labels for customer filtering, churn lists, and outreach.</p>
+    </a>
+    <a href="{% url 'tickets:member_list' %}" class="hub-link">
+        <span class="hub-link-icon"><i class="bi bi-people-fill"></i></span>
+        <span class="hub-link-title">Members</span>
+        <p class="hub-link-copy">Review team access and invite organization collaborators.</p>
+    </a>
+</div>
+
+{% if is_org_admin %}
+<h2 class="hub-section-title">Admin</h2>
+<div class="hub-grid">
+    <a href="{% url 'tickets:org_profile' %}" class="hub-link">
+        <span class="hub-link-icon"><i class="bi bi-building"></i></span>
+        <span class="hub-link-title">Organization Profile</span>
+        <p class="hub-link-copy">Update public organization details and branding.</p>
+    </a>
+    <a href="{% url 'tickets:custom_field_list' %}" class="hub-link">
+        <span class="hub-link-icon"><i class="bi bi-sliders"></i></span>
+        <span class="hub-link-title">Custom Fields</span>
+        <p class="hub-link-copy">Collect structured event data with organization-specific fields.</p>
+    </a>
+    <a href="{% url 'tickets:income_source_list' %}" class="hub-link">
+        <span class="hub-link-icon"><i class="bi bi-cash-stack"></i></span>
+        <span class="hub-link-title">Income Sources</span>
+        <p class="hub-link-copy">Define non-ticket revenue sources for event finance tracking.</p>
+    </a>
+    <a href="{% url 'tickets:meta_ads_settings' %}" class="hub-link">
+        <span class="hub-link-icon"><i class="bi bi-megaphone"></i></span>
+        <span class="hub-link-title">Meta Ads</span>
+        <p class="hub-link-copy">Connect ad spend for event-level marketing performance.</p>
+    </a>
+    <a href="{% url 'tickets:mailchimp_settings' %}" class="hub-link">
+        <span class="hub-link-icon"><i class="bi bi-envelope-paper"></i></span>
+        <span class="hub-link-title">Mailchimp</span>
+        <p class="hub-link-copy">Connect campaign reporting for event marketing analysis.</p>
+    </a>
+    <a href="{% url 'tickets:settings_api_keys' %}" class="hub-link">
+        <span class="hub-link-icon"><i class="bi bi-key"></i></span>
+        <span class="hub-link-title">API Keys</span>
+        <p class="hub-link-copy">Create and revoke organization API credentials.</p>
+    </a>
+    {% if request.user.is_superuser %}
+    <a href="{% url 'tickets:settings_google_calendar' %}" class="hub-link">
+        <span class="hub-link-icon"><i class="bi bi-calendar-check"></i></span>
+        <span class="hub-link-title">Google Calendar</span>
+        <p class="hub-link-copy">Configure the calendar webhook used for new events.</p>
+    </a>
+    {% endif %}
+</div>
+{% endif %}
+{% endblock %}

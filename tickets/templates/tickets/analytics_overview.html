@@ -1,0 +1,75 @@
+{% extends 'tickets/base.html' %}
+
+{% block title %}Analytics{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1>Analytics</h1>
+        <p class="page-header-subtitle">Browse analytics by sales, customer, survey, and finance data.</p>
+    </div>
+</div>
+
+{% if is_org_admin %}
+<h2 class="hub-section-title">Finance</h2>
+<div class="hub-grid">
+    <a href="{% url 'tickets:profitability_overview' %}" class="hub-link">
+        <span class="hub-link-icon"><i class="bi bi-cash-stack"></i></span>
+        <span class="hub-link-title">Profitability</span>
+        <p class="hub-link-copy">Review margin and profitability across events.</p>
+    </a>
+    <a href="{% url 'tickets:expense_analytics' %}" class="hub-link">
+        <span class="hub-link-icon"><i class="bi bi-receipt-cutoff"></i></span>
+        <span class="hub-link-title">Expenses</span>
+        <p class="hub-link-copy">Analyze spend categories and event cost patterns.</p>
+    </a>
+</div>
+{% endif %}
+
+<h2 class="hub-section-title">Customers</h2>
+<div class="hub-grid">
+    <a href="{% url 'tickets:customer_segments' %}" class="hub-link">
+        <span class="hub-link-icon"><i class="bi bi-diagram-3"></i></span>
+        <span class="hub-link-title">Segments</span>
+        <p class="hub-link-copy">Review RFM groups and purchase behavior profiles.</p>
+    </a>
+    <a href="{% url 'tickets:churn_overview' %}" class="hub-link">
+        <span class="hub-link-icon"><i class="bi bi-person-dash"></i></span>
+        <span class="hub-link-title">Churn Detection</span>
+        <p class="hub-link-copy">Find customers who have gone quiet and prepare outreach lists.</p>
+    </a>
+    <a href="{% url 'tickets:repeat_customers' %}" class="hub-link">
+        <span class="hub-link-icon"><i class="bi bi-arrow-repeat"></i></span>
+        <span class="hub-link-title">Repeat Customers</span>
+        <p class="hub-link-copy">Measure returning buyers and repeat purchase patterns.</p>
+    </a>
+    <a href="{% url 'tickets:cohort_retention' %}" class="hub-link">
+        <span class="hub-link-icon"><i class="bi bi-calendar2-range"></i></span>
+        <span class="hub-link-title">Cohort Retention</span>
+        <p class="hub-link-copy">Track how customer cohorts come back over time.</p>
+    </a>
+</div>
+
+<h2 class="hub-section-title">Surveys</h2>
+<div class="hub-grid">
+    <a href="{% url 'tickets:survey_upload_list' %}" class="hub-link">
+        <span class="hub-link-icon"><i class="bi bi-clipboard-data"></i></span>
+        <span class="hub-link-title">Survey Insights</span>
+        <p class="hub-link-copy">Upload survey exports and connect sentiment back to events.</p>
+    </a>
+</div>
+
+<h2 class="hub-section-title">Sales &amp; Forecasting</h2>
+<div class="hub-grid">
+    <a href="{% url 'tickets:forecast_tool' %}" class="hub-link">
+        <span class="hub-link-icon"><i class="bi bi-graph-up-arrow"></i></span>
+        <span class="hub-link-title">Forecast</span>
+        <p class="hub-link-copy">Preview sales curves for upcoming events and capacity decisions.</p>
+    </a>
+    <a href="{% url 'tickets:customer_ltv_by_market' %}" class="hub-link">
+        <span class="hub-link-icon"><i class="bi bi-bar-chart"></i></span>
+        <span class="hub-link-title">LTV by Market</span>
+        <p class="hub-link-copy">Compare customer value across markets and cities.</p>
+    </a>
+</div>
+{% endblock %}
