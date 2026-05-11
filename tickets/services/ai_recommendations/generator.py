@@ -136,8 +136,6 @@ class AIRecommendationGenerator:
         results = []
         for event in events:
             missing = []
-            if not event.ai_summary:
-                missing.append('AI event summary')
             if not EventExpense.objects.filter(event=event, deleted_at__isnull=True).exists():
                 missing.append('expenses')
             if not SurveyInvitation.objects.filter(event=event).exists():
@@ -147,7 +145,7 @@ class AIRecommendationGenerator:
             if not missing:
                 continue
 
-            priority = AIRecommendation.Priority.HIGH if 'AI event summary' in missing and 'expenses' in missing else AIRecommendation.Priority.MEDIUM
+            priority = AIRecommendation.Priority.HIGH if 'expenses' in missing else AIRecommendation.Priority.MEDIUM
             results.append(self._upsert(
                 dedupe_key=f'post_event_wrapup:{event.id}',
                 kind=AIRecommendation.Kind.POST_EVENT_WRAPUP,
@@ -166,7 +164,7 @@ class AIRecommendationGenerator:
                 action={
                     'type': 'event_summary',
                     'label': 'Open event review',
-                    'url': f"{reverse('tickets:event_detail', args=[event.id])}#ai-summary-card",
+                    'url': reverse('tickets:event_detail', args=[event.id]),
                     'payload': {'event_id': str(event.id)},
                 },
                 event=event,

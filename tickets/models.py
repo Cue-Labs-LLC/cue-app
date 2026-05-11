@@ -956,8 +956,6 @@ class Event(AuditBaseModel):
         editable=False,
         help_text="Short public-facing ID used in shareable URLs (/e/<public_id>/).",
     )
-    ai_summary = models.TextField(blank=True, default='')
-    ai_summary_generated_at = models.DateTimeField(null=True, blank=True)
     computed_total_revenue = models.DecimalField(
         max_digits=12, decimal_places=2, default=Decimal('0.00'),
         help_text="Denormalized sum of ticket revenue + additional income; maintained by signals.",

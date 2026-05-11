@@ -3038,9 +3038,6 @@ def event_calendar(request):
 def _compute_event_stats(event):
     """Compute financial, attendance, and survey stats for an event.
 
-    Returns a dict used by both event_detail (for rendering) and
-    event_summary_stream (for LLM prompt construction).
-
     Results are cached under _event_stats_cache_key(event.pk) for 300s.
     Invalidated by signals in signals.py and call-site invalidation in
     send_survey() and survey_event_link() (which use bulk_create/queryset.update
@@ -3783,50 +3780,6 @@ def event_uploads_summary(request, event_id):
         'event': event,
         'upload_stats': upload_stats,
     })
-
-
-@login_required
-@require_org
-@require_organizer
-@require_http_methods(["POST"])
-def event_summary_stream(request, event_id):
-    """SSE endpoint - streams LLM-generated event summary."""
-    from django.http import StreamingHttpResponse
-    from django.core.cache import cache as django_cache
-
-    from .services.event_summary import EventSummaryService
-
-    org = get_organization(request)
-
-    # Rate limit: 10 generations per org per hour
-    rate_key = f"summary_ratelimit:{org.id}"
-    try:
-        current_count = django_cache.get(rate_key, 0)
-        if current_count >= 10:
-            return JsonResponse(
-                {'error': 'Rate limit exceeded. Please try again later.'},
-                status=429,
-            )
-        django_cache.set(rate_key, current_count + 1, timeout=3600)
-    except Exception:
-        # Redis unavailable — skip rate limiting rather than blocking the request
-        pass
-
-    event = get_object_or_404(
-        Event.objects.filter(organization=org).select_related('venue'),
-        id=event_id,
-    )
-
-    event_data = _compute_event_stats(event)
-
-    service = EventSummaryService(org)
-    response = StreamingHttpResponse(
-        service.stream_summary(event, event_data),
-        content_type='text/event-stream',
-    )
-    response['Cache-Control'] = 'no-cache'
-    response['X-Accel-Buffering'] = 'no'
-    return response
 
 
 @login_required
