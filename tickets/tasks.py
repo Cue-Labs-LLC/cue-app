@@ -214,6 +214,32 @@ def recalculate_rfm_task(self, organization_id):
 
 
 @shared_task(bind=True, max_retries=2, default_retry_delay=30)
+def generate_org_ai_opportunities_task(self, organization_id):
+    """Generate reviewed AI recommendations for one organization."""
+    from tickets.models import Organization
+    from tickets.services.ai_recommendations import AIRecommendationGenerator
+
+    try:
+        org = Organization.objects.get(id=organization_id)
+    except Organization.DoesNotExist:
+        logger.warning("Organization %s not found, skipping AI opportunities", organization_id)
+        return 0
+
+    try:
+        recommendations = AIRecommendationGenerator(org).run_all()
+    except Exception as exc:
+        logger.exception("AI opportunity generation failed for org %s", organization_id)
+        raise self.retry(exc=exc)
+
+    logger.info(
+        "Generated/updated %d AI recommendations for org %s",
+        len(recommendations),
+        organization_id,
+    )
+    return len(recommendations)
+
+
+@shared_task(bind=True, max_retries=2, default_retry_delay=30)
 def notify_next_waitlist_entry(self, ticket_type_id):
     """Notify the next person on a waitlist that a spot is available."""
     from django.core.mail import send_mail

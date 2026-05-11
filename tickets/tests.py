@@ -5,6 +5,8 @@ from unittest.mock import patch, MagicMock
 from django.contrib.auth.models import AnonymousUser, User
 from django.contrib.messages.storage.fallback import FallbackStorage
 from django.contrib.sessions.middleware import SessionMiddleware
+from django.core.management import call_command
+from django.db import IntegrityError, transaction
 from django.test import TestCase, Client, RequestFactory
 from django.urls import reverse
 from django.utils import timezone
@@ -14,6 +16,7 @@ from .models import (
     UploadedFile, TicketOrder, Customer, CustomerTag, Event,
     Venue, CSVFormat, Ticket, TicketTier,
     Organization, UserProfile, OrganizationMembership, OrganizationInvitation, ChatMessage,
+    AIRecommendation,
     SaleableTicketType, SaleableTicketTypeTier, StripeCheckoutSession, FeatureFlagSettings,
     SurveyInvitation, SurveyResponse, SurveyAnswer, SurveyQuestion, Payout,
     ExternalSurveyResponse, EventDailyPageView,
@@ -4157,6 +4160,249 @@ class ChurnDetectionTests(TestCase):
 
         self.assertRedirects(response, f"{reverse('tickets:churn_overview')}?days=90")
         self.assertIn(tag, local_customer.tags.all())
+
+
+class AIRecommendationTests(TestCase):
+    def setUp(self):
+        self.client = Client()
+        self.org = Organization.objects.create(name='AI Org', slug='ai-org')
+        self.other_org = Organization.objects.create(name='Other AI Org', slug='other-ai-org')
+        self.user = User.objects.create_user(
+            username='aiuser',
+            email='ai@example.com',
+            password='testpass123',
+        )
+        UserProfile.objects.create(
+            user=self.user,
+            organization=self.org,
+            org_role=UserProfile.OrgRole.OWNER,
+        )
+        OrganizationMembership.objects.create(
+            user=self.user,
+            organization=self.org,
+            org_role=UserProfile.OrgRole.OWNER,
+        )
+        self.client.login(username='ai@example.com', password='testpass123')
+        session = self.client.session
+        session['_org_id'] = str(self.org.pk)
+        session.save()
+        self.venue = Venue.objects.create(
+            organization=self.org,
+            name='AI Venue',
+            city='Atlanta',
+            capacity=500,
+        )
+        self.event = Event.objects.create(
+            organization=self.org,
+            name='AI Event',
+            venue=self.venue,
+            ticketing_type='direct',
+            start_date=date.today() + timedelta(days=10),
+            start_time=time(20, 0),
+            end_date=date.today() + timedelta(days=10),
+            capacity=400,
+        )
+
+    def _recommendation(self, **overrides):
+        defaults = {
+            'organization': self.org,
+            'event': self.event,
+            'kind': AIRecommendation.Kind.SALES_PACING,
+            'priority': AIRecommendation.Priority.HIGH,
+            'confidence': Decimal('0.800'),
+            'title': 'Review pacing',
+            'summary': 'Sales are behind pace.',
+            'evidence_json': {'gap': 12},
+            'recommended_action_json': {
+                'type': 'open_url',
+                'label': 'Open event',
+                'url': reverse('tickets:event_detail', args=[self.event.id]),
+                'payload': {'event_id': str(self.event.id)},
+            },
+            'dedupe_key': 'sales_pacing:test',
+        }
+        defaults.update(overrides)
+        return AIRecommendation.objects.create(**defaults)
+
+    def test_recommendation_dedupe_is_scoped_to_organization(self):
+        self._recommendation()
+        with self.assertRaises(IntegrityError):
+            with transaction.atomic():
+                self._recommendation(title='Duplicate')
+        other_event = Event.objects.create(
+            organization=self.other_org,
+            name='Other Event',
+            venue=Venue.objects.create(organization=self.other_org, name='Other Venue', city='Savannah'),
+            start_date=date.today() + timedelta(days=10),
+        )
+        rec = self._recommendation(
+            organization=self.other_org,
+            event=other_event,
+            dedupe_key='sales_pacing:test',
+        )
+        self.assertEqual(rec.organization, self.other_org)
+
+    def test_status_transition_helpers_set_timestamps(self):
+        rec = self._recommendation()
+        rec.mark_reviewed()
+        rec.refresh_from_db()
+        self.assertEqual(rec.status, AIRecommendation.Status.REVIEWED)
+        self.assertIsNotNone(rec.reviewed_at)
+        rec.dismiss()
+        rec.refresh_from_db()
+        self.assertEqual(rec.status, AIRecommendation.Status.DISMISSED)
+        self.assertIsNotNone(rec.dismissed_at)
+        rec.resolve()
+        rec.refresh_from_db()
+        self.assertEqual(rec.status, AIRecommendation.Status.RESOLVED)
+        self.assertIsNotNone(rec.resolved_at)
+
+    @patch('tickets.services.ai_recommendations.generator.generate_forecast_preview')
+    def test_sales_pacing_detector_creates_recommendation(self, mock_preview):
+        from tickets.services.ai_recommendations import AIRecommendationGenerator
+
+        self.event.cached_paid_ticket_count = 2
+        self.event.save(update_fields=['cached_paid_ticket_count'])
+        mock_preview.return_value = {
+            'has_sufficient_data': True,
+            'curve_points': [{'days_before': 10, 'expected_tickets': 25}],
+        }
+        recommendations = AIRecommendationGenerator(self.org).detect_sales_pacing_risks()
+        self.assertEqual(len(recommendations), 1)
+        self.assertEqual(recommendations[0].kind, AIRecommendation.Kind.SALES_PACING)
+        self.assertEqual(recommendations[0].evidence_json['ticket_gap'], 23)
+
+    def test_post_event_detector_creates_review_recommendation_and_dedupes(self):
+        from tickets.services.ai_recommendations import AIRecommendationGenerator
+
+        self.event.start_date = date.today() - timedelta(days=2)
+        self.event.end_date = date.today() - timedelta(days=2)
+        self.event.save(update_fields=['start_date', 'end_date'])
+        generator = AIRecommendationGenerator(self.org)
+        first = generator.detect_post_event_wrapups()
+        second = generator.detect_post_event_wrapups()
+        self.assertEqual(len(first), 1)
+        self.assertEqual(len(second), 1)
+        self.assertEqual(
+            AIRecommendation.objects.filter(organization=self.org, kind=AIRecommendation.Kind.POST_EVENT_WRAPUP).count(),
+            1,
+        )
+
+    def test_dismissed_recommendation_is_not_reopened_by_detector(self):
+        from tickets.services.ai_recommendations import AIRecommendationGenerator
+
+        self.event.start_date = date.today() - timedelta(days=2)
+        self.event.end_date = date.today() - timedelta(days=2)
+        self.event.save(update_fields=['start_date', 'end_date'])
+        rec = AIRecommendationGenerator(self.org).detect_post_event_wrapups()[0]
+        rec.dismiss()
+        AIRecommendationGenerator(self.org).detect_post_event_wrapups()
+        rec.refresh_from_db()
+        self.assertEqual(rec.status, AIRecommendation.Status.DISMISSED)
+
+    def test_winback_detector_creates_recommendation(self):
+        from tickets.services.ai_recommendations import AIRecommendationGenerator
+
+        past_event = Event.objects.create(
+            organization=self.org,
+            name='Past Buyer Event',
+            venue=self.venue,
+            start_date=date.today() - timedelta(days=120),
+        )
+        customer = Customer.objects.create(
+            organization=self.org,
+            email='winback@example.com',
+            name='Win Back',
+            lifetime_value=Decimal('500.00'),
+            last_order_date=date.today() - timedelta(days=120),
+        )
+        for idx in range(2):
+            TicketOrder.objects.create(
+                customer=customer,
+                event=past_event,
+                order_number=f'WB-{idx}-{uuid.uuid4().hex[:6]}',
+                order_date=timezone.now() - timedelta(days=120 + idx),
+                total_amount=Decimal('250.00'),
+            )
+        recommendations = AIRecommendationGenerator(self.org).detect_winback_audience()
+        self.assertEqual(len(recommendations), 1)
+        self.assertEqual(recommendations[0].kind, AIRecommendation.Kind.WINBACK_AUDIENCE)
+        self.assertEqual(recommendations[0].evidence_json['customer_count'], 1)
+
+    def test_marketing_attribution_detector_creates_recommendation(self):
+        from tickets.services.ai_recommendations import AIRecommendationGenerator
+
+        self.org.meta_ads_account_id = 'act_123'
+        self.org.mailchimp_access_token = 'token'
+        self.org.mailchimp_dc = 'us1'
+        self.org.save(update_fields=['meta_ads_account_id', 'mailchimp_access_token', 'mailchimp_dc'])
+        recommendations = AIRecommendationGenerator(self.org).detect_marketing_attribution_gaps()
+        self.assertEqual(len(recommendations), 1)
+        self.assertEqual(recommendations[0].kind, AIRecommendation.Kind.MARKETING_ATTRIBUTION)
+        self.assertIn('Meta Ads spend', recommendations[0].evidence_json['missing_items'])
+
+    def test_action_center_is_org_scoped_and_dashboard_excludes_closed_items(self):
+        visible = self._recommendation(title='Visible recommendation')
+        hidden = self._recommendation(
+            title='Hidden recommendation',
+            dedupe_key='sales_pacing:hidden',
+            status=AIRecommendation.Status.DISMISSED,
+        )
+        other_event = Event.objects.create(
+            organization=self.other_org,
+            name='Other Event',
+            venue=Venue.objects.create(organization=self.other_org, name='Other Venue', city='Savannah'),
+            start_date=date.today() + timedelta(days=10),
+        )
+        self._recommendation(
+            organization=self.other_org,
+            event=other_event,
+            title='Other org recommendation',
+            dedupe_key='other-org-rec',
+        )
+
+        response = self.client.get(reverse('tickets:action_center'))
+        self.assertContains(response, visible.title)
+        self.assertNotContains(response, 'Other org recommendation')
+        self.assertNotContains(response, hidden.title)
+
+        response = self.client.get(reverse('tickets:home'))
+        self.assertContains(response, visible.title)
+        self.assertNotContains(response, hidden.title)
+
+    def test_recommendation_review_dismiss_and_resolve_views(self):
+        rec = self._recommendation()
+        response = self.client.post(reverse('tickets:ai_recommendation_review', args=[rec.id]))
+        self.assertEqual(response.status_code, 302)
+        rec.refresh_from_db()
+        self.assertEqual(rec.status, AIRecommendation.Status.REVIEWED)
+
+        response = self.client.post(reverse('tickets:ai_recommendation_dismiss', args=[rec.id]))
+        self.assertEqual(response.status_code, 302)
+        rec.refresh_from_db()
+        self.assertEqual(rec.status, AIRecommendation.Status.DISMISSED)
+
+        response = self.client.post(reverse('tickets:ai_recommendation_resolve', args=[rec.id]))
+        self.assertEqual(response.status_code, 302)
+        rec.refresh_from_db()
+        self.assertEqual(rec.status, AIRecommendation.Status.RESOLVED)
+
+    def test_task_handles_detector_failure(self):
+        from tickets.tasks import generate_org_ai_opportunities_task
+
+        with patch(
+            'tickets.services.ai_recommendations.generator.AIRecommendationGenerator.detect_sales_pacing_risks',
+            side_effect=RuntimeError('boom'),
+        ):
+            generated = generate_org_ai_opportunities_task.run(str(self.org.id))
+        self.assertGreaterEqual(generated, 0)
+
+    def test_management_command_enqueues_one_task_per_org(self):
+        with patch(
+            'tickets.management.commands.generate_ai_opportunities.generate_org_ai_opportunities_task.delay'
+        ) as mock_delay:
+            call_command('generate_ai_opportunities')
+        self.assertGreaterEqual(mock_delay.call_count, 2)
 
 
 class MultiOrgTests(TestCase):

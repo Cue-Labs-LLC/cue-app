@@ -36,6 +36,7 @@ from django.utils.text import slugify
 
 from .models import (
     Organization, UserProfile, OrganizationMembership, OrganizationInvitation,
+    AIRecommendation,
     CSVFormat, UploadedFile, Customer, CustomerTag, Event, EventExpense, EventEmailCampaign, EventTalent, TicketOrder, Ticket, Venue,
     CustomField, CustomFieldOption, EventCustomFieldValue, IncomeSource, EventIncome,
     SurveyQuestion, SurveyInvitation, SurveyResponse, SurveyAnswer,
@@ -1635,6 +1636,24 @@ def home(request):
     total_orders = order_agg['total_orders']
     total_revenue = order_agg['total_revenue'] + (additional_agg['total'] or Decimal('0.00')) - direct_fees
     total_tickets = Ticket.objects.filter(ticket_order__event__organization=org).count()
+    ai_recommendations = (
+        AIRecommendation.objects
+        .filter(
+            organization=org,
+            status__in=[AIRecommendation.Status.NEW, AIRecommendation.Status.REVIEWED],
+        )
+        .select_related('event', 'customer')
+        .order_by(
+            Case(
+                When(priority=AIRecommendation.Priority.HIGH, then=Value(0)),
+                When(priority=AIRecommendation.Priority.MEDIUM, then=Value(1)),
+                default=Value(2),
+                output_field=models.IntegerField(),
+            ),
+            '-confidence',
+            '-created_at',
+        )[:3]
+    )
     
     context = {
         'page_obj': page_obj,
@@ -1645,8 +1664,131 @@ def home(request):
         'total_orders': total_orders,
         'total_revenue': total_revenue,
         'total_tickets': total_tickets,
+        'ai_recommendations': ai_recommendations,
     }
     return render(request, 'tickets/home.html', context)
+
+
+@login_required
+@require_org
+@require_organizer
+def action_center(request):
+    """Reviewed AI recommendations for the active organization."""
+    org = get_organization(request)
+    status_filter = request.GET.get('status', '')
+    priority_filter = request.GET.get('priority', '')
+    kind_filter = request.GET.get('kind', '')
+
+    recommendations = (
+        AIRecommendation.objects
+        .filter(organization=org)
+        .select_related('event', 'customer')
+    )
+    if status_filter:
+        recommendations = recommendations.filter(status=status_filter)
+    else:
+        recommendations = recommendations.filter(
+            status__in=[AIRecommendation.Status.NEW, AIRecommendation.Status.REVIEWED],
+        )
+    if priority_filter:
+        recommendations = recommendations.filter(priority=priority_filter)
+    if kind_filter:
+        recommendations = recommendations.filter(kind=kind_filter)
+
+    recommendations = recommendations.order_by(
+        Case(
+            When(priority=AIRecommendation.Priority.HIGH, then=Value(0)),
+            When(priority=AIRecommendation.Priority.MEDIUM, then=Value(1)),
+            default=Value(2),
+            output_field=models.IntegerField(),
+        ),
+        Case(
+            When(status=AIRecommendation.Status.NEW, then=Value(0)),
+            When(status=AIRecommendation.Status.REVIEWED, then=Value(1)),
+            default=Value(2),
+            output_field=models.IntegerField(),
+        ),
+        '-confidence',
+        '-created_at',
+    )
+
+    paginator = Paginator(recommendations, 20)
+    page_obj = paginator.get_page(request.GET.get('page', 1))
+
+    context = {
+        'page_obj': page_obj,
+        'status_filter': status_filter,
+        'priority_filter': priority_filter,
+        'kind_filter': kind_filter,
+        'status_choices': AIRecommendation.Status.choices,
+        'priority_choices': AIRecommendation.Priority.choices,
+        'kind_choices': AIRecommendation.Kind.choices,
+    }
+    return render(request, 'tickets/action_center.html', context)
+
+
+def _ai_recommendation_redirect(request):
+    next_url = request.POST.get('next') or request.META.get('HTTP_REFERER') or reverse('tickets:action_center')
+    if url_has_allowed_host_and_scheme(
+        next_url,
+        allowed_hosts={request.get_host()},
+        require_https=request.is_secure(),
+    ):
+        return redirect(next_url)
+    return redirect('tickets:action_center')
+
+
+@login_required
+@require_org
+@require_organizer
+@require_http_methods(["POST"])
+def ai_recommendation_review(request, recommendation_id):
+    org = get_organization(request)
+    recommendation = get_object_or_404(
+        AIRecommendation.objects.filter(organization=org),
+        id=recommendation_id,
+    )
+    if recommendation.status == AIRecommendation.Status.NEW:
+        recommendation.mark_reviewed()
+    action = recommendation.recommended_action_json or {}
+    url = action.get('url') or reverse('tickets:action_center')
+    if url_has_allowed_host_and_scheme(
+        url,
+        allowed_hosts={request.get_host()},
+        require_https=request.is_secure(),
+    ):
+        return redirect(url)
+    return redirect('tickets:action_center')
+
+
+@login_required
+@require_org
+@require_organizer
+@require_http_methods(["POST"])
+def ai_recommendation_dismiss(request, recommendation_id):
+    org = get_organization(request)
+    recommendation = get_object_or_404(
+        AIRecommendation.objects.filter(organization=org),
+        id=recommendation_id,
+    )
+    recommendation.dismiss()
+    messages.success(request, 'Recommendation dismissed.')
+    return _ai_recommendation_redirect(request)
+
+
+@login_required
+@require_org
+@require_organizer
+@require_http_methods(["POST"])
+def ai_recommendation_resolve(request, recommendation_id):
+    org = get_organization(request)
+    recommendation = get_object_or_404(
+        AIRecommendation.objects.filter(organization=org),
+        id=recommendation_id,
+    )
+    recommendation.resolve()
+    messages.success(request, 'Recommendation marked resolved.')
+    return _ai_recommendation_redirect(request)
 
 
 @login_required
