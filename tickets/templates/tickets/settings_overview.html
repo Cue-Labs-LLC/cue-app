@@ -66,6 +66,11 @@
         <span class="hub-link-title">API Keys</span>
         <p class="hub-link-copy">Create and revoke organization API credentials.</p>
     </a>
+    <a href="{% url 'tickets:ai_token_usage' %}" class="hub-link">
+        <span class="hub-link-icon"><i class="bi bi-cpu"></i></span>
+        <span class="hub-link-title">AI Token Usage</span>
+        <p class="hub-link-copy">Review monthly token usage for billable AI features.</p>
+    </a>
     {% if request.user.is_superuser %}
     <a href="{% url 'tickets:settings_google_calendar' %}" class="hub-link">
         <span class="hub-link-icon"><i class="bi bi-calendar-check"></i></span>

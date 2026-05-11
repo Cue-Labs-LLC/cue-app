@@ -1,0 +1,145 @@
+{% extends 'tickets/base.html' %}
+{% load humanize %}
+
+{% block title %}AI Token Usage{% endblock %}
+
+{% block extra_head %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js" defer></script>
+{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1>AI Token Usage</h1>
+        <p class="page-header-subtitle">Review billable AI feature usage for your organization.</p>
+    </div>
+    <div class="page-header-actions">
+        <form method="get" class="d-inline">
+            <label for="month_key" class="visually-hidden">Month</label>
+            <select id="month_key" name="month_key" class="form-select" onchange="this.form.submit()">
+                {% for option in month_options %}
+                <option value="{{ option.key }}"{% if option.selected %} selected{% endif %}>{{ option.label }}</option>
+                {% endfor %}
+            </select>
+        </form>
+    </div>
+</div>
+
+<div class="row g-3 mb-4">
+    <div class="col-md-4">
+        <div class="stat-card stat-card--accent">
+            <div class="stat-card-label">Total tokens</div>
+            <div class="stat-card-value">{{ totals.total_tokens|intcomma }}</div>
+            <div class="stat-card-meta">{{ selected_month_label }}</div>
+        </div>
+    </div>
+    <div class="col-md-4">
+        <div class="stat-card stat-card--info">
+            <div class="stat-card-label">Prompt tokens</div>
+            <div class="stat-card-value">{{ totals.prompt_tokens|intcomma }}</div>
+        </div>
+    </div>
+    <div class="col-md-4">
+        <div class="stat-card stat-card--success">
+            <div class="stat-card-label">Completion tokens</div>
+            <div class="stat-card-value">{{ totals.completion_tokens|intcomma }}</div>
+        </div>
+    </div>
+</div>
+
+<div class="card mb-4">
+    <div class="card-header"><h5 class="mb-0">Daily token usage</h5></div>
+    <div class="card-body">
+        <div class="chart-container" style="height: 280px;">
+            <canvas id="dailyUsageChart"></canvas>
+        </div>
+    </div>
+</div>
+
+<div class="card mb-4">
+    <div class="card-header"><h5 class="mb-0">Usage by feature</h5></div>
+    {% if by_feature %}
+    <div class="card-body p-0">
+        <div class="table-responsive">
+            <table class="table table-hover mb-0">
+                <thead>
+                    <tr>
+                        <th>Feature</th>
+                        <th class="text-end">Prompt</th>
+                        <th class="text-end">Completion</th>
+                        <th class="text-end">Total</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for row in by_feature %}
+                    <tr>
+                        <td>{{ row.feature_label }}</td>
+                        <td class="text-end">{{ row.prompt_tokens|intcomma }}</td>
+                        <td class="text-end">{{ row.completion_tokens|intcomma }}</td>
+                        <td class="text-end fw-semibold">{{ row.total_tokens|intcomma }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+    {% else %}
+    <div class="card-body">
+        <div class="empty-state">
+            <i class="bi bi-cpu"></i>
+            <p class="mb-0">No AI token usage recorded for {{ selected_month_label }}.</p>
+        </div>
+    </div>
+    {% endif %}
+</div>
+
+<script type="application/json" id="daily-usage-data">{{ daily_json|safe }}</script>
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    var dataEl = document.getElementById('daily-usage-data');
+    if (!dataEl) return;
+    var rows = JSON.parse(dataEl.textContent || '[]');
+    var canvas = document.getElementById('dailyUsageChart');
+    if (!canvas || typeof Chart === 'undefined') return;
+
+    var isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+    var gridColor = isDark ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.1)';
+    var textColor = isDark ? '#adb5bd' : '#666';
+    var lineColor = isDark ? '#6ea8fe' : '#0d6efd';
+    var fillColor = isDark ? 'rgba(110,168,254,0.2)' : 'rgba(13,110,253,0.15)';
+
+    var labels = rows.map(function(r) {
+        var d = new Date(r.date + 'T00:00:00');
+        return (d.getMonth() + 1) + '/' + d.getDate();
+    });
+    var values = rows.map(function(r) { return r.total_tokens; });
+
+    new Chart(canvas.getContext('2d'), {
+        type: 'line',
+        data: {
+            labels: labels,
+            datasets: [{
+                label: 'Total tokens',
+                data: values,
+                borderColor: lineColor,
+                backgroundColor: fillColor,
+                fill: true,
+                tension: 0.25,
+                pointRadius: 2,
+            }],
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+                legend: { display: false },
+            },
+            scales: {
+                x: { ticks: { color: textColor }, grid: { color: gridColor } },
+                y: { beginAtZero: true, ticks: { color: textColor }, grid: { color: gridColor } },
+            },
+        },
+    });
+});
+</script>
+{% endblock %}

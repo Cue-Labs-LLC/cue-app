@@ -9086,6 +9086,68 @@ def finance_overview(request):
 @login_required
 @require_org
 @require_admin
+@require_http_methods(["GET"])
+def ai_token_usage_dashboard(request):
+    """Monthly AI token usage breakdown for billing review."""
+    from .services.ai_metering import monthly_ai_token_usage_breakdown
+
+    org = get_organization(request)
+    today = django_tz.localdate()
+
+    def _parse_month_key(value):
+        try:
+            year_str, month_str = value.split('-', 1)
+            year = int(year_str)
+            month = int(month_str)
+        except (ValueError, AttributeError):
+            return None
+        if not (1 <= month <= 12) or not (2000 <= year <= 2100):
+            return None
+        return year, month
+
+    selected = _parse_month_key(request.GET.get('month_key', ''))
+    if selected is None:
+        selected = (today.year, today.month)
+    year, month = selected
+
+    breakdown = monthly_ai_token_usage_breakdown(org, year, month)
+
+    month_options = []
+    cursor_year, cursor_month = today.year, today.month
+    for _ in range(12):
+        key = f"{cursor_year:04d}-{cursor_month:02d}"
+        label = date(cursor_year, cursor_month, 1).strftime('%B %Y')
+        month_options.append({
+            'key': key,
+            'label': label,
+            'selected': (cursor_year == year and cursor_month == month),
+        })
+        cursor_month -= 1
+        if cursor_month == 0:
+            cursor_month = 12
+            cursor_year -= 1
+
+    daily_json = json.dumps([
+        {'date': row['date'].isoformat(), 'total_tokens': row['total_tokens']}
+        for row in breakdown['daily']
+    ])
+
+    selected_label = date(year, month, 1).strftime('%B %Y')
+
+    context = {
+        'totals': breakdown['totals'],
+        'by_feature': breakdown['by_feature'],
+        'daily_json': daily_json,
+        'month_options': month_options,
+        'selected_month_key': f"{year:04d}-{month:02d}",
+        'selected_month_label': selected_label,
+    }
+    return render(request, 'tickets/ai_token_usage.html', context)
+
+
+@login_required
+@require_org
+@require_admin
 @require_http_methods(["POST"])
 def stripe_connect_onboard(request):
     """Create (or reuse) a Stripe Express account and redirect to onboarding."""

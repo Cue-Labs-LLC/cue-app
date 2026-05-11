@@ -1,9 +1,10 @@
 """Helpers for recording organization-scoped AI token usage."""
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from django.db.models import Sum
+from django.db.models.functions import TruncDate
 from django.utils import timezone
 
 from tickets.models import AITokenUsage
@@ -166,6 +167,72 @@ def monthly_ai_token_usage(organization, year, month):
         'prompt_tokens': totals['prompt_tokens'] or 0,
         'completion_tokens': totals['completion_tokens'] or 0,
         'total_tokens': totals['total_tokens'] or 0,
+    }
+
+
+def monthly_ai_token_usage_breakdown(organization, year, month):
+    """Return totals, per-feature, and per-day usage for one calendar month."""
+    tz = timezone.get_current_timezone()
+    start = datetime(year, month, 1, tzinfo=tz)
+    if month == 12:
+        end = datetime(year + 1, 1, 1, tzinfo=tz)
+    else:
+        end = datetime(year, month + 1, 1, tzinfo=tz)
+
+    base_qs = AITokenUsage.objects.filter(
+        organization=organization,
+        occurred_at__gte=start,
+        occurred_at__lt=end,
+    )
+
+    totals = base_qs.aggregate(
+        prompt_tokens=Sum('prompt_tokens'),
+        completion_tokens=Sum('completion_tokens'),
+        total_tokens=Sum('total_tokens'),
+    )
+    totals = {key: (value or 0) for key, value in totals.items()}
+
+    feature_labels = dict(AITokenUsage.FEATURE_CHOICES)
+    feature_rows = (
+        base_qs
+        .values('feature')
+        .annotate(
+            prompt_tokens=Sum('prompt_tokens'),
+            completion_tokens=Sum('completion_tokens'),
+            total_tokens=Sum('total_tokens'),
+        )
+        .order_by('-total_tokens')
+    )
+    by_feature = [
+        {
+            'feature': row['feature'],
+            'feature_label': feature_labels.get(row['feature'], row['feature']),
+            'prompt_tokens': row['prompt_tokens'] or 0,
+            'completion_tokens': row['completion_tokens'] or 0,
+            'total_tokens': row['total_tokens'] or 0,
+        }
+        for row in feature_rows
+    ]
+
+    daily_rows = (
+        base_qs
+        .annotate(day=TruncDate('occurred_at'))
+        .values('day')
+        .annotate(total_tokens=Sum('total_tokens'))
+    )
+    totals_by_day = {row['day']: (row['total_tokens'] or 0) for row in daily_rows}
+
+    daily = []
+    cursor = start.date()
+    end_date = end.date()
+    while cursor < end_date:
+        daily.append({'date': cursor, 'total_tokens': totals_by_day.get(cursor, 0)})
+        cursor += timedelta(days=1)
+
+    return {
+        'totals': totals,
+        'by_feature': by_feature,
+        'daily': daily,
     }
 
 
