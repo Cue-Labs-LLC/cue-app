@@ -2230,6 +2230,15 @@ def _normalized_customer_group_stats(org, field_name, ordered_labels, badge_colo
 @login_required
 @require_org
 @require_host
+def analytics_overview(request):
+    """Hub for organizer analytics destinations."""
+    get_organization(request)
+    return render(request, 'tickets/analytics_overview.html')
+
+
+@login_required
+@require_org
+@require_host
 def customer_segments(request):
     """Analytics page for RFM segments and purchase-pattern behavior profiles."""
     org = get_organization(request)
@@ -4410,6 +4419,15 @@ def event_upload_csv(request, event_id):
     }
     return render(request, 'tickets/event_upload.html', context)
 
+
+
+@login_required
+@require_org
+@require_host
+def settings_overview(request):
+    """Hub for organization setup and integrations."""
+    get_organization(request)
+    return render(request, 'tickets/settings_overview.html')
 
 
 @login_required
