@@ -235,6 +235,19 @@
 </div>
 {% endif %}
 
+<!-- Tab navigation -->
+<nav class="nav nav-tabs" id="eventDetailTabs" role="tablist">
+    <button class="nav-link active" id="tab-overview-btn" data-bs-toggle="tab" data-bs-target="#tab-overview" type="button" role="tab">Overview</button>
+    <button class="nav-link" id="tab-orders-btn" data-bs-toggle="tab" data-bs-target="#tab-orders" type="button" role="tab">Orders{% if total_orders %} ({{ total_orders }}){% endif %}</button>
+    <button class="nav-link" id="tab-finance-btn" data-bs-toggle="tab" data-bs-target="#tab-finance" type="button" role="tab">Finance</button>
+    <button class="nav-link" id="tab-marketing-btn" data-bs-toggle="tab" data-bs-target="#tab-marketing" type="button" role="tab">Marketing</button>
+    <button class="nav-link" id="tab-manage-btn" data-bs-toggle="tab" data-bs-target="#tab-manage" type="button" role="tab">Manage</button>
+</nav>
+<div class="tab-content">
+
+<!-- ===== TAB 1: Overview ===== -->
+<div class="tab-pane fade show active" id="tab-overview" role="tabpanel">
+
 <div class="stat-sections">
 <!-- Row 1: Sales + traffic -->
 <div class="stat-section">
@@ -336,19 +349,6 @@
 </div>
 {% endif %}
 {% endwith %}
-
-<!-- Tab navigation -->
-<nav class="nav nav-tabs" id="eventDetailTabs" role="tablist">
-    <button class="nav-link active" id="tab-overview-btn" data-bs-toggle="tab" data-bs-target="#tab-overview" type="button" role="tab">Overview</button>
-    <button class="nav-link" id="tab-orders-btn" data-bs-toggle="tab" data-bs-target="#tab-orders" type="button" role="tab">Orders{% if total_orders %} ({{ total_orders }}){% endif %}</button>
-    <button class="nav-link" id="tab-finance-btn" data-bs-toggle="tab" data-bs-target="#tab-finance" type="button" role="tab">Finance</button>
-    <button class="nav-link" id="tab-marketing-btn" data-bs-toggle="tab" data-bs-target="#tab-marketing" type="button" role="tab">Marketing</button>
-    <button class="nav-link" id="tab-manage-btn" data-bs-toggle="tab" data-bs-target="#tab-manage" type="button" role="tab">Manage</button>
-</nav>
-<div class="tab-content">
-
-<!-- ===== TAB 1: Overview ===== -->
-<div class="tab-pane fade show active" id="tab-overview" role="tabpanel">
 
 {% if total_orders or event.ticketing_type == 'direct' %}
 <script type="application/json" id="sales-over-time-data">{{ sales_over_time_json|safe }}</script>
