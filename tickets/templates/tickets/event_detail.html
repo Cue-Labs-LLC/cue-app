@@ -235,19 +235,6 @@
 </div>
 {% endif %}
 
-{% if event.ticket_link or event.talent_lineup.exists %}
-<div class="card mb-4 event-details-card" style="border-top: 2px solid var(--accent);">
-    <div class="card-body py-3" style="font-size: 13px;">
-        {% if event.ticket_link %}
-        <p class="mb-1"><i class="bi bi-ticket-perforated"></i> <a href="{{ event.ticket_link }}" target="_blank" rel="noopener noreferrer">Ticket Link</a></p>
-        {% endif %}
-        {% if event.talent_lineup.exists %}
-        <p class="mb-0"><strong>Talent:</strong> {% for t in event.talent_lineup.all %}{{ t.name }}{% if not forloop.last %}, {% endif %}{% endfor %}</p>
-        {% endif %}
-    </div>
-</div>
-{% endif %}
-
 <div class="stat-sections">
 <!-- Row 1: Sales + traffic -->
 <div class="stat-section">
