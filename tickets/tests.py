@@ -121,6 +121,16 @@ class AITokenUsageTests(TestCase):
         self.assertEqual(total.completion_tokens, 7)
         self.assertEqual(total.total_tokens, 21)
 
+    def test_to_cue_tokens_divides_by_1000(self):
+        from tickets.services.ai_metering import to_cue_tokens, CUE_TOKEN_DIVISOR
+
+        self.assertEqual(CUE_TOKEN_DIVISOR, 1000)
+        self.assertEqual(to_cue_tokens(0), 0)
+        self.assertEqual(to_cue_tokens(None), 0)
+        self.assertEqual(to_cue_tokens(1000), 1)
+        self.assertAlmostEqual(to_cue_tokens(125), 0.125)
+        self.assertAlmostEqual(to_cue_tokens(2_345_678), 2345.678)
+
     def test_monthly_breakdown_groups_by_feature_and_fills_daily_zeros(self):
         from tickets.services.ai_metering import (
             monthly_ai_token_usage_breakdown, record_ai_token_usage,
@@ -226,8 +236,10 @@ class AITokenUsageDashboardViewTests(TestCase):
         self._login_admin()
         response = self.client.get(reverse('tickets:ai_token_usage') + '?month_key=2026-05')
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.context['totals']['total_tokens'], 125)
-        self.assertNotContains(response, '560')
+        # 125 raw LLM tokens / 1000 = 0.125 Cue tokens
+        self.assertAlmostEqual(response.context['totals']['total_tokens'], 0.125)
+        # The other org's 560 raw tokens (0.56 Cue tokens) must not appear.
+        self.assertNotContains(response, '0.56')
 
     def test_non_admin_forbidden(self):
         self.client.login(username='dashhost@example.com', password='testpass123')

@@ -9089,7 +9089,7 @@ def finance_overview(request):
 @require_http_methods(["GET"])
 def ai_token_usage_dashboard(request):
     """Monthly AI token usage breakdown for billing review."""
-    from .services.ai_metering import monthly_ai_token_usage_breakdown
+    from .services.ai_metering import monthly_ai_token_usage_breakdown, to_cue_tokens
 
     org = get_organization(request)
     today = django_tz.localdate()
@@ -9127,16 +9127,31 @@ def ai_token_usage_dashboard(request):
             cursor_month = 12
             cursor_year -= 1
 
+    totals_cue = {
+        'prompt_tokens': to_cue_tokens(breakdown['totals']['prompt_tokens']),
+        'completion_tokens': to_cue_tokens(breakdown['totals']['completion_tokens']),
+        'total_tokens': to_cue_tokens(breakdown['totals']['total_tokens']),
+    }
+    by_feature_cue = [
+        {
+            'feature': row['feature'],
+            'feature_label': row['feature_label'],
+            'prompt_tokens': to_cue_tokens(row['prompt_tokens']),
+            'completion_tokens': to_cue_tokens(row['completion_tokens']),
+            'total_tokens': to_cue_tokens(row['total_tokens']),
+        }
+        for row in breakdown['by_feature']
+    ]
     daily_json = json.dumps([
-        {'date': row['date'].isoformat(), 'total_tokens': row['total_tokens']}
+        {'date': row['date'].isoformat(), 'total_tokens': to_cue_tokens(row['total_tokens'])}
         for row in breakdown['daily']
     ])
 
     selected_label = date(year, month, 1).strftime('%B %Y')
 
     context = {
-        'totals': breakdown['totals'],
-        'by_feature': breakdown['by_feature'],
+        'totals': totals_cue,
+        'by_feature': by_feature_cue,
         'daily_json': daily_json,
         'month_options': month_options,
         'selected_month_key': f"{year:04d}-{month:02d}",
