@@ -85,10 +85,10 @@
 
             {% if is_organizer %}
             <div class="sidebar-section">
-                <div class="sidebar-section-label">Manage</div>
+                <div class="sidebar-section-label">Workspace</div>
                 <ul class="sidebar-nav">
                     <li>
-                        <a href="{% url 'tickets:event_list' %}" class="sidebar-link{% if '/events/' in request.path and '/events/calendar/' not in request.path %} active{% endif %}">
+                        <a href="{% url 'tickets:event_list' %}" class="sidebar-link{% if '/events/' in request.path %} active{% endif %}">
                             <i class="bi bi-calendar-event"></i> Events
                         </a>
                     </li>
@@ -103,148 +103,30 @@
                         </a>
                     </li>
                     <li>
-                        <a href="{% url 'tickets:customer_tag_list' %}" class="sidebar-link{% if '/customers/tags/' in request.path %} active{% endif %}">
-                            <i class="bi bi-tags"></i> Tags
+                        <a href="{% url 'tickets:analytics_overview' %}" class="sidebar-link{% if '/analytics/' in request.path or '/forecast/' in request.path or '/customers/ltv-by-market/' in request.path %} active{% endif %}">
+                            <i class="bi bi-bar-chart-line"></i> Analytics
                         </a>
                     </li>
-                    <li>
-                        <a href="{% url 'tickets:venue_list' %}" class="sidebar-link{% if '/venues/' in request.path %} active{% endif %}">
-                            <i class="bi bi-geo-alt"></i> Venues
-                        </a>
-                    </li>
-                    <li>
-                        <a href="{% url 'tickets:member_list' %}" class="sidebar-link{% if '/members/' in request.path %} active{% endif %}">
-                            <i class="bi bi-people-fill"></i> Members
-                        </a>
-                    </li>
-                </ul>
-            </div>
-
-            {% if is_org_admin %}
-            <div class="sidebar-section">
-                <div class="sidebar-section-label">Finance</div>
-                <ul class="sidebar-nav">
+                    {% if is_org_admin %}
                     <li>
                         <a href="{% url 'tickets:finance_overview' %}"
                            class="sidebar-link{% if '/finance/' in request.path %} active{% endif %}">
                             <i class="bi bi-bank"></i> Finance
                         </a>
                     </li>
+                    {% endif %}
+                </ul>
+            </div>
+
+            <div class="sidebar-section">
+                <div class="sidebar-section-label">Configure</div>
+                <ul class="sidebar-nav">
                     <li>
-                        <a href="{% url 'tickets:profitability_overview' %}" class="sidebar-link{% if '/analytics/profitability/' in request.path %} active{% endif %}">
-                            <i class="bi bi-cash-stack"></i> Profitability
-                        </a>
-                    </li>
-                    <li>
-                        <a href="{% url 'tickets:expense_analytics' %}" class="sidebar-link{% if '/analytics/expenses/' in request.path %} active{% endif %}">
-                            <i class="bi bi-receipt-cutoff"></i> Expenses
+                        <a href="{% url 'tickets:settings_overview' %}" class="sidebar-link{% if '/settings/' in request.path or '/formats/' in request.path or '/venues/' in request.path or '/members/' in request.path or '/income-sources/' in request.path or '/customers/tags/' in request.path %} active{% endif %}">
+                            <i class="bi bi-gear"></i> Settings
                         </a>
                     </li>
                 </ul>
-            </div>
-            {% endif %}
-
-            <div class="sidebar-section">
-                <button class="sidebar-section-toggle" id="toggleAnalytics" data-submenu="submenuAnalytics">
-                    <span>Analytics</span>
-                    <i class="bi bi-chevron-down sidebar-toggle-icon"></i>
-                </button>
-                <div class="sidebar-submenu" id="submenuAnalytics">
-                    <ul class="sidebar-nav">
-                        <li>
-                            <a href="{% url 'tickets:forecast_tool' %}" class="sidebar-link{% if '/forecast/' in request.path %} active{% endif %}">
-                                <i class="bi bi-graph-up-arrow"></i> Forecast
-                            </a>
-                        </li>
-                        <li>
-                            <a href="{% url 'tickets:customer_ltv_by_market' %}" class="sidebar-link{% if '/customers/ltv-by-market/' in request.path %} active{% endif %}">
-                                <i class="bi bi-bar-chart"></i> LTV by Market
-                            </a>
-                        </li>
-                        <li>
-                            <a href="{% url 'tickets:customer_segments' %}" class="sidebar-link{% if '/analytics/segments/' in request.path %} active{% endif %}">
-                                <i class="bi bi-diagram-3"></i> Segments
-                            </a>
-                        </li>
-                        <li>
-                            <a href="{% url 'tickets:churn_overview' %}" class="sidebar-link{% if '/analytics/churn/' in request.path %} active{% endif %}">
-                                <i class="bi bi-person-dash"></i> Churn Detection
-                            </a>
-                        </li>
-                        <li>
-                            <a href="{% url 'tickets:repeat_customers' %}" class="sidebar-link{% if '/analytics/repeat-customers/' in request.path %} active{% endif %}">
-                                <i class="bi bi-arrow-repeat"></i> Repeat Customers
-                            </a>
-                        </li>
-                        <li>
-                            <a href="{% url 'tickets:cohort_retention' %}" class="sidebar-link{% if '/analytics/cohort-retention/' in request.path %} active{% endif %}">
-                                <i class="bi bi-calendar2-range"></i> Cohort Retention
-                            </a>
-                        </li>
-                        <li>
-                            <a href="{% url 'tickets:survey_upload_list' %}" class="sidebar-link{% if '/analytics/surveys/' in request.path %} active{% endif %}">
-                                <i class="bi bi-clipboard-data"></i> Survey Insights
-                            </a>
-                        </li>
-                    </ul>
-                </div>
-            </div>
-
-            <div class="sidebar-section">
-                <button class="sidebar-section-toggle" id="toggleSettings" data-submenu="submenuSettings">
-                    <span>Settings</span>
-                    <i class="bi bi-chevron-down sidebar-toggle-icon"></i>
-                </button>
-                <div class="sidebar-submenu" id="submenuSettings">
-                    <ul class="sidebar-nav">
-                        <li>
-                            <a href="{% url 'tickets:format_list' %}" class="sidebar-link{% if '/formats/' in request.path %} active{% endif %}">
-                                <i class="bi bi-file-earmark-spreadsheet"></i> CSV Formats
-                            </a>
-                        </li>
-                        {% if is_org_admin %}
-                        <li>
-                            <a href="{% url 'tickets:custom_field_list' %}" class="sidebar-link{% if '/settings/custom-fields/' in request.path %} active{% endif %}">
-                                <i class="bi bi-sliders"></i> Custom Fields
-                            </a>
-                        </li>
-                        <li>
-                            <a href="{% url 'tickets:org_profile' %}" class="sidebar-link{% if '/settings/profile/' in request.path %} active{% endif %}">
-                                <i class="bi bi-building"></i> Org Profile
-                            </a>
-                        </li>
-                        <li>
-                            <a href="{% url 'tickets:income_source_list' %}" class="sidebar-link{% if '/income-sources/' in request.path %} active{% endif %}">
-                                <i class="bi bi-cash-stack"></i> Income Sources
-                            </a>
-                        </li>
-                        <li>
-                            <a href="{% url 'tickets:meta_ads_settings' %}" class="sidebar-link{% if '/settings/meta-ads/' in request.path %} active{% endif %}">
-                                <i class="bi bi-megaphone"></i> Meta Ads
-                            </a>
-                        </li>
-                        <li>
-                            <a href="{% url 'tickets:mailchimp_settings' %}" class="sidebar-link{% if '/settings/mailchimp/' in request.path %} active{% endif %}">
-                                <i class="bi bi-envelope-paper"></i> Mailchimp
-                            </a>
-                        </li>
-                        {% if request.user.is_superuser %}
-                        <li>
-                            <a href="{% url 'tickets:settings_google_calendar' %}" class="sidebar-link{% if '/settings/google-calendar/' in request.path %} active{% endif %}">
-                                <i class="bi bi-calendar-check"></i> Google Calendar
-                            </a>
-                        </li>
-                        {% endif %}
-                        {% if is_org_admin %}
-                        <li>
-                            <a href="{% url 'tickets:settings_api_keys' %}" class="sidebar-link{% if '/settings/api-keys/' in request.path %} active{% endif %}">
-                                <i class="bi bi-key"></i> API Keys
-                            </a>
-                        </li>
-                        {% endif %}
-                        {% endif %}
-                    </ul>
-                </div>
             </div>
             {% endif %}
 
@@ -620,34 +502,6 @@
             }
         });
     }
-
-    // Collapsible sidebar sections (Analytics, Settings)
-    var collapsibles = [
-        { btnId: 'toggleAnalytics', menuId: 'submenuAnalytics', key: 'sidebar_analytics_open' },
-        { btnId: 'toggleSettings',  menuId: 'submenuSettings',  key: 'sidebar_settings_open'  },
-    ];
-
-    collapsibles.forEach(function(c) {
-        var btn  = document.getElementById(c.btnId);
-        var menu = document.getElementById(c.menuId);
-        if (!btn || !menu) return;
-
-        // Force-open if an active link is inside
-        var hasActive = menu.querySelector('.sidebar-link.active');
-        var stored    = localStorage.getItem(c.key);
-        var shouldOpen = hasActive || stored === 'true';
-
-        if (shouldOpen) {
-            btn.classList.add('open');
-            menu.classList.add('open');
-        }
-
-        btn.addEventListener('click', function() {
-            var isOpen = menu.classList.toggle('open');
-            btn.classList.toggle('open', isOpen);
-            localStorage.setItem(c.key, isOpen ? 'true' : 'false');
-        });
-    });
 
 })();
 </script>

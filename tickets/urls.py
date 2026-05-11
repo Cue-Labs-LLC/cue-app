@@ -102,6 +102,7 @@ urlpatterns = [
     path('customers/<uuid:customer_id>/tags/<uuid:tag_id>/remove/', views.customer_tag_remove, name='customer_tag_remove'),
     path('customers/<uuid:customer_id>/', views.customer_detail, name='customer_detail'),
     # Analytics - Segments
+    path('analytics/', views.analytics_overview, name='analytics_overview'),
     path('analytics/segments/', views.customer_segments, name='customer_segments'),
     path('analytics/segments/recalculate/', views.recalculate_segments, name='recalculate_segments'),
     path('analytics/churn/', views.churn_overview, name='churn_overview'),
@@ -182,6 +183,7 @@ urlpatterns = [
     
     # Settings
     path('settings/google-calendar/', views.settings_google_calendar, name='settings_google_calendar'),
+    path('settings/', views.settings_overview, name='settings_overview'),
     path('settings/google-calendar/disconnect/', views.settings_google_calendar_disconnect, name='settings_google_calendar_disconnect'),
     path('settings/meta-ads/', views.meta_ads_settings, name='meta_ads_settings'),
     path('settings/meta-ads/connect/', views.meta_ads_connect, name='meta_ads_connect'),
