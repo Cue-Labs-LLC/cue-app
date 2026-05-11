@@ -263,13 +263,13 @@ def _parse_window(request):
     return None, None, 'all'
 
 
-def _event_list_cache_key(org_id, search, sort, page, status_filter):
+def _event_list_cache_key(org_id, search, sort, page, status_filter, actions_count=0):
     """Build a versioned, org-scoped cache key for the event_list response."""
     try:
         version = django_cache.get(f'event_list_ver:{org_id}', 0)
     except Exception:
         version = 0
-    return f'event_list:{version}:{org_id}:{search}:{sort}:{page}:{status_filter}'
+    return f'event_list:{version}:{org_id}:{search}:{sort}:{page}:{status_filter}:a{actions_count}'
 
 
 def _invalidate_event_list_cache(org):
@@ -2872,8 +2872,18 @@ def event_list(request):
     if status_filter not in ('all', 'live', 'ended', 'upcoming'):
         status_filter = 'all'
 
+    # Include outstanding actions count in the cache key so the sidebar badge
+    # stays in sync (the rendered HTML embeds the count via the context processor).
+    try:
+        actions_count = AIRecommendation.objects.filter(
+            organization=org,
+            status__in=[AIRecommendation.Status.NEW, AIRecommendation.Status.REVIEWED],
+        ).count()
+    except Exception:
+        actions_count = 0
+
     # Check cache first (skip gracefully when Redis is unavailable)
-    cache_key = _event_list_cache_key(org.pk, search_query, '', page_number, status_filter)
+    cache_key = _event_list_cache_key(org.pk, search_query, '', page_number, status_filter, actions_count)
     try:
         cached = django_cache.get(cache_key)
     except Exception:
