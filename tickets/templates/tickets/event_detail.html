@@ -1218,27 +1218,33 @@
         <div class="modal-content">
             <div class="modal-header">
                 <div>
-                    <h5 class="modal-title" id="mailchimpMatchModalLabel">Match Mailchimp campaign</h5>
+                    <h5 class="modal-title" id="mailchimpMatchModalLabel">Match Mailchimp campaigns</h5>
                     <div class="text-body-secondary small">{{ event.name }}</div>
                 </div>
                 <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
             </div>
-            <div class="modal-body">
-                <div id="mailchimpMatchLoading" class="py-5 text-center">
-                    <div class="spinner-border text-primary" role="status" aria-hidden="true"></div>
-                    <p class="text-body-secondary mt-3 mb-0">Ranking campaigns...</p>
+            <form id="mailchimpApplyForm" method="post" action="">
+                {% csrf_token %}
+                <div class="modal-body">
+                    <div id="mailchimpMatchLoading" class="py-5 text-center">
+                        <div class="spinner-border text-primary" role="status" aria-hidden="true"></div>
+                        <p class="text-body-secondary mt-3 mb-0">Ranking campaigns...</p>
+                    </div>
+                    <div id="mailchimpMatchError" class="alert alert-danger d-none mb-0"></div>
+                    <div id="mailchimpMatchResults"></div>
+                    <div id="mailchimpMatchEmpty" class="empty-state d-none" style="padding: 32px;">
+                        <i class="bi bi-envelope-paper"></i>
+                        <p class="mb-2">No matching campaigns found.</p>
+                        <a href="{% url 'tickets:mailchimp_settings' %}" class="btn btn-primary">Mailchimp settings</a>
+                    </div>
                 </div>
-                <div id="mailchimpMatchError" class="alert alert-danger d-none mb-0"></div>
-                <div id="mailchimpMatchResults"></div>
-                <div id="mailchimpMatchEmpty" class="empty-state d-none" style="padding: 32px;">
-                    <i class="bi bi-envelope-paper"></i>
-                    <p class="mb-2">No matching campaigns found.</p>
-                    <a href="{% url 'tickets:mailchimp_settings' %}" class="btn btn-primary">Mailchimp settings</a>
+                <div class="modal-footer">
+                    <button type="submit" id="mailchimpApplyButton" class="btn btn-primary" disabled>
+                        <i class="bi bi-check2-circle me-1"></i> Apply selected (0)
+                    </button>
+                    <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Close</button>
                 </div>
-            </div>
-            <div class="modal-footer">
-                <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Close</button>
-            </div>
+            </form>
         </div>
     </div>
 </div>
@@ -1391,6 +1397,8 @@ document.addEventListener('DOMContentLoaded', function() {
     var errorEl = document.getElementById('mailchimpMatchError');
     var resultsEl = document.getElementById('mailchimpMatchResults');
     var emptyEl = document.getElementById('mailchimpMatchEmpty');
+    var formEl = document.getElementById('mailchimpApplyForm');
+    var applyButton = document.getElementById('mailchimpApplyButton');
     var marketingTab = document.getElementById('tab-marketing');
     var marketingTabBtn = document.getElementById('tab-marketing-btn');
     var campaignRowsEl = document.getElementById('mailchimpCampaignRows');
@@ -1411,6 +1419,8 @@ document.addEventListener('DOMContentLoaded', function() {
         errorEl.classList.add('d-none');
         emptyEl.classList.add('d-none');
         resultsEl.innerHTML = '';
+        formEl.setAttribute('action', trigger.getAttribute('data-apply-url'));
+        applyButton.classList.add('d-none');
 
         fetch(trigger.getAttribute('data-match-url'), {
             headers: { 'X-Requested-With': 'XMLHttpRequest' }
@@ -1434,7 +1444,8 @@ document.addEventListener('DOMContentLoaded', function() {
                 emptyEl.classList.remove('d-none');
                 return;
             }
-            resultsEl.innerHTML = renderMailchimpCandidateList(candidates, trigger.getAttribute('data-apply-url'));
+            resultsEl.innerHTML = renderMailchimpCandidateList(candidates);
+            wireSelection();
         })
         .catch(function() {
             loadingEl.classList.add('d-none');
@@ -1443,12 +1454,60 @@ document.addEventListener('DOMContentLoaded', function() {
         });
     });
 
-    function renderMailchimpCandidateList(candidates, applyUrl) {
+    formEl.addEventListener('submit', function() {
+        var checked = resultsEl.querySelectorAll('input.mailchimp-candidate-checkbox:checked');
+        formEl.querySelectorAll('input[data-paired-input="1"]').forEach(function(node) {
+            node.parentNode.removeChild(node);
+        });
+        checked.forEach(function(checkbox) {
+            ['confidence', 'reasoning'].forEach(function(key) {
+                var hidden = document.createElement('input');
+                hidden.type = 'hidden';
+                hidden.name = key;
+                hidden.value = checkbox.getAttribute('data-' + key) || '';
+                hidden.setAttribute('data-paired-input', '1');
+                formEl.appendChild(hidden);
+            });
+        });
+    });
+
+    function wireSelection() {
+        var checkboxes = resultsEl.querySelectorAll('input.mailchimp-candidate-checkbox:not(:disabled)');
+        var master = resultsEl.querySelector('input.mailchimp-master-checkbox');
+        applyButton.classList.remove('d-none');
+
+        function updateButton() {
+            var count = resultsEl.querySelectorAll('input.mailchimp-candidate-checkbox:checked').length;
+            applyButton.disabled = count === 0;
+            applyButton.innerHTML = '<i class="bi bi-check2-circle me-1"></i> Apply selected (' + count + ')';
+            if (master) {
+                master.checked = count > 0 && count === checkboxes.length;
+                master.indeterminate = count > 0 && count < checkboxes.length;
+            }
+        }
+
+        checkboxes.forEach(function(checkbox) {
+            checkbox.addEventListener('change', updateButton);
+        });
+        if (master) {
+            if (!checkboxes.length) {
+                master.disabled = true;
+            }
+            master.addEventListener('change', function() {
+                checkboxes.forEach(function(checkbox) { checkbox.checked = master.checked; });
+                updateButton();
+            });
+        }
+        updateButton();
+    }
+
+    function renderMailchimpCandidateList(candidates) {
         return '' +
             '<div class="table-responsive">' +
                 '<table class="table table-hover mb-0">' +
                     '<thead>' +
                         '<tr>' +
+                            '<th style="width: 36px;"><input type="checkbox" class="form-check-input mailchimp-master-checkbox" aria-label="Select all un-linked candidates"></th>' +
                             '<th>Campaign</th>' +
                             '<th>Sent</th>' +
                             '<th>Emails</th>' +
@@ -1464,13 +1523,22 @@ document.addEventListener('DOMContentLoaded', function() {
                             var sendTime = escapeHtml(candidate.send_time || 'Unknown');
                             var emailsSent = escapeHtml(candidate.emails_sent || 0);
                             var reasoning = escapeHtml(candidate.reasoning || '');
+                            var reasoningAttr = escapeHtml(candidate.reasoning || '');
                             var campaignId = escapeHtml(candidate.campaign_id || '');
                             var confidenceRaw = escapeHtml(candidate.confidence || 0);
                             var confidence = Number(candidate.confidence_pct || 0);
                             var confidenceClass = escapeHtml(candidate.confidence_class || 'bg-secondary');
+                            var isLinked = !!candidate.is_linked;
+                            var checkboxCell = isLinked
+                                ? '<input type="checkbox" class="form-check-input mailchimp-candidate-checkbox" disabled aria-label="Already linked">'
+                                : '<input type="checkbox" class="form-check-input mailchimp-candidate-checkbox" name="campaign_id" value="' + campaignId + '" data-confidence="' + confidenceRaw + '" data-reasoning="' + reasoningAttr + '" aria-label="Select campaign">';
+                            var statusBadge = isLinked
+                                ? '<span class="badge bg-success ms-2">Linked</span>'
+                                : '';
                             return '' +
                                 '<tr>' +
-                                    '<td><strong>' + title + '</strong><div class="small text-body-secondary">' + subject + '</div></td>' +
+                                    '<td>' + checkboxCell + '</td>' +
+                                    '<td><strong>' + title + '</strong>' + statusBadge + '<div class="small text-body-secondary">' + subject + '</div></td>' +
                                     '<td>' + sendTime + '</td>' +
                                     '<td>' + emailsSent + '</td>' +
                                     '<td style="min-width: 130px;">' +
@@ -1480,17 +1548,7 @@ document.addEventListener('DOMContentLoaded', function() {
                                         '</div>' +
                                     '</td>' +
                                     '<td class="small text-body-secondary">' + reasoning + '</td>' +
-                                    '<td class="text-end">' +
-                                        '<form method="post" action="' + escapeHtml(applyUrl) + '">' +
-                                            '<input type="hidden" name="csrfmiddlewaretoken" value="{{ csrf_token }}">' +
-                                            '<input type="hidden" name="campaign_id" value="' + campaignId + '">' +
-                                            '<input type="hidden" name="confidence" value="' + confidenceRaw + '">' +
-                                            '<input type="hidden" name="reasoning" value="' + reasoning + '">' +
-                                            '<button type="submit" class="btn btn-sm btn-primary">' +
-                                                '<i class="bi bi-check2-circle me-1"></i> Apply' +
-                                            '</button>' +
-                                        '</form>' +
-                                    '</td>' +
+                                    '<td></td>' +
                                 '</tr>';
                         }).join('') +
                     '</tbody>' +
