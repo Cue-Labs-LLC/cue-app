@@ -402,6 +402,106 @@ class MailchimpViewTests(TestCase):
         self.assertEqual(set(campaigns.values_list('external_id', flat=True)), {'cmp_1', 'cmp_2'})
 
     @patch('tickets.views.MailchimpClient')
+    def test_apply_accepts_multiple_campaign_ids_in_one_request(self, mock_client_cls):
+        client = mock_client_cls.return_value
+        client.list_campaign_reports.return_value = [
+            _report('cmp_1', 'Event Campaign'),
+            _report('cmp_2', 'Retargeting Campaign'),
+        ]
+        client.get_campaign_report.side_effect = [
+            _report('cmp_1', 'Event Campaign'),
+            _report('cmp_2', 'Retargeting Campaign'),
+        ]
+        url = reverse('tickets:event_mailchimp_apply', kwargs={'event_id': self.event.id})
+
+        response = self.client.post(url, {
+            'campaign_id': ['cmp_1', 'cmp_2'],
+            'confidence': ['0.84', '0.72'],
+            'reasoning': ['Name match.', 'Date match.'],
+        })
+
+        self.assertEqual(response.status_code, 302)
+        self.assertIn('?tab=marketing', response.url)
+        campaigns = EventEmailCampaign.objects.filter(event=self.event, source='mailchimp', deleted_at__isnull=True)
+        self.assertEqual(campaigns.count(), 2)
+        self.assertEqual(set(campaigns.values_list('external_id', flat=True)), {'cmp_1', 'cmp_2'})
+        self.assertEqual(client.get_campaign_report.call_count, 2)
+        flash_messages = [str(m) for m in response.wsgi_request._messages]
+        self.assertTrue(any('Linked 2 Mailchimp campaigns' in m for m in flash_messages), flash_messages)
+
+    @patch('tickets.views.MailchimpClient')
+    def test_apply_partial_failure_keeps_successes(self, mock_client_cls):
+        client = mock_client_cls.return_value
+        client.list_campaign_reports.return_value = [
+            _report('cmp_1', 'Event Campaign'),
+            _report('cmp_2', 'Retargeting Campaign'),
+        ]
+        client.get_campaign_report.side_effect = [
+            _report('cmp_1', 'Event Campaign'),
+            MailchimpAPIError('boom'),
+        ]
+        url = reverse('tickets:event_mailchimp_apply', kwargs={'event_id': self.event.id})
+
+        response = self.client.post(url, {
+            'campaign_id': ['cmp_1', 'cmp_2'],
+            'confidence': ['0.84', '0.72'],
+            'reasoning': ['', ''],
+        })
+
+        self.assertEqual(response.status_code, 302)
+        self.assertIn('?tab=marketing', response.url)
+        campaigns = EventEmailCampaign.objects.filter(event=self.event, source='mailchimp', deleted_at__isnull=True)
+        self.assertEqual(set(campaigns.values_list('external_id', flat=True)), {'cmp_1'})
+        flash_messages = [str(m) for m in response.wsgi_request._messages]
+        self.assertTrue(any('cmp_2' in m for m in flash_messages), flash_messages)
+
+    @patch('tickets.views.MailchimpClient')
+    def test_apply_rejects_unknown_campaign_id(self, mock_client_cls):
+        client = mock_client_cls.return_value
+        client.list_campaign_reports.return_value = [_report('cmp_1', 'Event Campaign')]
+        url = reverse('tickets:event_mailchimp_apply', kwargs={'event_id': self.event.id})
+
+        response = self.client.post(url, {'campaign_id': 'cmp_unknown'})
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(
+            EventEmailCampaign.objects.filter(event=self.event, deleted_at__isnull=True).count(),
+            0,
+        )
+        client.get_campaign_report.assert_not_called()
+        flash_messages = [str(m) for m in response.wsgi_request._messages]
+        self.assertTrue(any('cmp_unknown' in m for m in flash_messages), flash_messages)
+
+    @patch('tickets.views.MailchimpCampaignMatcher')
+    @patch('tickets.views.MailchimpClient')
+    def test_match_json_marks_linked_candidates(self, mock_client_cls, mock_matcher_cls):
+        EventEmailCampaign.objects.create(
+            event=self.event,
+            source='mailchimp',
+            external_id='cmp_1',
+            campaign_title='Already linked',
+        )
+        client = mock_client_cls.return_value
+        client.list_campaign_reports.return_value = [
+            _report('cmp_1', 'Event Campaign'),
+            _report('cmp_2', 'Retargeting Campaign'),
+        ]
+        mock_matcher_cls.return_value.rank.return_value = MailchimpMatchResult(candidates=[
+            MailchimpCampaignCandidate(campaign_id='cmp_1', confidence=0.9, reasoning='Already linked.'),
+            MailchimpCampaignCandidate(campaign_id='cmp_2', confidence=0.6, reasoning='Likely match.'),
+        ])
+
+        response = self.client.get(
+            reverse('tickets:event_mailchimp_match', kwargs={'event_id': self.event.id}),
+            {'format': 'json'},
+        )
+
+        payload = response.json()
+        by_id = {item['campaign_id']: item for item in payload['candidates']}
+        self.assertTrue(by_id['cmp_1']['is_linked'])
+        self.assertFalse(by_id['cmp_2']['is_linked'])
+
+    @patch('tickets.views.MailchimpClient')
     def test_refresh_action_updates_only_selected_campaign(self, mock_client_cls):
         client = mock_client_cls.return_value
         client.get_campaign_report.return_value = _report('cmp_1', 'Updated Campaign')
