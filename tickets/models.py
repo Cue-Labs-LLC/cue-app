@@ -956,8 +956,6 @@ class Event(AuditBaseModel):
         editable=False,
         help_text="Short public-facing ID used in shareable URLs (/e/<public_id>/).",
     )
-    ai_summary = models.TextField(blank=True, default='')
-    ai_summary_generated_at = models.DateTimeField(null=True, blank=True)
     computed_total_revenue = models.DecimalField(
         max_digits=12, decimal_places=2, default=Decimal('0.00'),
         help_text="Denormalized sum of ticket revenue + additional income; maintained by signals.",
@@ -1449,6 +1447,101 @@ class ChatMessage(BaseModel):
 
     def __str__(self):
         return f"[{self.role}] {self.content[:60]}"
+
+
+class AIRecommendation(BaseModel):
+    """Reviewed AI-generated opportunity surfaced in the organizer Action Center."""
+
+    class Kind(models.TextChoices):
+        SALES_PACING = 'sales_pacing', 'Sales pacing'
+        POST_EVENT_WRAPUP = 'post_event_wrapup', 'Post-event wrap-up'
+        WINBACK_AUDIENCE = 'winback_audience', 'Win-back audience'
+        MARKETING_ATTRIBUTION = 'marketing_attribution', 'Marketing attribution'
+
+    class Status(models.TextChoices):
+        NEW = 'new', 'New'
+        REVIEWED = 'reviewed', 'Reviewed'
+        DISMISSED = 'dismissed', 'Dismissed'
+        RESOLVED = 'resolved', 'Resolved'
+
+    class Priority(models.TextChoices):
+        HIGH = 'high', 'High'
+        MEDIUM = 'medium', 'Medium'
+        LOW = 'low', 'Low'
+
+    organization = models.ForeignKey(
+        Organization,
+        on_delete=models.CASCADE,
+        related_name='ai_recommendations',
+    )
+    event = models.ForeignKey(
+        Event,
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name='ai_recommendations',
+    )
+    customer = models.ForeignKey(
+        Customer,
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name='ai_recommendations',
+    )
+    kind = models.CharField(max_length=40, choices=Kind.choices, db_index=True)
+    status = models.CharField(
+        max_length=20,
+        choices=Status.choices,
+        default=Status.NEW,
+        db_index=True,
+    )
+    priority = models.CharField(max_length=20, choices=Priority.choices, db_index=True)
+    confidence = models.DecimalField(max_digits=4, decimal_places=3, default=Decimal('0.000'))
+    title = models.CharField(max_length=200)
+    summary = models.TextField()
+    evidence_json = models.JSONField(default=dict, blank=True)
+    recommended_action_json = models.JSONField(default=dict, blank=True)
+    dedupe_key = models.CharField(max_length=160)
+    reviewed_at = models.DateTimeField(null=True, blank=True)
+    dismissed_at = models.DateTimeField(null=True, blank=True)
+    resolved_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ['status', 'priority', '-confidence', '-created_at']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['organization', 'dedupe_key'],
+                name='ai_recommendation_org_dedupe_unique',
+            ),
+        ]
+        indexes = [
+            models.Index(fields=['organization', 'status', 'priority']),
+            models.Index(fields=['organization', 'kind', 'status']),
+            models.Index(fields=['event', 'status']),
+            models.Index(fields=['customer', 'status']),
+        ]
+
+    def __str__(self):
+        return f"{self.get_kind_display()} - {self.title}"
+
+    @property
+    def is_unresolved(self):
+        return self.status in {self.Status.NEW, self.Status.REVIEWED}
+
+    def mark_reviewed(self):
+        self.status = self.Status.REVIEWED
+        self.reviewed_at = timezone.now()
+        self.save(update_fields=['status', 'reviewed_at', 'updated_at'])
+
+    def dismiss(self):
+        self.status = self.Status.DISMISSED
+        self.dismissed_at = timezone.now()
+        self.save(update_fields=['status', 'dismissed_at', 'updated_at'])
+
+    def resolve(self):
+        self.status = self.Status.RESOLVED
+        self.resolved_at = timezone.now()
+        self.save(update_fields=['status', 'resolved_at', 'updated_at'])
 
 
 class SaleableTicketType(BaseModel):

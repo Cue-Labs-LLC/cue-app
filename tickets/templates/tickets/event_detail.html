@@ -7,7 +7,6 @@
 {% if ticket_type_breakdown or total_orders or event.ticketing_type == 'direct' %}
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js" defer></script>
 {% endif %}
-<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js" defer></script>
 {% if event.ticketing_type != 'direct' %}
 <link rel="stylesheet" href="https://releases.transloadit.com/uppy/v3.27.3/uppy.min.css">
 <script src="https://releases.transloadit.com/uppy/v3.27.3/uppy.min.js" defer></script>
@@ -308,47 +307,6 @@
     </div>
 </div>
 </div>
-
-{% with event_end=event.end_date|default:event.start_date %}
-{% if event.ticketing_type != 'direct' or event_end < today %}
-<div class="card mb-4" id="ai-summary-card">
-    <div class="card-header d-flex justify-content-between align-items-center">
-        <h5 class="mb-0"><i class="bi bi-stars"></i> AI Event Summary</h5>
-        <div class="d-flex align-items-center gap-2">
-            {% if event.ai_summary_generated_at %}
-            <span class="text-muted" style="font-size: 0.8rem;" id="ai-summary-timestamp">
-                Generated {{ event.ai_summary_generated_at|timesince }} ago
-            </span>
-            {% endif %}
-            {% if event_end < today %}
-            <button class="btn btn-sm btn-outline-primary" id="btn-generate-summary" type="button">
-                <i class="bi bi-arrow-repeat"></i>
-                {% if event.ai_summary %}Regenerate{% else %}Generate Summary{% endif %}
-            </button>
-            {% else %}
-            <button class="btn btn-sm btn-outline-secondary" id="btn-generate-summary" type="button" disabled title="Available after the event ends">
-                <i class="bi bi-arrow-repeat"></i>
-                {% if event.ai_summary %}Regenerate{% else %}Generate Summary{% endif %}
-            </button>
-            {% endif %}
-        </div>
-    </div>
-    <div class="card-body" id="ai-summary-body">
-        {% if event_end >= today %}
-        <div class="text-muted" style="padding: 8px 0;">
-            <i class="bi bi-clock me-1"></i> AI summaries are available once the event has ended.
-        </div>
-        {% elif event.ai_summary %}
-        <div id="ai-summary-content">{{ event.ai_summary }}</div>
-        {% else %}
-        <div class="text-muted" style="padding: 8px 0;" id="ai-summary-empty">
-            Click "Generate Summary" to create an AI-powered analysis of this event's performance.
-        </div>
-        {% endif %}
-    </div>
-</div>
-{% endif %}
-{% endwith %}
 
 {% if total_orders or event.ticketing_type == 'direct' %}
 <script type="application/json" id="sales-over-time-data">{{ sales_over_time_json|safe }}</script>
@@ -2217,92 +2175,4 @@ function copyScannnerPin() {
 </div>
 {% endif %}
 
-<script>
-document.addEventListener('DOMContentLoaded', function() {
-    var btn = document.getElementById('btn-generate-summary');
-    if (!btn) return;
-
-    // Render cached summary on load if present
-    var contentEl = document.getElementById('ai-summary-content');
-    if (contentEl && contentEl.textContent.trim() && typeof marked !== 'undefined') {
-        contentEl.innerHTML = marked.parse(contentEl.textContent);
-    }
-
-    btn.addEventListener('click', async function() {
-        var body = document.getElementById('ai-summary-body');
-        var emptyEl = document.getElementById('ai-summary-empty');
-        var tsEl = document.getElementById('ai-summary-timestamp');
-
-        btn.disabled = true;
-        btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Generating...';
-
-        // Clear existing content
-        if (emptyEl) emptyEl.remove();
-        body.innerHTML = '<div id="ai-summary-content"></div>';
-        var content = document.getElementById('ai-summary-content');
-        var fullText = '';
-
-        try {
-            var response = await fetch("{% url 'tickets:event_summary_stream' event.id %}", {
-                method: 'POST',
-                headers: {
-                    'X-CSRFToken': '{{ csrf_token }}',
-                },
-            });
-
-            if (response.status === 429) {
-                content.innerHTML = '<div class="text-warning"><i class="bi bi-exclamation-triangle"></i> Rate limit reached. Please try again later.</div>';
-                btn.disabled = false;
-                btn.innerHTML = '<i class="bi bi-arrow-repeat"></i> Regenerate';
-                return;
-            }
-
-            var reader = response.body.getReader();
-            var decoder = new TextDecoder();
-            var buffer = '';
-
-            while (true) {
-                var result = await reader.read();
-                if (result.done) break;
-                buffer += decoder.decode(result.value, { stream: true });
-                var lines = buffer.split('\n');
-                buffer = lines.pop();
-                for (var i = 0; i < lines.length; i++) {
-                    var line = lines[i];
-                    if (line.startsWith('data: ')) {
-                        try {
-                            var data = JSON.parse(line.slice(6));
-                            if (data.type === 'token') {
-                                fullText += data.content;
-                                if (typeof marked !== 'undefined') {
-                                    content.innerHTML = marked.parse(fullText);
-                                } else {
-                                    content.textContent = fullText;
-                                }
-                            } else if (data.type === 'error') {
-                                content.innerHTML = '<div class="text-danger"><i class="bi bi-exclamation-triangle"></i> ' + data.content + '</div>';
-                            } else if (data.type === 'done') {
-                                // Final render
-                                if (fullText && typeof marked !== 'undefined') {
-                                    content.innerHTML = marked.parse(fullText);
-                                }
-                            }
-                        } catch (e) {
-                            // Skip malformed SSE lines
-                        }
-                    }
-                }
-            }
-        } catch (e) {
-            content.innerHTML = '<div class="text-danger"><i class="bi bi-exclamation-triangle"></i> Failed to connect to the summary service. Please try again.</div>';
-        }
-
-        btn.disabled = false;
-        btn.innerHTML = '<i class="bi bi-arrow-repeat"></i> Regenerate';
-        if (tsEl) {
-            tsEl.textContent = 'Generated just now';
-        }
-    });
-});
-</script>
 {% endblock %}
