@@ -5352,6 +5352,14 @@ def event_mailchimp_match(request, event_id):
         messages.error(request, 'Could not rank Mailchimp campaigns. Please check your OpenAI configuration and try again.')
         return redirect('tickets:event_detail', event_id=event.id)
 
+    linked_ids = set(
+        EventEmailCampaign.objects.filter(
+            event=event,
+            source='mailchimp',
+            deleted_at__isnull=True,
+        ).exclude(external_id='').values_list('external_id', flat=True)
+    )
+
     reports_by_id = {str(report.get('id')): report for report in reports}
     candidates = []
     for candidate in match_result.candidates:
@@ -5371,6 +5379,7 @@ def event_mailchimp_match(request, event_id):
             'confidence_pct': confidence_pct,
             'confidence_class': confidence_class,
             'reasoning': candidate.reasoning,
+            'is_linked': str(report.get('id')) in linked_ids,
         })
 
     if wants_json:
@@ -5388,6 +5397,7 @@ def event_mailchimp_match(request, event_id):
                     'confidence_pct': item['confidence_pct'],
                     'confidence_class': item['confidence_class'],
                     'reasoning': item['reasoning'],
+                    'is_linked': item['is_linked'],
                 }
                 for item in candidates
             ],
@@ -5413,33 +5423,80 @@ def event_mailchimp_apply(request, event_id):
         messages.error(request, 'Connect Mailchimp before applying campaign results.')
         return redirect('tickets:mailchimp_settings')
 
-    campaign_id = request.POST.get('campaign_id', '').strip()
-    if not campaign_id:
-        messages.error(request, 'Choose a Mailchimp campaign to apply.')
+    campaign_ids = [cid.strip() for cid in request.POST.getlist('campaign_id') if cid.strip()]
+    if not campaign_ids:
+        messages.error(request, 'Choose at least one Mailchimp campaign to apply.')
         return redirect('tickets:event_mailchimp_match', event_id=event.id)
+
+    confidences = request.POST.getlist('confidence')
+    reasonings = request.POST.getlist('reasoning')
 
     try:
         client = MailchimpClient(connection.mailchimp_access_token, connection.mailchimp_dc)
         reports = client.list_campaign_reports()
-        if not any(str(item.get('id')) == campaign_id for item in reports):
-            messages.error(request, 'The selected Mailchimp campaign was not found in this account.')
-            return redirect('tickets:event_mailchimp_match', event_id=event.id)
-        report = client.get_campaign_report(campaign_id)
-        confidence = request.POST.get('confidence') or None
-        reasoning = request.POST.get('reasoning', '').strip()
-        email_campaign, created = _save_mailchimp_campaign_from_report(
-            event,
-            report,
-            user=request.user,
-            match_confidence=confidence,
-            match_reasoning=reasoning,
-        )
     except MailchimpAPIError as exc:
-        messages.error(request, f'Could not pull campaign results from Mailchimp: {exc}')
+        messages.error(request, f'Could not load Mailchimp campaigns: {exc}')
         return redirect('tickets:event_mailchimp_match', event_id=event.id)
 
-    action = 'updated' if not created else 'added'
-    messages.success(request, f'Mailchimp campaign "{email_campaign.campaign_title}" {action} for this event.')
+    available_ids = {str(item.get('id')) for item in reports}
+    unknown_ids = [cid for cid in campaign_ids if cid not in available_ids]
+    valid_ids = [cid for cid in campaign_ids if cid in available_ids]
+    if unknown_ids:
+        messages.error(
+            request,
+            'These Mailchimp campaigns were not found in this account: ' + ', '.join(unknown_ids),
+        )
+
+    added_titles = []
+    updated_titles = []
+    failed_ids = []
+    for index, campaign_id in enumerate(valid_ids):
+        confidence = confidences[index] if index < len(confidences) else None
+        reasoning = (reasonings[index] if index < len(reasonings) else '').strip()
+        try:
+            report = client.get_campaign_report(campaign_id)
+            email_campaign, created = _save_mailchimp_campaign_from_report(
+                event,
+                report,
+                user=request.user,
+                match_confidence=confidence or None,
+                match_reasoning=reasoning,
+            )
+        except MailchimpAPIError as exc:
+            logger.warning(
+                "Mailchimp apply failed for org=%s event=%s campaign=%s: %s",
+                org.id, event.id, campaign_id, exc,
+            )
+            failed_ids.append(campaign_id)
+            continue
+        if created:
+            added_titles.append(email_campaign.campaign_title)
+        else:
+            updated_titles.append(email_campaign.campaign_title)
+
+    succeeded = len(added_titles) + len(updated_titles)
+    if succeeded:
+        if succeeded == 1:
+            only_title = (added_titles + updated_titles)[0]
+            verb = 'added' if added_titles else 'updated'
+            messages.success(request, f'Mailchimp campaign "{only_title}" {verb} for this event.')
+        else:
+            parts = []
+            if added_titles:
+                parts.append(f'added {len(added_titles)}')
+            if updated_titles:
+                parts.append(f'updated {len(updated_titles)}')
+            messages.success(request, f'Linked {succeeded} Mailchimp campaigns to this event ({", ".join(parts)}).')
+
+    if failed_ids:
+        messages.error(
+            request,
+            'Could not pull results from Mailchimp for: ' + ', '.join(failed_ids),
+        )
+
+    if not succeeded and not unknown_ids and not failed_ids:
+        messages.error(request, 'No Mailchimp campaigns were applied.')
+
     return _marketing_tab_redirect(event)
 
 
