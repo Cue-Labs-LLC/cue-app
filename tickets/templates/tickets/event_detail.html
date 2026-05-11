@@ -1210,9 +1210,9 @@
                 </div>
                 <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
             </div>
-            <form id="mailchimpApplyForm" method="post" action="">
+            <form id="mailchimpApplyForm" method="post" action="" class="d-flex flex-column" style="flex: 1 1 auto; min-height: 0; overflow: hidden;">
                 {% csrf_token %}
-                <div class="modal-body">
+                <div class="modal-body" style="flex: 1 1 auto; min-height: 0; overflow-y: auto;">
                     <div id="mailchimpMatchLoading" class="py-5 text-center">
                         <div class="spinner-border text-primary" role="status" aria-hidden="true"></div>
                         <p class="text-body-secondary mt-3 mb-0">Ranking campaigns...</p>
