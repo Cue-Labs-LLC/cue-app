@@ -10,6 +10,14 @@ from django.utils import timezone
 from tickets.models import AITokenUsage
 
 
+CUE_TOKEN_DIVISOR = 1000
+
+
+def to_cue_tokens(llm_tokens):
+    """Convert raw LLM token count to Cue tokens (display unit). Returns float."""
+    return (llm_tokens or 0) / CUE_TOKEN_DIVISOR
+
+
 @dataclass(frozen=True)
 class TokenUsage:
     prompt_tokens: int = 0
