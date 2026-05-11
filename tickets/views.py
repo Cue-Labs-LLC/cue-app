@@ -3668,7 +3668,7 @@ def event_summary_stream(request, event_id):
 
     event_data = _compute_event_stats(event)
 
-    service = EventSummaryService(org)
+    service = EventSummaryService(org, user=request.user)
     response = StreamingHttpResponse(
         service.stream_summary(event, event_data),
         content_type='text/event-stream',

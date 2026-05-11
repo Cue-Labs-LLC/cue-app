@@ -12,6 +12,12 @@ import logging
 from django.conf import settings
 from django.utils import timezone
 
+from tickets.models import AITokenUsage
+from tickets.services.ai_metering import (
+    TokenUsageAccumulator,
+    record_ai_token_usage,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -80,21 +86,24 @@ Survey Results:
 class EventSummaryService:
     """Generates LLM-powered event summaries, scoped to an organization."""
 
-    def __init__(self, organization):
+    def __init__(self, organization, user=None):
         self.organization = organization
+        self.user = user
 
     def stream_summary(self, event, event_data):
         """Generator yielding SSE-formatted chunks. Saves result to event.ai_summary."""
         from langchain_openai import ChatOpenAI
 
         prompt = self._build_prompt(event, event_data)
+        model_name = getattr(settings, 'OPENAI_MODEL', 'gpt-4o')
 
         try:
             llm = ChatOpenAI(
-                model=getattr(settings, 'OPENAI_MODEL', 'gpt-4o'),
+                model=model_name,
                 api_key=getattr(settings, 'OPENAI_API_KEY', ''),
                 temperature=0.3,
                 streaming=True,
+                stream_usage=True,
             )
         except Exception as e:
             logger.error("Failed to initialize LLM for event summary: %s", e)
@@ -103,8 +112,10 @@ class EventSummaryService:
             return
 
         full_response = ""
+        usage_accumulator = TokenUsageAccumulator()
         try:
             for chunk in llm.stream([{"role": "user", "content": prompt}]):
+                usage_accumulator.add(chunk)
                 if chunk.content:
                     full_response += chunk.content
                     yield f"data: {json.dumps({'type': 'token', 'content': chunk.content})}\n\n"
@@ -122,6 +133,14 @@ class EventSummaryService:
             event.ai_summary = full_response
             event.ai_summary_generated_at = timezone.now()
             event.save(update_fields=['ai_summary', 'ai_summary_generated_at'])
+            record_ai_token_usage(
+                organization=self.organization,
+                feature=AITokenUsage.FEATURE_EVENT_SUMMARY,
+                model_name=model_name,
+                user=self.user,
+                usage=usage_accumulator.total(),
+                metadata={'event_id': str(event.id)},
+            )
 
     def _build_prompt(self, event, event_data):
         """Format the prompt template with event data."""

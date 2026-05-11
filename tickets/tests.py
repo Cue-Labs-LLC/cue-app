@@ -13,11 +13,110 @@ from rest_framework.authtoken.models import Token
 from .models import (
     UploadedFile, TicketOrder, Customer, CustomerTag, Event,
     Venue, CSVFormat, Ticket, TicketTier,
-    Organization, UserProfile, OrganizationMembership, OrganizationInvitation, ChatMessage,
+    Organization, UserProfile, OrganizationMembership, OrganizationInvitation, ChatMessage, AITokenUsage,
     SaleableTicketType, SaleableTicketTypeTier, StripeCheckoutSession, FeatureFlagSettings,
     SurveyInvitation, SurveyResponse, SurveyAnswer, SurveyQuestion, Payout,
     ExternalSurveyResponse, EventDailyPageView,
 )
+
+
+class AITokenUsageTests(TestCase):
+    """Tests for organization-scoped AI token metering."""
+
+    def setUp(self):
+        self.org = Organization.objects.create(name='AI Meter Org', slug='ai-meter-org')
+        self.other_org = Organization.objects.create(name='Other AI Org', slug='other-ai-org')
+        self.user = User.objects.create_user(username='meter', email='meter@example.com')
+
+    def test_record_ai_token_usage_from_langchain_metadata(self):
+        from tickets.services.ai_metering import record_ai_token_usage
+
+        class FakeMessage:
+            usage_metadata = {
+                'input_tokens': 42,
+                'output_tokens': 18,
+                'total_tokens': 60,
+            }
+
+        record = record_ai_token_usage(
+            organization=self.org,
+            user=self.user,
+            feature=AITokenUsage.FEATURE_EVENT_SUMMARY,
+            model_name='gpt-4o',
+            usage=FakeMessage(),
+            metadata={'event_id': 'event-123'},
+        )
+
+        self.assertIsNotNone(record)
+        self.assertEqual(record.organization, self.org)
+        self.assertEqual(record.user, self.user)
+        self.assertEqual(record.prompt_tokens, 42)
+        self.assertEqual(record.completion_tokens, 18)
+        self.assertEqual(record.total_tokens, 60)
+        self.assertEqual(record.metadata['event_id'], 'event-123')
+
+    def test_record_ai_token_usage_skips_missing_usage(self):
+        from tickets.services.ai_metering import record_ai_token_usage
+
+        record = record_ai_token_usage(
+            organization=self.org,
+            feature=AITokenUsage.FEATURE_CHAT_AGENT,
+            model_name='gpt-4o',
+            usage={},
+        )
+
+        self.assertIsNone(record)
+        self.assertFalse(AITokenUsage.objects.exists())
+
+    def test_monthly_ai_token_usage_is_scoped_to_organization_and_month(self):
+        from tickets.services.ai_metering import monthly_ai_token_usage, record_ai_token_usage
+
+        may = datetime(2026, 5, 10, tzinfo=timezone.get_current_timezone())
+        june = datetime(2026, 6, 1, tzinfo=timezone.get_current_timezone())
+
+        record_ai_token_usage(
+            organization=self.org,
+            feature=AITokenUsage.FEATURE_CHAT_AGENT,
+            model_name='gpt-4o',
+            usage={'prompt_tokens': 100, 'completion_tokens': 25, 'total_tokens': 125},
+            occurred_at=may,
+        )
+        record_ai_token_usage(
+            organization=self.org,
+            feature=AITokenUsage.FEATURE_META_CAMPAIGN_MATCH,
+            model_name='gpt-4o',
+            usage={'prompt_tokens': 20, 'completion_tokens': 5, 'total_tokens': 25},
+            occurred_at=june,
+        )
+        record_ai_token_usage(
+            organization=self.other_org,
+            feature=AITokenUsage.FEATURE_CHAT_AGENT,
+            model_name='gpt-4o',
+            usage={'prompt_tokens': 200, 'completion_tokens': 50, 'total_tokens': 250},
+            occurred_at=may,
+        )
+
+        totals = monthly_ai_token_usage(self.org, 2026, 5)
+
+        self.assertEqual(totals, {
+            'prompt_tokens': 100,
+            'completion_tokens': 25,
+            'total_tokens': 125,
+        })
+
+    def test_token_usage_accumulator_deduplicates_stream_chunks_by_run(self):
+        from tickets.services.ai_metering import TokenUsageAccumulator
+
+        accumulator = TokenUsageAccumulator()
+        accumulator.add({'input_tokens': 10, 'output_tokens': 1, 'total_tokens': 11}, key='run-1')
+        accumulator.add({'input_tokens': 10, 'output_tokens': 5, 'total_tokens': 15}, key='run-1')
+        accumulator.add({'input_tokens': 4, 'output_tokens': 2, 'total_tokens': 6}, key='run-2')
+
+        total = accumulator.total()
+
+        self.assertEqual(total.prompt_tokens, 14)
+        self.assertEqual(total.completion_tokens, 7)
+        self.assertEqual(total.total_tokens, 21)
 
 
 class UploadDeleteViewTests(TestCase):

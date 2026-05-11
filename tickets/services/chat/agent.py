@@ -9,7 +9,12 @@ import uuid
 
 from django.conf import settings
 
-from tickets.models import ChatMessage
+from tickets.models import AITokenUsage, ChatMessage
+from tickets.services.ai_metering import (
+    TokenUsageAccumulator,
+    record_ai_token_usage,
+    usage_key_from_metadata,
+)
 
 from .history import load_history
 from .prompts import SYSTEM_PROMPT
@@ -35,6 +40,7 @@ class ChatAgentService:
             api_key=getattr(settings, 'OPENAI_API_KEY', ''),
             temperature=0.3,
             streaming=True,
+            stream_usage=True,
         )
         tools = build_tools(self.organization)
         agent = create_react_agent(llm, tools)
@@ -83,6 +89,7 @@ class ChatAgentService:
             return
 
         full_response = ""
+        usage_accumulator = TokenUsageAccumulator()
         try:
             for event in agent.stream(
                 {"messages": messages},
@@ -90,6 +97,9 @@ class ChatAgentService:
             ):
                 # event is a tuple of (message, metadata)
                 msg, metadata = event
+                metadata = metadata or {}
+                if metadata.get('langgraph_node') == 'agent':
+                    usage_accumulator.add(msg, key=usage_key_from_metadata(metadata))
                 # We only want to stream AI message content tokens
                 if hasattr(msg, 'content') and msg.content and metadata.get('langgraph_node') == 'agent':
                     token = msg.content
@@ -107,10 +117,20 @@ class ChatAgentService:
 
         # Persist assistant response
         if full_response.strip():
+            token_usage = usage_accumulator.total()
             ChatMessage.objects.create(
                 organization=self.organization,
                 user=self.user,
                 conversation_id=conversation_id,
                 role='assistant',
                 content=full_response,
+                token_count=token_usage.total_tokens,
+            )
+            record_ai_token_usage(
+                organization=self.organization,
+                feature=AITokenUsage.FEATURE_CHAT_AGENT,
+                model_name=getattr(settings, 'OPENAI_MODEL', 'gpt-4o'),
+                user=self.user,
+                usage=token_usage,
+                metadata={'conversation_id': str(conversation_id)},
             )
