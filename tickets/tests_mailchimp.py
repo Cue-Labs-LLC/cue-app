@@ -94,23 +94,30 @@ class MailchimpClientTests(TestCase):
 
     @patch('tickets.services.mailchimp.requests.request')
     def test_client_uses_bearer_auth_and_paginates_reports(self, mock_request):
-        first_page = [_report(f'cmp_{idx}', f'Campaign {idx}') for idx in range(100)]
-        second_page = [_report(f'cmp_{idx}', f'Campaign {idx}') for idx in range(100, 150)]
+        first_page = [_report(f'cmp_{idx}', f'Campaign {idx}') for idx in range(50)]
+        second_page = [_report(f'cmp_{idx}', f'Campaign {idx}') for idx in range(50, 100)]
+        third_page = [_report(f'cmp_{idx}', f'Campaign {idx}') for idx in range(100, 150)]
         mock_request.side_effect = [
             _response(payload={'reports': first_page, 'total_items': 150}),
             _response(payload={'reports': second_page, 'total_items': 150}),
+            _response(payload={'reports': third_page, 'total_items': 150}),
         ]
 
         reports = MailchimpClient('token_123', 'us18').list_campaign_reports(limit=150)
 
         self.assertEqual(len(reports), 150)
         self.assertEqual(reports[0]['id'], 'cmp_0')
-        self.assertEqual(mock_request.call_count, 2)
+        self.assertEqual(mock_request.call_count, 3)
         first_call = mock_request.call_args_list[0]
         second_call = mock_request.call_args_list[1]
+        third_call = mock_request.call_args_list[2]
         self.assertEqual(first_call.kwargs['headers']['Authorization'], 'Bearer token_123')
-        self.assertEqual(first_call.kwargs['params'], {'count': 100, 'offset': 0})
-        self.assertEqual(second_call.kwargs['params'], {'count': 50, 'offset': 100})
+        self.assertEqual(first_call.kwargs['params']['count'], 50)
+        self.assertEqual(first_call.kwargs['params']['offset'], 0)
+        self.assertIn('reports.id', first_call.kwargs['params']['fields'])
+        self.assertIn('total_items', first_call.kwargs['params']['fields'])
+        self.assertEqual(second_call.kwargs['params']['offset'], 50)
+        self.assertEqual(third_call.kwargs['params']['offset'], 100)
 
     @patch('tickets.services.mailchimp.requests.request')
     def test_get_campaign_report_uses_report_endpoint(self, mock_request):
@@ -120,6 +127,7 @@ class MailchimpClientTests(TestCase):
 
         self.assertEqual(report['id'], 'cmp_1')
         self.assertEqual(mock_request.call_args.args[:2], ('GET', 'https://us18.api.mailchimp.com/3.0/reports/cmp_1'))
+        self.assertIn('id', mock_request.call_args.kwargs['params']['fields'])
 
     @patch('tickets.services.mailchimp.requests.request')
     def test_mailchimp_error_raises_message(self, mock_request):

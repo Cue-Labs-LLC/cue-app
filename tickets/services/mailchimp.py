@@ -12,6 +12,25 @@ AUTHORIZE_URL = "https://login.mailchimp.com/oauth2/authorize"
 TOKEN_URL = "https://login.mailchimp.com/oauth2/token"
 METADATA_URL = "https://login.mailchimp.com/oauth2/metadata"
 
+REPORT_FIELDS = (
+    "id",
+    "campaign_title",
+    "title",
+    "subject_line",
+    "type",
+    "send_time",
+    "archive_url",
+    "emails_sent",
+    "bounces",
+    "opens",
+    "clicks",
+    "ecommerce",
+    "unsubscribed",
+    "abuse_reports",
+    "list_id",
+    "list_name",
+)
+
 
 class MailchimpAPIError(Exception):
     """Raised when Mailchimp OAuth or Marketing API calls fail."""
@@ -53,7 +72,7 @@ def get_oauth_metadata(access_token: str) -> dict:
 class MailchimpClient:
     """Small direct client for Mailchimp Marketing API report endpoints."""
 
-    def __init__(self, access_token: str, dc: str, timeout: int = 30):
+    def __init__(self, access_token: str, dc: str, timeout: int = 60):
         self.access_token = access_token
         self.dc = dc
         self.timeout = timeout
@@ -65,10 +84,15 @@ class MailchimpClient:
     def list_campaign_reports(self, limit: int = 200) -> list[dict]:
         reports = []
         offset = 0
-        page_size = min(100, max(1, limit))
+        page_size = min(50, max(1, limit))
+        fields = ",".join(f"reports.{name}" for name in REPORT_FIELDS) + ",total_items"
         while len(reports) < limit:
             count = min(page_size, limit - len(reports))
-            payload = self._request("GET", "/reports", params={"count": count, "offset": offset})
+            payload = self._request(
+                "GET",
+                "/reports",
+                params={"count": count, "offset": offset, "fields": fields},
+            )
             page = payload.get("reports") or []
             reports.extend(page)
             offset += len(page)
@@ -78,7 +102,11 @@ class MailchimpClient:
         return reports[:limit]
 
     def get_campaign_report(self, campaign_id: str) -> dict:
-        return self._request("GET", f"/reports/{campaign_id}")
+        return self._request(
+            "GET",
+            f"/reports/{campaign_id}",
+            params={"fields": ",".join(REPORT_FIELDS)},
+        )
 
     def _request(self, method: str, path: str, params: dict | None = None) -> dict:
         url = f"{self.base_url}{path}"
