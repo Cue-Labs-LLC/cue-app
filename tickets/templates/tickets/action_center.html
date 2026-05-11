@@ -1,0 +1,125 @@
+{% extends 'tickets/base.html' %}
+
+{% block title %}Action Center{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1>Action Center</h1>
+        <p class="page-header-subtitle">Reviewed opportunities found from your event, customer, and marketing data</p>
+    </div>
+</div>
+
+<form method="get" class="card mb-4">
+    <div class="card-body">
+        <div class="row g-3 align-items-end">
+            <div class="col-md-3">
+                <label class="form-label">Status</label>
+                <select name="status" class="form-select">
+                    <option value="" {% if not status_filter %}selected{% endif %}>Unresolved</option>
+                    {% for value, label in status_choices %}
+                    <option value="{{ value }}" {% if status_filter == value %}selected{% endif %}>{{ label }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div class="col-md-3">
+                <label class="form-label">Priority</label>
+                <select name="priority" class="form-select">
+                    <option value="">All priorities</option>
+                    {% for value, label in priority_choices %}
+                    <option value="{{ value }}" {% if priority_filter == value %}selected{% endif %}>{{ label }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div class="col-md-4">
+                <label class="form-label">Type</label>
+                <select name="kind" class="form-select">
+                    <option value="">All types</option>
+                    {% for value, label in kind_choices %}
+                    <option value="{{ value }}" {% if kind_filter == value %}selected{% endif %}>{{ label }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div class="col-md-2 d-grid">
+                <button class="btn btn-primary" type="submit">Filter</button>
+            </div>
+        </div>
+    </div>
+</form>
+
+{% if page_obj %}
+<div class="d-flex flex-column gap-3">
+    {% for recommendation in page_obj %}
+    <div class="card">
+        <div class="card-body">
+            <div class="d-flex flex-column flex-lg-row justify-content-between gap-3">
+                <div>
+                    <div class="d-flex flex-wrap align-items-center gap-2 mb-2">
+                        <span class="badge {% if recommendation.priority == 'high' %}bg-danger{% elif recommendation.priority == 'medium' %}bg-warning text-dark{% else %}bg-secondary{% endif %}">
+                            {{ recommendation.get_priority_display }}
+                        </span>
+                        <span class="badge bg-light text-dark border">{{ recommendation.get_status_display }}</span>
+                        <span class="small text-body-secondary">{{ recommendation.get_kind_display }}</span>
+                        <span class="small text-body-secondary">Confidence {{ recommendation.confidence|floatformat:2 }}</span>
+                    </div>
+                    <h5 class="mb-2">{{ recommendation.title }}</h5>
+                    <p class="mb-3">{{ recommendation.summary }}</p>
+                    <div class="small text-body-secondary">
+                        {% if recommendation.event %}
+                        <span class="me-3"><i class="bi bi-calendar-event me-1"></i>{{ recommendation.event.name }}</span>
+                        {% endif %}
+                        {% if recommendation.customer %}
+                        <span class="me-3"><i class="bi bi-person me-1"></i>{{ recommendation.customer.name }}</span>
+                        {% endif %}
+                    </div>
+                </div>
+                <div class="d-flex flex-column gap-2" style="min-width: 180px;">
+                    <form method="post" action="{% url 'tickets:ai_recommendation_review' recommendation.id %}">
+                        {% csrf_token %}
+                        <button class="btn btn-primary w-100" type="submit">
+                            {{ recommendation.recommended_action_json.label|default:"Review" }}
+                        </button>
+                    </form>
+                    {% if recommendation.status != 'resolved' %}
+                    <form method="post" action="{% url 'tickets:ai_recommendation_resolve' recommendation.id %}">
+                        {% csrf_token %}
+                        <input type="hidden" name="next" value="{{ request.get_full_path }}">
+                        <button class="btn btn-outline-success w-100" type="submit">Mark resolved</button>
+                    </form>
+                    {% endif %}
+                    {% if recommendation.status != 'dismissed' %}
+                    <form method="post" action="{% url 'tickets:ai_recommendation_dismiss' recommendation.id %}">
+                        {% csrf_token %}
+                        <input type="hidden" name="next" value="{{ request.get_full_path }}">
+                        <button class="btn btn-outline-secondary w-100" type="submit">Dismiss</button>
+                    </form>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+    </div>
+    {% endfor %}
+</div>
+
+{% if page_obj.has_other_pages %}
+<div class="d-flex justify-content-center py-3">
+    <nav>
+        <ul class="pagination mb-0">
+            {% if page_obj.has_previous %}
+            <li class="page-item"><a class="page-link" href="?page={{ page_obj.previous_page_number }}&status={{ status_filter }}&priority={{ priority_filter }}&kind={{ kind_filter }}">Previous</a></li>
+            {% endif %}
+            <li class="page-item active"><span class="page-link">{{ page_obj.number }} / {{ page_obj.paginator.num_pages }}</span></li>
+            {% if page_obj.has_next %}
+            <li class="page-item"><a class="page-link" href="?page={{ page_obj.next_page_number }}&status={{ status_filter }}&priority={{ priority_filter }}&kind={{ kind_filter }}">Next</a></li>
+            {% endif %}
+        </ul>
+    </nav>
+</div>
+{% endif %}
+{% else %}
+<div class="empty-state">
+    <i class="bi bi-check2-circle d-block"></i>
+    <p>No recommendations match these filters.</p>
+</div>
+{% endif %}
+{% endblock %}

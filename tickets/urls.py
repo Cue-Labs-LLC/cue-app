@@ -80,6 +80,10 @@ urlpatterns = [
     path('terms/', views.terms, name='terms'),
     path('', views.landing),
     path('dashboard/', views.home, name='home'),
+    path('actions/', views.action_center, name='action_center'),
+    path('actions/<uuid:recommendation_id>/review/', views.ai_recommendation_review, name='ai_recommendation_review'),
+    path('actions/<uuid:recommendation_id>/dismiss/', views.ai_recommendation_dismiss, name='ai_recommendation_dismiss'),
+    path('actions/<uuid:recommendation_id>/resolve/', views.ai_recommendation_resolve, name='ai_recommendation_resolve'),
     
     # CSV Upload (price entry and results used when uploading from an event)
     path('upload/price-entry/<uuid:file_id>/', views.price_entry, name='price_entry'),
@@ -98,6 +102,7 @@ urlpatterns = [
     path('customers/<uuid:customer_id>/tags/<uuid:tag_id>/remove/', views.customer_tag_remove, name='customer_tag_remove'),
     path('customers/<uuid:customer_id>/', views.customer_detail, name='customer_detail'),
     # Analytics - Segments
+    path('analytics/', views.analytics_overview, name='analytics_overview'),
     path('analytics/segments/', views.customer_segments, name='customer_segments'),
     path('analytics/segments/recalculate/', views.recalculate_segments, name='recalculate_segments'),
     path('analytics/churn/', views.churn_overview, name='churn_overview'),
@@ -125,7 +130,6 @@ urlpatterns = [
     path('events/create/<str:ticketing_type>/', views.event_create, name='event_create'),
     path('events/<uuid:event_id>/', views.event_detail, name='event_detail'),
     path('events/<uuid:event_id>/uploads-summary/', views.event_uploads_summary, name='event_uploads_summary'),
-    path('events/<uuid:event_id>/summary/stream/', views.event_summary_stream, name='event_summary_stream'),
     path('events/<uuid:event_id>/scanner-pin/generate/', views.generate_scanner_pin, name='generate_scanner_pin'),
     path('events/<uuid:event_id>/scanner-pin/revoke/', views.revoke_scanner_pin, name='revoke_scanner_pin'),
     path('events/<uuid:event_id>/edit/', views.event_edit, name='event_edit'),
@@ -178,6 +182,7 @@ urlpatterns = [
     
     # Settings
     path('settings/google-calendar/', views.settings_google_calendar, name='settings_google_calendar'),
+    path('settings/', views.settings_overview, name='settings_overview'),
     path('settings/google-calendar/disconnect/', views.settings_google_calendar_disconnect, name='settings_google_calendar_disconnect'),
     path('settings/meta-ads/', views.meta_ads_settings, name='meta_ads_settings'),
     path('settings/meta-ads/connect/', views.meta_ads_connect, name='meta_ads_connect'),

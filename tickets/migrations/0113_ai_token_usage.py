@@ -11,7 +11,7 @@ from django.utils import timezone
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('tickets', '0110_organization_mailchimp_access_token_and_more'),
+        ('tickets', '0112_remove_event_ai_summary'),
         migrations.swappable_dependency(settings.AUTH_USER_MODEL),
     ]
 
@@ -22,7 +22,7 @@ class Migration(migrations.Migration):
                 ('id', models.UUIDField(default=uuid.uuid4, editable=False, primary_key=True, serialize=False)),
                 ('created_at', models.DateTimeField(auto_now_add=True)),
                 ('updated_at', models.DateTimeField(auto_now=True)),
-                ('feature', models.CharField(choices=[('chat_agent', 'Chat agent'), ('event_summary', 'Event summary'), ('meta_campaign_match', 'Meta campaign match'), ('mailchimp_campaign_match', 'Mailchimp campaign match')], db_index=True, max_length=50)),
+                ('feature', models.CharField(choices=[('chat_agent', 'Chat agent'), ('meta_campaign_match', 'Meta campaign match'), ('mailchimp_campaign_match', 'Mailchimp campaign match')], db_index=True, max_length=50)),
                 ('model_name', models.CharField(blank=True, db_index=True, max_length=100)),
                 ('prompt_tokens', models.PositiveIntegerField(default=0)),
                 ('completion_tokens', models.PositiveIntegerField(default=0)),
