@@ -16,11 +16,231 @@ from .models import (
     UploadedFile, TicketOrder, Customer, CustomerTag, Event,
     Venue, CSVFormat, Ticket, TicketTier,
     Organization, UserProfile, OrganizationMembership, OrganizationInvitation, ChatMessage,
-    AIRecommendation,
+    AITokenUsage, AIRecommendation,
     SaleableTicketType, SaleableTicketTypeTier, StripeCheckoutSession, FeatureFlagSettings,
     SurveyInvitation, SurveyResponse, SurveyAnswer, SurveyQuestion, Payout,
     ExternalSurveyResponse, EventDailyPageView,
 )
+
+
+class AITokenUsageTests(TestCase):
+    """Tests for organization-scoped AI token metering."""
+
+    def setUp(self):
+        self.org = Organization.objects.create(name='AI Meter Org', slug='ai-meter-org')
+        self.other_org = Organization.objects.create(name='Other AI Org', slug='other-ai-org')
+        self.user = User.objects.create_user(username='meter', email='meter@example.com')
+
+    def test_record_ai_token_usage_from_langchain_metadata(self):
+        from tickets.services.ai_metering import record_ai_token_usage
+
+        class FakeMessage:
+            usage_metadata = {
+                'input_tokens': 42,
+                'output_tokens': 18,
+                'total_tokens': 60,
+            }
+
+        record = record_ai_token_usage(
+            organization=self.org,
+            user=self.user,
+            feature=AITokenUsage.FEATURE_CHAT_AGENT,
+            model_name='gpt-4o',
+            usage=FakeMessage(),
+            metadata={'event_id': 'event-123'},
+        )
+
+        self.assertIsNotNone(record)
+        self.assertEqual(record.organization, self.org)
+        self.assertEqual(record.user, self.user)
+        self.assertEqual(record.prompt_tokens, 42)
+        self.assertEqual(record.completion_tokens, 18)
+        self.assertEqual(record.total_tokens, 60)
+        self.assertEqual(record.metadata['event_id'], 'event-123')
+
+    def test_record_ai_token_usage_skips_missing_usage(self):
+        from tickets.services.ai_metering import record_ai_token_usage
+
+        record = record_ai_token_usage(
+            organization=self.org,
+            feature=AITokenUsage.FEATURE_CHAT_AGENT,
+            model_name='gpt-4o',
+            usage={},
+        )
+
+        self.assertIsNone(record)
+        self.assertFalse(AITokenUsage.objects.exists())
+
+    def test_monthly_ai_token_usage_is_scoped_to_organization_and_month(self):
+        from tickets.services.ai_metering import monthly_ai_token_usage, record_ai_token_usage
+
+        may = datetime(2026, 5, 10, tzinfo=timezone.get_current_timezone())
+        june = datetime(2026, 6, 1, tzinfo=timezone.get_current_timezone())
+
+        record_ai_token_usage(
+            organization=self.org,
+            feature=AITokenUsage.FEATURE_CHAT_AGENT,
+            model_name='gpt-4o',
+            usage={'prompt_tokens': 100, 'completion_tokens': 25, 'total_tokens': 125},
+            occurred_at=may,
+        )
+        record_ai_token_usage(
+            organization=self.org,
+            feature=AITokenUsage.FEATURE_META_CAMPAIGN_MATCH,
+            model_name='gpt-4o',
+            usage={'prompt_tokens': 20, 'completion_tokens': 5, 'total_tokens': 25},
+            occurred_at=june,
+        )
+        record_ai_token_usage(
+            organization=self.other_org,
+            feature=AITokenUsage.FEATURE_CHAT_AGENT,
+            model_name='gpt-4o',
+            usage={'prompt_tokens': 200, 'completion_tokens': 50, 'total_tokens': 250},
+            occurred_at=may,
+        )
+
+        totals = monthly_ai_token_usage(self.org, 2026, 5)
+
+        self.assertEqual(totals, {
+            'prompt_tokens': 100,
+            'completion_tokens': 25,
+            'total_tokens': 125,
+        })
+
+    def test_token_usage_accumulator_deduplicates_stream_chunks_by_run(self):
+        from tickets.services.ai_metering import TokenUsageAccumulator
+
+        accumulator = TokenUsageAccumulator()
+        accumulator.add({'input_tokens': 10, 'output_tokens': 1, 'total_tokens': 11}, key='run-1')
+        accumulator.add({'input_tokens': 10, 'output_tokens': 5, 'total_tokens': 15}, key='run-1')
+        accumulator.add({'input_tokens': 4, 'output_tokens': 2, 'total_tokens': 6}, key='run-2')
+
+        total = accumulator.total()
+
+        self.assertEqual(total.prompt_tokens, 14)
+        self.assertEqual(total.completion_tokens, 7)
+        self.assertEqual(total.total_tokens, 21)
+
+    def test_monthly_breakdown_groups_by_feature_and_fills_daily_zeros(self):
+        from tickets.services.ai_metering import (
+            monthly_ai_token_usage_breakdown, record_ai_token_usage,
+        )
+
+        tz = timezone.get_current_timezone()
+        record_ai_token_usage(
+            organization=self.org,
+            feature=AITokenUsage.FEATURE_CHAT_AGENT,
+            usage={'prompt_tokens': 100, 'completion_tokens': 25, 'total_tokens': 125},
+            occurred_at=datetime(2026, 5, 3, 12, tzinfo=tz),
+        )
+        record_ai_token_usage(
+            organization=self.org,
+            feature=AITokenUsage.FEATURE_CHAT_AGENT,
+            usage={'prompt_tokens': 10, 'completion_tokens': 5, 'total_tokens': 15},
+            occurred_at=datetime(2026, 5, 3, 18, tzinfo=tz),
+        )
+        record_ai_token_usage(
+            organization=self.org,
+            feature=AITokenUsage.FEATURE_META_CAMPAIGN_MATCH,
+            usage={'prompt_tokens': 30, 'completion_tokens': 6, 'total_tokens': 36},
+            occurred_at=datetime(2026, 5, 17, 9, tzinfo=tz),
+        )
+        # Different org's records must be excluded.
+        record_ai_token_usage(
+            organization=self.other_org,
+            feature=AITokenUsage.FEATURE_CHAT_AGENT,
+            usage={'prompt_tokens': 999, 'completion_tokens': 999, 'total_tokens': 1998},
+            occurred_at=datetime(2026, 5, 3, 12, tzinfo=tz),
+        )
+
+        breakdown = monthly_ai_token_usage_breakdown(self.org, 2026, 5)
+
+        self.assertEqual(breakdown['totals'], {
+            'prompt_tokens': 140,
+            'completion_tokens': 36,
+            'total_tokens': 176,
+        })
+        self.assertEqual(breakdown['by_feature'][0]['feature'], AITokenUsage.FEATURE_CHAT_AGENT)
+        self.assertEqual(breakdown['by_feature'][0]['total_tokens'], 140)
+        self.assertEqual(breakdown['by_feature'][0]['feature_label'], 'Chat agent')
+        self.assertEqual(breakdown['by_feature'][1]['feature'], AITokenUsage.FEATURE_META_CAMPAIGN_MATCH)
+        self.assertEqual(breakdown['by_feature'][1]['total_tokens'], 36)
+
+        self.assertEqual(len(breakdown['daily']), 31)
+        self.assertEqual(breakdown['daily'][0]['date'], date(2026, 5, 1))
+        self.assertEqual(breakdown['daily'][0]['total_tokens'], 0)
+        self.assertEqual(breakdown['daily'][2]['date'], date(2026, 5, 3))
+        self.assertEqual(breakdown['daily'][2]['total_tokens'], 140)
+        self.assertEqual(breakdown['daily'][16]['date'], date(2026, 5, 17))
+        self.assertEqual(breakdown['daily'][16]['total_tokens'], 36)
+
+
+class AITokenUsageDashboardViewTests(TestCase):
+    """Tests for the AI token usage dashboard view."""
+
+    def setUp(self):
+        self.client = Client()
+        self.org = Organization.objects.create(name='Dash Org', slug='dash-org')
+        self.other_org = Organization.objects.create(name='Other Dash Org', slug='other-dash-org')
+
+        self.admin_user = User.objects.create_user(
+            username='dashadmin', email='dashadmin@example.com', password='testpass123',
+        )
+        UserProfile.objects.create(
+            user=self.admin_user, organization=self.org, org_role=UserProfile.OrgRole.OWNER,
+        )
+        OrganizationMembership.objects.create(
+            user=self.admin_user, organization=self.org, org_role=UserProfile.OrgRole.OWNER,
+        )
+
+        self.host_user = User.objects.create_user(
+            username='dashhost', email='dashhost@example.com', password='testpass123',
+        )
+        UserProfile.objects.create(
+            user=self.host_user, organization=self.org, org_role=UserProfile.OrgRole.HOST,
+        )
+        OrganizationMembership.objects.create(
+            user=self.host_user, organization=self.org, org_role=UserProfile.OrgRole.HOST,
+        )
+
+        tz = timezone.get_current_timezone()
+        from tickets.services.ai_metering import record_ai_token_usage
+        record_ai_token_usage(
+            organization=self.org,
+            feature=AITokenUsage.FEATURE_CHAT_AGENT,
+            usage={'prompt_tokens': 100, 'completion_tokens': 25, 'total_tokens': 125},
+            occurred_at=datetime(2026, 5, 10, 12, tzinfo=tz),
+        )
+        record_ai_token_usage(
+            organization=self.other_org,
+            feature=AITokenUsage.FEATURE_CHAT_AGENT,
+            usage={'prompt_tokens': 555, 'completion_tokens': 5, 'total_tokens': 560},
+            occurred_at=datetime(2026, 5, 10, 12, tzinfo=tz),
+        )
+
+    def _login_admin(self):
+        self.client.login(username='dashadmin@example.com', password='testpass123')
+        self.client.get(reverse('tickets:home'))
+
+    def test_admin_sees_only_own_org_usage(self):
+        self._login_admin()
+        response = self.client.get(reverse('tickets:ai_token_usage') + '?month_key=2026-05')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context['totals']['total_tokens'], 125)
+        self.assertNotContains(response, '560')
+
+    def test_non_admin_forbidden(self):
+        self.client.login(username='dashhost@example.com', password='testpass123')
+        self.client.get(reverse('tickets:home'))
+        response = self.client.get(reverse('tickets:ai_token_usage'))
+        self.assertEqual(response.status_code, 403)
+
+    def test_invalid_month_key_falls_back_to_current_month(self):
+        self._login_admin()
+        response = self.client.get(reverse('tickets:ai_token_usage') + '?month_key=not-a-month')
+        self.assertEqual(response.status_code, 200)
+        today = timezone.localdate()
+        self.assertEqual(response.context['selected_month_key'], f"{today.year:04d}-{today.month:02d}")
 
 
 class UploadDeleteViewTests(TestCase):

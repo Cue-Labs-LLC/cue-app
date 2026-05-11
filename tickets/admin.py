@@ -11,7 +11,7 @@ from .models import (
     CustomField, CustomFieldOption, EventCustomFieldValue,
     IncomeSource, EventIncome,
     SurveyQuestion, SurveyInvitation, SurveyResponse, SurveyAnswer,
-    ChatMessage, Payout, StripeCheckoutSession,
+    ChatMessage, AITokenUsage, Payout, StripeCheckoutSession,
     ExternalSurveyUpload, ExternalSurveyResponse,
     SaleableTicketType, SaleableTicketTypeTier,
     OrganizerWaitlist,
@@ -1018,6 +1018,37 @@ class ChatMessageAdmin(admin.ModelAdmin):
         if profile and profile.organization_id:
             return qs.filter(organization=profile.organization).select_related('organization', 'user')
         return qs.none()
+
+
+@admin.register(AITokenUsage)
+class AITokenUsageAdmin(admin.ModelAdmin):
+    list_display = [
+        'occurred_at', 'organization', 'feature', 'model_name',
+        'prompt_tokens', 'completion_tokens', 'total_tokens', 'user',
+    ]
+    list_filter = ['organization', 'feature', 'model_name', 'occurred_at']
+    search_fields = ['organization__name', 'user__username', 'user__email', 'request_id']
+    readonly_fields = [
+        'id', 'organization', 'user', 'feature', 'model_name',
+        'prompt_tokens', 'completion_tokens', 'total_tokens',
+        'request_id', 'occurred_at', 'metadata', 'created_at', 'updated_at',
+    ]
+    date_hierarchy = 'occurred_at'
+
+    def get_queryset(self, request):
+        qs = super().get_queryset(request).select_related('organization', 'user')
+        if request.user.is_superuser:
+            return qs
+        profile = getattr(request.user, 'profile', None)
+        if profile and profile.organization_id:
+            return qs.filter(organization=profile.organization)
+        return qs.none()
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
 
 
 @admin.register(ExternalSurveyUpload)

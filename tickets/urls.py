@@ -195,6 +195,7 @@ urlpatterns = [
     path('settings/mailchimp/disconnect/', views.mailchimp_disconnect, name='mailchimp_disconnect'),
     path('settings/profile/', views.org_profile, name='org_profile'),
     path('settings/api-keys/', views.settings_api_keys, name='settings_api_keys'),
+    path('settings/ai-token-usage/', views.ai_token_usage_dashboard, name='ai_token_usage'),
     path('settings/api-keys/<uuid:key_id>/revoke/', views.settings_api_key_revoke, name='settings_api_key_revoke'),
     path('settings/custom-fields/', views.custom_field_list, name='custom_field_list'),
     path('settings/custom-fields/create/', views.custom_field_create, name='custom_field_create'),

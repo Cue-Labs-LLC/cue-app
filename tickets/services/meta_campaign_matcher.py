@@ -6,6 +6,9 @@ from datetime import timedelta
 from django.conf import settings
 from pydantic import BaseModel, Field
 
+from tickets.models import AITokenUsage
+from tickets.services.ai_metering import record_ai_token_usage
+
 logger = logging.getLogger(__name__)
 
 
@@ -34,13 +37,15 @@ class MetaCampaignMatcher:
 
         from langchain_openai import ChatOpenAI
 
+        model_name = getattr(settings, "OPENAI_MODEL", "gpt-4o")
         llm = ChatOpenAI(
-            model=getattr(settings, "OPENAI_MODEL", "gpt-4o"),
+            model=model_name,
             api_key=getattr(settings, "OPENAI_API_KEY", ""),
             temperature=0.0,
+            stream_usage=True,
         )
-        structured_llm = llm.with_structured_output(MatchResult)
-        result = structured_llm.invoke([
+        structured_llm = llm.with_structured_output(MatchResult, include_raw=True)
+        raw_result = structured_llm.invoke([
             {
                 "role": "system",
                 "content": (
@@ -51,6 +56,24 @@ class MetaCampaignMatcher:
             },
             {"role": "user", "content": prompt},
         ])
+
+        if isinstance(raw_result, dict) and {'raw', 'parsed', 'parsing_error'} <= set(raw_result):
+            record_ai_token_usage(
+                organization=self.organization,
+                feature=AITokenUsage.FEATURE_META_CAMPAIGN_MATCH,
+                model_name=model_name,
+                usage=raw_result.get('raw'),
+                metadata={
+                    'event_id': str(event.id),
+                    'campaign_count': len(filtered_campaigns),
+                },
+            )
+            if raw_result.get('parsing_error'):
+                raise raw_result['parsing_error']
+            result = raw_result.get('parsed')
+        else:
+            result = raw_result
+
         if isinstance(result, MatchResult):
             return self._limit_result(result)
         if hasattr(MatchResult, "model_validate"):
