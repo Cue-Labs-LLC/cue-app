@@ -102,6 +102,11 @@ class Organization(BaseModel):
     meta_ads_account_id = models.CharField(max_length=64, blank=True, default='')
     meta_ads_account_name = models.CharField(max_length=255, blank=True, default='')
     meta_ads_token_expires_at = models.DateTimeField(null=True, blank=True)
+    mailchimp_access_token = models.CharField(max_length=512, blank=True, default='')
+    mailchimp_dc = models.CharField(max_length=20, blank=True, default='')
+    mailchimp_account_id = models.CharField(max_length=100, blank=True, default='')
+    mailchimp_account_name = models.CharField(max_length=255, blank=True, default='')
+    mailchimp_login_email = models.EmailField(blank=True, default='')
     waitlist_feature_enabled = models.BooleanField(
         default=False,
         help_text='Enable the waitlist feature for this organization.',
@@ -158,40 +163,6 @@ class PipedreamCalendarConnection(BaseModel):
 
     def __str__(self):
         return f"Pipedream calendar: {self.organization.name}"
-
-
-class PipedreamConnectedAccount(AuditBaseModel):
-    """Pipedream Connect account reference scoped to one organization."""
-    organization = models.ForeignKey(
-        Organization,
-        on_delete=models.CASCADE,
-        related_name='pipedream_connected_accounts',
-    )
-    app_slug = models.CharField(max_length=100, db_index=True)
-    external_user_id = models.CharField(max_length=255, db_index=True)
-    account_id = models.CharField(max_length=100, db_index=True)
-    account_name = models.CharField(max_length=255, blank=True, default='')
-    healthy = models.BooleanField(default=True)
-    connected_at = models.DateTimeField(null=True, blank=True)
-    last_checked_at = models.DateTimeField(null=True, blank=True)
-    external_metadata = models.JSONField(default=dict, blank=True)
-
-    class Meta:
-        ordering = ['app_slug', '-connected_at', '-created_at']
-        indexes = [
-            models.Index(fields=['organization', 'app_slug']),
-            models.Index(fields=['external_user_id', 'app_slug']),
-        ]
-        constraints = [
-            models.UniqueConstraint(
-                fields=['organization', 'app_slug'],
-                condition=models.Q(deleted_at__isnull=True),
-                name='uniq_active_pipedream_account',
-            ),
-        ]
-
-    def __str__(self):
-        return f"{self.app_slug}: {self.account_name or self.account_id}"
 
 
 def _generate_api_key():

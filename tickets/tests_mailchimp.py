@@ -1,5 +1,6 @@
 from datetime import date, datetime, timezone
 from decimal import Decimal
+from urllib.parse import parse_qs, urlparse
 from unittest.mock import MagicMock, patch
 
 from django.contrib.auth.models import User
@@ -11,21 +12,21 @@ from .models import (
     EventEmailCampaign,
     Organization,
     OrganizationMembership,
-    PipedreamConnectedAccount,
     UserProfile,
     Venue,
 )
-from .services.mailchimp import normalize_campaign_report
+from .services.mailchimp import (
+    MailchimpAPIError,
+    MailchimpClient,
+    build_authorize_url,
+    exchange_code_for_token,
+    get_oauth_metadata,
+    normalize_campaign_report,
+)
 from .services.mailchimp_campaign_matcher import (
     MailchimpCampaignCandidate,
     MailchimpCampaignMatcher,
     MailchimpMatchResult,
-)
-from .services.pipedream_connect import (
-    PipedreamConnectClient,
-    PipedreamConnectError,
-    PipedreamMailchimpClient,
-    external_user_id_for_org,
 )
 
 
@@ -49,77 +50,83 @@ def _report(campaign_id='cmp_1', title='Event Campaign', send_time='2025-05-15T1
     }
 
 
-class PipedreamMailchimpClientTests(TestCase):
-    def setUp(self):
-        self.org = Organization.objects.create(name='Org', slug='org')
-        self.connection = PipedreamConnectedAccount.objects.create(
-            organization=self.org,
-            app_slug='mailchimp',
-            external_user_id=external_user_id_for_org(self.org),
-            account_id='apn_123',
-            account_name='Main Account',
-        )
+def _response(status_code=200, payload=None):
+    response = MagicMock(status_code=status_code)
+    response.json.return_value = payload if payload is not None else {}
+    return response
 
-    def test_list_campaign_reports_paginates_through_proxy(self):
-        connect_client = MagicMock()
-        connect_client.run_action.return_value = {
-            'ret': {
-                'results': [
-                    {'campaign': {
-                        'id': 'cmp_1',
-                        'type': 'regular',
-                        'emails_sent': 100,
-                        'send_time': '2025-05-15T12:00:00+00:00',
-                        'long_archive_url': 'https://example.com/cmp_1',
-                        'settings': {'title': 'Campaign 1', 'subject_line': 'Subject 1'},
-                        'recipients': {'list_id': 'list_1', 'list_name': 'Main List'},
-                    }},
-                    {'campaign': {
-                        'id': 'draft_1',
-                        'type': 'regular',
-                        'emails_sent': 0,
-                        'send_time': '',
-                        'settings': {'title': 'Draft Campaign'},
-                    }},
-                    {'campaign': {
-                        'id': 'cmp_2',
-                        'type': 'regular',
-                        'emails_sent': 200,
-                        'send_time': '2025-05-16T12:00:00+00:00',
-                        'settings': {'title': 'Campaign 2', 'subject_line': 'Subject 2'},
-                    }},
-                ]
-            }
-        }
 
-        reports = PipedreamMailchimpClient(self.connection, connect_client).list_campaign_reports(limit=2)
+@override_settings(MAILCHIMP_CLIENT_ID='client', MAILCHIMP_CLIENT_SECRET='secret')
+class MailchimpClientTests(TestCase):
+    def test_build_authorize_url_includes_oauth_params(self):
+        url = build_authorize_url('https://cue.test/settings/mailchimp/callback/', 'state_123')
+        parsed = urlparse(url)
+        params = parse_qs(parsed.query)
 
-        self.assertEqual([item['id'] for item in reports], ['cmp_1', 'cmp_2'])
-        first_call = connect_client.run_action.call_args_list[0].args
-        self.assertEqual(first_call[0], self.connection.external_user_id)
-        self.assertEqual(first_call[1], 'mailchimp-search-campaign')
-        self.assertEqual(first_call[2]['mailchimp']['authProvisionId'], self.connection.account_id)
-        self.assertEqual(first_call[2]['query'], '*')
+        self.assertEqual(parsed.scheme, 'https')
+        self.assertEqual(parsed.netloc, 'login.mailchimp.com')
+        self.assertEqual(params['response_type'], ['code'])
+        self.assertEqual(params['client_id'], ['client'])
+        self.assertEqual(params['redirect_uri'], ['https://cue.test/settings/mailchimp/callback/'])
+        self.assertEqual(params['state'], ['state_123'])
 
-    def test_get_campaign_report_runs_pipedream_action(self):
-        connect_client = MagicMock()
-        connect_client.run_action.return_value = {'ret': _report('cmp_1', 'Campaign 1')}
+    @patch('tickets.services.mailchimp.requests.request')
+    def test_exchange_code_for_token_posts_oauth_form_fields(self, mock_request):
+        mock_request.return_value = _response(payload={'access_token': 'token_123'})
 
-        report = PipedreamMailchimpClient(self.connection, connect_client).get_campaign_report('cmp_1')
+        token = exchange_code_for_token('code_123', 'https://cue.test/settings/mailchimp/callback/')
+
+        self.assertEqual(token, 'token_123')
+        self.assertEqual(mock_request.call_args.args[:2], ('POST', 'https://login.mailchimp.com/oauth2/token'))
+        self.assertEqual(mock_request.call_args.kwargs['data']['client_id'], 'client')
+        self.assertEqual(mock_request.call_args.kwargs['data']['client_secret'], 'secret')
+        self.assertEqual(mock_request.call_args.kwargs['data']['code'], 'code_123')
+
+    @patch('tickets.services.mailchimp.requests.request')
+    def test_get_oauth_metadata_uses_oauth_header(self, mock_request):
+        mock_request.return_value = _response(payload={'dc': 'us18'})
+
+        metadata = get_oauth_metadata('token_123')
+
+        self.assertEqual(metadata['dc'], 'us18')
+        self.assertEqual(mock_request.call_args.args[:2], ('GET', 'https://login.mailchimp.com/oauth2/metadata'))
+        self.assertEqual(mock_request.call_args.kwargs['headers']['Authorization'], 'OAuth token_123')
+
+    @patch('tickets.services.mailchimp.requests.request')
+    def test_client_uses_bearer_auth_and_paginates_reports(self, mock_request):
+        first_page = [_report(f'cmp_{idx}', f'Campaign {idx}') for idx in range(100)]
+        second_page = [_report(f'cmp_{idx}', f'Campaign {idx}') for idx in range(100, 150)]
+        mock_request.side_effect = [
+            _response(payload={'reports': first_page, 'total_items': 150}),
+            _response(payload={'reports': second_page, 'total_items': 150}),
+        ]
+
+        reports = MailchimpClient('token_123', 'us18').list_campaign_reports(limit=150)
+
+        self.assertEqual(len(reports), 150)
+        self.assertEqual(reports[0]['id'], 'cmp_0')
+        self.assertEqual(mock_request.call_count, 2)
+        first_call = mock_request.call_args_list[0]
+        second_call = mock_request.call_args_list[1]
+        self.assertEqual(first_call.kwargs['headers']['Authorization'], 'Bearer token_123')
+        self.assertEqual(first_call.kwargs['params'], {'count': 100, 'offset': 0})
+        self.assertEqual(second_call.kwargs['params'], {'count': 50, 'offset': 100})
+
+    @patch('tickets.services.mailchimp.requests.request')
+    def test_get_campaign_report_uses_report_endpoint(self, mock_request):
+        mock_request.return_value = _response(payload=_report('cmp_1', 'Campaign 1'))
+
+        report = MailchimpClient('token_123', 'us18').get_campaign_report('cmp_1')
 
         self.assertEqual(report['id'], 'cmp_1')
-        first_call = connect_client.run_action.call_args_list[0].args
-        self.assertEqual(first_call[1], 'mailchimp-get-campaign-report')
-        self.assertEqual(first_call[2]['campaignId'], 'cmp_1')
+        self.assertEqual(mock_request.call_args.args[:2], ('GET', 'https://us18.api.mailchimp.com/3.0/reports/cmp_1'))
 
-    @patch('tickets.services.pipedream_connect.requests.request')
-    def test_pipedream_error_raises_message(self, mock_request):
-        response = MagicMock(status_code=401)
-        response.json.return_value = {'message': 'Invalid client'}
-        mock_request.return_value = response
+    @patch('tickets.services.mailchimp.requests.request')
+    def test_mailchimp_error_raises_message(self, mock_request):
+        mock_request.return_value = _response(status_code=401, payload={'detail': 'API key is invalid'})
 
-        with self.assertRaisesMessage(PipedreamConnectError, 'Invalid client'):
-            PipedreamConnectClient().create_oauth_token()
+        with self.assertRaisesMessage(MailchimpAPIError, 'API key is invalid'):
+            MailchimpClient('bad', 'us18').get_account_root()
 
     def test_normalize_campaign_report_summary_metrics(self):
         normalized = normalize_campaign_report(_report())
@@ -164,16 +171,18 @@ class MailchimpCampaignMatcherTests(TestCase):
         self.assertEqual([item.campaign_id for item in result.candidates[:3]], ['cmp_12', 'cmp_11', 'cmp_10'])
 
 
-@override_settings(
-    PIPEDREAM_CLIENT_ID='client',
-    PIPEDREAM_CLIENT_SECRET='secret',
-    PIPEDREAM_PROJECT_ID='proj_123',
-    PIPEDREAM_ENVIRONMENT='development',
-    PIPEDREAM_MAILCHIMP_APP_SLUG='mailchimp',
-)
+@override_settings(MAILCHIMP_CLIENT_ID='client', MAILCHIMP_CLIENT_SECRET='secret')
 class MailchimpViewTests(TestCase):
     def setUp(self):
-        self.org = Organization.objects.create(name='Mailchimp Org', slug='mailchimp-org')
+        self.org = Organization.objects.create(
+            name='Mailchimp Org',
+            slug='mailchimp-org',
+            mailchimp_access_token='token_123',
+            mailchimp_dc='us18',
+            mailchimp_account_id='acct_123',
+            mailchimp_account_name='Main Account',
+            mailchimp_login_email='owner@example.com',
+        )
         self.user = User.objects.create_user(username='owner', email='owner@example.com', password='pass123')
         UserProfile.objects.create(user=self.user, organization=self.org, org_role=UserProfile.OrgRole.OWNER)
         OrganizationMembership.objects.create(
@@ -188,73 +197,118 @@ class MailchimpViewTests(TestCase):
             name='Event',
             start_date=date(2025, 6, 1),
         )
-        self.connection = PipedreamConnectedAccount.objects.create(
-            organization=self.org,
-            app_slug='mailchimp',
-            external_user_id=external_user_id_for_org(self.org),
-            account_id='apn_123',
-            account_name='Main Account',
-        )
         self.client.force_login(self.user)
         session = self.client.session
         session['_org_id'] = str(self.org.id)
         session.save()
 
-    @patch('tickets.views.PipedreamConnectClient')
-    def test_connect_redirects_to_pipedream_connect_link(self, mock_client_cls):
-        self.connection.delete()
-        client = mock_client_cls.return_value
-        client.create_connect_token.return_value = {'connect_link_url': 'https://pipedream.com/_static/connect.html?token=abc'}
-        client.build_connect_link.return_value = 'https://pipedream.com/_static/connect.html?token=abc&connectLink=true&app=mailchimp'
+    def _disconnect_org(self):
+        self.org.mailchimp_access_token = ''
+        self.org.mailchimp_dc = ''
+        self.org.mailchimp_account_id = ''
+        self.org.mailchimp_account_name = ''
+        self.org.mailchimp_login_email = ''
+        self.org.save(update_fields=[
+            'mailchimp_access_token',
+            'mailchimp_dc',
+            'mailchimp_account_id',
+            'mailchimp_account_name',
+            'mailchimp_login_email',
+        ])
+
+    def _set_oauth_state(self, state='state_123'):
+        session = self.client.session
+        session['mailchimp_oauth_state'] = state
+        session.save()
+        return state
+
+    def test_connect_redirects_to_mailchimp_authorize_url(self):
+        self._disconnect_org()
 
         response = self.client.post(reverse('tickets:mailchimp_connect'))
 
         self.assertEqual(response.status_code, 302)
-        self.assertIn('app=mailchimp', response.url)
-        client.create_connect_token.assert_called_once()
+        parsed = urlparse(response.url)
+        params = parse_qs(parsed.query)
+        self.assertEqual(parsed.netloc, 'login.mailchimp.com')
+        self.assertEqual(params['client_id'], ['client'])
+        self.assertEqual(params['response_type'], ['code'])
+        self.assertTrue(params['state'][0])
+        self.assertEqual(self.client.session['mailchimp_oauth_state'], params['state'][0])
 
-    @patch('tickets.views.PipedreamConnectClient')
-    def test_callback_stores_newest_healthy_pipedream_account(self, mock_client_cls):
-        self.connection.delete()
-        client = mock_client_cls.return_value
-        client.list_accounts.return_value = [
-            {
-                'id': 'apn_old',
-                'name': 'Old Account',
-                'external_id': external_user_id_for_org(self.org),
-                'app': {'name_slug': 'mailchimp'},
-                'created_at': '2026-05-08T15:00:00+00:00',
-                'healthy': True,
-            },
-            {
-                'id': 'apn_new',
-                'name': 'New Account',
-                'external_id': external_user_id_for_org(self.org),
-                'app': {'name_slug': 'mailchimp'},
-                'created_at': '2026-05-09T15:00:00+00:00',
-                'healthy': True,
-            },
-        ]
+    @patch('tickets.views.exchange_code_for_token')
+    def test_callback_rejects_invalid_state(self, mock_exchange):
+        self._set_oauth_state('expected')
 
-        response = self.client.get(reverse('tickets:mailchimp_callback'))
+        response = self.client.get(reverse('tickets:mailchimp_callback'), {
+            'code': 'code_123',
+            'state': 'wrong',
+        })
 
         self.assertEqual(response.status_code, 302)
-        connection = PipedreamConnectedAccount.objects.get(organization=self.org, app_slug='mailchimp', deleted_at__isnull=True)
-        self.assertEqual(connection.account_id, 'apn_new')
-        self.assertEqual(connection.account_name, 'New Account')
-        self.assertEqual(connection.external_user_id, external_user_id_for_org(self.org))
+        mock_exchange.assert_not_called()
 
-    @patch('tickets.views.PipedreamConnectClient')
-    def test_disconnect_deletes_pipedream_account_and_soft_deletes_local_row(self, mock_client_cls):
+    @patch('tickets.views.MailchimpClient')
+    @patch('tickets.views.get_oauth_metadata')
+    @patch('tickets.views.exchange_code_for_token')
+    def test_callback_stores_direct_mailchimp_credentials(self, mock_exchange, mock_metadata, mock_client_cls):
+        self._disconnect_org()
+        self._set_oauth_state('state_123')
+        mock_exchange.return_value = 'token_new'
+        mock_metadata.return_value = {
+            'dc': 'us20',
+            'user_id': 'user_123',
+            'login': {'email': 'mailchimp@example.com'},
+        }
+        mock_client_cls.return_value.get_account_root.return_value = {
+            'account_id': 'acct_new',
+            'account_name': 'New Account',
+        }
+
+        response = self.client.get(reverse('tickets:mailchimp_callback'), {
+            'code': 'code_123',
+            'state': 'state_123',
+        })
+
+        self.assertEqual(response.status_code, 302)
+        self.org.refresh_from_db()
+        self.assertEqual(self.org.mailchimp_access_token, 'token_new')
+        self.assertEqual(self.org.mailchimp_dc, 'us20')
+        self.assertEqual(self.org.mailchimp_account_id, 'acct_new')
+        self.assertEqual(self.org.mailchimp_account_name, 'New Account')
+        self.assertEqual(self.org.mailchimp_login_email, 'mailchimp@example.com')
+        mock_exchange.assert_called_once()
+        mock_client_cls.assert_called_once_with('token_new', 'us20')
+
+    @patch('tickets.views.exchange_code_for_token')
+    def test_callback_api_failure_does_not_store_partial_credentials(self, mock_exchange):
+        self._disconnect_org()
+        self._set_oauth_state('state_123')
+        mock_exchange.side_effect = MailchimpAPIError('Invalid code')
+
+        response = self.client.get(reverse('tickets:mailchimp_callback'), {
+            'code': 'code_123',
+            'state': 'state_123',
+        })
+
+        self.assertEqual(response.status_code, 302)
+        self.org.refresh_from_db()
+        self.assertEqual(self.org.mailchimp_access_token, '')
+        self.assertEqual(self.org.mailchimp_dc, '')
+
+    def test_disconnect_clears_org_mailchimp_fields(self):
         response = self.client.post(reverse('tickets:mailchimp_disconnect'))
 
         self.assertEqual(response.status_code, 302)
-        self.connection.refresh_from_db()
-        self.assertIsNotNone(self.connection.deleted_at)
-        mock_client_cls.return_value.delete_account.assert_called_once_with('apn_123')
+        self.org.refresh_from_db()
+        self.assertEqual(self.org.mailchimp_access_token, '')
+        self.assertEqual(self.org.mailchimp_dc, '')
+        self.assertEqual(self.org.mailchimp_account_id, '')
+        self.assertEqual(self.org.mailchimp_account_name, '')
+        self.assertEqual(self.org.mailchimp_login_email, '')
 
     @patch('tickets.views.MailchimpCampaignMatcher')
-    @patch('tickets.views.PipedreamMailchimpClient')
+    @patch('tickets.views.MailchimpClient')
     def test_match_endpoint_returns_modal_json(self, mock_client_cls, mock_matcher_cls):
         client = mock_client_cls.return_value
         client.list_campaign_reports.return_value = [
@@ -279,10 +333,11 @@ class MailchimpViewTests(TestCase):
         self.assertEqual(payload['candidates'][0]['campaign_id'], 'cmp_1')
         self.assertEqual(payload['candidates'][0]['confidence_pct'], 84)
         self.assertEqual(payload['candidates'][0]['send_time'], 'Friday, May 8th 2026 at 8:00 AM PST')
+        mock_client_cls.assert_called_with('token_123', 'us18')
 
-    @patch('tickets.views.PipedreamMailchimpClient')
+    @patch('tickets.views.MailchimpClient')
     def test_match_endpoint_rejects_unconnected_org(self, mock_client_cls):
-        self.connection.delete()
+        self._disconnect_org()
 
         response = self.client.get(
             reverse('tickets:event_mailchimp_match', kwargs={'event_id': self.event.id}),
@@ -292,7 +347,7 @@ class MailchimpViewTests(TestCase):
         self.assertEqual(response.status_code, 400)
         mock_client_cls.assert_not_called()
 
-    @patch('tickets.views.PipedreamMailchimpClient')
+    @patch('tickets.views.MailchimpClient')
     def test_apply_upserts_single_mailchimp_campaign(self, mock_client_cls):
         client = mock_client_cls.return_value
         client.list_campaign_reports.return_value = [_report('cmp_1', 'Event Campaign')]
@@ -318,7 +373,7 @@ class MailchimpViewTests(TestCase):
         self.assertEqual(campaign.match_confidence, Decimal('0.900'))
         self.assertEqual(campaign.version, 2)
 
-    @patch('tickets.views.PipedreamMailchimpClient')
+    @patch('tickets.views.MailchimpClient')
     def test_apply_allows_multiple_linked_campaigns(self, mock_client_cls):
         client = mock_client_cls.return_value
         client.list_campaign_reports.return_value = [
@@ -338,7 +393,7 @@ class MailchimpViewTests(TestCase):
         self.assertEqual(campaigns.count(), 2)
         self.assertEqual(set(campaigns.values_list('external_id', flat=True)), {'cmp_1', 'cmp_2'})
 
-    @patch('tickets.views.PipedreamMailchimpClient')
+    @patch('tickets.views.MailchimpClient')
     def test_refresh_action_updates_only_selected_campaign(self, mock_client_cls):
         client = mock_client_cls.return_value
         client.get_campaign_report.return_value = _report('cmp_1', 'Updated Campaign')
@@ -372,7 +427,7 @@ class MailchimpViewTests(TestCase):
         self.assertEqual(other.emails_sent, 20)
         self.assertEqual(other.version, 1)
 
-    @patch('tickets.views.PipedreamMailchimpClient')
+    @patch('tickets.views.MailchimpClient')
     def test_bulk_refresh_updates_linked_campaigns_for_marketing_tab(self, mock_client_cls):
         client = mock_client_cls.return_value
         client.get_campaign_report.side_effect = [
@@ -408,10 +463,10 @@ class MailchimpViewTests(TestCase):
         )
         self.assertEqual(client.get_campaign_report.call_count, 2)
 
-    @patch('tickets.views.PipedreamMailchimpClient')
+    @patch('tickets.views.MailchimpClient')
     def test_refresh_failure_keeps_existing_metrics(self, mock_client_cls):
         client = mock_client_cls.return_value
-        client.get_campaign_report.side_effect = PipedreamConnectError('Mailchimp unavailable')
+        client.get_campaign_report.side_effect = MailchimpAPIError('Mailchimp unavailable')
         campaign = EventEmailCampaign.objects.create(
             event=self.event,
             source='mailchimp',
