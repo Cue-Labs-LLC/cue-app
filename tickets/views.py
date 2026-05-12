@@ -263,13 +263,13 @@ def _parse_window(request):
     return None, None, 'all'
 
 
-def _event_list_cache_key(org_id, search, sort, page, status_filter):
+def _event_list_cache_key(org_id, search, sort, page, status_filter, actions_count=0):
     """Build a versioned, org-scoped cache key for the event_list response."""
     try:
         version = django_cache.get(f'event_list_ver:{org_id}', 0)
     except Exception:
         version = 0
-    return f'event_list:{version}:{org_id}:{search}:{sort}:{page}:{status_filter}'
+    return f'event_list:{version}:{org_id}:{search}:{sort}:{page}:{status_filter}:a{actions_count}'
 
 
 def _invalidate_event_list_cache(org):
@@ -286,7 +286,7 @@ def _invalidate_event_list_cache(org):
         pass
 
 
-EVENT_STATS_CACHE_VERSION = 3
+EVENT_STATS_CACHE_VERSION = 4
 
 EVENT_STATS_REQUIRED_KEYS = frozenset({
     'total_orders',
@@ -312,6 +312,8 @@ EVENT_STATS_REQUIRED_KEYS = frozenset({
     'page_views_over_time',
     'survey_invitations_count',
     'survey_responses_count',
+    'external_survey_responses_count',
+    'survey_total_response_count',
     'survey_results',
     'attendee_segments',
 })
@@ -2872,8 +2874,18 @@ def event_list(request):
     if status_filter not in ('all', 'live', 'ended', 'upcoming'):
         status_filter = 'all'
 
+    # Include outstanding actions count in the cache key so the sidebar badge
+    # stays in sync (the rendered HTML embeds the count via the context processor).
+    try:
+        actions_count = AIRecommendation.objects.filter(
+            organization=org,
+            status__in=[AIRecommendation.Status.NEW, AIRecommendation.Status.REVIEWED],
+        ).count()
+    except Exception:
+        actions_count = 0
+
     # Check cache first (skip gracefully when Redis is unavailable)
-    cache_key = _event_list_cache_key(org.pk, search_query, '', page_number, status_filter)
+    cache_key = _event_list_cache_key(org.pk, search_query, '', page_number, status_filter, actions_count)
     try:
         cached = django_cache.get(cache_key)
     except Exception:
@@ -3197,6 +3209,8 @@ def _compute_event_stats(event):
             {
                 'text': c['text_answer'],
                 'author': c['response__customer__name'] or c['response__customer__email'] or 'Anonymous',
+                'source': 'Cue survey',
+                'submitted_at': c['response__submitted_at'],
             }
             for c in SurveyAnswer.objects.filter(
                 response__event=event
@@ -3204,6 +3218,7 @@ def _compute_event_stats(event):
                 'text_answer',
                 'response__customer__name',
                 'response__customer__email',
+                'response__submitted_at',
             )[:5]
         ]
 
@@ -3226,8 +3241,17 @@ def _compute_event_stats(event):
         ext_detractors = nps_agg['detractors']
 
         ext_comments = [
-            {'text': c['text_feedback'], 'author': c['email'] or 'Anonymous'}
-            for c in ext_qs.exclude(text_feedback='').order_by('-responded_at').values('text_feedback', 'email')[:5]
+            {
+                'text': c['text_feedback'],
+                'author': c['email'] or 'Anonymous',
+                'source': 'External upload',
+                'submitted_at': c['responded_at'],
+            }
+            for c in ext_qs.exclude(text_feedback='').order_by('-responded_at').values(
+                'text_feedback',
+                'email',
+                'responded_at',
+            )[:5]
         ]
 
         ext_rating_breakdown = list(
@@ -3239,6 +3263,7 @@ def _compute_event_stats(event):
 
     # Merge both sources
     survey_results = None
+    survey_total_response_count = survey_responses_count + ext_count
     if survey_responses_count > 0 or ext_count > 0:
         combined_nps_total = int_nps_total + ext_nps_total
         if combined_nps_total > 0:
@@ -3248,13 +3273,18 @@ def _compute_event_stats(event):
         else:
             nps_score = None
 
-        all_comments = (internal_comments + ext_comments)[:5]
+        all_comments = sorted(
+            internal_comments + ext_comments,
+            key=lambda comment: comment['submitted_at'],
+            reverse=True,
+        )[:5]
 
         survey_results = {
             'avg_star_rating': round(star_avg, 1) if star_avg else None,
             'nps_score': nps_score,
             'nps_total': combined_nps_total,
             'recent_comments': all_comments,
+            'internal_response_count': survey_responses_count,
             'ext_response_count': ext_count,
             'overall_rating_breakdown': ext_rating_breakdown,
         }
@@ -3303,6 +3333,8 @@ def _compute_event_stats(event):
         'page_views_over_time': page_views_over_time,
         'survey_invitations_count': survey_invitations_count,
         'survey_responses_count': survey_responses_count,
+        'external_survey_responses_count': ext_count,
+        'survey_total_response_count': survey_total_response_count,
         'survey_results': survey_results,
         'attendee_segments': attendee_segments,
     }
@@ -3587,6 +3619,8 @@ def event_detail(request, event_id):
     saleable_ticket_types_list = stats['saleable_ticket_types_list']
     survey_invitations_count = stats['survey_invitations_count']
     survey_responses_count = stats['survey_responses_count']
+    external_survey_responses_count = stats['external_survey_responses_count']
+    survey_total_response_count = stats['survey_total_response_count']
     survey_results = stats['survey_results']
 
     # Paginate orders - select_related + annotate to avoid N+1 in template
@@ -3698,6 +3732,8 @@ def event_detail(request, event_id):
         'org_has_custom_fields': bool(org_custom_fields),
         'survey_invitations_count': survey_invitations_count,
         'survey_responses_count': survey_responses_count,
+        'external_survey_responses_count': external_survey_responses_count,
+        'survey_total_response_count': survey_total_response_count,
         'survey_results': survey_results,
         'ticket_type_breakdown': ticket_type_breakdown,
         'ticket_type_breakdown_json': ticket_type_breakdown_json,
@@ -9081,6 +9117,83 @@ def finance_overview(request):
         'legacy_pending_payouts': legacy_pending_payouts,
     }
     return render(request, 'tickets/finance/overview.html', context)
+
+
+@login_required
+@require_org
+@require_admin
+@require_http_methods(["GET"])
+def ai_token_usage_dashboard(request):
+    """Monthly AI token usage breakdown for billing review."""
+    from .services.ai_metering import monthly_ai_token_usage_breakdown, to_cue_tokens
+
+    org = get_organization(request)
+    today = django_tz.localdate()
+
+    def _parse_month_key(value):
+        try:
+            year_str, month_str = value.split('-', 1)
+            year = int(year_str)
+            month = int(month_str)
+        except (ValueError, AttributeError):
+            return None
+        if not (1 <= month <= 12) or not (2000 <= year <= 2100):
+            return None
+        return year, month
+
+    selected = _parse_month_key(request.GET.get('month_key', ''))
+    if selected is None:
+        selected = (today.year, today.month)
+    year, month = selected
+
+    breakdown = monthly_ai_token_usage_breakdown(org, year, month)
+
+    month_options = []
+    cursor_year, cursor_month = today.year, today.month
+    for _ in range(12):
+        key = f"{cursor_year:04d}-{cursor_month:02d}"
+        label = date(cursor_year, cursor_month, 1).strftime('%B %Y')
+        month_options.append({
+            'key': key,
+            'label': label,
+            'selected': (cursor_year == year and cursor_month == month),
+        })
+        cursor_month -= 1
+        if cursor_month == 0:
+            cursor_month = 12
+            cursor_year -= 1
+
+    totals_cue = {
+        'prompt_tokens': to_cue_tokens(breakdown['totals']['prompt_tokens']),
+        'completion_tokens': to_cue_tokens(breakdown['totals']['completion_tokens']),
+        'total_tokens': to_cue_tokens(breakdown['totals']['total_tokens']),
+    }
+    by_feature_cue = [
+        {
+            'feature': row['feature'],
+            'feature_label': row['feature_label'],
+            'prompt_tokens': to_cue_tokens(row['prompt_tokens']),
+            'completion_tokens': to_cue_tokens(row['completion_tokens']),
+            'total_tokens': to_cue_tokens(row['total_tokens']),
+        }
+        for row in breakdown['by_feature']
+    ]
+    daily_json = json.dumps([
+        {'date': row['date'].isoformat(), 'total_tokens': to_cue_tokens(row['total_tokens'])}
+        for row in breakdown['daily']
+    ])
+
+    selected_label = date(year, month, 1).strftime('%B %Y')
+
+    context = {
+        'totals': totals_cue,
+        'by_feature': by_feature_cue,
+        'daily_json': daily_json,
+        'month_options': month_options,
+        'selected_month_key': f"{year:04d}-{month:02d}",
+        'selected_month_label': selected_label,
+    }
+    return render(request, 'tickets/ai_token_usage.html', context)
 
 
 @login_required

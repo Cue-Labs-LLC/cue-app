@@ -1,4 +1,5 @@
 import logging
+import re
 from datetime import timedelta
 from decimal import Decimal
 
@@ -24,6 +25,7 @@ UNRESOLVED_STATUSES = [
     AIRecommendation.Status.NEW,
     AIRecommendation.Status.REVIEWED,
 ]
+META_AD_EXPENSE_KEYWORDS = ['meta', 'facebook', 'fb', 'instagram', 'ig']
 
 
 class AIRecommendationGenerator:
@@ -238,11 +240,7 @@ class AIRecommendationGenerator:
             missing = []
             action_url = reverse('tickets:event_detail', args=[event.id])
             action_type = 'open_url'
-            if org.meta_ads_account_id and not EventExpense.objects.filter(
-                event=event,
-                source='meta_ads',
-                deleted_at__isnull=True,
-            ).exists():
+            if org.meta_ads_account_id and not self._event_has_meta_ads_spend(event):
                 missing.append('Meta Ads spend')
                 action_url = reverse('tickets:event_meta_ads_match', args=[event.id])
                 action_type = 'campaign_match'
@@ -256,6 +254,7 @@ class AIRecommendationGenerator:
                     action_url = reverse('tickets:event_mailchimp_match', args=[event.id])
                     action_type = 'campaign_match'
             if not missing:
+                self._resolve_marketing_attribution_recommendation(event)
                 continue
 
             results.append(self._upsert(
@@ -284,6 +283,44 @@ class AIRecommendationGenerator:
                 event=event,
             ))
         return results
+
+    def _event_has_meta_ads_spend(self, event):
+        if EventExpense.objects.filter(
+            event=event,
+            source='meta_ads',
+            deleted_at__isnull=True,
+        ).exists():
+            return True
+
+        manual_marketing_expenses = EventExpense.objects.filter(
+            event=event,
+            category='marketing',
+            source='manual',
+            deleted_at__isnull=True,
+        ).values_list('description', 'notes')
+        for description, notes in manual_marketing_expenses:
+            if self._contains_meta_ad_expense_keyword(description) or self._contains_meta_ad_expense_keyword(notes):
+                return True
+        return False
+
+    def _contains_meta_ad_expense_keyword(self, value):
+        if not value:
+            return False
+
+        normalized = value.lower()
+        return any(
+            re.search(rf'(^|[^a-z0-9]){re.escape(keyword)}([^a-z0-9]|$)', normalized)
+            for keyword in META_AD_EXPENSE_KEYWORDS
+        )
+
+    def _resolve_marketing_attribution_recommendation(self, event):
+        recommendation = AIRecommendation.objects.filter(
+            organization=self.organization,
+            dedupe_key=f'marketing_attribution:{event.id}',
+            status__in=UNRESOLVED_STATUSES,
+        ).first()
+        if recommendation:
+            recommendation.resolve()
 
     def _expected_tickets_today(self, event, days_until_event):
         try:

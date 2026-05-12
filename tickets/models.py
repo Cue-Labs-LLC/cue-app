@@ -1544,6 +1544,54 @@ class AIRecommendation(BaseModel):
         self.save(update_fields=['status', 'resolved_at', 'updated_at'])
 
 
+class AITokenUsage(BaseModel):
+    """Immutable token usage record for billable AI features."""
+
+    FEATURE_CHAT_AGENT = 'chat_agent'
+    FEATURE_META_CAMPAIGN_MATCH = 'meta_campaign_match'
+    FEATURE_MAILCHIMP_CAMPAIGN_MATCH = 'mailchimp_campaign_match'
+
+    FEATURE_CHOICES = [
+        (FEATURE_CHAT_AGENT, 'Chat agent'),
+        (FEATURE_META_CAMPAIGN_MATCH, 'Meta campaign match'),
+        (FEATURE_MAILCHIMP_CAMPAIGN_MATCH, 'Mailchimp campaign match'),
+    ]
+
+    organization = models.ForeignKey(
+        Organization,
+        on_delete=models.CASCADE,
+        related_name='ai_token_usage',
+    )
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='ai_token_usage',
+    )
+    feature = models.CharField(max_length=50, choices=FEATURE_CHOICES, db_index=True)
+    model_name = models.CharField(max_length=100, blank=True, db_index=True)
+    prompt_tokens = models.PositiveIntegerField(default=0)
+    completion_tokens = models.PositiveIntegerField(default=0)
+    total_tokens = models.PositiveIntegerField(default=0)
+    request_id = models.CharField(max_length=100, blank=True, db_index=True)
+    occurred_at = models.DateTimeField(default=timezone.now, db_index=True)
+    metadata = models.JSONField(default=dict, blank=True)
+
+    class Meta:
+        ordering = ['-occurred_at', '-created_at']
+        indexes = [
+            models.Index(fields=['organization', 'occurred_at'], name='aiusage_org_time_idx'),
+            models.Index(fields=['organization', 'feature', 'occurred_at'], name='aiusage_org_feature_idx'),
+            models.Index(fields=['organization', 'model_name', 'occurred_at'], name='aiusage_org_model_idx'),
+        ]
+        verbose_name = 'AI token usage'
+        verbose_name_plural = 'AI token usage'
+
+    def __str__(self):
+        return f"{self.organization} {self.feature}: {self.total_tokens} tokens"
+
+
 class SaleableTicketType(BaseModel):
     """Organizer-configured, per-event product catalog for direct ticket selling."""
     event = models.ForeignKey(

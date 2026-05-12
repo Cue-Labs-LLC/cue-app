@@ -4,6 +4,9 @@ from datetime import date, timedelta
 from django.conf import settings
 from pydantic import BaseModel, Field
 
+from tickets.models import AITokenUsage
+from tickets.services.ai_metering import record_ai_token_usage
+
 
 class MailchimpCampaignCandidate(BaseModel):
     campaign_id: str
@@ -30,13 +33,15 @@ class MailchimpCampaignMatcher:
 
         from langchain_openai import ChatOpenAI
 
+        model_name = getattr(settings, "OPENAI_MODEL", "gpt-4o")
         llm = ChatOpenAI(
-            model=getattr(settings, "OPENAI_MODEL", "gpt-4o"),
+            model=model_name,
             api_key=getattr(settings, "OPENAI_API_KEY", ""),
             temperature=0.0,
+            stream_usage=True,
         )
-        structured_llm = llm.with_structured_output(MailchimpMatchResult)
-        result = structured_llm.invoke([
+        structured_llm = llm.with_structured_output(MailchimpMatchResult, include_raw=True)
+        raw_result = structured_llm.invoke([
             {
                 "role": "system",
                 "content": (
@@ -47,6 +52,24 @@ class MailchimpCampaignMatcher:
             },
             {"role": "user", "content": prompt},
         ])
+
+        if isinstance(raw_result, dict) and {'raw', 'parsed', 'parsing_error'} <= set(raw_result):
+            record_ai_token_usage(
+                organization=self.organization,
+                feature=AITokenUsage.FEATURE_MAILCHIMP_CAMPAIGN_MATCH,
+                model_name=model_name,
+                usage=raw_result.get('raw'),
+                metadata={
+                    'event_id': str(event.id),
+                    'campaign_count': len(filtered_reports),
+                },
+            )
+            if raw_result.get('parsing_error'):
+                raise raw_result['parsing_error']
+            result = raw_result.get('parsed')
+        else:
+            result = raw_result
+
         if isinstance(result, MailchimpMatchResult):
             return self._limit_result(result)
         if hasattr(MailchimpMatchResult, "model_validate"):

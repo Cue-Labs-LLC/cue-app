@@ -95,6 +95,9 @@
                     <li>
                         <a href="{% url 'tickets:action_center' %}" class="sidebar-link{% if '/actions/' in request.path %} active{% endif %}">
                             <i class="bi bi-magic"></i> Actions
+                            {% if outstanding_actions_count %}
+                                <span class="sidebar-badge">{{ outstanding_actions_count }}</span>
+                            {% endif %}
                         </a>
                     </li>
                     <li>

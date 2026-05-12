@@ -65,6 +65,17 @@ def organization_context(request):
                 ctx['view_mode'] = 'attendee'
         except Exception:
             pass
+
+    ctx['outstanding_actions_count'] = 0
+    if org and ctx['is_organizer']:
+        try:
+            from .models import AIRecommendation
+            ctx['outstanding_actions_count'] = AIRecommendation.objects.filter(
+                organization=org,
+                status__in=[AIRecommendation.Status.NEW, AIRecommendation.Status.REVIEWED],
+            ).count()
+        except Exception:
+            pass
     return ctx
 
 
