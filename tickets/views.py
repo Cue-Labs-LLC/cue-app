@@ -286,7 +286,7 @@ def _invalidate_event_list_cache(org):
         pass
 
 
-EVENT_STATS_CACHE_VERSION = 3
+EVENT_STATS_CACHE_VERSION = 4
 
 EVENT_STATS_REQUIRED_KEYS = frozenset({
     'total_orders',
@@ -312,6 +312,8 @@ EVENT_STATS_REQUIRED_KEYS = frozenset({
     'page_views_over_time',
     'survey_invitations_count',
     'survey_responses_count',
+    'external_survey_responses_count',
+    'survey_total_response_count',
     'survey_results',
     'attendee_segments',
 })
@@ -3207,6 +3209,8 @@ def _compute_event_stats(event):
             {
                 'text': c['text_answer'],
                 'author': c['response__customer__name'] or c['response__customer__email'] or 'Anonymous',
+                'source': 'Cue survey',
+                'submitted_at': c['response__submitted_at'],
             }
             for c in SurveyAnswer.objects.filter(
                 response__event=event
@@ -3214,6 +3218,7 @@ def _compute_event_stats(event):
                 'text_answer',
                 'response__customer__name',
                 'response__customer__email',
+                'response__submitted_at',
             )[:5]
         ]
 
@@ -3236,8 +3241,17 @@ def _compute_event_stats(event):
         ext_detractors = nps_agg['detractors']
 
         ext_comments = [
-            {'text': c['text_feedback'], 'author': c['email'] or 'Anonymous'}
-            for c in ext_qs.exclude(text_feedback='').order_by('-responded_at').values('text_feedback', 'email')[:5]
+            {
+                'text': c['text_feedback'],
+                'author': c['email'] or 'Anonymous',
+                'source': 'External upload',
+                'submitted_at': c['responded_at'],
+            }
+            for c in ext_qs.exclude(text_feedback='').order_by('-responded_at').values(
+                'text_feedback',
+                'email',
+                'responded_at',
+            )[:5]
         ]
 
         ext_rating_breakdown = list(
@@ -3249,6 +3263,7 @@ def _compute_event_stats(event):
 
     # Merge both sources
     survey_results = None
+    survey_total_response_count = survey_responses_count + ext_count
     if survey_responses_count > 0 or ext_count > 0:
         combined_nps_total = int_nps_total + ext_nps_total
         if combined_nps_total > 0:
@@ -3258,13 +3273,18 @@ def _compute_event_stats(event):
         else:
             nps_score = None
 
-        all_comments = (internal_comments + ext_comments)[:5]
+        all_comments = sorted(
+            internal_comments + ext_comments,
+            key=lambda comment: comment['submitted_at'],
+            reverse=True,
+        )[:5]
 
         survey_results = {
             'avg_star_rating': round(star_avg, 1) if star_avg else None,
             'nps_score': nps_score,
             'nps_total': combined_nps_total,
             'recent_comments': all_comments,
+            'internal_response_count': survey_responses_count,
             'ext_response_count': ext_count,
             'overall_rating_breakdown': ext_rating_breakdown,
         }
@@ -3313,6 +3333,8 @@ def _compute_event_stats(event):
         'page_views_over_time': page_views_over_time,
         'survey_invitations_count': survey_invitations_count,
         'survey_responses_count': survey_responses_count,
+        'external_survey_responses_count': ext_count,
+        'survey_total_response_count': survey_total_response_count,
         'survey_results': survey_results,
         'attendee_segments': attendee_segments,
     }
@@ -3597,6 +3619,8 @@ def event_detail(request, event_id):
     saleable_ticket_types_list = stats['saleable_ticket_types_list']
     survey_invitations_count = stats['survey_invitations_count']
     survey_responses_count = stats['survey_responses_count']
+    external_survey_responses_count = stats['external_survey_responses_count']
+    survey_total_response_count = stats['survey_total_response_count']
     survey_results = stats['survey_results']
 
     # Paginate orders - select_related + annotate to avoid N+1 in template
@@ -3708,6 +3732,8 @@ def event_detail(request, event_id):
         'org_has_custom_fields': bool(org_custom_fields),
         'survey_invitations_count': survey_invitations_count,
         'survey_responses_count': survey_responses_count,
+        'external_survey_responses_count': external_survey_responses_count,
+        'survey_total_response_count': survey_total_response_count,
         'survey_results': survey_results,
         'ticket_type_breakdown': ticket_type_breakdown,
         'ticket_type_breakdown_json': ticket_type_breakdown_json,
