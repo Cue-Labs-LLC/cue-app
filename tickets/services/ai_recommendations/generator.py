@@ -11,6 +11,7 @@ from tickets.models import (
     Event,
     EventEmailCampaign,
     EventExpense,
+    ExternalSurveyResponse,
     SurveyInvitation,
     TICKETING_TYPE_DIRECT,
 )
@@ -140,7 +141,9 @@ class AIRecommendationGenerator:
             missing = []
             if not EventExpense.objects.filter(event=event, deleted_at__isnull=True).exists():
                 missing.append('expenses')
-            if not SurveyInvitation.objects.filter(event=event).exists():
+            has_invitation = SurveyInvitation.objects.filter(event=event).exists()
+            has_external_response = ExternalSurveyResponse.objects.filter(event=event).exists()
+            if not has_invitation and not has_external_response:
                 missing.append('survey follow-up')
             if not EventEmailCampaign.objects.filter(event=event, deleted_at__isnull=True).exists():
                 missing.append('email campaign attribution')
