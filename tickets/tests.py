@@ -17,6 +17,7 @@ from .models import (
     Venue, CSVFormat, Ticket, TicketTier,
     Organization, UserProfile, OrganizationMembership, OrganizationInvitation, ChatMessage,
     AITokenUsage, AIRecommendation,
+    EventExpense,
     SaleableTicketType, SaleableTicketTypeTier, StripeCheckoutSession, FeatureFlagSettings,
     SurveyInvitation, SurveyResponse, SurveyAnswer, SurveyQuestion, Payout,
     ExternalSurveyUpload, ExternalSurveyResponse, EventDailyPageView,
@@ -4500,6 +4501,71 @@ class AIRecommendationTests(TestCase):
         self.assertEqual(len(recommendations), 1)
         self.assertEqual(recommendations[0].kind, AIRecommendation.Kind.MARKETING_ATTRIBUTION)
         self.assertIn('Meta Ads spend', recommendations[0].evidence_json['missing_items'])
+
+    def test_marketing_attribution_detector_skips_meta_gap_for_manual_facebook_marketing_expense(self):
+        from tickets.services.ai_recommendations import AIRecommendationGenerator
+
+        self.org.meta_ads_account_id = 'act_123'
+        self.org.save(update_fields=['meta_ads_account_id'])
+        EventExpense.objects.create(
+            event=self.event,
+            category='marketing',
+            source='manual',
+            description='Facebook ads campaign',
+            amount=Decimal('150.00'),
+        )
+
+        recommendations = AIRecommendationGenerator(self.org).detect_marketing_attribution_gaps()
+
+        self.assertEqual(recommendations, [])
+        self.assertFalse(
+            AIRecommendation.objects.filter(
+                organization=self.org,
+                dedupe_key=f'marketing_attribution:{self.event.id}',
+            ).exists()
+        )
+
+    def test_marketing_attribution_detector_requires_manual_meta_expense_to_be_marketing(self):
+        from tickets.services.ai_recommendations import AIRecommendationGenerator
+
+        self.org.meta_ads_account_id = 'act_123'
+        self.org.save(update_fields=['meta_ads_account_id'])
+        EventExpense.objects.create(
+            event=self.event,
+            category='venue',
+            source='manual',
+            description='Facebook ads watch party rental',
+            amount=Decimal('150.00'),
+        )
+
+        recommendations = AIRecommendationGenerator(self.org).detect_marketing_attribution_gaps()
+
+        self.assertEqual(len(recommendations), 1)
+        self.assertIn('Meta Ads spend', recommendations[0].evidence_json['missing_items'])
+
+    def test_marketing_attribution_detector_resolves_open_recommendation_when_manual_meta_expense_exists(self):
+        from tickets.services.ai_recommendations import AIRecommendationGenerator
+
+        self.org.meta_ads_account_id = 'act_123'
+        self.org.save(update_fields=['meta_ads_account_id'])
+        generator = AIRecommendationGenerator(self.org)
+        recommendation = generator.detect_marketing_attribution_gaps()[0]
+
+        EventExpense.objects.create(
+            event=self.event,
+            category='marketing',
+            source='manual',
+            description='Launch marketing',
+            notes='IG and FB ad spend',
+            amount=Decimal('150.00'),
+        )
+
+        recommendations = generator.detect_marketing_attribution_gaps()
+        recommendation.refresh_from_db()
+
+        self.assertEqual(recommendations, [])
+        self.assertEqual(recommendation.status, AIRecommendation.Status.RESOLVED)
+        self.assertIsNotNone(recommendation.resolved_at)
 
     def test_action_center_is_org_scoped_and_dashboard_excludes_closed_items(self):
         visible = self._recommendation(title='Visible recommendation')
