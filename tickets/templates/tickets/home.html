@@ -54,6 +54,14 @@
                 </div>
                 <strong>{{ recommendation.title }}</strong>
                 <p class="small text-body-secondary mb-0">{{ recommendation.summary }}</p>
+                {% if recommendation.event %}
+                <div class="small text-body-secondary mt-1">
+                    <i class="bi bi-calendar-event me-1"></i>{{ recommendation.event.name }}
+                    {% if recommendation.event.start_date %}
+                    <span>({{ recommendation.event.start_date|date:"M j, Y" }})</span>
+                    {% endif %}
+                </div>
+                {% endif %}
             </div>
             <form method="post" action="{% url 'tickets:ai_recommendation_review' recommendation.id %}" class="d-flex align-items-start">
                 {% csrf_token %}
