@@ -687,46 +687,48 @@
         <p class="text-body-secondary mb-3">
             Connected account: <strong>{{ org.meta_ads_account_name|default:org.meta_ads_account_id }}</strong>
         </p>
-        {% if meta_ads_expenses %}
-        <div class="table-responsive mb-3">
-            <table class="table table-hover mb-0">
-                <thead>
-                    <tr>
-                        <th>Linked Campaign</th>
-                        <th>Spend</th>
-                        <th></th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {% for meta_ads_expense in meta_ads_expenses %}
-                    <tr>
-                        <td>
-                            <strong>{{ meta_ads_expense.external_metadata.campaign_name|default:meta_ads_expense.description }}</strong>
-                            {% if meta_ads_expense.external_id %}
-                            <div class="text-body-secondary small">{{ meta_ads_expense.external_id }}</div>
-                            {% endif %}
-                        </td>
-                        <td><strong>${{ meta_ads_expense.amount|currency }}</strong></td>
-                        <td class="text-end">
-                            <div class="d-inline-flex gap-1">
-                                <form method="post" action="{% url 'tickets:event_meta_ads_refresh' event.id meta_ads_expense.id %}" class="d-inline">
-                                    {% csrf_token %}
-                                    <button type="submit" class="btn btn-sm btn-outline-secondary">Refresh</button>
-                                </form>
-                                <form method="post" action="{% url 'tickets:event_meta_ads_remove' event.id meta_ads_expense.id %}" class="d-inline" onsubmit="return confirm('Remove this linked Meta Ads campaign from the event?');">
-                                    {% csrf_token %}
-                                    <button type="submit" class="btn btn-sm btn-outline-danger">Remove</button>
-                                </form>
-                            </div>
-                        </td>
-                    </tr>
-                    {% endfor %}
-                </tbody>
-            </table>
+        <div id="metaAdsApplyFlash" class="alert d-none mb-3" role="alert"></div>
+        <div id="metaAdsLinkedSection"{% if not meta_ads_expenses %} class="d-none"{% endif %}>
+            <div class="table-responsive mb-3">
+                <table class="table table-hover mb-0">
+                    <thead>
+                        <tr>
+                            <th>Linked Campaign</th>
+                            <th>Spend</th>
+                            <th></th>
+                        </tr>
+                    </thead>
+                    <tbody id="metaAdsExpenseRows">
+                        {% for meta_ads_expense in meta_ads_expenses %}
+                        <tr>
+                            <td>
+                                <strong>{{ meta_ads_expense.external_metadata.campaign_name|default:meta_ads_expense.description }}</strong>
+                                {% if meta_ads_expense.external_id %}
+                                <div class="text-body-secondary small">{{ meta_ads_expense.external_id }}</div>
+                                {% endif %}
+                            </td>
+                            <td><strong>${{ meta_ads_expense.amount|currency }}</strong></td>
+                            <td class="text-end">
+                                <div class="d-inline-flex gap-1">
+                                    <form method="post" action="{% url 'tickets:event_meta_ads_refresh' event.id meta_ads_expense.id %}" class="d-inline">
+                                        {% csrf_token %}
+                                        <button type="submit" class="btn btn-sm btn-outline-secondary">Refresh</button>
+                                    </form>
+                                    <form method="post" action="{% url 'tickets:event_meta_ads_remove' event.id meta_ads_expense.id %}" class="d-inline" onsubmit="return confirm('Remove this linked Meta Ads campaign from the event?');">
+                                        {% csrf_token %}
+                                        <button type="submit" class="btn btn-sm btn-outline-danger">Remove</button>
+                                    </form>
+                                </div>
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
         </div>
-        {% endif %}
-        {% if not meta_ads_expenses and is_org_admin %}
+        {% if is_org_admin %}
         <div id="metaAdsInlineSuggestions"
+             {% if meta_ads_expenses %}class="d-none"{% endif %}
              data-match-url="{% url 'tickets:event_meta_ads_match' event.id %}?format=json"
              data-apply-url="{% url 'tickets:event_meta_ads_apply' event.id %}">
             <h6 class="mb-3">Suggested Meta Ads campaigns</h6>
@@ -740,11 +742,10 @@
                 No matching Meta Ads campaigns found near this event's dates. Use the Match button above to search again.
             </p>
         </div>
-        {% else %}
-        <p class="mb-0">
+        {% endif %}
+        <p id="metaAdsHelpText" class="mb-0 text-body-secondary{% if not meta_ads_expenses and is_org_admin %} d-none{% endif %}">
             Use campaign matching to find Meta campaigns for this event, pull lifetime campaign spend, and save it as a marketing expense.
         </p>
-        {% endif %}
         {% else %}
         <div class="empty-state" style="padding: 24px;">
             <i class="bi bi-megaphone"></i>
@@ -782,55 +783,57 @@
         <p class="text-body-secondary mb-3">
             Connected account: <strong>{{ org.mailchimp_account_name|default:org.mailchimp_login_email|default:org.mailchimp_account_id }}</strong>
         </p>
-        {% if mailchimp_campaigns %}
-        <div class="table-responsive mb-3">
-            <table class="table table-hover mb-0">
-                <thead>
-                    <tr>
-                        <th>Linked Campaign</th>
-                        <th>Sent</th>
-                        <th>Emails</th>
-                        <th>Unique Opens</th>
-                        <th>Unique Clicks</th>
-                        <th>Revenue</th>
-                        <th></th>
-                    </tr>
-                </thead>
-                <tbody id="mailchimpCampaignRows">
-                    {% for mailchimp_campaign in mailchimp_campaigns %}
-                    <tr>
-                        <td>
-                            <strong>{{ mailchimp_campaign.campaign_title }}</strong>
-                            {% if mailchimp_campaign.subject_line %}
-                            <div class="text-body-secondary small">{{ mailchimp_campaign.subject_line }}</div>
-                            {% endif %}
-                            <div class="text-body-secondary small">{{ mailchimp_campaign.external_id }}</div>
-                        </td>
-                        <td>{{ mailchimp_campaign.send_time_display|default:"Unknown" }}</td>
-                        <td>{{ mailchimp_campaign.emails_sent }}</td>
-                        <td>{{ mailchimp_campaign.unique_opens }}</td>
-                        <td>{{ mailchimp_campaign.unique_clicks }}</td>
-                        <td>${{ mailchimp_campaign.ecommerce_revenue|currency }}</td>
-                        <td class="text-end">
-                            <div class="d-inline-flex gap-1">
-                                <form method="post" action="{% url 'tickets:event_mailchimp_refresh' event.id mailchimp_campaign.id %}" class="d-inline">
-                                    {% csrf_token %}
-                                    <button type="submit" class="btn btn-sm btn-outline-secondary">Refresh</button>
-                                </form>
-                                <form method="post" action="{% url 'tickets:event_mailchimp_remove' event.id mailchimp_campaign.id %}" class="d-inline" onsubmit="return confirm('Remove this linked Mailchimp campaign from the event?');">
-                                    {% csrf_token %}
-                                    <button type="submit" class="btn btn-sm btn-outline-danger">Remove</button>
-                                </form>
-                            </div>
-                        </td>
-                    </tr>
-                    {% endfor %}
-                </tbody>
-            </table>
+        <div id="mailchimpApplyFlash" class="alert d-none mb-3" role="alert"></div>
+        <div id="mailchimpLinkedSection"{% if not mailchimp_campaigns %} class="d-none"{% endif %}>
+            <div class="table-responsive mb-3">
+                <table class="table table-hover mb-0">
+                    <thead>
+                        <tr>
+                            <th>Linked Campaign</th>
+                            <th>Sent</th>
+                            <th>Emails</th>
+                            <th>Unique Opens</th>
+                            <th>Unique Clicks</th>
+                            <th>Revenue</th>
+                            <th></th>
+                        </tr>
+                    </thead>
+                    <tbody id="mailchimpCampaignRows">
+                        {% for mailchimp_campaign in mailchimp_campaigns %}
+                        <tr>
+                            <td>
+                                <strong>{{ mailchimp_campaign.campaign_title }}</strong>
+                                {% if mailchimp_campaign.subject_line %}
+                                <div class="text-body-secondary small">{{ mailchimp_campaign.subject_line }}</div>
+                                {% endif %}
+                                <div class="text-body-secondary small">{{ mailchimp_campaign.external_id }}</div>
+                            </td>
+                            <td>{{ mailchimp_campaign.send_time_display|default:"Unknown" }}</td>
+                            <td>{{ mailchimp_campaign.emails_sent }}</td>
+                            <td>{{ mailchimp_campaign.unique_opens }}</td>
+                            <td>{{ mailchimp_campaign.unique_clicks }}</td>
+                            <td>${{ mailchimp_campaign.ecommerce_revenue|currency }}</td>
+                            <td class="text-end">
+                                <div class="d-inline-flex gap-1">
+                                    <form method="post" action="{% url 'tickets:event_mailchimp_refresh' event.id mailchimp_campaign.id %}" class="d-inline">
+                                        {% csrf_token %}
+                                        <button type="submit" class="btn btn-sm btn-outline-secondary">Refresh</button>
+                                    </form>
+                                    <form method="post" action="{% url 'tickets:event_mailchimp_remove' event.id mailchimp_campaign.id %}" class="d-inline" onsubmit="return confirm('Remove this linked Mailchimp campaign from the event?');">
+                                        {% csrf_token %}
+                                        <button type="submit" class="btn btn-sm btn-outline-danger">Remove</button>
+                                    </form>
+                                </div>
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
         </div>
-        {% endif %}
-        {% if not mailchimp_campaigns and is_org_admin %}
+        {% if is_org_admin %}
         <div id="mailchimpInlineSuggestions"
+             {% if mailchimp_campaigns %}class="d-none"{% endif %}
              data-match-url="{% url 'tickets:event_mailchimp_match' event.id %}?format=json"
              data-apply-url="{% url 'tickets:event_mailchimp_apply' event.id %}">
             <h6 class="mb-3">Suggested Mailchimp campaigns</h6>
@@ -852,11 +855,10 @@
                 No matching Mailchimp campaigns found near this event's dates. Use the Match button above to search again.
             </p>
         </div>
-        {% else %}
-        <p class="mb-0">
+        {% endif %}
+        <p id="mailchimpHelpText" class="mb-0 text-body-secondary{% if not mailchimp_campaigns and is_org_admin %} d-none{% endif %}">
             Use campaign matching to find Mailchimp email campaigns for this event and save opens, clicks, bounces, unsubscribes, and reported revenue.
         </p>
-        {% endif %}
         {% else %}
         <div class="empty-state" style="padding: 24px;">
             <i class="bi bi-envelope-paper"></i>
@@ -1541,6 +1543,105 @@ document.addEventListener('DOMContentLoaded', function() {
         });
     });
 
+    var linkedSectionEl = document.getElementById('metaAdsLinkedSection');
+    var expenseRowsEl = document.getElementById('metaAdsExpenseRows');
+    var helpTextEl = document.getElementById('metaAdsHelpText');
+    var flashEl = document.getElementById('metaAdsApplyFlash');
+
+    function showMetaAdsFlash(message, isError) {
+        if (!flashEl || !message) return;
+        flashEl.textContent = message;
+        flashEl.classList.toggle('alert-success', !isError);
+        flashEl.classList.toggle('alert-danger', !!isError);
+        flashEl.classList.remove('d-none');
+    }
+
+    function renderLinkedMetaAdsExpenseRow(expense) {
+        var name = escapeHtml(expense.campaign_name || expense.external_id);
+        var externalId = expense.external_id ? '<div class="text-body-secondary small">' + escapeHtml(expense.external_id) + '</div>' : '';
+        return '' +
+            '<tr data-meta-ads-expense-id="' + escapeHtml(expense.id) + '">' +
+                '<td><strong>' + name + '</strong>' + externalId + '</td>' +
+                '<td><strong>$' + escapeHtml(expense.amount || '0.00') + '</strong></td>' +
+                '<td class="text-end">' +
+                    '<div class="d-inline-flex gap-1">' +
+                        '<form method="post" action="' + escapeHtml(expense.refresh_url || '') + '" class="d-inline">' +
+                            '<input type="hidden" name="csrfmiddlewaretoken" value="{{ csrf_token }}">' +
+                            '<button type="submit" class="btn btn-sm btn-outline-secondary">Refresh</button>' +
+                        '</form>' +
+                        '<form method="post" action="' + escapeHtml(expense.remove_url || '') + '" class="d-inline" onsubmit="return confirm(\'Remove this linked Meta Ads campaign from the event?\');">' +
+                            '<input type="hidden" name="csrfmiddlewaretoken" value="{{ csrf_token }}">' +
+                            '<button type="submit" class="btn btn-sm btn-outline-danger">Remove</button>' +
+                        '</form>' +
+                    '</div>' +
+                '</td>' +
+            '</tr>';
+    }
+
+    function handleCandidateSubmit(submitEvent) {
+        var form = submitEvent.target;
+        if (!form || form.tagName !== 'FORM') return;
+        if (!form.action || form.action.indexOf('/meta-ads/apply') === -1) return;
+        submitEvent.preventDefault();
+        var submitBtn = form.querySelector('button[type="submit"]');
+        if (submitBtn) submitBtn.disabled = true;
+
+        fetch(form.action, {
+            method: 'POST',
+            body: new FormData(form),
+            headers: { 'X-Requested-With': 'XMLHttpRequest' },
+            credentials: 'same-origin',
+        })
+        .then(function(response) {
+            return response.json().then(function(data) {
+                return { ok: response.ok, data: data };
+            });
+        })
+        .then(function(result) {
+            if (submitBtn) submitBtn.disabled = false;
+            if (!result.ok || !result.data.success) {
+                showMetaAdsFlash((result.data && result.data.error) || 'Could not apply this Meta Ads campaign.', true);
+                return;
+            }
+            if (expenseRowsEl && result.data.expenses) {
+                expenseRowsEl.innerHTML = result.data.expenses.map(renderLinkedMetaAdsExpenseRow).join('');
+            }
+            if (linkedSectionEl) linkedSectionEl.classList.remove('d-none');
+            if (helpTextEl) helpTextEl.classList.remove('d-none');
+
+            var candidateCard = form.closest('.col-12');
+            if (candidateCard) candidateCard.remove();
+
+            var inlineRemaining = inlineEl ? inlineEl.querySelectorAll('.meta-ads-inline-results .col-12').length : 0;
+            if (inlineEl && inlineRemaining === 0) {
+                inlineEl.classList.add('d-none');
+            }
+            var modalRemaining = resultsEl ? resultsEl.querySelectorAll('.col-12').length : 0;
+            if (modalRemaining === 0) {
+                var modalInstance = bootstrap.Modal.getInstance(modalEl);
+                if (modalInstance) modalInstance.hide();
+                loaded = false;
+                resultsEl.innerHTML = '';
+            }
+
+            showMetaAdsFlash(result.data.message, false);
+        })
+        .catch(function() {
+            if (submitBtn) submitBtn.disabled = false;
+            showMetaAdsFlash('Could not apply this Meta Ads campaign. Please try again.', true);
+        });
+    }
+
+    if (inlineEl) {
+        var inlineResultsContainer = inlineEl.querySelector('.meta-ads-inline-results');
+        if (inlineResultsContainer) {
+            inlineResultsContainer.addEventListener('submit', handleCandidateSubmit);
+        }
+    }
+    if (resultsEl) {
+        resultsEl.addEventListener('submit', handleCandidateSubmit);
+    }
+
     function renderMetaAdsCandidate(candidate, applyUrl) {
         var name = escapeHtml(candidate.campaign_name || candidate.campaign_id);
         var objective = escapeHtml(candidate.objective || 'No objective');
@@ -1700,23 +1801,99 @@ document.addEventListener('DOMContentLoaded', function() {
         updateButton();
     }
 
+    var linkedSectionEl = document.getElementById('mailchimpLinkedSection');
+    var helpTextEl = document.getElementById('mailchimpHelpText');
+    var flashEl = document.getElementById('mailchimpApplyFlash');
+
+    function attachPairedInputs(form, checkboxes) {
+        form.querySelectorAll('input[data-paired-input="1"]').forEach(function(node) {
+            node.parentNode.removeChild(node);
+        });
+        checkboxes.forEach(function(checkbox) {
+            ['confidence', 'reasoning'].forEach(function(key) {
+                var hidden = document.createElement('input');
+                hidden.type = 'hidden';
+                hidden.name = key;
+                hidden.value = checkbox.getAttribute('data-' + key) || '';
+                hidden.setAttribute('data-paired-input', '1');
+                form.appendChild(hidden);
+            });
+        });
+    }
+
+    function showMailchimpFlash(message, isError) {
+        if (!flashEl) return;
+        flashEl.textContent = message;
+        flashEl.classList.toggle('alert-success', !isError);
+        flashEl.classList.toggle('alert-danger', !!isError);
+        flashEl.classList.remove('d-none');
+    }
+
+    function applyResultToDom(data) {
+        if (campaignRowsEl && data.campaigns) {
+            campaignRowsEl.innerHTML = data.campaigns.map(renderLinkedMailchimpCampaignRow).join('');
+        }
+        if (linkedSectionEl && data.campaigns && data.campaigns.length) {
+            linkedSectionEl.classList.remove('d-none');
+        }
+        if (inlineEl) {
+            inlineEl.classList.add('d-none');
+        }
+        if (helpTextEl) {
+            helpTextEl.classList.remove('d-none');
+        }
+        if (data.message) {
+            showMailchimpFlash(data.message, false);
+        }
+        var problems = [];
+        if (data.failed_ids && data.failed_ids.length) {
+            problems.push('Could not pull results from Mailchimp for: ' + data.failed_ids.join(', '));
+        }
+        if (data.unknown_ids && data.unknown_ids.length) {
+            problems.push('Campaigns not found in this account: ' + data.unknown_ids.join(', '));
+        }
+        if (problems.length) {
+            showMailchimpFlash(problems.join(' '), true);
+        }
+    }
+
+    function submitApplyForm(form, checkboxSelector) {
+        var checked = form.querySelectorAll(checkboxSelector + ':checked');
+        if (!checked.length) return Promise.resolve(null);
+        attachPairedInputs(form, checked);
+        var submitBtn = form.querySelector('button[type="submit"]');
+        if (submitBtn) submitBtn.disabled = true;
+        return fetch(form.getAttribute('action'), {
+            method: 'POST',
+            body: new FormData(form),
+            headers: { 'X-Requested-With': 'XMLHttpRequest' },
+            credentials: 'same-origin',
+        })
+        .then(function(response) {
+            return response.json().then(function(data) {
+                return { ok: response.ok, data: data };
+            });
+        })
+        .then(function(result) {
+            if (submitBtn) submitBtn.disabled = false;
+            if (!result.ok || !result.data.success) {
+                showMailchimpFlash((result.data && result.data.error) || 'Could not apply Mailchimp campaigns.', true);
+                return null;
+            }
+            applyResultToDom(result.data);
+            return result.data;
+        })
+        .catch(function() {
+            if (submitBtn) submitBtn.disabled = false;
+            showMailchimpFlash('Could not apply Mailchimp campaigns. Please try again.', true);
+            return null;
+        });
+    }
+
     if (inlineFormEl) {
-        inlineFormEl.addEventListener('submit', function() {
-            var container = inlineEl.querySelector('.mailchimp-inline-results');
-            var checked = container.querySelectorAll('input.mailchimp-candidate-checkbox:checked');
-            inlineFormEl.querySelectorAll('input[data-paired-input="1"]').forEach(function(node) {
-                node.parentNode.removeChild(node);
-            });
-            checked.forEach(function(checkbox) {
-                ['confidence', 'reasoning'].forEach(function(key) {
-                    var hidden = document.createElement('input');
-                    hidden.type = 'hidden';
-                    hidden.name = key;
-                    hidden.value = checkbox.getAttribute('data-' + key) || '';
-                    hidden.setAttribute('data-paired-input', '1');
-                    inlineFormEl.appendChild(hidden);
-                });
-            });
+        inlineFormEl.addEventListener('submit', function(event) {
+            event.preventDefault();
+            submitApplyForm(inlineFormEl, 'input.mailchimp-candidate-checkbox');
         });
     }
 
@@ -1770,20 +1947,14 @@ document.addEventListener('DOMContentLoaded', function() {
         });
     });
 
-    formEl.addEventListener('submit', function() {
-        var checked = resultsEl.querySelectorAll('input.mailchimp-candidate-checkbox:checked');
-        formEl.querySelectorAll('input[data-paired-input="1"]').forEach(function(node) {
-            node.parentNode.removeChild(node);
-        });
-        checked.forEach(function(checkbox) {
-            ['confidence', 'reasoning'].forEach(function(key) {
-                var hidden = document.createElement('input');
-                hidden.type = 'hidden';
-                hidden.name = key;
-                hidden.value = checkbox.getAttribute('data-' + key) || '';
-                hidden.setAttribute('data-paired-input', '1');
-                formEl.appendChild(hidden);
-            });
+    formEl.addEventListener('submit', function(event) {
+        event.preventDefault();
+        submitApplyForm(formEl, 'input.mailchimp-candidate-checkbox').then(function(data) {
+            if (!data) return;
+            var modal = bootstrap.Modal.getInstance(modalEl);
+            if (modal) modal.hide();
+            loaded = false;
+            resultsEl.innerHTML = '';
         });
     });
 
