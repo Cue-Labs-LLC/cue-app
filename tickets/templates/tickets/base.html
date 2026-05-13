@@ -44,8 +44,13 @@
                     {% csrf_token %}
                     <input type="hidden" name="org_id" value="{{ membership.organization.pk }}">
                     <button type="submit" class="sidebar-link" style="width:100%;border:none;background:none;cursor:pointer;text-align:left;display:flex;align-items:center;gap:8px;padding:8px 12px;">
-                        {% if membership.organization == org %}<i class="bi bi-check2" style="color:var(--accent);flex-shrink:0;"></i>{% else %}<i class="bi bi-building" style="opacity:0.4;flex-shrink:0;"></i>{% endif %}
+                        {% if membership.organization.photo %}
+                        <img src="{{ membership.organization.photo.url }}" alt="{{ membership.organization.name }}" class="sidebar-brand-avatar" style="width:22px;height:22px;">
+                        {% else %}
+                        <div class="sidebar-brand-avatar sidebar-brand-avatar--initial" style="width:22px;height:22px;font-size:10px;">{{ membership.organization.name|make_list|first|upper }}</div>
+                        {% endif %}
                         <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{{ membership.organization.name }}</span>
+                        {% if membership.organization == org %}<i class="bi bi-check2" style="color:var(--accent);flex-shrink:0;"></i>{% endif %}
                     </button>
                 </form>
                 {% endfor %}
