@@ -6063,13 +6063,18 @@ def event_slicktext_apply(request, event_id):
     """Pull SlickText campaign + analytics for each chosen ID and upsert as EventSMSCampaign rows."""
     org = get_organization(request)
     event = get_object_or_404(Event.objects.filter(organization=org), id=event_id)
+    wants_json = request.headers.get('X-Requested-With') == 'XMLHttpRequest'
     connection = _get_slicktext_connection(org)
     if not connection:
+        if wants_json:
+            return JsonResponse({'success': False, 'error': 'Connect SlickText before applying campaign results.'}, status=400)
         messages.error(request, 'Connect SlickText before applying campaign results.')
         return redirect('tickets:slicktext_settings')
 
     campaign_ids = [cid.strip() for cid in request.POST.getlist('campaign_id') if cid.strip()]
     if not campaign_ids:
+        if wants_json:
+            return JsonResponse({'success': False, 'error': 'Choose at least one SlickText broadcast to apply.'}, status=400)
         messages.error(request, 'Choose at least one SlickText broadcast to apply.')
         return redirect('tickets:event_slicktext_match', event_id=event.id)
 
@@ -6105,18 +6110,39 @@ def event_slicktext_apply(request, event_id):
             updated_titles.append(sms_campaign.name)
 
     succeeded = len(added_titles) + len(updated_titles)
+    if succeeded == 1:
+        only_title = (added_titles + updated_titles)[0]
+        verb = 'added' if added_titles else 'updated'
+        success_msg = f'SlickText broadcast "{only_title}" {verb} for this event.'
+    elif succeeded:
+        parts = []
+        if added_titles:
+            parts.append(f'added {len(added_titles)}')
+        if updated_titles:
+            parts.append(f'updated {len(updated_titles)}')
+        success_msg = f'Linked {succeeded} SlickText broadcasts to this event ({", ".join(parts)}).'
+    else:
+        success_msg = ''
+
+    if wants_json:
+        all_linked = list(
+            EventSMSCampaign.objects.filter(
+                event=event,
+                source='slicktext',
+                deleted_at__isnull=True,
+            ).order_by('-send_time', '-created_at')
+        )
+        return JsonResponse({
+            'success': succeeded > 0,
+            'message': success_msg,
+            'added_count': len(added_titles),
+            'updated_count': len(updated_titles),
+            'failed_ids': failed_ids,
+            'campaigns': [_serialize_slicktext_campaign(item, event) for item in all_linked],
+        })
+
     if succeeded:
-        if succeeded == 1:
-            only_title = (added_titles + updated_titles)[0]
-            verb = 'added' if added_titles else 'updated'
-            messages.success(request, f'SlickText broadcast "{only_title}" {verb} for this event.')
-        else:
-            parts = []
-            if added_titles:
-                parts.append(f'added {len(added_titles)}')
-            if updated_titles:
-                parts.append(f'updated {len(updated_titles)}')
-            messages.success(request, f'Linked {succeeded} SlickText broadcasts to this event ({", ".join(parts)}).')
+        messages.success(request, success_msg)
 
     if failed_ids:
         messages.error(
