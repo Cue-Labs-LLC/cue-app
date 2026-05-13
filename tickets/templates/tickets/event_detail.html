@@ -660,7 +660,7 @@
 </div><!-- /tab-finance -->
 
 <!-- ===== TAB 4: Marketing ===== -->
-<div class="tab-pane fade" id="tab-marketing" role="tabpanel"{% if is_org_admin and mailchimp_connection %} data-mailchimp-refresh-url="{% url 'tickets:event_mailchimp_refresh_all' event.id %}"{% endif %}>
+<div class="tab-pane fade" id="tab-marketing" role="tabpanel"{% if is_org_admin and mailchimp_connection %} data-mailchimp-refresh-url="{% url 'tickets:event_mailchimp_refresh_all' event.id %}"{% endif %}{% if is_org_admin and slicktext_connection %} data-slicktext-refresh-url="{% url 'tickets:event_slicktext_refresh_all' event.id %}"{% endif %}>
 
 <div class="card mb-4">
     <div class="card-header d-flex justify-content-between align-items-center">
@@ -863,6 +863,118 @@
             <p class="mb-2">Connect Mailchimp to match email campaigns and attach campaign results to this event.</p>
             {% if is_org_admin %}
             <a href="{% url 'tickets:mailchimp_settings' %}" class="btn btn-primary">Connect Mailchimp</a>
+            {% endif %}
+        </div>
+        {% endif %}
+    </div>
+</div>
+
+<div class="card mb-4">
+    <div class="card-header d-flex justify-content-between align-items-center">
+        <h5 class="mb-0">SlickText</h5>
+        {% if is_org_admin %}
+            {% if slicktext_connection %}
+            <button type="button"
+                    class="btn btn-sm btn-primary"
+                    data-bs-toggle="modal"
+                    data-bs-target="#slicktextMatchModal"
+                    data-match-url="{% url 'tickets:event_slicktext_match' event.id %}?format=json"
+                    data-apply-url="{% url 'tickets:event_slicktext_apply' event.id %}">
+                <i class="bi bi-chat-dots"></i> Match SlickText broadcast
+            </button>
+            {% else %}
+            <a href="{% url 'tickets:slicktext_settings' %}" class="btn btn-sm btn-primary">
+                <i class="bi bi-chat-dots"></i> Connect SlickText
+            </a>
+            {% endif %}
+        {% endif %}
+    </div>
+    <div class="card-body">
+        {% if slicktext_connection %}
+        <p class="text-body-secondary mb-3">
+            Connected brand: <strong>{{ org.slicktext_brand_name|default:org.slicktext_brand_id }}</strong>
+        </p>
+        {% if slicktext_campaigns %}
+        <div class="table-responsive mb-3">
+            <table class="table table-hover mb-0">
+                <thead>
+                    <tr>
+                        <th>Linked Broadcast</th>
+                        <th>Sent</th>
+                        <th>Audience</th>
+                        <th>Clicks</th>
+                        <th>Unsubscribes</th>
+                        <th>Revenue</th>
+                        <th></th>
+                    </tr>
+                </thead>
+                <tbody id="slicktextCampaignRows">
+                    {% for sms_campaign in slicktext_campaigns %}
+                    <tr>
+                        <td>
+                            <strong>{{ sms_campaign.name }}</strong>
+                            {% if sms_campaign.message %}
+                            <div class="text-body-secondary small">{{ sms_campaign.message|truncatechars:120 }}</div>
+                            {% endif %}
+                            <div class="text-body-secondary small">{{ sms_campaign.external_id }}</div>
+                        </td>
+                        <td>{{ sms_campaign.send_time_display|default:"Unknown" }}</td>
+                        <td>{{ sms_campaign.audience_size }}</td>
+                        <td>{{ sms_campaign.unique_clicks|default:sms_campaign.clicks }}</td>
+                        <td>{{ sms_campaign.unsubscribes }}</td>
+                        <td>${{ sms_campaign.revenue|currency }}</td>
+                        <td class="text-end">
+                            <div class="d-inline-flex gap-1">
+                                <form method="post" action="{% url 'tickets:event_slicktext_refresh' event.id sms_campaign.id %}" class="d-inline">
+                                    {% csrf_token %}
+                                    <button type="submit" class="btn btn-sm btn-outline-secondary">Refresh</button>
+                                </form>
+                                <form method="post" action="{% url 'tickets:event_slicktext_remove' event.id sms_campaign.id %}" class="d-inline" onsubmit="return confirm('Remove this linked SlickText broadcast from the event?');">
+                                    {% csrf_token %}
+                                    <button type="submit" class="btn btn-sm btn-outline-danger">Remove</button>
+                                </form>
+                            </div>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% endif %}
+        {% if not slicktext_campaigns and is_org_admin %}
+        <div id="slicktextInlineSuggestions"
+             data-match-url="{% url 'tickets:event_slicktext_match' event.id %}?format=json"
+             data-apply-url="{% url 'tickets:event_slicktext_apply' event.id %}">
+            <h6 class="mb-3">Suggested SlickText broadcasts</h6>
+            <div class="slicktext-inline-loading py-3 text-center">
+                <div class="spinner-border spinner-border-sm text-primary" role="status" aria-hidden="true"></div>
+                <span class="text-body-secondary ms-2">Ranking broadcasts…</span>
+            </div>
+            <div class="slicktext-inline-error alert alert-danger d-none mb-0"></div>
+            <form id="slicktextInlineForm" method="post" action="" class="d-none">
+                {% csrf_token %}
+                <div class="slicktext-inline-results"></div>
+                <div class="mt-3 d-flex justify-content-end">
+                    <button type="submit" id="slicktextInlineApplyButton" class="btn btn-primary" disabled>
+                        <i class="bi bi-check2-circle me-1"></i> Apply selected (0)
+                    </button>
+                </div>
+            </form>
+            <p class="slicktext-inline-empty text-body-secondary mb-0 d-none">
+                No matching SlickText broadcasts found near this event's dates. Use the Match button above to search again.
+            </p>
+        </div>
+        {% else %}
+        <p class="mb-0">
+            Use campaign matching to find SlickText broadcasts for this event and save audience size, clicks, unsubscribes, and attributed revenue.
+        </p>
+        {% endif %}
+        {% else %}
+        <div class="empty-state" style="padding: 24px;">
+            <i class="bi bi-chat-dots"></i>
+            <p class="mb-2">Connect SlickText to match SMS broadcasts and attach campaign results to this event.</p>
+            {% if is_org_admin %}
+            <a href="{% url 'tickets:slicktext_settings' %}" class="btn btn-primary">Connect SlickText</a>
             {% endif %}
         </div>
         {% endif %}
@@ -1249,6 +1361,44 @@
                 </div>
                 <div class="modal-footer">
                     <button type="submit" id="mailchimpApplyButton" class="btn btn-primary" disabled>
+                        <i class="bi bi-check2-circle me-1"></i> Apply selected (0)
+                    </button>
+                    <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Close</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+{% endif %}
+
+{% if is_org_admin and slicktext_connection %}
+<div class="modal fade" id="slicktextMatchModal" tabindex="-1" aria-labelledby="slicktextMatchModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-xl modal-dialog-scrollable">
+        <div class="modal-content">
+            <div class="modal-header">
+                <div>
+                    <h5 class="modal-title" id="slicktextMatchModalLabel">Match SlickText broadcasts</h5>
+                    <div class="text-body-secondary small">{{ event.name }}</div>
+                </div>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <form id="slicktextApplyForm" method="post" action="" class="d-flex flex-column" style="flex: 1 1 auto; min-height: 0; overflow: hidden;">
+                {% csrf_token %}
+                <div class="modal-body" style="flex: 1 1 auto; min-height: 0; overflow-y: auto;">
+                    <div id="slicktextMatchLoading" class="py-5 text-center">
+                        <div class="spinner-border text-primary" role="status" aria-hidden="true"></div>
+                        <p class="text-body-secondary mt-3 mb-0">Ranking broadcasts...</p>
+                    </div>
+                    <div id="slicktextMatchError" class="alert alert-danger d-none mb-0"></div>
+                    <div id="slicktextMatchResults"></div>
+                    <div id="slicktextMatchEmpty" class="empty-state d-none" style="padding: 32px;">
+                        <i class="bi bi-chat-dots"></i>
+                        <p class="mb-2">No matching broadcasts found.</p>
+                        <a href="{% url 'tickets:slicktext_settings' %}" class="btn btn-primary">SlickText settings</a>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="submit" id="slicktextApplyButton" class="btn btn-primary" disabled>
                         <i class="bi bi-check2-circle me-1"></i> Apply selected (0)
                     </button>
                     <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Close</button>
@@ -1773,6 +1923,354 @@ document.addEventListener('DOMContentLoaded', function() {
                             '<button type="submit" class="btn btn-sm btn-outline-secondary">Refresh</button>' +
                         '</form>' +
                         '<form method="post" action="' + escapeHtml(campaign.remove_url || '') + '" class="d-inline" onsubmit="return confirm(\'Remove this linked Mailchimp campaign from the event?\');">' +
+                            '<input type="hidden" name="csrfmiddlewaretoken" value="{{ csrf_token }}">' +
+                            '<button type="submit" class="btn btn-sm btn-outline-danger">Remove</button>' +
+                        '</form>' +
+                    '</div>' +
+                '</td>' +
+            '</tr>';
+    }
+
+    function escapeHtml(value) {
+        return String(value).replace(/[&<>"']/g, function(char) {
+            return {
+                '&': '&amp;',
+                '<': '&lt;',
+                '>': '&gt;',
+                '"': '&quot;',
+                "'": '&#039;'
+            }[char];
+        });
+    }
+});
+</script>
+{% endif %}
+{% if is_org_admin and slicktext_connection %}
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    var modalEl = document.getElementById('slicktextMatchModal');
+    if (!modalEl) return;
+
+    var loaded = false;
+    var loadingEl = document.getElementById('slicktextMatchLoading');
+    var errorEl = document.getElementById('slicktextMatchError');
+    var resultsEl = document.getElementById('slicktextMatchResults');
+    var emptyEl = document.getElementById('slicktextMatchEmpty');
+    var formEl = document.getElementById('slicktextApplyForm');
+    var applyButton = document.getElementById('slicktextApplyButton');
+
+    var marketingTab = document.getElementById('tab-marketing');
+    var marketingTabBtn = document.getElementById('tab-marketing-btn');
+    var campaignRowsEl = document.getElementById('slicktextCampaignRows');
+    var refreshInFlight = false;
+
+    if (marketingTab && marketingTabBtn && campaignRowsEl) {
+        marketingTabBtn.addEventListener('shown.bs.tab', refreshLinkedSlickTextCampaigns);
+        if (marketingTabBtn.classList.contains('active')) {
+            refreshLinkedSlickTextCampaigns();
+        }
+    }
+
+    var inlineEl = document.getElementById('slicktextInlineSuggestions');
+    var inlineFormEl = document.getElementById('slicktextInlineForm');
+    var inlineApplyBtn = document.getElementById('slicktextInlineApplyButton');
+    var inlineLoaded = false;
+
+    function loadInlineSuggestions() {
+        if (!inlineEl || inlineLoaded) return;
+        inlineLoaded = true;
+        var inlineLoadingEl = inlineEl.querySelector('.slicktext-inline-loading');
+        var inlineErrorEl = inlineEl.querySelector('.slicktext-inline-error');
+        var inlineResultsEl = inlineEl.querySelector('.slicktext-inline-results');
+        var inlineEmptyEl = inlineEl.querySelector('.slicktext-inline-empty');
+        inlineFormEl.setAttribute('action', inlineEl.getAttribute('data-apply-url'));
+
+        fetch(inlineEl.getAttribute('data-match-url'), {
+            headers: { 'X-Requested-With': 'XMLHttpRequest' }
+        })
+        .then(function(response) {
+            return response.json().then(function(data) {
+                return { ok: response.ok, data: data };
+            });
+        })
+        .then(function(result) {
+            inlineLoadingEl.classList.add('d-none');
+            if (!result.ok || !result.data.success) {
+                inlineErrorEl.textContent = result.data.error || 'Could not match SlickText broadcasts.';
+                inlineErrorEl.classList.remove('d-none');
+                inlineLoaded = false;
+                return;
+            }
+            var candidates = result.data.candidates || [];
+            if (!candidates.length) {
+                inlineEmptyEl.classList.remove('d-none');
+                return;
+            }
+            inlineResultsEl.innerHTML = renderSlickTextCandidateList(candidates);
+            inlineFormEl.classList.remove('d-none');
+            wireInlineSelection(inlineResultsEl);
+        })
+        .catch(function() {
+            inlineLoadingEl.classList.add('d-none');
+            inlineErrorEl.textContent = 'Could not match SlickText broadcasts. Please try again.';
+            inlineErrorEl.classList.remove('d-none');
+            inlineLoaded = false;
+        });
+    }
+
+    function wireInlineSelection(container) {
+        var checkboxes = container.querySelectorAll('input.slicktext-candidate-checkbox:not(:disabled)');
+        var master = container.querySelector('input.slicktext-master-checkbox');
+
+        function updateButton() {
+            var count = container.querySelectorAll('input.slicktext-candidate-checkbox:checked').length;
+            inlineApplyBtn.disabled = count === 0;
+            inlineApplyBtn.innerHTML = '<i class="bi bi-check2-circle me-1"></i> Apply selected (' + count + ')';
+            if (master) {
+                master.checked = count > 0 && count === checkboxes.length;
+                master.indeterminate = count > 0 && count < checkboxes.length;
+            }
+        }
+
+        checkboxes.forEach(function(checkbox) {
+            checkbox.addEventListener('change', updateButton);
+        });
+        if (master) {
+            if (!checkboxes.length) {
+                master.disabled = true;
+            }
+            master.addEventListener('change', function() {
+                checkboxes.forEach(function(checkbox) { checkbox.checked = master.checked; });
+                updateButton();
+            });
+        }
+        updateButton();
+    }
+
+    if (inlineFormEl) {
+        inlineFormEl.addEventListener('submit', function() {
+            var container = inlineEl.querySelector('.slicktext-inline-results');
+            var checked = container.querySelectorAll('input.slicktext-candidate-checkbox:checked');
+            inlineFormEl.querySelectorAll('input[data-paired-input="1"]').forEach(function(node) {
+                node.parentNode.removeChild(node);
+            });
+            checked.forEach(function(checkbox) {
+                ['confidence', 'reasoning'].forEach(function(key) {
+                    var hidden = document.createElement('input');
+                    hidden.type = 'hidden';
+                    hidden.name = key;
+                    hidden.value = checkbox.getAttribute('data-' + key) || '';
+                    hidden.setAttribute('data-paired-input', '1');
+                    inlineFormEl.appendChild(hidden);
+                });
+            });
+        });
+    }
+
+    if (inlineEl && marketingTabBtn) {
+        marketingTabBtn.addEventListener('shown.bs.tab', loadInlineSuggestions);
+        if (marketingTabBtn.classList.contains('active')) {
+            loadInlineSuggestions();
+        }
+    }
+
+    modalEl.addEventListener('show.bs.modal', function(event) {
+        var trigger = event.relatedTarget;
+        if (!trigger || loaded) return;
+
+        loadingEl.classList.remove('d-none');
+        errorEl.classList.add('d-none');
+        emptyEl.classList.add('d-none');
+        resultsEl.innerHTML = '';
+        formEl.setAttribute('action', trigger.getAttribute('data-apply-url'));
+        applyButton.classList.add('d-none');
+
+        fetch(trigger.getAttribute('data-match-url'), {
+            headers: { 'X-Requested-With': 'XMLHttpRequest' }
+        })
+        .then(function(response) {
+            return response.json().then(function(data) {
+                return { ok: response.ok, data: data };
+            });
+        })
+        .then(function(result) {
+            loadingEl.classList.add('d-none');
+            if (!result.ok || !result.data.success) {
+                errorEl.textContent = result.data.error || 'Could not match SlickText broadcasts.';
+                errorEl.classList.remove('d-none');
+                return;
+            }
+
+            loaded = true;
+            var candidates = result.data.candidates || [];
+            if (!candidates.length) {
+                emptyEl.classList.remove('d-none');
+                return;
+            }
+            resultsEl.innerHTML = renderSlickTextCandidateList(candidates);
+            wireSelection();
+        })
+        .catch(function() {
+            loadingEl.classList.add('d-none');
+            errorEl.textContent = 'Could not match SlickText broadcasts. Please try again.';
+            errorEl.classList.remove('d-none');
+        });
+    });
+
+    formEl.addEventListener('submit', function() {
+        var checked = resultsEl.querySelectorAll('input.slicktext-candidate-checkbox:checked');
+        formEl.querySelectorAll('input[data-paired-input="1"]').forEach(function(node) {
+            node.parentNode.removeChild(node);
+        });
+        checked.forEach(function(checkbox) {
+            ['confidence', 'reasoning'].forEach(function(key) {
+                var hidden = document.createElement('input');
+                hidden.type = 'hidden';
+                hidden.name = key;
+                hidden.value = checkbox.getAttribute('data-' + key) || '';
+                hidden.setAttribute('data-paired-input', '1');
+                formEl.appendChild(hidden);
+            });
+        });
+    });
+
+    function wireSelection() {
+        var checkboxes = resultsEl.querySelectorAll('input.slicktext-candidate-checkbox:not(:disabled)');
+        var master = resultsEl.querySelector('input.slicktext-master-checkbox');
+        applyButton.classList.remove('d-none');
+
+        function updateButton() {
+            var count = resultsEl.querySelectorAll('input.slicktext-candidate-checkbox:checked').length;
+            applyButton.disabled = count === 0;
+            applyButton.innerHTML = '<i class="bi bi-check2-circle me-1"></i> Apply selected (' + count + ')';
+            if (master) {
+                master.checked = count > 0 && count === checkboxes.length;
+                master.indeterminate = count > 0 && count < checkboxes.length;
+            }
+        }
+
+        checkboxes.forEach(function(checkbox) {
+            checkbox.addEventListener('change', updateButton);
+        });
+        if (master) {
+            if (!checkboxes.length) {
+                master.disabled = true;
+            }
+            master.addEventListener('change', function() {
+                checkboxes.forEach(function(checkbox) { checkbox.checked = master.checked; });
+                updateButton();
+            });
+        }
+        updateButton();
+    }
+
+    function renderSlickTextCandidateList(candidates) {
+        return '' +
+            '<div class="table-responsive">' +
+                '<table class="table table-hover mb-0">' +
+                    '<thead>' +
+                        '<tr>' +
+                            '<th style="width: 36px;"><input type="checkbox" class="form-check-input slicktext-master-checkbox" aria-label="Select all un-linked candidates"></th>' +
+                            '<th>Broadcast</th>' +
+                            '<th>Sent</th>' +
+                            '<th>Audience</th>' +
+                            '<th>Confidence</th>' +
+                            '<th>Reason</th>' +
+                            '<th></th>' +
+                        '</tr>' +
+                    '</thead>' +
+                    '<tbody>' +
+                        candidates.map(function(candidate) {
+                            var name = escapeHtml(candidate.name || candidate.campaign_id);
+                            var body = escapeHtml((candidate.message || '').slice(0, 120));
+                            var sendTime = escapeHtml(candidate.send_time || 'Unknown');
+                            var audience = escapeHtml(candidate.audience_size || 0);
+                            var reasoning = escapeHtml(candidate.reasoning || '');
+                            var reasoningAttr = escapeHtml(candidate.reasoning || '');
+                            var campaignId = escapeHtml(candidate.campaign_id || '');
+                            var confidenceRaw = escapeHtml(candidate.confidence || 0);
+                            var confidence = Number(candidate.confidence_pct || 0);
+                            var confidenceClass = escapeHtml(candidate.confidence_class || 'bg-secondary');
+                            var isLinked = !!candidate.is_linked;
+                            var checkboxCell = isLinked
+                                ? '<input type="checkbox" class="form-check-input slicktext-candidate-checkbox" disabled aria-label="Already linked">'
+                                : '<input type="checkbox" class="form-check-input slicktext-candidate-checkbox" name="campaign_id" value="' + campaignId + '" data-confidence="' + confidenceRaw + '" data-reasoning="' + reasoningAttr + '" aria-label="Select broadcast">';
+                            var statusBadge = isLinked
+                                ? '<span class="badge bg-success ms-2">Linked</span>'
+                                : '';
+                            return '' +
+                                '<tr>' +
+                                    '<td>' + checkboxCell + '</td>' +
+                                    '<td><strong>' + name + '</strong>' + statusBadge + (body ? '<div class="small text-body-secondary">' + body + '</div>' : '') + '</td>' +
+                                    '<td>' + sendTime + '</td>' +
+                                    '<td>' + audience + '</td>' +
+                                    '<td style="min-width: 130px;">' +
+                                        '<div class="d-flex justify-content-between small mb-1"><span>' + confidence + '%</span></div>' +
+                                        '<div class="progress" style="height: 8px;">' +
+                                            '<div class="progress-bar ' + confidenceClass + '" role="progressbar" style="width: ' + confidence + '%;" aria-valuenow="' + confidence + '" aria-valuemin="0" aria-valuemax="100"></div>' +
+                                        '</div>' +
+                                    '</td>' +
+                                    '<td class="small text-body-secondary">' + reasoning + '</td>' +
+                                    '<td></td>' +
+                                '</tr>';
+                        }).join('') +
+                    '</tbody>' +
+                '</table>' +
+            '</div>';
+    }
+
+    function refreshLinkedSlickTextCampaigns() {
+        var refreshUrl = marketingTab.getAttribute('data-slicktext-refresh-url');
+        if (!refreshUrl || refreshInFlight) return;
+
+        refreshInFlight = true;
+        fetch(refreshUrl, {
+            method: 'POST',
+            headers: {
+                'X-CSRFToken': '{{ csrf_token }}',
+                'X-Requested-With': 'XMLHttpRequest'
+            }
+        })
+        .then(function(response) {
+            return response.json().then(function(data) {
+                return { ok: response.ok, data: data };
+            });
+        })
+        .then(function(result) {
+            refreshInFlight = false;
+            if (!result.ok || !result.data.success) {
+                return;
+            }
+            campaignRowsEl.innerHTML = (result.data.campaigns || []).map(renderLinkedSlickTextCampaignRow).join('');
+        })
+        .catch(function() {
+            refreshInFlight = false;
+        });
+    }
+
+    function renderLinkedSlickTextCampaignRow(campaign) {
+        var bodyPreview = campaign.message
+            ? '<div class="text-body-secondary small">' + escapeHtml(String(campaign.message).slice(0, 120)) + '</div>'
+            : '';
+        return '' +
+            '<tr data-slicktext-campaign-id="' + escapeHtml(campaign.id) + '">' +
+                '<td>' +
+                    '<strong>' + escapeHtml(campaign.name || campaign.external_id) + '</strong>' +
+                    bodyPreview +
+                    '<div class="text-body-secondary small">' + escapeHtml(campaign.external_id || '') + '</div>' +
+                '</td>' +
+                '<td>' + escapeHtml(campaign.send_time_display || 'Unknown') + '</td>' +
+                '<td>' + escapeHtml(campaign.audience_size || 0) + '</td>' +
+                '<td>' + escapeHtml(campaign.unique_clicks || campaign.clicks || 0) + '</td>' +
+                '<td>' + escapeHtml(campaign.unsubscribes || 0) + '</td>' +
+                '<td>$' + escapeHtml(campaign.revenue || '0.00') + '</td>' +
+                '<td class="text-end">' +
+                    '<div class="d-inline-flex gap-1">' +
+                        '<form method="post" action="' + escapeHtml(campaign.refresh_url || '') + '" class="d-inline">' +
+                            '<input type="hidden" name="csrfmiddlewaretoken" value="{{ csrf_token }}">' +
+                            '<button type="submit" class="btn btn-sm btn-outline-secondary">Refresh</button>' +
+                        '</form>' +
+                        '<form method="post" action="' + escapeHtml(campaign.remove_url || '') + '" class="d-inline" onsubmit="return confirm(\'Remove this linked SlickText broadcast from the event?\');">' +
                             '<input type="hidden" name="csrfmiddlewaretoken" value="{{ csrf_token }}">' +
                             '<button type="submit" class="btn btn-sm btn-outline-danger">Remove</button>' +
                         '</form>' +

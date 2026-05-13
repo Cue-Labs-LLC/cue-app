@@ -1,0 +1,81 @@
+{% extends 'tickets/base.html' %}
+
+{% block title %}Match SlickText - {{ event.name }}{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1>Match SlickText broadcast</h1>
+        <p class="text-body-secondary mb-0">{{ event.name }}{% if brand_name %} - {{ brand_name }}{% endif %}</p>
+    </div>
+    <div class="page-header-actions">
+        <a href="{% url 'tickets:event_detail' event.id %}" class="btn btn-outline-secondary btn-sm">
+            <i class="bi bi-arrow-left"></i><span class="ms-1">Back to event</span>
+        </a>
+    </div>
+</div>
+
+{% if candidates %}
+<div class="card">
+    <div class="card-body p-0">
+        <div class="table-responsive">
+            <table class="table table-hover mb-0">
+                <thead>
+                    <tr>
+                        <th>Broadcast</th>
+                        <th>Sent</th>
+                        <th>Audience</th>
+                        <th>Confidence</th>
+                        <th>Reason</th>
+                        <th></th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for item in candidates %}
+                    <tr>
+                        <td>
+                            <strong>{{ item.campaign.name|default:item.campaign.campaign_id }}</strong>
+                            {% with item.campaign.body|default:item.campaign.message as body_preview %}
+                            {% if body_preview %}
+                            <div class="small text-body-secondary">{{ body_preview|truncatechars:120 }}</div>
+                            {% endif %}
+                            {% endwith %}
+                        </td>
+                        <td>{{ item.campaign.finished|default:item.campaign.started|default:item.campaign.scheduled|default:"Unknown" }}</td>
+                        <td>{{ item.campaign.audience_size|default:0 }}</td>
+                        <td style="min-width: 130px;">
+                            <div class="d-flex justify-content-between small mb-1">
+                                <span>{{ item.confidence_pct }}%</span>
+                            </div>
+                            <div class="progress" style="height: 8px;">
+                                <div class="progress-bar {{ item.confidence_class }}" role="progressbar" style="width: {{ item.confidence_pct }}%;" aria-valuenow="{{ item.confidence_pct }}" aria-valuemin="0" aria-valuemax="100"></div>
+                            </div>
+                        </td>
+                        <td class="small text-body-secondary">{{ item.reasoning }}</td>
+                        <td class="text-end">
+                            <form method="post" action="{% url 'tickets:event_slicktext_apply' event.id %}">
+                                {% csrf_token %}
+                                <input type="hidden" name="campaign_id" value="{{ item.campaign.campaign_id|default:item.campaign.id }}">
+                                <input type="hidden" name="confidence" value="{{ item.confidence }}">
+                                <input type="hidden" name="reasoning" value="{{ item.reasoning }}">
+                                <button type="submit" class="btn btn-sm btn-primary"{% if item.is_linked %} disabled{% endif %}>
+                                    <i class="bi bi-check2-circle me-1"></i> {% if item.is_linked %}Linked{% else %}Apply{% endif %}
+                                </button>
+                            </form>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+{% else %}
+<div class="empty-state">
+    <i class="bi bi-chat-dots"></i>
+    <h2>No matching broadcasts found</h2>
+    <p>Connect a different SlickText brand or keep this event unlinked.</p>
+    <a href="{% url 'tickets:slicktext_settings' %}" class="btn btn-outline-secondary">SlickText settings</a>
+</div>
+{% endif %}
+{% endblock %}

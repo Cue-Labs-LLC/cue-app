@@ -7,7 +7,7 @@ from django import forms
 from .models import (
     Organization, UserProfile, OrganizationMembership, OrganizationInvitation, EmailOTP, PhoneOTP,
     AIRecommendation,
-    CSVFormat, UploadedFile, Customer, CustomerTag, Event, ScannerSession, EventExpense, EventEmailCampaign, EventTalent, TicketOrder, Ticket, TicketTier, Venue,
+    CSVFormat, UploadedFile, Customer, CustomerTag, Event, ScannerSession, EventExpense, EventEmailCampaign, EventSMSCampaign, EventTalent, TicketOrder, Ticket, TicketTier, Venue,
     CustomField, CustomFieldOption, EventCustomFieldValue,
     IncomeSource, EventIncome,
     SurveyQuestion, SurveyInvitation, SurveyResponse, SurveyAnswer,
@@ -397,6 +397,34 @@ class EventEmailCampaignAdmin(admin.ModelAdmin):
     list_display = ['campaign_title', 'source', 'emails_sent', 'unique_opens', 'unique_clicks', 'ecommerce_revenue', 'get_event', 'get_organization', 'send_time']
     list_filter = ['event__organization', 'source', 'send_time', 'created_at']
     search_fields = ['campaign_title', 'subject_line', 'external_id', 'event__name']
+    readonly_fields = ['id', 'created_at', 'updated_at', 'last_synced_at']
+    date_hierarchy = 'send_time'
+
+    def get_event(self, obj):
+        return obj.event.name if obj.event_id else ''
+    get_event.short_description = 'Event'
+    get_event.admin_order_field = 'event__name'
+
+    def get_organization(self, obj):
+        return obj.event.organization if obj.event_id else ''
+    get_organization.short_description = 'Organization'
+    get_organization.admin_order_field = 'event__organization'
+
+    def get_queryset(self, request):
+        qs = super().get_queryset(request)
+        if request.user.is_superuser:
+            return qs.select_related('event', 'event__organization')
+        profile = getattr(request.user, 'profile', None)
+        if profile and profile.organization_id:
+            return qs.filter(event__organization=profile.organization).select_related('event', 'event__organization')
+        return qs.none()
+
+
+@admin.register(EventSMSCampaign)
+class EventSMSCampaignAdmin(admin.ModelAdmin):
+    list_display = ['name', 'source', 'audience_size', 'unique_clicks', 'unsubscribes', 'revenue', 'get_event', 'get_organization', 'send_time']
+    list_filter = ['event__organization', 'source', 'send_time', 'created_at']
+    search_fields = ['name', 'message', 'external_id', 'event__name']
     readonly_fields = ['id', 'created_at', 'updated_at', 'last_synced_at']
     date_hierarchy = 'send_time'
 

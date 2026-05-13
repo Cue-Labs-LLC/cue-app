@@ -107,6 +107,10 @@ class Organization(BaseModel):
     mailchimp_account_id = models.CharField(max_length=100, blank=True, default='')
     mailchimp_account_name = models.CharField(max_length=255, blank=True, default='')
     mailchimp_login_email = models.EmailField(blank=True, default='')
+    slicktext_api_key = models.CharField(max_length=255, blank=True, default='')
+    slicktext_brand_id = models.CharField(max_length=100, blank=True, default='')
+    slicktext_brand_name = models.CharField(max_length=255, blank=True, default='')
+    slicktext_validated_at = models.DateTimeField(null=True, blank=True)
     waitlist_feature_enabled = models.BooleanField(
         default=False,
         help_text='Enable the waitlist feature for this organization.',
@@ -1128,6 +1132,51 @@ class EventEmailCampaign(AuditBaseModel):
         return f"{self.get_source_display()} - {self.campaign_title}"
 
 
+class EventSMSCampaign(AuditBaseModel):
+    """SMS marketing broadcast results linked to an event."""
+    SOURCE_CHOICES = [
+        ('slicktext', 'SlickText'),
+    ]
+
+    event = models.ForeignKey(Event, on_delete=models.CASCADE, related_name='sms_campaigns')
+    source = models.CharField(max_length=20, choices=SOURCE_CHOICES, default='slicktext', db_index=True)
+    external_id = models.CharField(max_length=100)
+    name = models.CharField(max_length=300)
+    message = models.CharField(max_length=1600, blank=True, default='')
+    media_url = models.URLField(max_length=500, blank=True, default='')
+    send_time = models.DateTimeField(null=True, blank=True, db_index=True)
+    audience_size = models.PositiveIntegerField(default=0)
+    clicks = models.PositiveIntegerField(default=0)
+    unique_clicks = models.PositiveIntegerField(default=0)
+    click_rate = models.DecimalField(max_digits=7, decimal_places=4, default=Decimal('0.0000'))
+    unsubscribes = models.PositiveIntegerField(default=0)
+    unsubscribe_rate = models.DecimalField(max_digits=7, decimal_places=4, default=Decimal('0.0000'))
+    orders = models.PositiveIntegerField(default=0)
+    revenue = models.DecimalField(max_digits=10, decimal_places=2, default=Decimal('0.00'))
+    match_confidence = models.DecimalField(max_digits=4, decimal_places=3, default=Decimal('0.000'))
+    match_reasoning = models.TextField(blank=True, default='')
+    last_synced_at = models.DateTimeField(null=True, blank=True)
+    external_metadata = models.JSONField(default=dict, blank=True)
+
+    class Meta:
+        ordering = ['-send_time', '-created_at']
+        indexes = [
+            models.Index(fields=['event', 'source']),
+            models.Index(fields=['source', 'external_id']),
+            models.Index(fields=['event', 'deleted_at']),
+        ]
+        constraints = [
+            models.UniqueConstraint(
+                fields=['event', 'source', 'external_id'],
+                condition=models.Q(source='slicktext', deleted_at__isnull=True),
+                name='uniq_active_sms_campaign',
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.get_source_display()} - {self.name}"
+
+
 class IncomeSource(BaseModel):
     """User-defined income source type (e.g. Bar Splits, Merch) scoped per organization."""
     organization = models.ForeignKey(
@@ -1550,11 +1599,13 @@ class AITokenUsage(BaseModel):
     FEATURE_CHAT_AGENT = 'chat_agent'
     FEATURE_META_CAMPAIGN_MATCH = 'meta_campaign_match'
     FEATURE_MAILCHIMP_CAMPAIGN_MATCH = 'mailchimp_campaign_match'
+    FEATURE_SLICKTEXT_CAMPAIGN_MATCH = 'slicktext_campaign_match'
 
     FEATURE_CHOICES = [
         (FEATURE_CHAT_AGENT, 'Chat agent'),
         (FEATURE_META_CAMPAIGN_MATCH, 'Meta campaign match'),
         (FEATURE_MAILCHIMP_CAMPAIGN_MATCH, 'Mailchimp campaign match'),
+        (FEATURE_SLICKTEXT_CAMPAIGN_MATCH, 'SlickText campaign match'),
     ]
 
     organization = models.ForeignKey(

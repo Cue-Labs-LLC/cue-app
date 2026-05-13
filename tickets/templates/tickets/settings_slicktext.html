@@ -1,0 +1,79 @@
+{% extends 'tickets/base.html' %}
+
+{% block title %}SlickText{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1>SlickText</h1>
+        <p class="text-body-secondary mb-0">Connect SlickText so SMS broadcast results can be attached to events.</p>
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-body">
+        {% if not slicktext_connection %}
+        <h2 class="h5 mb-2">Connect SlickText</h2>
+        <p class="text-body-secondary mb-3">
+            Generate an API key in your SlickText dashboard under <strong>Settings &rarr; API &amp; Webhooks &rarr; API Keys</strong>, then paste it below. Cue uses it to read campaign analytics for this organization.
+        </p>
+        <form method="post" action="{% url 'tickets:slicktext_save' %}" class="row g-3" style="max-width: 640px;">
+            {% csrf_token %}
+            <div class="col-12">
+                <label for="slicktext-api-key" class="form-label">API key</label>
+                <input
+                    type="password"
+                    class="form-control font-monospace"
+                    id="slicktext-api-key"
+                    name="api_key"
+                    autocomplete="off"
+                    required
+                >
+                <div class="form-text">Stored encrypted at rest. Disconnect at any time.</div>
+            </div>
+            <div class="col-12">
+                <button type="submit" class="btn btn-primary">
+                    <i class="bi bi-chat-dots me-1"></i> Connect SlickText
+                </button>
+            </div>
+        </form>
+        {% else %}
+        <div class="d-flex flex-column flex-md-row justify-content-between gap-3">
+            <div>
+                <h2 class="h5 mb-2">Connected</h2>
+                <p class="mb-1"><strong>Brand:</strong> {{ org.slicktext_brand_name|default:org.slicktext_brand_id }}</p>
+                <p class="text-body-secondary small mb-0">Brand ID: {{ org.slicktext_brand_id }}</p>
+                {% if org.slicktext_validated_at %}
+                <p class="text-body-secondary small mb-0">Last validated: {{ org.slicktext_validated_at }}</p>
+                {% endif %}
+            </div>
+            <form method="post" action="{% url 'tickets:slicktext_disconnect' %}" onsubmit="return confirm('Disconnect SlickText from this organization?');">
+                {% csrf_token %}
+                <button type="submit" class="btn btn-outline-danger">Disconnect</button>
+            </form>
+        </div>
+
+        <hr class="my-4">
+        <h3 class="h6 mb-2">Replace API key</h3>
+        <p class="text-body-secondary mb-3">Paste a new key to rotate credentials. The brand will be re-validated on save.</p>
+        <form method="post" action="{% url 'tickets:slicktext_save' %}" class="row g-3" style="max-width: 640px;">
+            {% csrf_token %}
+            <div class="col-12">
+                <label for="slicktext-api-key-replace" class="form-label">New API key</label>
+                <input
+                    type="password"
+                    class="form-control font-monospace"
+                    id="slicktext-api-key-replace"
+                    name="api_key"
+                    autocomplete="off"
+                    required
+                >
+            </div>
+            <div class="col-12">
+                <button type="submit" class="btn btn-outline-primary">Save new key</button>
+            </div>
+        </form>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}
