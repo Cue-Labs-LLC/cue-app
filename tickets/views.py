@@ -37,7 +37,7 @@ from django.utils.text import slugify
 from .models import (
     Organization, UserProfile, OrganizationMembership, OrganizationInvitation,
     AIRecommendation,
-    CSVFormat, UploadedFile, Customer, CustomerTag, Event, EventExpense, EventEmailCampaign, EventTalent, TicketOrder, Ticket, Venue,
+    CSVFormat, UploadedFile, Customer, CustomerTag, Event, EventExpense, EventEmailCampaign, EventSMSCampaign, EventTalent, TicketOrder, Ticket, Venue,
     CustomField, CustomFieldOption, EventCustomFieldValue, IncomeSource, EventIncome,
     SurveyQuestion, SurveyInvitation, SurveyResponse, SurveyAnswer,
     PipedreamCalendarConnection, OrganizationAPIKey,
@@ -118,6 +118,13 @@ from .services.mailchimp import (
     normalize_campaign_report,
 )
 from .services.mailchimp_campaign_matcher import MailchimpCampaignMatcher
+from .services.slicktext import (
+    SlickTextAPIError,
+    SlickTextClient,
+    build_campaign_report as build_slicktext_campaign_report,
+    normalize_campaign_report as normalize_slicktext_campaign_report,
+)
+from .services.slicktext_campaign_matcher import SlickTextCampaignMatcher
 from .utils import get_organization, require_org, require_organizer, require_host, require_admin, require_owner, clear_org_cache, next_order_number, generate_qr_b64
 from .feature_flags import (
     smart_pricing_recommendations_enabled,
@@ -3562,6 +3569,110 @@ def _serialize_mailchimp_campaign(email_campaign, event):
     }
 
 
+def _get_active_slicktext_campaign_or_404(org, event_id, sms_campaign_id):
+    event = get_object_or_404(Event.objects.filter(organization=org), id=event_id)
+    sms_campaign = get_object_or_404(
+        EventSMSCampaign.objects.filter(
+            event=event,
+            source='slicktext',
+            deleted_at__isnull=True,
+        ).exclude(external_id=''),
+        id=sms_campaign_id,
+    )
+    return event, sms_campaign
+
+
+def _get_slicktext_connection(org):
+    if org.slicktext_api_key and org.slicktext_brand_id:
+        return org
+    return None
+
+
+def _save_slicktext_campaign_from_report(event, report, user=None, match_confidence=None, match_reasoning=''):
+    normalized = normalize_slicktext_campaign_report(report)
+    external_id = normalized['external_id']
+    if not external_id:
+        raise SlickTextAPIError('SlickText campaign did not include a campaign ID.')
+
+    defaults = {
+        'name': normalized['name'][:300],
+        'message': normalized['message'][:1600],
+        'media_url': normalized['media_url'][:500],
+        'send_time': normalized['send_time'],
+        'audience_size': normalized['audience_size'],
+        'clicks': normalized['clicks'],
+        'unique_clicks': normalized['unique_clicks'],
+        'click_rate': normalized['click_rate'],
+        'unsubscribes': normalized['unsubscribes'],
+        'unsubscribe_rate': normalized['unsubscribe_rate'],
+        'orders': normalized['orders'],
+        'revenue': normalized['revenue'],
+        'last_synced_at': django_tz.now(),
+        'external_metadata': normalized['external_metadata'],
+    }
+    if match_confidence is not None:
+        defaults['match_confidence'] = Decimal(str(match_confidence)).quantize(Decimal('0.001'))
+    if match_reasoning:
+        defaults['match_reasoning'] = match_reasoning
+
+    sms_campaign, created = EventSMSCampaign.objects.filter(
+        event=event,
+        source='slicktext',
+        external_id=external_id,
+        deleted_at__isnull=True,
+    ).get_or_create(
+        defaults={
+            **defaults,
+            'event': event,
+            'source': 'slicktext',
+            'external_id': external_id,
+            'created_by': user if user and user.is_authenticated else None,
+        }
+    )
+    if not created:
+        for field, value in defaults.items():
+            setattr(sms_campaign, field, value)
+        sms_campaign.version += 1
+        if user and user.is_authenticated:
+            sms_campaign.updated_by = user
+    sms_campaign.save()
+    return sms_campaign, created
+
+
+def _serialize_slicktext_campaign(sms_campaign, event):
+    return {
+        'id': str(sms_campaign.id),
+        'external_id': sms_campaign.external_id,
+        'name': sms_campaign.name,
+        'message': sms_campaign.message,
+        'send_time_display': _format_meta_ads_datetime(sms_campaign.send_time.isoformat() if sms_campaign.send_time else '') or 'Unknown',
+        'audience_size': sms_campaign.audience_size,
+        'clicks': sms_campaign.clicks,
+        'unique_clicks': sms_campaign.unique_clicks,
+        'unsubscribes': sms_campaign.unsubscribes,
+        'orders': sms_campaign.orders,
+        'revenue': f"{sms_campaign.revenue:.2f}",
+        'refresh_url': reverse('tickets:event_slicktext_refresh', kwargs={
+            'event_id': event.id,
+            'sms_campaign_id': sms_campaign.id,
+        }),
+        'remove_url': reverse('tickets:event_slicktext_remove', kwargs={
+            'event_id': event.id,
+            'sms_campaign_id': sms_campaign.id,
+        }),
+    }
+
+
+def _slicktext_fetch_campaign_with_analytics(client, campaign_id):
+    """Fetch a SlickText campaign plus its analytics and bundle them as a report."""
+    campaign = client.get_campaign(campaign_id)
+    try:
+        analytics = client.get_campaign_analytics(campaign_id)
+    except SlickTextAPIError:
+        analytics = {}
+    return build_slicktext_campaign_report(campaign, analytics)
+
+
 @login_required
 @require_org
 @require_organizer
@@ -3677,6 +3788,18 @@ def event_detail(request, event_id):
         campaign.send_time_display = _format_meta_ads_datetime(campaign.send_time.isoformat() if campaign.send_time else '')
         campaign.last_synced_display = _format_meta_ads_datetime(campaign.last_synced_at.isoformat() if campaign.last_synced_at else '')
 
+    slicktext_connection = _get_slicktext_connection(org)
+    slicktext_campaigns = list(
+        EventSMSCampaign.objects.filter(
+            event=event,
+            source='slicktext',
+            deleted_at__isnull=True,
+        ).order_by('-send_time', '-created_at')
+    )
+    for sms_campaign in slicktext_campaigns:
+        sms_campaign.send_time_display = _format_meta_ads_datetime(sms_campaign.send_time.isoformat() if sms_campaign.send_time else '')
+        sms_campaign.last_synced_display = _format_meta_ads_datetime(sms_campaign.last_synced_at.isoformat() if sms_campaign.last_synced_at else '')
+
     ticket_type_breakdown_json = json.dumps(ticket_type_breakdown)
     ticket_type_allocation_charts_json = json.dumps(ticket_type_allocation_charts)
 
@@ -3722,6 +3845,8 @@ def event_detail(request, event_id):
         'meta_ads_expenses': meta_ads_expenses,
         'mailchimp_connection': mailchimp_connection,
         'mailchimp_campaigns': mailchimp_campaigns,
+        'slicktext_connection': slicktext_connection,
+        'slicktext_campaigns': slicktext_campaigns,
         'category_labels': category_labels,
         'additional_income_lines': additional_income_lines,
         'income_sources': IncomeSource.objects.filter(organization=org).order_by('order', 'name'),
@@ -4889,6 +5014,79 @@ def mailchimp_disconnect(request):
 @login_required
 @require_org
 @require_admin
+def slicktext_settings(request):
+    """Show SlickText connection status and the credential form."""
+    org = get_organization(request)
+    return render(request, 'tickets/settings_slicktext.html', {
+        'org': org,
+        'slicktext_connection': _get_slicktext_connection(org),
+    })
+
+
+@login_required
+@require_org
+@require_admin
+@require_http_methods(["POST"])
+def slicktext_save(request):
+    """Validate posted SlickText API key, fetch the brand, and persist credentials."""
+    org = get_organization(request)
+    api_key = (request.POST.get('api_key') or '').strip()
+    if not api_key:
+        messages.error(request, 'Enter your SlickText API key.')
+        return redirect('tickets:slicktext_settings')
+
+    try:
+        brand = SlickTextClient(api_key).get_brand()
+    except SlickTextAPIError as exc:
+        messages.error(request, f'Could not verify SlickText credentials: {exc}')
+        return redirect('tickets:slicktext_settings')
+
+    brand_id = str(brand.get('brand_id') or brand.get('id') or '')
+    if not brand_id:
+        messages.error(request, 'SlickText did not return a brand ID for this API key.')
+        return redirect('tickets:slicktext_settings')
+
+    org.slicktext_api_key = api_key
+    org.slicktext_brand_id = brand_id
+    org.slicktext_brand_name = str(brand.get('name') or brand.get('legal_name') or '')
+    org.slicktext_validated_at = django_tz.now()
+    org.save(update_fields=[
+        'slicktext_api_key',
+        'slicktext_brand_id',
+        'slicktext_brand_name',
+        'slicktext_validated_at',
+    ])
+    messages.success(request, 'SlickText connected.')
+    return redirect('tickets:slicktext_settings')
+
+
+@login_required
+@require_org
+@require_admin
+@require_http_methods(["POST"])
+def slicktext_disconnect(request):
+    """Disconnect SlickText from the current org."""
+    org = get_organization(request)
+    if _get_slicktext_connection(org):
+        org.slicktext_api_key = ''
+        org.slicktext_brand_id = ''
+        org.slicktext_brand_name = ''
+        org.slicktext_validated_at = None
+        org.save(update_fields=[
+            'slicktext_api_key',
+            'slicktext_brand_id',
+            'slicktext_brand_name',
+            'slicktext_validated_at',
+        ])
+        messages.success(request, 'SlickText disconnected.')
+    else:
+        messages.info(request, 'SlickText was not connected.')
+    return redirect('tickets:slicktext_settings')
+
+
+@login_required
+@require_org
+@require_admin
 def settings_api_keys(request):
     """List and create API keys for the current org."""
     org = get_organization(request)
@@ -5749,6 +5947,282 @@ def event_mailchimp_remove(request, event_id, email_campaign_id):
     email_campaign.delete()
 
     messages.success(request, 'Mailchimp campaign removed from this event.')
+    return _marketing_tab_redirect(event)
+
+
+@login_required
+@require_org
+@require_admin
+@require_http_methods(["GET"])
+def event_slicktext_match(request, event_id):
+    """Rank SlickText broadcasts that likely correspond to this event."""
+    org = get_organization(request)
+    wants_json = request.GET.get('format') == 'json'
+    event = get_object_or_404(
+        Event.objects.filter(organization=org).select_related('venue'),
+        id=event_id,
+    )
+    connection = _get_slicktext_connection(org)
+    if not connection:
+        if wants_json:
+            return JsonResponse({
+                'success': False,
+                'error': 'Connect SlickText before matching campaigns.',
+            }, status=400)
+        messages.error(request, 'Connect SlickText before matching campaigns.')
+        return redirect('tickets:slicktext_settings')
+
+    try:
+        client = SlickTextClient(connection.slicktext_api_key, connection.slicktext_brand_id)
+        campaigns = client.list_campaigns()
+        match_result = SlickTextCampaignMatcher(org).rank(event, campaigns)
+    except SlickTextAPIError as exc:
+        if wants_json:
+            return JsonResponse({'success': False, 'error': f'Could not load SlickText campaigns: {exc}'}, status=502)
+        messages.error(request, f'Could not load SlickText campaigns: {exc}')
+        return redirect('tickets:event_detail', event_id=event.id)
+    except Exception as exc:
+        logger.exception("SlickText campaign matching failed for event %s: %s", event.id, exc)
+        if wants_json:
+            return JsonResponse({
+                'success': False,
+                'error': 'Could not rank SlickText campaigns. Please check your OpenAI configuration and try again.',
+            }, status=500)
+        messages.error(request, 'Could not rank SlickText campaigns. Please check your OpenAI configuration and try again.')
+        return redirect('tickets:event_detail', event_id=event.id)
+
+    linked_ids = set(
+        EventSMSCampaign.objects.filter(
+            event=event,
+            source='slicktext',
+            deleted_at__isnull=True,
+        ).exclude(external_id='').values_list('external_id', flat=True)
+    )
+
+    campaigns_by_id = {str(campaign.get('campaign_id') or campaign.get('id')): campaign for campaign in campaigns}
+    candidates = []
+    for candidate in match_result.candidates:
+        campaign = campaigns_by_id.get(candidate.campaign_id)
+        if not campaign:
+            continue
+        confidence_pct = int(round(candidate.confidence * 100))
+        if candidate.confidence >= 0.7:
+            confidence_class = 'bg-success'
+        elif candidate.confidence >= 0.3:
+            confidence_class = 'bg-warning'
+        else:
+            confidence_class = 'bg-secondary'
+        external_id = str(campaign.get('campaign_id') or campaign.get('id'))
+        candidates.append({
+            'campaign': campaign,
+            'confidence': candidate.confidence,
+            'confidence_pct': confidence_pct,
+            'confidence_class': confidence_class,
+            'reasoning': candidate.reasoning,
+            'is_linked': external_id in linked_ids,
+        })
+
+    if wants_json:
+        return JsonResponse({
+            'success': True,
+            'brand_name': connection.slicktext_brand_name or connection.slicktext_brand_id,
+            'candidates': [
+                {
+                    'campaign_id': str(item['campaign'].get('campaign_id') or item['campaign'].get('id')),
+                    'name': item['campaign'].get('name') or '',
+                    'message': item['campaign'].get('body') or item['campaign'].get('message') or '',
+                    'send_time': _format_meta_ads_datetime(
+                        item['campaign'].get('finished')
+                        or item['campaign'].get('started')
+                        or item['campaign'].get('scheduled')
+                    ) or 'Unknown',
+                    'audience_size': item['campaign'].get('audience_size') or 0,
+                    'status': item['campaign'].get('status') or '',
+                    'confidence': item['confidence'],
+                    'confidence_pct': item['confidence_pct'],
+                    'confidence_class': item['confidence_class'],
+                    'reasoning': item['reasoning'],
+                    'is_linked': item['is_linked'],
+                }
+                for item in candidates
+            ],
+        })
+
+    return render(request, 'tickets/event_slicktext_match.html', {
+        'event': event,
+        'candidates': candidates,
+        'brand_name': connection.slicktext_brand_name or connection.slicktext_brand_id,
+    })
+
+
+@login_required
+@require_org
+@require_admin
+@require_http_methods(["POST"])
+def event_slicktext_apply(request, event_id):
+    """Pull SlickText campaign + analytics for each chosen ID and upsert as EventSMSCampaign rows."""
+    org = get_organization(request)
+    event = get_object_or_404(Event.objects.filter(organization=org), id=event_id)
+    connection = _get_slicktext_connection(org)
+    if not connection:
+        messages.error(request, 'Connect SlickText before applying campaign results.')
+        return redirect('tickets:slicktext_settings')
+
+    campaign_ids = [cid.strip() for cid in request.POST.getlist('campaign_id') if cid.strip()]
+    if not campaign_ids:
+        messages.error(request, 'Choose at least one SlickText broadcast to apply.')
+        return redirect('tickets:event_slicktext_match', event_id=event.id)
+
+    confidences = request.POST.getlist('confidence')
+    reasonings = request.POST.getlist('reasoning')
+
+    client = SlickTextClient(connection.slicktext_api_key, connection.slicktext_brand_id)
+    added_titles = []
+    updated_titles = []
+    failed_ids = []
+    for index, campaign_id in enumerate(campaign_ids):
+        confidence = confidences[index] if index < len(confidences) else None
+        reasoning = (reasonings[index] if index < len(reasonings) else '').strip()
+        try:
+            report = _slicktext_fetch_campaign_with_analytics(client, campaign_id)
+            sms_campaign, created = _save_slicktext_campaign_from_report(
+                event,
+                report,
+                user=request.user,
+                match_confidence=confidence or None,
+                match_reasoning=reasoning,
+            )
+        except SlickTextAPIError as exc:
+            logger.warning(
+                "SlickText apply failed for org=%s event=%s campaign=%s: %s",
+                org.id, event.id, campaign_id, exc,
+            )
+            failed_ids.append(campaign_id)
+            continue
+        if created:
+            added_titles.append(sms_campaign.name)
+        else:
+            updated_titles.append(sms_campaign.name)
+
+    succeeded = len(added_titles) + len(updated_titles)
+    if succeeded:
+        if succeeded == 1:
+            only_title = (added_titles + updated_titles)[0]
+            verb = 'added' if added_titles else 'updated'
+            messages.success(request, f'SlickText broadcast "{only_title}" {verb} for this event.')
+        else:
+            parts = []
+            if added_titles:
+                parts.append(f'added {len(added_titles)}')
+            if updated_titles:
+                parts.append(f'updated {len(updated_titles)}')
+            messages.success(request, f'Linked {succeeded} SlickText broadcasts to this event ({", ".join(parts)}).')
+
+    if failed_ids:
+        messages.error(
+            request,
+            'Could not pull results from SlickText for: ' + ', '.join(failed_ids),
+        )
+
+    if not succeeded and not failed_ids:
+        messages.error(request, 'No SlickText broadcasts were applied.')
+
+    return _marketing_tab_redirect(event)
+
+
+@login_required
+@require_org
+@require_admin
+@require_http_methods(["POST"])
+def event_slicktext_refresh_all(request, event_id):
+    """Refresh all linked SlickText campaign analytics for an event."""
+    org = get_organization(request)
+    event = get_object_or_404(Event.objects.filter(organization=org), id=event_id)
+    connection = _get_slicktext_connection(org)
+    if not connection:
+        return JsonResponse({
+            'success': False,
+            'error': 'Connect SlickText before refreshing campaign results.',
+        }, status=400)
+
+    sms_campaigns = list(
+        EventSMSCampaign.objects.filter(
+            event=event,
+            source='slicktext',
+            deleted_at__isnull=True,
+        ).exclude(external_id='')
+    )
+    client = SlickTextClient(connection.slicktext_api_key, connection.slicktext_brand_id)
+    had_error = False
+    refreshed = []
+
+    for sms_campaign in sms_campaigns:
+        try:
+            report = _slicktext_fetch_campaign_with_analytics(client, sms_campaign.external_id)
+            refreshed_row, _created = _save_slicktext_campaign_from_report(event, report, user=request.user)
+            refreshed.append(refreshed_row)
+        except SlickTextAPIError as exc:
+            had_error = True
+            logger.warning(
+                "SlickText bulk refresh failed for org=%s event=%s sms_campaign=%s campaign=%s: %s",
+                org.id, event.id, sms_campaign.id, sms_campaign.external_id, exc,
+            )
+            refreshed.append(sms_campaign)
+
+    refreshed.sort(
+        key=lambda item: (item.send_time or django_tz.datetime.min.replace(tzinfo=django_tz.utc), item.created_at),
+        reverse=True,
+    )
+    return JsonResponse({
+        'success': True,
+        'had_error': had_error,
+        'campaigns': [_serialize_slicktext_campaign(item, event) for item in refreshed],
+    })
+
+
+@login_required
+@require_org
+@require_admin
+@require_http_methods(["POST"])
+def event_slicktext_refresh(request, event_id, sms_campaign_id):
+    """Refresh a single linked SlickText campaign."""
+    org = get_organization(request)
+    event, sms_campaign = _get_active_slicktext_campaign_or_404(org, event_id, sms_campaign_id)
+    connection = _get_slicktext_connection(org)
+    if not connection:
+        messages.error(request, 'Connect SlickText before refreshing campaign results.')
+        return redirect('tickets:slicktext_settings')
+
+    try:
+        client = SlickTextClient(connection.slicktext_api_key, connection.slicktext_brand_id)
+        report = _slicktext_fetch_campaign_with_analytics(client, sms_campaign.external_id)
+        refreshed, _created = _save_slicktext_campaign_from_report(event, report, user=request.user)
+    except SlickTextAPIError as exc:
+        logger.warning(
+            "SlickText row refresh failed for org=%s event=%s sms_campaign=%s campaign=%s: %s",
+            org.id, event.id, sms_campaign.id, sms_campaign.external_id, exc,
+        )
+        messages.warning(request, 'Could not refresh this SlickText broadcast.')
+        return _marketing_tab_redirect(event)
+
+    messages.success(request, f'SlickText broadcast "{refreshed.name}" refreshed.')
+    return _marketing_tab_redirect(event)
+
+
+@login_required
+@require_org
+@require_admin
+@require_http_methods(["POST"])
+def event_slicktext_remove(request, event_id, sms_campaign_id):
+    """Unlink a SlickText broadcast from an event by soft-deleting its stored results."""
+    org = get_organization(request)
+    event, sms_campaign = _get_active_slicktext_campaign_or_404(org, event_id, sms_campaign_id)
+
+    sms_campaign.updated_by = request.user
+    sms_campaign.save(update_fields=['updated_by'])
+    sms_campaign.delete()
+
+    messages.success(request, 'SlickText broadcast removed from this event.')
     return _marketing_tab_redirect(event)
 
 
