@@ -725,9 +725,26 @@
             </table>
         </div>
         {% endif %}
+        {% if not meta_ads_expenses and is_org_admin %}
+        <div id="metaAdsInlineSuggestions"
+             data-match-url="{% url 'tickets:event_meta_ads_match' event.id %}?format=json"
+             data-apply-url="{% url 'tickets:event_meta_ads_apply' event.id %}">
+            <h6 class="mb-3">Suggested Meta Ads campaigns</h6>
+            <div class="meta-ads-inline-loading py-3 text-center">
+                <div class="spinner-border spinner-border-sm text-primary" role="status" aria-hidden="true"></div>
+                <span class="text-body-secondary ms-2">Ranking campaigns…</span>
+            </div>
+            <div class="meta-ads-inline-error alert alert-danger d-none mb-0"></div>
+            <div class="meta-ads-inline-results row g-3"></div>
+            <p class="meta-ads-inline-empty text-body-secondary mb-0 d-none">
+                No matching Meta Ads campaigns found near this event's dates. Use the Match button above to search again.
+            </p>
+        </div>
+        {% else %}
         <p class="mb-0">
             Use campaign matching to find Meta campaigns for this event, pull lifetime campaign spend, and save it as a marketing expense.
         </p>
+        {% endif %}
         {% else %}
         <div class="empty-state" style="padding: 24px;">
             <i class="bi bi-megaphone"></i>
@@ -812,9 +829,34 @@
             </table>
         </div>
         {% endif %}
+        {% if not mailchimp_campaigns and is_org_admin %}
+        <div id="mailchimpInlineSuggestions"
+             data-match-url="{% url 'tickets:event_mailchimp_match' event.id %}?format=json"
+             data-apply-url="{% url 'tickets:event_mailchimp_apply' event.id %}">
+            <h6 class="mb-3">Suggested Mailchimp campaigns</h6>
+            <div class="mailchimp-inline-loading py-3 text-center">
+                <div class="spinner-border spinner-border-sm text-primary" role="status" aria-hidden="true"></div>
+                <span class="text-body-secondary ms-2">Ranking campaigns…</span>
+            </div>
+            <div class="mailchimp-inline-error alert alert-danger d-none mb-0"></div>
+            <form id="mailchimpInlineForm" method="post" action="" class="d-none">
+                {% csrf_token %}
+                <div class="mailchimp-inline-results"></div>
+                <div class="mt-3 d-flex justify-content-end">
+                    <button type="submit" id="mailchimpInlineApplyButton" class="btn btn-primary" disabled>
+                        <i class="bi bi-check2-circle me-1"></i> Apply selected (0)
+                    </button>
+                </div>
+            </form>
+            <p class="mailchimp-inline-empty text-body-secondary mb-0 d-none">
+                No matching Mailchimp campaigns found near this event's dates. Use the Match button above to search again.
+            </p>
+        </div>
+        {% else %}
         <p class="mb-0">
             Use campaign matching to find Mailchimp email campaigns for this event and save opens, clicks, bounces, unsubscribes, and reported revenue.
         </p>
+        {% endif %}
         {% else %}
         <div class="empty-state" style="padding: 24px;">
             <i class="bi bi-envelope-paper"></i>
@@ -1253,6 +1295,59 @@ document.addEventListener('DOMContentLoaded', function() {
     var resultsEl = document.getElementById('metaAdsMatchResults');
     var emptyEl = document.getElementById('metaAdsMatchEmpty');
 
+    var inlineEl = document.getElementById('metaAdsInlineSuggestions');
+    var marketingTabBtn = document.getElementById('tab-marketing-btn');
+    var inlineLoaded = false;
+
+    function loadInlineSuggestions() {
+        if (!inlineEl || inlineLoaded) return;
+        inlineLoaded = true;
+        var inlineLoadingEl = inlineEl.querySelector('.meta-ads-inline-loading');
+        var inlineErrorEl = inlineEl.querySelector('.meta-ads-inline-error');
+        var inlineResultsEl = inlineEl.querySelector('.meta-ads-inline-results');
+        var inlineEmptyEl = inlineEl.querySelector('.meta-ads-inline-empty');
+        var applyUrl = inlineEl.getAttribute('data-apply-url');
+
+        fetch(inlineEl.getAttribute('data-match-url'), {
+            headers: { 'X-Requested-With': 'XMLHttpRequest' }
+        })
+        .then(function(response) {
+            return response.json().then(function(data) {
+                return { ok: response.ok, data: data };
+            });
+        })
+        .then(function(result) {
+            inlineLoadingEl.classList.add('d-none');
+            if (!result.ok || !result.data.success) {
+                inlineErrorEl.textContent = result.data.error || 'Could not match Meta campaigns.';
+                inlineErrorEl.classList.remove('d-none');
+                inlineLoaded = false;
+                return;
+            }
+            var candidates = result.data.candidates || [];
+            if (!candidates.length) {
+                inlineEmptyEl.classList.remove('d-none');
+                return;
+            }
+            inlineResultsEl.innerHTML = candidates.map(function(candidate) {
+                return renderMetaAdsCandidate(candidate, applyUrl);
+            }).join('');
+        })
+        .catch(function() {
+            inlineLoadingEl.classList.add('d-none');
+            inlineErrorEl.textContent = 'Could not match Meta campaigns. Please try again.';
+            inlineErrorEl.classList.remove('d-none');
+            inlineLoaded = false;
+        });
+    }
+
+    if (inlineEl && marketingTabBtn) {
+        marketingTabBtn.addEventListener('shown.bs.tab', loadInlineSuggestions);
+        if (marketingTabBtn.classList.contains('active')) {
+            loadInlineSuggestions();
+        }
+    }
+
     modalEl.addEventListener('show.bs.modal', function(event) {
         var trigger = event.relatedTarget;
         if (!trigger || loaded) return;
@@ -1375,6 +1470,109 @@ document.addEventListener('DOMContentLoaded', function() {
         marketingTabBtn.addEventListener('shown.bs.tab', refreshLinkedMailchimpCampaigns);
         if (marketingTabBtn.classList.contains('active')) {
             refreshLinkedMailchimpCampaigns();
+        }
+    }
+
+    var inlineEl = document.getElementById('mailchimpInlineSuggestions');
+    var inlineFormEl = document.getElementById('mailchimpInlineForm');
+    var inlineApplyBtn = document.getElementById('mailchimpInlineApplyButton');
+    var inlineLoaded = false;
+
+    function loadInlineSuggestions() {
+        if (!inlineEl || inlineLoaded) return;
+        inlineLoaded = true;
+        var inlineLoadingEl = inlineEl.querySelector('.mailchimp-inline-loading');
+        var inlineErrorEl = inlineEl.querySelector('.mailchimp-inline-error');
+        var inlineResultsEl = inlineEl.querySelector('.mailchimp-inline-results');
+        var inlineEmptyEl = inlineEl.querySelector('.mailchimp-inline-empty');
+        inlineFormEl.setAttribute('action', inlineEl.getAttribute('data-apply-url'));
+
+        fetch(inlineEl.getAttribute('data-match-url'), {
+            headers: { 'X-Requested-With': 'XMLHttpRequest' }
+        })
+        .then(function(response) {
+            return response.json().then(function(data) {
+                return { ok: response.ok, data: data };
+            });
+        })
+        .then(function(result) {
+            inlineLoadingEl.classList.add('d-none');
+            if (!result.ok || !result.data.success) {
+                inlineErrorEl.textContent = result.data.error || 'Could not match Mailchimp campaigns.';
+                inlineErrorEl.classList.remove('d-none');
+                inlineLoaded = false;
+                return;
+            }
+            var candidates = result.data.candidates || [];
+            if (!candidates.length) {
+                inlineEmptyEl.classList.remove('d-none');
+                return;
+            }
+            inlineResultsEl.innerHTML = renderMailchimpCandidateList(candidates);
+            inlineFormEl.classList.remove('d-none');
+            wireInlineSelection(inlineResultsEl);
+        })
+        .catch(function() {
+            inlineLoadingEl.classList.add('d-none');
+            inlineErrorEl.textContent = 'Could not match Mailchimp campaigns. Please try again.';
+            inlineErrorEl.classList.remove('d-none');
+            inlineLoaded = false;
+        });
+    }
+
+    function wireInlineSelection(container) {
+        var checkboxes = container.querySelectorAll('input.mailchimp-candidate-checkbox:not(:disabled)');
+        var master = container.querySelector('input.mailchimp-master-checkbox');
+
+        function updateButton() {
+            var count = container.querySelectorAll('input.mailchimp-candidate-checkbox:checked').length;
+            inlineApplyBtn.disabled = count === 0;
+            inlineApplyBtn.innerHTML = '<i class="bi bi-check2-circle me-1"></i> Apply selected (' + count + ')';
+            if (master) {
+                master.checked = count > 0 && count === checkboxes.length;
+                master.indeterminate = count > 0 && count < checkboxes.length;
+            }
+        }
+
+        checkboxes.forEach(function(checkbox) {
+            checkbox.addEventListener('change', updateButton);
+        });
+        if (master) {
+            if (!checkboxes.length) {
+                master.disabled = true;
+            }
+            master.addEventListener('change', function() {
+                checkboxes.forEach(function(checkbox) { checkbox.checked = master.checked; });
+                updateButton();
+            });
+        }
+        updateButton();
+    }
+
+    if (inlineFormEl) {
+        inlineFormEl.addEventListener('submit', function() {
+            var container = inlineEl.querySelector('.mailchimp-inline-results');
+            var checked = container.querySelectorAll('input.mailchimp-candidate-checkbox:checked');
+            inlineFormEl.querySelectorAll('input[data-paired-input="1"]').forEach(function(node) {
+                node.parentNode.removeChild(node);
+            });
+            checked.forEach(function(checkbox) {
+                ['confidence', 'reasoning'].forEach(function(key) {
+                    var hidden = document.createElement('input');
+                    hidden.type = 'hidden';
+                    hidden.name = key;
+                    hidden.value = checkbox.getAttribute('data-' + key) || '';
+                    hidden.setAttribute('data-paired-input', '1');
+                    inlineFormEl.appendChild(hidden);
+                });
+            });
+        });
+    }
+
+    if (inlineEl && marketingTabBtn) {
+        marketingTabBtn.addEventListener('shown.bs.tab', loadInlineSuggestions);
+        if (marketingTabBtn.classList.contains('active')) {
+            loadInlineSuggestions();
         }
     }
 
