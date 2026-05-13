@@ -3569,6 +3569,25 @@ def _serialize_mailchimp_campaign(email_campaign, event):
     }
 
 
+def _serialize_meta_ads_expense(expense, event):
+    metadata = expense.external_metadata or {}
+    return {
+        'id': str(expense.id),
+        'external_id': expense.external_id,
+        'campaign_name': metadata.get('campaign_name') or expense.description,
+        'amount': f"{expense.amount:.2f}",
+        'last_synced_display': _format_meta_ads_datetime(metadata.get('last_synced_at')) or '',
+        'refresh_url': reverse('tickets:event_meta_ads_refresh', kwargs={
+            'event_id': event.id,
+            'expense_id': expense.id,
+        }),
+        'remove_url': reverse('tickets:event_meta_ads_remove', kwargs={
+            'event_id': event.id,
+            'expense_id': expense.id,
+        }),
+    }
+
+
 def _get_active_slicktext_campaign_or_404(org, event_id, sms_campaign_id):
     event = get_object_or_404(Event.objects.filter(organization=org), id=event_id)
     sms_campaign = get_object_or_404(
@@ -5543,12 +5562,21 @@ def event_meta_ads_apply(request, event_id):
     """Pull campaign lifetime spend and upsert it as this event's Meta Ads expense."""
     org = get_organization(request)
     event = get_object_or_404(Event.objects.filter(organization=org), id=event_id)
+    wants_json = request.headers.get('X-Requested-With') == 'XMLHttpRequest'
+
+    def _json_error(msg, status):
+        return JsonResponse({'success': False, 'error': msg}, status=status)
+
     if not org.meta_ads_access_token or not org.meta_ads_account_id:
+        if wants_json:
+            return _json_error('Connect Meta Ads and choose an ad account before applying campaign spend.', 400)
         messages.error(request, 'Connect Meta Ads and choose an ad account before applying campaign spend.')
         return redirect('tickets:meta_ads_settings')
 
     campaign_id = request.POST.get('campaign_id', '').strip()
     if not campaign_id:
+        if wants_json:
+            return _json_error('Choose a Meta campaign to apply.', 400)
         messages.error(request, 'Choose a Meta campaign to apply.')
         return redirect('tickets:event_meta_ads_match', event_id=event.id)
 
@@ -5557,10 +5585,14 @@ def event_meta_ads_apply(request, event_id):
         campaigns = client.list_campaigns(org.meta_ads_account_id)
         campaign = next((item for item in campaigns if str(item.get('id')) == campaign_id), None)
         if not campaign:
+            if wants_json:
+                return _json_error('The selected Meta campaign was not found in this ad account.', 404)
             messages.error(request, 'The selected Meta campaign was not found in this ad account.')
             return redirect('tickets:event_meta_ads_match', event_id=event.id)
         spend = client.get_campaign_spend(campaign_id)
     except MetaAdsAPIError as exc:
+        if wants_json:
+            return _json_error(f'Could not pull campaign spend from Meta: {exc}', 502)
         messages.error(request, f'Could not pull campaign spend from Meta: {exc}')
         return redirect('tickets:event_meta_ads_match', event_id=event.id)
 
@@ -5598,7 +5630,23 @@ def event_meta_ads_apply(request, event_id):
     _invalidate_event_list_cache(org)
 
     action = 'updated' if not created else 'added'
-    messages.success(request, f'Meta Ads campaign spend ${spend:,.2f} {action} as a linked marketing expense.')
+    success_msg = f'Meta Ads campaign spend ${spend:,.2f} {action} as a linked marketing expense.'
+
+    if wants_json:
+        linked = list(
+            EventExpense.objects.filter(
+                event=event,
+                source='meta_ads',
+                deleted_at__isnull=True,
+            ).order_by('-created_at')
+        )
+        return JsonResponse({
+            'success': True,
+            'message': success_msg,
+            'expenses': [_serialize_meta_ads_expense(item, event) for item in linked],
+        })
+
+    messages.success(request, success_msg)
     return _marketing_tab_redirect(event)
 
 
@@ -5765,13 +5813,18 @@ def event_mailchimp_apply(request, event_id):
     """Pull campaign report details and upsert them as this event's Mailchimp campaign results."""
     org = get_organization(request)
     event = get_object_or_404(Event.objects.filter(organization=org), id=event_id)
+    wants_json = request.headers.get('X-Requested-With') == 'XMLHttpRequest'
     connection = _get_mailchimp_connection(org)
     if not connection:
+        if wants_json:
+            return JsonResponse({'success': False, 'error': 'Connect Mailchimp before applying campaign results.'}, status=400)
         messages.error(request, 'Connect Mailchimp before applying campaign results.')
         return redirect('tickets:mailchimp_settings')
 
     campaign_ids = [cid.strip() for cid in request.POST.getlist('campaign_id') if cid.strip()]
     if not campaign_ids:
+        if wants_json:
+            return JsonResponse({'success': False, 'error': 'Choose at least one Mailchimp campaign to apply.'}, status=400)
         messages.error(request, 'Choose at least one Mailchimp campaign to apply.')
         return redirect('tickets:event_mailchimp_match', event_id=event.id)
 
@@ -5782,13 +5835,15 @@ def event_mailchimp_apply(request, event_id):
         client = MailchimpClient(connection.mailchimp_access_token, connection.mailchimp_dc)
         reports = client.list_campaign_reports()
     except MailchimpAPIError as exc:
+        if wants_json:
+            return JsonResponse({'success': False, 'error': f'Could not load Mailchimp campaigns: {exc}'}, status=502)
         messages.error(request, f'Could not load Mailchimp campaigns: {exc}')
         return redirect('tickets:event_mailchimp_match', event_id=event.id)
 
     available_ids = {str(item.get('id')) for item in reports}
     unknown_ids = [cid for cid in campaign_ids if cid not in available_ids]
     valid_ids = [cid for cid in campaign_ids if cid in available_ids]
-    if unknown_ids:
+    if unknown_ids and not wants_json:
         messages.error(
             request,
             'These Mailchimp campaigns were not found in this account: ' + ', '.join(unknown_ids),
@@ -5822,18 +5877,38 @@ def event_mailchimp_apply(request, event_id):
             updated_titles.append(email_campaign.campaign_title)
 
     succeeded = len(added_titles) + len(updated_titles)
+    if succeeded == 1:
+        only_title = (added_titles + updated_titles)[0]
+        verb = 'added' if added_titles else 'updated'
+        success_msg = f'Mailchimp campaign "{only_title}" {verb} for this event.'
+    elif succeeded:
+        parts = []
+        if added_titles:
+            parts.append(f'added {len(added_titles)}')
+        if updated_titles:
+            parts.append(f'updated {len(updated_titles)}')
+        success_msg = f'Linked {succeeded} Mailchimp campaigns to this event ({", ".join(parts)}).'
+    else:
+        success_msg = ''
+
+    if wants_json:
+        all_linked = list(
+            EventEmailCampaign.objects.filter(
+                event=event,
+                source='mailchimp',
+                deleted_at__isnull=True,
+            ).order_by('-send_time', '-created_at')
+        )
+        return JsonResponse({
+            'success': succeeded > 0,
+            'message': success_msg,
+            'failed_ids': failed_ids,
+            'unknown_ids': unknown_ids,
+            'campaigns': [_serialize_mailchimp_campaign(c, event) for c in all_linked],
+        })
+
     if succeeded:
-        if succeeded == 1:
-            only_title = (added_titles + updated_titles)[0]
-            verb = 'added' if added_titles else 'updated'
-            messages.success(request, f'Mailchimp campaign "{only_title}" {verb} for this event.')
-        else:
-            parts = []
-            if added_titles:
-                parts.append(f'added {len(added_titles)}')
-            if updated_titles:
-                parts.append(f'updated {len(updated_titles)}')
-            messages.success(request, f'Linked {succeeded} Mailchimp campaigns to this event ({", ".join(parts)}).')
+        messages.success(request, success_msg)
 
     if failed_ids:
         messages.error(
@@ -6063,13 +6138,18 @@ def event_slicktext_apply(request, event_id):
     """Pull SlickText campaign + analytics for each chosen ID and upsert as EventSMSCampaign rows."""
     org = get_organization(request)
     event = get_object_or_404(Event.objects.filter(organization=org), id=event_id)
+    wants_json = request.headers.get('X-Requested-With') == 'XMLHttpRequest'
     connection = _get_slicktext_connection(org)
     if not connection:
+        if wants_json:
+            return JsonResponse({'success': False, 'error': 'Connect SlickText before applying campaign results.'}, status=400)
         messages.error(request, 'Connect SlickText before applying campaign results.')
         return redirect('tickets:slicktext_settings')
 
     campaign_ids = [cid.strip() for cid in request.POST.getlist('campaign_id') if cid.strip()]
     if not campaign_ids:
+        if wants_json:
+            return JsonResponse({'success': False, 'error': 'Choose at least one SlickText broadcast to apply.'}, status=400)
         messages.error(request, 'Choose at least one SlickText broadcast to apply.')
         return redirect('tickets:event_slicktext_match', event_id=event.id)
 
@@ -6105,18 +6185,39 @@ def event_slicktext_apply(request, event_id):
             updated_titles.append(sms_campaign.name)
 
     succeeded = len(added_titles) + len(updated_titles)
+    if succeeded == 1:
+        only_title = (added_titles + updated_titles)[0]
+        verb = 'added' if added_titles else 'updated'
+        success_msg = f'SlickText broadcast "{only_title}" {verb} for this event.'
+    elif succeeded:
+        parts = []
+        if added_titles:
+            parts.append(f'added {len(added_titles)}')
+        if updated_titles:
+            parts.append(f'updated {len(updated_titles)}')
+        success_msg = f'Linked {succeeded} SlickText broadcasts to this event ({", ".join(parts)}).'
+    else:
+        success_msg = ''
+
+    if wants_json:
+        all_linked = list(
+            EventSMSCampaign.objects.filter(
+                event=event,
+                source='slicktext',
+                deleted_at__isnull=True,
+            ).order_by('-send_time', '-created_at')
+        )
+        return JsonResponse({
+            'success': succeeded > 0,
+            'message': success_msg,
+            'added_count': len(added_titles),
+            'updated_count': len(updated_titles),
+            'failed_ids': failed_ids,
+            'campaigns': [_serialize_slicktext_campaign(item, event) for item in all_linked],
+        })
+
     if succeeded:
-        if succeeded == 1:
-            only_title = (added_titles + updated_titles)[0]
-            verb = 'added' if added_titles else 'updated'
-            messages.success(request, f'SlickText broadcast "{only_title}" {verb} for this event.')
-        else:
-            parts = []
-            if added_titles:
-                parts.append(f'added {len(added_titles)}')
-            if updated_titles:
-                parts.append(f'updated {len(updated_titles)}')
-            messages.success(request, f'Linked {succeeded} SlickText broadcasts to this event ({", ".join(parts)}).')
+        messages.success(request, success_msg)
 
     if failed_ids:
         messages.error(
