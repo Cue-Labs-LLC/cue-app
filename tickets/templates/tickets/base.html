@@ -111,6 +111,11 @@
                         </a>
                     </li>
                     <li>
+                        <a href="{% url 'tickets:marketing_overview' %}" class="sidebar-link{% if '/marketing/' in request.path %} active{% endif %}">
+                            <i class="bi bi-megaphone"></i> Marketing
+                        </a>
+                    </li>
+                    <li>
                         <a href="{% url 'tickets:analytics_overview' %}" class="sidebar-link{% if '/analytics/' in request.path or '/forecast/' in request.path or '/customers/ltv-by-market/' in request.path %} active{% endif %}">
                             <i class="bi bi-bar-chart-line"></i> Analytics
                         </a>

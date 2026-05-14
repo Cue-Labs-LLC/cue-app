@@ -125,6 +125,12 @@ from .services.slicktext import (
     normalize_campaign_report as normalize_slicktext_campaign_report,
 )
 from .services.slicktext_campaign_matcher import SlickTextCampaignMatcher
+from .services.marketing import (
+    MarketingAnalyticsService,
+    WINDOW_CHOICES,
+    generate_marketing_narrative,
+)
+from .services.marketing.analytics import DEFAULT_WINDOW, resolve_window
 from .utils import get_organization, require_org, require_organizer, require_host, require_admin, require_owner, clear_org_cache, next_order_number, generate_qr_b64
 from .feature_flags import (
     smart_pricing_recommendations_enabled,
@@ -2387,6 +2393,130 @@ def analytics_overview(request):
     return render(request, 'tickets/analytics_overview.html')
 
 
+def _marketing_cache_key(org_id, window):
+    try:
+        version = django_cache.get(f'marketing_overview_ver:{org_id}', 0)
+    except Exception:
+        version = 0
+    return f'marketing_overview:{version}:{org_id}:{window}'
+
+
+def _invalidate_marketing_cache(org):
+    if org is None:
+        return
+    key = f'marketing_overview_ver:{org.pk}'
+    try:
+        django_cache.incr(key)
+    except ValueError:
+        try:
+            django_cache.set(key, 1, timeout=None)
+        except Exception:
+            pass
+    except Exception:
+        pass
+    safe_cache_delete(f'marketing_ai:{org.pk}:30')
+    safe_cache_delete(f'marketing_ai:{org.pk}:90')
+    safe_cache_delete(f'marketing_ai:{org.pk}:365')
+    safe_cache_delete(f'marketing_ai:{org.pk}:all')
+
+
+@login_required
+@require_org
+@require_host
+def marketing_overview(request):
+    """Org-wide marketing performance dashboard with AI recommendations."""
+    org = get_organization(request)
+    window_key, window_days, window_label = resolve_window(request.GET.get('window', DEFAULT_WINDOW))
+
+    cache_key = _marketing_cache_key(org.pk, window_key)
+    metrics = safe_cache_get(cache_key)
+    if metrics is None:
+        metrics = MarketingAnalyticsService(org, window_days).calculate()
+        safe_cache_set(cache_key, metrics, timeout=600)
+
+    recommendations = (
+        AIRecommendation.objects
+        .filter(
+            organization=org,
+            kind=AIRecommendation.Kind.MARKETING_ATTRIBUTION,
+            status__in=[AIRecommendation.Status.NEW, AIRecommendation.Status.REVIEWED],
+        )
+        .select_related('event')
+        .order_by(
+            Case(
+                When(priority=AIRecommendation.Priority.HIGH, then=Value(0)),
+                When(priority=AIRecommendation.Priority.MEDIUM, then=Value(1)),
+                default=Value(2),
+                output_field=models.IntegerField(),
+            ),
+            '-confidence',
+            '-created_at',
+        )[:20]
+    )
+
+    trend_chart = {
+        'labels': [row['month'] for row in metrics['trends']],
+        'email_revenue': [float(row['email_revenue']) for row in metrics['trends']],
+        'sms_revenue': [float(row['sms_revenue']) for row in metrics['trends']],
+        'ads_spend': [float(row['ads_spend']) for row in metrics['trends']],
+    }
+    engagement_chart = {
+        'labels': [row['month'] for row in metrics['engagement_trends']],
+        'email_opens': [row['email_opens'] for row in metrics['engagement_trends']],
+        'email_clicks': [row['email_clicks'] for row in metrics['engagement_trends']],
+        'sms_clicks': [row['sms_clicks'] for row in metrics['engagement_trends']],
+    }
+    comparison_chart = {
+        'labels': [row['label'] for row in metrics['channel_comparison']],
+        'revenue': [float(row['revenue']) for row in metrics['channel_comparison']],
+    }
+
+    context = {
+        'metrics': metrics,
+        'recommendations': recommendations,
+        'window_choices': WINDOW_CHOICES,
+        'window_key': window_key,
+        'window_label': window_label,
+        'trend_chart_json': json.dumps(trend_chart),
+        'engagement_chart_json': json.dumps(engagement_chart),
+        'comparison_chart_json': json.dumps(comparison_chart),
+    }
+    return render(request, 'tickets/marketing_overview.html', context)
+
+
+@login_required
+@require_org
+@require_host
+@require_http_methods(["POST"])
+def marketing_ai_analyze(request):
+    """On-demand: ask the configured LLM for narrative insights about the current window."""
+    org = get_organization(request)
+    window_key, window_days, window_label = resolve_window(request.POST.get('window', DEFAULT_WINDOW))
+
+    ai_cache_key = f'marketing_ai:{org.pk}:{window_key}'
+    cached = safe_cache_get(ai_cache_key)
+    if cached is not None:
+        return JsonResponse({**cached, 'cached': True})
+
+    metrics_key = _marketing_cache_key(org.pk, window_key)
+    metrics = safe_cache_get(metrics_key)
+    if metrics is None:
+        metrics = MarketingAnalyticsService(org, window_days).calculate()
+        safe_cache_set(metrics_key, metrics, timeout=600)
+
+    try:
+        result = generate_marketing_narrative(org, metrics, window_label)
+    except Exception:
+        logger.exception('Marketing narrative generation failed for org %s', org.pk)
+        return JsonResponse(
+            {'error': 'Could not generate insights right now. Please try again in a moment.'},
+            status=502,
+        )
+
+    safe_cache_set(ai_cache_key, result, timeout=600)
+    return JsonResponse({**result, 'cached': False})
+
+
 @login_required
 @require_org
 @require_host
@@ -3436,11 +3566,13 @@ def _refresh_meta_ads_expenses_for_event(org, event, user=None):
         django_cache.delete(_event_stats_cache_key(event.pk))
     if changed:
         _invalidate_event_list_cache(org)
+        _invalidate_marketing_cache(org)
 
     return had_error
 
 
 def _marketing_tab_redirect(event):
+    _invalidate_marketing_cache(getattr(event, 'organization', None))
     return redirect(f"{reverse('tickets:event_detail', kwargs={'event_id': event.id})}?tab=marketing")
 
 
@@ -4062,6 +4194,8 @@ def event_delete(request, event_id):
                 )
 
             _invalidate_event_list_cache(org)
+
+            _invalidate_marketing_cache(org)
             success_msg = f"Event '{event_name}' and {orders_count} associated order(s) have been permanently deleted."
             if customers_deleted > 0:
                 success_msg += f" Removed {customers_deleted} customer(s) with no remaining orders."
@@ -4176,6 +4310,7 @@ def refund_order(request, order_id):
 
         order.customer.update_lifetime_value()
         _invalidate_event_list_cache(org)
+        _invalidate_marketing_cache(org)
 
     # Trigger waitlist notifications for any ticket types that opened up
     from tickets.tasks import notify_next_waitlist_entry
@@ -4446,6 +4581,7 @@ def event_create(request, ticketing_type):
                             current_tt.unlocks_after = unlock_target
                             current_tt.save(update_fields=['unlocks_after'])
                     _invalidate_event_list_cache(org)
+                    _invalidate_marketing_cache(org)
                     messages.success(request, f"Event '{event.name}' created successfully.")
                     # TODO: re-enable when calendar sync is ready
                     # if event.start_date >= date.today():
@@ -4508,6 +4644,7 @@ def event_create(request, ticketing_type):
                     value.custom_field_option_id = None
                 value.save()
             _invalidate_event_list_cache(org)
+            _invalidate_marketing_cache(org)
             messages.success(request, f"Event '{event.name}' created successfully.")
             _sync_event_to_google_calendar(event)
             return redirect('tickets:event_detail', event_id=event.id)
@@ -4556,6 +4693,7 @@ def event_edit(request, event_id):
                     event.venue = venue
                     event.save()
                     _invalidate_event_list_cache(org)
+                    _invalidate_marketing_cache(org)
                     messages.success(request, f"Event '{event.name}' updated successfully.")
                     return redirect('tickets:event_detail', event_id=event.id)
         else:
@@ -4616,6 +4754,7 @@ def event_edit(request, event_id):
                     value.custom_field_option_id = None
                 value.save()
             _invalidate_event_list_cache(org)
+            _invalidate_marketing_cache(org)
             messages.success(request, f"Event '{event.name}' updated successfully.")
             return redirect('tickets:event_detail', event_id=event.id)
     else:
@@ -5454,6 +5593,8 @@ def event_pricing_recommendation(request, event_id):
         ])
 
     _invalidate_event_list_cache(org)
+
+    _invalidate_marketing_cache(org)
     return JsonResponse({
         'success': True,
         'message': 'Ticket types created from recommendation.',
@@ -5628,6 +5769,7 @@ def event_meta_ads_apply(request, event_id):
     }
     expense.save()
     _invalidate_event_list_cache(org)
+    _invalidate_marketing_cache(org)
 
     action = 'updated' if not created else 'added'
     success_msg = f'Meta Ads campaign spend ${spend:,.2f} {action} as a linked marketing expense.'
@@ -5682,6 +5824,7 @@ def event_meta_ads_refresh(request, event_id, expense_id):
     django_cache.delete(_event_stats_cache_key(event.pk))
     if old_amount != spend:
         _invalidate_event_list_cache(org)
+        _invalidate_marketing_cache(org)
 
     messages.success(request, f'Meta Ads campaign spend refreshed to ${spend:,.2f}.')
     return _marketing_tab_redirect(event)
@@ -5701,6 +5844,7 @@ def event_meta_ads_remove(request, event_id, expense_id):
     expense.delete()
     django_cache.delete(_event_stats_cache_key(event.pk))
     _invalidate_event_list_cache(org)
+    _invalidate_marketing_cache(org)
 
     messages.success(request, 'Meta Ads campaign removed from this event.')
     return _marketing_tab_redirect(event)
@@ -6344,6 +6488,7 @@ def expense_create(request, event_id):
             expense.created_by = request.user
             expense.save()
             _invalidate_event_list_cache(org)
+            _invalidate_marketing_cache(org)
             messages.success(request, f'Expense "${expense.description}" added.')
             return redirect('tickets:event_detail', event_id=event.id)
     else:
@@ -6376,6 +6521,7 @@ def expense_edit(request, event_id, expense_id):
             expense.updated_by = request.user
             expense.save()
             _invalidate_event_list_cache(org)
+            _invalidate_marketing_cache(org)
             messages.success(request, f'Expense "{expense.description}" updated.')
             return redirect('tickets:event_detail', event_id=event.id)
     else:
@@ -6405,6 +6551,7 @@ def expense_delete(request, event_id, expense_id):
     if request.method == 'POST':
         expense.delete()  # soft delete
         _invalidate_event_list_cache(org)
+        _invalidate_marketing_cache(org)
         messages.success(request, f'Expense "{expense.description}" deleted.')
         return redirect('tickets:event_detail', event_id=event.id)
 
@@ -6517,6 +6664,7 @@ def event_income_create(request, event_id):
             income.created_by = request.user
             income.save()
             _invalidate_event_list_cache(org)
+            _invalidate_marketing_cache(org)
             messages.success(request, f"Income '{income.income_source.name}' added.")
             return redirect('tickets:event_detail', event_id=event.id)
     else:
@@ -6547,6 +6695,7 @@ def event_income_edit(request, event_id, income_id):
             income.updated_by = request.user
             income.save()
             _invalidate_event_list_cache(org)
+            _invalidate_marketing_cache(org)
             messages.success(request, f"Income '{income.income_source.name}' updated.")
             return redirect('tickets:event_detail', event_id=event.id)
     else:
@@ -6575,6 +6724,7 @@ def event_income_delete(request, event_id, income_id):
         source_name = income.income_source.name
         income.delete()
         _invalidate_event_list_cache(org)
+        _invalidate_marketing_cache(org)
         messages.success(request, f"Income '{source_name}' deleted.")
         return redirect('tickets:event_detail', event_id=event.id)
     return render(request, 'tickets/event_income_delete.html', {
@@ -7283,6 +7433,7 @@ def saleable_ticket_type_create(request, event_id):
             tier_formset.instance = tt
             tier_formset.save()
             _invalidate_event_list_cache(org)
+            _invalidate_marketing_cache(org)
             messages.success(request, f'Ticket type "{tt.name}" created.')
             from django.urls import reverse
             redirect_url = reverse('tickets:event_edit', kwargs={'event_id': event.id})
@@ -7327,6 +7478,7 @@ def saleable_ticket_type_edit(request, event_id, ticket_type_id):
             updated = form.save()
             tier_formset.save()
             _invalidate_event_list_cache(org)
+            _invalidate_marketing_cache(org)
             # If quantity limit increased (or unlimited added) and waitlist is enabled, notify next person
             new_quantity_limit = updated.quantity_limit
             if updated.waitlist_enabled and (
@@ -7432,6 +7584,7 @@ def saleable_ticket_type_delete(request, event_id, ticket_type_id):
         name = tt.name
         tt.delete()
         _invalidate_event_list_cache(org)
+        _invalidate_marketing_cache(org)
         messages.success(request, f'Ticket type "{name}" deleted.')
         return redirect('tickets:event_edit', event_id=event.id)
 
@@ -7456,6 +7609,7 @@ def event_publish(request, event_id):
     event.status = EVENT_STATUS_LIVE
     event.save(update_fields=['status'])
     _invalidate_event_list_cache(org)
+    _invalidate_marketing_cache(org)
     messages.success(request, f'"{event.name}" is now live. The public ticket page is active.')
     return redirect('tickets:event_detail', event_id=event.id)
 
@@ -7475,6 +7629,7 @@ def event_end_sales(request, event_id):
     event.status = EVENT_STATUS_ENDED
     event.save(update_fields=['status'])
     _invalidate_event_list_cache(org)
+    _invalidate_marketing_cache(org)
     messages.success(request, f'Sales for "{event.name}" have ended.')
     return redirect('tickets:event_detail', event_id=event.id)
 
@@ -7550,6 +7705,8 @@ def event_cancel(request, event_id):
             pass
 
     _invalidate_event_list_cache(org)
+
+    _invalidate_marketing_cache(org)
 
     if failed_count:
         messages.warning(
@@ -8358,6 +8515,7 @@ def checkout_payment(request, public_id):
                 ])
             customer.update_lifetime_value()
             _invalidate_event_list_cache(org)
+            _invalidate_marketing_cache(org)
 
         from tickets.tasks import send_order_confirmation_email_task
         send_order_confirmation_email_task.delay(str(order.id))
@@ -9074,6 +9232,8 @@ def _fulfill_payment_intent(payment_intent):
                 )
 
         _invalidate_event_list_cache(org)
+
+        _invalidate_marketing_cache(org)
 
         from tickets.tasks import send_order_confirmation_email_task
         send_order_confirmation_email_task.delay(str(order.id))

@@ -1600,12 +1600,14 @@ class AITokenUsage(BaseModel):
     FEATURE_META_CAMPAIGN_MATCH = 'meta_campaign_match'
     FEATURE_MAILCHIMP_CAMPAIGN_MATCH = 'mailchimp_campaign_match'
     FEATURE_SLICKTEXT_CAMPAIGN_MATCH = 'slicktext_campaign_match'
+    FEATURE_MARKETING_NARRATIVE = 'marketing_narrative'
 
     FEATURE_CHOICES = [
         (FEATURE_CHAT_AGENT, 'Chat agent'),
         (FEATURE_META_CAMPAIGN_MATCH, 'Meta campaign match'),
         (FEATURE_MAILCHIMP_CAMPAIGN_MATCH, 'Mailchimp campaign match'),
         (FEATURE_SLICKTEXT_CAMPAIGN_MATCH, 'SlickText campaign match'),
+        (FEATURE_MARKETING_NARRATIVE, 'Marketing narrative'),
     ]
 
     organization = models.ForeignKey(

@@ -5639,3 +5639,276 @@ class AgentAPITests(TestCase):
         page2 = self.client.get('/api/v1/orders/?limit=1&page=2', **self.auth).json()
         self.assertEqual(page1['total'], 3)
         self.assertNotEqual(page1['orders'][0]['id'], page2['orders'][0]['id'])
+
+
+class MarketingAnalyticsServiceTests(TestCase):
+    """Service-level tests for cross-event marketing analytics aggregations."""
+
+    def setUp(self):
+        from .models import EventEmailCampaign, EventSMSCampaign
+        self.org = Organization.objects.create(name='Marketing Org', slug='marketing-org')
+        self.other_org = Organization.objects.create(name='Other Org', slug='other-org')
+
+        venue = Venue.objects.create(organization=self.org, name='V1', city='SF')
+        other_venue = Venue.objects.create(organization=self.other_org, name='V2', city='LA')
+
+        self.event = Event.objects.create(
+            organization=self.org, name='Inside Window', venue=venue,
+            start_date=date.today(), start_time=time(20, 0, 0),
+            computed_total_revenue=Decimal('1500.00'),
+        )
+        self.event_outside = Event.objects.create(
+            organization=self.org, name='Older Event', venue=venue,
+            start_date=date.today() - timedelta(days=400), start_time=time(20, 0, 0),
+        )
+        self.other_event = Event.objects.create(
+            organization=self.other_org, name='Different Org', venue=other_venue,
+            start_date=date.today(), start_time=time(20, 0, 0),
+        )
+
+        now = timezone.now()
+        old = now - timedelta(days=200)
+
+        EventEmailCampaign.objects.create(
+            event=self.event, source='mailchimp', external_id='mc-1',
+            campaign_title='Newsletter', send_time=now - timedelta(days=10),
+            emails_sent=1000, opens=400, unique_opens=400,
+            clicks=120, unique_clicks=120, unsubscribes=5,
+            ecommerce_orders=8, ecommerce_revenue=Decimal('600.00'),
+        )
+        EventEmailCampaign.objects.create(
+            event=self.event_outside, source='mailchimp', external_id='mc-2',
+            campaign_title='Old Newsletter', send_time=old,
+            emails_sent=500, unique_opens=100, unique_clicks=30, unsubscribes=2,
+            ecommerce_orders=3, ecommerce_revenue=Decimal('150.00'),
+        )
+        EventEmailCampaign.objects.create(
+            event=self.other_event, source='mailchimp', external_id='mc-3',
+            campaign_title='Leak', send_time=now - timedelta(days=5),
+            emails_sent=200, unique_opens=50, unique_clicks=10, unsubscribes=1,
+            ecommerce_orders=2, ecommerce_revenue=Decimal('300.00'),
+        )
+
+        EventSMSCampaign.objects.create(
+            event=self.event, source='slicktext', external_id='st-1',
+            name='Pre-show blast', send_time=now - timedelta(days=3),
+            audience_size=800, unique_clicks=80, unsubscribes=4,
+            orders=5, revenue=Decimal('400.00'),
+        )
+
+        EventExpense.objects.create(
+            event=self.event, category='marketing', description='Meta Ads',
+            amount=Decimal('200.00'), expense_date=date.today() - timedelta(days=8),
+            source='meta_ads', external_id='ad-1',
+        )
+        EventExpense.objects.create(
+            event=self.event_outside, category='marketing', description='Meta Ads (old)',
+            amount=Decimal('500.00'), expense_date=date.today() - timedelta(days=300),
+            source='meta_ads', external_id='ad-2',
+        )
+
+    def test_channels_aggregate_only_inside_window_and_org(self):
+        from .services.marketing import MarketingAnalyticsService
+
+        result = MarketingAnalyticsService(self.org, window_days=90).calculate()
+
+        # Email totals exclude other_org row and the >90d old row
+        self.assertEqual(result['channels']['email']['sends'], 1000)
+        self.assertEqual(result['channels']['email']['orders'], 8)
+        self.assertEqual(result['channels']['email']['revenue'], Decimal('600.00'))
+
+        self.assertEqual(result['channels']['sms']['audience'], 800)
+        self.assertEqual(result['channels']['sms']['revenue'], Decimal('400.00'))
+
+        self.assertEqual(result['channels']['ads']['spend'], Decimal('200.00'))
+        # Ads revenue is attributed via event total
+        self.assertEqual(result['channels']['ads']['revenue'], Decimal('1500.00'))
+        self.assertEqual(result['channels']['ads']['roas'], Decimal('7.5000'))
+
+    def test_all_time_includes_old_records(self):
+        from .services.marketing import MarketingAnalyticsService
+
+        result = MarketingAnalyticsService(self.org, window_days=None).calculate()
+        self.assertEqual(result['channels']['email']['sends'], 1500)
+        self.assertEqual(result['channels']['ads']['spend'], Decimal('700.00'))
+
+    def test_top_events_by_roi_orders_correctly(self):
+        from .services.marketing import MarketingAnalyticsService
+
+        result = MarketingAnalyticsService(self.org, window_days=90).calculate()
+        rows = result['top_events_by_roi']
+        self.assertEqual(len(rows), 1)
+        row = rows[0]
+        self.assertEqual(row['event_name'], 'Inside Window')
+        self.assertEqual(row['ads_spend'], Decimal('200.00'))
+        self.assertEqual(row['attributed_revenue'], Decimal('1000.00'))
+
+
+class MarketingOverviewViewTests(TestCase):
+    """View-level tests for the marketing overview page."""
+
+    def setUp(self):
+        self.client = Client()
+        self.org = Organization.objects.create(name='View Org', slug='view-org')
+        self.user = User.objects.create_user(username='view', email='view@example.com', password='pw')
+        UserProfile.objects.create(user=self.user, organization=self.org, org_role=UserProfile.OrgRole.OWNER)
+        OrganizationMembership.objects.create(user=self.user, organization=self.org, org_role=UserProfile.OrgRole.OWNER)
+        self.client.login(username='view@example.com', password='pw')
+        self.client.get(reverse('tickets:home'))
+
+    def test_anonymous_redirected_to_login(self):
+        anon = Client()
+        response = anon.get(reverse('tickets:marketing_overview'))
+        self.assertEqual(response.status_code, 302)
+
+    def test_overview_renders_with_default_window(self):
+        response = self.client.get(reverse('tickets:marketing_overview'))
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('metrics', response.context)
+        self.assertEqual(response.context['window_key'], '90')
+
+    def test_window_querystring_overrides_default(self):
+        response = self.client.get(reverse('tickets:marketing_overview') + '?window=all')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context['window_key'], 'all')
+
+    def test_invalid_window_falls_back_to_default(self):
+        response = self.client.get(reverse('tickets:marketing_overview') + '?window=banana')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context['window_key'], '90')
+
+
+class MarketingAINarrativeTests(TestCase):
+    """Tests for the on-demand AI marketing narrative endpoint."""
+
+    def setUp(self):
+        self.client = Client()
+        self.org = Organization.objects.create(name='AI Org', slug='ai-org')
+        self.user = User.objects.create_user(username='ai', email='ai@example.com', password='pw')
+        UserProfile.objects.create(user=self.user, organization=self.org, org_role=UserProfile.OrgRole.OWNER)
+        OrganizationMembership.objects.create(user=self.user, organization=self.org, org_role=UserProfile.OrgRole.OWNER)
+        self.client.login(username='ai@example.com', password='pw')
+        self.client.get(reverse('tickets:home'))
+
+    def test_generate_marketing_narrative_records_token_usage(self):
+        from tickets.services.marketing.ai_narrative import (
+            generate_marketing_narrative,
+            MarketingNarrativeResult,
+            Insight,
+        )
+
+        stub_result = MarketingNarrativeResult(
+            headline='All good.',
+            insights=[Insight(
+                title='Email is performing',
+                body='Email sends generated $600 in revenue.',
+                severity='info',
+                recommended_action='Repeat last week\'s subject line.',
+            )],
+        )
+
+        class FakeLLM:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def with_structured_output(self, *args, **kwargs):
+                outer = self
+
+                class Bound:
+                    def invoke(self, _messages):
+                        class FakeRaw:
+                            usage_metadata = {
+                                'input_tokens': 100, 'output_tokens': 50, 'total_tokens': 150,
+                            }
+                        return {'raw': FakeRaw(), 'parsed': stub_result, 'parsing_error': None}
+                return Bound()
+
+        with patch('langchain_openai.ChatOpenAI', FakeLLM):
+            metrics = {'channels': {}, 'trends': [], 'channel_comparison': [], 'top_campaigns': [], 'top_events_by_roi': [], 'meta': {}}
+            result = generate_marketing_narrative(self.org, metrics, 'Last 90 days')
+
+        self.assertEqual(result['headline'], 'All good.')
+        self.assertEqual(len(result['insights']), 1)
+        record = AITokenUsage.objects.filter(
+            organization=self.org,
+            feature=AITokenUsage.FEATURE_MARKETING_NARRATIVE,
+        ).first()
+        self.assertIsNotNone(record)
+        self.assertEqual(record.total_tokens, 150)
+
+    def test_analyze_endpoint_returns_insights(self):
+        with patch('tickets.views.generate_marketing_narrative') as fake:
+            fake.return_value = {'headline': 'Hi', 'insights': []}
+            response = self.client.post(reverse('tickets:marketing_ai_analyze'), data={'window': '90'})
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body['headline'], 'Hi')
+
+
+class MarketingDetectorTests(TestCase):
+    """Tests for the new marketing detectors in AIRecommendationGenerator."""
+
+    def setUp(self):
+        from .models import EventEmailCampaign, EventSMSCampaign
+        self.org = Organization.objects.create(name='Detector Org', slug='detector-org')
+        venue = Venue.objects.create(organization=self.org, name='V', city='SF')
+        self.event = Event.objects.create(
+            organization=self.org, name='Event A', venue=venue,
+            start_date=date.today() - timedelta(days=10), start_time=time(20, 0, 0),
+            computed_total_revenue=Decimal('100.00'),
+        )
+
+        self.high_unsub_email = EventEmailCampaign.objects.create(
+            event=self.event, source='mailchimp', external_id='em-bad',
+            campaign_title='Bad blast', send_time=timezone.now() - timedelta(days=5),
+            emails_sent=1000, unsubscribes=25, unique_opens=100, unique_clicks=20,
+        )
+        EventExpense.objects.create(
+            event=self.event, category='marketing', description='Meta Ads',
+            amount=Decimal('500.00'), expense_date=date.today() - timedelta(days=5),
+            source='meta_ads', external_id='ad-bad',
+        )
+
+    def test_high_unsubscribe_rate_detector_creates_one_rec(self):
+        from tickets.services.ai_recommendations.generator import AIRecommendationGenerator
+
+        gen = AIRecommendationGenerator(self.org)
+        recs = gen.detect_high_unsubscribe_rate()
+        self.assertEqual(len(recs), 1)
+        self.assertEqual(recs[0].kind, AIRecommendation.Kind.MARKETING_ATTRIBUTION)
+        self.assertEqual(recs[0].dedupe_key, f'marketing_unsub:email:{self.high_unsub_email.id}')
+
+        # Idempotent on re-run
+        recs2 = gen.detect_high_unsubscribe_rate()
+        self.assertEqual(len(recs2), 1)
+        self.assertEqual(AIRecommendation.objects.filter(organization=self.org).count(), 1)
+
+    def test_low_channel_roi_detector_fires_when_roas_below_one(self):
+        from tickets.services.ai_recommendations.generator import AIRecommendationGenerator
+
+        gen = AIRecommendationGenerator(self.org)
+        recs = gen.detect_low_channel_roi()
+        self.assertEqual(len(recs), 1)
+        self.assertEqual(recs[0].dedupe_key, 'marketing_low_roi:ads:90')
+        self.assertEqual(recs[0].priority, AIRecommendation.Priority.HIGH)
+
+    def test_channel_imbalance_detector_flags_ads_without_email(self):
+        from tickets.services.ai_recommendations.generator import AIRecommendationGenerator
+
+        self.high_unsub_email.hard_delete()
+        gen = AIRecommendationGenerator(self.org)
+        recs = gen.detect_channel_imbalance()
+        self.assertEqual(len(recs), 1)
+        self.assertEqual(recs[0].dedupe_key, f'marketing_imbalance:{self.event.id}')
+
+    def test_dismissed_recommendation_is_not_reopened(self):
+        from tickets.services.ai_recommendations.generator import AIRecommendationGenerator
+
+        gen = AIRecommendationGenerator(self.org)
+        recs = gen.detect_high_unsubscribe_rate()
+        recs[0].dismiss()
+
+        # Re-run; the dismissed record stays dismissed.
+        gen.detect_high_unsubscribe_rate()
+        kept = AIRecommendation.objects.get(id=recs[0].id)
+        self.assertEqual(kept.status, AIRecommendation.Status.DISMISSED)
