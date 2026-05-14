@@ -5669,24 +5669,28 @@ class MarketingAnalyticsServiceTests(TestCase):
         now = timezone.now()
         old = now - timedelta(days=200)
 
+        # All fixtures are confirmed so they flow into reports.
         EventEmailCampaign.objects.create(
             event=self.event, source='mailchimp', external_id='mc-1',
             campaign_title='Newsletter', send_time=now - timedelta(days=10),
             emails_sent=1000, opens=400, unique_opens=400,
             clicks=120, unique_clicks=120, unsubscribes=5,
             ecommerce_orders=8, ecommerce_revenue=Decimal('600.00'),
+            confirmed_at=now,
         )
         EventEmailCampaign.objects.create(
             event=self.event_outside, source='mailchimp', external_id='mc-2',
             campaign_title='Old Newsletter', send_time=old,
             emails_sent=500, unique_opens=100, unique_clicks=30, unsubscribes=2,
             ecommerce_orders=3, ecommerce_revenue=Decimal('150.00'),
+            confirmed_at=now,
         )
         EventEmailCampaign.objects.create(
             event=self.other_event, source='mailchimp', external_id='mc-3',
             campaign_title='Leak', send_time=now - timedelta(days=5),
             emails_sent=200, unique_opens=50, unique_clicks=10, unsubscribes=1,
             ecommerce_orders=2, ecommerce_revenue=Decimal('300.00'),
+            confirmed_at=now,
         )
 
         EventSMSCampaign.objects.create(
@@ -5694,17 +5698,22 @@ class MarketingAnalyticsServiceTests(TestCase):
             name='Pre-show blast', send_time=now - timedelta(days=3),
             audience_size=800, unique_clicks=80, unsubscribes=4,
             orders=5, revenue=Decimal('400.00'),
+            confirmed_at=now,
         )
 
         EventExpense.objects.create(
             event=self.event, category='marketing', description='Meta Ads',
             amount=Decimal('200.00'), expense_date=date.today() - timedelta(days=8),
             source='meta_ads', external_id='ad-1',
+            manual_attributed_revenue=Decimal('1500.00'),
+            manual_attributed_orders=12,
+            confirmed_at=now,
         )
         EventExpense.objects.create(
             event=self.event_outside, category='marketing', description='Meta Ads (old)',
             amount=Decimal('500.00'), expense_date=date.today() - timedelta(days=300),
             source='meta_ads', external_id='ad-2',
+            confirmed_at=now,
         )
 
     def test_channels_aggregate_only_inside_window_and_org(self):
@@ -5741,7 +5750,101 @@ class MarketingAnalyticsServiceTests(TestCase):
         row = rows[0]
         self.assertEqual(row['event_name'], 'Inside Window')
         self.assertEqual(row['ads_spend'], Decimal('200.00'))
-        self.assertEqual(row['attributed_revenue'], Decimal('1000.00'))
+        # attributed = email_rev (600) + sms_rev (400) + ads_rev (1500 manual) = 2500
+        self.assertEqual(row['attributed_revenue'], Decimal('2500.00'))
+
+    def test_unconfirmed_campaigns_excluded_from_all_metrics(self):
+        """Unconfirmed campaigns must not flow into channel totals or top tables."""
+        from .models import EventEmailCampaign, EventSMSCampaign
+        from .services.marketing import MarketingAnalyticsService
+
+        EventEmailCampaign.objects.filter(event__organization=self.org).delete()
+        EventSMSCampaign.objects.filter(event__organization=self.org).delete()
+        EventExpense.objects.filter(event__organization=self.org).delete()
+
+        now = timezone.now()
+        EventEmailCampaign.objects.create(
+            event=self.event, source='mailchimp', external_id='mc-confirmed',
+            campaign_title='Confirmed', send_time=now - timedelta(days=5),
+            emails_sent=1000, unique_opens=300, unique_clicks=60,
+            ecommerce_orders=4, ecommerce_revenue=Decimal('250.00'),
+            confirmed_at=now,
+        )
+        EventEmailCampaign.objects.create(
+            event=self.event, source='mailchimp', external_id='mc-pending',
+            campaign_title='Pending', send_time=now - timedelta(days=3),
+            emails_sent=2000, unique_opens=400, unique_clicks=100,
+            ecommerce_orders=12, ecommerce_revenue=Decimal('9999.00'),
+        )
+
+        result = MarketingAnalyticsService(self.org, window_days=90).calculate()
+        self.assertEqual(result['channels']['email']['revenue'], Decimal('250.00'))
+        self.assertEqual(result['channels']['email']['campaigns'], 1)
+        self.assertEqual(len(result['top_email_campaigns']), 1)
+        self.assertEqual(result['top_email_campaigns'][0]['name'], 'Confirmed')
+
+    def test_unconfirmed_meta_expense_excluded(self):
+        from .services.marketing import MarketingAnalyticsService
+
+        EventExpense.objects.filter(event__organization=self.org).delete()
+        now = timezone.now()
+        EventExpense.objects.create(
+            event=self.event, category='marketing', description='Confirmed ad',
+            amount=Decimal('100.00'), expense_date=date.today(), source='meta_ads',
+            external_id='ad-c', manual_attributed_revenue=Decimal('300.00'),
+            confirmed_at=now,
+        )
+        EventExpense.objects.create(
+            event=self.event, category='marketing', description='Pending ad',
+            amount=Decimal('500.00'), expense_date=date.today(), source='meta_ads',
+            external_id='ad-p', manual_attributed_revenue=Decimal('9999.00'),
+        )
+
+        result = MarketingAnalyticsService(self.org, window_days=90).calculate()
+        self.assertEqual(result['channels']['ads']['spend'], Decimal('100.00'))
+        self.assertEqual(result['channels']['ads']['revenue'], Decimal('300.00'))
+
+    def test_manual_revenue_overrides_api_zero(self):
+        """A confirmed email campaign with manual_revenue but zero ecommerce_revenue still counts."""
+        from .models import EventEmailCampaign
+        from .services.marketing import MarketingAnalyticsService
+
+        EventEmailCampaign.objects.filter(event__organization=self.org).delete()
+        now = timezone.now()
+        EventEmailCampaign.objects.create(
+            event=self.event, source='mailchimp', external_id='mc-manual',
+            campaign_title='Manual', send_time=now - timedelta(days=2),
+            emails_sent=500, unique_opens=200, unique_clicks=50,
+            ecommerce_orders=0, ecommerce_revenue=Decimal('0.00'),
+            manual_revenue=Decimal('420.00'),
+            manual_orders=7,
+            manual_clicks=99,
+            confirmed_at=now,
+        )
+
+        result = MarketingAnalyticsService(self.org, window_days=90).calculate()
+        self.assertEqual(result['channels']['email']['revenue'], Decimal('420.00'))
+        self.assertEqual(result['channels']['email']['orders'], 7)
+        self.assertEqual(result['channels']['email']['clicks'], 99)
+
+    def test_manual_zero_is_respected(self):
+        """manual_revenue=0 must override a non-zero ecommerce_revenue."""
+        from .models import EventEmailCampaign
+        from .services.marketing import MarketingAnalyticsService
+
+        EventEmailCampaign.objects.filter(event__organization=self.org).delete()
+        now = timezone.now()
+        EventEmailCampaign.objects.create(
+            event=self.event, source='mailchimp', external_id='mc-zero',
+            campaign_title='Zeroed', send_time=now - timedelta(days=2),
+            emails_sent=500, unique_opens=200, unique_clicks=50,
+            ecommerce_orders=10, ecommerce_revenue=Decimal('700.00'),
+            manual_revenue=Decimal('0.00'),
+            confirmed_at=now,
+        )
+
+        result = MarketingAnalyticsService(self.org, window_days=90).calculate()
+        self.assertEqual(result['channels']['email']['revenue'], Decimal('0.00'))
 
     def test_top_sms_campaigns_not_crowded_out_by_email(self):
         """Regression: SMS rows must survive even when email revenue dwarfs them."""
@@ -5759,6 +5862,7 @@ class MarketingAnalyticsServiceTests(TestCase):
             campaign_title='Huge email', send_time=now - timedelta(days=5),
             emails_sent=5000, unique_opens=2000, unique_clicks=500,
             ecommerce_orders=50, ecommerce_revenue=Decimal('5000.00'),
+            confirmed_at=now,
         )
         # SMS broadcast with low revenue — would be evicted under the old
         # cross-channel sort.
@@ -5766,6 +5870,7 @@ class MarketingAnalyticsServiceTests(TestCase):
             event=self.event, source='slicktext', external_id='st-small',
             name='Modest blast', send_time=now - timedelta(days=2),
             audience_size=300, unique_clicks=15, orders=1, revenue=Decimal('50.00'),
+            confirmed_at=now,
         )
 
         result = MarketingAnalyticsService(self.org, window_days=90).calculate()
@@ -5877,6 +5982,269 @@ class MarketingAINarrativeTests(TestCase):
         self.assertEqual(response.status_code, 200)
         body = response.json()
         self.assertEqual(body['headline'], 'Hi')
+
+
+class CampaignReviewConfirmTests(TestCase):
+    """Model-level tests for the effective/confirmation property helpers."""
+
+    def setUp(self):
+        from .models import EventEmailCampaign
+        self.org = Organization.objects.create(name='Confirm Org', slug='confirm-org')
+        venue = Venue.objects.create(organization=self.org, name='V', city='SF')
+        self.event = Event.objects.create(
+            organization=self.org, name='E', venue=venue,
+            start_date=date.today(), start_time=time(20, 0, 0),
+        )
+        self.campaign = EventEmailCampaign.objects.create(
+            event=self.event, source='mailchimp', external_id='mc-prop',
+            campaign_title='Props', send_time=timezone.now(),
+            emails_sent=100, unique_opens=40, unique_clicks=10,
+            ecommerce_orders=2, ecommerce_revenue=Decimal('200.00'),
+        )
+
+    def test_effective_revenue_prefers_manual(self):
+        self.campaign.manual_revenue = Decimal('150.00')
+        self.assertEqual(self.campaign.effective_revenue, Decimal('150.00'))
+
+    def test_manual_zero_distinguished_from_unset(self):
+        self.campaign.manual_revenue = Decimal('0.00')
+        self.assertEqual(self.campaign.effective_revenue, Decimal('0.00'))
+
+    def test_unset_manual_falls_back_to_api(self):
+        self.assertIsNone(self.campaign.manual_revenue)
+        self.assertEqual(self.campaign.effective_revenue, Decimal('200.00'))
+
+    def test_needs_review_when_api_changed_after_confirm(self):
+        now = timezone.now()
+        self.campaign.confirmed_at = now - timedelta(hours=1)
+        self.campaign.api_data_changed_at = now
+        self.assertTrue(self.campaign.needs_review)
+
+    def test_needs_review_false_when_no_api_change(self):
+        self.campaign.confirmed_at = timezone.now()
+        self.assertFalse(self.campaign.needs_review)
+
+
+class CampaignConfirmViewTests(TestCase):
+    """View-level tests for the review/edit/confirm/unconfirm endpoints."""
+
+    def setUp(self):
+        from .models import EventEmailCampaign, EventSMSCampaign
+        self.client = Client()
+        self.org = Organization.objects.create(name='Confirm View Org', slug='confirm-view')
+        self.admin = User.objects.create_user(username='cv', email='cv@example.com', password='pw')
+        UserProfile.objects.create(user=self.admin, organization=self.org, org_role=UserProfile.OrgRole.OWNER)
+        OrganizationMembership.objects.create(user=self.admin, organization=self.org, org_role=UserProfile.OrgRole.OWNER)
+        self.client.login(username='cv@example.com', password='pw')
+        self.client.get(reverse('tickets:home'))
+
+        venue = Venue.objects.create(organization=self.org, name='V', city='SF')
+        self.event = Event.objects.create(
+            organization=self.org, name='E', venue=venue,
+            start_date=date.today(), start_time=time(20, 0, 0),
+        )
+        self.email = EventEmailCampaign.objects.create(
+            event=self.event, source='mailchimp', external_id='mc-confirm',
+            campaign_title='CV-email', send_time=timezone.now(),
+            emails_sent=500, unique_opens=200, unique_clicks=50,
+            ecommerce_orders=3, ecommerce_revenue=Decimal('200.00'),
+        )
+        self.sms = EventSMSCampaign.objects.create(
+            event=self.event, source='slicktext', external_id='st-confirm',
+            name='CV-sms', send_time=timezone.now(),
+            audience_size=300, unique_clicks=15, orders=2, revenue=Decimal('100.00'),
+        )
+        self.ad = EventExpense.objects.create(
+            event=self.event, category='marketing', description='CV-ad',
+            amount=Decimal('400.00'), expense_date=date.today(),
+            source='meta_ads', external_id='ad-confirm',
+        )
+
+    def test_post_metrics_edit_sets_manual_fields(self):
+        url = reverse('tickets:event_mailchimp_metrics_edit', args=[self.event.id, self.email.id])
+        resp = self.client.post(url, {'manual_clicks': '42', 'manual_orders': '3', 'manual_revenue': '187.50'})
+        self.assertEqual(resp.status_code, 302)
+        self.email.refresh_from_db()
+        self.assertEqual(self.email.manual_clicks, 42)
+        self.assertEqual(self.email.manual_orders, 3)
+        self.assertEqual(self.email.manual_revenue, Decimal('187.50'))
+
+    def test_post_blank_clears_manual_fields(self):
+        self.email.manual_revenue = Decimal('100.00')
+        self.email.save()
+        url = reverse('tickets:event_mailchimp_metrics_edit', args=[self.event.id, self.email.id])
+        resp = self.client.post(url, {'manual_clicks': '', 'manual_orders': '', 'manual_revenue': ''})
+        self.assertEqual(resp.status_code, 302)
+        self.email.refresh_from_db()
+        self.assertIsNone(self.email.manual_revenue)
+
+    def test_confirm_sets_confirmed_at_and_by(self):
+        url = reverse('tickets:event_mailchimp_confirm', args=[self.event.id, self.email.id])
+        self.client.post(url)
+        self.email.refresh_from_db()
+        self.assertIsNotNone(self.email.confirmed_at)
+        self.assertEqual(self.email.confirmed_by, self.admin)
+
+    def test_unconfirm_clears_confirmed_at(self):
+        self.email.confirmed_at = timezone.now()
+        self.email.confirmed_by = self.admin
+        self.email.save()
+        url = reverse('tickets:event_mailchimp_unconfirm', args=[self.event.id, self.email.id])
+        self.client.post(url)
+        self.email.refresh_from_db()
+        self.assertIsNone(self.email.confirmed_at)
+        self.assertIsNone(self.email.confirmed_by)
+
+    def test_confirm_meta_ads_expense(self):
+        url = reverse('tickets:event_meta_ads_confirm', args=[self.event.id, self.ad.id])
+        self.client.post(url)
+        self.ad.refresh_from_db()
+        self.assertIsNotNone(self.ad.confirmed_at)
+
+    def test_meta_ads_metrics_edit_sets_attributed(self):
+        url = reverse('tickets:event_meta_ads_metrics_edit', args=[self.event.id, self.ad.id])
+        resp = self.client.post(url, {'manual_attributed_orders': '8', 'manual_attributed_revenue': '950'})
+        self.assertEqual(resp.status_code, 302)
+        self.ad.refresh_from_db()
+        self.assertEqual(self.ad.manual_attributed_orders, 8)
+        self.assertEqual(self.ad.manual_attributed_revenue, Decimal('950.00'))
+
+    def test_confirm_all_processes_pending_records_on_event(self):
+        url = reverse('tickets:event_marketing_confirm_all', args=[self.event.id])
+        self.client.post(url)
+        self.email.refresh_from_db()
+        self.sms.refresh_from_db()
+        self.ad.refresh_from_db()
+        self.assertIsNotNone(self.email.confirmed_at)
+        self.assertIsNotNone(self.sms.confirmed_at)
+        self.assertIsNotNone(self.ad.confirmed_at)
+
+    def test_confirm_all_skips_already_confirmed(self):
+        original_time = timezone.now() - timedelta(days=1)
+        self.email.confirmed_at = original_time
+        self.email.save()
+        url = reverse('tickets:event_marketing_confirm_all', args=[self.event.id])
+        self.client.post(url)
+        self.email.refresh_from_db()
+        # Already-confirmed row keeps its original timestamp.
+        self.assertEqual(self.email.confirmed_at, original_time)
+
+    def test_ajax_metrics_edit_returns_json_row(self):
+        url = reverse('tickets:event_mailchimp_metrics_edit', args=[self.event.id, self.email.id])
+        resp = self.client.post(
+            url,
+            {'manual_clicks': '42', 'manual_orders': '3', 'manual_revenue': '187.50'},
+            HTTP_X_REQUESTED_WITH='XMLHttpRequest',
+        )
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertTrue(body['ok'])
+        row = body['row']
+        self.assertEqual(row['effective_clicks'], 42)
+        self.assertEqual(row['effective_revenue'], '187.50')
+        self.assertEqual(row['is_confirmed'], False)
+        self.assertEqual(row['status_label'], 'Pending')
+
+    def test_ajax_confirm_returns_json_with_status(self):
+        url = reverse('tickets:event_mailchimp_confirm', args=[self.event.id, self.email.id])
+        resp = self.client.post(url, HTTP_X_REQUESTED_WITH='XMLHttpRequest')
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertTrue(body['ok'])
+        self.assertTrue(body['row']['is_confirmed'])
+        self.assertEqual(body['row']['status_label'], 'Confirmed')
+
+    def test_manual_audience_and_unsubscribes_persist_for_sms(self):
+        url = reverse('tickets:event_slicktext_metrics_edit', args=[self.event.id, self.sms.id])
+        resp = self.client.post(
+            url,
+            {'manual_audience': '999', 'manual_unsubscribes': '7'},
+            HTTP_X_REQUESTED_WITH='XMLHttpRequest',
+        )
+        self.assertEqual(resp.status_code, 200)
+        row = resp.json()['row']
+        self.assertEqual(row['effective_audience'], 999)
+        self.assertEqual(row['effective_unsubscribes'], 7)
+        self.sms.refresh_from_db()
+        self.assertEqual(self.sms.manual_audience, 999)
+        self.assertEqual(self.sms.manual_unsubscribes, 7)
+
+    def test_manual_emails_sent_and_unique_opens_persist_for_email(self):
+        url = reverse('tickets:event_mailchimp_metrics_edit', args=[self.event.id, self.email.id])
+        resp = self.client.post(
+            url,
+            {'manual_emails_sent': '1234', 'manual_unique_opens': '321'},
+            HTTP_X_REQUESTED_WITH='XMLHttpRequest',
+        )
+        self.assertEqual(resp.status_code, 200)
+        row = resp.json()['row']
+        self.assertEqual(row['effective_emails_sent'], 1234)
+        self.assertEqual(row['effective_unique_opens'], 321)
+        self.email.refresh_from_db()
+        self.assertEqual(self.email.manual_emails_sent, 1234)
+        self.assertEqual(self.email.manual_unique_opens, 321)
+
+    def test_partial_update_does_not_clear_other_manual_fields(self):
+        """POSTing only manual_revenue must leave manual_clicks/manual_orders untouched."""
+        self.email.manual_clicks = 100
+        self.email.manual_orders = 5
+        self.email.save()
+        url = reverse('tickets:event_mailchimp_metrics_edit', args=[self.event.id, self.email.id])
+        resp = self.client.post(url, {'manual_revenue': '42.00'}, HTTP_X_REQUESTED_WITH='XMLHttpRequest')
+        self.assertEqual(resp.status_code, 200)
+        self.email.refresh_from_db()
+        self.assertEqual(self.email.manual_clicks, 100)
+        self.assertEqual(self.email.manual_orders, 5)
+        self.assertEqual(self.email.manual_revenue, Decimal('42.00'))
+
+    def test_ajax_metrics_edit_invalid_returns_400_json(self):
+        url = reverse('tickets:event_mailchimp_metrics_edit', args=[self.event.id, self.email.id])
+        resp = self.client.post(
+            url,
+            {'manual_revenue': '-99'},
+            HTTP_X_REQUESTED_WITH='XMLHttpRequest',
+        )
+        self.assertEqual(resp.status_code, 400)
+        body = resp.json()
+        self.assertFalse(body['ok'])
+        self.assertIn('non-negative', body['error'])
+
+    def test_mailchimp_refresh_preserves_manual_and_confirmed(self):
+        """Simulate a refresh cycle: manual values stay; api_data_changed_at bumps if API value differs."""
+        self.email.manual_revenue = Decimal('500.00')
+        self.email.confirmed_at = timezone.now() - timedelta(hours=2)
+        self.email.confirmed_by = self.admin
+        self.email.save()
+
+        from .views import _save_mailchimp_campaign_from_report
+
+        fresh_report = {
+            'id': self.email.external_id,
+            'campaign_title': self.email.campaign_title,
+            'subject_line': '',
+            'send_time': self.email.send_time.isoformat() if self.email.send_time else None,
+            'archive_url': '',
+            'emails_sent': self.email.emails_sent,
+            'opens': self.email.opens,
+            'unique_opens': self.email.unique_opens,
+            'open_rate': float(self.email.open_rate),
+            'clicks': self.email.clicks,
+            'unique_clicks': self.email.unique_clicks,
+            'click_rate': float(self.email.click_rate),
+            'bounces': self.email.bounces,
+            'unsubscribes': self.email.unsubscribes,
+            'abuse_reports': self.email.abuse_reports,
+            'ecommerce_orders': self.email.ecommerce_orders,
+            'ecommerce_revenue': float(self.email.ecommerce_revenue) + 50,  # API changed
+            'external_metadata': {},
+        }
+
+        refreshed, _ = _save_mailchimp_campaign_from_report(self.event, fresh_report, user=self.admin)
+
+        self.assertEqual(refreshed.manual_revenue, Decimal('500.00'))
+        self.assertIsNotNone(refreshed.confirmed_at)
+        self.assertIsNotNone(refreshed.api_data_changed_at)
+        self.assertGreater(refreshed.api_data_changed_at, refreshed.confirmed_at)
 
 
 class MarketingDetectorTests(TestCase):
