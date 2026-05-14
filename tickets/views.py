@@ -2470,10 +2470,6 @@ def marketing_overview(request):
         'email_clicks': [row['email_clicks'] for row in metrics['engagement_trends']],
         'sms_clicks': [row['sms_clicks'] for row in metrics['engagement_trends']],
     }
-    comparison_chart = {
-        'labels': [row['label'] for row in metrics['channel_comparison']],
-        'revenue': [float(row['revenue']) for row in metrics['channel_comparison']],
-    }
 
     context = {
         'metrics': metrics,
@@ -2484,7 +2480,6 @@ def marketing_overview(request):
         'active_tab': active_tab,
         'trend_chart_json': json.dumps(trend_chart),
         'engagement_chart_json': json.dumps(engagement_chart),
-        'comparison_chart_json': json.dumps(comparison_chart),
     }
     return render(request, 'tickets/marketing_overview.html', context)
 

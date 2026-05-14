@@ -250,16 +250,6 @@
             {% endif %}
         </div>
 
-        <div class="marketing-grid-two">
-            <div class="chart-card">
-                <h2>Revenue and ad spend by month</h2>
-                <div class="chart-canvas-wrap"><canvas id="trend-chart"></canvas></div>
-            </div>
-            <div class="chart-card">
-                <h2>Revenue share by channel</h2>
-                <div class="chart-canvas-wrap"><canvas id="comparison-chart"></canvas></div>
-            </div>
-        </div>
     </div>
 
     {# ── Email ────────────────────────────────────────────────────────── #}
@@ -431,7 +421,6 @@
 
 <script type="application/json" id="trend-chart-data">{{ trend_chart_json|safe }}</script>
 <script type="application/json" id="engagement-chart-data">{{ engagement_chart_json|safe }}</script>
-<script type="application/json" id="comparison-chart-data">{{ comparison_chart_json|safe }}</script>
 <script type="application/json" id="marketing-window-data">{"window": "{{ window_key }}", "tab": "{{ active_tab }}"}</script>
 {% endblock %}
 
@@ -446,49 +435,9 @@
 
         var trendData = JSON.parse(document.getElementById('trend-chart-data').textContent);
         var engageData = JSON.parse(document.getElementById('engagement-chart-data').textContent);
-        var compData  = JSON.parse(document.getElementById('comparison-chart-data').textContent);
         var meta = JSON.parse(document.getElementById('marketing-window-data').textContent);
 
         var initialized = {};
-
-        function initTrendChart() {
-            if (initialized.trend) return; initialized.trend = true;
-            new Chart(document.getElementById('trend-chart'), {
-                type: 'bar',
-                data: {
-                    labels: trendData.labels,
-                    datasets: [
-                        { label: 'Email revenue', data: trendData.email_revenue, backgroundColor: '#5b8def', stack: 'rev' },
-                        { label: 'SMS revenue',   data: trendData.sms_revenue,   backgroundColor: '#33c481', stack: 'rev' },
-                        { label: 'Ads spend',     data: trendData.ads_spend.map(function(v){ return -Math.abs(v); }), backgroundColor: '#e6796d', stack: 'spend' }
-                    ]
-                },
-                options: {
-                    responsive: true, maintainAspectRatio: false,
-                    scales: {
-                        x: { stacked: true, grid: { color: grid }, ticks: { color: tick } },
-                        y: { stacked: true, grid: { color: grid }, ticks: { color: tick,
-                            callback: function(v) { return '$' + Math.abs(v).toLocaleString(); } } }
-                    },
-                    plugins: { legend: { labels: { color: tick } } }
-                }
-            });
-        }
-
-        function initComparisonChart() {
-            if (initialized.comparison) return; initialized.comparison = true;
-            new Chart(document.getElementById('comparison-chart'), {
-                type: 'doughnut',
-                data: {
-                    labels: compData.labels,
-                    datasets: [{ data: compData.revenue, backgroundColor: ['#5b8def', '#33c481', '#e6796d'], borderWidth: 0 }]
-                },
-                options: {
-                    responsive: true, maintainAspectRatio: false,
-                    plugins: { legend: { position: 'bottom', labels: { color: tick } } }
-                }
-            });
-        }
 
         function initEmailChart() {
             if (initialized.email) return; initialized.email = true;
@@ -564,7 +513,7 @@
         var activeTab = validTabs.indexOf(qsTab) >= 0 ? qsTab : (validTabs.indexOf(serverTab) >= 0 ? serverTab : 'overview');
 
         var btnIdByKey = { overview: 'overview-tab-btn', email: 'email-tab-btn', sms: 'sms-tab-btn', ads: 'ads-tab-btn' };
-        var initByKey  = { overview: function(){ initTrendChart(); initComparisonChart(); },
+        var initByKey  = { overview: function(){},
                            email:    initEmailChart,
                            sms:      initSmsChart,
                            ads:      initAdsChart };
