@@ -6,28 +6,34 @@
 {% block extra_head %}
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js" defer></script>
 <style>
-.marketing-toolbar {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: 12px;
-    margin-bottom: 1.25rem;
+.marketing-tabs { margin-bottom: 1.25rem; border-bottom: 1px solid var(--border); }
+.marketing-tabs .nav-link {
+    color: var(--text-secondary);
+    border: 1px solid transparent;
+    border-bottom: none;
+    padding: 0.55rem 1rem;
+    font-weight: 500;
 }
-.marketing-toolbar form { margin: 0; }
-.marketing-toolbar .form-select { min-width: 180px; }
-.marketing-channel-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
-    gap: 16px;
-    margin-bottom: 1.5rem;
+.marketing-tabs .nav-link:hover {
+    color: var(--text-primary);
+    background: transparent;
 }
+.marketing-tabs .nav-link.active {
+    color: var(--text-primary);
+    background: var(--bg-surface);
+    border-color: var(--border);
+    border-bottom-color: var(--bg-surface);
+}
+.marketing-tabs .nav-link i { margin-right: 6px; opacity: 0.8; }
+
 .channel-card {
     background: var(--bg-surface);
     border: 1px solid var(--border);
     border-radius: 10px;
-    padding: 1.1rem 1.25rem;
+    padding: 1.25rem 1.5rem;
     border-top-width: 3px;
     border-top-style: solid;
+    margin-bottom: 1.25rem;
 }
 .channel-card--email { border-top-color: var(--accent); }
 .channel-card--sms   { border-top-color: var(--success); }
@@ -41,17 +47,17 @@
 }
 .channel-card-headline {
     font-family: 'Outfit', system-ui, sans-serif;
-    font-size: 1.6rem;
+    font-size: 1.9rem;
     font-weight: 600;
     line-height: 1.1;
 }
 .channel-card-meta {
     color: var(--text-secondary);
-    font-size: 0.84rem;
-    margin-top: 0.45rem;
+    font-size: 0.88rem;
+    margin-top: 0.65rem;
     display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 4px 12px;
+    grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+    gap: 6px 16px;
 }
 .channel-card-meta span { display: block; }
 .channel-card-meta b { color: var(--text-primary); font-weight: 600; }
@@ -68,6 +74,7 @@
     border: 1px solid var(--border);
     border-radius: 10px;
     padding: 1.1rem 1.25rem;
+    margin-bottom: 1.25rem;
 }
 .chart-card h2 {
     font-size: 1rem;
@@ -81,7 +88,7 @@
     border: 1px solid var(--border);
     border-radius: 10px;
     padding: 1.25rem;
-    margin-bottom: 1.5rem;
+    margin-bottom: 1.25rem;
 }
 .ai-panel-header { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 0.75rem; }
 .ai-panel-header h2 { font-size: 1.05rem; margin: 0; }
@@ -148,213 +155,284 @@
     </div>
 </div>
 
-<div class="marketing-toolbar">
-    <form method="get">
-        <label for="window-select" class="form-label visually-hidden">Window</label>
-        <select id="window-select" name="window" class="form-select" onchange="this.form.submit()">
-            {% for key, info in window_choices.items %}
-                <option value="{{ key }}" {% if key == window_key %}selected{% endif %}>{{ info.label }}</option>
-            {% endfor %}
-        </select>
-    </form>
-    <div class="text-secondary small">Window: <b>{{ window_label }}</b></div>
-</div>
-
-<div class="marketing-channel-grid">
-    <div class="channel-card channel-card--email">
-        <div class="channel-card-title">Email &middot; Mailchimp</div>
-        <div class="channel-card-headline">${{ metrics.channels.email.revenue|currency }}</div>
-        <div class="channel-card-meta">
-            <span>Sends <b>{{ metrics.channels.email.sends }}</b></span>
-            <span>Campaigns <b>{{ metrics.channels.email.campaigns }}</b></span>
-            <span>Opens <b>{{ metrics.channels.email.opens }}</b> <span class="text-tertiary small">({{ metrics.channels.email.open_rate|floatformat:2 }})</span></span>
-            <span>Clicks <b>{{ metrics.channels.email.clicks }}</b> <span class="text-tertiary small">({{ metrics.channels.email.click_rate|floatformat:2 }})</span></span>
-            <span>Orders <b>{{ metrics.channels.email.orders }}</b></span>
-            <span>Unsubs <b>{{ metrics.channels.email.unsubscribes }}</b></span>
-        </div>
-    </div>
-    <div class="channel-card channel-card--sms">
-        <div class="channel-card-title">SMS &middot; SlickText</div>
-        <div class="channel-card-headline">${{ metrics.channels.sms.revenue|currency }}</div>
-        <div class="channel-card-meta">
-            <span>Audience <b>{{ metrics.channels.sms.audience }}</b></span>
-            <span>Broadcasts <b>{{ metrics.channels.sms.campaigns }}</b></span>
-            <span>Clicks <b>{{ metrics.channels.sms.clicks }}</b> <span class="text-tertiary small">({{ metrics.channels.sms.click_rate|floatformat:2 }})</span></span>
-            <span>Unsubs <b>{{ metrics.channels.sms.unsubscribes }}</b> <span class="text-tertiary small">({{ metrics.channels.sms.unsub_rate|floatformat:2 }})</span></span>
-            <span>Orders <b>{{ metrics.channels.sms.orders }}</b></span>
-            <span>&nbsp;</span>
-        </div>
-    </div>
-    <div class="channel-card channel-card--ads">
-        <div class="channel-card-title">Ads &middot; Meta</div>
-        <div class="channel-card-headline">${{ metrics.channels.ads.spend|currency }}</div>
-        <div class="channel-card-meta">
-            <span>Attributed rev <b>${{ metrics.channels.ads.revenue|currency }}</b></span>
-            <span>ROAS <b>{{ metrics.channels.ads.roas|floatformat:2 }}x</b></span>
-            <span>ROI <b>{{ metrics.channels.ads.roi|floatformat:2 }}</b></span>
-            <span>Line items <b>{{ metrics.channels.ads.line_items }}</b></span>
-            <span>Orders <b>{{ metrics.channels.ads.orders }}</b></span>
-            <span>&nbsp;</span>
-        </div>
-    </div>
-</div>
-
-<div class="ai-panel">
-    <div class="ai-panel-header">
-        <h2>AI insights</h2>
-        <button type="button" id="ai-analyze-btn" class="btn btn-sm btn-primary">
-            Analyze with AI
+<div class="window-selector mb-3">
+    <div class="dropdown">
+        <button class="window-selector-btn dropdown-toggle" type="button" data-bs-toggle="dropdown" aria-expanded="false">
+            <i class="bi bi-calendar3"></i>
+            {{ window_label }}
         </button>
-    </div>
-    <p class="text-secondary small mb-0" id="ai-analyze-status">
-        Get a plain-language read on what's working, what isn't, and what to do next. Uses your configured AI model.
-    </p>
-    <div id="ai-analyze-result" hidden></div>
-</div>
-
-<div class="marketing-grid-two">
-    <div class="chart-card">
-        <h2>Revenue and ad spend by month</h2>
-        <div class="chart-canvas-wrap"><canvas id="trend-chart"></canvas></div>
-    </div>
-    <div class="chart-card">
-        <h2>Revenue share by channel</h2>
-        <div class="chart-canvas-wrap"><canvas id="comparison-chart"></canvas></div>
+        <ul class="dropdown-menu">
+            {% for key, info in window_choices.items %}
+            <li><a class="dropdown-item{% if key == window_key %} active{% endif %}" href="?window={{ key }}&tab={{ active_tab }}">{{ info.label }}</a></li>
+            {% endfor %}
+        </ul>
     </div>
 </div>
 
-<div class="chart-card" style="margin-bottom: 1.5rem;">
-    <h2>Opens and clicks by month</h2>
-    <div class="chart-canvas-wrap"><canvas id="engagement-chart"></canvas></div>
-</div>
+<ul class="nav nav-tabs marketing-tabs" id="marketing-tab-nav" role="tablist">
+    <li class="nav-item" role="presentation">
+        <button class="nav-link" id="overview-tab-btn" data-bs-toggle="tab" data-bs-target="#tab-overview" type="button" role="tab" aria-controls="tab-overview" data-tab-key="overview">
+            <i class="bi bi-grid-1x2"></i>Overview
+        </button>
+    </li>
+    <li class="nav-item" role="presentation">
+        <button class="nav-link" id="email-tab-btn" data-bs-toggle="tab" data-bs-target="#tab-email" type="button" role="tab" aria-controls="tab-email" data-tab-key="email">
+            <i class="bi bi-envelope"></i>Email
+        </button>
+    </li>
+    <li class="nav-item" role="presentation">
+        <button class="nav-link" id="sms-tab-btn" data-bs-toggle="tab" data-bs-target="#tab-sms" type="button" role="tab" aria-controls="tab-sms" data-tab-key="sms">
+            <i class="bi bi-chat-dots"></i>SMS
+        </button>
+    </li>
+    <li class="nav-item" role="presentation">
+        <button class="nav-link" id="ads-tab-btn" data-bs-toggle="tab" data-bs-target="#tab-ads" type="button" role="tab" aria-controls="tab-ads" data-tab-key="ads">
+            <i class="bi bi-bullseye"></i>Paid Ads
+        </button>
+    </li>
+</ul>
 
-<div class="marketing-grid-two">
-    <div class="chart-card">
-        <h2>Top campaigns</h2>
-        {% if metrics.top_campaigns %}
-        <div class="table-responsive">
-            <table class="table table-hover align-middle mb-0">
-                <thead>
-                    <tr>
-                        <th>Campaign</th>
-                        <th>Channel</th>
-                        <th>Event</th>
-                        <th class="text-end">Sends</th>
-                        <th class="text-end">Opens</th>
-                        <th class="text-end">Clicks</th>
-                        <th class="text-end">Orders</th>
-                        <th class="text-end">Revenue</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {% for row in metrics.top_campaigns %}
-                    <tr>
-                        <td><span class="fw-semibold">{{ row.name }}</span></td>
-                        <td><span class="badge bg-secondary-subtle text-body">{{ row.channel_label }}</span></td>
-                        <td><a href="{% url 'tickets:event_detail' event_id=row.event_id %}?tab=marketing">{{ row.event_name }}</a></td>
-                        <td class="text-end">{{ row.sends }}</td>
-                        <td class="text-end">
-                            {% if row.opens is None %}&mdash;{% else %}{{ row.opens }}
-                                <span class="text-tertiary small d-block">{{ row.open_rate|floatformat:2 }}</span>
-                            {% endif %}
-                        </td>
-                        <td class="text-end">{{ row.clicks }}
-                            <span class="text-tertiary small d-block">{{ row.click_rate|floatformat:2 }}</span>
-                        </td>
-                        <td class="text-end">{{ row.orders }}</td>
-                        <td class="text-end">${{ row.revenue|currency }}</td>
-                    </tr>
-                    {% endfor %}
-                </tbody>
-            </table>
-        </div>
-        {% else %}
-        <div class="empty-state">
-            <p>No campaigns matched in this window. Link Mailchimp, SlickText, or Meta Ads on an event's Marketing tab.</p>
-        </div>
-        {% endif %}
-    </div>
+<div class="tab-content" id="marketing-tab-content">
 
-    <div class="chart-card">
-        <h2>Top events by ROI</h2>
-        {% if metrics.top_events_by_roi %}
-        <div class="table-responsive">
-            <table class="table table-hover align-middle mb-0">
-                <thead>
-                    <tr>
-                        <th>Event</th>
-                        <th class="text-end">Spend</th>
-                        <th class="text-end">Attributed</th>
-                        <th class="text-end">ROI</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {% for row in metrics.top_events_by_roi %}
-                    <tr>
-                        <td><a href="{% url 'tickets:event_detail' event_id=row.event_id %}?tab=marketing">{{ row.event_name }}</a></td>
-                        <td class="text-end">${{ row.ads_spend|currency }}</td>
-                        <td class="text-end">${{ row.attributed_revenue|currency }}</td>
-                        <td class="text-end">{% if row.roi is not None %}{{ row.roi|floatformat:2 }}{% else %}&mdash;{% endif %}</td>
-                    </tr>
-                    {% endfor %}
-                </tbody>
-            </table>
-        </div>
-        {% else %}
-        <div class="empty-state">
-            <p>No event-level ROI to compare yet. Link spend and campaign data on at least one event.</p>
-        </div>
-        {% endif %}
-    </div>
-</div>
-
-<div class="chart-card">
-    <div class="ai-panel-header">
-        <h2 style="margin:0;">Marketing recommendations</h2>
-        <a href="{% url 'tickets:action_center' %}?kind=marketing_attribution" class="btn btn-sm btn-outline-secondary">View all in Action Center</a>
-    </div>
-    {% if recommendations %}
-    <div class="recs-list">
-        {% for rec in recommendations %}
-        <div class="rec-row rec-row--{{ rec.priority }}">
-            <div class="rec-row-header">
-                <div class="rec-row-title">{{ rec.title }}</div>
-                <div class="rec-row-priority">{{ rec.get_priority_display }}</div>
+    {# ── Overview ─────────────────────────────────────────────────────── #}
+    <div class="tab-pane fade" id="tab-overview" role="tabpanel" aria-labelledby="overview-tab-btn">
+        <div class="ai-panel">
+            <div class="ai-panel-header">
+                <h2>AI insights</h2>
+                <button type="button" id="ai-analyze-btn" class="btn btn-sm btn-primary">Analyze with AI</button>
             </div>
-            <div class="rec-row-summary">{{ rec.summary }}</div>
-            <div class="rec-row-actions">
-                {% if rec.recommended_action_json.url %}
-                <form method="post" action="{% url 'tickets:ai_recommendation_review' rec.id %}">
-                    {% csrf_token %}
-                    <input type="hidden" name="next" value="{% url 'tickets:marketing_overview' %}?window={{ window_key }}">
-                    <button type="submit" class="btn btn-sm btn-primary">{{ rec.recommended_action_json.label|default:"Take action" }}</button>
-                </form>
-                {% endif %}
-                <form method="post" action="{% url 'tickets:ai_recommendation_resolve' rec.id %}">
-                    {% csrf_token %}
-                    <input type="hidden" name="next" value="{% url 'tickets:marketing_overview' %}?window={{ window_key }}">
-                    <button type="submit" class="btn btn-sm btn-outline-success">Mark resolved</button>
-                </form>
-                <form method="post" action="{% url 'tickets:ai_recommendation_dismiss' rec.id %}">
-                    {% csrf_token %}
-                    <input type="hidden" name="next" value="{% url 'tickets:marketing_overview' %}?window={{ window_key }}">
-                    <button type="submit" class="btn btn-sm btn-outline-secondary">Dismiss</button>
-                </form>
+            <p class="text-secondary small mb-0" id="ai-analyze-status">
+                Get a plain-language read on what's working, what isn't, and what to do next. Uses your configured AI model.
+            </p>
+            <div id="ai-analyze-result" hidden></div>
+        </div>
+
+        <div class="chart-card">
+            <div class="ai-panel-header">
+                <h2 style="margin:0;">Marketing recommendations</h2>
+                <a href="{% url 'tickets:action_center' %}?kind=marketing_attribution" class="btn btn-sm btn-outline-secondary">View all in Action Center</a>
+            </div>
+            {% if recommendations %}
+            <div class="recs-list">
+                {% for rec in recommendations %}
+                <div class="rec-row rec-row--{{ rec.priority }}">
+                    <div class="rec-row-header">
+                        <div class="rec-row-title">{{ rec.title }}</div>
+                        <div class="rec-row-priority">{{ rec.get_priority_display }}</div>
+                    </div>
+                    <div class="rec-row-summary">{{ rec.summary }}</div>
+                    <div class="rec-row-actions">
+                        {% if rec.recommended_action_json.url %}
+                        <form method="post" action="{% url 'tickets:ai_recommendation_review' rec.id %}">
+                            {% csrf_token %}
+                            <input type="hidden" name="next" value="{% url 'tickets:marketing_overview' %}?window={{ window_key }}">
+                            <button type="submit" class="btn btn-sm btn-primary">{{ rec.recommended_action_json.label|default:"Take action" }}</button>
+                        </form>
+                        {% endif %}
+                        <form method="post" action="{% url 'tickets:ai_recommendation_resolve' rec.id %}">
+                            {% csrf_token %}
+                            <input type="hidden" name="next" value="{% url 'tickets:marketing_overview' %}?window={{ window_key }}">
+                            <button type="submit" class="btn btn-sm btn-outline-success">Mark resolved</button>
+                        </form>
+                        <form method="post" action="{% url 'tickets:ai_recommendation_dismiss' rec.id %}">
+                            {% csrf_token %}
+                            <input type="hidden" name="next" value="{% url 'tickets:marketing_overview' %}?window={{ window_key }}">
+                            <button type="submit" class="btn btn-sm btn-outline-secondary">Dismiss</button>
+                        </form>
+                    </div>
+                </div>
+                {% endfor %}
+            </div>
+            {% else %}
+            <div class="empty-state">
+                <p>No open marketing recommendations &mdash; either you're caught up, or none have been generated yet. New recommendations appear here as data lands.</p>
+            </div>
+            {% endif %}
+        </div>
+
+        <div class="marketing-grid-two">
+            <div class="chart-card">
+                <h2>Revenue and ad spend by month</h2>
+                <div class="chart-canvas-wrap"><canvas id="trend-chart"></canvas></div>
+            </div>
+            <div class="chart-card">
+                <h2>Revenue share by channel</h2>
+                <div class="chart-canvas-wrap"><canvas id="comparison-chart"></canvas></div>
             </div>
         </div>
-        {% endfor %}
     </div>
-    {% else %}
-    <div class="empty-state">
-        <p>No open marketing recommendations &mdash; either you're caught up, or none have been generated yet. New recommendations appear here as data lands.</p>
+
+    {# ── Email ────────────────────────────────────────────────────────── #}
+    <div class="tab-pane fade" id="tab-email" role="tabpanel" aria-labelledby="email-tab-btn">
+        <div class="channel-card channel-card--email">
+            <div class="channel-card-title">Email &middot; Mailchimp</div>
+            <div class="channel-card-headline">${{ metrics.channels.email.revenue|currency }}</div>
+            <div class="channel-card-meta">
+                <span>Sends <b>{{ metrics.channels.email.sends }}</b></span>
+                <span>Campaigns <b>{{ metrics.channels.email.campaigns }}</b></span>
+                <span>Opens <b>{{ metrics.channels.email.opens }}</b> <span class="text-tertiary small">({{ metrics.channels.email.open_rate|floatformat:2 }})</span></span>
+                <span>Clicks <b>{{ metrics.channels.email.clicks }}</b> <span class="text-tertiary small">({{ metrics.channels.email.click_rate|floatformat:2 }})</span></span>
+                <span>Orders <b>{{ metrics.channels.email.orders }}</b></span>
+                <span>Unsubs <b>{{ metrics.channels.email.unsubscribes }}</b></span>
+            </div>
+        </div>
+
+        <div class="chart-card">
+            <h2>Email opens and clicks by month</h2>
+            <div class="chart-canvas-wrap"><canvas id="email-engagement-chart"></canvas></div>
+        </div>
+
+        <div class="chart-card">
+            <h2>Top email campaigns</h2>
+            {% with email_rows=metrics.top_campaigns|filter_channel:"email" %}
+            {% if email_rows %}
+            <div class="table-responsive">
+                <table class="table table-hover align-middle mb-0">
+                    <thead>
+                        <tr>
+                            <th>Campaign</th>
+                            <th>Event</th>
+                            <th class="text-end">Sends</th>
+                            <th class="text-end">Opens</th>
+                            <th class="text-end">Clicks</th>
+                            <th class="text-end">Orders</th>
+                            <th class="text-end">Revenue</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for row in email_rows %}
+                        <tr>
+                            <td><span class="fw-semibold">{{ row.name }}</span></td>
+                            <td><a href="{% url 'tickets:event_detail' event_id=row.event_id %}?tab=marketing">{{ row.event_name }}</a></td>
+                            <td class="text-end">{{ row.sends }}</td>
+                            <td class="text-end">{{ row.opens }}<span class="text-tertiary small d-block">{{ row.open_rate|floatformat:2 }}</span></td>
+                            <td class="text-end">{{ row.clicks }}<span class="text-tertiary small d-block">{{ row.click_rate|floatformat:2 }}</span></td>
+                            <td class="text-end">{{ row.orders }}</td>
+                            <td class="text-end">${{ row.revenue|currency }}</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+            {% else %}
+            <div class="empty-state"><p>No Mailchimp campaigns matched in this window.</p></div>
+            {% endif %}
+            {% endwith %}
+        </div>
     </div>
-    {% endif %}
+
+    {# ── SMS ──────────────────────────────────────────────────────────── #}
+    <div class="tab-pane fade" id="tab-sms" role="tabpanel" aria-labelledby="sms-tab-btn">
+        <div class="channel-card channel-card--sms">
+            <div class="channel-card-title">SMS &middot; SlickText</div>
+            <div class="channel-card-headline">${{ metrics.channels.sms.revenue|currency }}</div>
+            <div class="channel-card-meta">
+                <span>Audience <b>{{ metrics.channels.sms.audience }}</b></span>
+                <span>Broadcasts <b>{{ metrics.channels.sms.campaigns }}</b></span>
+                <span>Clicks <b>{{ metrics.channels.sms.clicks }}</b> <span class="text-tertiary small">({{ metrics.channels.sms.click_rate|floatformat:2 }})</span></span>
+                <span>Unsubs <b>{{ metrics.channels.sms.unsubscribes }}</b> <span class="text-tertiary small">({{ metrics.channels.sms.unsub_rate|floatformat:2 }})</span></span>
+                <span>Orders <b>{{ metrics.channels.sms.orders }}</b></span>
+            </div>
+        </div>
+
+        <div class="chart-card">
+            <h2>SMS clicks by month</h2>
+            <div class="chart-canvas-wrap"><canvas id="sms-engagement-chart"></canvas></div>
+        </div>
+
+        <div class="chart-card">
+            <h2>Top SMS broadcasts</h2>
+            {% with sms_rows=metrics.top_campaigns|filter_channel:"sms" %}
+            {% if sms_rows %}
+            <div class="table-responsive">
+                <table class="table table-hover align-middle mb-0">
+                    <thead>
+                        <tr>
+                            <th>Broadcast</th>
+                            <th>Event</th>
+                            <th class="text-end">Audience</th>
+                            <th class="text-end">Clicks</th>
+                            <th class="text-end">Orders</th>
+                            <th class="text-end">Revenue</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for row in sms_rows %}
+                        <tr>
+                            <td><span class="fw-semibold">{{ row.name }}</span></td>
+                            <td><a href="{% url 'tickets:event_detail' event_id=row.event_id %}?tab=marketing">{{ row.event_name }}</a></td>
+                            <td class="text-end">{{ row.sends }}</td>
+                            <td class="text-end">{{ row.clicks }}<span class="text-tertiary small d-block">{{ row.click_rate|floatformat:2 }}</span></td>
+                            <td class="text-end">{{ row.orders }}</td>
+                            <td class="text-end">${{ row.revenue|currency }}</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+            {% else %}
+            <div class="empty-state"><p>No SlickText broadcasts matched in this window.</p></div>
+            {% endif %}
+            {% endwith %}
+        </div>
+    </div>
+
+    {# ── Paid Ads ─────────────────────────────────────────────────────── #}
+    <div class="tab-pane fade" id="tab-ads" role="tabpanel" aria-labelledby="ads-tab-btn">
+        <div class="channel-card channel-card--ads">
+            <div class="channel-card-title">Ads &middot; Meta</div>
+            <div class="channel-card-headline">${{ metrics.channels.ads.spend|currency }}</div>
+            <div class="channel-card-meta">
+                <span>Attributed rev <b>${{ metrics.channels.ads.revenue|currency }}</b></span>
+                <span>ROAS <b>{{ metrics.channels.ads.roas|floatformat:2 }}x</b></span>
+                <span>ROI <b>{{ metrics.channels.ads.roi|floatformat:2 }}</b></span>
+                <span>Line items <b>{{ metrics.channels.ads.line_items }}</b></span>
+                <span>Orders <b>{{ metrics.channels.ads.orders }}</b></span>
+            </div>
+        </div>
+
+        <div class="chart-card">
+            <h2>Ad spend by month</h2>
+            <div class="chart-canvas-wrap"><canvas id="ads-spend-chart"></canvas></div>
+        </div>
+
+        <div class="chart-card">
+            <h2>Top events by ROI</h2>
+            {% if metrics.top_events_by_roi %}
+            <div class="table-responsive">
+                <table class="table table-hover align-middle mb-0">
+                    <thead>
+                        <tr>
+                            <th>Event</th>
+                            <th class="text-end">Spend</th>
+                            <th class="text-end">Attributed</th>
+                            <th class="text-end">ROI</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for row in metrics.top_events_by_roi %}
+                        <tr>
+                            <td><a href="{% url 'tickets:event_detail' event_id=row.event_id %}?tab=marketing">{{ row.event_name }}</a></td>
+                            <td class="text-end">${{ row.ads_spend|currency }}</td>
+                            <td class="text-end">${{ row.attributed_revenue|currency }}</td>
+                            <td class="text-end">{% if row.roi is not None %}{{ row.roi|floatformat:2 }}{% else %}&mdash;{% endif %}</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+            {% else %}
+            <div class="empty-state"><p>No event-level ROI to compare yet. Link spend and campaign data on at least one event.</p></div>
+            {% endif %}
+        </div>
+    </div>
+
 </div>
 
 <script type="application/json" id="trend-chart-data">{{ trend_chart_json|safe }}</script>
 <script type="application/json" id="engagement-chart-data">{{ engagement_chart_json|safe }}</script>
 <script type="application/json" id="comparison-chart-data">{{ comparison_chart_json|safe }}</script>
-<script type="application/json" id="marketing-window-data">{"window": "{{ window_key }}"}</script>
+<script type="application/json" id="marketing-window-data">{"window": "{{ window_key }}", "tab": "{{ active_tab }}"}</script>
 {% endblock %}
 
 {% block extra_js %}
@@ -369,73 +447,162 @@
         var trendData = JSON.parse(document.getElementById('trend-chart-data').textContent);
         var engageData = JSON.parse(document.getElementById('engagement-chart-data').textContent);
         var compData  = JSON.parse(document.getElementById('comparison-chart-data').textContent);
+        var meta = JSON.parse(document.getElementById('marketing-window-data').textContent);
 
-        new Chart(document.getElementById('trend-chart'), {
-            type: 'bar',
-            data: {
-                labels: trendData.labels,
-                datasets: [
-                    { label: 'Email revenue', data: trendData.email_revenue, backgroundColor: '#5b8def', stack: 'rev' },
-                    { label: 'SMS revenue',   data: trendData.sms_revenue,   backgroundColor: '#33c481', stack: 'rev' },
-                    { label: 'Ads spend',     data: trendData.ads_spend.map(function(v){ return -Math.abs(v); }), backgroundColor: '#e6796d', stack: 'spend' }
-                ]
-            },
-            options: {
-                responsive: true,
-                maintainAspectRatio: false,
-                scales: {
-                    x: { stacked: true, grid: { color: grid }, ticks: { color: tick } },
-                    y: { stacked: true, grid: { color: grid }, ticks: { color: tick,
-                        callback: function(v) { return '$' + Math.abs(v).toLocaleString(); } } }
+        var initialized = {};
+
+        function initTrendChart() {
+            if (initialized.trend) return; initialized.trend = true;
+            new Chart(document.getElementById('trend-chart'), {
+                type: 'bar',
+                data: {
+                    labels: trendData.labels,
+                    datasets: [
+                        { label: 'Email revenue', data: trendData.email_revenue, backgroundColor: '#5b8def', stack: 'rev' },
+                        { label: 'SMS revenue',   data: trendData.sms_revenue,   backgroundColor: '#33c481', stack: 'rev' },
+                        { label: 'Ads spend',     data: trendData.ads_spend.map(function(v){ return -Math.abs(v); }), backgroundColor: '#e6796d', stack: 'spend' }
+                    ]
                 },
-                plugins: { legend: { labels: { color: tick } } }
-            }
-        });
+                options: {
+                    responsive: true, maintainAspectRatio: false,
+                    scales: {
+                        x: { stacked: true, grid: { color: grid }, ticks: { color: tick } },
+                        y: { stacked: true, grid: { color: grid }, ticks: { color: tick,
+                            callback: function(v) { return '$' + Math.abs(v).toLocaleString(); } } }
+                    },
+                    plugins: { legend: { labels: { color: tick } } }
+                }
+            });
+        }
 
-        new Chart(document.getElementById('engagement-chart'), {
-            type: 'line',
-            data: {
-                labels: engageData.labels,
-                datasets: [
-                    { label: 'Email opens',  data: engageData.email_opens,  borderColor: '#5b8def', backgroundColor: 'rgba(91,141,239,0.12)', tension: 0.3, fill: true },
-                    { label: 'Email clicks', data: engageData.email_clicks, borderColor: '#9b6dff', backgroundColor: 'rgba(155,109,255,0.10)', tension: 0.3, fill: true },
-                    { label: 'SMS clicks',   data: engageData.sms_clicks,   borderColor: '#33c481', backgroundColor: 'rgba(51,196,129,0.10)', tension: 0.3, fill: true }
-                ]
-            },
-            options: {
-                responsive: true,
-                maintainAspectRatio: false,
-                interaction: { mode: 'index', intersect: false },
-                scales: {
-                    x: { grid: { color: grid }, ticks: { color: tick } },
-                    y: { beginAtZero: true, grid: { color: grid }, ticks: { color: tick } }
+        function initComparisonChart() {
+            if (initialized.comparison) return; initialized.comparison = true;
+            new Chart(document.getElementById('comparison-chart'), {
+                type: 'doughnut',
+                data: {
+                    labels: compData.labels,
+                    datasets: [{ data: compData.revenue, backgroundColor: ['#5b8def', '#33c481', '#e6796d'], borderWidth: 0 }]
                 },
-                plugins: { legend: { labels: { color: tick } } }
-            }
+                options: {
+                    responsive: true, maintainAspectRatio: false,
+                    plugins: { legend: { position: 'bottom', labels: { color: tick } } }
+                }
+            });
+        }
+
+        function initEmailChart() {
+            if (initialized.email) return; initialized.email = true;
+            new Chart(document.getElementById('email-engagement-chart'), {
+                type: 'line',
+                data: {
+                    labels: engageData.labels,
+                    datasets: [
+                        { label: 'Opens',  data: engageData.email_opens,  borderColor: '#5b8def', backgroundColor: 'rgba(91,141,239,0.12)', tension: 0.3, fill: true },
+                        { label: 'Clicks', data: engageData.email_clicks, borderColor: '#9b6dff', backgroundColor: 'rgba(155,109,255,0.10)', tension: 0.3, fill: true }
+                    ]
+                },
+                options: {
+                    responsive: true, maintainAspectRatio: false,
+                    interaction: { mode: 'index', intersect: false },
+                    scales: {
+                        x: { grid: { color: grid }, ticks: { color: tick } },
+                        y: { beginAtZero: true, grid: { color: grid }, ticks: { color: tick } }
+                    },
+                    plugins: { legend: { labels: { color: tick } } }
+                }
+            });
+        }
+
+        function initSmsChart() {
+            if (initialized.sms) return; initialized.sms = true;
+            new Chart(document.getElementById('sms-engagement-chart'), {
+                type: 'line',
+                data: {
+                    labels: engageData.labels,
+                    datasets: [
+                        { label: 'Clicks', data: engageData.sms_clicks, borderColor: '#33c481', backgroundColor: 'rgba(51,196,129,0.12)', tension: 0.3, fill: true }
+                    ]
+                },
+                options: {
+                    responsive: true, maintainAspectRatio: false,
+                    scales: {
+                        x: { grid: { color: grid }, ticks: { color: tick } },
+                        y: { beginAtZero: true, grid: { color: grid }, ticks: { color: tick } }
+                    },
+                    plugins: { legend: { labels: { color: tick } } }
+                }
+            });
+        }
+
+        function initAdsChart() {
+            if (initialized.ads) return; initialized.ads = true;
+            new Chart(document.getElementById('ads-spend-chart'), {
+                type: 'bar',
+                data: {
+                    labels: trendData.labels,
+                    datasets: [
+                        { label: 'Spend', data: trendData.ads_spend, backgroundColor: '#e6796d' }
+                    ]
+                },
+                options: {
+                    responsive: true, maintainAspectRatio: false,
+                    scales: {
+                        x: { grid: { color: grid }, ticks: { color: tick } },
+                        y: { beginAtZero: true, grid: { color: grid }, ticks: { color: tick,
+                            callback: function(v) { return '$' + v.toLocaleString(); } } }
+                    },
+                    plugins: { legend: { labels: { color: tick } } }
+                }
+            });
+        }
+
+        // --- Tab state ----------------------------------------------------
+        var validTabs = ['overview', 'email', 'sms', 'ads'];
+        var serverTab = (meta.tab || 'overview').toLowerCase();
+        var qs = new URLSearchParams(window.location.search);
+        var qsTab = (qs.get('tab') || '').toLowerCase();
+        var activeTab = validTabs.indexOf(qsTab) >= 0 ? qsTab : (validTabs.indexOf(serverTab) >= 0 ? serverTab : 'overview');
+
+        var btnIdByKey = { overview: 'overview-tab-btn', email: 'email-tab-btn', sms: 'sms-tab-btn', ads: 'ads-tab-btn' };
+        var initByKey  = { overview: function(){ initTrendChart(); initComparisonChart(); },
+                           email:    initEmailChart,
+                           sms:      initSmsChart,
+                           ads:      initAdsChart };
+
+        try {
+            var bsTab = new bootstrap.Tab(document.getElementById(btnIdByKey[activeTab]));
+            bsTab.show();
+        } catch (err) {
+            // If Bootstrap is unavailable, just show the active pane manually so the page is usable.
+            document.querySelectorAll('.tab-pane').forEach(function (el) {
+                el.classList.remove('show', 'active');
+            });
+            var pane = document.getElementById('tab-' + activeTab);
+            if (pane) pane.classList.add('show', 'active');
+            var btn = document.getElementById(btnIdByKey[activeTab]);
+            if (btn) btn.classList.add('active');
+        }
+        initByKey[activeTab]();
+
+        document.querySelectorAll('#marketing-tab-nav button[data-bs-toggle="tab"]').forEach(function (btn) {
+            btn.addEventListener('shown.bs.tab', function (ev) {
+                var key = ev.target.getAttribute('data-tab-key');
+                if (initByKey[key]) initByKey[key]();
+                // Sync into the window-selector form so window changes preserve the tab.
+                var hidden = document.getElementById('tab-form-input');
+                if (hidden) hidden.value = key;
+                // Update URL without reload so refresh keeps the tab.
+                var url = new URL(window.location.href);
+                url.searchParams.set('tab', key);
+                window.history.replaceState({}, '', url.toString());
+            });
         });
 
-        new Chart(document.getElementById('comparison-chart'), {
-            type: 'doughnut',
-            data: {
-                labels: compData.labels,
-                datasets: [{
-                    data: compData.revenue,
-                    backgroundColor: ['#5b8def', '#33c481', '#e6796d'],
-                    borderWidth: 0
-                }]
-            },
-            options: {
-                responsive: true,
-                maintainAspectRatio: false,
-                plugins: { legend: { position: 'bottom', labels: { color: tick } } }
-            }
-        });
-
-        // AI Analyze button
+        // --- AI analyze ---------------------------------------------------
         var btn = document.getElementById('ai-analyze-btn');
         var status = document.getElementById('ai-analyze-status');
         var resultBox = document.getElementById('ai-analyze-result');
-        var windowKey = JSON.parse(document.getElementById('marketing-window-data').textContent).window;
+        var windowKey = meta.window;
 
         function severityClass(sev) {
             if (sev === 'critical') return 'ai-insight ai-insight--critical';
