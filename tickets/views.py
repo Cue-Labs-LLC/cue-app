@@ -7,7 +7,7 @@ import random
 import secrets
 import uuid as _uuid
 from datetime import date, datetime, time, timedelta
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from urllib.parse import urlencode
 from django import forms as django_forms
 from django.shortcuts import render, redirect, get_object_or_404
@@ -3593,6 +3593,7 @@ def _update_meta_ads_expense_spend(expense, spend, user=None):
     metadata = dict(expense.external_metadata or {})
     metadata['last_synced_at'] = django_tz.now().isoformat()
 
+    api_changed = expense.amount != spend
     expense.amount = spend
     expense.external_metadata = metadata
     expense.version += 1
@@ -3601,6 +3602,10 @@ def _update_meta_ads_expense_spend(expense, spend, user=None):
     if user and user.is_authenticated:
         expense.updated_by = user
         update_fields.append('updated_by')
+
+    if api_changed and expense.confirmed_at:
+        expense.api_data_changed_at = django_tz.now()
+        update_fields.append('api_data_changed_at')
 
     expense.save(update_fields=update_fields)
 
@@ -3622,6 +3627,12 @@ def _get_mailchimp_connection(org):
     if org.mailchimp_access_token and org.mailchimp_dc:
         return org
     return None
+
+
+MAILCHIMP_TRACKED_API_FIELDS = (
+    'emails_sent', 'opens', 'unique_opens', 'clicks', 'unique_clicks',
+    'bounces', 'unsubscribes', 'ecommerce_orders', 'ecommerce_revenue',
+)
 
 
 def _save_mailchimp_campaign_from_report(event, report, user=None, match_confidence=None, match_reasoning=''):
@@ -3655,26 +3666,43 @@ def _save_mailchimp_campaign_from_report(event, report, user=None, match_confide
     if match_reasoning:
         defaults['match_reasoning'] = match_reasoning
 
-    email_campaign, created = EventEmailCampaign.objects.filter(
+    existing = EventEmailCampaign.objects.filter(
         event=event,
         source='mailchimp',
         external_id=external_id,
         deleted_at__isnull=True,
-    ).get_or_create(
-        defaults={
-            **defaults,
-            'event': event,
-            'source': 'mailchimp',
-            'external_id': external_id,
-            'created_by': user if user and user.is_authenticated else None,
-        }
+    ).first()
+
+    # Snapshot pre-save values so we can detect API changes after a previous confirmation.
+    pre_snapshot = (
+        {field: getattr(existing, field) for field in MAILCHIMP_TRACKED_API_FIELDS}
+        if existing else None
     )
-    if not created:
+    was_confirmed = bool(existing and existing.confirmed_at)
+
+    if existing:
         for field, value in defaults.items():
-            setattr(email_campaign, field, value)
-        email_campaign.version += 1
+            setattr(existing, field, value)
+        existing.version += 1
         if user and user.is_authenticated:
-            email_campaign.updated_by = user
+            existing.updated_by = user
+        email_campaign = existing
+        created = False
+    else:
+        email_campaign = EventEmailCampaign(
+            event=event,
+            source='mailchimp',
+            external_id=external_id,
+            created_by=user if user and user.is_authenticated else None,
+            **defaults,
+        )
+        created = True
+
+    if was_confirmed and pre_snapshot is not None and any(
+        pre_snapshot[field] != getattr(email_campaign, field) for field in MAILCHIMP_TRACKED_API_FIELDS
+    ):
+        email_campaign.api_data_changed_at = django_tz.now()
+
     email_campaign.save()
     return email_campaign, created
 
@@ -3739,6 +3767,12 @@ def _get_slicktext_connection(org):
     return None
 
 
+SLICKTEXT_TRACKED_API_FIELDS = (
+    'audience_size', 'clicks', 'unique_clicks',
+    'unsubscribes', 'orders', 'revenue',
+)
+
+
 def _save_slicktext_campaign_from_report(event, report, user=None, match_confidence=None, match_reasoning=''):
     normalized = normalize_slicktext_campaign_report(report)
     external_id = normalized['external_id']
@@ -3766,26 +3800,42 @@ def _save_slicktext_campaign_from_report(event, report, user=None, match_confide
     if match_reasoning:
         defaults['match_reasoning'] = match_reasoning
 
-    sms_campaign, created = EventSMSCampaign.objects.filter(
+    existing = EventSMSCampaign.objects.filter(
         event=event,
         source='slicktext',
         external_id=external_id,
         deleted_at__isnull=True,
-    ).get_or_create(
-        defaults={
-            **defaults,
-            'event': event,
-            'source': 'slicktext',
-            'external_id': external_id,
-            'created_by': user if user and user.is_authenticated else None,
-        }
+    ).first()
+
+    pre_snapshot = (
+        {field: getattr(existing, field) for field in SLICKTEXT_TRACKED_API_FIELDS}
+        if existing else None
     )
-    if not created:
+    was_confirmed = bool(existing and existing.confirmed_at)
+
+    if existing:
         for field, value in defaults.items():
-            setattr(sms_campaign, field, value)
-        sms_campaign.version += 1
+            setattr(existing, field, value)
+        existing.version += 1
         if user and user.is_authenticated:
-            sms_campaign.updated_by = user
+            existing.updated_by = user
+        sms_campaign = existing
+        created = False
+    else:
+        sms_campaign = EventSMSCampaign(
+            event=event,
+            source='slicktext',
+            external_id=external_id,
+            created_by=user if user and user.is_authenticated else None,
+            **defaults,
+        )
+        created = True
+
+    if was_confirmed and pre_snapshot is not None and any(
+        pre_snapshot[field] != getattr(sms_campaign, field) for field in SLICKTEXT_TRACKED_API_FIELDS
+    ):
+        sms_campaign.api_data_changed_at = django_tz.now()
+
     sms_campaign.save()
     return sms_campaign, created
 
@@ -3951,6 +4001,17 @@ def event_detail(request, event_id):
         sms_campaign.send_time_display = _format_meta_ads_datetime(sms_campaign.send_time.isoformat() if sms_campaign.send_time else '')
         sms_campaign.last_synced_display = _format_meta_ads_datetime(sms_campaign.last_synced_at.isoformat() if sms_campaign.last_synced_at else '')
 
+    marketing_pending_count = (
+        sum(1 for c in mailchimp_campaigns if not c.is_confirmed)
+        + sum(1 for c in slicktext_campaigns if not c.is_confirmed)
+        + sum(1 for e in meta_ads_expenses if not e.is_confirmed)
+    )
+    marketing_needs_review_count = (
+        sum(1 for c in mailchimp_campaigns if c.needs_review)
+        + sum(1 for c in slicktext_campaigns if c.needs_review)
+        + sum(1 for e in meta_ads_expenses if e.needs_review)
+    )
+
     ticket_type_breakdown_json = json.dumps(ticket_type_breakdown)
     ticket_type_allocation_charts_json = json.dumps(ticket_type_allocation_charts)
 
@@ -3998,6 +4059,8 @@ def event_detail(request, event_id):
         'mailchimp_campaigns': mailchimp_campaigns,
         'slicktext_connection': slicktext_connection,
         'slicktext_campaigns': slicktext_campaigns,
+        'marketing_pending_count': marketing_pending_count,
+        'marketing_needs_review_count': marketing_needs_review_count,
         'category_labels': category_labels,
         'additional_income_lines': additional_income_lines,
         'income_sources': IncomeSource.objects.filter(organization=org).order_by('order', 'name'),
@@ -5753,6 +5816,8 @@ def event_meta_ads_apply(request, event_id):
         },
     )
     if not created:
+        old_amount = expense.amount
+        was_confirmed = bool(expense.confirmed_at)
         expense.category = 'marketing'
         expense.description = f'Meta Ads: {campaign_name}'[:300]
         expense.amount = spend
@@ -5760,6 +5825,8 @@ def event_meta_ads_apply(request, event_id):
         expense.external_id = campaign_id
         expense.updated_by = request.user
         expense.version += 1
+        if was_confirmed and old_amount != spend:
+            expense.api_data_changed_at = django_tz.now()
 
     expense.external_metadata = {
         'campaign_name': campaign_name,
@@ -5800,9 +5867,13 @@ def event_meta_ads_refresh(request, event_id, expense_id):
     """Refresh a single linked Meta Ads campaign expense."""
     org = get_organization(request)
     event, expense = _get_active_meta_ads_expense_or_404(org, event_id, expense_id)
+    ajax = _wants_marketing_json(request)
 
     if not org.meta_ads_access_token or not org.meta_ads_account_id:
-        messages.error(request, 'Connect Meta Ads and choose an ad account before refreshing campaign spend.')
+        msg = 'Connect Meta Ads and choose an ad account before refreshing campaign spend.'
+        if ajax:
+            return JsonResponse({'ok': False, 'error': msg}, status=400)
+        messages.error(request, msg)
         return redirect('tickets:meta_ads_settings')
 
     try:
@@ -5816,7 +5887,10 @@ def event_meta_ads_refresh(request, event_id, expense_id):
             expense.external_id,
             exc,
         )
-        messages.warning(request, 'Could not refresh this Meta Ads campaign spend.')
+        msg = 'Could not refresh this Meta Ads campaign spend.'
+        if ajax:
+            return JsonResponse({'ok': False, 'error': msg}, status=502)
+        messages.warning(request, msg)
         return _marketing_tab_redirect(event)
 
     old_amount = expense.amount
@@ -5826,6 +5900,9 @@ def event_meta_ads_refresh(request, event_id, expense_id):
         _invalidate_event_list_cache(org)
         _invalidate_marketing_cache(org)
 
+    if ajax:
+        expense.refresh_from_db()
+        return JsonResponse({'ok': True, 'row': _serialize_ads_row(expense)})
     messages.success(request, f'Meta Ads campaign spend refreshed to ${spend:,.2f}.')
     return _marketing_tab_redirect(event)
 
@@ -5846,6 +5923,8 @@ def event_meta_ads_remove(request, event_id, expense_id):
     _invalidate_event_list_cache(org)
     _invalidate_marketing_cache(org)
 
+    if _wants_marketing_json(request):
+        return JsonResponse({'ok': True, 'removed_id': str(expense.id)})
     messages.success(request, 'Meta Ads campaign removed from this event.')
     return _marketing_tab_redirect(event)
 
@@ -6128,9 +6207,13 @@ def event_mailchimp_refresh(request, event_id, email_campaign_id):
     """Refresh a single linked Mailchimp campaign report."""
     org = get_organization(request)
     event, email_campaign = _get_active_mailchimp_campaign_or_404(org, event_id, email_campaign_id)
+    ajax = _wants_marketing_json(request)
     connection = _get_mailchimp_connection(org)
     if not connection:
-        messages.error(request, 'Connect Mailchimp before refreshing campaign results.')
+        msg = 'Connect Mailchimp before refreshing campaign results.'
+        if ajax:
+            return JsonResponse({'ok': False, 'error': msg}, status=400)
+        messages.error(request, msg)
         return redirect('tickets:mailchimp_settings')
 
     try:
@@ -6145,9 +6228,14 @@ def event_mailchimp_refresh(request, event_id, email_campaign_id):
             email_campaign.external_id,
             exc,
         )
-        messages.warning(request, 'Could not refresh this Mailchimp campaign.')
+        msg = 'Could not refresh this Mailchimp campaign.'
+        if ajax:
+            return JsonResponse({'ok': False, 'error': msg}, status=502)
+        messages.warning(request, msg)
         return _marketing_tab_redirect(event)
 
+    if ajax:
+        return JsonResponse({'ok': True, 'row': _serialize_email_row(refreshed)})
     messages.success(request, f'Mailchimp campaign "{refreshed.campaign_title}" refreshed.')
     return _marketing_tab_redirect(event)
 
@@ -6165,7 +6253,370 @@ def event_mailchimp_remove(request, event_id, email_campaign_id):
     email_campaign.save(update_fields=['updated_by'])
     email_campaign.delete()
 
+    if _wants_marketing_json(request):
+        return JsonResponse({'ok': True, 'removed_id': str(email_campaign.id)})
     messages.success(request, 'Mailchimp campaign removed from this event.')
+    return _marketing_tab_redirect(event)
+
+
+def _parse_optional_int(raw):
+    if raw is None:
+        return None
+    raw = raw.strip()
+    if raw == '':
+        return None
+    value = int(raw)
+    if value < 0:
+        raise ValueError('Negative not allowed')
+    return value
+
+
+def _parse_optional_decimal(raw):
+    if raw is None:
+        return None
+    raw = raw.strip()
+    if raw == '':
+        return None
+    value = Decimal(raw)
+    if value < 0:
+        raise ValueError('Negative not allowed')
+    return value.quantize(Decimal('0.01'))
+
+
+def _wants_marketing_json(request):
+    return request.headers.get('X-Requested-With') == 'XMLHttpRequest'
+
+
+def _status_label(obj):
+    if obj.needs_review:
+        return 'Re-review'
+    if obj.is_confirmed:
+        return 'Confirmed'
+    return 'Pending'
+
+
+def _status_badge_class(obj):
+    if obj.needs_review:
+        return 'bg-warning text-dark'
+    if obj.is_confirmed:
+        return 'bg-success'
+    return 'bg-secondary'
+
+
+def _serialize_email_row(c):
+    return {
+        'id': str(c.id),
+        # Effective (manual override falls back to API) — used for all table cells.
+        'effective_emails_sent': c.effective_emails_sent or 0,
+        'effective_unique_opens': c.effective_unique_opens or 0,
+        'effective_clicks': c.effective_clicks or 0,
+        'effective_unsubscribes': c.effective_unsubscribes or 0,
+        'effective_orders': c.effective_orders or 0,
+        'effective_revenue': f'{(c.effective_revenue or Decimal("0.00")):.2f}',
+        # Raw manual values for form prefill / data-numeric-value sync.
+        'manual_emails_sent': c.manual_emails_sent,
+        'manual_unique_opens': c.manual_unique_opens,
+        'manual_clicks': c.manual_clicks,
+        'manual_unsubscribes': c.manual_unsubscribes,
+        'manual_orders': c.manual_orders,
+        'manual_revenue': f'{c.manual_revenue:.2f}' if c.manual_revenue is not None else '',
+        'is_confirmed': c.is_confirmed,
+        'needs_review': c.needs_review,
+        'status_label': _status_label(c),
+        'status_badge_class': _status_badge_class(c),
+    }
+
+
+def _serialize_sms_row(c):
+    return {
+        'id': str(c.id),
+        'effective_audience': c.effective_audience or 0,
+        'effective_clicks': c.effective_clicks or 0,
+        'effective_unsubscribes': c.effective_unsubscribes or 0,
+        'effective_orders': c.effective_orders or 0,
+        'effective_revenue': f'{(c.effective_revenue or Decimal("0.00")):.2f}',
+        'manual_audience': c.manual_audience,
+        'manual_clicks': c.manual_clicks,
+        'manual_unsubscribes': c.manual_unsubscribes,
+        'manual_orders': c.manual_orders,
+        'manual_revenue': f'{c.manual_revenue:.2f}' if c.manual_revenue is not None else '',
+        'is_confirmed': c.is_confirmed,
+        'needs_review': c.needs_review,
+        'status_label': _status_label(c),
+        'status_badge_class': _status_badge_class(c),
+    }
+
+
+def _serialize_ads_row(e):
+    return {
+        'id': str(e.id),
+        'amount': f'{(e.amount or Decimal("0.00")):.2f}',
+        'effective_attributed_orders': e.effective_attributed_orders or 0,
+        'effective_attributed_revenue': f'{(e.effective_attributed_revenue or Decimal("0.00")):.2f}',
+        'manual_attributed_orders': e.manual_attributed_orders,
+        'manual_attributed_revenue': f'{e.manual_attributed_revenue:.2f}' if e.manual_attributed_revenue is not None else '',
+        'is_confirmed': e.is_confirmed,
+        'needs_review': e.needs_review,
+        'status_label': _status_label(e),
+        'status_badge_class': _status_badge_class(e),
+    }
+
+
+@login_required
+@require_org
+@require_admin
+@require_http_methods(["POST"])
+def event_mailchimp_metrics_edit(request, event_id, email_campaign_id):
+    """Set or clear manual_clicks/manual_orders/manual_revenue on a Mailchimp campaign.
+
+    Partial update: only fields present in POST are written. Empty string clears
+    (sets to NULL → fall back to API). Missing key leaves the field unchanged.
+    """
+    org = get_organization(request)
+    event, email_campaign = _get_active_mailchimp_campaign_or_404(org, event_id, email_campaign_id)
+    ajax = _wants_marketing_json(request)
+    update_fields = []
+    int_fields = ['manual_emails_sent', 'manual_unique_opens', 'manual_clicks', 'manual_unsubscribes', 'manual_orders']
+    try:
+        for field in int_fields:
+            if field in request.POST:
+                setattr(email_campaign, field, _parse_optional_int(request.POST.get(field)))
+                update_fields.append(field)
+        if 'manual_revenue' in request.POST:
+            email_campaign.manual_revenue = _parse_optional_decimal(request.POST.get('manual_revenue'))
+            update_fields.append('manual_revenue')
+    except (ValueError, InvalidOperation):
+        msg = 'Enter non-negative numbers (or leave a field blank to use the API value).'
+        if ajax:
+            return JsonResponse({'ok': False, 'error': msg}, status=400)
+        messages.error(request, msg)
+        return _marketing_tab_redirect(event)
+    if not update_fields:
+        if ajax:
+            return JsonResponse({'ok': True, 'row': _serialize_email_row(email_campaign)})
+        return _marketing_tab_redirect(event)
+    email_campaign.updated_by = request.user
+    update_fields += ['updated_by', 'updated_at']
+    email_campaign.save(update_fields=update_fields)
+    _invalidate_marketing_cache(org)
+    if ajax:
+        return JsonResponse({'ok': True, 'row': _serialize_email_row(email_campaign)})
+    messages.success(request, f'Updated metrics for "{email_campaign.campaign_title}".')
+    return _marketing_tab_redirect(event)
+
+
+@login_required
+@require_org
+@require_admin
+@require_http_methods(["POST"])
+def event_mailchimp_confirm(request, event_id, email_campaign_id):
+    org = get_organization(request)
+    event, email_campaign = _get_active_mailchimp_campaign_or_404(org, event_id, email_campaign_id)
+    email_campaign.confirmed_at = django_tz.now()
+    email_campaign.confirmed_by = request.user
+    email_campaign.updated_by = request.user
+    email_campaign.save(update_fields=['confirmed_at', 'confirmed_by', 'updated_by', 'updated_at'])
+    _invalidate_marketing_cache(org)
+    if _wants_marketing_json(request):
+        return JsonResponse({'ok': True, 'row': _serialize_email_row(email_campaign)})
+    messages.success(request, f'Confirmed "{email_campaign.campaign_title}".')
+    return _marketing_tab_redirect(event)
+
+
+@login_required
+@require_org
+@require_admin
+@require_http_methods(["POST"])
+def event_mailchimp_unconfirm(request, event_id, email_campaign_id):
+    org = get_organization(request)
+    event, email_campaign = _get_active_mailchimp_campaign_or_404(org, event_id, email_campaign_id)
+    email_campaign.confirmed_at = None
+    email_campaign.confirmed_by = None
+    email_campaign.updated_by = request.user
+    email_campaign.save(update_fields=['confirmed_at', 'confirmed_by', 'updated_by', 'updated_at'])
+    _invalidate_marketing_cache(org)
+    if _wants_marketing_json(request):
+        return JsonResponse({'ok': True, 'row': _serialize_email_row(email_campaign)})
+    messages.success(request, f'Removed "{email_campaign.campaign_title}" from reports.')
+    return _marketing_tab_redirect(event)
+
+
+@login_required
+@require_org
+@require_admin
+@require_http_methods(["POST"])
+def event_slicktext_metrics_edit(request, event_id, sms_campaign_id):
+    """Partial update of manual_clicks/manual_orders/manual_revenue."""
+    org = get_organization(request)
+    event, sms_campaign = _get_active_slicktext_campaign_or_404(org, event_id, sms_campaign_id)
+    ajax = _wants_marketing_json(request)
+    update_fields = []
+    int_fields = ['manual_audience', 'manual_clicks', 'manual_unsubscribes', 'manual_orders']
+    try:
+        for field in int_fields:
+            if field in request.POST:
+                setattr(sms_campaign, field, _parse_optional_int(request.POST.get(field)))
+                update_fields.append(field)
+        if 'manual_revenue' in request.POST:
+            sms_campaign.manual_revenue = _parse_optional_decimal(request.POST.get('manual_revenue'))
+            update_fields.append('manual_revenue')
+    except (ValueError, InvalidOperation):
+        msg = 'Enter non-negative numbers (or leave a field blank to use the API value).'
+        if ajax:
+            return JsonResponse({'ok': False, 'error': msg}, status=400)
+        messages.error(request, msg)
+        return _marketing_tab_redirect(event)
+    if not update_fields:
+        if ajax:
+            return JsonResponse({'ok': True, 'row': _serialize_sms_row(sms_campaign)})
+        return _marketing_tab_redirect(event)
+    sms_campaign.updated_by = request.user
+    update_fields += ['updated_by', 'updated_at']
+    sms_campaign.save(update_fields=update_fields)
+    _invalidate_marketing_cache(org)
+    if ajax:
+        return JsonResponse({'ok': True, 'row': _serialize_sms_row(sms_campaign)})
+    messages.success(request, f'Updated metrics for "{sms_campaign.name}".')
+    return _marketing_tab_redirect(event)
+
+
+@login_required
+@require_org
+@require_admin
+@require_http_methods(["POST"])
+def event_slicktext_confirm(request, event_id, sms_campaign_id):
+    org = get_organization(request)
+    event, sms_campaign = _get_active_slicktext_campaign_or_404(org, event_id, sms_campaign_id)
+    sms_campaign.confirmed_at = django_tz.now()
+    sms_campaign.confirmed_by = request.user
+    sms_campaign.updated_by = request.user
+    sms_campaign.save(update_fields=['confirmed_at', 'confirmed_by', 'updated_by', 'updated_at'])
+    _invalidate_marketing_cache(org)
+    if _wants_marketing_json(request):
+        return JsonResponse({'ok': True, 'row': _serialize_sms_row(sms_campaign)})
+    messages.success(request, f'Confirmed "{sms_campaign.name}".')
+    return _marketing_tab_redirect(event)
+
+
+@login_required
+@require_org
+@require_admin
+@require_http_methods(["POST"])
+def event_slicktext_unconfirm(request, event_id, sms_campaign_id):
+    org = get_organization(request)
+    event, sms_campaign = _get_active_slicktext_campaign_or_404(org, event_id, sms_campaign_id)
+    sms_campaign.confirmed_at = None
+    sms_campaign.confirmed_by = None
+    sms_campaign.updated_by = request.user
+    sms_campaign.save(update_fields=['confirmed_at', 'confirmed_by', 'updated_by', 'updated_at'])
+    _invalidate_marketing_cache(org)
+    if _wants_marketing_json(request):
+        return JsonResponse({'ok': True, 'row': _serialize_sms_row(sms_campaign)})
+    messages.success(request, f'Removed "{sms_campaign.name}" from reports.')
+    return _marketing_tab_redirect(event)
+
+
+@login_required
+@require_org
+@require_admin
+@require_http_methods(["POST"])
+def event_meta_ads_metrics_edit(request, event_id, expense_id):
+    """Partial update of manual_attributed_orders / manual_attributed_revenue."""
+    org = get_organization(request)
+    event, expense = _get_active_meta_ads_expense_or_404(org, event_id, expense_id)
+    ajax = _wants_marketing_json(request)
+    update_fields = []
+    try:
+        if 'manual_attributed_orders' in request.POST:
+            expense.manual_attributed_orders = _parse_optional_int(request.POST.get('manual_attributed_orders'))
+            update_fields.append('manual_attributed_orders')
+        if 'manual_attributed_revenue' in request.POST:
+            expense.manual_attributed_revenue = _parse_optional_decimal(request.POST.get('manual_attributed_revenue'))
+            update_fields.append('manual_attributed_revenue')
+    except (ValueError, InvalidOperation):
+        msg = 'Enter non-negative numbers for attributed orders and revenue.'
+        if ajax:
+            return JsonResponse({'ok': False, 'error': msg}, status=400)
+        messages.error(request, msg)
+        return _marketing_tab_redirect(event)
+    if not update_fields:
+        if ajax:
+            return JsonResponse({'ok': True, 'row': _serialize_ads_row(expense)})
+        return _marketing_tab_redirect(event)
+    expense.updated_by = request.user
+    update_fields += ['updated_by', 'updated_at']
+    expense.save(update_fields=update_fields)
+    _invalidate_marketing_cache(org)
+    if ajax:
+        return JsonResponse({'ok': True, 'row': _serialize_ads_row(expense)})
+    messages.success(request, 'Updated ad attribution.')
+    return _marketing_tab_redirect(event)
+
+
+@login_required
+@require_org
+@require_admin
+@require_http_methods(["POST"])
+def event_meta_ads_confirm(request, event_id, expense_id):
+    org = get_organization(request)
+    event, expense = _get_active_meta_ads_expense_or_404(org, event_id, expense_id)
+    expense.confirmed_at = django_tz.now()
+    expense.confirmed_by = request.user
+    expense.updated_by = request.user
+    expense.save(update_fields=['confirmed_at', 'confirmed_by', 'updated_by', 'updated_at'])
+    _invalidate_marketing_cache(org)
+    if _wants_marketing_json(request):
+        return JsonResponse({'ok': True, 'row': _serialize_ads_row(expense)})
+    messages.success(request, 'Confirmed ad spend.')
+    return _marketing_tab_redirect(event)
+
+
+@login_required
+@require_org
+@require_admin
+@require_http_methods(["POST"])
+def event_meta_ads_unconfirm(request, event_id, expense_id):
+    org = get_organization(request)
+    event, expense = _get_active_meta_ads_expense_or_404(org, event_id, expense_id)
+    expense.confirmed_at = None
+    expense.confirmed_by = None
+    expense.updated_by = request.user
+    expense.save(update_fields=['confirmed_at', 'confirmed_by', 'updated_by', 'updated_at'])
+    _invalidate_marketing_cache(org)
+    if _wants_marketing_json(request):
+        return JsonResponse({'ok': True, 'row': _serialize_ads_row(expense)})
+    messages.success(request, 'Removed ad spend from reports.')
+    return _marketing_tab_redirect(event)
+
+
+@login_required
+@require_org
+@require_admin
+@require_http_methods(["POST"])
+def event_marketing_confirm_all(request, event_id):
+    """Confirm every unconfirmed Mailchimp / SlickText / Meta Ads record on the event."""
+    org = get_organization(request)
+    event = get_object_or_404(Event.objects.filter(organization=org), id=event_id)
+    now = django_tz.now()
+
+    email_count = EventEmailCampaign.objects.filter(
+        event=event, deleted_at__isnull=True, confirmed_at__isnull=True,
+    ).update(confirmed_at=now, confirmed_by=request.user, updated_by=request.user, updated_at=now)
+
+    sms_count = EventSMSCampaign.objects.filter(
+        event=event, deleted_at__isnull=True, confirmed_at__isnull=True,
+    ).update(confirmed_at=now, confirmed_by=request.user, updated_by=request.user, updated_at=now)
+
+    ads_count = EventExpense.objects.filter(
+        event=event, source='meta_ads', deleted_at__isnull=True, confirmed_at__isnull=True,
+    ).update(confirmed_at=now, confirmed_by=request.user, updated_by=request.user, updated_at=now)
+
+    total = email_count + sms_count + ads_count
+    if total:
+        _invalidate_marketing_cache(org)
+        messages.success(request, f'Confirmed {total} record(s) for this event.')
+    else:
+        messages.info(request, 'Nothing to confirm — every record on this event is already confirmed.')
     return _marketing_tab_redirect(event)
 
 
@@ -6433,9 +6884,13 @@ def event_slicktext_refresh(request, event_id, sms_campaign_id):
     """Refresh a single linked SlickText campaign."""
     org = get_organization(request)
     event, sms_campaign = _get_active_slicktext_campaign_or_404(org, event_id, sms_campaign_id)
+    ajax = _wants_marketing_json(request)
     connection = _get_slicktext_connection(org)
     if not connection:
-        messages.error(request, 'Connect SlickText before refreshing campaign results.')
+        msg = 'Connect SlickText before refreshing campaign results.'
+        if ajax:
+            return JsonResponse({'ok': False, 'error': msg}, status=400)
+        messages.error(request, msg)
         return redirect('tickets:slicktext_settings')
 
     try:
@@ -6447,9 +6902,14 @@ def event_slicktext_refresh(request, event_id, sms_campaign_id):
             "SlickText row refresh failed for org=%s event=%s sms_campaign=%s campaign=%s: %s",
             org.id, event.id, sms_campaign.id, sms_campaign.external_id, exc,
         )
-        messages.warning(request, 'Could not refresh this SlickText broadcast.')
+        msg = 'Could not refresh this SlickText broadcast.'
+        if ajax:
+            return JsonResponse({'ok': False, 'error': msg}, status=502)
+        messages.warning(request, msg)
         return _marketing_tab_redirect(event)
 
+    if ajax:
+        return JsonResponse({'ok': True, 'row': _serialize_sms_row(refreshed)})
     messages.success(request, f'SlickText broadcast "{refreshed.name}" refreshed.')
     return _marketing_tab_redirect(event)
 
@@ -6467,6 +6927,8 @@ def event_slicktext_remove(request, event_id, sms_campaign_id):
     sms_campaign.save(update_fields=['updated_by'])
     sms_campaign.delete()
 
+    if _wants_marketing_json(request):
+        return JsonResponse({'ok': True, 'removed_id': str(sms_campaign.id)})
     messages.success(request, 'SlickText broadcast removed from this event.')
     return _marketing_tab_redirect(event)
 

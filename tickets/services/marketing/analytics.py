@@ -7,10 +7,13 @@ from decimal import Decimal
 from django.db.models import (
     Count,
     DecimalField,
+    F,
+    IntegerField,
     OuterRef,
     Q,
     Subquery,
     Sum,
+    Value,
 )
 from django.db.models.functions import Coalesce, TruncMonth
 from django.utils import timezone
@@ -96,6 +99,7 @@ class MarketingAnalyticsService:
             event__organization=self.organization,
             event__deleted_at__isnull=True,
             deleted_at__isnull=True,
+            confirmed_at__isnull=False,
         )
         if self.window_start is not None:
             qs = qs.filter(send_time__gte=self.window_start)
@@ -106,6 +110,7 @@ class MarketingAnalyticsService:
             event__organization=self.organization,
             event__deleted_at__isnull=True,
             deleted_at__isnull=True,
+            confirmed_at__isnull=False,
         )
         if self.window_start is not None:
             qs = qs.filter(send_time__gte=self.window_start)
@@ -117,36 +122,60 @@ class MarketingAnalyticsService:
             event__deleted_at__isnull=True,
             source='meta_ads',
             deleted_at__isnull=True,
+            confirmed_at__isnull=False,
         )
         if self.window_start is not None:
             qs = qs.filter(expense_date__gte=self.window_start.date())
         return qs
 
+    @staticmethod
+    def _coalesce_int(manual_field, api_field):
+        return Coalesce(F(manual_field), F(api_field), output_field=IntegerField())
+
+    @staticmethod
+    def _coalesce_decimal(manual_field, api_field):
+        return Coalesce(F(manual_field), F(api_field), output_field=DecimalField(max_digits=12, decimal_places=2))
+
     def _email_totals(self):
-        return self._email_qs().aggregate(
+        return self._email_qs().annotate(
+            eff_sends=self._coalesce_int('manual_emails_sent', 'emails_sent'),
+            eff_opens=self._coalesce_int('manual_unique_opens', 'unique_opens'),
+            eff_clicks=self._coalesce_int('manual_clicks', 'unique_clicks'),
+            eff_unsubs=self._coalesce_int('manual_unsubscribes', 'unsubscribes'),
+            eff_orders=self._coalesce_int('manual_orders', 'ecommerce_orders'),
+            eff_revenue=self._coalesce_decimal('manual_revenue', 'ecommerce_revenue'),
+        ).aggregate(
             campaigns=Count('id'),
-            sends=Coalesce(Sum('emails_sent'), 0),
-            opens=Coalesce(Sum('unique_opens'), 0),
-            clicks=Coalesce(Sum('unique_clicks'), 0),
-            unsubscribes=Coalesce(Sum('unsubscribes'), 0),
-            orders=Coalesce(Sum('ecommerce_orders'), 0),
-            revenue=Coalesce(Sum('ecommerce_revenue'), ZERO, output_field=DecimalField(max_digits=12, decimal_places=2)),
+            sends=Coalesce(Sum('eff_sends'), 0),
+            opens=Coalesce(Sum('eff_opens'), 0),
+            clicks=Coalesce(Sum('eff_clicks'), 0),
+            unsubscribes=Coalesce(Sum('eff_unsubs'), 0),
+            orders=Coalesce(Sum('eff_orders'), 0),
+            revenue=Coalesce(Sum('eff_revenue'), ZERO, output_field=DecimalField(max_digits=12, decimal_places=2)),
         )
 
     def _sms_totals(self):
-        return self._sms_qs().aggregate(
+        return self._sms_qs().annotate(
+            eff_audience=self._coalesce_int('manual_audience', 'audience_size'),
+            eff_clicks=self._coalesce_int('manual_clicks', 'unique_clicks'),
+            eff_unsubs=self._coalesce_int('manual_unsubscribes', 'unsubscribes'),
+            eff_orders=self._coalesce_int('manual_orders', 'orders'),
+            eff_revenue=self._coalesce_decimal('manual_revenue', 'revenue'),
+        ).aggregate(
             campaigns=Count('id'),
-            audience=Coalesce(Sum('audience_size'), 0),
-            clicks=Coalesce(Sum('unique_clicks'), 0),
-            unsubscribes=Coalesce(Sum('unsubscribes'), 0),
-            orders=Coalesce(Sum('orders'), 0),
-            revenue=Coalesce(Sum('revenue'), ZERO, output_field=DecimalField(max_digits=12, decimal_places=2)),
+            audience=Coalesce(Sum('eff_audience'), 0),
+            clicks=Coalesce(Sum('eff_clicks'), 0),
+            unsubscribes=Coalesce(Sum('eff_unsubs'), 0),
+            orders=Coalesce(Sum('eff_orders'), 0),
+            revenue=Coalesce(Sum('eff_revenue'), ZERO, output_field=DecimalField(max_digits=12, decimal_places=2)),
         )
 
     def _ads_totals(self):
         return self._ads_qs().aggregate(
             line_items=Count('id'),
             spend=Coalesce(Sum('amount'), ZERO, output_field=DecimalField(max_digits=12, decimal_places=2)),
+            attributed_orders=Coalesce(Sum('manual_attributed_orders'), 0),
+            attributed_revenue=Coalesce(Sum('manual_attributed_revenue'), ZERO, output_field=DecimalField(max_digits=12, decimal_places=2)),
         )
 
     def _format_email(self, totals):
@@ -179,7 +208,8 @@ class MarketingAnalyticsService:
 
     def _format_ads(self, totals):
         spend = totals['spend']
-        ads_orders, ads_revenue = self._ads_attribution()
+        ads_revenue = totals['attributed_revenue']
+        ads_orders = totals['attributed_orders']
         roas = (ads_revenue / spend) if spend else Decimal('0.0000')
         roi = ((ads_revenue - spend) / spend) if spend else Decimal('0.0000')
         return {
@@ -190,29 +220,6 @@ class MarketingAnalyticsService:
             'roas': roas.quantize(Decimal('0.0001')),
             'roi': roi.quantize(Decimal('0.0001')),
         }
-
-    def _ads_attribution(self):
-        """Attribute revenue/orders for events that ran Meta Ads in the window.
-
-        Ads channel revenue is the ticket revenue of events with ad spend in the window
-        (proxy attribution — most accurate signal we have without click-through tracking).
-        """
-        event_ids = list(self._ads_qs().values_list('event_id', flat=True).distinct())
-        if not event_ids:
-            return 0, ZERO
-
-        agg = (
-            Event.objects.filter(id__in=event_ids)
-            .aggregate(
-                orders=Coalesce(Sum('cached_paid_ticket_count'), 0),
-                revenue=Coalesce(
-                    Sum('computed_total_revenue'),
-                    ZERO,
-                    output_field=DecimalField(max_digits=12, decimal_places=2),
-                ),
-            )
-        )
-        return agg['orders'], agg['revenue']
 
     def _trends(self):
         """Monthly revenue + ads spend across the window for stacked bar chart."""
@@ -229,9 +236,12 @@ class MarketingAnalyticsService:
         email_rows = (
             self._email_qs()
             .exclude(send_time__isnull=True)
-            .annotate(m=TruncMonth('send_time'))
+            .annotate(
+                m=TruncMonth('send_time'),
+                eff_revenue=self._coalesce_decimal('manual_revenue', 'ecommerce_revenue'),
+            )
             .values('m')
-            .annotate(revenue=Coalesce(Sum('ecommerce_revenue'), ZERO, output_field=DecimalField(max_digits=12, decimal_places=2)))
+            .annotate(revenue=Coalesce(Sum('eff_revenue'), ZERO, output_field=DecimalField(max_digits=12, decimal_places=2)))
             .order_by('m')
         )
         for row in email_rows:
@@ -242,9 +252,12 @@ class MarketingAnalyticsService:
         sms_rows = (
             self._sms_qs()
             .exclude(send_time__isnull=True)
-            .annotate(m=TruncMonth('send_time'))
+            .annotate(
+                m=TruncMonth('send_time'),
+                eff_revenue=self._coalesce_decimal('manual_revenue', 'revenue'),
+            )
             .values('m')
-            .annotate(revenue=Coalesce(Sum('revenue'), ZERO, output_field=DecimalField(max_digits=12, decimal_places=2)))
+            .annotate(revenue=Coalesce(Sum('eff_revenue'), ZERO, output_field=DecimalField(max_digits=12, decimal_places=2)))
             .order_by('m')
         )
         for row in sms_rows:
@@ -286,26 +299,33 @@ class MarketingAnalyticsService:
 
     def _top_email_campaigns(self, limit=10):
         rows = []
-        for row in (
+        qs = (
             self._email_qs()
             .select_related('event')
+            .annotate(
+                eff_clicks=self._coalesce_int('manual_clicks', 'unique_clicks'),
+                eff_orders=self._coalesce_int('manual_orders', 'ecommerce_orders'),
+                eff_revenue=self._coalesce_decimal('manual_revenue', 'ecommerce_revenue'),
+            )
             .values(
-                'id', 'campaign_title', 'send_time', 'ecommerce_revenue', 'ecommerce_orders',
-                'emails_sent', 'unique_opens', 'unique_clicks',
+                'id', 'campaign_title', 'send_time',
+                'emails_sent', 'unique_opens',
+                'eff_clicks', 'eff_orders', 'eff_revenue',
                 'event_id', 'event__name',
             )
-            .order_by('-ecommerce_revenue')[:limit]
-        ):
+            .order_by('-eff_revenue')[:limit]
+        )
+        for row in qs:
             sends = row['emails_sent'] or 0
             opens = row['unique_opens'] or 0
-            clicks = row['unique_clicks'] or 0
+            clicks = row['eff_clicks'] or 0
             rows.append({
                 'channel': 'email',
                 'channel_label': 'Email',
                 'name': row['campaign_title'] or 'Untitled campaign',
                 'send_time': row['send_time'].isoformat() if row['send_time'] else None,
-                'revenue': row['ecommerce_revenue'] or ZERO,
-                'orders': row['ecommerce_orders'] or 0,
+                'revenue': row['eff_revenue'] or ZERO,
+                'orders': row['eff_orders'] or 0,
                 'sends': sends,
                 'opens': opens,
                 'clicks': clicks,
@@ -318,25 +338,31 @@ class MarketingAnalyticsService:
 
     def _top_sms_campaigns(self, limit=10):
         rows = []
-        for row in (
+        qs = (
             self._sms_qs()
             .select_related('event')
+            .annotate(
+                eff_clicks=self._coalesce_int('manual_clicks', 'unique_clicks'),
+                eff_orders=self._coalesce_int('manual_orders', 'orders'),
+                eff_revenue=self._coalesce_decimal('manual_revenue', 'revenue'),
+            )
             .values(
-                'id', 'name', 'send_time', 'revenue', 'orders',
-                'audience_size', 'unique_clicks',
+                'id', 'name', 'send_time', 'audience_size',
+                'eff_clicks', 'eff_orders', 'eff_revenue',
                 'event_id', 'event__name',
             )
-            .order_by('-revenue')[:limit]
-        ):
+            .order_by('-eff_revenue')[:limit]
+        )
+        for row in qs:
             audience = row['audience_size'] or 0
-            clicks = row['unique_clicks'] or 0
+            clicks = row['eff_clicks'] or 0
             rows.append({
                 'channel': 'sms',
                 'channel_label': 'SMS',
                 'name': row['name'] or 'Untitled SMS',
                 'send_time': row['send_time'].isoformat() if row['send_time'] else None,
-                'revenue': row['revenue'] or ZERO,
-                'orders': row['orders'] or 0,
+                'revenue': row['eff_revenue'] or ZERO,
+                'orders': row['eff_orders'] or 0,
                 'sends': audience,
                 'opens': None,
                 'clicks': clicks,
@@ -362,11 +388,14 @@ class MarketingAnalyticsService:
         for row in (
             self._email_qs()
             .exclude(send_time__isnull=True)
-            .annotate(m=TruncMonth('send_time'))
+            .annotate(
+                m=TruncMonth('send_time'),
+                eff_clicks=self._coalesce_int('manual_clicks', 'unique_clicks'),
+            )
             .values('m')
             .annotate(
                 opens=Coalesce(Sum('unique_opens'), 0),
-                clicks=Coalesce(Sum('unique_clicks'), 0),
+                clicks=Coalesce(Sum('eff_clicks'), 0),
             )
             .order_by('m')
         ):
@@ -379,9 +408,12 @@ class MarketingAnalyticsService:
         for row in (
             self._sms_qs()
             .exclude(send_time__isnull=True)
-            .annotate(m=TruncMonth('send_time'))
+            .annotate(
+                m=TruncMonth('send_time'),
+                eff_clicks=self._coalesce_int('manual_clicks', 'unique_clicks'),
+            )
             .values('m')
-            .annotate(clicks=Coalesce(Sum('unique_clicks'), 0))
+            .annotate(clicks=Coalesce(Sum('eff_clicks'), 0))
             .order_by('m')
         ):
             month_key = row['m'].date().isoformat() if row['m'] else None
@@ -391,7 +423,11 @@ class MarketingAnalyticsService:
         return sorted(months.values(), key=lambda r: r['month'])
 
     def _top_events_by_roi(self, limit=10):
-        """Per-event ROI using the isolated-Subquery pattern (CLAUDE.md)."""
+        """Per-event ROI using the isolated-Subquery pattern (CLAUDE.md).
+
+        Confirmed-only: revenue and spend roll up from confirmed campaigns/expenses.
+        Manual overrides take precedence via Coalesce.
+        """
         event_qs = Event.objects.filter(
             organization=self.organization,
             deleted_at__isnull=True,
@@ -400,22 +436,30 @@ class MarketingAnalyticsService:
         email_subq = EventEmailCampaign.objects.filter(
             event=OuterRef('pk'),
             deleted_at__isnull=True,
+            confirmed_at__isnull=False,
         )
         if self.window_start is not None:
             email_subq = email_subq.filter(send_time__gte=self.window_start)
         email_revenue_sq = Subquery(
-            email_subq.values('event').annotate(s=Sum('ecommerce_revenue')).values('s')[:1],
+            email_subq.values('event').annotate(
+                s=Sum(Coalesce(F('manual_revenue'), F('ecommerce_revenue'),
+                               output_field=DecimalField(max_digits=12, decimal_places=2)))
+            ).values('s')[:1],
             output_field=DecimalField(max_digits=12, decimal_places=2),
         )
 
         sms_subq = EventSMSCampaign.objects.filter(
             event=OuterRef('pk'),
             deleted_at__isnull=True,
+            confirmed_at__isnull=False,
         )
         if self.window_start is not None:
             sms_subq = sms_subq.filter(send_time__gte=self.window_start)
         sms_revenue_sq = Subquery(
-            sms_subq.values('event').annotate(s=Sum('revenue')).values('s')[:1],
+            sms_subq.values('event').annotate(
+                s=Sum(Coalesce(F('manual_revenue'), F('revenue'),
+                               output_field=DecimalField(max_digits=12, decimal_places=2)))
+            ).values('s')[:1],
             output_field=DecimalField(max_digits=12, decimal_places=2),
         )
 
@@ -423,6 +467,7 @@ class MarketingAnalyticsService:
             event=OuterRef('pk'),
             deleted_at__isnull=True,
             source='meta_ads',
+            confirmed_at__isnull=False,
         )
         if self.window_start is not None:
             ads_subq = ads_subq.filter(expense_date__gte=self.window_start.date())
@@ -430,13 +475,18 @@ class MarketingAnalyticsService:
             ads_subq.values('event').annotate(s=Sum('amount')).values('s')[:1],
             output_field=DecimalField(max_digits=12, decimal_places=2),
         )
+        ads_revenue_sq = Subquery(
+            ads_subq.values('event').annotate(s=Sum('manual_attributed_revenue')).values('s')[:1],
+            output_field=DecimalField(max_digits=12, decimal_places=2),
+        )
 
         annotated = event_qs.annotate(
             email_revenue=Coalesce(email_revenue_sq, ZERO, output_field=DecimalField(max_digits=12, decimal_places=2)),
             sms_revenue=Coalesce(sms_revenue_sq, ZERO, output_field=DecimalField(max_digits=12, decimal_places=2)),
             ads_spend=Coalesce(ads_spend_sq, ZERO, output_field=DecimalField(max_digits=12, decimal_places=2)),
+            ads_revenue=Coalesce(ads_revenue_sq, ZERO, output_field=DecimalField(max_digits=12, decimal_places=2)),
         ).filter(
-            Q(email_revenue__gt=0) | Q(sms_revenue__gt=0) | Q(ads_spend__gt=0)
+            Q(email_revenue__gt=0) | Q(sms_revenue__gt=0) | Q(ads_spend__gt=0) | Q(ads_revenue__gt=0)
         )
 
         rows = []
@@ -444,7 +494,8 @@ class MarketingAnalyticsService:
             email_rev = event.email_revenue or ZERO
             sms_rev = event.sms_revenue or ZERO
             spend = event.ads_spend or ZERO
-            attributed = email_rev + sms_rev
+            ads_rev = event.ads_revenue or ZERO
+            attributed = email_rev + sms_rev + ads_rev
             net = attributed - spend
             roi = (net / spend) if spend else None
             rows.append({
@@ -453,6 +504,7 @@ class MarketingAnalyticsService:
                 'event_date': event.start_date.isoformat() if event.start_date else None,
                 'email_revenue': email_rev,
                 'sms_revenue': sms_rev,
+                'ads_revenue': ads_rev,
                 'ads_spend': spend,
                 'attributed_revenue': attributed,
                 'roi': roi.quantize(Decimal('0.0001')) if roi is not None else None,

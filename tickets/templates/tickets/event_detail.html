@@ -664,6 +664,23 @@
 <!-- ===== TAB 4: Marketing ===== -->
 <div class="tab-pane fade" id="tab-marketing" role="tabpanel"{% if is_org_admin and mailchimp_connection %} data-mailchimp-refresh-url="{% url 'tickets:event_mailchimp_refresh_all' event.id %}"{% endif %}{% if is_org_admin and slicktext_connection %} data-slicktext-refresh-url="{% url 'tickets:event_slicktext_refresh_all' event.id %}"{% endif %}>
 
+{% if is_org_admin and marketing_pending_count or marketing_needs_review_count %}
+<div class="alert alert-warning d-flex justify-content-between align-items-center mb-3" role="alert">
+    <div>
+        <i class="bi bi-eye me-2"></i>
+        {% if marketing_pending_count %}<strong>{{ marketing_pending_count }}</strong> record{{ marketing_pending_count|pluralize }} pending review.{% endif %}
+        {% if marketing_needs_review_count %} <strong>{{ marketing_needs_review_count }}</strong> need{{ marketing_needs_review_count|pluralize:",s" }} re-review (vendor data changed).{% endif %}
+        Confirm them to flow into the Marketing dashboard.
+    </div>
+    {% if marketing_pending_count %}
+    <form method="post" action="{% url 'tickets:event_marketing_confirm_all' event.id %}" onsubmit="return confirm('Confirm all {{ marketing_pending_count }} pending record(s) on this event?');">
+        {% csrf_token %}
+        <button type="submit" class="btn btn-sm btn-primary">Confirm all ({{ marketing_pending_count }})</button>
+    </form>
+    {% endif %}
+</div>
+{% endif %}
+
 <div class="card mb-4">
     <div class="card-header d-flex justify-content-between align-items-center">
         <h5 class="mb-0">Meta Ads</h5>
@@ -696,27 +713,43 @@
                     <thead>
                         <tr>
                             <th>Linked Campaign</th>
+                            <th>Attributed orders</th>
+                            <th>Attributed revenue</th>
                             <th>Spend</th>
+                            <th>Status</th>
                             <th></th>
                         </tr>
                     </thead>
                     <tbody id="metaAdsExpenseRows">
                         {% for meta_ads_expense in meta_ads_expenses %}
-                        <tr>
+                        <tr data-row-id="{{ meta_ads_expense.id }}" data-channel="ads">
                             <td>
                                 <strong>{{ meta_ads_expense.external_metadata.campaign_name|default:meta_ads_expense.description }}</strong>
                                 {% if meta_ads_expense.external_id %}
                                 <div class="text-body-secondary small">{{ meta_ads_expense.external_id }}</div>
                                 {% endif %}
                             </td>
-                            <td><strong>${{ meta_ads_expense.amount|currency }}</strong></td>
+                            <td data-field="effective_attributed_orders" data-editable="true" data-field-name="manual_attributed_orders" data-input-type="number" data-step="1" data-min="0" data-numeric-value="{% if meta_ads_expense.manual_attributed_orders is not None %}{{ meta_ads_expense.manual_attributed_orders }}{% elif meta_ads_expense.effective_attributed_orders %}{{ meta_ads_expense.effective_attributed_orders }}{% else %}{% endif %}" data-edit-url="{% url 'tickets:event_meta_ads_metrics_edit' event.id meta_ads_expense.id %}" data-row-id="{{ meta_ads_expense.id }}" data-channel="ads" title="Click to edit">{{ meta_ads_expense.effective_attributed_orders|default:"—" }}</td>
+                            <td data-field="effective_attributed_revenue" data-editable="true" data-field-name="manual_attributed_revenue" data-input-type="number" data-step="0.01" data-min="0" data-numeric-value="{% if meta_ads_expense.manual_attributed_revenue is not None %}{{ meta_ads_expense.manual_attributed_revenue }}{% elif meta_ads_expense.effective_attributed_revenue %}{{ meta_ads_expense.effective_attributed_revenue }}{% else %}{% endif %}" data-edit-url="{% url 'tickets:event_meta_ads_metrics_edit' event.id meta_ads_expense.id %}" data-row-id="{{ meta_ads_expense.id }}" data-channel="ads" title="Click to edit">${{ meta_ads_expense.effective_attributed_revenue|currency }}</td>
+                            <td data-field="amount"><strong>${{ meta_ads_expense.amount|currency }}</strong></td>
+                            <td data-field="status">
+                                <span class="badge {% if meta_ads_expense.needs_review %}bg-warning text-dark{% elif meta_ads_expense.is_confirmed %}bg-success{% else %}bg-secondary{% endif %}">{% if meta_ads_expense.needs_review %}Re-review{% elif meta_ads_expense.is_confirmed %}Confirmed{% else %}Pending{% endif %}</span>
+                            </td>
                             <td class="text-end">
-                                <div class="d-inline-flex gap-1">
-                                    <form method="post" action="{% url 'tickets:event_meta_ads_refresh' event.id meta_ads_expense.id %}" class="d-inline">
+                                <div class="d-inline-flex gap-1 flex-wrap">
+                                    <form method="post" action="{% url 'tickets:event_meta_ads_unconfirm' event.id meta_ads_expense.id %}" class="d-inline{% if not meta_ads_expense.is_confirmed %} d-none{% endif %}" data-marketing-form="unconfirm" data-row-id="{{ meta_ads_expense.id }}" data-channel="ads">
+                                        {% csrf_token %}
+                                        <button type="submit" class="btn btn-sm btn-outline-warning">Unconfirm</button>
+                                    </form>
+                                    <form method="post" action="{% url 'tickets:event_meta_ads_confirm' event.id meta_ads_expense.id %}" class="d-inline{% if meta_ads_expense.is_confirmed %} d-none{% endif %}" data-marketing-form="confirm" data-row-id="{{ meta_ads_expense.id }}" data-channel="ads">
+                                        {% csrf_token %}
+                                        <button type="submit" class="btn btn-sm btn-success">Confirm</button>
+                                    </form>
+                                    <form method="post" action="{% url 'tickets:event_meta_ads_refresh' event.id meta_ads_expense.id %}" class="d-inline" data-marketing-form="refresh" data-row-id="{{ meta_ads_expense.id }}" data-channel="ads">
                                         {% csrf_token %}
                                         <button type="submit" class="btn btn-sm btn-outline-secondary">Refresh</button>
                                     </form>
-                                    <form method="post" action="{% url 'tickets:event_meta_ads_remove' event.id meta_ads_expense.id %}" class="d-inline" onsubmit="return confirm('Remove this linked Meta Ads campaign from the event?');">
+                                    <form method="post" action="{% url 'tickets:event_meta_ads_remove' event.id meta_ads_expense.id %}" class="d-inline" data-marketing-form="remove" data-row-id="{{ meta_ads_expense.id }}" data-channel="ads" data-confirm-text="Remove this linked Meta Ads campaign from the event?">
                                         {% csrf_token %}
                                         <button type="submit" class="btn btn-sm btn-outline-danger">Remove</button>
                                     </form>
@@ -795,14 +828,16 @@
                             <th>Sent</th>
                             <th>Emails</th>
                             <th>Unique Opens</th>
-                            <th>Unique Clicks</th>
+                            <th>Clicks</th>
+                            <th>Orders</th>
                             <th>Revenue</th>
+                            <th>Status</th>
                             <th></th>
                         </tr>
                     </thead>
                     <tbody id="mailchimpCampaignRows">
                         {% for mailchimp_campaign in mailchimp_campaigns %}
-                        <tr>
+                        <tr data-row-id="{{ mailchimp_campaign.id }}" data-channel="email">
                             <td>
                                 <strong>{{ mailchimp_campaign.campaign_title }}</strong>
                                 {% if mailchimp_campaign.subject_line %}
@@ -811,17 +846,29 @@
                                 <div class="text-body-secondary small">{{ mailchimp_campaign.external_id }}</div>
                             </td>
                             <td>{{ mailchimp_campaign.send_time_display|default:"Unknown" }}</td>
-                            <td>{{ mailchimp_campaign.emails_sent }}</td>
-                            <td>{{ mailchimp_campaign.unique_opens }}</td>
-                            <td>{{ mailchimp_campaign.unique_clicks }}</td>
-                            <td>${{ mailchimp_campaign.ecommerce_revenue|currency }}</td>
+                            <td data-field="effective_emails_sent" data-editable="true" data-field-name="manual_emails_sent" data-input-type="number" data-step="1" data-min="0" data-numeric-value="{% if mailchimp_campaign.manual_emails_sent is not None %}{{ mailchimp_campaign.manual_emails_sent }}{% else %}{{ mailchimp_campaign.emails_sent }}{% endif %}" data-edit-url="{% url 'tickets:event_mailchimp_metrics_edit' event.id mailchimp_campaign.id %}" data-row-id="{{ mailchimp_campaign.id }}" data-channel="email" title="Click to edit">{{ mailchimp_campaign.effective_emails_sent }}</td>
+                            <td data-field="effective_unique_opens" data-editable="true" data-field-name="manual_unique_opens" data-input-type="number" data-step="1" data-min="0" data-numeric-value="{% if mailchimp_campaign.manual_unique_opens is not None %}{{ mailchimp_campaign.manual_unique_opens }}{% else %}{{ mailchimp_campaign.unique_opens }}{% endif %}" data-edit-url="{% url 'tickets:event_mailchimp_metrics_edit' event.id mailchimp_campaign.id %}" data-row-id="{{ mailchimp_campaign.id }}" data-channel="email" title="Click to edit">{{ mailchimp_campaign.effective_unique_opens }}</td>
+                            <td data-field="effective_clicks" data-editable="true" data-field-name="manual_clicks" data-input-type="number" data-step="1" data-min="0" data-numeric-value="{% if mailchimp_campaign.manual_clicks is not None %}{{ mailchimp_campaign.manual_clicks }}{% else %}{{ mailchimp_campaign.unique_clicks }}{% endif %}" data-edit-url="{% url 'tickets:event_mailchimp_metrics_edit' event.id mailchimp_campaign.id %}" data-row-id="{{ mailchimp_campaign.id }}" data-channel="email" title="Click to edit">{{ mailchimp_campaign.effective_clicks }}</td>
+                            <td data-field="effective_orders" data-editable="true" data-field-name="manual_orders" data-input-type="number" data-step="1" data-min="0" data-numeric-value="{% if mailchimp_campaign.manual_orders is not None %}{{ mailchimp_campaign.manual_orders }}{% else %}{{ mailchimp_campaign.ecommerce_orders }}{% endif %}" data-edit-url="{% url 'tickets:event_mailchimp_metrics_edit' event.id mailchimp_campaign.id %}" data-row-id="{{ mailchimp_campaign.id }}" data-channel="email" title="Click to edit">{{ mailchimp_campaign.effective_orders }}</td>
+                            <td data-field="effective_revenue" data-editable="true" data-field-name="manual_revenue" data-input-type="number" data-step="0.01" data-min="0" data-numeric-value="{% if mailchimp_campaign.manual_revenue is not None %}{{ mailchimp_campaign.manual_revenue }}{% else %}{{ mailchimp_campaign.ecommerce_revenue }}{% endif %}" data-edit-url="{% url 'tickets:event_mailchimp_metrics_edit' event.id mailchimp_campaign.id %}" data-row-id="{{ mailchimp_campaign.id }}" data-channel="email" title="Click to edit">${{ mailchimp_campaign.effective_revenue|currency }}</td>
+                            <td data-field="status">
+                                <span class="badge {% if mailchimp_campaign.needs_review %}bg-warning text-dark{% elif mailchimp_campaign.is_confirmed %}bg-success{% else %}bg-secondary{% endif %}">{% if mailchimp_campaign.needs_review %}Re-review{% elif mailchimp_campaign.is_confirmed %}Confirmed{% else %}Pending{% endif %}</span>
+                            </td>
                             <td class="text-end">
-                                <div class="d-inline-flex gap-1">
-                                    <form method="post" action="{% url 'tickets:event_mailchimp_refresh' event.id mailchimp_campaign.id %}" class="d-inline">
+                                <div class="d-inline-flex gap-1 flex-wrap">
+                                    <form method="post" action="{% url 'tickets:event_mailchimp_unconfirm' event.id mailchimp_campaign.id %}" class="d-inline{% if not mailchimp_campaign.is_confirmed %} d-none{% endif %}" data-marketing-form="unconfirm" data-row-id="{{ mailchimp_campaign.id }}" data-channel="email">
+                                        {% csrf_token %}
+                                        <button type="submit" class="btn btn-sm btn-outline-warning">Unconfirm</button>
+                                    </form>
+                                    <form method="post" action="{% url 'tickets:event_mailchimp_confirm' event.id mailchimp_campaign.id %}" class="d-inline{% if mailchimp_campaign.is_confirmed %} d-none{% endif %}" data-marketing-form="confirm" data-row-id="{{ mailchimp_campaign.id }}" data-channel="email">
+                                        {% csrf_token %}
+                                        <button type="submit" class="btn btn-sm btn-success">Confirm</button>
+                                    </form>
+                                    <form method="post" action="{% url 'tickets:event_mailchimp_refresh' event.id mailchimp_campaign.id %}" class="d-inline" data-marketing-form="refresh" data-row-id="{{ mailchimp_campaign.id }}" data-channel="email">
                                         {% csrf_token %}
                                         <button type="submit" class="btn btn-sm btn-outline-secondary">Refresh</button>
                                     </form>
-                                    <form method="post" action="{% url 'tickets:event_mailchimp_remove' event.id mailchimp_campaign.id %}" class="d-inline" onsubmit="return confirm('Remove this linked Mailchimp campaign from the event?');">
+                                    <form method="post" action="{% url 'tickets:event_mailchimp_remove' event.id mailchimp_campaign.id %}" class="d-inline" data-marketing-form="remove" data-row-id="{{ mailchimp_campaign.id }}" data-channel="email" data-confirm-text="Remove this linked Mailchimp campaign from the event?">
                                         {% csrf_token %}
                                         <button type="submit" class="btn btn-sm btn-outline-danger">Remove</button>
                                     </form>
@@ -909,13 +956,15 @@
                             <th>Audience</th>
                             <th>Clicks</th>
                             <th>Unsubscribes</th>
+                            <th>Orders</th>
                             <th>Revenue</th>
+                            <th>Status</th>
                             <th></th>
                         </tr>
                     </thead>
                     <tbody id="slicktextCampaignRows">
                         {% for sms_campaign in slicktext_campaigns %}
-                        <tr>
+                        <tr data-row-id="{{ sms_campaign.id }}" data-channel="sms">
                             <td>
                                 <strong>{{ sms_campaign.name }}</strong>
                                 {% if sms_campaign.message %}
@@ -924,17 +973,29 @@
                                 <div class="text-body-secondary small">{{ sms_campaign.external_id }}</div>
                             </td>
                             <td>{{ sms_campaign.send_time_display|default:"Unknown" }}</td>
-                            <td>{{ sms_campaign.audience_size }}</td>
-                            <td>{{ sms_campaign.unique_clicks|default:sms_campaign.clicks }}</td>
-                            <td>{{ sms_campaign.unsubscribes }}</td>
-                            <td>${{ sms_campaign.revenue|currency }}</td>
+                            <td data-field="effective_audience" data-editable="true" data-field-name="manual_audience" data-input-type="number" data-step="1" data-min="0" data-numeric-value="{% if sms_campaign.manual_audience is not None %}{{ sms_campaign.manual_audience }}{% else %}{{ sms_campaign.audience_size }}{% endif %}" data-edit-url="{% url 'tickets:event_slicktext_metrics_edit' event.id sms_campaign.id %}" data-row-id="{{ sms_campaign.id }}" data-channel="sms" title="Click to edit">{{ sms_campaign.effective_audience }}</td>
+                            <td data-field="effective_clicks" data-editable="true" data-field-name="manual_clicks" data-input-type="number" data-step="1" data-min="0" data-numeric-value="{% if sms_campaign.manual_clicks is not None %}{{ sms_campaign.manual_clicks }}{% else %}{{ sms_campaign.unique_clicks }}{% endif %}" data-edit-url="{% url 'tickets:event_slicktext_metrics_edit' event.id sms_campaign.id %}" data-row-id="{{ sms_campaign.id }}" data-channel="sms" title="Click to edit">{{ sms_campaign.effective_clicks }}</td>
+                            <td data-field="effective_unsubscribes" data-editable="true" data-field-name="manual_unsubscribes" data-input-type="number" data-step="1" data-min="0" data-numeric-value="{% if sms_campaign.manual_unsubscribes is not None %}{{ sms_campaign.manual_unsubscribes }}{% else %}{{ sms_campaign.unsubscribes }}{% endif %}" data-edit-url="{% url 'tickets:event_slicktext_metrics_edit' event.id sms_campaign.id %}" data-row-id="{{ sms_campaign.id }}" data-channel="sms" title="Click to edit">{{ sms_campaign.effective_unsubscribes }}</td>
+                            <td data-field="effective_orders" data-editable="true" data-field-name="manual_orders" data-input-type="number" data-step="1" data-min="0" data-numeric-value="{% if sms_campaign.manual_orders is not None %}{{ sms_campaign.manual_orders }}{% else %}{{ sms_campaign.orders }}{% endif %}" data-edit-url="{% url 'tickets:event_slicktext_metrics_edit' event.id sms_campaign.id %}" data-row-id="{{ sms_campaign.id }}" data-channel="sms" title="Click to edit">{{ sms_campaign.effective_orders }}</td>
+                            <td data-field="effective_revenue" data-editable="true" data-field-name="manual_revenue" data-input-type="number" data-step="0.01" data-min="0" data-numeric-value="{% if sms_campaign.manual_revenue is not None %}{{ sms_campaign.manual_revenue }}{% else %}{{ sms_campaign.revenue }}{% endif %}" data-edit-url="{% url 'tickets:event_slicktext_metrics_edit' event.id sms_campaign.id %}" data-row-id="{{ sms_campaign.id }}" data-channel="sms" title="Click to edit">${{ sms_campaign.effective_revenue|currency }}</td>
+                            <td data-field="status">
+                                <span class="badge {% if sms_campaign.needs_review %}bg-warning text-dark{% elif sms_campaign.is_confirmed %}bg-success{% else %}bg-secondary{% endif %}">{% if sms_campaign.needs_review %}Re-review{% elif sms_campaign.is_confirmed %}Confirmed{% else %}Pending{% endif %}</span>
+                            </td>
                             <td class="text-end">
-                                <div class="d-inline-flex gap-1">
-                                    <form method="post" action="{% url 'tickets:event_slicktext_refresh' event.id sms_campaign.id %}" class="d-inline">
+                                <div class="d-inline-flex gap-1 flex-wrap">
+                                    <form method="post" action="{% url 'tickets:event_slicktext_unconfirm' event.id sms_campaign.id %}" class="d-inline{% if not sms_campaign.is_confirmed %} d-none{% endif %}" data-marketing-form="unconfirm" data-row-id="{{ sms_campaign.id }}" data-channel="sms">
+                                        {% csrf_token %}
+                                        <button type="submit" class="btn btn-sm btn-outline-warning">Unconfirm</button>
+                                    </form>
+                                    <form method="post" action="{% url 'tickets:event_slicktext_confirm' event.id sms_campaign.id %}" class="d-inline{% if sms_campaign.is_confirmed %} d-none{% endif %}" data-marketing-form="confirm" data-row-id="{{ sms_campaign.id }}" data-channel="sms">
+                                        {% csrf_token %}
+                                        <button type="submit" class="btn btn-sm btn-success">Confirm</button>
+                                    </form>
+                                    <form method="post" action="{% url 'tickets:event_slicktext_refresh' event.id sms_campaign.id %}" class="d-inline" data-marketing-form="refresh" data-row-id="{{ sms_campaign.id }}" data-channel="sms">
                                         {% csrf_token %}
                                         <button type="submit" class="btn btn-sm btn-outline-secondary">Refresh</button>
                                     </form>
-                                    <form method="post" action="{% url 'tickets:event_slicktext_remove' event.id sms_campaign.id %}" class="d-inline" onsubmit="return confirm('Remove this linked SlickText broadcast from the event?');">
+                                    <form method="post" action="{% url 'tickets:event_slicktext_remove' event.id sms_campaign.id %}" class="d-inline" data-marketing-form="remove" data-row-id="{{ sms_campaign.id }}" data-channel="sms" data-confirm-text="Remove this linked SlickText broadcast from the event?">
                                         {% csrf_token %}
                                         <button type="submit" class="btn btn-sm btn-outline-danger">Remove</button>
                                     </form>
@@ -1605,11 +1666,10 @@ document.addEventListener('DOMContentLoaded', function() {
                 showMetaAdsFlash((result.data && result.data.error) || 'Could not apply this Meta Ads campaign.', true);
                 return;
             }
-            if (expenseRowsEl && result.data.expenses) {
-                expenseRowsEl.innerHTML = result.data.expenses.map(renderLinkedMetaAdsExpenseRow).join('');
-            }
-            if (linkedSectionEl) linkedSectionEl.classList.remove('d-none');
-            if (helpTextEl) helpTextEl.classList.remove('d-none');
+            // Reload so the new row renders with full server-side markup
+            // (Edit/Confirm/Status buttons + manual-override columns).
+            window.location.reload();
+            return;
 
             var candidateCard = form.closest('.col-12');
             if (candidateCard) candidateCard.remove();
@@ -1720,12 +1780,8 @@ document.addEventListener('DOMContentLoaded', function() {
     var campaignRowsEl = document.getElementById('mailchimpCampaignRows');
     var refreshInFlight = false;
 
-    if (marketingTab && marketingTabBtn && campaignRowsEl) {
-        marketingTabBtn.addEventListener('shown.bs.tab', refreshLinkedMailchimpCampaigns);
-        if (marketingTabBtn.classList.contains('active')) {
-            refreshLinkedMailchimpCampaigns();
-        }
-    }
+    // Auto-refresh-on-tab-show disabled — the renderer rebuilds the <tbody>
+    // without the new Edit/Confirm/Status markup. Per-row Refresh covers freshness.
 
     var inlineEl = document.getElementById('mailchimpInlineSuggestions');
     var inlineFormEl = document.getElementById('mailchimpInlineForm');
@@ -1832,21 +1888,6 @@ document.addEventListener('DOMContentLoaded', function() {
     }
 
     function applyResultToDom(data) {
-        if (campaignRowsEl && data.campaigns) {
-            campaignRowsEl.innerHTML = data.campaigns.map(renderLinkedMailchimpCampaignRow).join('');
-        }
-        if (linkedSectionEl && data.campaigns && data.campaigns.length) {
-            linkedSectionEl.classList.remove('d-none');
-        }
-        if (inlineEl) {
-            inlineEl.classList.add('d-none');
-        }
-        if (helpTextEl) {
-            helpTextEl.classList.remove('d-none');
-        }
-        if (data.message) {
-            showMailchimpFlash(data.message, false);
-        }
         var problems = [];
         if (data.failed_ids && data.failed_ids.length) {
             problems.push('Could not pull results from Mailchimp for: ' + data.failed_ids.join(', '));
@@ -1856,7 +1897,10 @@ document.addEventListener('DOMContentLoaded', function() {
         }
         if (problems.length) {
             showMailchimpFlash(problems.join(' '), true);
+            return;
         }
+        // Reload so server-side markup (Edit/Confirm/Status) renders for the new row.
+        window.location.reload();
     }
 
     function submitApplyForm(form, checkboxSelector) {
@@ -2138,12 +2182,8 @@ document.addEventListener('DOMContentLoaded', function() {
     var campaignRowsEl = document.getElementById('slicktextCampaignRows');
     var refreshInFlight = false;
 
-    if (marketingTab && marketingTabBtn && campaignRowsEl) {
-        marketingTabBtn.addEventListener('shown.bs.tab', refreshLinkedSlickTextCampaigns);
-        if (marketingTabBtn.classList.contains('active')) {
-            refreshLinkedSlickTextCampaigns();
-        }
-    }
+    // Auto-refresh-on-tab-show disabled — the renderer rebuilds the <tbody>
+    // without the new Edit/Confirm/Status markup. Per-row Refresh covers freshness.
 
     var inlineEl = document.getElementById('slicktextInlineSuggestions');
     var inlineFormEl = document.getElementById('slicktextInlineForm');
@@ -2250,24 +2290,12 @@ document.addEventListener('DOMContentLoaded', function() {
     }
 
     function applyResultToDom(data) {
-        if (campaignRowsEl && data.campaigns) {
-            campaignRowsEl.innerHTML = data.campaigns.map(renderLinkedSlickTextCampaignRow).join('');
-        }
-        if (linkedSectionEl && data.campaigns && data.campaigns.length) {
-            linkedSectionEl.classList.remove('d-none');
-        }
-        if (inlineEl) {
-            inlineEl.classList.add('d-none');
-        }
-        if (helpTextEl) {
-            helpTextEl.classList.remove('d-none');
-        }
-        if (data.message) {
-            showFlash(data.message, false);
-        }
         if (data.failed_ids && data.failed_ids.length) {
             showFlash('Could not pull results from SlickText for: ' + data.failed_ids.join(', '), true);
+            return;
         }
+        // Reload so server-side markup (Edit/Confirm/Status) renders for the new row.
+        window.location.reload();
     }
 
     function submitApplyForm(form, checkboxSelector) {
@@ -3129,5 +3157,341 @@ function copyScannnerPin() {
     </div>
 </div>
 {% endif %}
+
+<script>
+(function () {
+    'use strict';
+
+    // CSS for click-to-edit cells.
+    var style = document.createElement('style');
+    style.textContent =
+        '[data-editable="true"]:not(.is-editing){' +
+            'cursor:text;' +
+            'border-bottom:1px dashed var(--bs-border-color, #ced4da);' +
+        '}' +
+        '[data-editable="true"]:not(.is-editing):hover{' +
+            'background-color:rgba(13,110,253,0.06);' +
+        '}' +
+        'td.is-editing{padding:2px 4px;}' +
+        'td.is-editing input.cell-edit{' +
+            'width:100%;' +
+            'padding:2px 4px;' +
+            'border:1px solid var(--bs-primary, #0d6efd);' +
+            'border-radius:3px;' +
+            'font:inherit;' +
+            'background:var(--bs-body-bg, #fff);' +
+            'color:inherit;' +
+        '}';
+    document.head.appendChild(style);
+
+    function getCsrf() {
+        var m = document.cookie.match(/csrftoken=([^;]+)/);
+        return m ? m[1] : '';
+    }
+
+    function findRow(channel, rowId) {
+        return document.querySelector('tr[data-row-id="' + rowId + '"][data-channel="' + channel + '"]');
+    }
+
+    function findEditRow(channel, rowId) {
+        var prefix = ({email: 'mailchimpEdit-', sms: 'slicktextEdit-', ads: 'metaAdsEdit-'})[channel];
+        return prefix ? document.getElementById(prefix + rowId) : null;
+    }
+
+    function renderBadge(row) {
+        var cls = 'bg-secondary';
+        if (row.needs_review) cls = 'bg-warning text-dark';
+        else if (row.is_confirmed) cls = 'bg-success';
+        return '<span class="badge ' + cls + '">' + row.status_label + '</span>';
+    }
+
+    var CURRENCY_FIELDS = {
+        effective_revenue: true,
+        effective_attributed_revenue: true,
+        amount: true,
+    };
+
+    function fmtCurrency(v) {
+        return '$' + Number(v).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+    }
+
+    function applyRowUpdate(channel, rowId, row) {
+        var tr = findRow(channel, rowId);
+        if (!tr) return;
+        // Update every [data-field] cell whose key is in the payload.
+        tr.querySelectorAll('[data-field]').forEach(function (cell) {
+            var key = cell.getAttribute('data-field');
+            if (key === 'status' || !(key in row)) return;
+            var value = row[key];
+            if (CURRENCY_FIELDS[key]) {
+                // Preserve any inner <strong> wrapper (used on the Spend cell).
+                if (cell.querySelector('strong')) {
+                    cell.querySelector('strong').textContent = fmtCurrency(value);
+                } else {
+                    cell.textContent = fmtCurrency(value);
+                }
+            } else {
+                cell.textContent = value;
+            }
+        });
+        // Status badge.
+        var statusCell = tr.querySelector('[data-field="status"]');
+        if (statusCell) statusCell.innerHTML = renderBadge(row);
+        // Toggle confirm/unconfirm form visibility.
+        var confirmForm = document.querySelector('form[data-marketing-form="confirm"][data-row-id="' + rowId + '"]');
+        var unconfirmForm = document.querySelector('form[data-marketing-form="unconfirm"][data-row-id="' + rowId + '"]');
+        if (confirmForm) confirmForm.classList.toggle('d-none', !!row.is_confirmed);
+        if (unconfirmForm) unconfirmForm.classList.toggle('d-none', !row.is_confirmed);
+        // Update manual input prefills so reopening the editor shows what was saved.
+        var editForm = document.querySelector('form[data-marketing-form="metrics-edit"][data-row-id="' + rowId + '"]');
+        if (editForm) {
+            ['manual_clicks', 'manual_orders', 'manual_revenue',
+             'manual_attributed_orders', 'manual_attributed_revenue'].forEach(function (name) {
+                var input = editForm.querySelector('[name="' + name + '"]');
+                if (input && row[name] !== undefined) {
+                    input.value = row[name] == null ? '' : row[name];
+                }
+            });
+        }
+        // Briefly flash the row to confirm visually.
+        tr.style.transition = 'background-color 0.3s';
+        var prev = tr.style.backgroundColor;
+        tr.style.backgroundColor = 'rgba(40, 167, 69, 0.18)';
+        setTimeout(function () { tr.style.backgroundColor = prev; }, 600);
+    }
+
+    function removeRow(channel, rowId) {
+        var tr = findRow(channel, rowId);
+        var editRow = findEditRow(channel, rowId);
+        if (editRow) editRow.remove();
+        if (!tr) return;
+        tr.style.transition = 'opacity 0.25s';
+        tr.style.opacity = '0';
+        setTimeout(function () { tr.remove(); }, 250);
+    }
+
+    function showError(form, msg) {
+        var box = form.querySelector('.form-error');
+        if (box) {
+            box.textContent = msg;
+            box.classList.remove('d-none');
+        } else if (window.showCueToast) {
+            window.showCueToast(msg, 'error');
+        } else {
+            alert(msg);
+        }
+    }
+
+    function clearError(form) {
+        var box = form.querySelector('.form-error');
+        if (box) {
+            box.textContent = '';
+            box.classList.add('d-none');
+        }
+    }
+
+    // --- Click-to-edit inline cells ----------------------------------------
+    function beginCellEdit(cell) {
+        if (cell.classList.contains('is-editing')) return;
+        var originalHTML = cell.innerHTML;
+        var originalTitle = cell.getAttribute('title') || '';
+        var value = cell.getAttribute('data-numeric-value') || '';
+        var inputType = cell.getAttribute('data-input-type') || 'number';
+        var step = cell.getAttribute('data-step') || '1';
+        var min = cell.getAttribute('data-min') || '0';
+
+        cell.classList.add('is-editing');
+        cell.removeAttribute('title');
+        cell.innerHTML = '';
+        var input = document.createElement('input');
+        input.type = inputType;
+        input.className = 'cell-edit';
+        input.value = value;
+        input.step = step;
+        input.min = min;
+        cell.appendChild(input);
+        input.focus();
+        input.select();
+
+        var settled = false;
+        function restoreOriginal() {
+            cell.classList.remove('is-editing');
+            cell.innerHTML = originalHTML;
+            if (originalTitle) cell.setAttribute('title', originalTitle);
+        }
+
+        function save() {
+            if (settled) return;
+            settled = true;
+            var newValueRaw = input.value.trim();
+            var fieldName = cell.getAttribute('data-field-name');
+            var url = cell.getAttribute('data-edit-url');
+            var rowId = cell.getAttribute('data-row-id');
+            var channel = cell.getAttribute('data-channel');
+            // If unchanged, just restore.
+            if (newValueRaw === value) {
+                restoreOriginal();
+                return;
+            }
+            // Show a brief saving state.
+            input.disabled = true;
+            var body = new FormData();
+            body.append(fieldName, newValueRaw);
+            fetch(url, {
+                method: 'POST',
+                headers: {
+                    'X-Requested-With': 'XMLHttpRequest',
+                    'X-CSRFToken': getCsrf(),
+                },
+                body: body,
+                credentials: 'same-origin',
+            }).then(function (r) {
+                return r.json().then(function (d) { return {ok: r.ok, data: d}; });
+            }).then(function (out) {
+                if (!out.ok || !out.data.ok) {
+                    var msg = (out.data && out.data.error) || 'Save failed.';
+                    if (window.showCueToast) window.showCueToast(msg, 'error');
+                    restoreOriginal();
+                    return;
+                }
+                cell.classList.remove('is-editing');
+                // applyRowUpdate rewrites every [data-field] in the row, including this one,
+                // and updates the data-numeric-value reflectors below.
+                applyRowUpdate(channel, rowId, out.data.row);
+                refreshEditableCellPriors(rowId, channel, out.data.row);
+                if (originalTitle) cell.setAttribute('title', originalTitle);
+            }).catch(function () {
+                if (window.showCueToast) window.showCueToast('Network error. Please retry.', 'error');
+                restoreOriginal();
+            });
+        }
+
+        input.addEventListener('keydown', function (e) {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                input.blur();
+            } else if (e.key === 'Escape') {
+                e.preventDefault();
+                settled = true;
+                restoreOriginal();
+            }
+        });
+        input.addEventListener('blur', save);
+    }
+
+    function refreshEditableCellPriors(rowId, channel, row) {
+        // Sync data-numeric-value on each editable cell to the latest underlying value,
+        // so the next edit pre-fills with what's now displayed.
+        var tr = findRow(channel, rowId);
+        if (!tr) return;
+        tr.querySelectorAll('[data-editable="true"]').forEach(function (cell) {
+            var fieldName = cell.getAttribute('data-field-name');
+            if (!fieldName) return;
+            // Prefer the corresponding manual_* value (could be null) then effective.
+            var manualVal = row[fieldName];
+            if (manualVal !== undefined && manualVal !== null && manualVal !== '') {
+                cell.setAttribute('data-numeric-value', String(manualVal));
+                return;
+            }
+            // Manual cleared → fall back to effective value (string from server).
+            var effectiveKey = ({
+                manual_emails_sent: 'effective_emails_sent',
+                manual_unique_opens: 'effective_unique_opens',
+                manual_audience: 'effective_audience',
+                manual_clicks: 'effective_clicks',
+                manual_unsubscribes: 'effective_unsubscribes',
+                manual_orders: 'effective_orders',
+                manual_revenue: 'effective_revenue',
+                manual_attributed_orders: 'effective_attributed_orders',
+                manual_attributed_revenue: 'effective_attributed_revenue',
+            })[fieldName];
+            if (effectiveKey && row[effectiveKey] !== undefined) {
+                cell.setAttribute('data-numeric-value', String(row[effectiveKey]));
+            }
+        });
+    }
+
+    document.addEventListener('click', function (ev) {
+        var cell = ev.target.closest('td[data-editable="true"]');
+        if (!cell) return;
+        if (cell.classList.contains('is-editing')) return;
+        if (ev.target.tagName === 'INPUT') return;
+        ev.preventDefault();
+        beginCellEdit(cell);
+    });
+    // ---------------------------------------------------------------------
+
+    document.addEventListener('submit', function (ev) {
+        var form = ev.target.closest('form[data-marketing-form]');
+        if (!form) return;
+        ev.preventDefault();
+        clearError(form);
+
+        var kind = form.getAttribute('data-marketing-form');
+        var channel = form.getAttribute('data-channel');
+        var rowId = form.getAttribute('data-row-id');
+
+        // Remove requires a confirmation prompt.
+        if (kind === 'remove') {
+            var prompt = form.getAttribute('data-confirm-text') || 'Remove this row?';
+            if (!window.confirm(prompt)) return;
+        }
+
+        var submitBtn = form.querySelector('button[type="submit"]');
+        var originalLabel = submitBtn ? submitBtn.innerHTML : null;
+        if (submitBtn) {
+            submitBtn.disabled = true;
+            if (kind === 'refresh') {
+                submitBtn.innerHTML = '<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>';
+            }
+        }
+
+        fetch(form.action, {
+            method: 'POST',
+            headers: {
+                'X-Requested-With': 'XMLHttpRequest',
+                'X-CSRFToken': getCsrf(),
+            },
+            body: new FormData(form),
+            credentials: 'same-origin',
+        }).then(function (r) {
+            return r.json().then(function (data) { return { ok: r.ok, data: data }; });
+        }).then(function (out) {
+            if (submitBtn) {
+                submitBtn.disabled = false;
+                if (originalLabel !== null) submitBtn.innerHTML = originalLabel;
+            }
+            if (!out.ok || !out.data.ok) {
+                showError(form, (out.data && out.data.error) || 'Action failed.');
+                if (window.showCueToast) {
+                    window.showCueToast((out.data && out.data.error) || 'Action failed.', 'error');
+                }
+                return;
+            }
+            if (kind === 'remove') {
+                removeRow(channel, rowId);
+                return;
+            }
+            applyRowUpdate(channel, rowId, out.data.row);
+            if (kind === 'metrics-edit') {
+                var collapseId = form.getAttribute('data-collapse-id');
+                if (collapseId) {
+                    var pane = document.getElementById(collapseId);
+                    if (pane && window.bootstrap) {
+                        var inst = bootstrap.Collapse.getInstance(pane) || new bootstrap.Collapse(pane, {toggle: false});
+                        inst.hide();
+                    }
+                }
+            }
+        }).catch(function () {
+            if (submitBtn) {
+                submitBtn.disabled = false;
+                if (originalLabel !== null) submitBtn.innerHTML = originalLabel;
+            }
+            showError(form, 'Network error. Please retry.');
+        });
+    });
+})();
+</script>
 
 {% endblock %}

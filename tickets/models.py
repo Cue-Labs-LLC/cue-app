@@ -1063,6 +1063,16 @@ class EventExpense(AuditBaseModel):
     source = models.CharField(max_length=20, choices=SOURCE_CHOICES, default='manual', db_index=True)
     external_id = models.CharField(max_length=100, blank=True, default='')
     external_metadata = models.JSONField(default=dict, blank=True)
+    manual_attributed_orders = models.PositiveIntegerField(null=True, blank=True)
+    manual_attributed_revenue = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    confirmed_at = models.DateTimeField(null=True, blank=True, db_index=True)
+    confirmed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True, blank=True,
+        on_delete=models.SET_NULL,
+        related_name='+',
+    )
+    api_data_changed_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         ordering = ['-expense_date', '-created_at']
@@ -1081,6 +1091,25 @@ class EventExpense(AuditBaseModel):
 
     def __str__(self):
         return f"{self.get_category_display()} - {self.description} (${self.amount})"
+
+    @property
+    def effective_attributed_orders(self):
+        return self.manual_attributed_orders if self.manual_attributed_orders is not None else 0
+
+    @property
+    def effective_attributed_revenue(self):
+        return self.manual_attributed_revenue if self.manual_attributed_revenue is not None else Decimal('0.00')
+
+    @property
+    def is_confirmed(self):
+        return self.confirmed_at is not None
+
+    @property
+    def needs_review(self):
+        return bool(
+            self.api_data_changed_at
+            and (not self.confirmed_at or self.api_data_changed_at > self.confirmed_at)
+        )
 
 
 class EventEmailCampaign(AuditBaseModel):
@@ -1112,6 +1141,20 @@ class EventEmailCampaign(AuditBaseModel):
     match_reasoning = models.TextField(blank=True, default='')
     last_synced_at = models.DateTimeField(null=True, blank=True)
     external_metadata = models.JSONField(default=dict, blank=True)
+    manual_emails_sent = models.PositiveIntegerField(null=True, blank=True)
+    manual_unique_opens = models.PositiveIntegerField(null=True, blank=True)
+    manual_clicks = models.PositiveIntegerField(null=True, blank=True)
+    manual_unsubscribes = models.PositiveIntegerField(null=True, blank=True)
+    manual_orders = models.PositiveIntegerField(null=True, blank=True)
+    manual_revenue = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    confirmed_at = models.DateTimeField(null=True, blank=True, db_index=True)
+    confirmed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True, blank=True,
+        on_delete=models.SET_NULL,
+        related_name='+',
+    )
+    api_data_changed_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         ordering = ['-send_time', '-created_at']
@@ -1130,6 +1173,41 @@ class EventEmailCampaign(AuditBaseModel):
 
     def __str__(self):
         return f"{self.get_source_display()} - {self.campaign_title}"
+
+    @property
+    def effective_emails_sent(self):
+        return self.manual_emails_sent if self.manual_emails_sent is not None else self.emails_sent
+
+    @property
+    def effective_unique_opens(self):
+        return self.manual_unique_opens if self.manual_unique_opens is not None else self.unique_opens
+
+    @property
+    def effective_clicks(self):
+        return self.manual_clicks if self.manual_clicks is not None else self.unique_clicks
+
+    @property
+    def effective_unsubscribes(self):
+        return self.manual_unsubscribes if self.manual_unsubscribes is not None else self.unsubscribes
+
+    @property
+    def effective_orders(self):
+        return self.manual_orders if self.manual_orders is not None else self.ecommerce_orders
+
+    @property
+    def effective_revenue(self):
+        return self.manual_revenue if self.manual_revenue is not None else self.ecommerce_revenue
+
+    @property
+    def is_confirmed(self):
+        return self.confirmed_at is not None
+
+    @property
+    def needs_review(self):
+        return bool(
+            self.api_data_changed_at
+            and (not self.confirmed_at or self.api_data_changed_at > self.confirmed_at)
+        )
 
 
 class EventSMSCampaign(AuditBaseModel):
@@ -1157,6 +1235,19 @@ class EventSMSCampaign(AuditBaseModel):
     match_reasoning = models.TextField(blank=True, default='')
     last_synced_at = models.DateTimeField(null=True, blank=True)
     external_metadata = models.JSONField(default=dict, blank=True)
+    manual_audience = models.PositiveIntegerField(null=True, blank=True)
+    manual_clicks = models.PositiveIntegerField(null=True, blank=True)
+    manual_unsubscribes = models.PositiveIntegerField(null=True, blank=True)
+    manual_orders = models.PositiveIntegerField(null=True, blank=True)
+    manual_revenue = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    confirmed_at = models.DateTimeField(null=True, blank=True, db_index=True)
+    confirmed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True, blank=True,
+        on_delete=models.SET_NULL,
+        related_name='+',
+    )
+    api_data_changed_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         ordering = ['-send_time', '-created_at']
@@ -1175,6 +1266,37 @@ class EventSMSCampaign(AuditBaseModel):
 
     def __str__(self):
         return f"{self.get_source_display()} - {self.name}"
+
+    @property
+    def effective_audience(self):
+        return self.manual_audience if self.manual_audience is not None else self.audience_size
+
+    @property
+    def effective_clicks(self):
+        return self.manual_clicks if self.manual_clicks is not None else self.unique_clicks
+
+    @property
+    def effective_unsubscribes(self):
+        return self.manual_unsubscribes if self.manual_unsubscribes is not None else self.unsubscribes
+
+    @property
+    def effective_orders(self):
+        return self.manual_orders if self.manual_orders is not None else self.orders
+
+    @property
+    def effective_revenue(self):
+        return self.manual_revenue if self.manual_revenue is not None else self.revenue
+
+    @property
+    def is_confirmed(self):
+        return self.confirmed_at is not None
+
+    @property
+    def needs_review(self):
+        return bool(
+            self.api_data_changed_at
+            and (not self.confirmed_at or self.api_data_changed_at > self.confirmed_at)
+        )
 
 
 class IncomeSource(BaseModel):
