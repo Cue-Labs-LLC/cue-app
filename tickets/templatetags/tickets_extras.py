@@ -43,6 +43,17 @@ def intcomma(value):
 
 
 @register.filter
+def filter_channel(rows, channel):
+    """Filter a list of campaign-row dicts by `channel` key."""
+    if not rows:
+        return []
+    try:
+        return [row for row in rows if row.get('channel') == channel]
+    except AttributeError:
+        return []
+
+
+@register.filter
 def currency(value):
     """Format a numeric value with comma thousands separator and 2 decimal places.
     Example: 1234567.8 → '1,234,567.80'. Returns '0.00' for None/empty."""

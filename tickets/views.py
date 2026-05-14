@@ -127,7 +127,7 @@ from .services.slicktext import (
 from .services.slicktext_campaign_matcher import SlickTextCampaignMatcher
 from .services.marketing import (
     MarketingAnalyticsService,
-    WINDOW_CHOICES,
+    WINDOW_CHOICES as MARKETING_WINDOW_CHOICES,
     generate_marketing_narrative,
 )
 from .services.marketing.analytics import DEFAULT_WINDOW, resolve_window
@@ -2427,6 +2427,10 @@ def marketing_overview(request):
     """Org-wide marketing performance dashboard with AI recommendations."""
     org = get_organization(request)
     window_key, window_days, window_label = resolve_window(request.GET.get('window', DEFAULT_WINDOW))
+    allowed_tabs = {'overview', 'email', 'sms', 'ads'}
+    active_tab = request.GET.get('tab', 'overview').lower()
+    if active_tab not in allowed_tabs:
+        active_tab = 'overview'
 
     cache_key = _marketing_cache_key(org.pk, window_key)
     metrics = safe_cache_get(cache_key)
@@ -2474,9 +2478,10 @@ def marketing_overview(request):
     context = {
         'metrics': metrics,
         'recommendations': recommendations,
-        'window_choices': WINDOW_CHOICES,
+        'window_choices': MARKETING_WINDOW_CHOICES,
         'window_key': window_key,
         'window_label': window_label,
+        'active_tab': active_tab,
         'trend_chart_json': json.dumps(trend_chart),
         'engagement_chart_json': json.dumps(engagement_chart),
         'comparison_chart_json': json.dumps(comparison_chart),
