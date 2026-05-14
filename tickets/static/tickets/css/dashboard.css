@@ -418,13 +418,17 @@ a:hover {
 }
 
 .mobile-toggle {
-    display: block;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 44px;
+    height: 44px;
     background: rgba(255,255,255,0.05);
     border: 1px solid var(--border);
     border-radius: 3px;
     color: var(--text-secondary);
-    font-size: 17px;
-    padding: 5px 8px;
+    font-size: 20px;
+    padding: 0;
     cursor: pointer;
     transition: background 0.12s, color 0.12s;
 }
@@ -447,13 +451,19 @@ a:hover {
     min-width: 0;         /* ensures cards containing tables can shrink */
 }
 
-/* Event list flyer - hidden on desktop, revealed in Block 12 mobile media query */
+/* Event list flyer - hidden at all viewports (desktop shows revenue/profit columns instead, mobile shows compact card without flyer) */
 .event-card-flyer {
     display: none;
 }
 
 /* Mobile-only metadata strip - hidden on desktop */
 .event-card-meta {
+    display: none;
+}
+
+/* Customer card mobile sub-elements - hidden on desktop, revealed in Block 12 */
+.customer-card-email,
+.customer-card-meta {
     display: none;
 }
 
@@ -511,6 +521,13 @@ a:hover {
     align-items: center;
     gap: 8px;
     flex-shrink: 0;
+}
+
+/* Keeps a primary action + its overflow dropdown side-by-side at all viewports */
+.page-header-action-pair {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
 }
 
 /* -- Stat Cards -------------------------------- */
@@ -1508,10 +1525,76 @@ code {
     .page-header {
         flex-direction: column;
         align-items: flex-start;
+        gap: 10px;
     }
 
     .page-header-actions {
         width: 100%;
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+    }
+
+    .page-header-actions > .btn:not(.btn-icon) {
+        width: 100%;
+        justify-content: center;
+    }
+
+    /* Action pair: button + overflow dots side-by-side, full row width */
+    .page-header-actions > .page-header-action-pair {
+        display: flex;
+        width: 100%;
+        gap: 8px;
+        align-items: stretch;
+    }
+
+    .page-header-action-pair > .btn:not(.btn-icon) {
+        flex: 1;
+        width: auto;
+        justify-content: center;
+    }
+}
+
+/* -- Block 13: Single-Column Stat Grid (small phones) --- */
+@media (max-width: 419px) {
+    .stats-grid {
+        grid-template-columns: 1fr;
+        gap: 8px;
+    }
+
+    .stat-card {
+        padding: 12px 14px;
+    }
+
+    .stat-value {
+        font-size: 1.5rem;
+    }
+}
+
+/* -- Block 14: Quiet Motion on Mobile --- */
+@media (max-width: 767px) {
+    .content > * {
+        animation: none;
+    }
+
+    .stats-grid .stat-card {
+        animation: none;
+    }
+}
+
+/* -- Block 15: Suppress Hover States on Touch Devices --- */
+@media (hover: none) {
+    .stat-card:hover,
+    .card:hover,
+    .event-list-table tbody tr:hover,
+    .mobile-card-table tbody tr:hover {
+        box-shadow: inherit;
+        border-color: inherit;
+        transform: none;
+    }
+
+    .table-hover > tbody > tr:hover > * {
+        background-color: inherit;
     }
 }
 
@@ -1915,16 +1998,23 @@ gmp-place-autocomplete#venue-address-autocomplete {
     }
 }
 
-/* -- Block 3: Search Bar Flex-Wrap ------------ */
+/* -- Block 3: Search Bar Stack-on-Mobile ------------ */
 @media (max-width: 575px) {
-    .search-bar {
-        flex-wrap: wrap;
+    .search-bar form {
+        flex-direction: column;
+        align-items: stretch;
     }
 
-    .search-bar .form-control {
+    .search-bar .form-control,
+    .search-bar .form-select {
         min-width: 0;
-        width: 100%;
-        flex-basis: 100%;
+        width: 100% !important;
+        max-width: none !important;
+        flex-basis: auto;
+    }
+
+    .search-bar .btn {
+        align-self: stretch;
     }
 }
 
@@ -2007,20 +2097,21 @@ gmp-place-autocomplete#venue-address-autocomplete {
     }
 }
 
-/* -- Block 11: Table Cell Padding Reduction ---- */
+/* -- Block 11: Table Cell Padding Reduction (non-card tables only) ---- */
 @media (max-width: 575px) {
-    .table > :not(caption) > * > * {
+    .table:not(.mobile-card-table) > :not(caption) > * > * {
         padding: 8px 10px;
     }
 }
 
-/* -- Block 12: Event List Mobile Card Transform --- */
+/* -- Block 12: Mobile Card Transform (generic + per-table) --- */
 @media (max-width: 575px) {
-    .event-list-table thead {
+    /* Generic: any table tagged .mobile-card-table renders rows as cards */
+    .mobile-card-table thead {
         display: none;
     }
 
-    .event-list-table tbody tr {
+    .mobile-card-table tbody tr {
         display: block;
         background: var(--bg-surface);
         border: 1px solid var(--border);
@@ -2031,15 +2122,16 @@ gmp-place-autocomplete#venue-address-autocomplete {
         transition: box-shadow 0.18s ease, border-color 0.18s ease;
     }
 
-    .event-list-table tbody tr:hover {
-        box-shadow: 0 3px 12px rgba(0, 0, 0, 0.35);
-        border-color: rgba(255, 255, 255, 0.13);
-    }
-
-    .event-list-table tbody td {
+    .mobile-card-table tbody td {
         display: none;
         border: none !important;
         padding: 0;
+    }
+
+    /* Event-list specific: name+flyer composition, meta strip, actions footer */
+    .event-list-table tbody tr:hover {
+        box-shadow: 0 3px 12px rgba(0, 0, 0, 0.35);
+        border-color: rgba(255, 255, 255, 0.13);
     }
 
     /* Cell 1: flex row - name area left, flyer right */
@@ -2053,7 +2145,7 @@ gmp-place-autocomplete#venue-address-autocomplete {
     .event-card-name-area {
         flex: 1;
         min-width: 0;
-        padding: 13px 10px 13px 14px;
+        padding: 13px 14px;
         display: flex;
         flex-direction: column;
         gap: 3px;
@@ -2101,38 +2193,6 @@ gmp-place-autocomplete#venue-address-autocomplete {
         color: var(--text-primary);
     }
 
-    /* Flyer: fixed 4:5 column, no cropping */
-    .event-card-flyer {
-        display: block;
-        flex-shrink: 0;
-        width: 90px;
-        aspect-ratio: 4 / 5;
-        overflow: hidden;
-        margin-top: 13px;
-        margin-right: 10px;
-        border-radius: var(--radius-sm);
-    }
-
-    .event-card-flyer-img {
-        width: 100%;
-        height: 100%;
-        object-fit: contain;
-        object-position: center center;
-        display: block;
-        border-radius: var(--radius-sm);
-    }
-
-    .event-card-flyer-placeholder {
-        width: 100%;
-        height: 100%;
-        background: linear-gradient(180deg, var(--bg-inset) 0%, #1a1918 100%);
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        color: var(--text-tertiary);
-        font-size: 18px;
-    }
-
     /* Actions footer - class-based so column count doesn't matter */
     .event-list-table tbody td.event-actions-cell {
         display: block;
@@ -2157,6 +2217,56 @@ gmp-place-autocomplete#venue-address-autocomplete {
         border-radius: var(--radius-sm) !important;
         min-height: 38px;
         font-size: 13px;
+    }
+
+    /* Customer-list specific: name + email stacked, segment + LTV row below */
+    .customer-list-table tbody td.customer-card-cell {
+        display: block;
+        padding: 12px 14px;
+    }
+
+    .customer-card-name {
+        font-size: 14px;
+        font-weight: 700;
+        letter-spacing: -0.015em;
+        line-height: 1.25;
+        color: var(--text-primary);
+    }
+
+    .customer-card-email {
+        display: block;
+        font-size: 12px;
+        color: var(--text-secondary);
+        margin-top: 2px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+
+    .customer-card-meta {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        margin-top: 9px;
+        padding-top: 9px;
+        border-top: 1px solid var(--border-light);
+    }
+
+    .customer-card-segment .badge {
+        font-size: 0.7em;
+    }
+
+    .customer-card-segment-empty {
+        font-size: 11.5px;
+        color: var(--text-tertiary);
+    }
+
+    .customer-card-ltv {
+        font-weight: 700;
+        font-size: 13px;
+        letter-spacing: -0.01em;
+        color: var(--text-primary);
     }
 }
 
