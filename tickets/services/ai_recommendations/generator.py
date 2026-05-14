@@ -6,11 +6,14 @@ from decimal import Decimal
 from django.urls import reverse
 from django.utils import timezone
 
+from django.db.models import Sum
+
 from tickets.models import (
     AIRecommendation,
     Event,
     EventEmailCampaign,
     EventExpense,
+    EventSMSCampaign,
     ExternalSurveyResponse,
     SurveyInvitation,
     TICKETING_TYPE_DIRECT,
@@ -41,6 +44,9 @@ class AIRecommendationGenerator:
             self.detect_post_event_wrapups,
             self.detect_winback_audience,
             self.detect_marketing_attribution_gaps,
+            self.detect_high_unsubscribe_rate,
+            self.detect_low_channel_roi,
+            self.detect_channel_imbalance,
         ):
             try:
                 recommendations.extend(detector())
@@ -278,6 +284,206 @@ class AIRecommendationGenerator:
                     'type': action_type,
                     'label': 'Link campaigns',
                     'url': action_url,
+                    'payload': {'event_id': str(event.id)},
+                },
+                event=event,
+            ))
+        return results
+
+    def detect_high_unsubscribe_rate(self) -> list[AIRecommendation]:
+        org = self.organization
+        now = timezone.now()
+        window_start = now - timedelta(days=90)
+        marketing_url = reverse('tickets:marketing_overview')
+
+        results = []
+        email_candidates = (
+            EventEmailCampaign.objects.filter(
+                event__organization=org,
+                event__deleted_at__isnull=True,
+                deleted_at__isnull=True,
+                send_time__gte=window_start,
+                emails_sent__gt=0,
+            )
+            .select_related('event')
+        )
+        for campaign in email_candidates:
+            sends = campaign.emails_sent or 0
+            unsubs = campaign.unsubscribes or 0
+            if sends < 200:
+                continue
+            rate = Decimal(unsubs) / Decimal(sends)
+            if rate <= Decimal('0.01'):
+                continue
+            priority = AIRecommendation.Priority.HIGH if rate >= Decimal('0.02') else AIRecommendation.Priority.MEDIUM
+            results.append(self._upsert(
+                dedupe_key=f'marketing_unsub:email:{campaign.id}',
+                kind=AIRecommendation.Kind.MARKETING_ATTRIBUTION,
+                priority=priority,
+                confidence=Decimal('0.780'),
+                title=f'High unsubscribe rate on "{campaign.campaign_title or "an email campaign"}"',
+                summary=(
+                    f'{campaign.campaign_title or "An email campaign"} unsubscribed '
+                    f'{unsubs} of {sends} recipients ({rate * 100:.2f}%). '
+                    f'Review subject line, audience targeting, and send cadence before the next send.'
+                ),
+                evidence={
+                    'channel': 'email',
+                    'campaign_id': str(campaign.id),
+                    'event_id': str(campaign.event_id),
+                    'sends': sends,
+                    'unsubscribes': unsubs,
+                    'unsub_rate': str(rate.quantize(Decimal('0.0001'))),
+                },
+                action={
+                    'type': 'open_url',
+                    'label': 'Open marketing overview',
+                    'url': marketing_url,
+                    'payload': {'campaign_id': str(campaign.id)},
+                },
+                event=campaign.event,
+            ))
+
+        sms_candidates = (
+            EventSMSCampaign.objects.filter(
+                event__organization=org,
+                event__deleted_at__isnull=True,
+                deleted_at__isnull=True,
+                send_time__gte=window_start,
+                audience_size__gte=200,
+            )
+            .select_related('event')
+        )
+        for campaign in sms_candidates:
+            rate = campaign.unsubscribe_rate or Decimal('0.0000')
+            if rate <= Decimal('0.03'):
+                continue
+            priority = AIRecommendation.Priority.HIGH if rate >= Decimal('0.05') else AIRecommendation.Priority.MEDIUM
+            results.append(self._upsert(
+                dedupe_key=f'marketing_unsub:sms:{campaign.id}',
+                kind=AIRecommendation.Kind.MARKETING_ATTRIBUTION,
+                priority=priority,
+                confidence=Decimal('0.780'),
+                title=f'High SMS unsubscribe rate on "{campaign.name or "an SMS broadcast"}"',
+                summary=(
+                    f'{campaign.name or "An SMS broadcast"} unsubscribed '
+                    f'{campaign.unsubscribes} of {campaign.audience_size} subscribers '
+                    f'({rate * 100:.2f}%). Reduce send frequency or tighten the list.'
+                ),
+                evidence={
+                    'channel': 'sms',
+                    'campaign_id': str(campaign.id),
+                    'event_id': str(campaign.event_id),
+                    'audience_size': campaign.audience_size,
+                    'unsubscribes': campaign.unsubscribes,
+                    'unsub_rate': str(rate),
+                },
+                action={
+                    'type': 'open_url',
+                    'label': 'Open marketing overview',
+                    'url': marketing_url,
+                    'payload': {'campaign_id': str(campaign.id)},
+                },
+                event=campaign.event,
+            ))
+        return results
+
+    def detect_low_channel_roi(self) -> list[AIRecommendation]:
+        org = self.organization
+        now = timezone.now()
+        window_start = now - timedelta(days=90)
+
+        ads = EventExpense.objects.filter(
+            event__organization=org,
+            event__deleted_at__isnull=True,
+            source='meta_ads',
+            deleted_at__isnull=True,
+            expense_date__gte=window_start.date(),
+        )
+        spend = ads.aggregate(total=Sum('amount'))['total'] or Decimal('0.00')
+        if spend < Decimal('250.00'):
+            return []
+
+        event_ids = list(ads.values_list('event_id', flat=True).distinct())
+        revenue = (
+            Event.objects.filter(id__in=event_ids)
+            .aggregate(total=Sum('computed_total_revenue'))['total']
+        ) or Decimal('0.00')
+        roas = revenue / spend if spend else Decimal('0.0000')
+        if roas >= Decimal('1.0'):
+            return []
+
+        return [self._upsert(
+            dedupe_key='marketing_low_roi:ads:90',
+            kind=AIRecommendation.Kind.MARKETING_ATTRIBUTION,
+            priority=AIRecommendation.Priority.HIGH,
+            confidence=Decimal('0.750'),
+            title='Meta Ads spend is outpacing attributed revenue',
+            summary=(
+                f'You\'ve spent ${spend:,.2f} on Meta Ads in the last 90 days against '
+                f'${revenue:,.2f} of revenue on those events (ROAS {roas:.2f}). '
+                f'Reallocate budget toward the best-performing events or rework creative.'
+            ),
+            evidence={
+                'channel': 'ads',
+                'window_days': 90,
+                'spend': str(spend),
+                'attributed_revenue': str(revenue),
+                'roas': str(roas.quantize(Decimal('0.0001'))),
+                'event_count': len(event_ids),
+            },
+            action={
+                'type': 'open_url',
+                'label': 'Review marketing performance',
+                'url': reverse('tickets:marketing_overview'),
+                'payload': {'window': '90'},
+            },
+        )]
+
+    def detect_channel_imbalance(self) -> list[AIRecommendation]:
+        org = self.organization
+        today = timezone.localdate()
+        window_start = today - timedelta(days=60)
+
+        events_with_ads = (
+            EventExpense.objects.filter(
+                event__organization=org,
+                event__deleted_at__isnull=True,
+                source='meta_ads',
+                deleted_at__isnull=True,
+                expense_date__gte=window_start,
+            )
+            .values_list('event_id', flat=True)
+            .distinct()
+        )
+
+        results = []
+        for event in Event.objects.filter(id__in=list(events_with_ads), deleted_at__isnull=True).select_related('venue'):
+            has_email = EventEmailCampaign.objects.filter(
+                event=event,
+                deleted_at__isnull=True,
+            ).exists()
+            if has_email:
+                continue
+            results.append(self._upsert(
+                dedupe_key=f'marketing_imbalance:{event.id}',
+                kind=AIRecommendation.Kind.MARKETING_ATTRIBUTION,
+                priority=AIRecommendation.Priority.MEDIUM,
+                confidence=Decimal('0.700'),
+                title=f'{event.name} ran ads without a matched email send',
+                summary=(
+                    f'{event.name} has Meta Ads spend logged but no Mailchimp email campaign attributed. '
+                    f'Email lifts ad ROAS by re-engaging warm audiences — pair them up.'
+                ),
+                evidence={
+                    'channel': 'ads+email',
+                    'event_id': str(event.id),
+                    'event_date': event.start_date.isoformat() if event.start_date else None,
+                },
+                action={
+                    'type': 'open_url',
+                    'label': 'Open event marketing',
+                    'url': reverse('tickets:event_detail', args=[event.id]) + '#marketing',
                     'payload': {'event_id': str(event.id)},
                 },
                 event=event,

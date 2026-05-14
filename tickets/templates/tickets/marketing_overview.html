@@ -1,0 +1,501 @@
+{% extends 'tickets/base.html' %}
+{% load tickets_extras %}
+
+{% block title %}Marketing{% endblock %}
+
+{% block extra_head %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js" defer></script>
+<style>
+.marketing-toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 1.25rem;
+}
+.marketing-toolbar form { margin: 0; }
+.marketing-toolbar .form-select { min-width: 180px; }
+.marketing-channel-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+    gap: 16px;
+    margin-bottom: 1.5rem;
+}
+.channel-card {
+    background: var(--bg-surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 1.1rem 1.25rem;
+    border-top-width: 3px;
+    border-top-style: solid;
+}
+.channel-card--email { border-top-color: var(--accent); }
+.channel-card--sms   { border-top-color: var(--success); }
+.channel-card--ads   { border-top-color: var(--info); }
+.channel-card-title {
+    font-size: 11px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--text-tertiary);
+    margin-bottom: 0.4rem;
+}
+.channel-card-headline {
+    font-family: 'Outfit', system-ui, sans-serif;
+    font-size: 1.6rem;
+    font-weight: 600;
+    line-height: 1.1;
+}
+.channel-card-meta {
+    color: var(--text-secondary);
+    font-size: 0.84rem;
+    margin-top: 0.45rem;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 4px 12px;
+}
+.channel-card-meta span { display: block; }
+.channel-card-meta b { color: var(--text-primary); font-weight: 600; }
+
+.marketing-grid-two {
+    display: grid;
+    grid-template-columns: 2fr 1fr;
+    gap: 16px;
+    margin-bottom: 1.5rem;
+}
+@media (max-width: 900px) { .marketing-grid-two { grid-template-columns: 1fr; } }
+.chart-card {
+    background: var(--bg-surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 1.1rem 1.25rem;
+}
+.chart-card h2 {
+    font-size: 1rem;
+    margin-bottom: 0.8rem;
+    color: var(--text-primary);
+}
+.chart-canvas-wrap { position: relative; height: 280px; }
+
+.ai-panel {
+    background: linear-gradient(135deg, var(--bg-surface) 0%, var(--bg-surface) 60%, color-mix(in srgb, var(--accent) 8%, var(--bg-surface)) 100%);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 1.25rem;
+    margin-bottom: 1.5rem;
+}
+.ai-panel-header { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 0.75rem; }
+.ai-panel-header h2 { font-size: 1.05rem; margin: 0; }
+.ai-insight {
+    background: var(--bg-base);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--accent);
+    border-radius: 6px;
+    padding: 0.85rem 1rem;
+    margin-top: 0.6rem;
+}
+.ai-insight--warning { border-left-color: var(--warning, #ffc107); }
+.ai-insight--critical { border-left-color: var(--danger, #dc3545); }
+.ai-insight-title { font-weight: 600; margin-bottom: 0.25rem; }
+.ai-insight-body { color: var(--text-secondary); font-size: 0.9rem; }
+.ai-insight-action {
+    margin-top: 0.45rem;
+    font-size: 0.82rem;
+    color: var(--text-primary);
+    font-weight: 500;
+}
+.ai-spinner {
+    display: inline-block;
+    width: 14px;
+    height: 14px;
+    border: 2px solid var(--text-tertiary);
+    border-top-color: transparent;
+    border-radius: 50%;
+    animation: ai-spin 0.7s linear infinite;
+    vertical-align: -2px;
+    margin-right: 6px;
+}
+@keyframes ai-spin { to { transform: rotate(360deg); } }
+
+.recs-list { display: grid; gap: 10px; }
+.rec-row {
+    background: var(--bg-surface);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--accent);
+    border-radius: 8px;
+    padding: 0.9rem 1rem;
+}
+.rec-row--high { border-left-color: var(--danger, #dc3545); }
+.rec-row--medium { border-left-color: var(--warning, #ffc107); }
+.rec-row-header { display: flex; justify-content: space-between; gap: 12px; align-items: baseline; }
+.rec-row-title { font-weight: 600; }
+.rec-row-priority {
+    font-size: 10px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--text-tertiary);
+}
+.rec-row-summary { color: var(--text-secondary); font-size: 0.9rem; margin: 0.35rem 0 0.6rem; }
+.rec-row-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.rec-row-actions form { margin: 0; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1>Marketing</h1>
+        <p class="page-header-subtitle">Performance across Meta Ads, Mailchimp email, and SlickText SMS &mdash; with AI recommendations.</p>
+    </div>
+</div>
+
+<div class="marketing-toolbar">
+    <form method="get">
+        <label for="window-select" class="form-label visually-hidden">Window</label>
+        <select id="window-select" name="window" class="form-select" onchange="this.form.submit()">
+            {% for key, info in window_choices.items %}
+                <option value="{{ key }}" {% if key == window_key %}selected{% endif %}>{{ info.label }}</option>
+            {% endfor %}
+        </select>
+    </form>
+    <div class="text-secondary small">Window: <b>{{ window_label }}</b></div>
+</div>
+
+<div class="marketing-channel-grid">
+    <div class="channel-card channel-card--email">
+        <div class="channel-card-title">Email &middot; Mailchimp</div>
+        <div class="channel-card-headline">${{ metrics.channels.email.revenue|currency }}</div>
+        <div class="channel-card-meta">
+            <span>Sends <b>{{ metrics.channels.email.sends }}</b></span>
+            <span>Campaigns <b>{{ metrics.channels.email.campaigns }}</b></span>
+            <span>Opens <b>{{ metrics.channels.email.opens }}</b> <span class="text-tertiary small">({{ metrics.channels.email.open_rate|floatformat:2 }})</span></span>
+            <span>Clicks <b>{{ metrics.channels.email.clicks }}</b> <span class="text-tertiary small">({{ metrics.channels.email.click_rate|floatformat:2 }})</span></span>
+            <span>Orders <b>{{ metrics.channels.email.orders }}</b></span>
+            <span>Unsubs <b>{{ metrics.channels.email.unsubscribes }}</b></span>
+        </div>
+    </div>
+    <div class="channel-card channel-card--sms">
+        <div class="channel-card-title">SMS &middot; SlickText</div>
+        <div class="channel-card-headline">${{ metrics.channels.sms.revenue|currency }}</div>
+        <div class="channel-card-meta">
+            <span>Audience <b>{{ metrics.channels.sms.audience }}</b></span>
+            <span>Broadcasts <b>{{ metrics.channels.sms.campaigns }}</b></span>
+            <span>Clicks <b>{{ metrics.channels.sms.clicks }}</b> <span class="text-tertiary small">({{ metrics.channels.sms.click_rate|floatformat:2 }})</span></span>
+            <span>Unsubs <b>{{ metrics.channels.sms.unsubscribes }}</b> <span class="text-tertiary small">({{ metrics.channels.sms.unsub_rate|floatformat:2 }})</span></span>
+            <span>Orders <b>{{ metrics.channels.sms.orders }}</b></span>
+            <span>&nbsp;</span>
+        </div>
+    </div>
+    <div class="channel-card channel-card--ads">
+        <div class="channel-card-title">Ads &middot; Meta</div>
+        <div class="channel-card-headline">${{ metrics.channels.ads.spend|currency }}</div>
+        <div class="channel-card-meta">
+            <span>Attributed rev <b>${{ metrics.channels.ads.revenue|currency }}</b></span>
+            <span>ROAS <b>{{ metrics.channels.ads.roas|floatformat:2 }}x</b></span>
+            <span>ROI <b>{{ metrics.channels.ads.roi|floatformat:2 }}</b></span>
+            <span>Line items <b>{{ metrics.channels.ads.line_items }}</b></span>
+            <span>Orders <b>{{ metrics.channels.ads.orders }}</b></span>
+            <span>&nbsp;</span>
+        </div>
+    </div>
+</div>
+
+<div class="ai-panel">
+    <div class="ai-panel-header">
+        <h2>AI insights</h2>
+        <button type="button" id="ai-analyze-btn" class="btn btn-sm btn-primary">
+            Analyze with AI
+        </button>
+    </div>
+    <p class="text-secondary small mb-0" id="ai-analyze-status">
+        Get a plain-language read on what's working, what isn't, and what to do next. Uses your configured AI model.
+    </p>
+    <div id="ai-analyze-result" hidden></div>
+</div>
+
+<div class="marketing-grid-two">
+    <div class="chart-card">
+        <h2>Revenue and ad spend by month</h2>
+        <div class="chart-canvas-wrap"><canvas id="trend-chart"></canvas></div>
+    </div>
+    <div class="chart-card">
+        <h2>Revenue share by channel</h2>
+        <div class="chart-canvas-wrap"><canvas id="comparison-chart"></canvas></div>
+    </div>
+</div>
+
+<div class="chart-card" style="margin-bottom: 1.5rem;">
+    <h2>Opens and clicks by month</h2>
+    <div class="chart-canvas-wrap"><canvas id="engagement-chart"></canvas></div>
+</div>
+
+<div class="marketing-grid-two">
+    <div class="chart-card">
+        <h2>Top campaigns</h2>
+        {% if metrics.top_campaigns %}
+        <div class="table-responsive">
+            <table class="table table-hover align-middle mb-0">
+                <thead>
+                    <tr>
+                        <th>Campaign</th>
+                        <th>Channel</th>
+                        <th>Event</th>
+                        <th class="text-end">Sends</th>
+                        <th class="text-end">Opens</th>
+                        <th class="text-end">Clicks</th>
+                        <th class="text-end">Orders</th>
+                        <th class="text-end">Revenue</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for row in metrics.top_campaigns %}
+                    <tr>
+                        <td><span class="fw-semibold">{{ row.name }}</span></td>
+                        <td><span class="badge bg-secondary-subtle text-body">{{ row.channel_label }}</span></td>
+                        <td><a href="{% url 'tickets:event_detail' event_id=row.event_id %}?tab=marketing">{{ row.event_name }}</a></td>
+                        <td class="text-end">{{ row.sends }}</td>
+                        <td class="text-end">
+                            {% if row.opens is None %}&mdash;{% else %}{{ row.opens }}
+                                <span class="text-tertiary small d-block">{{ row.open_rate|floatformat:2 }}</span>
+                            {% endif %}
+                        </td>
+                        <td class="text-end">{{ row.clicks }}
+                            <span class="text-tertiary small d-block">{{ row.click_rate|floatformat:2 }}</span>
+                        </td>
+                        <td class="text-end">{{ row.orders }}</td>
+                        <td class="text-end">${{ row.revenue|currency }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% else %}
+        <div class="empty-state">
+            <p>No campaigns matched in this window. Link Mailchimp, SlickText, or Meta Ads on an event's Marketing tab.</p>
+        </div>
+        {% endif %}
+    </div>
+
+    <div class="chart-card">
+        <h2>Top events by ROI</h2>
+        {% if metrics.top_events_by_roi %}
+        <div class="table-responsive">
+            <table class="table table-hover align-middle mb-0">
+                <thead>
+                    <tr>
+                        <th>Event</th>
+                        <th class="text-end">Spend</th>
+                        <th class="text-end">Attributed</th>
+                        <th class="text-end">ROI</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for row in metrics.top_events_by_roi %}
+                    <tr>
+                        <td><a href="{% url 'tickets:event_detail' event_id=row.event_id %}?tab=marketing">{{ row.event_name }}</a></td>
+                        <td class="text-end">${{ row.ads_spend|currency }}</td>
+                        <td class="text-end">${{ row.attributed_revenue|currency }}</td>
+                        <td class="text-end">{% if row.roi is not None %}{{ row.roi|floatformat:2 }}{% else %}&mdash;{% endif %}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% else %}
+        <div class="empty-state">
+            <p>No event-level ROI to compare yet. Link spend and campaign data on at least one event.</p>
+        </div>
+        {% endif %}
+    </div>
+</div>
+
+<div class="chart-card">
+    <div class="ai-panel-header">
+        <h2 style="margin:0;">Marketing recommendations</h2>
+        <a href="{% url 'tickets:action_center' %}?kind=marketing_attribution" class="btn btn-sm btn-outline-secondary">View all in Action Center</a>
+    </div>
+    {% if recommendations %}
+    <div class="recs-list">
+        {% for rec in recommendations %}
+        <div class="rec-row rec-row--{{ rec.priority }}">
+            <div class="rec-row-header">
+                <div class="rec-row-title">{{ rec.title }}</div>
+                <div class="rec-row-priority">{{ rec.get_priority_display }}</div>
+            </div>
+            <div class="rec-row-summary">{{ rec.summary }}</div>
+            <div class="rec-row-actions">
+                {% if rec.recommended_action_json.url %}
+                <form method="post" action="{% url 'tickets:ai_recommendation_review' rec.id %}">
+                    {% csrf_token %}
+                    <input type="hidden" name="next" value="{% url 'tickets:marketing_overview' %}?window={{ window_key }}">
+                    <button type="submit" class="btn btn-sm btn-primary">{{ rec.recommended_action_json.label|default:"Take action" }}</button>
+                </form>
+                {% endif %}
+                <form method="post" action="{% url 'tickets:ai_recommendation_resolve' rec.id %}">
+                    {% csrf_token %}
+                    <input type="hidden" name="next" value="{% url 'tickets:marketing_overview' %}?window={{ window_key }}">
+                    <button type="submit" class="btn btn-sm btn-outline-success">Mark resolved</button>
+                </form>
+                <form method="post" action="{% url 'tickets:ai_recommendation_dismiss' rec.id %}">
+                    {% csrf_token %}
+                    <input type="hidden" name="next" value="{% url 'tickets:marketing_overview' %}?window={{ window_key }}">
+                    <button type="submit" class="btn btn-sm btn-outline-secondary">Dismiss</button>
+                </form>
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+    {% else %}
+    <div class="empty-state">
+        <p>No open marketing recommendations &mdash; either you're caught up, or none have been generated yet. New recommendations appear here as data lands.</p>
+    </div>
+    {% endif %}
+</div>
+
+<script type="application/json" id="trend-chart-data">{{ trend_chart_json|safe }}</script>
+<script type="application/json" id="engagement-chart-data">{{ engagement_chart_json|safe }}</script>
+<script type="application/json" id="comparison-chart-data">{{ comparison_chart_json|safe }}</script>
+<script type="application/json" id="marketing-window-data">{"window": "{{ window_key }}"}</script>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+(function () {
+    document.addEventListener('DOMContentLoaded', function () {
+        if (typeof Chart === 'undefined') { return; }
+        var isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+        var grid = isDark ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.06)';
+        var tick = isDark ? 'rgba(255,255,255,0.7)' : 'rgba(0,0,0,0.65)';
+
+        var trendData = JSON.parse(document.getElementById('trend-chart-data').textContent);
+        var engageData = JSON.parse(document.getElementById('engagement-chart-data').textContent);
+        var compData  = JSON.parse(document.getElementById('comparison-chart-data').textContent);
+
+        new Chart(document.getElementById('trend-chart'), {
+            type: 'bar',
+            data: {
+                labels: trendData.labels,
+                datasets: [
+                    { label: 'Email revenue', data: trendData.email_revenue, backgroundColor: '#5b8def', stack: 'rev' },
+                    { label: 'SMS revenue',   data: trendData.sms_revenue,   backgroundColor: '#33c481', stack: 'rev' },
+                    { label: 'Ads spend',     data: trendData.ads_spend.map(function(v){ return -Math.abs(v); }), backgroundColor: '#e6796d', stack: 'spend' }
+                ]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                scales: {
+                    x: { stacked: true, grid: { color: grid }, ticks: { color: tick } },
+                    y: { stacked: true, grid: { color: grid }, ticks: { color: tick,
+                        callback: function(v) { return '$' + Math.abs(v).toLocaleString(); } } }
+                },
+                plugins: { legend: { labels: { color: tick } } }
+            }
+        });
+
+        new Chart(document.getElementById('engagement-chart'), {
+            type: 'line',
+            data: {
+                labels: engageData.labels,
+                datasets: [
+                    { label: 'Email opens',  data: engageData.email_opens,  borderColor: '#5b8def', backgroundColor: 'rgba(91,141,239,0.12)', tension: 0.3, fill: true },
+                    { label: 'Email clicks', data: engageData.email_clicks, borderColor: '#9b6dff', backgroundColor: 'rgba(155,109,255,0.10)', tension: 0.3, fill: true },
+                    { label: 'SMS clicks',   data: engageData.sms_clicks,   borderColor: '#33c481', backgroundColor: 'rgba(51,196,129,0.10)', tension: 0.3, fill: true }
+                ]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                interaction: { mode: 'index', intersect: false },
+                scales: {
+                    x: { grid: { color: grid }, ticks: { color: tick } },
+                    y: { beginAtZero: true, grid: { color: grid }, ticks: { color: tick } }
+                },
+                plugins: { legend: { labels: { color: tick } } }
+            }
+        });
+
+        new Chart(document.getElementById('comparison-chart'), {
+            type: 'doughnut',
+            data: {
+                labels: compData.labels,
+                datasets: [{
+                    data: compData.revenue,
+                    backgroundColor: ['#5b8def', '#33c481', '#e6796d'],
+                    borderWidth: 0
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: { legend: { position: 'bottom', labels: { color: tick } } }
+            }
+        });
+
+        // AI Analyze button
+        var btn = document.getElementById('ai-analyze-btn');
+        var status = document.getElementById('ai-analyze-status');
+        var resultBox = document.getElementById('ai-analyze-result');
+        var windowKey = JSON.parse(document.getElementById('marketing-window-data').textContent).window;
+
+        function severityClass(sev) {
+            if (sev === 'critical') return 'ai-insight ai-insight--critical';
+            if (sev === 'warning') return 'ai-insight ai-insight--warning';
+            return 'ai-insight';
+        }
+        function render(payload) {
+            resultBox.hidden = false;
+            resultBox.innerHTML = '';
+            if (payload.headline) {
+                var h = document.createElement('p');
+                h.style.fontWeight = '600';
+                h.style.marginBottom = '0.4rem';
+                h.textContent = payload.headline;
+                resultBox.appendChild(h);
+            }
+            (payload.insights || []).forEach(function(ins) {
+                var box = document.createElement('div');
+                box.className = severityClass(ins.severity);
+                box.innerHTML =
+                    '<div class="ai-insight-title"></div>' +
+                    '<div class="ai-insight-body"></div>' +
+                    '<div class="ai-insight-action"></div>';
+                box.querySelector('.ai-insight-title').textContent = ins.title || '';
+                box.querySelector('.ai-insight-body').textContent  = ins.body || '';
+                box.querySelector('.ai-insight-action').textContent = ins.recommended_action ? ('Next: ' + ins.recommended_action) : '';
+                resultBox.appendChild(box);
+            });
+        }
+        function getCsrf() {
+            var m = document.cookie.match(/csrftoken=([^;]+)/);
+            return m ? m[1] : '';
+        }
+        btn.addEventListener('click', function () {
+            btn.disabled = true;
+            status.innerHTML = '<span class="ai-spinner"></span> Generating insights&hellip;';
+            resultBox.hidden = true;
+            var form = new FormData();
+            form.append('window', windowKey);
+            fetch('{% url "tickets:marketing_ai_analyze" %}', {
+                method: 'POST',
+                headers: { 'X-CSRFToken': getCsrf() },
+                body: form,
+                credentials: 'same-origin'
+            }).then(function (r) {
+                return r.json().then(function (data) { return { ok: r.ok, data: data }; });
+            }).then(function (out) {
+                btn.disabled = false;
+                if (!out.ok) {
+                    status.textContent = (out.data && out.data.error) || 'Could not generate insights.';
+                    return;
+                }
+                status.textContent = out.data.cached ? 'Showing cached insights from the last 10 minutes.' : 'Insights generated.';
+                render(out.data);
+            }).catch(function () {
+                btn.disabled = false;
+                status.textContent = 'Could not reach the analysis service.';
+            });
+        });
+    });
+})();
+</script>
+{% endblock %}

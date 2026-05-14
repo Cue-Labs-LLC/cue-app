@@ -170,6 +170,10 @@ urlpatterns = [
     path('income-sources/<uuid:source_id>/edit/', views.income_source_edit, name='income_source_edit'),
     path('income-sources/<uuid:source_id>/delete/', views.income_source_delete, name='income_source_delete'),
 
+    # Marketing
+    path('marketing/', views.marketing_overview, name='marketing_overview'),
+    path('marketing/analyze/', views.marketing_ai_analyze, name='marketing_ai_analyze'),
+
     # Forecast Tool
     path('forecast/', views.forecast_tool, name='forecast_tool'),
     path('forecast/api/', views.forecast_api, name='forecast_api'),
