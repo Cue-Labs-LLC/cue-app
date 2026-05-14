@@ -284,7 +284,7 @@
 
         <div class="chart-card">
             <h2>Top email campaigns</h2>
-            {% with email_rows=metrics.top_campaigns|filter_channel:"email" %}
+            {% with email_rows=metrics.top_email_campaigns %}
             {% if email_rows %}
             <div class="table-responsive">
                 <table class="table table-hover align-middle mb-0">
@@ -342,7 +342,7 @@
 
         <div class="chart-card">
             <h2>Top SMS broadcasts</h2>
-            {% with sms_rows=metrics.top_campaigns|filter_channel:"sms" %}
+            {% with sms_rows=metrics.top_sms_campaigns %}
             {% if sms_rows %}
             <div class="table-responsive">
                 <table class="table table-hover align-middle mb-0">

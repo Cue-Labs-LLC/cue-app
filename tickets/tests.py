@@ -5743,6 +5743,40 @@ class MarketingAnalyticsServiceTests(TestCase):
         self.assertEqual(row['ads_spend'], Decimal('200.00'))
         self.assertEqual(row['attributed_revenue'], Decimal('1000.00'))
 
+    def test_top_sms_campaigns_not_crowded_out_by_email(self):
+        """Regression: SMS rows must survive even when email revenue dwarfs them."""
+        from .models import EventEmailCampaign, EventSMSCampaign
+        from .services.marketing import MarketingAnalyticsService
+
+        # Wipe seed data so we control the comparison cleanly.
+        EventEmailCampaign.objects.filter(event__organization=self.org).delete()
+        EventSMSCampaign.objects.filter(event__organization=self.org).delete()
+
+        now = timezone.now()
+        # Email campaign with very high revenue.
+        EventEmailCampaign.objects.create(
+            event=self.event, source='mailchimp', external_id='mc-big',
+            campaign_title='Huge email', send_time=now - timedelta(days=5),
+            emails_sent=5000, unique_opens=2000, unique_clicks=500,
+            ecommerce_orders=50, ecommerce_revenue=Decimal('5000.00'),
+        )
+        # SMS broadcast with low revenue — would be evicted under the old
+        # cross-channel sort.
+        EventSMSCampaign.objects.create(
+            event=self.event, source='slicktext', external_id='st-small',
+            name='Modest blast', send_time=now - timedelta(days=2),
+            audience_size=300, unique_clicks=15, orders=1, revenue=Decimal('50.00'),
+        )
+
+        result = MarketingAnalyticsService(self.org, window_days=90).calculate()
+
+        self.assertEqual(len(result['top_email_campaigns']), 1)
+        self.assertEqual(result['top_email_campaigns'][0]['revenue'], Decimal('5000.00'))
+
+        self.assertEqual(len(result['top_sms_campaigns']), 1)
+        self.assertEqual(result['top_sms_campaigns'][0]['name'], 'Modest blast')
+        self.assertEqual(result['top_sms_campaigns'][0]['revenue'], Decimal('50.00'))
+
 
 class MarketingOverviewViewTests(TestCase):
     """View-level tests for the marketing overview page."""

@@ -72,7 +72,8 @@ class MarketingAnalyticsService:
         trends = self._trends()
         engagement_trends = self._engagement_trends()
         channel_comparison = self._channel_comparison(channels)
-        top_campaigns = self._top_campaigns()
+        top_email = self._top_email_campaigns()
+        top_sms = self._top_sms_campaigns()
         top_events = self._top_events_by_roi()
 
         return {
@@ -80,7 +81,9 @@ class MarketingAnalyticsService:
             'trends': trends,
             'engagement_trends': engagement_trends,
             'channel_comparison': channel_comparison,
-            'top_campaigns': top_campaigns,
+            'top_email_campaigns': top_email,
+            'top_sms_campaigns': top_sms,
+            'top_campaigns': top_email + top_sms,
             'top_events_by_roi': top_events,
             'meta': {
                 'window_start': self.window_start.isoformat() if self.window_start else None,
@@ -281,7 +284,7 @@ class MarketingAnalyticsService:
             {'channel': 'ads', 'label': 'Ads', 'revenue': ads_rev, 'share': share(ads_rev)},
         ]
 
-    def _top_campaigns(self, limit=10):
+    def _top_email_campaigns(self, limit=10):
         rows = []
         for row in (
             self._email_qs()
@@ -311,7 +314,10 @@ class MarketingAnalyticsService:
                 'event_id': str(row['event_id']),
                 'event_name': row['event__name'],
             })
+        return rows
 
+    def _top_sms_campaigns(self, limit=10):
+        rows = []
         for row in (
             self._sms_qs()
             .select_related('event')
@@ -339,9 +345,7 @@ class MarketingAnalyticsService:
                 'event_id': str(row['event_id']),
                 'event_name': row['event__name'],
             })
-
-        rows.sort(key=lambda r: r['revenue'] or ZERO, reverse=True)
-        return rows[:limit]
+        return rows
 
     def _engagement_trends(self):
         """Monthly opens and clicks across email + SMS for the engagement chart."""
