@@ -44,7 +44,7 @@
     <div class="card-body p-0">
         {% if page_obj %}
         <div class="table-responsive">
-            <table class="table table-hover mb-0">
+            <table class="table table-hover mb-0 mobile-card-table customer-list-table">
                 <thead>
                     <tr>
                         <th><a href="?sort=name&search={{ search_query }}&segment={{ segment_filter }}&tag={{ tag_filter }}">Name <i class="bi bi-arrow-down-up"></i></a></th>
@@ -60,7 +60,18 @@
                 <tbody>
                     {% for customer in page_obj %}
                     <tr style="cursor: pointer;" onclick="window.location='{% url 'tickets:customer_detail' customer.id %}'">
-                        <td><strong>{{ customer.name }}</strong></td>
+                        <td class="customer-card-cell">
+                            <div class="customer-card-name"><strong>{{ customer.name }}</strong></div>
+                            <div class="customer-card-email">{{ customer.email }}</div>
+                            <div class="customer-card-meta">
+                                {% if customer.rfm_segment %}
+                                <span class="customer-card-segment"><span class="badge bg-{{ segment_badge_colors|get_item:customer.rfm_segment }}">{{ customer.rfm_segment }}</span></span>
+                                {% else %}
+                                <span class="customer-card-segment-empty">No segment</span>
+                                {% endif %}
+                                <span class="customer-card-ltv">${{ customer.lifetime_value|currency }}</span>
+                            </div>
+                        </td>
                         <td>{{ customer.email }}</td>
                         <td class="d-none d-sm-table-cell">{{ customer.phone|default:"-" }}</td>
                         <td>

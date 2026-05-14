@@ -211,13 +211,9 @@
         <!-- Main Content -->
         <main class="main-wrapper">
             <div class="topbar d-lg-none">
-                <button class="mobile-toggle" id="mobileToggle" type="button">
+                <button class="mobile-toggle" id="mobileToggle" type="button" aria-label="Open navigation">
                     <i class="bi bi-list"></i>
                 </button>
-                <span style="font-family: var(--font-display); font-size: 14px; font-weight: 700; letter-spacing: -0.02em; color: var(--text-primary);">
-                    {{ org_name }}
-                </span>
-                <div style="width: 36px;"></div>
             </div>
 {% endif %}
             <div class="content{% if not user.is_authenticated %} content--auth{% endif %}">

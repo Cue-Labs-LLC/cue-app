@@ -164,60 +164,62 @@
         </form>
         {% endif %}
 
-        <!-- Edit: always visible -->
-        <a href="{% url 'tickets:event_edit' event.id %}" class="btn btn-outline-secondary btn-sm"><i class="bi bi-pencil"></i><span class="ms-1">Edit</span></a>
+        <!-- Edit + overflow menus: paired so the dots button stays beside Edit on mobile -->
+        <div class="page-header-action-pair">
+            <a href="{% url 'tickets:event_edit' event.id %}" class="btn btn-outline-secondary btn-sm"><i class="bi bi-pencil"></i><span class="ms-1">Edit</span></a>
 
-        <!-- Desktop secondary actions: hidden on mobile -->
-        <div class="dropdown d-none d-sm-flex">
-            <button class="btn btn-outline-secondary btn-sm dropdown-toggle dropdown-toggle-split" style="width: 36px; padding-left: 6px; padding-right: 6px;" data-bs-toggle="dropdown" aria-expanded="false" aria-label="More actions">
-                <i class="bi bi-three-dots"></i>
-            </button>
-            <ul class="dropdown-menu dropdown-menu-end">
-                <li><a class="dropdown-item" href="{% url 'tickets:event_export_csv' event.id %}"><i class="bi bi-download me-2"></i>Export CSV</a></li>
-                {% if org_has_custom_fields %}
-                <li>
-                    <button type="button" class="dropdown-item" data-bs-toggle="modal" data-bs-target="#customFieldsModal">
-                        <i class="bi bi-sliders me-2"></i>Custom Fields
-                    </button>
-                </li>
-                {% endif %}
-                {% if event.ticketing_type != 'direct' or event.effective_status == 'draft' %}
-                <li><hr class="dropdown-divider"></li>
-                <li><a class="dropdown-item text-danger" href="{% url 'tickets:event_delete' event.id %}"><i class="bi bi-trash me-2"></i>Delete</a></li>
-                {% endif %}
-            </ul>
-        </div>
+            <!-- Desktop secondary actions: hidden on mobile -->
+            <div class="dropdown d-none d-sm-flex">
+                <button class="btn btn-outline-secondary btn-sm dropdown-toggle dropdown-toggle-split" style="width: 36px; padding-left: 6px; padding-right: 6px;" data-bs-toggle="dropdown" aria-expanded="false" aria-label="More actions">
+                    <i class="bi bi-three-dots"></i>
+                </button>
+                <ul class="dropdown-menu dropdown-menu-end">
+                    <li><a class="dropdown-item" href="{% url 'tickets:event_export_csv' event.id %}"><i class="bi bi-download me-2"></i>Export CSV</a></li>
+                    {% if org_has_custom_fields %}
+                    <li>
+                        <button type="button" class="dropdown-item" data-bs-toggle="modal" data-bs-target="#customFieldsModal">
+                            <i class="bi bi-sliders me-2"></i>Custom Fields
+                        </button>
+                    </li>
+                    {% endif %}
+                    {% if event.ticketing_type != 'direct' or event.effective_status == 'draft' %}
+                    <li><hr class="dropdown-divider"></li>
+                    <li><a class="dropdown-item text-danger" href="{% url 'tickets:event_delete' event.id %}"><i class="bi bi-trash me-2"></i>Delete</a></li>
+                    {% endif %}
+                </ul>
+            </div>
 
-        <!-- Mobile overflow menu: hidden on ≥576px -->
-        <div class="dropdown d-sm-none">
-            <button class="event-row-dots-btn dropdown-toggle" data-bs-toggle="dropdown"
-                    aria-expanded="false" aria-label="Event actions"
-                    style="min-height: 44px; min-width: 44px;">
-                <i class="bi bi-three-dots-vertical"></i>
-            </button>
-            <ul class="dropdown-menu dropdown-menu-end">
-                <!-- View Ticket Page -->
-                {% if event.ticketing_type == 'direct' and event.effective_status != 'draft' %}
-                <li><a class="dropdown-item" href="{% url 'tickets:public_event_buy' event.public_id %}" target="_blank" rel="noopener noreferrer"><i class="bi bi-box-arrow-up-right me-2"></i>View Ticket Page</a></li>
-                {% elif event.ticket_link %}
-                <li><a class="dropdown-item" href="{{ event.ticket_link }}" target="_blank" rel="noopener noreferrer"><i class="bi bi-box-arrow-up-right me-2"></i>View Ticket Page</a></li>
-                {% endif %}
+            <!-- Mobile overflow menu: hidden on ≥576px -->
+            <div class="dropdown d-sm-none">
+                <button class="event-row-dots-btn dropdown-toggle" data-bs-toggle="dropdown"
+                        aria-expanded="false" aria-label="Event actions"
+                        style="min-height: 44px; min-width: 44px;">
+                    <i class="bi bi-three-dots-vertical"></i>
+                </button>
+                <ul class="dropdown-menu dropdown-menu-end">
+                    <!-- View Ticket Page -->
+                    {% if event.ticketing_type == 'direct' and event.effective_status != 'draft' %}
+                    <li><a class="dropdown-item" href="{% url 'tickets:public_event_buy' event.public_id %}" target="_blank" rel="noopener noreferrer"><i class="bi bi-box-arrow-up-right me-2"></i>View Ticket Page</a></li>
+                    {% elif event.ticket_link %}
+                    <li><a class="dropdown-item" href="{{ event.ticket_link }}" target="_blank" rel="noopener noreferrer"><i class="bi bi-box-arrow-up-right me-2"></i>View Ticket Page</a></li>
+                    {% endif %}
 
-                <!-- Utility actions -->
-                <li><a class="dropdown-item" href="{% url 'tickets:event_export_csv' event.id %}"><i class="bi bi-download me-2"></i>Export CSV</a></li>
-                {% if org_has_custom_fields %}
-                <li>
-                    <button type="button" class="dropdown-item" data-bs-toggle="modal" data-bs-target="#customFieldsModal">
-                        <i class="bi bi-sliders me-2"></i>Custom Fields
-                    </button>
-                </li>
-                {% endif %}
-                <!-- Delete: only if event is deletable -->
-                {% if event.ticketing_type != 'direct' or event.effective_status == 'draft' %}
-                <li><hr class="dropdown-divider"></li>
-                <li><a class="dropdown-item text-danger" href="{% url 'tickets:event_delete' event.id %}"><i class="bi bi-trash me-2"></i>Delete</a></li>
-                {% endif %}
-            </ul>
+                    <!-- Utility actions -->
+                    <li><a class="dropdown-item" href="{% url 'tickets:event_export_csv' event.id %}"><i class="bi bi-download me-2"></i>Export CSV</a></li>
+                    {% if org_has_custom_fields %}
+                    <li>
+                        <button type="button" class="dropdown-item" data-bs-toggle="modal" data-bs-target="#customFieldsModal">
+                            <i class="bi bi-sliders me-2"></i>Custom Fields
+                        </button>
+                    </li>
+                    {% endif %}
+                    <!-- Delete: only if event is deletable -->
+                    {% if event.ticketing_type != 'direct' or event.effective_status == 'draft' %}
+                    <li><hr class="dropdown-divider"></li>
+                    <li><a class="dropdown-item text-danger" href="{% url 'tickets:event_delete' event.id %}"><i class="bi bi-trash me-2"></i>Delete</a></li>
+                    {% endif %}
+                </ul>
+            </div>
         </div>
     </div>
 </div>
