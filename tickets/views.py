@@ -4001,16 +4001,9 @@ def event_detail(request, event_id):
         sms_campaign.send_time_display = _format_meta_ads_datetime(sms_campaign.send_time.isoformat() if sms_campaign.send_time else '')
         sms_campaign.last_synced_display = _format_meta_ads_datetime(sms_campaign.last_synced_at.isoformat() if sms_campaign.last_synced_at else '')
 
-    marketing_pending_count = (
-        sum(1 for c in mailchimp_campaigns if not c.is_confirmed)
-        + sum(1 for c in slicktext_campaigns if not c.is_confirmed)
-        + sum(1 for e in meta_ads_expenses if not e.is_confirmed)
-    )
-    marketing_needs_review_count = (
-        sum(1 for c in mailchimp_campaigns if c.needs_review)
-        + sum(1 for c in slicktext_campaigns if c.needs_review)
-        + sum(1 for e in meta_ads_expenses if e.needs_review)
-    )
+    mailchimp_pending_count = sum(1 for c in mailchimp_campaigns if not c.is_confirmed)
+    slicktext_pending_count = sum(1 for c in slicktext_campaigns if not c.is_confirmed)
+    meta_ads_pending_count = sum(1 for e in meta_ads_expenses if not e.is_confirmed)
 
     ticket_type_breakdown_json = json.dumps(ticket_type_breakdown)
     ticket_type_allocation_charts_json = json.dumps(ticket_type_allocation_charts)
@@ -4059,8 +4052,9 @@ def event_detail(request, event_id):
         'mailchimp_campaigns': mailchimp_campaigns,
         'slicktext_connection': slicktext_connection,
         'slicktext_campaigns': slicktext_campaigns,
-        'marketing_pending_count': marketing_pending_count,
-        'marketing_needs_review_count': marketing_needs_review_count,
+        'mailchimp_pending_count': mailchimp_pending_count,
+        'slicktext_pending_count': slicktext_pending_count,
+        'meta_ads_pending_count': meta_ads_pending_count,
         'category_labels': category_labels,
         'additional_income_lines': additional_income_lines,
         'income_sources': IncomeSource.objects.filter(organization=org).order_by('order', 'name'),
@@ -6589,35 +6583,75 @@ def event_meta_ads_unconfirm(request, event_id, expense_id):
     return _marketing_tab_redirect(event)
 
 
-@login_required
-@require_org
-@require_admin
-@require_http_methods(["POST"])
-def event_marketing_confirm_all(request, event_id):
-    """Confirm every unconfirmed Mailchimp / SlickText / Meta Ads record on the event."""
+def _confirm_all_channel(request, event_id, model_cls, extra_filter, serialize_row, label):
+    """Shared helper: bulk-confirm all unconfirmed rows of one channel on an event."""
     org = get_organization(request)
     event = get_object_or_404(Event.objects.filter(organization=org), id=event_id)
     now = django_tz.now()
 
-    email_count = EventEmailCampaign.objects.filter(
+    pending_qs = model_cls.objects.filter(
         event=event, deleted_at__isnull=True, confirmed_at__isnull=True,
-    ).update(confirmed_at=now, confirmed_by=request.user, updated_by=request.user, updated_at=now)
-
-    sms_count = EventSMSCampaign.objects.filter(
-        event=event, deleted_at__isnull=True, confirmed_at__isnull=True,
-    ).update(confirmed_at=now, confirmed_by=request.user, updated_by=request.user, updated_at=now)
-
-    ads_count = EventExpense.objects.filter(
-        event=event, source='meta_ads', deleted_at__isnull=True, confirmed_at__isnull=True,
-    ).update(confirmed_at=now, confirmed_by=request.user, updated_by=request.user, updated_at=now)
-
-    total = email_count + sms_count + ads_count
-    if total:
+        **extra_filter,
+    )
+    pending_ids = list(pending_qs.values_list('pk', flat=True))
+    if pending_ids:
+        model_cls.objects.filter(pk__in=pending_ids).update(
+            confirmed_at=now, confirmed_by=request.user, updated_by=request.user, updated_at=now,
+        )
         _invalidate_marketing_cache(org)
-        messages.success(request, f'Confirmed {total} record(s) for this event.')
+
+    if _wants_marketing_json(request):
+        # Re-fetch so the serializers reflect the new confirmed_at.
+        rows = [serialize_row(obj) for obj in model_cls.objects.filter(pk__in=pending_ids)]
+        return JsonResponse({'ok': True, 'rows': rows, 'count': len(rows)})
+
+    if pending_ids:
+        messages.success(request, f'Confirmed {len(pending_ids)} {label}.')
     else:
-        messages.info(request, 'Nothing to confirm — every record on this event is already confirmed.')
+        messages.info(request, f'Nothing to confirm — every {label} is already confirmed.')
     return _marketing_tab_redirect(event)
+
+
+@login_required
+@require_org
+@require_admin
+@require_http_methods(["POST"])
+def event_mailchimp_confirm_all(request, event_id):
+    """Confirm every unconfirmed Mailchimp campaign on the event."""
+    return _confirm_all_channel(
+        request, event_id, EventEmailCampaign,
+        extra_filter={'source': 'mailchimp'},
+        serialize_row=_serialize_email_row,
+        label='Mailchimp campaign(s)',
+    )
+
+
+@login_required
+@require_org
+@require_admin
+@require_http_methods(["POST"])
+def event_slicktext_confirm_all(request, event_id):
+    """Confirm every unconfirmed SlickText broadcast on the event."""
+    return _confirm_all_channel(
+        request, event_id, EventSMSCampaign,
+        extra_filter={'source': 'slicktext'},
+        serialize_row=_serialize_sms_row,
+        label='SlickText broadcast(s)',
+    )
+
+
+@login_required
+@require_org
+@require_admin
+@require_http_methods(["POST"])
+def event_meta_ads_confirm_all(request, event_id):
+    """Confirm every unconfirmed Meta Ads expense on the event."""
+    return _confirm_all_channel(
+        request, event_id, EventExpense,
+        extra_filter={'source': 'meta_ads'},
+        serialize_row=_serialize_ads_row,
+        label='Meta Ads expense(s)',
+    )
 
 
 @login_required

@@ -6109,25 +6109,56 @@ class CampaignConfirmViewTests(TestCase):
         self.assertEqual(self.ad.manual_attributed_orders, 8)
         self.assertEqual(self.ad.manual_attributed_revenue, Decimal('950.00'))
 
-    def test_confirm_all_processes_pending_records_on_event(self):
-        url = reverse('tickets:event_marketing_confirm_all', args=[self.event.id])
+    def test_mailchimp_confirm_all_confirms_only_emails(self):
+        url = reverse('tickets:event_mailchimp_confirm_all', args=[self.event.id])
         self.client.post(url)
         self.email.refresh_from_db()
         self.sms.refresh_from_db()
         self.ad.refresh_from_db()
         self.assertIsNotNone(self.email.confirmed_at)
+        self.assertIsNone(self.sms.confirmed_at)
+        self.assertIsNone(self.ad.confirmed_at)
+
+    def test_slicktext_confirm_all_confirms_only_sms(self):
+        url = reverse('tickets:event_slicktext_confirm_all', args=[self.event.id])
+        self.client.post(url)
+        self.email.refresh_from_db()
+        self.sms.refresh_from_db()
+        self.ad.refresh_from_db()
+        self.assertIsNone(self.email.confirmed_at)
         self.assertIsNotNone(self.sms.confirmed_at)
+        self.assertIsNone(self.ad.confirmed_at)
+
+    def test_meta_ads_confirm_all_confirms_only_ads(self):
+        url = reverse('tickets:event_meta_ads_confirm_all', args=[self.event.id])
+        self.client.post(url)
+        self.email.refresh_from_db()
+        self.sms.refresh_from_db()
+        self.ad.refresh_from_db()
+        self.assertIsNone(self.email.confirmed_at)
+        self.assertIsNone(self.sms.confirmed_at)
         self.assertIsNotNone(self.ad.confirmed_at)
 
-    def test_confirm_all_skips_already_confirmed(self):
+    def test_mailchimp_confirm_all_skips_already_confirmed(self):
         original_time = timezone.now() - timedelta(days=1)
         self.email.confirmed_at = original_time
         self.email.save()
-        url = reverse('tickets:event_marketing_confirm_all', args=[self.event.id])
+        url = reverse('tickets:event_mailchimp_confirm_all', args=[self.event.id])
         self.client.post(url)
         self.email.refresh_from_db()
         # Already-confirmed row keeps its original timestamp.
         self.assertEqual(self.email.confirmed_at, original_time)
+
+    def test_ajax_mailchimp_confirm_all_returns_rows_json(self):
+        url = reverse('tickets:event_mailchimp_confirm_all', args=[self.event.id])
+        resp = self.client.post(url, HTTP_X_REQUESTED_WITH='XMLHttpRequest')
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertTrue(body['ok'])
+        self.assertEqual(body['count'], 1)
+        self.assertEqual(len(body['rows']), 1)
+        self.assertTrue(body['rows'][0]['is_confirmed'])
+        self.assertEqual(body['rows'][0]['status_label'], 'Confirmed')
 
     def test_ajax_metrics_edit_returns_json_row(self):
         url = reverse('tickets:event_mailchimp_metrics_edit', args=[self.event.id, self.email.id])
