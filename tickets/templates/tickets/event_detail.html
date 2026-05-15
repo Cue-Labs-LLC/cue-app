@@ -664,42 +664,33 @@
 <!-- ===== TAB 4: Marketing ===== -->
 <div class="tab-pane fade" id="tab-marketing" role="tabpanel"{% if is_org_admin and mailchimp_connection %} data-mailchimp-refresh-url="{% url 'tickets:event_mailchimp_refresh_all' event.id %}"{% endif %}{% if is_org_admin and slicktext_connection %} data-slicktext-refresh-url="{% url 'tickets:event_slicktext_refresh_all' event.id %}"{% endif %}>
 
-{% if is_org_admin and marketing_pending_count or marketing_needs_review_count %}
-<div class="alert alert-warning d-flex justify-content-between align-items-center mb-3" role="alert">
-    <div>
-        <i class="bi bi-eye me-2"></i>
-        {% if marketing_pending_count %}<strong>{{ marketing_pending_count }}</strong> record{{ marketing_pending_count|pluralize }} pending review.{% endif %}
-        {% if marketing_needs_review_count %} <strong>{{ marketing_needs_review_count }}</strong> need{{ marketing_needs_review_count|pluralize:",s" }} re-review (vendor data changed).{% endif %}
-        Confirm them to flow into the Marketing dashboard.
-    </div>
-    {% if marketing_pending_count %}
-    <form method="post" action="{% url 'tickets:event_marketing_confirm_all' event.id %}" onsubmit="return confirm('Confirm all {{ marketing_pending_count }} pending record(s) on this event?');">
-        {% csrf_token %}
-        <button type="submit" class="btn btn-sm btn-primary">Confirm all ({{ marketing_pending_count }})</button>
-    </form>
-    {% endif %}
-</div>
-{% endif %}
-
 <div class="card mb-4">
     <div class="card-header d-flex justify-content-between align-items-center">
         <h5 class="mb-0">Meta Ads</h5>
-        {% if is_org_admin %}
-            {% if org.meta_ads_access_token and org.meta_ads_account_id %}
-            <button type="button"
-                    class="btn btn-sm btn-primary"
-                    data-bs-toggle="modal"
-                    data-bs-target="#metaAdsMatchModal"
-                    data-match-url="{% url 'tickets:event_meta_ads_match' event.id %}?format=json"
-                    data-apply-url="{% url 'tickets:event_meta_ads_apply' event.id %}">
-                <i class="bi bi-megaphone"></i> Match Meta Ads campaign
-            </button>
-            {% else %}
-            <a href="{% url 'tickets:meta_ads_settings' %}" class="btn btn-sm btn-primary">
-                <i class="bi bi-facebook"></i> Connect Meta Ads
-            </a>
+        <div class="d-inline-flex gap-2 align-items-center">
+            {% if is_org_admin and meta_ads_pending_count %}
+            <form method="post" action="{% url 'tickets:event_meta_ads_confirm_all' event.id %}" class="d-inline" data-marketing-form="confirm-all" data-channel="ads">
+                {% csrf_token %}
+                <button type="submit" class="btn btn-sm btn-outline-primary">Confirm all ({{ meta_ads_pending_count }})</button>
+            </form>
             {% endif %}
-        {% endif %}
+            {% if is_org_admin %}
+                {% if org.meta_ads_access_token and org.meta_ads_account_id %}
+                <button type="button"
+                        class="btn btn-sm btn-primary"
+                        data-bs-toggle="modal"
+                        data-bs-target="#metaAdsMatchModal"
+                        data-match-url="{% url 'tickets:event_meta_ads_match' event.id %}?format=json"
+                        data-apply-url="{% url 'tickets:event_meta_ads_apply' event.id %}">
+                    <i class="bi bi-megaphone"></i> Match Meta Ads campaign
+                </button>
+                {% else %}
+                <a href="{% url 'tickets:meta_ads_settings' %}" class="btn btn-sm btn-primary">
+                    <i class="bi bi-facebook"></i> Connect Meta Ads
+                </a>
+                {% endif %}
+            {% endif %}
+        </div>
     </div>
     <div class="card-body">
         {% if org.meta_ads_access_token and org.meta_ads_account_id %}
@@ -796,22 +787,30 @@
 <div class="card mb-4">
     <div class="card-header d-flex justify-content-between align-items-center">
         <h5 class="mb-0">Mailchimp</h5>
-        {% if is_org_admin %}
-            {% if mailchimp_connection %}
-            <button type="button"
-                    class="btn btn-sm btn-primary"
-                    data-bs-toggle="modal"
-                    data-bs-target="#mailchimpMatchModal"
-                    data-match-url="{% url 'tickets:event_mailchimp_match' event.id %}?format=json"
-                    data-apply-url="{% url 'tickets:event_mailchimp_apply' event.id %}">
-                <i class="bi bi-envelope-paper"></i> Match Mailchimp campaign
-            </button>
-            {% else %}
-            <a href="{% url 'tickets:mailchimp_settings' %}" class="btn btn-sm btn-primary">
-                <i class="bi bi-envelope-paper"></i> Connect Mailchimp
-            </a>
+        <div class="d-inline-flex gap-2 align-items-center">
+            {% if is_org_admin and mailchimp_pending_count %}
+            <form method="post" action="{% url 'tickets:event_mailchimp_confirm_all' event.id %}" class="d-inline" data-marketing-form="confirm-all" data-channel="email">
+                {% csrf_token %}
+                <button type="submit" class="btn btn-sm btn-outline-primary">Confirm all ({{ mailchimp_pending_count }})</button>
+            </form>
             {% endif %}
-        {% endif %}
+            {% if is_org_admin %}
+                {% if mailchimp_connection %}
+                <button type="button"
+                        class="btn btn-sm btn-primary"
+                        data-bs-toggle="modal"
+                        data-bs-target="#mailchimpMatchModal"
+                        data-match-url="{% url 'tickets:event_mailchimp_match' event.id %}?format=json"
+                        data-apply-url="{% url 'tickets:event_mailchimp_apply' event.id %}">
+                    <i class="bi bi-envelope-paper"></i> Match Mailchimp campaign
+                </button>
+                {% else %}
+                <a href="{% url 'tickets:mailchimp_settings' %}" class="btn btn-sm btn-primary">
+                    <i class="bi bi-envelope-paper"></i> Connect Mailchimp
+                </a>
+                {% endif %}
+            {% endif %}
+        </div>
     </div>
     <div class="card-body">
         {% if mailchimp_connection %}
@@ -923,22 +922,30 @@
 <div class="card mb-4">
     <div class="card-header d-flex justify-content-between align-items-center">
         <h5 class="mb-0">SlickText</h5>
-        {% if is_org_admin %}
-            {% if slicktext_connection %}
-            <button type="button"
-                    class="btn btn-sm btn-primary"
-                    data-bs-toggle="modal"
-                    data-bs-target="#slicktextMatchModal"
-                    data-match-url="{% url 'tickets:event_slicktext_match' event.id %}?format=json"
-                    data-apply-url="{% url 'tickets:event_slicktext_apply' event.id %}">
-                <i class="bi bi-chat-dots"></i> Match SlickText broadcast
-            </button>
-            {% else %}
-            <a href="{% url 'tickets:slicktext_settings' %}" class="btn btn-sm btn-primary">
-                <i class="bi bi-chat-dots"></i> Connect SlickText
-            </a>
+        <div class="d-inline-flex gap-2 align-items-center">
+            {% if is_org_admin and slicktext_pending_count %}
+            <form method="post" action="{% url 'tickets:event_slicktext_confirm_all' event.id %}" class="d-inline" data-marketing-form="confirm-all" data-channel="sms">
+                {% csrf_token %}
+                <button type="submit" class="btn btn-sm btn-outline-primary">Confirm all ({{ slicktext_pending_count }})</button>
+            </form>
             {% endif %}
-        {% endif %}
+            {% if is_org_admin %}
+                {% if slicktext_connection %}
+                <button type="button"
+                        class="btn btn-sm btn-primary"
+                        data-bs-toggle="modal"
+                        data-bs-target="#slicktextMatchModal"
+                        data-match-url="{% url 'tickets:event_slicktext_match' event.id %}?format=json"
+                        data-apply-url="{% url 'tickets:event_slicktext_apply' event.id %}">
+                    <i class="bi bi-chat-dots"></i> Match SlickText broadcast
+                </button>
+                {% else %}
+                <a href="{% url 'tickets:slicktext_settings' %}" class="btn btn-sm btn-primary">
+                    <i class="bi bi-chat-dots"></i> Connect SlickText
+                </a>
+                {% endif %}
+            {% endif %}
+        </div>
     </div>
     <div class="card-body">
         {% if slicktext_connection %}
@@ -3436,12 +3443,18 @@ function copyScannnerPin() {
             var prompt = form.getAttribute('data-confirm-text') || 'Remove this row?';
             if (!window.confirm(prompt)) return;
         }
+        // Bulk confirm-all: light confirmation prompt with the count from the button label.
+        if (kind === 'confirm-all') {
+            var btn = form.querySelector('button[type="submit"]');
+            var label = btn ? btn.textContent.trim() : 'Confirm all';
+            if (!window.confirm('Confirm all pending records in this section? (' + label + ')')) return;
+        }
 
         var submitBtn = form.querySelector('button[type="submit"]');
         var originalLabel = submitBtn ? submitBtn.innerHTML : null;
         if (submitBtn) {
             submitBtn.disabled = true;
-            if (kind === 'refresh') {
+            if (kind === 'refresh' || kind === 'confirm-all') {
                 submitBtn.innerHTML = '<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>';
             }
         }
@@ -3470,6 +3483,14 @@ function copyScannnerPin() {
             }
             if (kind === 'remove') {
                 removeRow(channel, rowId);
+                return;
+            }
+            if (kind === 'confirm-all') {
+                (out.data.rows || []).forEach(function (row) {
+                    applyRowUpdate(channel, row.id, row);
+                });
+                // No more pending records in this section — hide the button entirely.
+                form.remove();
                 return;
             }
             applyRowUpdate(channel, rowId, out.data.row);
