@@ -1339,6 +1339,14 @@ def scanner_checkin(request):
     event_id = request.data.get('event_id', '').strip()
 
     if not order_number or not event_id:
+        try:
+            received_keys = sorted(request.data.keys())
+        except Exception:
+            received_keys = '<unreadable>'
+        logger.warning(
+            "scanner_checkin 400: missing field — content_type=%r, received_keys=%r, order_number=%r, event_id=%r",
+            request.content_type, received_keys, order_number, event_id,
+        )
         return Response({'error': 'order_number and event_id are required'}, status=400)
     if str(event.pk) != event_id:
         return Response({'error': 'Event mismatch'}, status=403)
