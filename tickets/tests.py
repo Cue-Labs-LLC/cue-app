@@ -6345,3 +6345,86 @@ class MarketingDetectorTests(TestCase):
         gen.detect_high_unsubscribe_rate()
         kept = AIRecommendation.objects.get(id=recs[0].id)
         self.assertEqual(kept.status, AIRecommendation.Status.DISMISSED)
+
+
+class ScannerCheckinAPITests(TestCase):
+    """Tests for /api/scanner/checkin/ (PIN-based scanner session)."""
+
+    def setUp(self):
+        from .models import ScannerSession
+
+        self.org = Organization.objects.create(name='Scan Org', slug='scan-org')
+        self.venue = Venue.objects.create(
+            organization=self.org, name='Scan Venue', city='SF',
+        )
+        self.event = Event.objects.create(
+            organization=self.org,
+            name='Scan Event',
+            venue=self.venue,
+            start_date=date.today(),
+            scanner_pin='1234',
+        )
+        self.customer = Customer.objects.create(
+            organization=self.org, name='Buyer', email='buyer@example.com',
+        )
+        self.order = TicketOrder.objects.create(
+            customer=self.customer,
+            event=self.event,
+            order_number='#00001',
+            order_date=timezone.now(),
+            total_amount=Decimal('10.00'),
+        )
+        self.session = ScannerSession.objects.create(event=self.event)
+        self.auth = f'Scanner {self.session.token}'
+
+    def test_checkin_succeeds_without_event_id_in_body(self):
+        # Regression: the mobile scanner does not send event_id; the session is authoritative.
+        res = self.client.post(
+            '/api/scanner/checkin/',
+            data=json.dumps({'order_number': '#00001'}),
+            content_type='application/json',
+            HTTP_AUTHORIZATION=self.auth,
+        )
+        self.assertEqual(res.status_code, 200, res.content)
+        self.assertEqual(res.json()['status'], 'checked_in')
+        self.order.refresh_from_db()
+        self.assertIsNotNone(self.order.checked_in_at)
+
+    def test_checkin_succeeds_with_matching_event_id(self):
+        res = self.client.post(
+            '/api/scanner/checkin/',
+            data=json.dumps({'order_number': '#00001', 'event_id': str(self.event.pk)}),
+            content_type='application/json',
+            HTTP_AUTHORIZATION=self.auth,
+        )
+        self.assertEqual(res.status_code, 200, res.content)
+
+    def test_checkin_rejects_mismatched_event_id(self):
+        other = Event.objects.create(
+            organization=self.org, name='Other', venue=self.venue, start_date=date.today(),
+        )
+        res = self.client.post(
+            '/api/scanner/checkin/',
+            data=json.dumps({'order_number': '#00001', 'event_id': str(other.pk)}),
+            content_type='application/json',
+            HTTP_AUTHORIZATION=self.auth,
+        )
+        self.assertEqual(res.status_code, 403)
+
+    def test_checkin_requires_order_number(self):
+        res = self.client.post(
+            '/api/scanner/checkin/',
+            data=json.dumps({'event_id': str(self.event.pk)}),
+            content_type='application/json',
+            HTTP_AUTHORIZATION=self.auth,
+        )
+        self.assertEqual(res.status_code, 400)
+
+    def test_checkin_unknown_order_returns_404(self):
+        res = self.client.post(
+            '/api/scanner/checkin/',
+            data=json.dumps({'order_number': '#99999'}),
+            content_type='application/json',
+            HTTP_AUTHORIZATION=self.auth,
+        )
+        self.assertEqual(res.status_code, 404)

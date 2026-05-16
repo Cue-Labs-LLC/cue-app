@@ -1328,8 +1328,11 @@ def scanner_event(request):
 def scanner_checkin(request):
     """
     POST /api/scanner/checkin/
-    Body: {order_number, event_id}
+    Body: {order_number, event_id?}
     Authorization: Scanner <token>
+
+    event_id is optional. The scanner session is already bound to a single
+    event, which is authoritative. If event_id is supplied, it must match.
     """
     session = request.auth
     event = session.event
@@ -1338,17 +1341,17 @@ def scanner_checkin(request):
     order_number = request.data.get('order_number', '').strip()
     event_id = request.data.get('event_id', '').strip()
 
-    if not order_number or not event_id:
+    if not order_number:
         try:
             received_keys = sorted(request.data.keys())
         except Exception:
             received_keys = '<unreadable>'
         logger.warning(
-            "scanner_checkin 400: missing field — content_type=%r, received_keys=%r, order_number=%r, event_id=%r",
-            request.content_type, received_keys, order_number, event_id,
+            "scanner_checkin 400: missing order_number — content_type=%r, received_keys=%r",
+            request.content_type, received_keys,
         )
-        return Response({'error': 'order_number and event_id are required'}, status=400)
-    if str(event.pk) != event_id:
+        return Response({'error': 'order_number is required'}, status=400)
+    if event_id and str(event.pk) != event_id:
         return Response({'error': 'Event mismatch'}, status=403)
 
     with transaction.atomic():
