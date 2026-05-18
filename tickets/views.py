@@ -10174,21 +10174,38 @@ def _compute_available_balance(org):
     return stripe_revenue, platform_fees, paid_out, organizer_revenue - paid_out
 
 
-def _get_stripe_platform_available_cents():
+_STRIPE_PLATFORM_AVAILABLE_CACHE_KEY = 'stripe_platform_available_cents'
+_STRIPE_PLATFORM_AVAILABLE_CACHE_TTL = 60
+
+
+def _get_stripe_platform_available_cents(use_cache=False):
     """
     Query the Stripe platform account's available balance in cents.
-    Used as a safety check before initiating a Transfer, not for per-org display.
-    Returns None on error.
+    Used both for the finance display (cached) and as a safety check before
+    initiating a Transfer (uncached). Returns None on error.
     """
+    if use_cache:
+        cached = django_cache.get(_STRIPE_PLATFORM_AVAILABLE_CACHE_KEY)
+        if cached is not None:
+            return cached
+
     import stripe as stripe_lib
     from django.conf import settings as django_settings
     stripe_lib.api_key = django_settings.STRIPE_SECRET_KEY
     try:
         balance = stripe_lib.Balance.retrieve()
+        amount = 0
         for entry in balance.available:
             if entry.currency.lower() == django_settings.STRIPE_CURRENCY.lower():
-                return entry.amount
-        return 0
+                amount = entry.amount
+                break
+        if use_cache:
+            django_cache.set(
+                _STRIPE_PLATFORM_AVAILABLE_CACHE_KEY,
+                amount,
+                _STRIPE_PLATFORM_AVAILABLE_CACHE_TTL,
+            )
+        return amount
     except Exception:
         logger.exception("Could not retrieve Stripe platform balance")
         return None
@@ -10324,7 +10341,18 @@ def finance_overview(request):
             logger.exception("Could not retrieve Stripe account state for org %s", org.id)
 
     if org.stripe_onboarding_complete and org.stripe_account_id:
-        stripe_available = _compute_settled_payout_balance(org)
+        db_settled = _compute_settled_payout_balance(org)
+        stripe_actual_cents = _get_stripe_platform_available_cents(use_cache=True)
+        if stripe_actual_cents is not None:
+            stripe_actual = Decimal(str(stripe_actual_cents)) / 100
+            if stripe_actual < db_settled:
+                logger.warning(
+                    "Stripe-available below DB-settled for org %s: db=%s stripe=%s gap=%s",
+                    org.id, db_settled, stripe_actual, db_settled - stripe_actual,
+                )
+            stripe_available = min(db_settled, stripe_actual)
+        else:
+            stripe_available = db_settled
         settling_balance = max(Decimal('0.00'), available_balance - stripe_available)
 
     legacy_pending_payouts = Payout.objects.filter(
