@@ -29,6 +29,7 @@ class AIRecommendationAdmin(admin.ModelAdmin):
     list_filter = ['organization', 'kind', 'priority', 'status', 'created_at']
     search_fields = ['title', 'summary', 'dedupe_key', 'event__name', 'customer__email', 'customer__name']
     readonly_fields = ['id', 'created_at', 'updated_at', 'reviewed_at', 'dismissed_at', 'resolved_at']
+    autocomplete_fields = ['organization', 'event', 'customer']
     date_hierarchy = 'created_at'
 
 
@@ -102,8 +103,9 @@ class UploadedFileAdmin(admin.ModelAdmin):
     list_filter = ['organization', 'status', 'csv_format', 'uploaded_at']
     search_fields = ['filename', 'description', 'source']
     readonly_fields = ['id', 'uploaded_at', 'created_at', 'updated_at']
+    autocomplete_fields = ['csv_format']
     date_hierarchy = 'uploaded_at'
-    
+
     fieldsets = (
         ('File Information', {
             'fields': ('csv_format', 'filename', 'description', 'source', 'status')
@@ -206,6 +208,7 @@ class CustomerTagAdmin(admin.ModelAdmin):
     list_filter = ['organization', 'color']
     search_fields = ['name']
     readonly_fields = ['id', 'created_at', 'updated_at']
+    autocomplete_fields = ['organization']
 
     def customer_count(self, obj):
         return obj.customers.count()
@@ -278,6 +281,7 @@ class EventAdmin(admin.ModelAdmin):
     list_filter = ['organization', 'start_date', 'created_at', 'venue__city']
     search_fields = ['name', 'venue__name', 'venue__city', 'description', 'ticket_link']
     readonly_fields = ['id', 'created_at', 'updated_at']
+    autocomplete_fields = ['venue']
     date_hierarchy = 'start_date'
     inlines = [EventTalentInline, EventExpenseInline]
 
@@ -339,6 +343,7 @@ class ScannerSessionAdmin(admin.ModelAdmin):
             'classes': ('collapse',)
         }),
     )
+    autocomplete_fields = ['event']
 
     def get_queryset(self, request):
         qs = super().get_queryset(request)
@@ -356,6 +361,7 @@ class EventExpenseAdmin(admin.ModelAdmin):
     list_filter = ['event__organization', 'category', 'source', 'expense_date', 'created_at']
     search_fields = ['description', 'notes', 'external_id', 'event__name']
     readonly_fields = ['id', 'created_at', 'updated_at']
+    autocomplete_fields = ['event']
     date_hierarchy = 'expense_date'
 
     fieldsets = (
@@ -398,6 +404,7 @@ class EventEmailCampaignAdmin(admin.ModelAdmin):
     list_filter = ['event__organization', 'source', 'send_time', 'created_at']
     search_fields = ['campaign_title', 'subject_line', 'external_id', 'event__name']
     readonly_fields = ['id', 'created_at', 'updated_at', 'last_synced_at']
+    autocomplete_fields = ['event', 'confirmed_by']
     date_hierarchy = 'send_time'
 
     def get_event(self, obj):
@@ -426,6 +433,7 @@ class EventSMSCampaignAdmin(admin.ModelAdmin):
     list_filter = ['event__organization', 'source', 'send_time', 'created_at']
     search_fields = ['name', 'message', 'external_id', 'event__name']
     readonly_fields = ['id', 'created_at', 'updated_at', 'last_synced_at']
+    autocomplete_fields = ['event', 'confirmed_by']
     date_hierarchy = 'send_time'
 
     def get_event(self, obj):
@@ -453,6 +461,7 @@ class IncomeSourceAdmin(admin.ModelAdmin):
     list_display = ['name', 'order', 'organization', 'created_at']
     list_filter = ['organization', 'created_at']
     search_fields = ['name']
+    autocomplete_fields = ['organization']
     ordering = ['organization', 'order', 'name']
 
     def get_queryset(self, request):
@@ -471,6 +480,7 @@ class EventIncomeAdmin(admin.ModelAdmin):
     list_filter = ['event__organization', 'income_source', 'income_date', 'created_at']
     search_fields = ['income_source__name', 'notes', 'event__name']
     readonly_fields = ['id', 'created_at', 'updated_at']
+    autocomplete_fields = ['event', 'income_source']
     date_hierarchy = 'income_date'
 
     fieldsets = (
@@ -509,6 +519,7 @@ class TicketOrderAdmin(admin.ModelAdmin):
     list_filter = ['event__organization', 'order_date', 'event', 'uploaded_file', 'created_at']
     search_fields = ['order_number', 'external_order_number', 'customer__name', 'customer__email', 'event__name']
     readonly_fields = ['id', 'created_at', 'updated_at', 'stripe_dashboard_link']
+    autocomplete_fields = ['customer', 'event', 'uploaded_file']
     date_hierarchy = 'order_date'
     inlines = [TicketInline]
 
@@ -576,7 +587,8 @@ class TicketTierAdmin(admin.ModelAdmin):
     get_organization.admin_order_field = 'uploaded_file__organization'
     search_fields = ['ticket_type', 'name', 'uploaded_file__filename']
     readonly_fields = ['id', 'created_at', 'updated_at']
-    
+    autocomplete_fields = ['uploaded_file']
+
     fieldsets = (
         ('Tier Information', {
             'fields': ('ticket_type', 'name', 'price', 'allotment', 'order')
@@ -612,6 +624,7 @@ class TicketAdmin(admin.ModelAdmin):
     list_filter = ['ticket_order__event__organization', 'ticket_type', 'tier_name', 'created_at']
     search_fields = ['ticket_order__order_number', 'ticket_type', 'tier_name']
     readonly_fields = ['id', 'created_at', 'updated_at']
+    autocomplete_fields = ['ticket_order', 'tier']
 
     def get_organization(self, obj):
         return obj.ticket_order.event.organization if obj.ticket_order_id and obj.ticket_order.event_id else ''
@@ -649,8 +662,10 @@ class CustomFieldOptionInline(admin.TabularInline):
 class CustomFieldAdmin(admin.ModelAdmin):
     list_display = ['name', 'field_type', 'order', 'required', 'default_option', 'organization']
     list_filter = ['organization', 'field_type', 'required']
+    search_fields = ['name']
     ordering = ['order', 'name']
     inlines = [CustomFieldOptionInline]
+    autocomplete_fields = ['organization']
 
     def get_queryset(self, request):
         qs = super().get_queryset(request)
@@ -686,6 +701,8 @@ class CustomFieldAdmin(admin.ModelAdmin):
 class CustomFieldOptionAdmin(admin.ModelAdmin):
     list_display = ['custom_field', 'label', 'order', 'get_organization']
     list_filter = ['custom_field__organization', 'custom_field']
+    search_fields = ['label', 'custom_field__name']
+    autocomplete_fields = ['custom_field']
 
     def get_organization(self, obj):
         return obj.custom_field.organization if obj.custom_field_id else ''
@@ -714,6 +731,7 @@ class EventCustomFieldValueAdmin(admin.ModelAdmin):
     get_organization.admin_order_field = 'event__organization'
     search_fields = ['event__name']
     raw_id_fields = ['event']
+    autocomplete_fields = ['custom_field', 'custom_field_option']
 
     def get_queryset(self, request):
         qs = super().get_queryset(request)
@@ -825,6 +843,7 @@ class PayoutAdmin(admin.ModelAdmin):
     list_filter = ['status', 'organization']
     search_fields = ['organization__name', 'stripe_transfer_id']
     readonly_fields = ['stripe_transfer_id', 'created_at', 'updated_at']
+    autocomplete_fields = ['organization', 'initiated_by']
     ordering = ['-created_at']
     actions = ['sync_with_stripe']
 
@@ -880,6 +899,7 @@ class UserProfileAdmin(admin.ModelAdmin):
     list_filter = ['role', 'organization']
     search_fields = ['user__username', 'user__first_name', 'user__last_name', 'user__email', 'phone_number']
     raw_id_fields = ['user']
+    autocomplete_fields = ['organization']
 
     def user_full_name(self, obj):
         return obj.user.get_full_name() if obj.user_id else ''
@@ -893,6 +913,7 @@ class OrganizationInvitationAdmin(admin.ModelAdmin):
     search_fields = ['email', 'organization__name']
     readonly_fields = ['id', 'token', 'created_at', 'updated_at', 'accepted_at', 'accepted_by']
     raw_id_fields = ['invited_by', 'accepted_by']
+    autocomplete_fields = ['organization']
 
     def get_queryset(self, request):
         qs = super().get_queryset(request)
@@ -942,6 +963,7 @@ class SurveyQuestionAdmin(admin.ModelAdmin):
     list_filter = ['question_type', 'is_required', 'is_active', 'organization']
     search_fields = ['question_text']
     readonly_fields = ['id', 'created_at', 'updated_at']
+    autocomplete_fields = ['event', 'organization']
     ordering = ['position']
 
     def get_queryset(self, request):
@@ -963,6 +985,7 @@ class SurveyInvitationAdmin(admin.ModelAdmin):
     search_fields = ['email', 'customer__name', 'customer__email', 'event__name']
     readonly_fields = ['id', 'token', 'created_at', 'updated_at']
     raw_id_fields = ['customer', 'event']
+    autocomplete_fields = ['organization']
 
     def get_queryset(self, request):
         qs = super().get_queryset(request)
@@ -981,6 +1004,7 @@ class SurveyResponseAdmin(admin.ModelAdmin):
     search_fields = ['customer__name', 'customer__email', 'event__name']
     readonly_fields = ['id', 'created_at', 'updated_at', 'submitted_at']
     raw_id_fields = ['customer', 'event', 'invitation']
+    autocomplete_fields = ['organization']
 
     def get_queryset(self, request):
         qs = super().get_queryset(request)
@@ -1032,6 +1056,7 @@ class ChatMessageAdmin(admin.ModelAdmin):
     list_filter = ['organization', 'role', 'created_at']
     search_fields = ['content', 'user__username', 'user__email']
     readonly_fields = ['id', 'created_at', 'updated_at']
+    autocomplete_fields = ['organization', 'user']
     date_hierarchy = 'created_at'
 
     def content_preview(self, obj):
@@ -1085,6 +1110,7 @@ class ExternalSurveyUploadAdmin(admin.ModelAdmin):
     list_filter = ['organization', 'status', 'uploaded_at']
     readonly_fields = ['id', 'uploaded_at', 'created_at', 'updated_at']
     search_fields = ['filename', 'organization__name']
+    autocomplete_fields = ['organization']
 
 
 @admin.register(ExternalSurveyResponse)
@@ -1094,6 +1120,7 @@ class ExternalSurveyResponseAdmin(admin.ModelAdmin):
     raw_id_fields = ['upload', 'event']
     readonly_fields = ['id', 'created_at', 'updated_at']
     search_fields = ['email', 'city', 'text_feedback']
+    autocomplete_fields = ['organization']
 
 
 class SaleableTicketTypeTierInline(admin.TabularInline):
@@ -1109,6 +1136,7 @@ class SaleableTicketTypeAdmin(admin.ModelAdmin):
     list_filter = ['event__organization', 'is_active']
     search_fields = ['name', 'event__name']
     readonly_fields = ['id', 'created_at', 'updated_at', 'quantity_sold']
+    autocomplete_fields = ['event', 'unlocks_after']
     inlines = [SaleableTicketTypeTierInline]
 
     def get_queryset(self, request):
@@ -1126,6 +1154,7 @@ class PipedreamCalendarConnectionAdmin(admin.ModelAdmin):
     list_display = ['organization', 'webhook_url', 'created_at', 'updated_at']
     search_fields = ['organization__name', 'webhook_url']
     readonly_fields = ['id', 'created_at', 'updated_at']
+    autocomplete_fields = ['organization']
 
 
 @admin.register(OrganizationAPIKey)
@@ -1134,6 +1163,7 @@ class OrganizationAPIKeyAdmin(admin.ModelAdmin):
     list_filter = ('is_active', 'organization')
     search_fields = ('name', 'organization__name')
     readonly_fields = ('key', 'masked_key', 'last_used_at', 'created_at', 'updated_at')
+    autocomplete_fields = ('organization',)
 
 
 @admin.register(OAuthClient)
@@ -1148,6 +1178,7 @@ class OAuthAccessTokenAdmin(admin.ModelAdmin):
     list_display = ['client', 'organization', 'expires_at', 'created_at']
     readonly_fields = ['token', 'created_at', 'updated_at']
     list_filter = ['organization', 'client']
+    autocomplete_fields = ['client', 'organization']
 
 
 @admin.register(OrganizerWaitlist)
