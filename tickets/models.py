@@ -1035,6 +1035,13 @@ class ScannerSession(BaseModel):
         return f"ScannerSession {self.token} ({'active' if self.is_active else 'inactive'})"
 
 
+class EventExpenseQuerySet(models.QuerySet):
+    def visible(self):
+        return self.filter(deleted_at__isnull=True).exclude(
+            source='meta_ads', confirmed_at__isnull=True
+        )
+
+
 class EventExpense(AuditBaseModel):
     """Expense line item for an event."""
     SOURCE_CHOICES = [
@@ -1073,6 +1080,8 @@ class EventExpense(AuditBaseModel):
         related_name='+',
     )
     api_data_changed_at = models.DateTimeField(null=True, blank=True)
+
+    objects = EventExpenseQuerySet.as_manager()
 
     class Meta:
         ordering = ['-expense_date', '-created_at']

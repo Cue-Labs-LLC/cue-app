@@ -268,8 +268,8 @@ def agent_events(request):
         .values('s')
     )
     expense_sq = (
-        EventExpense.objects
-        .filter(event=OuterRef('pk'), deleted_at__isnull=True)
+        EventExpense.objects.visible()
+        .filter(event=OuterRef('pk'))
         .values('event')
         .annotate(s=Sum('amount'))
         .values('s')
@@ -377,8 +377,8 @@ def agent_event_detail(request, event_id):
     new_count = len(attended_customer_ids - prior_customer_ids)
 
     expenses = list(
-        EventExpense.objects
-        .filter(event=event, deleted_at__isnull=True)
+        EventExpense.objects.visible()
+        .filter(event=event)
         .values('category', 'description', 'amount', 'expense_date')
         .order_by('-expense_date')
     )

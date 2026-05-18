@@ -496,7 +496,7 @@ def _annotate_events(queryset):
         ),
         total_expenses=Coalesce(
             Subquery(
-                EventExpense.objects.filter(event=OuterRef('pk'), deleted_at__isnull=True)
+                EventExpense.objects.visible().filter(event=OuterRef('pk'))
                 .values('event')
                 .annotate(total=Sum('amount'))
                 .values('total')[:1],
@@ -3253,8 +3253,10 @@ def _compute_event_stats(event):
     total_additional_income = sum(line.amount for line in additional_income_lines)
     total_revenue = net_ticket_revenue + total_additional_income
 
-    # Expenses — evaluate queryset to list so it can be pickled for cache
-    expenses_qs = event.expenses.filter(deleted_at__isnull=True)
+    # Expenses — evaluate queryset to list so it can be pickled for cache.
+    # Unconfirmed meta_ads (campaign-matched) expenses are excluded from event
+    # expense totals/listings; they only appear in the Marketing tab review UI.
+    expenses_qs = event.expenses.visible()
     total_expenses = expenses_qs.aggregate(
         total=Coalesce(Sum('amount'), Decimal('0.00'))
     )['total']
@@ -3974,7 +3976,14 @@ def event_detail(request, event_id):
 
     # Map category keys to display labels
     category_labels = dict(EventExpense.CATEGORY_CHOICES)
-    meta_ads_expenses = [expense for expense in expenses if expense.source == 'meta_ads']
+    # The Marketing tab review UI needs ALL meta_ads expenses including
+    # unconfirmed ones (so the user can confirm/unconfirm them), so we query
+    # them separately rather than deriving from `expenses` (which is filtered
+    # to visible / confirmed meta_ads only).
+    meta_ads_expenses = list(
+        event.expenses.filter(deleted_at__isnull=True, source='meta_ads')
+        .order_by('-expense_date', '-created_at')
+    )
     for expense in meta_ads_expenses:
         metadata = expense.external_metadata or {}
         expense.meta_ads_last_synced_display = _format_meta_ads_datetime(metadata.get('last_synced_at'))
@@ -7248,7 +7257,7 @@ def profitability_overview(request):
         .annotate(
             total_expenses=Coalesce(
                 Subquery(
-                    EventExpense.objects.filter(event=OuterRef('pk'), deleted_at__isnull=True)
+                    EventExpense.objects.visible().filter(event=OuterRef('pk'))
                     .values('event')
                     .annotate(total=Sum('amount'))
                     .values('total')[:1],
@@ -7419,10 +7428,9 @@ def expense_analytics(request):
     selected_cats = request.GET.getlist('cat')
     selected_event_id = request.GET.get('event', '')
 
-    # Base queryset — org-scoped, soft-delete safe
-    qs = EventExpense.objects.filter(
+    # Base queryset — org-scoped, soft-delete safe, excludes unconfirmed meta_ads
+    qs = EventExpense.objects.visible().filter(
         event__organization=org,
-        deleted_at__isnull=True,
     ).select_related('event')
 
     # Time-series views: use expense_date when set, fall back to event start_date

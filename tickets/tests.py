@@ -6300,6 +6300,7 @@ class MarketingDetectorTests(TestCase):
             event=self.event, category='marketing', description='Meta Ads',
             amount=Decimal('500.00'), expense_date=date.today() - timedelta(days=5),
             source='meta_ads', external_id='ad-bad',
+            confirmed_at=timezone.now(),
         )
 
     def test_high_unsubscribe_rate_detector_creates_one_rec(self):

@@ -229,7 +229,7 @@ async def list_events(status: str = "all", limit: int = 20) -> str:
 
     orders_sq = TicketOrder.objects.filter(event=OuterRef("pk"), refunded_at__isnull=True).values("event").annotate(c=Count("id")).values("c")
     revenue_sq = TicketOrder.objects.filter(event=OuterRef("pk"), refunded_at__isnull=True).values("event").annotate(s=Sum("total_amount")).values("s")
-    expense_sq = EventExpense.objects.filter(event=OuterRef("pk"), deleted_at__isnull=True).values("event").annotate(s=Sum("amount")).values("s")
+    expense_sq = EventExpense.objects.visible().filter(event=OuterRef("pk")).values("event").annotate(s=Sum("amount")).values("s")
     income_sq = EventIncome.objects.filter(event=OuterRef("pk"), deleted_at__isnull=True).values("event").annotate(s=Sum("amount")).values("s")
 
     qs = Event.objects.filter(organization=org, deleted_at__isnull=True)
@@ -323,7 +323,7 @@ async def get_event(event_id: str) -> str:
     )()
 
     expenses = await sync_to_async(list)(
-        EventExpense.objects.filter(event=event, deleted_at__isnull=True)
+        EventExpense.objects.visible().filter(event=event)
         .values("category", "description", "amount", "expense_date")
         .order_by("-expense_date")
     )
