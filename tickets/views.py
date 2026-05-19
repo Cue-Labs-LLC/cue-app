@@ -105,7 +105,7 @@ from .services.cohort_analysis.cohort_retention_calculator import CohortRetentio
 from .services.meta_ads import (
     MetaAdsAPIError,
     MetaAdsClient,
-    exchange_code_for_token,
+    exchange_code_for_token as meta_exchange_code_for_token,
     exchange_for_long_lived_token,
 )
 from .services.meta_campaign_matcher import MetaCampaignMatcher
@@ -5027,7 +5027,7 @@ def meta_ads_callback(request):
 
     callback_url = request.build_absolute_uri(reverse('tickets:meta_ads_callback'))
     try:
-        short_token = exchange_code_for_token(code, callback_url)
+        short_token = meta_exchange_code_for_token(code, callback_url)
         long_token = exchange_for_long_lived_token(short_token['access_token'])
         access_token = long_token['access_token']
         profile = MetaAdsClient(access_token).get_user_profile()
