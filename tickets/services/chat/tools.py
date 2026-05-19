@@ -154,7 +154,7 @@ def _get_event_detail(organization, event_name: str) -> str:
         total=Coalesce(Sum('total_amount'), Decimal('0.00')),
         count=Count('id'),
     )
-    expenses = EventExpense.objects.filter(event=event).aggregate(
+    expenses = EventExpense.objects.visible().filter(event=event).aggregate(
         total=Coalesce(Sum('amount'), Decimal('0.00')),
     )
     additional_income = EventIncome.objects.filter(event=event).aggregate(
@@ -179,7 +179,7 @@ def _get_event_detail(organization, event_name: str) -> str:
     ]
 
     # Expense breakdown
-    expense_items = EventExpense.objects.filter(event=event).values('category').annotate(
+    expense_items = EventExpense.objects.visible().filter(event=event).values('category').annotate(
         total=Sum('amount'),
     ).order_by('-total')
     if expense_items:

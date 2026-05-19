@@ -145,7 +145,7 @@ class AIRecommendationGenerator:
         results = []
         for event in events:
             missing = []
-            if not EventExpense.objects.filter(event=event, deleted_at__isnull=True).exists():
+            if not EventExpense.objects.visible().filter(event=event).exists():
                 missing.append('expenses')
             has_invitation = SurveyInvitation.objects.filter(event=event).exists()
             has_external_response = ExternalSurveyResponse.objects.filter(event=event).exists()
@@ -393,11 +393,10 @@ class AIRecommendationGenerator:
         now = timezone.now()
         window_start = now - timedelta(days=90)
 
-        ads = EventExpense.objects.filter(
+        ads = EventExpense.objects.visible().filter(
             event__organization=org,
             event__deleted_at__isnull=True,
             source='meta_ads',
-            deleted_at__isnull=True,
             expense_date__gte=window_start.date(),
         )
         spend = ads.aggregate(total=Sum('amount'))['total'] or Decimal('0.00')
@@ -446,11 +445,10 @@ class AIRecommendationGenerator:
         window_start = today - timedelta(days=60)
 
         events_with_ads = (
-            EventExpense.objects.filter(
+            EventExpense.objects.visible().filter(
                 event__organization=org,
                 event__deleted_at__isnull=True,
                 source='meta_ads',
-                deleted_at__isnull=True,
                 expense_date__gte=window_start,
             )
             .values_list('event_id', flat=True)
@@ -491,18 +489,16 @@ class AIRecommendationGenerator:
         return results
 
     def _event_has_meta_ads_spend(self, event):
-        if EventExpense.objects.filter(
+        if EventExpense.objects.visible().filter(
             event=event,
             source='meta_ads',
-            deleted_at__isnull=True,
         ).exists():
             return True
 
-        manual_marketing_expenses = EventExpense.objects.filter(
+        manual_marketing_expenses = EventExpense.objects.visible().filter(
             event=event,
             category='marketing',
             source='manual',
-            deleted_at__isnull=True,
         ).values_list('description', 'notes')
         for description, notes in manual_marketing_expenses:
             if self._contains_meta_ad_expense_keyword(description) or self._contains_meta_ad_expense_keyword(notes):
