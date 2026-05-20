@@ -10469,6 +10469,24 @@ def _ensure_manual_payout_schedule(stripe_lib, connected_account_id):
     )
 
 
+def _read_stripe_capability(capabilities, name):
+    """Read one capability state from a Stripe Account.capabilities object.
+
+    The Stripe Python SDK exposes capabilities as a `Capabilities`
+    StripeObject which supports `__getitem__` and attribute access but
+    NOT `.get()`. Plain dicts (used in tests) support `.get()`. This
+    helper handles both so we can't silently miss an active capability
+    because of the type mismatch.
+    """
+    if capabilities is None:
+        return None
+    if hasattr(capabilities, 'to_dict'):
+        return capabilities.to_dict().get(name)
+    if isinstance(capabilities, dict):
+        return capabilities.get(name)
+    return None
+
+
 def _request_card_payments_capability(stripe_lib, connected_account_id):
     """Idempotently request the `card_payments` capability on a Connect account.
 
@@ -10504,8 +10522,7 @@ def _derive_tap_to_pay_ui_state(account):
     from django.conf import settings as django_settings
 
     country = (getattr(account, 'country', '') or '').upper()
-    capabilities = getattr(account, 'capabilities', None) or {}
-    card_cap = capabilities.get('card_payments') if hasattr(capabilities, 'get') else None
+    card_cap = _read_stripe_capability(getattr(account, 'capabilities', None), 'card_payments')
 
     if country and country not in django_settings.TAP_TO_PAY_SUPPORTED_COUNTRIES:
         status = 'unsupported'
