@@ -182,32 +182,97 @@
 
 </div>
 
-{% if session and session.status != 'completed' %}
+{% if pixel_id %}
+<script>
+(function() {
+    var params = new URLSearchParams(window.location.search);
+    var alreadyFired = params.get('fired') === '1';
+    var sessionId = params.get('session_id') || '';
+    {% if order %}
+    var orderRendered = true;
+    var purchaseData = {
+        value: 0.00,
+        currency: 'USD',
+        content_ids: [{% for id in pixel_content_ids %}'{{ id }}'{% if not forloop.last %}, {% endif %}{% endfor %}],
+        event_id: '{{ purchase_event_id }}',
+        redirect_url: {% if user.is_authenticated %}'{% url "tickets:my_tickets" %}'{% else %}''{% endif %}
+    };
+    {% elif session and session.status == 'completed' %}
+    var orderRendered = true;
+    var purchaseData = {
+        value: parseFloat('{{ session.ticket_order.total_amount|default:"0.00" }}'),
+        currency: 'USD',
+        content_ids: [{% for id in pixel_content_ids %}'{{ id }}'{% if not forloop.last %}, {% endif %}{% endfor %}],
+        event_id: '{{ purchase_event_id }}',
+        redirect_url: {% if user.is_authenticated %}'{% url "tickets:my_tickets" %}'{% else %}''{% endif %}
+    };
+    {% else %}
+    var orderRendered = false;
+    var purchaseData = null;
+    {% endif %}
+
+    function firePurchase(data) {
+        if (!window.fbq || !data) return;
+        fbq('track', 'Purchase', {
+            value: data.value,
+            currency: data.currency,
+            content_type: 'product',
+            content_ids: data.content_ids
+        }, { eventID: data.event_id });
+    }
+
+    function maybeRedirect(url) {
+        if (url) setTimeout(function() { window.location.href = url; }, 400);
+    }
+
+    if (orderRendered && !alreadyFired && purchaseData) {
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', function() {
+                firePurchase(purchaseData);
+                maybeRedirect(purchaseData.redirect_url);
+            });
+        } else {
+            firePurchase(purchaseData);
+            maybeRedirect(purchaseData.redirect_url);
+        }
+    } else if (!orderRendered && sessionId) {
+        var attempts = 0;
+        function poll() {
+            attempts++;
+            fetch('/checkout/session-status/' + sessionId + '/', { credentials: 'same-origin' })
+                .then(function(r) { return r.ok ? r.json() : null; })
+                .then(function(data) {
+                    if (data && data.status === 'completed' && data.purchase) {
+                        firePurchase({
+                            value: parseFloat(data.purchase.value),
+                            currency: data.purchase.currency,
+                            content_ids: data.purchase.content_ids,
+                            event_id: data.purchase.event_id
+                        });
+                        setTimeout(function() {
+                            if (data.purchase.redirect_url) {
+                                window.location.href = data.purchase.redirect_url;
+                            } else {
+                                var sep = window.location.search ? '&' : '?';
+                                window.location.href = window.location.pathname + window.location.search + sep + 'fired=1';
+                            }
+                        }, 400);
+                        return;
+                    }
+                    if (attempts < 60) setTimeout(poll, 2000);
+                })
+                .catch(function() {
+                    if (attempts < 60) setTimeout(poll, 2000);
+                });
+        }
+        setTimeout(poll, 1500);
+    }
+})();
+</script>
+{% elif session and session.status != 'completed' %}
 <script>
     setTimeout(function() { location.reload(); }, 5000);
 </script>
-{% endif %}
-
-{% if pixel_id %}
-{% if order %}
-<script>
-fbq('track', 'Purchase', {
-    value: 0.00,
-    currency: 'USD',
-    content_type: 'product',
-    content_ids: [{% for id in pixel_content_ids %}'{{ id }}'{% if not forloop.last %}, {% endif %}{% endfor %}]
-}, { eventID: '{{ purchase_event_id }}' });
-</script>
-{% elif session and session.status == 'completed' %}
-<script>
-fbq('track', 'Purchase', {
-    value: {{ session.ticket_order.total_amount|default:"0.00" }},
-    currency: 'USD',
-    content_type: 'product',
-    content_ids: [{% for id in pixel_content_ids %}'{{ id }}'{% if not forloop.last %}, {% endif %}{% endfor %}]
-}, { eventID: '{{ purchase_event_id }}' });
-</script>
-{% endif %}
 {% endif %}
 </body>
 </html>

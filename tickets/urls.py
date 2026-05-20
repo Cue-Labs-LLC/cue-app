@@ -256,6 +256,7 @@ urlpatterns = [
     # Redirect old /buy/<uuid>/ links to new short /e/<public_id>/
     path('buy/<uuid:event_id>/', views.buy_redirect, name='buy_redirect'),
     path('checkout/success/', views.checkout_success, name='checkout_success'),
+    path('checkout/session-status/<uuid:session_id>/', views.checkout_session_status, name='checkout_session_status'),
 
     # Promo Codes - Organizer
     path('events/<uuid:event_id>/promo-codes/create/', views.promo_code_create, name='promo_code_create'),
