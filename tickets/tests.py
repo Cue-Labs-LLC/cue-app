@@ -1165,7 +1165,11 @@ class MobileAPITests(TestCase):
 
     def setUp(self):
         self.client = Client()
-        self.org = Organization.objects.create(name='API Test Org', slug='api-test-org')
+        self.org = Organization.objects.create(
+            name='API Test Org', slug='api-test-org',
+            stripe_account_id='acct_test_api',
+            stripe_onboarding_complete=True,
+        )
         self.user = User.objects.create_user(
             username='apiuser',
             email='api@example.com',
@@ -6836,7 +6840,12 @@ class ScannerInPersonSellTests(TestCase):
     def setUp(self):
         from .models import ScannerSession
 
-        self.org = Organization.objects.create(name='Sell Org', slug='sell-org')
+        self.org = Organization.objects.create(
+            name='Sell Org', slug='sell-org',
+            stripe_account_id='acct_test_sell',
+            stripe_onboarding_complete=True,
+            stripe_terminal_location_id='tml_test_existing',
+        )
         self.venue = Venue.objects.create(organization=self.org, name='Sell Venue', city='SF')
         self.event = Event.objects.create(
             organization=self.org,
@@ -6905,17 +6914,84 @@ class ScannerInPersonSellTests(TestCase):
     def test_stripe_connection_token_returns_secret(self):
         fake_token = MagicMock()
         fake_token.secret = 'pst_test_secret'
-        with patch('stripe.terminal.ConnectionToken.create', return_value=fake_token):
+        with patch('stripe.terminal.ConnectionToken.create', return_value=fake_token) as ct_mock:
             res = self.client.post(
                 '/api/scanner/stripe/connection-token/',
                 HTTP_AUTHORIZATION=self.auth,
             )
         self.assertEqual(res.status_code, 200, res.content)
         self.assertEqual(res.json(), {'secret': 'pst_test_secret'})
+        # Critical: token must be scoped to the merchant's Connect account,
+        # not the platform. Without stripe_account=, Terminal collection
+        # fails later with cryptic errors.
+        ct_mock.assert_called_once_with(stripe_account='acct_test_sell')
 
     def test_stripe_connection_token_requires_scanner_token(self):
         res = self.client.post('/api/scanner/stripe/connection-token/')
         self.assertEqual(res.status_code, 403)
+
+    def test_stripe_connection_token_403_when_no_stripe_account(self):
+        self.org.stripe_account_id = ''
+        self.org.save(update_fields=['stripe_account_id'])
+        with patch('stripe.terminal.ConnectionToken.create') as ct_mock:
+            res = self.client.post(
+                '/api/scanner/stripe/connection-token/',
+                HTTP_AUTHORIZATION=self.auth,
+            )
+        self.assertEqual(res.status_code, 403)
+        ct_mock.assert_not_called()
+
+    # ---- shared /api/stripe/connection-token/ (dual-auth) ----
+
+    def test_shared_connection_token_accepts_scanner_auth(self):
+        """iOS scanner app uses /api/stripe/connection-token/ with a
+        Scanner token; the endpoint must accept it and scope the Stripe
+        call to the scanner session's merchant.
+        """
+        fake_token = MagicMock()
+        fake_token.secret = 'pst_test_shared'
+        with patch('stripe.terminal.ConnectionToken.create', return_value=fake_token) as ct_mock:
+            res = self.client.post(
+                '/api/stripe/connection-token/',
+                HTTP_AUTHORIZATION=self.auth,
+            )
+        self.assertEqual(res.status_code, 200, res.content)
+        self.assertEqual(res.json(), {'secret': 'pst_test_shared'})
+        ct_mock.assert_called_once_with(stripe_account='acct_test_sell')
+
+    def test_shared_connection_token_rejects_missing_auth(self):
+        res = self.client.post('/api/stripe/connection-token/')
+        # DRF returns 403 (not 401) when no auth class accepts the
+        # request and no WWW-Authenticate header is set — matches every
+        # other scanner endpoint and the iOS client handles either.
+        self.assertIn(res.status_code, (401, 403))
+
+    def test_shared_terminal_payment_intent_accepts_scanner_auth(self):
+        fake_pi = MagicMock()
+        fake_pi.client_secret = 'pi_secret_shared'
+        fake_pi.id = 'pi_shared'
+        with patch('stripe.PaymentIntent.create', return_value=fake_pi) as pi_mock:
+            res = self.client.post(
+                '/api/stripe/terminal-payment-intent/',
+                data=json.dumps({
+                    'event_id': str(self.event.pk),
+                    'line_items': [{'ticket_type_id': str(self.tt.pk), 'quantity': 1}],
+                }),
+                content_type='application/json',
+                HTTP_AUTHORIZATION=self.auth,
+            )
+        self.assertEqual(res.status_code, 201, res.content)
+        self.assertEqual(res.json()['location_id'], 'tml_test_existing')
+        pi_mock.assert_called_once()
+        # Critical: PaymentIntent must be created on the merchant's
+        # Connect account (stripe_account=) with card-present + the
+        # event metadata that scanner_receipt's declined-receipt branch
+        # relies on.
+        call_kwargs = pi_mock.call_args.kwargs
+        self.assertEqual(call_kwargs['stripe_account'], 'acct_test_sell')
+        self.assertEqual(call_kwargs['payment_method_types'], ['card_present'])
+        self.assertEqual(call_kwargs['capture_method'], 'automatic')
+        self.assertEqual(call_kwargs['metadata']['event_id'], str(self.event.pk))
 
     # ---- stripe terminal-payment-intent ----
 
@@ -6938,7 +7014,104 @@ class ScannerInPersonSellTests(TestCase):
         self.assertEqual(body['client_secret'], 'pi_secret_123')
         self.assertEqual(body['payment_intent_id'], 'pi_123')
         self.assertEqual(body['amount_cents'], 5000)
+        self.assertEqual(body['location_id'], 'tml_test_existing')
         pi_mock.assert_called_once()
+        self.assertEqual(pi_mock.call_args.kwargs['stripe_account'], 'acct_test_sell')
+
+    def test_terminal_payment_intent_returns_cached_location_id(self):
+        """When the org already has a Terminal Location cached, the PI
+        endpoint must NOT call Location.create — that would be wasted
+        Stripe quota on every sale."""
+        fake_pi = MagicMock()
+        fake_pi.client_secret = 'pi_secret_456'
+        fake_pi.id = 'pi_456'
+        with patch('stripe.terminal.Location.create') as loc_mock, \
+                patch('stripe.PaymentIntent.create', return_value=fake_pi):
+            res = self.client.post(
+                '/api/scanner/stripe/terminal-payment-intent/',
+                data=json.dumps({
+                    'event_id': str(self.event.pk),
+                    'line_items': [{'ticket_type_id': str(self.tt.pk), 'quantity': 1}],
+                }),
+                content_type='application/json',
+                HTTP_AUTHORIZATION=self.auth,
+            )
+        self.assertEqual(res.status_code, 201, res.content)
+        self.assertEqual(res.json()['location_id'], 'tml_test_existing')
+        loc_mock.assert_not_called()
+
+    def test_terminal_payment_intent_lazy_creates_location(self):
+        """First sale for a merchant who has no cached Location: call
+        Location.create scoped to the Connect account with idempotency,
+        cache the result on the org, and return tml_ in the response."""
+        self.org.stripe_terminal_location_id = ''
+        self.org.save(update_fields=['stripe_terminal_location_id'])
+
+        fake_account = MagicMock()
+        fake_account.company = None
+        fake_account.business_profile = None
+        fake_account.individual = None
+        fake_location = MagicMock()
+        fake_location.id = 'tml_freshly_minted'
+        fake_pi = MagicMock()
+        fake_pi.client_secret = 'pi_secret_lazy'
+        fake_pi.id = 'pi_lazy'
+
+        with patch('stripe.Account.retrieve', return_value=fake_account), \
+                patch('stripe.terminal.Location.create', return_value=fake_location) as loc_mock, \
+                patch('stripe.PaymentIntent.create', return_value=fake_pi):
+            res = self.client.post(
+                '/api/scanner/stripe/terminal-payment-intent/',
+                data=json.dumps({
+                    'event_id': str(self.event.pk),
+                    'line_items': [{'ticket_type_id': str(self.tt.pk), 'quantity': 1}],
+                }),
+                content_type='application/json',
+                HTTP_AUTHORIZATION=self.auth,
+            )
+        self.assertEqual(res.status_code, 201, res.content)
+        self.assertEqual(res.json()['location_id'], 'tml_freshly_minted')
+
+        # Critical: Location must be created on the Connect account, with
+        # an idempotency key so concurrent first-sale requests for the
+        # same merchant don't create duplicates.
+        loc_mock.assert_called_once()
+        call_kwargs = loc_mock.call_args.kwargs
+        self.assertEqual(call_kwargs['stripe_account'], 'acct_test_sell')
+        self.assertEqual(call_kwargs['idempotency_key'], f'terminal-location:{self.org.pk}')
+        self.assertIn('address', call_kwargs)
+        self.assertIn('display_name', call_kwargs)
+
+        # And the org now caches the value so the next sale won't call again.
+        self.org.refresh_from_db()
+        self.assertEqual(self.org.stripe_terminal_location_id, 'tml_freshly_minted')
+
+    def test_terminal_payment_intent_502_when_location_create_fails(self):
+        """If Stripe can't mint a Location, fail loudly instead of
+        returning a PaymentIntent with no location_id — the iOS app
+        would error and we'd have a dangling PI on Stripe."""
+        import stripe as stripe_lib
+        self.org.stripe_terminal_location_id = ''
+        self.org.save(update_fields=['stripe_terminal_location_id'])
+
+        with patch('stripe.Account.retrieve', return_value=MagicMock()), \
+                patch(
+                    'stripe.terminal.Location.create',
+                    side_effect=stripe_lib.error.APIConnectionError('boom'),
+                ), \
+                patch('stripe.PaymentIntent.create') as pi_mock:
+            res = self.client.post(
+                '/api/scanner/stripe/terminal-payment-intent/',
+                data=json.dumps({
+                    'event_id': str(self.event.pk),
+                    'line_items': [{'ticket_type_id': str(self.tt.pk), 'quantity': 1}],
+                }),
+                content_type='application/json',
+                HTTP_AUTHORIZATION=self.auth,
+            )
+        self.assertEqual(res.status_code, 502)
+        # Crucially we don't mint a PI we can't pair with a Location.
+        pi_mock.assert_not_called()
 
     def test_terminal_payment_intent_rejects_mismatched_event_id(self):
         with patch('stripe.PaymentIntent.create') as pi_mock:
@@ -6968,7 +7141,7 @@ class ScannerInPersonSellTests(TestCase):
     def test_sell_creates_in_person_order_with_no_checked_in_by(self):
         fake_pi = MagicMock()
         fake_pi.status = 'succeeded'
-        with patch('stripe.PaymentIntent.retrieve', return_value=fake_pi):
+        with patch('stripe.PaymentIntent.retrieve', return_value=fake_pi) as retrieve_mock:
             res = self.client.post(
                 '/api/scanner/sell/',
                 data=json.dumps({
@@ -6990,6 +7163,14 @@ class ScannerInPersonSellTests(TestCase):
         body = res.json()
         self.assertEqual(body['ticket_count'], 2)
         self.assertEqual(body['total_amount'], '50.00')
+
+        # PaymentIntent.retrieve must be scoped to the merchant's
+        # Connect account; otherwise Stripe 404s the PI that was
+        # created on that connected account.
+        retrieve_mock.assert_called_once_with(
+            'pi_succeeded_123',
+            stripe_account='acct_test_sell',
+        )
 
         order = TicketOrder.objects.get(pk=body['order_id'])
         self.assertTrue(order.is_in_person)
@@ -7068,6 +7249,9 @@ class ScannerInPersonSellTests(TestCase):
     def test_sell_eligibility_pending_by_default(self):
         from django.core.cache import cache as django_cache
         django_cache.clear()
+        # A merchant that has not connected Stripe at all.
+        self.org.stripe_account_id = ''
+        self.org.save(update_fields=['stripe_account_id'])
         res = self.client.get('/api/scanner/sell-eligibility/', HTTP_AUTHORIZATION=self.auth)
         self.assertEqual(res.status_code, 200, res.content)
         body = res.json()
@@ -7405,3 +7589,177 @@ class EnableTapToPayViewTests(TestCase):
         res = self.client.get(self.finance_url)
         self.assertEqual(res.status_code, 200)
         self.assertEqual(res.context['tap_to_pay_ui']['status'], 'unsupported')
+
+
+class RequestCardPaymentsCapabilityCommandTests(TestCase):
+    """Tests for the request_card_payments_capability management command."""
+
+    def setUp(self):
+        self.org = Organization.objects.create(
+            name='Capability Org',
+            slug='capability-org',
+            stripe_account_id='acct_capability_test',
+        )
+
+    def _mock_account(self, *, country='US', ttp='unrequested', currently_due=None):
+        account = MagicMock()
+        account.country = country
+        account.capabilities = {'card_payments': ttp}
+        requirements = MagicMock()
+        requirements.currently_due = list(currently_due or [])
+        account.requirements = requirements
+        return account
+
+    @patch('stripe.Account.modify')
+    @patch('stripe.Account.retrieve')
+    def test_request_by_org_slug_calls_stripe_and_busts_cache(
+        self, mock_retrieve, mock_modify,
+    ):
+        from django.core.cache import cache as django_cache
+        from django.core.management import call_command
+        from io import StringIO
+
+        django_cache.set(f'tap_to_pay_status:{self.org.pk}', {'status': 'pending'}, timeout=60)
+        mock_retrieve.return_value = self._mock_account(ttp='unrequested')
+        mock_modify.return_value = self._mock_account(ttp='pending')
+
+        out = StringIO()
+        call_command('request_card_payments_capability', '--org', self.org.slug, stdout=out)
+
+        mock_modify.assert_called_once_with(
+            self.org.stripe_account_id,
+            capabilities={'card_payments': {'requested': True}},
+        )
+        self.assertIsNone(django_cache.get(f'tap_to_pay_status:{self.org.pk}'))
+        output = out.getvalue()
+        self.assertIn('Before:', output)
+        self.assertIn('card_payments=unrequested', output)
+        self.assertIn('card_payments=pending', output)
+        self.assertIn(f'org={self.org.slug}', output)
+
+    @patch('stripe.Account.modify')
+    @patch('stripe.Account.retrieve')
+    def test_request_by_account_id_works_without_matching_org(
+        self, mock_retrieve, mock_modify,
+    ):
+        from django.core.management import call_command
+        from io import StringIO
+
+        mock_retrieve.return_value = self._mock_account(ttp='unrequested')
+        mock_modify.return_value = self._mock_account(ttp='pending')
+
+        out = StringIO()
+        call_command(
+            'request_card_payments_capability',
+            '--account', 'acct_orphan_no_org',
+            stdout=out,
+        )
+
+        mock_modify.assert_called_once_with(
+            'acct_orphan_no_org',
+            capabilities={'card_payments': {'requested': True}},
+        )
+        output = out.getvalue()
+        self.assertIn('card_payments=pending', output)
+        # No org → no cache-bust line printed.
+        self.assertNotIn('Cleared status cache', output)
+
+    @patch('stripe.Account.modify')
+    @patch('stripe.Account.retrieve')
+    def test_request_warns_when_requirements_currently_due(
+        self, mock_retrieve, mock_modify,
+    ):
+        from django.core.management import call_command
+        from io import StringIO
+
+        mock_retrieve.return_value = self._mock_account(ttp='unrequested')
+        mock_modify.return_value = self._mock_account(
+            ttp='inactive',
+            currently_due=['representative.verification.document'],
+        )
+
+        out = StringIO()
+        call_command('request_card_payments_capability', '--org', self.org.slug, stdout=out)
+
+        output = out.getvalue()
+        self.assertIn('Stripe wants more info', output)
+        self.assertIn('representative.verification.document', output)
+
+    def test_rejects_neither_flag(self):
+        from django.core.management import call_command
+        from django.core.management.base import CommandError
+
+        with self.assertRaises(CommandError):
+            call_command('request_card_payments_capability')
+
+    def test_rejects_both_flags(self):
+        from django.core.management import call_command
+        from django.core.management.base import CommandError
+
+        with self.assertRaises(CommandError):
+            call_command(
+                'request_card_payments_capability',
+                '--org', self.org.slug,
+                '--account', 'acct_other',
+            )
+
+    def test_rejects_unknown_org_slug(self):
+        from django.core.management import call_command
+        from django.core.management.base import CommandError
+
+        with self.assertRaises(CommandError):
+            call_command('request_card_payments_capability', '--org', 'no-such-org')
+
+    def test_rejects_org_without_stripe_account(self):
+        from django.core.management import call_command
+        from django.core.management.base import CommandError
+
+        self.org.stripe_account_id = ''
+        self.org.save(update_fields=['stripe_account_id'])
+
+        with self.assertRaises(CommandError):
+            call_command('request_card_payments_capability', '--org', self.org.slug)
+
+    @patch('stripe.Account.modify')
+    @patch('stripe.Account.retrieve')
+    def test_reads_capability_from_real_stripe_object(
+        self, mock_retrieve, mock_modify,
+    ):
+        """Regression: the Stripe Python SDK returns capabilities as a
+        StripeObject without a .get() method. Earlier code used
+        capabilities.get('card_payments') and silently fell back to
+        'unrequested' for every real merchant. The _read_stripe_capability
+        helper must handle the real type, not just dict mocks.
+        """
+        from django.core.management import call_command
+        from io import StringIO
+        from stripe._stripe_object import StripeObject
+
+        def _as_stripe_object(payload):
+            return StripeObject.construct_from(payload, key=None)
+
+        before = _as_stripe_object({
+            'id': self.org.stripe_account_id,
+            'object': 'account',
+            'country': 'US',
+            'capabilities': {'card_payments': 'active', 'transfers': 'active'},
+            'requirements': {'currently_due': []},
+        })
+        after = _as_stripe_object({
+            'id': self.org.stripe_account_id,
+            'object': 'account',
+            'country': 'US',
+            'capabilities': {'card_payments': 'active', 'transfers': 'active'},
+            'requirements': {'currently_due': []},
+        })
+        mock_retrieve.return_value = before
+        mock_modify.return_value = after
+
+        out = StringIO()
+        call_command('request_card_payments_capability', '--org', self.org.slug, stdout=out)
+
+        output = out.getvalue()
+        # Must read 'active' off the StripeObject, NOT fall back to 'unrequested'.
+        self.assertIn('Before:', output)
+        self.assertIn('card_payments=active', output)
+        self.assertNotIn('card_payments=unrequested', output)

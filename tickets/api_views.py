@@ -14,7 +14,11 @@ from django.db.models.functions import Coalesce
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 
-from rest_framework.authentication import BaseAuthentication, get_authorization_header
+from rest_framework.authentication import (
+    BaseAuthentication,
+    TokenAuthentication,
+    get_authorization_header,
+)
 from rest_framework.authtoken.models import Token
 from rest_framework.decorators import api_view, authentication_classes, permission_classes
 from rest_framework.exceptions import AuthenticationFailed
@@ -91,6 +95,26 @@ class ScannerSessionAuthentication(BaseAuthentication):
 class IsScannerAuthenticated(BasePermission):
     def has_permission(self, request, view):
         return isinstance(request.auth, ScannerSession)
+
+
+class IsScannerOrAuthenticatedUser(BasePermission):
+    """Accepts either a scanner-PIN session or a logged-in user.
+
+    Used by shared sell-flow endpoints (connection-token, terminal-PI,
+    organizer/sell) that the iOS scanner app calls under scanner auth
+    while the web organizer calls under token/session auth.
+    """
+    def has_permission(self, request, view):
+        if isinstance(request.auth, ScannerSession):
+            return True
+        return bool(request.user and request.user.is_authenticated)
+
+
+def _resolve_dual_auth_org(request):
+    """Return the org for a dual-auth (scanner OR user) request, or None."""
+    if isinstance(request.auth, ScannerSession):
+        return request.auth.event.organization
+    return _get_org_from_user(request.user)
 
 
 # ---------------------------------------------------------------------------
@@ -1059,26 +1083,40 @@ def organizer_checkin(request):
 # ---------------------------------------------------------------------------
 
 @api_view(['POST'])
+@authentication_classes([ScannerSessionAuthentication, TokenAuthentication])
+@permission_classes([IsScannerOrAuthenticatedUser])
 def stripe_connection_token(request):
     """
     POST /api/stripe/connection-token/
-    Returns a Stripe Terminal connection token for the org's location.
+    Returns a Stripe Terminal connection token scoped to the merchant's
+    Stripe Connect account. Accepts either organizer token auth or a
+    scanner-PIN session token.
+
+    The `stripe_account=` parameter is CRITICAL — without it the token
+    is issued against the platform account and Terminal collection
+    fails later with cryptic errors.
     """
-    org = _get_org_from_user(request.user)
+    org = _resolve_dual_auth_org(request)
     if org is None:
-        return Response({'error': 'No organization found for this user'}, status=403)
+        return Response({'error': 'No organization for this request'}, status=403)
+    if not org.stripe_account_id:
+        return Response(
+            {'error': 'This merchant has not connected a Stripe account yet.'},
+            status=403,
+        )
 
     import stripe as stripe_lib
     from django.conf import settings as django_settings
 
     stripe_lib.api_key = django_settings.STRIPE_SECRET_KEY
 
+    # Tap to Pay on iPhone doesn't need a pre-registered Location; the
+    # platform-level STRIPE_TERMINAL_LOCATION_ID would 404 on a
+    # connected account anyway. Omit `location=` entirely here.
     try:
-        kwargs = {}
-        location_id = django_settings.STRIPE_TERMINAL_LOCATION_ID
-        if location_id:
-            kwargs['location'] = location_id
-        conn_token = stripe_lib.terminal.ConnectionToken.create(**kwargs)
+        conn_token = stripe_lib.terminal.ConnectionToken.create(
+            stripe_account=org.stripe_account_id,
+        )
     except stripe_lib.error.StripeError as exc:
         logger.error("Stripe connection token error: %s", exc)
         return Response({'error': str(exc)}, status=502)
@@ -1090,15 +1128,104 @@ def stripe_connection_token(request):
 # Stripe Terminal — Payment Intent
 # ---------------------------------------------------------------------------
 
+def _get_or_create_terminal_location(org):
+    """Return the org's Stripe Terminal Location ID, creating it lazily.
+
+    Stripe Terminal's `connectReader({ locationId, ... })` requires a
+    Location object scoped to the merchant's Connect account. Locations
+    don't expire and aren't per-sale, so we cache on Organization.
+
+    Concurrency-safe via Stripe's idempotency_key — concurrent first-sale
+    requests for the same merchant resolve to the same Location instead
+    of creating duplicates. Returns the location ID, or None on Stripe
+    error (caller handles the fallout).
+    """
+    if org.stripe_terminal_location_id:
+        return org.stripe_terminal_location_id
+
+    import stripe as stripe_lib
+    from django.conf import settings as django_settings
+
+    stripe_lib.api_key = django_settings.STRIPE_SECRET_KEY
+
+    # Pull a usable address off the connected account; fall back to a
+    # generic US address per Stripe's requirement. For Tap to Pay the
+    # address is mostly cosmetic — the device's real location is what
+    # Stripe uses for fraud/tax.
+    address = {
+        'line1': 'In-Person Sales',
+        'city': 'Los Angeles',
+        'state': 'CA',
+        'country': 'US',
+        'postal_code': '90017',
+    }
+    try:
+        account = stripe_lib.Account.retrieve(org.stripe_account_id)
+    except stripe_lib.error.StripeError as exc:
+        logger.warning(
+            "Could not retrieve Connect account for terminal location (org=%s): %s",
+            org.pk, exc,
+        )
+        account = None
+
+    if account is not None:
+        for source_path in (
+            ('company', 'address'),
+            ('business_profile', 'support_address'),
+            ('individual', 'address'),
+        ):
+            obj = account
+            for attr in source_path:
+                obj = getattr(obj, attr, None)
+                if obj is None:
+                    break
+            if obj is None:
+                continue
+            country = getattr(obj, 'country', None)
+            if not country:
+                continue
+            address = {
+                'line1': getattr(obj, 'line1', None) or 'In-Person Sales',
+                'city': getattr(obj, 'city', None) or 'Los Angeles',
+                'state': getattr(obj, 'state', None) or 'CA',
+                'country': country,
+                'postal_code': getattr(obj, 'postal_code', None) or '00000',
+            }
+            break
+
+    try:
+        location = stripe_lib.terminal.Location.create(
+            display_name=(org.name or 'Cue Merchant')[:50],
+            address=address,
+            stripe_account=org.stripe_account_id,
+            idempotency_key=f'terminal-location:{org.pk}',
+        )
+    except stripe_lib.error.StripeError as exc:
+        logger.error(
+            "Stripe Terminal Location create failed for org %s: %s",
+            org.pk, exc,
+        )
+        return None
+
+    org.stripe_terminal_location_id = location.id
+    org.save(update_fields=['stripe_terminal_location_id'])
+    return location.id
+
+
 def _create_terminal_payment_intent(event, line_items):
-    """Validate ticket-type inventory and create a card-present PaymentIntent.
+    """Validate ticket-type inventory and create a card-present PaymentIntent
+    on the merchant's Stripe Connect account.
 
     Returns (payload, status). On success, payload is the response body and
     status is 201. On failure, payload is an {'error': ...} dict and status
-    is 400 (validation) or 502 (Stripe).
+    is 400 (validation), 403 (Connect not set up), or 502 (Stripe).
     """
     if not line_items:
         return {'error': 'event_id and line_items are required'}, 400
+
+    org = event.organization
+    if not org.stripe_account_id:
+        return {'error': 'This merchant has not connected a Stripe account yet.'}, 403
 
     amount_cents = 0
     for item in line_items:
@@ -1118,6 +1245,15 @@ def _create_terminal_payment_intent(event, line_items):
 
         amount_cents += int((tt.price * qty * 100).to_integral_value())
 
+    # Resolve the merchant's Stripe Terminal Location before creating the
+    # PaymentIntent — the iOS app needs both to call connectReader.
+    # If we can't reach Stripe to mint the Location, fail loudly instead
+    # of returning a PI with no location_id (the iOS app would error and
+    # we'd have a dangling intent on the merchant's account).
+    location_id = _get_or_create_terminal_location(org)
+    if not location_id:
+        return {'error': 'Could not provision a Stripe Terminal location for this merchant.'}, 502
+
     import stripe as stripe_lib
     from django.conf import settings as django_settings
 
@@ -1129,6 +1265,8 @@ def _create_terminal_payment_intent(event, line_items):
             currency=django_settings.STRIPE_CURRENCY,
             payment_method_types=['card_present'],
             capture_method='automatic',
+            stripe_account=org.stripe_account_id,
+            metadata={'event_id': str(event.pk), 'org_id': str(org.pk)},
         )
     except stripe_lib.error.StripeError as exc:
         logger.error("Stripe terminal PaymentIntent error: %s", exc)
@@ -1139,25 +1277,34 @@ def _create_terminal_payment_intent(event, line_items):
         'payment_intent_id': pi.id,
         'amount_cents': amount_cents,
         'currency': django_settings.STRIPE_CURRENCY,
+        'location_id': location_id,
     }, 201
 
 
 @api_view(['POST'])
+@authentication_classes([ScannerSessionAuthentication, TokenAuthentication])
+@permission_classes([IsScannerOrAuthenticatedUser])
 def stripe_terminal_payment_intent(request):
     """
     POST /api/stripe/terminal-payment-intent/
     Body: {event_id, line_items: [{ticket_type_id, quantity}]}
-    Creates a PaymentIntent for a card-present terminal transaction.
+    Creates a PaymentIntent on the merchant's Connect account for a
+    card-present terminal transaction. Accepts organizer token auth or
+    scanner-PIN session auth.
     """
-    org = _get_org_from_user(request.user)
+    org = _resolve_dual_auth_org(request)
     if org is None:
-        return Response({'error': 'No organization found for this user'}, status=403)
+        return Response({'error': 'No organization for this request'}, status=403)
 
     event_id = request.data.get('event_id', '').strip()
     line_items = request.data.get('line_items', [])
 
     if not event_id or not line_items:
         return Response({'error': 'event_id and line_items are required'}, status=400)
+
+    # Scanner sessions are bound to a single event — enforce match.
+    if isinstance(request.auth, ScannerSession) and str(request.auth.event.pk) != event_id:
+        return Response({'error': 'event_id does not match scanner session'}, status=403)
 
     event = get_object_or_404(Event.objects.filter(organization=org), id=event_id)
 
@@ -1174,7 +1321,7 @@ def _finalize_in_person_sale(event, payment_intent_id, buyer_name, buyer_email, 
 
     Returns (payload, status). On success, payload is the response body and
     status is 201. On failure, payload is an {'error': ...} dict and status
-    is 400 (validation) or 502 (Stripe).
+    is 400 (validation), 403 (Connect not set up), or 502 (Stripe).
 
     checked_in_by may be None for scanner-PIN sessions (no Cue account).
     """
@@ -1183,8 +1330,15 @@ def _finalize_in_person_sale(event, payment_intent_id, buyer_name, buyer_email, 
 
     stripe_lib.api_key = django_settings.STRIPE_SECRET_KEY
 
+    org = event.organization
+    if not org.stripe_account_id:
+        return {'error': 'This merchant has not connected a Stripe account yet.'}, 403
+
     try:
-        pi = stripe_lib.PaymentIntent.retrieve(payment_intent_id)
+        pi = stripe_lib.PaymentIntent.retrieve(
+            payment_intent_id,
+            stripe_account=org.stripe_account_id,
+        )
     except stripe_lib.error.StripeError as exc:
         logger.error("Stripe PaymentIntent retrieve error: %s", exc)
         return {'error': str(exc)}, 502
@@ -1211,7 +1365,6 @@ def _finalize_in_person_sale(event, payment_intent_id, buyer_name, buyer_email, 
         total_amount += item_price * qty
         resolved.append({'tt': tt, 'tt_id': tt_id, 'qty': qty, 'name': item_name or tt.name, 'price': item_price})
 
-    org = event.organization
     now = timezone.now()
     customer, _ = Customer.objects.get_or_create(
         email=buyer_email,
@@ -1260,16 +1413,20 @@ def _finalize_in_person_sale(event, payment_intent_id, buyer_name, buyer_email, 
 
 
 @api_view(['POST'])
+@authentication_classes([ScannerSessionAuthentication, TokenAuthentication])
+@permission_classes([IsScannerOrAuthenticatedUser])
 def organizer_sell(request):
     """
     POST /api/organizer/sell/
     Body: {event_id, payment_intent_id, buyer_name, buyer_email,
            line_items: [{ticket_type_id, quantity, name, price}]}
-    Verifies the PaymentIntent succeeded, then creates the order.
+    Verifies the PaymentIntent succeeded, then creates the in-person order.
+    Accepts organizer token auth or scanner-PIN session auth (the iOS
+    sell flow uses the latter).
     """
-    org = _get_org_from_user(request.user)
+    org = _resolve_dual_auth_org(request)
     if org is None:
-        return Response({'error': 'No organization found for this user'}, status=403)
+        return Response({'error': 'No organization for this request'}, status=403)
 
     event_id = request.data.get('event_id', '').strip()
     payment_intent_id = request.data.get('payment_intent_id', '').strip()
@@ -1283,7 +1440,12 @@ def organizer_sell(request):
             status=400,
         )
 
+    # Scanner sessions are bound to a single event — enforce match.
+    if isinstance(request.auth, ScannerSession) and str(request.auth.event.pk) != event_id:
+        return Response({'error': 'event_id does not match scanner session'}, status=403)
+
     event = get_object_or_404(Event.objects.filter(organization=org), id=event_id)
+    checked_in_by = request.user if (request.user and request.user.is_authenticated) else None
 
     payload, status = _finalize_in_person_sale(
         event=event,
@@ -1291,7 +1453,7 @@ def organizer_sell(request):
         buyer_name=buyer_name,
         buyer_email=buyer_email,
         line_items=line_items,
-        checked_in_by=request.user,
+        checked_in_by=checked_in_by,
     )
     return Response(payload, status=status)
 
@@ -1563,17 +1725,22 @@ def scanner_stripe_connection_token(request):
     Returns a Stripe Terminal connection token for the merchant tied to the
     scanner session.
     """
+    org = request.auth.event.organization
+    if not org.stripe_account_id:
+        return Response(
+            {'error': 'This merchant has not connected a Stripe account yet.'},
+            status=403,
+        )
+
     import stripe as stripe_lib
     from django.conf import settings as django_settings
 
     stripe_lib.api_key = django_settings.STRIPE_SECRET_KEY
 
     try:
-        kwargs = {}
-        location_id = django_settings.STRIPE_TERMINAL_LOCATION_ID
-        if location_id:
-            kwargs['location'] = location_id
-        conn_token = stripe_lib.terminal.ConnectionToken.create(**kwargs)
+        conn_token = stripe_lib.terminal.ConnectionToken.create(
+            stripe_account=org.stripe_account_id,
+        )
     except stripe_lib.error.StripeError as exc:
         logger.error("Stripe connection token error: %s", exc)
         return Response({'error': str(exc)}, status=502)
@@ -1821,11 +1988,10 @@ def _resolve_tap_to_pay_facts(org):
         if account is None:
             capability_state = 'unknown'
         else:
-            capabilities = getattr(account, 'capabilities', None) or {}
-            if hasattr(capabilities, 'get'):
-                card_cap = capabilities.get('card_payments')
-            else:
-                card_cap = None
+            from .views import _read_stripe_capability
+            card_cap = _read_stripe_capability(
+                getattr(account, 'capabilities', None), 'card_payments',
+            )
             capability_state = card_cap or 'unrequested'
             country = (getattr(account, 'country', '') or '').upper()
 
@@ -1985,8 +2151,11 @@ def scanner_receipt(request):
 
     stripe_lib.api_key = django_settings.STRIPE_SECRET_KEY
 
+    retrieve_kwargs = {}
+    if org.stripe_account_id:
+        retrieve_kwargs['stripe_account'] = org.stripe_account_id
     try:
-        pi = stripe_lib.PaymentIntent.retrieve(payment_intent_id)
+        pi = stripe_lib.PaymentIntent.retrieve(payment_intent_id, **retrieve_kwargs)
     except stripe_lib.error.InvalidRequestError:
         return Response({'error': 'payment intent not found'}, status=404)
     except stripe_lib.error.StripeError as exc:
