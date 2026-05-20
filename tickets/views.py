@@ -9368,6 +9368,17 @@ def checkout_success(request):
 
     _event_for_pixel = order_obj.event if order_obj else (session_obj.event if session_obj else None)
 
+    # When no Meta Pixel is configured, there's no client-side event to fire — keep the
+    # original UX of bouncing authenticated buyers straight to /my_tickets/.
+    _has_pixel = bool(_event_for_pixel and _event_for_pixel.facebook_pixel_id)
+    if request.user.is_authenticated and not _has_pixel:
+        if order_obj:
+            messages.success(request, "Your tickets are confirmed!")
+            return redirect('tickets:my_tickets')
+        if session_obj and session_obj.status == StripeCheckoutSession.Status.COMPLETED:
+            messages.success(request, "Your tickets are confirmed!")
+            return redirect('tickets:my_tickets')
+
     pixel_content_ids = []
     if order_obj:
         ticket_names = list(order_obj.tickets.values_list('ticket_type', flat=True).distinct())
