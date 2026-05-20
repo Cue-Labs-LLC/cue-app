@@ -423,12 +423,16 @@ class OrganizationMembership(BaseModel):
 
 
 class OrganizationInvitation(BaseModel):
-    """Invitation for a user to join an organization by email."""
+    """Invitation for a user to join an organization by email or phone."""
     class Status(models.TextChoices):
         PENDING = 'pending', 'Pending'
         ACCEPTED = 'accepted', 'Accepted'
         EXPIRED = 'expired', 'Expired'
         REVOKED = 'revoked', 'Revoked'
+
+    class InvitedVia(models.TextChoices):
+        EMAIL = 'email', 'Email'
+        PHONE = 'phone', 'Phone'
 
     organization = models.ForeignKey(
         Organization,
@@ -436,6 +440,12 @@ class OrganizationInvitation(BaseModel):
         related_name='organization_invitations',
     )
     email = models.EmailField(db_index=True)
+    phone_number = models.CharField(max_length=20, blank=True, default='', db_index=True)
+    invited_via = models.CharField(
+        max_length=10,
+        choices=InvitedVia.choices,
+        default=InvitedVia.EMAIL,
+    )
     invited_by = models.ForeignKey(
         'auth.User',
         on_delete=models.SET_NULL,
@@ -488,17 +498,20 @@ class OrganizationInvitation(BaseModel):
     def clean(self):
         if self.status != self.Status.PENDING or not self.organization_id:
             return
-        qs = OrganizationInvitation.objects.filter(
+        base = OrganizationInvitation.objects.filter(
             organization_id=self.organization_id,
-            email__iexact=self.email,
             status=self.Status.PENDING,
             expires_at__gt=timezone.now(),
         )
         if self.pk:
-            qs = qs.exclude(pk=self.pk)
-        if qs.exists():
+            base = base.exclude(pk=self.pk)
+        if base.filter(email__iexact=self.email).exists():
             raise ValidationError(
                 f"An invitation for {self.email} is already pending for this organization."
+            )
+        if self.phone_number and base.filter(phone_number=self.phone_number).exists():
+            raise ValidationError(
+                f"An invitation for {self.phone_number} is already pending for this organization."
             )
 
 

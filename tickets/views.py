@@ -607,6 +607,11 @@ def unified_verify_view(request):
                         messages.error(request, 'Account not found. Please sign up.')
                         return redirect('tickets:login')
                     auth_login(request, user, backend='tickets.backends.PhoneBackend')
+                    invitation = _maybe_accept_pending_invite(request)
+                    if invitation is not None:
+                        request.session.pop('auth_next', None)
+                        is_organizer = invitation.role == UserProfile.Role.ORGANIZER
+                        return redirect('tickets:home' if is_organizer else 'tickets:attendee_dashboard')
                     try:
                         if user.profile.is_organizer:
                             request.session.pop('auth_next', None)
@@ -731,6 +736,10 @@ def verify_email_after_profile_view(request):
                 del request.session['pending_profile_data']
                 auth_login(request, user, backend='tickets.backends.PhoneBackend')
                 messages.success(request, 'Welcome to Cue!')
+                invitation = _maybe_accept_pending_invite(request)
+                if invitation is not None:
+                    is_organizer = invitation.role == UserProfile.Role.ORGANIZER
+                    return redirect('tickets:home' if is_organizer else 'tickets:attendee_dashboard')
                 next_url = request.session.pop('auth_next', None)
                 if next_url and url_has_allowed_host_and_scheme(next_url, allowed_hosts={request.get_host()}):
                     return redirect(next_url)
@@ -783,7 +792,11 @@ def email_login_view(request):
                 request.session['verify_email'] = {'email': email, 'is_new': is_new}
                 return redirect('tickets:email_verify')
     else:
-        form = EmailLoginForm()
+        initial = {}
+        prefill_email = request.GET.get('email', '').strip()
+        if prefill_email:
+            initial['email'] = prefill_email
+        form = EmailLoginForm(initial=initial)
         next_url = request.GET.get('next', '')
         if next_url:
             request.session['auth_next'] = next_url
@@ -822,6 +835,11 @@ def email_verify_view(request):
                         messages.error(request, 'Account not found. Please sign up.')
                         return redirect('tickets:email_login')
                     auth_login(request, user, backend='tickets.backends.EmailOTPBackend')
+                    invitation = _maybe_accept_pending_invite(request)
+                    if invitation is not None:
+                        request.session.pop('auth_next', None)
+                        is_organizer = invitation.role == UserProfile.Role.ORGANIZER
+                        return redirect('tickets:home' if is_organizer else 'tickets:attendee_dashboard')
                     try:
                         if user.profile.is_organizer:
                             request.session.pop('auth_next', None)
@@ -945,6 +963,10 @@ def verify_phone_after_profile_view(request):
                 del request.session['pending_email_profile_data']
                 auth_login(request, user, backend='tickets.backends.EmailOTPBackend')
                 messages.success(request, 'Welcome to Cue!')
+                invitation = _maybe_accept_pending_invite(request)
+                if invitation is not None:
+                    is_organizer = invitation.role == UserProfile.Role.ORGANIZER
+                    return redirect('tickets:home' if is_organizer else 'tickets:attendee_dashboard')
                 next_url = request.session.pop('auth_next', None)
                 if next_url and url_has_allowed_host_and_scheme(next_url, allowed_hosts={request.get_host()}):
                     return redirect(next_url)
@@ -1466,6 +1488,7 @@ def member_list(request):
 @require_http_methods(["POST"])
 def member_invite(request):
     """Create an organization invitation and send email."""
+    from django.contrib.auth.models import User
     org = get_organization(request)
     form = MemberInviteForm(request.POST)
     if not form.is_valid():
@@ -1474,29 +1497,67 @@ def member_invite(request):
                 messages.error(request, err)
         return redirect('tickets:member_list')
 
-    email = form.cleaned_data['email'].strip().lower()
+    method = form.cleaned_data.get('invite_method', 'email')
     role = UserProfile.Role.ORGANIZER
     org_role = form.cleaned_data['org_role']
+
+    resolved_email = ''
+    resolved_phone = ''
+
+    if method == 'email':
+        entered_email = form.cleaned_data['email'].strip().lower()
+        matched_user = User.objects.filter(email__iexact=entered_email).first()
+        resolved_email = entered_email
+        if matched_user is not None:
+            profile = UserProfile.objects.filter(user=matched_user).first()
+            if profile and profile.phone_number:
+                resolved_phone = profile.phone_number
+    else:
+        entered_phone = form.cleaned_data['phone_number']
+        profile = (
+            UserProfile.objects
+            .select_related('user')
+            .filter(phone_number=entered_phone)
+            .first()
+        )
+        if profile is None or not profile.user.email:
+            messages.error(
+                request,
+                'No account found for that phone number. Invite them by email instead.',
+            )
+            return redirect('tickets:member_list')
+        resolved_email = profile.user.email.lower()
+        resolved_phone = entered_phone
+
     if OrganizationMembership.objects.filter(
         organization=org,
-        user__email__iexact=email,
+        user__email__iexact=resolved_email,
     ).exists():
-        messages.error(request, f'{email} is already a member of this organization.')
+        messages.error(request, f'{resolved_email} is already a member of this organization.')
         return redirect('tickets:member_list')
 
-    if OrganizationInvitation.objects.filter(
+    pending_qs = OrganizationInvitation.objects.filter(
         organization=org,
-        email__iexact=email,
         status=OrganizationInvitation.Status.PENDING,
         expires_at__gt=django_tz.now(),
-    ).exists():
-        messages.error(request, f'An invitation for {email} is already pending.')
+    )
+    if pending_qs.filter(email__iexact=resolved_email).exists():
+        messages.error(request, f'An invitation for {resolved_email} is already pending.')
+        return redirect('tickets:member_list')
+    if resolved_phone and pending_qs.filter(phone_number=resolved_phone).exists():
+        messages.error(request, f'An invitation for {resolved_phone} is already pending.')
         return redirect('tickets:member_list')
 
     expires_at = django_tz.now() + timedelta(days=7)
     invitation = OrganizationInvitation(
         organization=org,
-        email=email,
+        email=resolved_email,
+        phone_number=resolved_phone,
+        invited_via=(
+            OrganizationInvitation.InvitedVia.PHONE
+            if method == 'phone'
+            else OrganizationInvitation.InvitedVia.EMAIL
+        ),
         invited_by=request.user,
         status=OrganizationInvitation.Status.PENDING,
         expires_at=expires_at,
@@ -1508,8 +1569,57 @@ def member_invite(request):
 
     from .tasks import send_org_invite_email_task
     send_org_invite_email_task.delay(str(invitation.id))
-    messages.success(request, f'Invitation sent to {email}. They can use the link in the email to join.')
+    messages.success(
+        request,
+        f'Invitation sent to {resolved_email}. They can use the link in the email to join.',
+    )
     return redirect('tickets:member_list')
+
+
+def _maybe_accept_pending_invite(request):
+    """If a `pending_invite_token` is in the session, attach the user to that org.
+
+    Called right after a brand-new account is created via the signup flow so an
+    invitee who clicked an invite link without an existing account auto-joins.
+    Returns the invitation if accepted, else None.
+    """
+    token = request.session.pop('pending_invite_token', None)
+    if not token:
+        return None
+    try:
+        invitation = OrganizationInvitation.objects.get(token=token)
+    except (OrganizationInvitation.DoesNotExist, ValueError):
+        return None
+    if not invitation.is_usable():
+        return None
+    if not request.user.is_authenticated:
+        return None
+    if (request.user.email or '').lower() != invitation.email.lower():
+        return None
+    profile, _ = UserProfile.objects.get_or_create(
+        user=request.user,
+        defaults={'organization_id': None},
+    )
+    with transaction.atomic():
+        OrganizationMembership.objects.update_or_create(
+            user=request.user,
+            organization=invitation.organization,
+            defaults={'org_role': invitation.org_role},
+        )
+        if invitation.role == UserProfile.Role.ORGANIZER:
+            profile.role = UserProfile.Role.ORGANIZER
+        if profile.organization_id is None:
+            profile.organization = invitation.organization
+            profile.org_role = invitation.org_role
+        profile.save(update_fields=['organization', 'role', 'org_role'])
+        invitation.status = OrganizationInvitation.Status.ACCEPTED
+        invitation.accepted_at = django_tz.now()
+        invitation.accepted_by = request.user
+        invitation.save(update_fields=['status', 'accepted_at', 'accepted_by'])
+    clear_org_cache(request)
+    request.session['_org_id'] = str(invitation.organization.pk)
+    messages.success(request, f"You've joined {invitation.organization.name}. Welcome!")
+    return invitation
 
 
 @require_http_methods(["GET", "POST"])
@@ -1523,11 +1633,22 @@ def invite_accept(request, token):
         })
 
     if not request.user.is_authenticated:
+        from django.contrib.auth.models import User
         from django.urls import reverse
         from urllib.parse import urlencode
-        login_url = reverse('tickets:login')
         invite_url = request.build_absolute_uri()
-        return redirect(f'{login_url}?{urlencode({"next": invite_url})}')
+        # Stash the token so post-login completion can auto-accept even if the
+        # login flow short-circuits past `next=` (e.g. organizer dashboard redirect).
+        request.session['pending_invite_token'] = str(invitation.token)
+        user_exists = User.objects.filter(email__iexact=invitation.email).exists()
+        if user_exists:
+            login_url = reverse('tickets:login')
+            return redirect(f'{login_url}?{urlencode({"next": invite_url})}')
+        # Clicking the tokenized link we emailed to invitation.email already
+        # proves the recipient controls that inbox, so skip the email OTP step
+        # and drop them straight into profile creation.
+        request.session['pending_signup_email'] = invitation.email
+        return redirect('tickets:email_complete_profile')
 
     if request.user.email.lower() != invitation.email.lower():
         return render(request, 'tickets/invite_accept.html', {

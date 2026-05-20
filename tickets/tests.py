@@ -967,7 +967,7 @@ class MemberInviteTests(TestCase):
     def test_member_invite_valid_email_creates_invitation(self):
         response = self.client.post(
             reverse('tickets:member_invite'),
-            {'email': 'newuser@example.com', 'role': 'organizer', 'org_role': 'host', 'csrfmiddlewaretoken': self.client.cookies.get('csrftoken', '')},
+            {'invite_method': 'email', 'email': 'newuser@example.com', 'role': 'organizer', 'org_role': 'host', 'csrfmiddlewaretoken': self.client.cookies.get('csrftoken', '')},
         )
         self.assertEqual(response.status_code, 302)
         self.assertRedirects(response, reverse('tickets:member_list'))
@@ -979,6 +979,47 @@ class MemberInviteTests(TestCase):
             ).exists()
         )
 
+    def test_member_invite_email_matches_existing_user_records_phone(self):
+        existing = User.objects.create_user(
+            username='existing@example.com', email='existing@example.com', password='pass123',
+        )
+        UserProfile.objects.create(user=existing, organization=None, phone_number='+15555550199')
+        response = self.client.post(
+            reverse('tickets:member_invite'),
+            {'invite_method': 'email', 'email': 'existing@example.com', 'org_role': 'host'},
+        )
+        self.assertEqual(response.status_code, 302)
+        inv = OrganizationInvitation.objects.get(organization=self.org, email='existing@example.com')
+        self.assertEqual(inv.phone_number, '+15555550199')
+        self.assertEqual(inv.invited_via, OrganizationInvitation.InvitedVia.EMAIL)
+
+    def test_member_invite_by_phone_matched_user_uses_on_file_email(self):
+        existing = User.objects.create_user(
+            username='phoneuser@example.com', email='phoneuser@example.com', password='pass123',
+        )
+        UserProfile.objects.create(user=existing, organization=None, phone_number='+15555550111')
+        response = self.client.post(
+            reverse('tickets:member_invite'),
+            {'invite_method': 'phone', 'phone_number': '+15555550111', 'org_role': 'host'},
+        )
+        self.assertEqual(response.status_code, 302)
+        inv = OrganizationInvitation.objects.get(organization=self.org, phone_number='+15555550111')
+        self.assertEqual(inv.email, 'phoneuser@example.com')
+        self.assertEqual(inv.invited_via, OrganizationInvitation.InvitedVia.PHONE)
+
+    def test_member_invite_by_phone_no_match_errors(self):
+        response = self.client.post(
+            reverse('tickets:member_invite'),
+            {'invite_method': 'phone', 'phone_number': '+15555550000', 'org_role': 'host'},
+        )
+        self.assertEqual(response.status_code, 302)
+        self.assertFalse(
+            OrganizationInvitation.objects.filter(
+                organization=self.org,
+                phone_number='+15555550000',
+            ).exists()
+        )
+
     def test_member_invite_duplicate_email_existing_member_error(self):
         other = User.objects.create_user(
             username='other@example.com', email='other@example.com', password='pass123',
@@ -987,7 +1028,7 @@ class MemberInviteTests(TestCase):
         OrganizationMembership.objects.create(user=other, organization=self.org)
         response = self.client.post(
             reverse('tickets:member_invite'),
-            {'email': 'other@example.com'},
+            {'invite_method': 'email', 'email': 'other@example.com', 'org_role': 'host'},
         )
         self.assertEqual(response.status_code, 302)
         self.assertRedirects(response, reverse('tickets:member_list'))
@@ -1008,7 +1049,7 @@ class MemberInviteTests(TestCase):
         )
         response = self.client.post(
             reverse('tickets:member_invite'),
-            {'email': 'pending@example.com'},
+            {'invite_method': 'email', 'email': 'pending@example.com', 'org_role': 'host'},
         )
         self.assertEqual(response.status_code, 302)
         self.assertRedirects(response, reverse('tickets:member_list'))
@@ -1020,6 +1061,44 @@ class MemberInviteTests(TestCase):
             ).count(),
             1,
         )
+
+    def test_invite_accept_unauthenticated_new_email_skips_email_otp(self):
+        inv = OrganizationInvitation.objects.create(
+            organization=self.org,
+            email='brandnew@example.com',
+            invited_by=self.user,
+            status=OrganizationInvitation.Status.PENDING,
+            expires_at=timezone.now() + timedelta(days=7),
+        )
+        self.client.logout()
+        response = self.client.get(reverse('tickets:invite_accept', args=[inv.token]))
+        self.assertEqual(response.status_code, 302)
+        self.assertRedirects(
+            response, reverse('tickets:email_complete_profile'),
+            target_status_code=200,
+        )
+        self.assertEqual(self.client.session.get('pending_invite_token'), str(inv.token))
+        self.assertEqual(self.client.session.get('pending_signup_email'), 'brandnew@example.com')
+
+    def test_invite_accept_unauthenticated_existing_email_redirects_to_login(self):
+        existing = User.objects.create_user(
+            username='already@example.com', email='already@example.com', password='pass123',
+        )
+        UserProfile.objects.create(user=existing, organization=None)
+        inv = OrganizationInvitation.objects.create(
+            organization=self.org,
+            email='already@example.com',
+            invited_by=self.user,
+            status=OrganizationInvitation.Status.PENDING,
+            expires_at=timezone.now() + timedelta(days=7),
+        )
+        self.client.logout()
+        response = self.client.get(reverse('tickets:invite_accept', args=[inv.token]))
+        self.assertEqual(response.status_code, 302)
+        self.assertIn(reverse('tickets:login'), response.get('Location', '') or response.url)
+        # Token is stashed so the post-login flow can auto-accept even when the
+        # login view ignores ?next= (e.g. organizer redirect to home).
+        self.assertEqual(self.client.session.get('pending_invite_token'), str(inv.token))
 
     def test_invite_accept_valid_token_matching_email_joins_org(self):
         inv = OrganizationInvitation.objects.create(
@@ -1080,25 +1159,6 @@ class MemberInviteTests(TestCase):
         response = self.client.get(reverse('tickets:invite_accept', args=[inv.token]))
         self.assertEqual(response.status_code, 200)
         self.assertIn(b'expired or already been used', response.content)
-
-    def test_invite_accept_unauthenticated_redirects_to_signup_with_next(self):
-        inv = OrganizationInvitation.objects.create(
-            organization=self.org,
-            email='invitee@test.com',
-            invited_by=self.user,
-            status=OrganizationInvitation.Status.PENDING,
-            expires_at=timezone.now() + timedelta(days=7),
-        )
-        self.client.logout()
-        response = self.client.get(reverse('tickets:invite_accept', args=[inv.token]))
-        self.assertEqual(response.status_code, 302)
-        location = response.get('Location', '') or response.url
-        # Unauthenticated invite acceptance redirects to /login/ so users can
-        # sign in or create an account before accepting.
-        self.assertIn('/login/', location)
-        self.assertIn('next=', location)
-        self.assertIn(str(inv.token), location)
-
 
 class MobileAPITests(TestCase):
     """Test cases for the mobile API endpoints."""
