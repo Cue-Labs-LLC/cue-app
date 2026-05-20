@@ -42,7 +42,7 @@ from .models import (
     SurveyQuestion, SurveyInvitation, SurveyResponse, SurveyAnswer,
     PipedreamCalendarConnection, OrganizationAPIKey,
     SaleableTicketType, SaleableTicketTypeTier, StripeCheckoutSession, Payout, PromoCode,
-    ExternalSurveyUpload, ExternalSurveyResponse, EventDailyPageView,
+    ExternalSurveyUpload, ExternalSurveyResponse, TypeformFormSubscription, EventDailyPageView,
     WaitlistEntry, OrganizerWaitlist,
     ScannerSession, generate_unique_scanner_pin, TrackingLink, _generate_tracking_token,
     EVENT_STATUS_DRAFT, EVENT_STATUS_LIVE, EVENT_STATUS_ENDED, EVENT_STATUS_CANCELLED,
@@ -11123,6 +11123,381 @@ def survey_analytics(request):
         'page_obj': page_obj,
         'rating_labels': [r['overall_rating'] for r in stats['rating_breakdown']],
         'rating_counts': [r['count'] for r in stats['rating_breakdown']],
+    })
+
+
+# ── Typeform integration ────────────────────────────────────────────────────
+
+@login_required
+@require_org
+@require_admin
+def typeform_settings(request):
+    """Show Typeform connection status, current form subscriptions, and sync controls."""
+    org = get_organization(request)
+    subscriptions = (
+        TypeformFormSubscription.objects
+        .filter(organization=org)
+        .order_by('-is_active', '-created_at')
+    )
+    return render(request, 'tickets/typeform_settings.html', {
+        'org': org,
+        'is_connected': bool(org.typeform_access_token),
+        'subscriptions': subscriptions,
+    })
+
+
+@login_required
+@require_org
+@require_admin
+@require_http_methods(["POST"])
+def typeform_connect(request):
+    """Validate the posted Personal Access Token, save it, and stash the account email."""
+    from .services.typeform.client import TypeformAPIError, TypeformClient
+
+    org = get_organization(request)
+    token = (request.POST.get('access_token') or '').strip()
+    if not token:
+        messages.error(request, 'Paste a Typeform Personal Access Token.')
+        return redirect('tickets:typeform_settings')
+
+    try:
+        me = TypeformClient(access_token=token).validate_token()
+    except TypeformAPIError as exc:
+        messages.error(request, f'Could not verify Typeform credentials: {exc}')
+        return redirect('tickets:typeform_settings')
+
+    org.typeform_access_token = token
+    org.typeform_account_email = (me.get('email') or '')[:254]
+    org.typeform_validated_at = django_tz.now()
+    org.save(update_fields=[
+        'typeform_access_token', 'typeform_account_email', 'typeform_validated_at',
+    ])
+    messages.success(request, 'Typeform connected.')
+    return redirect('tickets:typeform_settings')
+
+
+@login_required
+@require_org
+@require_admin
+@require_http_methods(["POST"])
+def typeform_disconnect(request):
+    """Disconnect Typeform: delete all webhooks and clear org credentials."""
+    from .services.typeform.client import TypeformAPIError, TypeformClient
+
+    org = get_organization(request)
+    if not org.typeform_access_token:
+        messages.info(request, 'Typeform was not connected.')
+        return redirect('tickets:typeform_settings')
+
+    client = TypeformClient(access_token=org.typeform_access_token)
+    tag = getattr(settings, 'TYPEFORM_WEBHOOK_TAG', 'cue')
+    for sub in TypeformFormSubscription.objects.filter(organization=org, is_active=True):
+        try:
+            client.delete_webhook(sub.form_id, tag=tag)
+        except TypeformAPIError as exc:
+            logger.warning('Failed to delete Typeform webhook for sub %s: %s', sub.id, exc)
+        sub.is_active = False
+        sub.webhook_id = ''
+        sub.save(update_fields=['is_active', 'webhook_id'])
+
+    org.typeform_access_token = ''
+    org.typeform_account_email = ''
+    org.typeform_validated_at = None
+    org.save(update_fields=[
+        'typeform_access_token', 'typeform_account_email', 'typeform_validated_at',
+    ])
+    messages.success(request, 'Typeform disconnected.')
+    return redirect('tickets:typeform_settings')
+
+
+def _typeform_webhook_url(request, sub_id) -> str:
+    base = getattr(settings, 'SITE_URL', '').rstrip('/')
+    if not base:
+        base = request.build_absolute_uri('/').rstrip('/')
+    path = reverse('tickets:typeform_webhook', args=[sub_id])
+    return f'{base}{path}'
+
+
+@login_required
+@require_org
+@require_admin
+def typeform_form_picker(request):
+    """List Typeform forms; let the org check which to subscribe (creates webhooks)."""
+    from .services.typeform.client import TypeformAPIError, TypeformClient
+    from .services.typeform.field_mapping import auto_field_map
+
+    org = get_organization(request)
+    if not org.typeform_access_token:
+        messages.error(request, 'Connect Typeform first.')
+        return redirect('tickets:typeform_settings')
+
+    client = TypeformClient(access_token=org.typeform_access_token)
+    try:
+        forms = client.list_forms()
+    except TypeformAPIError as exc:
+        messages.error(request, f'Could not load Typeform forms: {exc}')
+        return redirect('tickets:typeform_settings')
+
+    existing = {s.form_id: s for s in TypeformFormSubscription.objects.filter(organization=org)}
+
+    if request.method == 'POST':
+        selected_form_ids = set(request.POST.getlist('form_ids'))
+        tag = getattr(settings, 'TYPEFORM_WEBHOOK_TAG', 'cue')
+
+        forms_by_id = {f.get('id'): f for f in forms if f.get('id')}
+        created = 0
+        for form_id in selected_form_ids:
+            form_meta = forms_by_id.get(form_id)
+            if not form_meta:
+                continue
+            sub = existing.get(form_id)
+            if sub is None:
+                upload = ExternalSurveyUpload.objects.create(
+                    organization=org,
+                    filename=f'Typeform: {form_meta.get("title") or form_id}',
+                    status=ExternalSurveyUpload.Status.COMPLETED,
+                )
+                sub = TypeformFormSubscription.objects.create(
+                    organization=org,
+                    form_id=form_id,
+                    form_title=(form_meta.get('title') or '')[:255],
+                    upload=upload,
+                )
+            else:
+                sub.is_active = True
+                sub.form_title = (form_meta.get('title') or sub.form_title)[:255]
+                sub.save(update_fields=['is_active', 'form_title'])
+
+            try:
+                definition = client.get_form(form_id)
+                if not sub.field_map:
+                    sub.field_map = auto_field_map(definition)
+                    sub.save(update_fields=['field_map'])
+            except TypeformAPIError as exc:
+                logger.warning('Could not load form definition for %s: %s', form_id, exc)
+
+            try:
+                webhook = client.create_webhook(
+                    form_id=form_id,
+                    url=_typeform_webhook_url(request, sub.id),
+                    secret=sub.webhook_secret,
+                    tag=tag,
+                )
+                sub.webhook_id = str(webhook.get('id') or '')[:64]
+                sub.save(update_fields=['webhook_id'])
+            except TypeformAPIError as exc:
+                messages.warning(
+                    request,
+                    f'Form "{sub.form_title}" subscribed but webhook registration failed: {exc}',
+                )
+            created += 1
+
+        # Deactivate any previously-active subscriptions that the org just unchecked.
+        for sub in existing.values():
+            if sub.is_active and sub.form_id not in selected_form_ids:
+                try:
+                    client.delete_webhook(sub.form_id, tag=tag)
+                except TypeformAPIError:
+                    pass
+                sub.is_active = False
+                sub.webhook_id = ''
+                sub.save(update_fields=['is_active', 'webhook_id'])
+
+        messages.success(request, f'Subscribed to {created} Typeform form(s).')
+        return redirect('tickets:typeform_settings')
+
+    rows = []
+    for form in forms:
+        sub = existing.get(form.get('id'))
+        rows.append({
+            'id': form.get('id'),
+            'title': form.get('title') or form.get('id'),
+            'last_updated_at': form.get('last_updated_at'),
+            'is_subscribed': bool(sub and sub.is_active),
+        })
+    return render(request, 'tickets/typeform_form_picker.html', {
+        'forms': rows,
+    })
+
+
+@login_required
+@require_org
+@require_admin
+def typeform_form_detail(request, sub_id):
+    """Show + edit the field map for one Typeform form subscription."""
+    from .services.typeform.client import TypeformAPIError, TypeformClient
+    from .services.typeform.field_mapping import TARGET_FIELDS
+
+    org = get_organization(request)
+    subscription = get_object_or_404(
+        TypeformFormSubscription.objects.filter(organization=org), id=sub_id,
+    )
+
+    client = TypeformClient(access_token=org.typeform_access_token)
+    try:
+        definition = client.get_form(subscription.form_id)
+    except TypeformAPIError as exc:
+        messages.error(request, f'Could not load form definition: {exc}')
+        definition = {'fields': []}
+
+    if request.method == 'POST':
+        new_map: dict = {}
+        for field in definition.get('fields') or []:
+            key = field.get('ref') or field.get('id')
+            if not key:
+                continue
+            value = (request.POST.get(f'map_{key}') or '').strip()
+            if value and value in TARGET_FIELDS:
+                new_map[key] = value
+        subscription.field_map = new_map
+        subscription.save(update_fields=['field_map'])
+        messages.success(request, 'Field mapping saved.')
+        return redirect('tickets:typeform_form_detail', sub_id=subscription.id)
+
+    fields = []
+    for field in definition.get('fields') or []:
+        key = field.get('ref') or field.get('id')
+        if not key:
+            continue
+        fields.append({
+            'key': key,
+            'title': field.get('title') or '(untitled)',
+            'type': field.get('type'),
+            'mapped_to': subscription.field_map.get(key, ''),
+        })
+
+    return render(request, 'tickets/typeform_form_detail.html', {
+        'subscription': subscription,
+        'fields': fields,
+        'target_fields': TARGET_FIELDS,
+    })
+
+
+@login_required
+@require_org
+@require_admin
+@require_http_methods(["POST"])
+def typeform_form_sync(request, sub_id):
+    """Trigger an on-demand pull of recent responses for one subscription."""
+    from .tasks import sync_typeform_form_task
+
+    org = get_organization(request)
+    subscription = get_object_or_404(
+        TypeformFormSubscription.objects.filter(organization=org), id=sub_id,
+    )
+    sync_typeform_form_task.delay(str(subscription.id))
+    messages.success(request, f'Syncing "{subscription.form_title}" — new responses will appear shortly.')
+    return redirect('tickets:typeform_settings')
+
+
+@login_required
+@require_org
+@require_admin
+@require_http_methods(["POST"])
+def typeform_form_unsubscribe(request, sub_id):
+    """Delete the webhook and deactivate one form subscription."""
+    from .services.typeform.client import TypeformAPIError, TypeformClient
+
+    org = get_organization(request)
+    subscription = get_object_or_404(
+        TypeformFormSubscription.objects.filter(organization=org), id=sub_id,
+    )
+    if org.typeform_access_token:
+        tag = getattr(settings, 'TYPEFORM_WEBHOOK_TAG', 'cue')
+        try:
+            TypeformClient(access_token=org.typeform_access_token).delete_webhook(
+                subscription.form_id, tag=tag,
+            )
+        except TypeformAPIError as exc:
+            logger.warning('Failed to delete webhook for sub %s: %s', subscription.id, exc)
+    subscription.is_active = False
+    subscription.webhook_id = ''
+    subscription.save(update_fields=['is_active', 'webhook_id'])
+    messages.success(request, f'Unsubscribed from "{subscription.form_title}".')
+    return redirect('tickets:typeform_settings')
+
+
+@csrf_exempt
+@require_http_methods(["POST"])
+def typeform_webhook(request, sub_id):
+    """Receive Typeform webhook deliveries: verify HMAC, ingest one response, queue LLM match."""
+    import base64
+    import hashlib
+    import hmac as hmac_mod
+
+    from .services.typeform.ingest import ingest_response
+    from .tasks import match_survey_response_to_event_task
+
+    try:
+        subscription = TypeformFormSubscription.objects.select_related('organization').get(
+            id=sub_id, is_active=True,
+        )
+    except (TypeformFormSubscription.DoesNotExist, ValueError, Http404):
+        return HttpResponse(status=404)
+
+    signature_header = request.headers.get('Typeform-Signature', '')
+    if not signature_header.startswith('sha256='):
+        return HttpResponse('Invalid signature header', status=401)
+    posted_b64 = signature_header[len('sha256='):]
+
+    raw_body = request.body
+    digest = hmac_mod.new(
+        subscription.webhook_secret.encode('utf-8'),
+        raw_body, hashlib.sha256,
+    ).digest()
+    expected_b64 = base64.b64encode(digest).decode('ascii')
+    if not hmac_mod.compare_digest(posted_b64, expected_b64):
+        return HttpResponse('Bad signature', status=401)
+
+    try:
+        payload = json.loads(raw_body.decode('utf-8'))
+    except (ValueError, UnicodeDecodeError):
+        return HttpResponseBadRequest('Invalid JSON')
+
+    form_response = payload.get('form_response')
+    if not form_response:
+        return HttpResponseBadRequest('Missing form_response')
+
+    response, created = ingest_response(subscription, form_response)
+    if response and created:
+        match_survey_response_to_event_task.delay(str(response.id))
+
+    return JsonResponse({'ok': True, 'created': bool(created)})
+
+
+@login_required
+@require_org
+def typeform_review(request):
+    """Show all Typeform responses awaiting event confirmation (suggested but not linked)."""
+    org = get_organization(request)
+    responses = (
+        ExternalSurveyResponse.objects
+        .filter(organization=org, event__isnull=True)
+        .exclude(typeform_response_id='')
+        .select_related('suggested_event', 'suggested_event__venue', 'upload')
+        .order_by('-responded_at')
+    )
+    events = Event.objects.filter(organization=org).order_by('-start_date')
+
+    if request.method == 'POST':
+        valid_event_ids = set(str(eid) for eid in events.values_list('id', flat=True))
+        affected_event_ids: set[str] = set()
+        for resp in responses:
+            chosen = (request.POST.get(f'event_{resp.id}') or '').strip()
+            if chosen and chosen in valid_event_ids:
+                ExternalSurveyResponse.objects.filter(id=resp.id).update(event_id=chosen)
+                affected_event_ids.add(chosen)
+
+        for eid in affected_event_ids:
+            django_cache.delete(_event_stats_cache_key(eid))
+            _invalidate_event_upload_stats_cache(eid)
+
+        messages.success(request, 'Event links saved.')
+        return redirect('tickets:typeform_review')
+
+    return render(request, 'tickets/typeform_review.html', {
+        'responses': responses,
+        'events': events,
     })
 
 

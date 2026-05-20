@@ -1,0 +1,136 @@
+{% extends 'tickets/base.html' %}
+
+{% block title %}Typeform{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1>Typeform</h1>
+        <p class="text-body-secondary mb-0">Pull survey responses from Typeform and attach them to events.</p>
+    </div>
+</div>
+
+<div class="card mb-4">
+    <div class="card-body">
+        {% if not is_connected %}
+        <h2 class="h5 mb-2">Connect Typeform</h2>
+        <p class="text-body-secondary mb-3">
+            Create a Personal Access Token at <strong>Typeform &rarr; Account &rarr; Personal tokens</strong>
+            with scopes <code>forms:read</code>, <code>responses:read</code>, and <code>webhooks:write</code>.
+            Paste it below.
+        </p>
+        <form method="post" action="{% url 'tickets:typeform_connect' %}" class="row g-3" style="max-width: 640px;">
+            {% csrf_token %}
+            <div class="col-12">
+                <label for="typeform-token" class="form-label">Personal Access Token</label>
+                <input
+                    type="password"
+                    class="form-control font-monospace"
+                    id="typeform-token"
+                    name="access_token"
+                    autocomplete="off"
+                    required
+                >
+                <div class="form-text">Stored at rest. Disconnect at any time.</div>
+            </div>
+            <div class="col-12">
+                <button type="submit" class="btn btn-primary">
+                    <i class="bi bi-link-45deg me-1"></i> Connect Typeform
+                </button>
+            </div>
+        </form>
+        {% else %}
+        <div class="d-flex flex-column flex-md-row justify-content-between gap-3">
+            <div>
+                <h2 class="h5 mb-2">Connected</h2>
+                <p class="mb-1"><strong>Account:</strong> {{ org.typeform_account_email|default:'(unknown)' }}</p>
+                {% if org.typeform_validated_at %}
+                <p class="text-body-secondary small mb-0">Last validated: {{ org.typeform_validated_at }}</p>
+                {% endif %}
+            </div>
+            <div class="d-flex gap-2">
+                <a href="{% url 'tickets:typeform_form_picker' %}" class="btn btn-primary">
+                    <i class="bi bi-plus-lg me-1"></i> Pick forms to sync
+                </a>
+                <form method="post" action="{% url 'tickets:typeform_disconnect' %}"
+                      onsubmit="return confirm('Disconnect Typeform? All form webhooks will be deleted.');">
+                    {% csrf_token %}
+                    <button type="submit" class="btn btn-outline-danger">Disconnect</button>
+                </form>
+            </div>
+        </div>
+        {% endif %}
+    </div>
+</div>
+
+{% if is_connected %}
+<div class="card">
+    <div class="card-header bg-transparent">
+        <div class="d-flex justify-content-between align-items-center">
+            <h2 class="h6 mb-0">Synced forms</h2>
+            <a href="{% url 'tickets:typeform_review' %}" class="btn btn-sm btn-outline-secondary">
+                <i class="bi bi-list-check me-1"></i> Review pending matches
+            </a>
+        </div>
+    </div>
+    {% if subscriptions %}
+    <div class="card-body p-0">
+        <div class="table-responsive">
+            <table class="table table-hover mb-0 align-middle">
+                <thead>
+                    <tr>
+                        <th>Form</th>
+                        <th>Status</th>
+                        <th>Last synced</th>
+                        <th class="text-end">Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for sub in subscriptions %}
+                    <tr>
+                        <td>
+                            <a href="{% url 'tickets:typeform_form_detail' sub_id=sub.id %}">{{ sub.form_title }}</a>
+                            <div class="text-body-secondary small">Form ID: <code>{{ sub.form_id }}</code></div>
+                            {% if sub.last_sync_error %}
+                            <div class="text-danger small">Last error: {{ sub.last_sync_error|truncatechars:160 }}</div>
+                            {% endif %}
+                        </td>
+                        <td>
+                            {% if sub.is_active %}
+                            <span class="badge bg-success-subtle text-success">Active</span>
+                            {% else %}
+                            <span class="badge bg-secondary-subtle text-secondary">Inactive</span>
+                            {% endif %}
+                        </td>
+                        <td class="text-body-secondary small">{{ sub.last_synced_at|default:'Never' }}</td>
+                        <td class="text-end">
+                            {% if sub.is_active %}
+                            <form method="post" action="{% url 'tickets:typeform_form_sync' sub_id=sub.id %}" class="d-inline">
+                                {% csrf_token %}
+                                <button type="submit" class="btn btn-sm btn-outline-primary">Sync recent</button>
+                            </form>
+                            <form method="post" action="{% url 'tickets:typeform_form_unsubscribe' sub_id=sub.id %}" class="d-inline"
+                                  onsubmit="return confirm('Stop syncing this form?');">
+                                {% csrf_token %}
+                                <button type="submit" class="btn btn-sm btn-outline-danger">Stop</button>
+                            </form>
+                            {% endif %}
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+    {% else %}
+    <div class="card-body">
+        <div class="empty-state">
+            <i class="bi bi-clipboard2-data fs-1 text-body-secondary"></i>
+            <p class="mb-2">No forms synced yet.</p>
+            <a href="{% url 'tickets:typeform_form_picker' %}" class="btn btn-primary">Pick forms to sync</a>
+        </div>
+    </div>
+    {% endif %}
+</div>
+{% endif %}
+{% endblock %}

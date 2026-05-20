@@ -118,6 +118,17 @@ urlpatterns = [
     path('analytics/surveys/<uuid:upload_id>/', views.survey_upload_detail, name='survey_upload_detail'),
     path('analytics/surveys/<uuid:upload_id>/delete/', views.survey_upload_delete, name='survey_upload_delete'),
     path('analytics/surveys/<uuid:upload_id>/link-events/', views.survey_event_link, name='survey_event_link'),
+    path('analytics/surveys/typeform-review/', views.typeform_review, name='typeform_review'),
+
+    # Typeform integration (organizer settings)
+    path('settings/typeform/', views.typeform_settings, name='typeform_settings'),
+    path('settings/typeform/connect/', views.typeform_connect, name='typeform_connect'),
+    path('settings/typeform/disconnect/', views.typeform_disconnect, name='typeform_disconnect'),
+    path('settings/typeform/forms/', views.typeform_form_picker, name='typeform_form_picker'),
+    path('settings/typeform/forms/<uuid:sub_id>/', views.typeform_form_detail, name='typeform_form_detail'),
+    path('settings/typeform/forms/<uuid:sub_id>/sync/', views.typeform_form_sync, name='typeform_form_sync'),
+    path('settings/typeform/forms/<uuid:sub_id>/delete/', views.typeform_form_unsubscribe, name='typeform_form_unsubscribe'),
+    path('webhooks/typeform/<uuid:sub_id>/', views.typeform_webhook, name='typeform_webhook'),
 
     # Surveys (public - no login required)
     path('survey/<uuid:token>/', views.survey_form, name='survey_form'),
