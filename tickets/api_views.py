@@ -1650,17 +1650,41 @@ def scanner_sell_eligibility(request):
     GET /api/scanner/sell-eligibility/?event_id=<uuid>
     Returns whether the scanner session may sell in person right now, based
     on the merchant's Tap to Pay enablement state.
+
+    Response shape:
+        {
+          'eligible': bool,
+          'reason': str,  # only when eligible is False
+          'details': {
+            'stripe_capability_state': str,
+            'country': str,
+            'checked_at': ISO-8601 UTC of last Stripe lookup,
+            'cache_age_seconds': int,
+          }
+        }
+    `details` is additive — older clients can ignore it. Newer clients use
+    it to render diagnostics ("Why is this disabled?") without another
+    server-side schema change.
     """
     requested = request.query_params.get('event_id', '').strip()
     mismatch = _require_matching_scanner_event(request, requested)
     if mismatch is not None:
         return mismatch
 
-    status = _resolve_tap_to_pay_status(request.auth.event.organization)
-    if status == 'enabled':
-        return Response({'eligible': True})
-    reason = 'tap_to_pay_unsupported' if status == 'unsupported' else 'tap_to_pay_pending'
-    return Response({'eligible': False, 'reason': reason})
+    facts = _resolve_tap_to_pay_facts(request.auth.event.organization)
+    computed_at = facts['computed_at']
+    cache_age = max(0, int((timezone.now() - computed_at).total_seconds()))
+    details = {
+        'stripe_capability_state': facts['capability_state'],
+        'country': facts['country'],
+        'checked_at': computed_at.isoformat(),
+        'cache_age_seconds': cache_age,
+    }
+
+    if facts['status'] == 'enabled':
+        return Response({'eligible': True, 'details': details})
+    reason = 'tap_to_pay_unsupported' if facts['status'] == 'unsupported' else 'tap_to_pay_pending'
+    return Response({'eligible': False, 'reason': reason, 'details': details})
 
 
 # ---------------------------------------------------------------------------
@@ -1758,9 +1782,17 @@ def _send_receipt_email_for_intent(summary, to_email):
         return 'failed', str(exc)[:1000]
 
 
-def _resolve_tap_to_pay_status(org):
-    """Inspect the org's Stripe Connect account and return one of
-    'pending' / 'enabled' / 'unsupported'.
+def _resolve_tap_to_pay_facts(org):
+    """Inspect the org's Stripe Connect account and return a dict of facts.
+
+    Returns:
+        {
+          'status': 'pending' | 'enabled' | 'unsupported',
+          'capability_state': str,  # 'active' | 'inactive' | 'pending' |
+                                    # 'unrequested' | 'missing' | 'unknown'
+          'country': 'US' or '' if unknown,
+          'computed_at': timezone-aware datetime when Stripe was last queried,
+        }
 
     Cached per-org for TAP_TO_PAY_STATUS_CACHE_TTL seconds so the iOS app
     can poll on every foreground transition without burning Stripe quota.
@@ -1769,12 +1801,15 @@ def _resolve_tap_to_pay_status(org):
 
     cache_key = f'tap_to_pay_status:{org.pk}'
     cached = django_cache.get(cache_key)
-    if cached is not None:
+    if isinstance(cached, dict) and 'status' in cached and 'computed_at' in cached:
         return cached
 
     status = 'pending'
+    country = ''
     account_id = (org.stripe_account_id or '').strip()
-    if account_id:
+    if not account_id:
+        capability_state = 'missing'
+    else:
         import stripe as stripe_lib
         stripe_lib.api_key = django_settings.STRIPE_SECRET_KEY
         try:
@@ -1783,24 +1818,38 @@ def _resolve_tap_to_pay_status(org):
             logger.warning("Stripe Account retrieve failed for org %s: %s", org.pk, exc)
             account = None
 
-        if account is not None:
+        if account is None:
+            capability_state = 'unknown'
+        else:
             capabilities = getattr(account, 'capabilities', None) or {}
             if hasattr(capabilities, 'get'):
-                ttp_cap = capabilities.get('tap_to_pay_payments')
+                card_cap = capabilities.get('card_payments')
             else:
-                ttp_cap = None
+                card_cap = None
+            capability_state = card_cap or 'unrequested'
             country = (getattr(account, 'country', '') or '').upper()
 
-            if ttp_cap == 'active':
-                status = 'enabled'
-            elif country and country not in django_settings.TAP_TO_PAY_SUPPORTED_COUNTRIES:
+            if country and country not in django_settings.TAP_TO_PAY_SUPPORTED_COUNTRIES:
                 status = 'unsupported'
+            elif card_cap == 'active':
+                status = 'enabled'
 
+    facts = {
+        'status': status,
+        'capability_state': capability_state,
+        'country': country,
+        'computed_at': timezone.now(),
+    }
     try:
-        django_cache.set(cache_key, status, timeout=django_settings.TAP_TO_PAY_STATUS_CACHE_TTL)
+        django_cache.set(cache_key, facts, timeout=django_settings.TAP_TO_PAY_STATUS_CACHE_TTL)
     except Exception:
         pass
-    return status
+    return facts
+
+
+def _resolve_tap_to_pay_status(org):
+    """Backwards-compatible thin wrapper — returns just the status string."""
+    return _resolve_tap_to_pay_facts(org)['status']
 
 
 @api_view(['GET'])

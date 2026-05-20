@@ -114,6 +114,43 @@
             </form>
         </div>
 
+        {% if tap_to_pay_ui %}
+        <div class="p-3 rounded mb-3" style="background:var(--bs-body-bg);border:1px solid var(--bs-border-color);">
+            <div class="d-flex align-items-start gap-3 flex-wrap">
+                <div class="d-flex align-items-center justify-content-center rounded-circle bg-primary bg-opacity-10" style="width:2.5rem;height:2.5rem;flex-shrink:0;">
+                    <i class="bi bi-phone text-primary"></i>
+                </div>
+                <div class="flex-grow-1" style="min-width:16rem;">
+                    <div class="fw-semibold">Tap to Pay on iPhone</div>
+                    {% if tap_to_pay_ui.status == 'enabled' %}
+                    <div class="text-muted small">Ready. Open the Cue scanner app on your iPhone to start accepting Tap to Pay sales.</div>
+                    {% elif tap_to_pay_ui.status == 'unsupported' %}
+                    <div class="text-muted small">
+                        Tap to Pay on iPhone isn't supported in your country yet.
+                        <a href="https://developer.apple.com/tap-to-pay/regions/" target="_blank" rel="noopener">See supported regions</a>.
+                    </div>
+                    {% else %}
+                    <div class="text-muted small">Accept in-person card payments on your iPhone — request the capability from Stripe to get started.</div>
+                    {% endif %}
+                </div>
+                <div class="d-flex align-items-center gap-2">
+                    {% if tap_to_pay_ui.status == 'enabled' %}
+                    <span class="badge text-bg-success"><i class="bi bi-check-circle"></i> Enabled</span>
+                    {% elif tap_to_pay_ui.status == 'unsupported' %}
+                    <span class="badge text-bg-secondary">Unavailable</span>
+                    {% else %}
+                    <form method="post" action="{% url 'tickets:enable_tap_to_pay' %}">
+                        {% csrf_token %}
+                        <button type="submit" class="btn btn-success">
+                            <i class="bi bi-lightning-charge"></i> Enable in-person payments
+                        </button>
+                    </form>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+        {% endif %}
+
         {% if legacy_pending_payouts %}
         <div class="alert alert-warning d-flex align-items-start justify-content-between gap-3 flex-wrap">
             <div>

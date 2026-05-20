@@ -10468,6 +10468,57 @@ def _ensure_manual_payout_schedule(stripe_lib, connected_account_id):
         },
     )
 
+
+def _request_card_payments_capability(stripe_lib, connected_account_id):
+    """Idempotently request the `card_payments` capability on a Connect account.
+
+    Stripe Express onboarding sometimes leaves capabilities in the
+    `unrequested` state if they weren't asked for at create-time. This is
+    the documented unstick: re-requesting an already-active capability is
+    a no-op for Stripe. Returns the refreshed Account on success, None on
+    Stripe error (logged at WARN — non-fatal for the caller).
+    """
+    try:
+        return stripe_lib.Account.modify(
+            connected_account_id,
+            capabilities={'card_payments': {'requested': True}},
+        )
+    except stripe_lib.error.StripeError as exc:
+        logger.warning(
+            "Could not request card_payments capability for %s: %s",
+            connected_account_id, exc,
+        )
+        return None
+
+
+def _derive_tap_to_pay_ui_state(account):
+    """Map a Stripe Account object to the state the finance template renders.
+
+    Tap to Pay on iPhone runs on the `card_payments` capability — Stripe
+    Connect does not expose a separate `tap_to_pay_payments` capability.
+    Apple's entitlement + T&C acceptance are handled on the iOS client.
+
+    Returns {'status', 'country'} where status is one of:
+    'pending', 'enabled', 'unsupported'.
+    """
+    from django.conf import settings as django_settings
+
+    country = (getattr(account, 'country', '') or '').upper()
+    capabilities = getattr(account, 'capabilities', None) or {}
+    card_cap = capabilities.get('card_payments') if hasattr(capabilities, 'get') else None
+
+    if country and country not in django_settings.TAP_TO_PAY_SUPPORTED_COUNTRIES:
+        status = 'unsupported'
+    elif card_cap == 'active':
+        status = 'enabled'
+    else:
+        status = 'pending'
+
+    return {
+        'status': status,
+        'country': country,
+    }
+
 @login_required
 @require_org
 @require_admin
@@ -10488,6 +10539,7 @@ def finance_overview(request):
     stripe_available = None
     settling_balance = Decimal('0.00')
     bank_account = None
+    tap_to_pay_ui = None
     if org.stripe_account_id:
         try:
             import stripe as stripe_lib
@@ -10495,6 +10547,7 @@ def finance_overview(request):
             stripe_lib.api_key = django_settings.STRIPE_SECRET_KEY
             stripe_state = _get_connected_account_state(stripe_lib, org.stripe_account_id)
             bank_account = stripe_state['bank_account']
+            tap_to_pay_ui = _derive_tap_to_pay_ui_state(stripe_state['account'])
             _sync_org_payout_readiness(org, stripe_state['payouts_ready'])
         except Exception:
             logger.exception("Could not retrieve Stripe account state for org %s", org.id)
@@ -10532,6 +10585,7 @@ def finance_overview(request):
         'has_stripe_account': bool(org.stripe_account_id),
         'min_payout': _MIN_PAYOUT,
         'bank_account': bank_account,
+        'tap_to_pay_ui': tap_to_pay_ui,
         'legacy_pending_payouts': legacy_pending_payouts,
     }
     return render(request, 'tickets/finance/overview.html', context)
@@ -10631,6 +10685,10 @@ def stripe_connect_onboard(request):
             account = stripe_lib.Account.create(
                 type='express',
                 metadata={'org_id': str(org.id)},
+                capabilities={
+                    'card_payments': {'requested': True},
+                    'transfers': {'requested': True},
+                },
             )
             org.stripe_account_id = account.id
             org.save(update_fields=['stripe_account_id'])
@@ -10650,15 +10708,106 @@ def stripe_connect_onboard(request):
 @login_required
 @require_org
 @require_admin
+@require_http_methods(["POST"])
+def enable_tap_to_pay(request):
+    """Request the `card_payments` capability on the org's Connect account.
+
+    Tap to Pay on iPhone (and every other in-person payment) rides on the
+    `card_payments` capability. Express accounts sometimes leave it in the
+    `unrequested` state — this endpoint is the manual unstick. If Stripe
+    responds with outstanding requirements, the merchant is redirected
+    through a fresh Account Link to fill them in.
+    """
+    import stripe as stripe_lib
+    from django.core.cache import cache as django_cache
+    from django.urls import reverse
+    from django.conf import settings as django_settings
+
+    stripe_lib.api_key = django_settings.STRIPE_SECRET_KEY
+    org = get_organization(request)
+
+    if not org.stripe_account_id:
+        messages.error(
+            request,
+            'Connect your Stripe account first, then come back to enable in-person payments.',
+        )
+        return redirect('tickets:finance_overview')
+
+    try:
+        pre_state = _get_connected_account_state(stripe_lib, org.stripe_account_id)
+        pre_ui = _derive_tap_to_pay_ui_state(pre_state['account'])
+    except stripe_lib.error.StripeError as exc:
+        messages.error(
+            request,
+            f'Could not check your Stripe account: {getattr(exc, "user_message", None) or str(exc)}',
+        )
+        return redirect('tickets:finance_overview')
+
+    if pre_ui['status'] == 'unsupported':
+        messages.error(request, "Tap to Pay on iPhone isn't supported in your country yet.")
+        return redirect('tickets:finance_overview')
+
+    if pre_ui['status'] == 'enabled':
+        django_cache.delete(f'tap_to_pay_status:{org.pk}')
+        messages.info(request, 'In-person payments are already enabled on your account.')
+        return redirect('tickets:finance_overview')
+
+    refreshed = _request_card_payments_capability(stripe_lib, org.stripe_account_id)
+    django_cache.delete(f'tap_to_pay_status:{org.pk}')
+
+    if refreshed is None:
+        messages.error(
+            request,
+            'We couldn\'t reach Stripe to request in-person payments. Please try again in a moment.',
+        )
+        return redirect('tickets:finance_overview')
+
+    requirements = getattr(refreshed, 'requirements', None)
+    currently_due = list(getattr(requirements, 'currently_due', None) or []) if requirements else []
+    if currently_due:
+        try:
+            account_link = stripe_lib.AccountLink.create(
+                account=org.stripe_account_id,
+                refresh_url=request.build_absolute_uri(reverse('tickets:stripe_connect_refresh')),
+                return_url=request.build_absolute_uri(reverse('tickets:stripe_connect_return')),
+                type='account_onboarding',
+                collect='currently_due',
+            )
+            return redirect(account_link.url)
+        except stripe_lib.error.StripeError as exc:
+            messages.error(
+                request,
+                f'Could not open Stripe onboarding: {getattr(exc, "user_message", None) or str(exc)}',
+            )
+            return redirect('tickets:finance_overview')
+
+    messages.success(
+        request,
+        'In-person payments requested. Stripe usually activates them within a few minutes — '
+        'pull to refresh in the iOS app to check.',
+    )
+    return redirect('tickets:finance_overview')
+
+
+@login_required
+@require_org
+@require_admin
 @require_http_methods(["GET"])
 def stripe_connect_return(request):
     """Stripe redirects here after the organizer completes (or abandons) onboarding."""
     import stripe as stripe_lib
+    from django.core.cache import cache as django_cache
     from django.conf import settings as django_settings
     stripe_lib.api_key = django_settings.STRIPE_SECRET_KEY
     org = get_organization(request)
 
     if org.stripe_account_id:
+        # Idempotently re-request card_payments — Express accounts created
+        # before we asked for it at create-time can be left in 'unrequested'
+        # and this is the surest way to unstick them.
+        _request_card_payments_capability(stripe_lib, org.stripe_account_id)
+        django_cache.delete(f'tap_to_pay_status:{org.pk}')
+
         try:
             stripe_state = _get_connected_account_state(stripe_lib, org.stripe_account_id)
             _sync_org_payout_readiness(org, stripe_state['payouts_ready'])
