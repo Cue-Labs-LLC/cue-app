@@ -12,10 +12,16 @@ urlpatterns = [
     path('scanner/checkin-stats/', api_views.scanner_checkin_stats, name='api_scanner_checkin_stats'),
     path('scanner/orders/', api_views.scanner_orders, name='api_scanner_orders'),
     path('scanner/receipt/', api_views.scanner_receipt, name='api_scanner_receipt'),
+    path('scanner/ticket-types/', api_views.scanner_ticket_types, name='api_scanner_ticket_types'),
+    path('scanner/stripe/connection-token/', api_views.scanner_stripe_connection_token, name='api_scanner_stripe_connection_token'),
+    path('scanner/stripe/terminal-payment-intent/', api_views.scanner_stripe_terminal_payment_intent, name='api_scanner_stripe_terminal_pi'),
+    path('scanner/sell/', api_views.scanner_sell, name='api_scanner_sell'),
+    path('scanner/sell-eligibility/', api_views.scanner_sell_eligibility, name='api_scanner_sell_eligibility'),
 
     # Tap to Pay on iPhone (Apple entitlement compliance)
     path('tap-to-pay/terms-version/', api_views.tap_to_pay_terms_version, name='api_ttp_terms_version'),
     path('tap-to-pay/terms-acceptance/', api_views.tap_to_pay_terms_acceptance, name='api_ttp_terms_acceptance'),
+    path('merchant/status/', api_views.merchant_status, name='api_merchant_status'),
 
     # Organizer
     path('organizer/events/', api_views.organizer_events, name='api_organizer_events'),

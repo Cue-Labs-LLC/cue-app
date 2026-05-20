@@ -1090,6 +1090,58 @@ def stripe_connection_token(request):
 # Stripe Terminal — Payment Intent
 # ---------------------------------------------------------------------------
 
+def _create_terminal_payment_intent(event, line_items):
+    """Validate ticket-type inventory and create a card-present PaymentIntent.
+
+    Returns (payload, status). On success, payload is the response body and
+    status is 201. On failure, payload is an {'error': ...} dict and status
+    is 400 (validation) or 502 (Stripe).
+    """
+    if not line_items:
+        return {'error': 'event_id and line_items are required'}, 400
+
+    amount_cents = 0
+    for item in line_items:
+        tt_id = item.get('ticket_type_id', '')
+        qty = int(item.get('quantity', 1))
+        if qty < 1:
+            return {'error': 'quantity must be >= 1'}, 400
+
+        try:
+            tt = SaleableTicketType.objects.get(id=tt_id, event=event, is_active=True)
+        except SaleableTicketType.DoesNotExist:
+            return {'error': f'Ticket type {tt_id} not found for this event'}, 400
+
+        remaining = tt.remaining_quantity()
+        if remaining is not None and qty > remaining:
+            return {'error': f'Only {remaining} tickets remaining for {tt.name}'}, 400
+
+        amount_cents += int((tt.price * qty * 100).to_integral_value())
+
+    import stripe as stripe_lib
+    from django.conf import settings as django_settings
+
+    stripe_lib.api_key = django_settings.STRIPE_SECRET_KEY
+
+    try:
+        pi = stripe_lib.PaymentIntent.create(
+            amount=amount_cents,
+            currency=django_settings.STRIPE_CURRENCY,
+            payment_method_types=['card_present'],
+            capture_method='automatic',
+        )
+    except stripe_lib.error.StripeError as exc:
+        logger.error("Stripe terminal PaymentIntent error: %s", exc)
+        return {'error': str(exc)}, 502
+
+    return {
+        'client_secret': pi.client_secret,
+        'payment_intent_id': pi.id,
+        'amount_cents': amount_cents,
+        'currency': django_settings.STRIPE_CURRENCY,
+    }, 201
+
+
 @api_view(['POST'])
 def stripe_terminal_payment_intent(request):
     """
@@ -1109,54 +1161,103 @@ def stripe_terminal_payment_intent(request):
 
     event = get_object_or_404(Event.objects.filter(organization=org), id=event_id)
 
-    amount_cents = 0
-    resolved_items = []
-    for item in line_items:
-        tt_id = item.get('ticket_type_id', '')
-        qty = int(item.get('quantity', 1))
-        if qty < 1:
-            return Response({'error': 'quantity must be >= 1'}, status=400)
+    payload, status = _create_terminal_payment_intent(event, line_items)
+    return Response(payload, status=status)
 
-        try:
-            tt = SaleableTicketType.objects.get(id=tt_id, event=event, is_active=True)
-        except SaleableTicketType.DoesNotExist:
-            return Response({'error': f'Ticket type {tt_id} not found for this event'}, status=400)
 
-        remaining = tt.remaining_quantity()
-        if remaining is not None and qty > remaining:
-            return Response({'error': f'Only {remaining} tickets remaining for {tt.name}'}, status=400)
+# ---------------------------------------------------------------------------
+# Organizer — Sell (post-terminal payment fulfillment)
+# ---------------------------------------------------------------------------
 
-        item_cents = int((tt.price * qty * 100).to_integral_value())
-        amount_cents += item_cents
-        resolved_items.append({'tt': tt, 'qty': qty})
+def _finalize_in_person_sale(event, payment_intent_id, buyer_name, buyer_email, line_items, checked_in_by):
+    """Verify Stripe PaymentIntent succeeded and create the in-person TicketOrder.
 
+    Returns (payload, status). On success, payload is the response body and
+    status is 201. On failure, payload is an {'error': ...} dict and status
+    is 400 (validation) or 502 (Stripe).
+
+    checked_in_by may be None for scanner-PIN sessions (no Cue account).
+    """
     import stripe as stripe_lib
     from django.conf import settings as django_settings
 
     stripe_lib.api_key = django_settings.STRIPE_SECRET_KEY
 
     try:
-        pi = stripe_lib.PaymentIntent.create(
-            amount=amount_cents,
-            currency=django_settings.STRIPE_CURRENCY,
-            payment_method_types=['card_present'],
-            capture_method='automatic',
-        )
+        pi = stripe_lib.PaymentIntent.retrieve(payment_intent_id)
     except stripe_lib.error.StripeError as exc:
-        logger.error("Stripe terminal PaymentIntent error: %s", exc)
-        return Response({'error': str(exc)}, status=502)
+        logger.error("Stripe PaymentIntent retrieve error: %s", exc)
+        return {'error': str(exc)}, 502
 
-    return Response({
-        'client_secret': pi.client_secret,
-        'payment_intent_id': pi.id,
-        'amount_cents': amount_cents,
-        'currency': django_settings.STRIPE_CURRENCY,
-    }, status=201)
+    if pi.status != 'succeeded':
+        return {'error': f'PaymentIntent status is {pi.status!r}, expected succeeded'}, 400
 
+    total_amount = Decimal('0.00')
+    resolved = []
+    for item in line_items:
+        tt_id = item.get('ticket_type_id', '')
+        qty = int(item.get('quantity', 1))
+        item_name = item.get('name', '')
+        try:
+            item_price = Decimal(str(item.get('price', '0')))
+        except InvalidOperation:
+            return {'error': f'Invalid price for item {item_name}'}, 400
 
-# ---------------------------------------------------------------------------
-# Organizer — Sell (post-terminal payment fulfillment)
-# ---------------------------------------------------------------------------
+        try:
+            tt = SaleableTicketType.objects.get(id=tt_id, event=event)
+        except SaleableTicketType.DoesNotExist:
+            return {'error': f'Ticket type {tt_id} not found'}, 400
+
+        total_amount += item_price * qty
+        resolved.append({'tt': tt, 'tt_id': tt_id, 'qty': qty, 'name': item_name or tt.name, 'price': item_price})
+
+    org = event.organization
+    now = timezone.now()
+    customer, _ = Customer.objects.get_or_create(
+        email=buyer_email,
+        organization=org,
+        defaults={'name': buyer_name or buyer_email},
+    )
+
+    with transaction.atomic():
+        order = TicketOrder.objects.create(
+            customer=customer,
+            event=event,
+            uploaded_file=None,
+            order_number=next_order_number(),
+            order_date=now,
+            total_amount=total_amount,
+            is_in_person=True,
+            checked_in_at=now,
+            checked_in_by=checked_in_by,
+        )
+
+        ticket_count = 0
+        for item in resolved:
+            Ticket.objects.bulk_create([
+                Ticket(
+                    ticket_order=order,
+                    ticket_type=item['name'],
+                    price=item['price'],
+                    tier=None,
+                )
+                for _ in range(item['qty'])
+            ])
+            SaleableTicketType.objects.filter(id=item['tt_id']).update(
+                quantity_sold=F('quantity_sold') + item['qty']
+            )
+            ticket_count += item['qty']
+
+    customer.update_lifetime_value()
+    _invalidate_event_list_cache(org)
+
+    return {
+        'order_number': order.order_number,
+        'order_id': str(order.pk),
+        'total_amount': str(order.total_amount),
+        'ticket_count': ticket_count,
+    }, 201
+
 
 @api_view(['POST'])
 def organizer_sell(request):
@@ -1184,86 +1285,15 @@ def organizer_sell(request):
 
     event = get_object_or_404(Event.objects.filter(organization=org), id=event_id)
 
-    import stripe as stripe_lib
-    from django.conf import settings as django_settings
-
-    stripe_lib.api_key = django_settings.STRIPE_SECRET_KEY
-
-    # Verify payment succeeded
-    try:
-        pi = stripe_lib.PaymentIntent.retrieve(payment_intent_id)
-    except stripe_lib.error.StripeError as exc:
-        logger.error("Stripe PaymentIntent retrieve error: %s", exc)
-        return Response({'error': str(exc)}, status=502)
-
-    if pi.status != 'succeeded':
-        return Response({'error': f'PaymentIntent status is {pi.status!r}, expected succeeded'}, status=400)
-
-    # Validate line items and compute total
-    total_amount = Decimal('0.00')
-    resolved = []
-    for item in line_items:
-        tt_id = item.get('ticket_type_id', '')
-        qty = int(item.get('quantity', 1))
-        item_name = item.get('name', '')
-        try:
-            item_price = Decimal(str(item.get('price', '0')))
-        except InvalidOperation:
-            return Response({'error': f'Invalid price for item {item_name}'}, status=400)
-
-        try:
-            tt = SaleableTicketType.objects.get(id=tt_id, event=event)
-        except SaleableTicketType.DoesNotExist:
-            return Response({'error': f'Ticket type {tt_id} not found'}, status=400)
-
-        total_amount += item_price * qty
-        resolved.append({'tt': tt, 'tt_id': tt_id, 'qty': qty, 'name': item_name or tt.name, 'price': item_price})
-
-    now = timezone.now()
-    customer, _ = Customer.objects.get_or_create(
-        email=buyer_email,
-        organization=org,
-        defaults={'name': buyer_name or buyer_email},
+    payload, status = _finalize_in_person_sale(
+        event=event,
+        payment_intent_id=payment_intent_id,
+        buyer_name=buyer_name,
+        buyer_email=buyer_email,
+        line_items=line_items,
+        checked_in_by=request.user,
     )
-
-    with transaction.atomic():
-        order = TicketOrder.objects.create(
-            customer=customer,
-            event=event,
-            uploaded_file=None,
-            order_number=next_order_number(),
-            order_date=now,
-            total_amount=total_amount,
-            is_in_person=True,
-            checked_in_at=now,
-            checked_in_by=request.user,
-        )
-
-        ticket_count = 0
-        for item in resolved:
-            Ticket.objects.bulk_create([
-                Ticket(
-                    ticket_order=order,
-                    ticket_type=item['name'],
-                    price=item['price'],
-                    tier=None,
-                )
-                for _ in range(item['qty'])
-            ])
-            SaleableTicketType.objects.filter(id=item['tt_id']).update(
-                quantity_sold=F('quantity_sold') + item['qty']
-            )
-            ticket_count += item['qty']
-
-    customer.update_lifetime_value()
-    _invalidate_event_list_cache(org)
-
-    return Response({
-        'order_number': order.order_number,
-        'order_id': str(order.pk),
-        'total_amount': str(order.total_amount),
-        'ticket_count': ticket_count,
-    }, status=201)
+    return Response(payload, status=status)
 
 
 # ---------------------------------------------------------------------------
@@ -1468,6 +1498,172 @@ def scanner_orders(request):
 
 
 # ---------------------------------------------------------------------------
+# Scanner — In-person sell flow
+#
+# Mirrors the /api/organizer/* + /api/stripe/* endpoints below but scoped to a
+# guest scanner-PIN session (no Cue account). The iOS scanner app's in-person
+# sell flow targets these paths; the legacy /api/organizer/* paths still serve
+# session-authenticated organizers from the web UI.
+# ---------------------------------------------------------------------------
+
+def _require_matching_scanner_event(request, requested_event_id):
+    """If a client passes ?event_id=<uuid> or {event_id: ...}, it must match
+    the scanner session's bound event. Returns an error Response on mismatch,
+    or None when the request is OK to proceed.
+    """
+    if not requested_event_id:
+        return None
+    if str(request.auth.event_id) != str(requested_event_id):
+        return Response(status=404)
+    return None
+
+
+@api_view(['GET'])
+@authentication_classes([ScannerSessionAuthentication])
+@permission_classes([IsScannerAuthenticated])
+def scanner_ticket_types(request):
+    """
+    GET /api/scanner/ticket-types/?event_id=<uuid>
+    Returns active, non-password-protected, on-sale ticket types for the
+    scanner session's bound event. The event_id query param is optional but
+    must match the bound event when supplied.
+    """
+    requested = request.query_params.get('event_id', '').strip()
+    mismatch = _require_matching_scanner_event(request, requested)
+    if mismatch is not None:
+        return mismatch
+
+    event = request.auth.event
+    ticket_types = SaleableTicketType.objects.filter(
+        event=event,
+        is_active=True,
+        is_password_protected=False,
+    )
+    on_sale = [t for t in ticket_types if t.is_on_sale()]
+
+    data = [
+        {
+            'id': str(tt.pk),
+            'name': tt.name,
+            'price': str(tt.price),
+            'description': tt.description,
+            'remaining': tt.remaining_quantity(),
+        }
+        for tt in on_sale
+    ]
+    return Response(data)
+
+
+@api_view(['POST'])
+@authentication_classes([ScannerSessionAuthentication])
+@permission_classes([IsScannerAuthenticated])
+def scanner_stripe_connection_token(request):
+    """
+    POST /api/scanner/stripe/connection-token/
+    Returns a Stripe Terminal connection token for the merchant tied to the
+    scanner session.
+    """
+    import stripe as stripe_lib
+    from django.conf import settings as django_settings
+
+    stripe_lib.api_key = django_settings.STRIPE_SECRET_KEY
+
+    try:
+        kwargs = {}
+        location_id = django_settings.STRIPE_TERMINAL_LOCATION_ID
+        if location_id:
+            kwargs['location'] = location_id
+        conn_token = stripe_lib.terminal.ConnectionToken.create(**kwargs)
+    except stripe_lib.error.StripeError as exc:
+        logger.error("Stripe connection token error: %s", exc)
+        return Response({'error': str(exc)}, status=502)
+
+    return Response({'secret': conn_token.secret})
+
+
+@api_view(['POST'])
+@authentication_classes([ScannerSessionAuthentication])
+@permission_classes([IsScannerAuthenticated])
+def scanner_stripe_terminal_payment_intent(request):
+    """
+    POST /api/scanner/stripe/terminal-payment-intent/
+    Body: {event_id, line_items: [{ticket_type_id, quantity}]}
+    Creates a card-present PaymentIntent for the scanner session's event.
+    """
+    event_id = request.data.get('event_id', '').strip()
+    line_items = request.data.get('line_items', [])
+
+    mismatch = _require_matching_scanner_event(request, event_id)
+    if mismatch is not None:
+        return mismatch
+
+    if not line_items:
+        return Response({'error': 'line_items are required'}, status=400)
+
+    payload, status = _create_terminal_payment_intent(request.auth.event, line_items)
+    return Response(payload, status=status)
+
+
+@api_view(['POST'])
+@authentication_classes([ScannerSessionAuthentication])
+@permission_classes([IsScannerAuthenticated])
+def scanner_sell(request):
+    """
+    POST /api/scanner/sell/
+    Body: {event_id, payment_intent_id, buyer_name, buyer_email,
+           line_items: [{ticket_type_id, quantity, name, price}]}
+    Verifies the PaymentIntent succeeded, then creates an in-person ticket
+    order. checked_in_by is None because the seller is a scanner-PIN guest.
+    """
+    event_id = request.data.get('event_id', '').strip()
+    payment_intent_id = request.data.get('payment_intent_id', '').strip()
+    buyer_name = request.data.get('buyer_name', '').strip()
+    buyer_email = request.data.get('buyer_email', '').strip().lower()
+    line_items = request.data.get('line_items', [])
+
+    mismatch = _require_matching_scanner_event(request, event_id)
+    if mismatch is not None:
+        return mismatch
+
+    if not payment_intent_id or not buyer_email or not line_items:
+        return Response(
+            {'error': 'payment_intent_id, buyer_email, and line_items are required'},
+            status=400,
+        )
+
+    payload, status = _finalize_in_person_sale(
+        event=request.auth.event,
+        payment_intent_id=payment_intent_id,
+        buyer_name=buyer_name,
+        buyer_email=buyer_email,
+        line_items=line_items,
+        checked_in_by=None,
+    )
+    return Response(payload, status=status)
+
+
+@api_view(['GET'])
+@authentication_classes([ScannerSessionAuthentication])
+@permission_classes([IsScannerAuthenticated])
+def scanner_sell_eligibility(request):
+    """
+    GET /api/scanner/sell-eligibility/?event_id=<uuid>
+    Returns whether the scanner session may sell in person right now, based
+    on the merchant's Tap to Pay enablement state.
+    """
+    requested = request.query_params.get('event_id', '').strip()
+    mismatch = _require_matching_scanner_event(request, requested)
+    if mismatch is not None:
+        return mismatch
+
+    status = _resolve_tap_to_pay_status(request.auth.event.organization)
+    if status == 'enabled':
+        return Response({'eligible': True})
+    reason = 'tap_to_pay_unsupported' if status == 'unsupported' else 'tap_to_pay_pending'
+    return Response({'eligible': False, 'reason': reason})
+
+
+# ---------------------------------------------------------------------------
 # Tap to Pay on iPhone (Apple entitlement compliance)
 # ---------------------------------------------------------------------------
 
@@ -1560,6 +1756,70 @@ def _send_receipt_email_for_intent(summary, to_email):
     except Exception as exc:
         logger.exception("Failed to send Tap-to-Pay attempt receipt email")
         return 'failed', str(exc)[:1000]
+
+
+def _resolve_tap_to_pay_status(org):
+    """Inspect the org's Stripe Connect account and return one of
+    'pending' / 'enabled' / 'unsupported'.
+
+    Cached per-org for TAP_TO_PAY_STATUS_CACHE_TTL seconds so the iOS app
+    can poll on every foreground transition without burning Stripe quota.
+    """
+    from django.conf import settings as django_settings
+
+    cache_key = f'tap_to_pay_status:{org.pk}'
+    cached = django_cache.get(cache_key)
+    if cached is not None:
+        return cached
+
+    status = 'pending'
+    account_id = (org.stripe_account_id or '').strip()
+    if account_id:
+        import stripe as stripe_lib
+        stripe_lib.api_key = django_settings.STRIPE_SECRET_KEY
+        try:
+            account = stripe_lib.Account.retrieve(account_id)
+        except stripe_lib.error.StripeError as exc:
+            logger.warning("Stripe Account retrieve failed for org %s: %s", org.pk, exc)
+            account = None
+
+        if account is not None:
+            capabilities = getattr(account, 'capabilities', None) or {}
+            if hasattr(capabilities, 'get'):
+                ttp_cap = capabilities.get('tap_to_pay_payments')
+            else:
+                ttp_cap = None
+            country = (getattr(account, 'country', '') or '').upper()
+
+            if ttp_cap == 'active':
+                status = 'enabled'
+            elif country and country not in django_settings.TAP_TO_PAY_SUPPORTED_COUNTRIES:
+                status = 'unsupported'
+
+    try:
+        django_cache.set(cache_key, status, timeout=django_settings.TAP_TO_PAY_STATUS_CACHE_TTL)
+    except Exception:
+        pass
+    return status
+
+
+@api_view(['GET'])
+@authentication_classes([ScannerSessionAuthentication])
+@permission_classes([IsScannerAuthenticated])
+def merchant_status(request):
+    """
+    GET /api/merchant/status/
+    Returns the current Tap to Pay enablement state for the merchant tied
+    to the scanner session. Designed to be polled on every iOS foreground
+    transition; the first 'enabled' result fires the Apple §3.3 awareness
+    splash on the client.
+
+    Response shape is composable — future phases will add sibling keys
+    (kyc, payouts, country) alongside tap_to_pay rather than nesting them.
+    """
+    org = request.auth.event.organization
+    status = _resolve_tap_to_pay_status(org)
+    return Response({'tap_to_pay': {'status': status}})
 
 
 @api_view(['GET'])

@@ -6726,3 +6726,365 @@ class TapToPayEndpointsTests(TestCase):
             )
         self.assertEqual(res.status_code, 404)
         self.assertEqual(res.json(), {'error': 'payment intent not found'})
+
+    # ---- merchant_status ----
+
+    def _fake_account(self, country='US', ttp='active'):
+        account = MagicMock()
+        account.country = country
+        account.capabilities = {'tap_to_pay_payments': ttp} if ttp is not None else {}
+        return account
+
+    def test_merchant_status_pending_when_no_stripe_account(self):
+        from django.core.cache import cache as django_cache
+        django_cache.clear()
+        # Org has no stripe_account_id by default.
+        res = self.client.get('/api/merchant/status/', HTTP_AUTHORIZATION=self.auth)
+        self.assertEqual(res.status_code, 200, res.content)
+        self.assertEqual(res.json(), {'tap_to_pay': {'status': 'pending'}})
+
+    def test_merchant_status_enabled_when_capability_active(self):
+        from django.core.cache import cache as django_cache
+        django_cache.clear()
+        self.org.stripe_account_id = 'acct_test_enabled'
+        self.org.save(update_fields=['stripe_account_id'])
+
+        with patch(
+            'stripe.Account.retrieve',
+            return_value=self._fake_account(country='US', ttp='active'),
+        ):
+            res = self.client.get('/api/merchant/status/', HTTP_AUTHORIZATION=self.auth)
+        self.assertEqual(res.status_code, 200, res.content)
+        self.assertEqual(res.json(), {'tap_to_pay': {'status': 'enabled'}})
+
+    def test_merchant_status_unsupported_country(self):
+        from django.core.cache import cache as django_cache
+        django_cache.clear()
+        self.org.stripe_account_id = 'acct_test_unsupported'
+        self.org.save(update_fields=['stripe_account_id'])
+
+        with patch(
+            'stripe.Account.retrieve',
+            return_value=self._fake_account(country='IN', ttp='inactive'),
+        ):
+            res = self.client.get('/api/merchant/status/', HTTP_AUTHORIZATION=self.auth)
+        self.assertEqual(res.status_code, 200, res.content)
+        self.assertEqual(res.json(), {'tap_to_pay': {'status': 'unsupported'}})
+
+    def test_merchant_status_pending_when_capability_inactive_in_supported_country(self):
+        from django.core.cache import cache as django_cache
+        django_cache.clear()
+        self.org.stripe_account_id = 'acct_test_pending'
+        self.org.save(update_fields=['stripe_account_id'])
+
+        with patch(
+            'stripe.Account.retrieve',
+            return_value=self._fake_account(country='US', ttp='inactive'),
+        ):
+            res = self.client.get('/api/merchant/status/', HTTP_AUTHORIZATION=self.auth)
+        self.assertEqual(res.status_code, 200, res.content)
+        self.assertEqual(res.json(), {'tap_to_pay': {'status': 'pending'}})
+
+    def test_merchant_status_pending_when_stripe_errors(self):
+        import stripe as stripe_lib
+        from django.core.cache import cache as django_cache
+        django_cache.clear()
+        self.org.stripe_account_id = 'acct_test_err'
+        self.org.save(update_fields=['stripe_account_id'])
+
+        with patch(
+            'stripe.Account.retrieve',
+            side_effect=stripe_lib.error.APIConnectionError('boom'),
+        ):
+            res = self.client.get('/api/merchant/status/', HTTP_AUTHORIZATION=self.auth)
+        self.assertEqual(res.status_code, 200, res.content)
+        self.assertEqual(res.json(), {'tap_to_pay': {'status': 'pending'}})
+
+    def test_merchant_status_caches_stripe_lookup(self):
+        from django.core.cache import cache as django_cache
+        django_cache.clear()
+        self.org.stripe_account_id = 'acct_test_cache'
+        self.org.save(update_fields=['stripe_account_id'])
+
+        with patch(
+            'stripe.Account.retrieve',
+            return_value=self._fake_account(country='US', ttp='active'),
+        ) as retrieve_mock:
+            self.client.get('/api/merchant/status/', HTTP_AUTHORIZATION=self.auth)
+            self.client.get('/api/merchant/status/', HTTP_AUTHORIZATION=self.auth)
+            self.client.get('/api/merchant/status/', HTTP_AUTHORIZATION=self.auth)
+        self.assertEqual(retrieve_mock.call_count, 1)
+
+    def test_merchant_status_rejects_bad_token(self):
+        res = self.client.get(
+            '/api/merchant/status/',
+            HTTP_AUTHORIZATION='Scanner ' + str(uuid.uuid4()),
+        )
+        self.assertEqual(res.status_code, 403)
+
+
+class ScannerInPersonSellTests(TestCase):
+    """Tests for the /api/scanner/* in-person sell endpoints used by the iOS app."""
+
+    def setUp(self):
+        from .models import ScannerSession
+
+        self.org = Organization.objects.create(name='Sell Org', slug='sell-org')
+        self.venue = Venue.objects.create(organization=self.org, name='Sell Venue', city='SF')
+        self.event = Event.objects.create(
+            organization=self.org,
+            name='Sell Event',
+            venue=self.venue,
+            start_date=date.today(),
+            scanner_pin='5555',
+        )
+        self.other_event = Event.objects.create(
+            organization=self.org,
+            name='Other Event',
+            venue=self.venue,
+            start_date=date.today(),
+        )
+        self.tt = SaleableTicketType.objects.create(
+            event=self.event,
+            name='General Admission',
+            price=Decimal('25.00'),
+            description='Standing room',
+        )
+        self.session = ScannerSession.objects.create(event=self.event)
+        self.auth = f'Scanner {self.session.token}'
+
+    # ---- ticket-types ----
+
+    def test_ticket_types_returns_active_ticket_types(self):
+        res = self.client.get('/api/scanner/ticket-types/', HTTP_AUTHORIZATION=self.auth)
+        self.assertEqual(res.status_code, 200, res.content)
+        body = res.json()
+        self.assertEqual(len(body), 1)
+        self.assertEqual(body[0]['id'], str(self.tt.pk))
+        self.assertEqual(body[0]['name'], 'General Admission')
+        self.assertEqual(body[0]['price'], '25.00')
+        self.assertEqual(body[0]['description'], 'Standing room')
+        self.assertIsNone(body[0]['remaining'])
+
+    def test_ticket_types_accepts_matching_event_id(self):
+        res = self.client.get(
+            f'/api/scanner/ticket-types/?event_id={self.event.pk}',
+            HTTP_AUTHORIZATION=self.auth,
+        )
+        self.assertEqual(res.status_code, 200, res.content)
+        self.assertEqual(len(res.json()), 1)
+
+    def test_ticket_types_rejects_mismatched_event_id(self):
+        res = self.client.get(
+            f'/api/scanner/ticket-types/?event_id={self.other_event.pk}',
+            HTTP_AUTHORIZATION=self.auth,
+        )
+        self.assertEqual(res.status_code, 404)
+
+    def test_ticket_types_returns_empty_list_when_none_for_sale(self):
+        # iOS treats 404 as "endpoint missing" — empty inventory must still be 200 [].
+        self.tt.is_active = False
+        self.tt.save(update_fields=['is_active'])
+        res = self.client.get('/api/scanner/ticket-types/', HTTP_AUTHORIZATION=self.auth)
+        self.assertEqual(res.status_code, 200, res.content)
+        self.assertEqual(res.json(), [])
+
+    def test_ticket_types_requires_scanner_token(self):
+        res = self.client.get('/api/scanner/ticket-types/')
+        self.assertEqual(res.status_code, 403)
+
+    # ---- stripe connection-token ----
+
+    def test_stripe_connection_token_returns_secret(self):
+        fake_token = MagicMock()
+        fake_token.secret = 'pst_test_secret'
+        with patch('stripe.terminal.ConnectionToken.create', return_value=fake_token):
+            res = self.client.post(
+                '/api/scanner/stripe/connection-token/',
+                HTTP_AUTHORIZATION=self.auth,
+            )
+        self.assertEqual(res.status_code, 200, res.content)
+        self.assertEqual(res.json(), {'secret': 'pst_test_secret'})
+
+    def test_stripe_connection_token_requires_scanner_token(self):
+        res = self.client.post('/api/scanner/stripe/connection-token/')
+        self.assertEqual(res.status_code, 403)
+
+    # ---- stripe terminal-payment-intent ----
+
+    def test_terminal_payment_intent_creates_pi(self):
+        fake_pi = MagicMock()
+        fake_pi.client_secret = 'pi_secret_123'
+        fake_pi.id = 'pi_123'
+        with patch('stripe.PaymentIntent.create', return_value=fake_pi) as pi_mock:
+            res = self.client.post(
+                '/api/scanner/stripe/terminal-payment-intent/',
+                data=json.dumps({
+                    'event_id': str(self.event.pk),
+                    'line_items': [{'ticket_type_id': str(self.tt.pk), 'quantity': 2}],
+                }),
+                content_type='application/json',
+                HTTP_AUTHORIZATION=self.auth,
+            )
+        self.assertEqual(res.status_code, 201, res.content)
+        body = res.json()
+        self.assertEqual(body['client_secret'], 'pi_secret_123')
+        self.assertEqual(body['payment_intent_id'], 'pi_123')
+        self.assertEqual(body['amount_cents'], 5000)
+        pi_mock.assert_called_once()
+
+    def test_terminal_payment_intent_rejects_mismatched_event_id(self):
+        with patch('stripe.PaymentIntent.create') as pi_mock:
+            res = self.client.post(
+                '/api/scanner/stripe/terminal-payment-intent/',
+                data=json.dumps({
+                    'event_id': str(self.other_event.pk),
+                    'line_items': [{'ticket_type_id': str(self.tt.pk), 'quantity': 1}],
+                }),
+                content_type='application/json',
+                HTTP_AUTHORIZATION=self.auth,
+            )
+        self.assertEqual(res.status_code, 404)
+        pi_mock.assert_not_called()
+
+    def test_terminal_payment_intent_requires_line_items(self):
+        res = self.client.post(
+            '/api/scanner/stripe/terminal-payment-intent/',
+            data=json.dumps({'event_id': str(self.event.pk)}),
+            content_type='application/json',
+            HTTP_AUTHORIZATION=self.auth,
+        )
+        self.assertEqual(res.status_code, 400)
+
+    # ---- sell ----
+
+    def test_sell_creates_in_person_order_with_no_checked_in_by(self):
+        fake_pi = MagicMock()
+        fake_pi.status = 'succeeded'
+        with patch('stripe.PaymentIntent.retrieve', return_value=fake_pi):
+            res = self.client.post(
+                '/api/scanner/sell/',
+                data=json.dumps({
+                    'event_id': str(self.event.pk),
+                    'payment_intent_id': 'pi_succeeded_123',
+                    'buyer_name': 'Walk-up Buyer',
+                    'buyer_email': 'walkup@example.com',
+                    'line_items': [{
+                        'ticket_type_id': str(self.tt.pk),
+                        'quantity': 2,
+                        'name': 'General Admission',
+                        'price': '25.00',
+                    }],
+                }),
+                content_type='application/json',
+                HTTP_AUTHORIZATION=self.auth,
+            )
+        self.assertEqual(res.status_code, 201, res.content)
+        body = res.json()
+        self.assertEqual(body['ticket_count'], 2)
+        self.assertEqual(body['total_amount'], '50.00')
+
+        order = TicketOrder.objects.get(pk=body['order_id'])
+        self.assertTrue(order.is_in_person)
+        self.assertIsNotNone(order.checked_in_at)
+        self.assertIsNone(order.checked_in_by)
+        self.assertEqual(order.event_id, self.event.pk)
+        self.assertEqual(order.customer.email, 'walkup@example.com')
+        self.assertEqual(order.tickets.count(), 2)
+
+        self.tt.refresh_from_db()
+        self.assertEqual(self.tt.quantity_sold, 2)
+
+    def test_sell_rejects_mismatched_event_id(self):
+        with patch('stripe.PaymentIntent.retrieve') as pi_mock:
+            res = self.client.post(
+                '/api/scanner/sell/',
+                data=json.dumps({
+                    'event_id': str(self.other_event.pk),
+                    'payment_intent_id': 'pi_123',
+                    'buyer_email': 'walkup@example.com',
+                    'line_items': [{
+                        'ticket_type_id': str(self.tt.pk),
+                        'quantity': 1,
+                        'name': 'GA',
+                        'price': '25.00',
+                    }],
+                }),
+                content_type='application/json',
+                HTTP_AUTHORIZATION=self.auth,
+            )
+        self.assertEqual(res.status_code, 404)
+        pi_mock.assert_not_called()
+
+    def test_sell_rejects_unsucceeded_payment_intent(self):
+        fake_pi = MagicMock()
+        fake_pi.status = 'requires_payment_method'
+        with patch('stripe.PaymentIntent.retrieve', return_value=fake_pi):
+            res = self.client.post(
+                '/api/scanner/sell/',
+                data=json.dumps({
+                    'event_id': str(self.event.pk),
+                    'payment_intent_id': 'pi_failed',
+                    'buyer_email': 'walkup@example.com',
+                    'line_items': [{
+                        'ticket_type_id': str(self.tt.pk),
+                        'quantity': 1,
+                        'name': 'GA',
+                        'price': '25.00',
+                    }],
+                }),
+                content_type='application/json',
+                HTTP_AUTHORIZATION=self.auth,
+            )
+        self.assertEqual(res.status_code, 400)
+
+    def test_sell_requires_buyer_email(self):
+        res = self.client.post(
+            '/api/scanner/sell/',
+            data=json.dumps({
+                'event_id': str(self.event.pk),
+                'payment_intent_id': 'pi_123',
+                'line_items': [{
+                    'ticket_type_id': str(self.tt.pk),
+                    'quantity': 1,
+                    'name': 'GA',
+                    'price': '25.00',
+                }],
+            }),
+            content_type='application/json',
+            HTTP_AUTHORIZATION=self.auth,
+        )
+        self.assertEqual(res.status_code, 400)
+
+    # ---- sell-eligibility ----
+
+    def test_sell_eligibility_pending_by_default(self):
+        from django.core.cache import cache as django_cache
+        django_cache.clear()
+        res = self.client.get('/api/scanner/sell-eligibility/', HTTP_AUTHORIZATION=self.auth)
+        self.assertEqual(res.status_code, 200, res.content)
+        self.assertEqual(res.json(), {'eligible': False, 'reason': 'tap_to_pay_pending'})
+
+    def test_sell_eligibility_true_when_tap_to_pay_active(self):
+        from django.core.cache import cache as django_cache
+        django_cache.clear()
+        self.org.stripe_account_id = 'acct_test_ttp_active'
+        self.org.save(update_fields=['stripe_account_id'])
+
+        account = MagicMock()
+        account.country = 'US'
+        account.capabilities = {'tap_to_pay_payments': 'active'}
+        with patch('stripe.Account.retrieve', return_value=account):
+            res = self.client.get(
+                '/api/scanner/sell-eligibility/',
+                HTTP_AUTHORIZATION=self.auth,
+            )
+        self.assertEqual(res.status_code, 200, res.content)
+        self.assertEqual(res.json(), {'eligible': True})
+
+    def test_sell_eligibility_rejects_mismatched_event_id(self):
+        res = self.client.get(
+            f'/api/scanner/sell-eligibility/?event_id={self.other_event.pk}',
+            HTTP_AUTHORIZATION=self.auth,
+        )
+        self.assertEqual(res.status_code, 404)
