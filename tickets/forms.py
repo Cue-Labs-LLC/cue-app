@@ -66,13 +66,33 @@ class OrgProfileForm(forms.ModelForm):
 
 
 class MemberInviteForm(forms.Form):
-    """Form to invite a member to the organization by email."""
+    """Form to invite a member to the organization by email or phone."""
 
+    INVITE_METHOD_CHOICES = (
+        ('email', 'Email'),
+        ('phone', 'Phone'),
+    )
+
+    invite_method = forms.ChoiceField(
+        choices=INVITE_METHOD_CHOICES,
+        initial='email',
+        widget=forms.RadioSelect(attrs={'class': 'form-check-input'}),
+    )
     email = forms.EmailField(
+        required=False,
         widget=forms.EmailInput(attrs={
             'class': 'form-control',
             'placeholder': 'Email address',
         })
+    )
+    phone_number = forms.CharField(
+        required=False,
+        max_length=20,
+        widget=forms.TextInput(attrs={
+            'class': 'form-control',
+            'placeholder': 'Phone number',
+            'type': 'tel',
+        }),
     )
     org_role = forms.ChoiceField(
         choices=UserProfile.OrgRole.choices,
@@ -84,13 +104,28 @@ class MemberInviteForm(forms.Form):
         super().__init__(*args, **kwargs)
         self.helper = FormHelper()
         self.helper.form_method = 'post'
-        self.helper.layout = Layout(
-            Row(
-                Column('email', css_class='form-group col-md-8 mb-0'),
-                Column('org_role', css_class='form-group col-md-4 mb-0'),
-            ),
-            Submit('submit', 'Invite member', css_class='btn btn-primary'),
-        )
+        self.helper.form_tag = False
+
+    def clean(self):
+        cleaned = super().clean()
+        method = cleaned.get('invite_method') or 'email'
+        if method == 'email':
+            email = (cleaned.get('email') or '').strip()
+            if not email:
+                self.add_error('email', 'Enter an email address to invite.')
+            cleaned['phone_number'] = ''
+        else:
+            raw_phone = (cleaned.get('phone_number') or '').strip()
+            if not raw_phone:
+                self.add_error('phone_number', 'Enter a phone number to invite.')
+            else:
+                phone = _normalize_phone(raw_phone)
+                if not _re.match(r'^\+[1-9]\d{6,14}$', phone):
+                    self.add_error('phone_number', 'Enter a valid phone number for the selected country.')
+                else:
+                    cleaned['phone_number'] = phone
+            cleaned['email'] = ''
+        return cleaned
 
 
 class AttendeePhoneForm(forms.Form):

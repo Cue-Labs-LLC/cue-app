@@ -48,13 +48,62 @@
         <h5 class="mb-0">Invite member</h5>
     </div>
     <div class="card-body">
-        <p class="text-muted small">Send an invitation by email. They will receive a link to join this organization.</p>
-        <form method="post" action="{% url 'tickets:member_invite' %}">
+        <p class="text-muted small">Invite by email or phone. If the person already has a Cue account, the invite is sent to their on-file email. Phone invites only work for existing accounts.</p>
+        <form method="post" action="{% url 'tickets:member_invite' %}" id="member-invite-form">
             {% csrf_token %}
-            {% crispy invite_form %}
+            <div class="mb-3">
+                <div class="btn-group" role="group" aria-label="Invite method">
+                    {% for value, label in invite_form.fields.invite_method.choices %}
+                    <input type="radio" class="btn-check" name="invite_method" id="invite-method-{{ value }}" value="{{ value }}"
+                        {% if invite_form.invite_method.value == value or not invite_form.invite_method.value and value == 'email' %}checked{% endif %}>
+                    <label class="btn btn-outline-primary" for="invite-method-{{ value }}">Invite by {{ label|lower }}</label>
+                    {% endfor %}
+                </div>
+            </div>
+            <div class="row g-2">
+                <div class="col-md-8">
+                    <div class="invite-input" data-method="email">
+                        <label for="id_email" class="form-label visually-hidden">Email address</label>
+                        <input type="email" name="email" id="id_email" class="form-control" placeholder="Email address" value="{{ invite_form.email.value|default_if_none:'' }}">
+                        {% if invite_form.email.errors %}<div class="text-danger small mt-1">{{ invite_form.email.errors|join:" " }}</div>{% endif %}
+                    </div>
+                    <div class="invite-input" data-method="phone" hidden>
+                        <label for="id_phone_number" class="form-label visually-hidden">Phone number</label>
+                        <input type="tel" name="phone_number" id="id_phone_number" class="form-control" placeholder="Phone number" value="{{ invite_form.phone_number.value|default_if_none:'' }}">
+                        {% if invite_form.phone_number.errors %}<div class="text-danger small mt-1">{{ invite_form.phone_number.errors|join:" " }}</div>{% endif %}
+                    </div>
+                </div>
+                <div class="col-md-4">
+                    <label for="id_org_role" class="form-label visually-hidden">Org role</label>
+                    <select name="org_role" id="id_org_role" class="form-select">
+                        {% for value, label in invite_form.fields.org_role.choices %}
+                        <option value="{{ value }}"{% if invite_form.org_role.value == value %} selected{% endif %}>{{ label }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+            </div>
+            <div class="mt-3">
+                <button type="submit" class="btn btn-primary">Invite member</button>
+            </div>
         </form>
     </div>
 </div>
+<script>
+(function() {
+    var radios = document.querySelectorAll('input[name="invite_method"]');
+    var inputs = document.querySelectorAll('#member-invite-form .invite-input');
+    function toggle() {
+        var selected = document.querySelector('input[name="invite_method"]:checked');
+        var method = selected ? selected.value : 'email';
+        inputs.forEach(function(el) {
+            var match = el.getAttribute('data-method') === method;
+            el.hidden = !match;
+        });
+    }
+    radios.forEach(function(r) { r.addEventListener('change', toggle); });
+    toggle();
+})();
+</script>
 {% endif %}
 
 <div class="card mb-4">
@@ -77,7 +126,10 @@
                 <tbody>
                     {% for inv in pending_invites %}
                     <tr>
-                        <td>{{ inv.email }}</td>
+                        <td>
+                            {{ inv.email }}
+                            {% if inv.phone_number %}<div class="text-muted small">{{ inv.phone_number }}</div>{% endif %}
+                        </td>
                         <td><span class="badge bg-primary">{{ inv.get_org_role_display }}</span></td>
                         <td>{% if inv.invited_by %}{{ inv.invited_by.get_full_name|default:inv.invited_by.email }}{% else %}-{% endif %}</td>
                         <td>{{ inv.expires_at|date:"M d, Y" }}</td>
