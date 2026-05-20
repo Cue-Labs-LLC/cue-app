@@ -10,7 +10,7 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('tickets', '0119_receiptsend_taptopaytermsacceptance'),
+        ('tickets', '0120_organization_stripe_terminal_location_id'),
         migrations.swappable_dependency(settings.AUTH_USER_MODEL),
     ]
 
