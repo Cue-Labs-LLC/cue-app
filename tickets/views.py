@@ -9481,15 +9481,6 @@ def checkout_success(request):
             id=order_id
         ).select_related('event', 'customer').first()
 
-    # Redirect authenticated users to My Tickets when the order is confirmed
-    if request.user.is_authenticated:
-        if order_obj:
-            messages.success(request, "Your tickets are confirmed!")
-            return redirect('tickets:my_tickets')
-        if session_obj and session_obj.status == StripeCheckoutSession.Status.COMPLETED:
-            messages.success(request, "Your tickets are confirmed!")
-            return redirect('tickets:my_tickets')
-
     qr_code = ''
     if order_obj and not order_obj.refunded_at:
         qr_code = generate_qr_b64(order_obj.order_number)
@@ -9497,6 +9488,17 @@ def checkout_success(request):
         qr_code = generate_qr_b64(session_obj.ticket_order.order_number)
 
     _event_for_pixel = order_obj.event if order_obj else (session_obj.event if session_obj else None)
+
+    # When no Meta Pixel is configured, there's no client-side event to fire — keep the
+    # original UX of bouncing authenticated buyers straight to /my_tickets/.
+    _has_pixel = bool(_event_for_pixel and _event_for_pixel.facebook_pixel_id)
+    if request.user.is_authenticated and not _has_pixel:
+        if order_obj:
+            messages.success(request, "Your tickets are confirmed!")
+            return redirect('tickets:my_tickets')
+        if session_obj and session_obj.status == StripeCheckoutSession.Status.COMPLETED:
+            messages.success(request, "Your tickets are confirmed!")
+            return redirect('tickets:my_tickets')
 
     pixel_content_ids = []
     if order_obj:
@@ -9542,6 +9544,34 @@ def checkout_success(request):
         'pixel_id': _event_for_pixel.facebook_pixel_id if _event_for_pixel else '',
         'pixel_content_ids': pixel_content_ids,
         'purchase_event_id': purchase_event_id,
+    })
+
+
+def checkout_session_status(request, session_id):
+    """JSON endpoint - returns fulfillment status + Purchase pixel payload once a paid session completes."""
+    session_obj = StripeCheckoutSession.objects.filter(
+        id=session_id
+    ).select_related('ticket_order').first()
+    if not session_obj:
+        return JsonResponse({'status': 'unknown'}, status=404)
+
+    if session_obj.status != StripeCheckoutSession.Status.COMPLETED or not session_obj.ticket_order:
+        return JsonResponse({'status': 'pending'})
+
+    order = session_obj.ticket_order
+    content_ids = [item['saleable_ticket_type_id'] for item in (session_obj.line_items_snapshot or [])]
+    redirect_url = reverse('tickets:my_tickets') if request.user.is_authenticated else ''
+
+    return JsonResponse({
+        'status': 'completed',
+        'purchase': {
+            'value': str(order.total_amount),
+            'currency': 'USD',
+            'content_ids': content_ids,
+            'event_id': f'purchase_{order.order_number}',
+            'order_number': order.display_order_number,
+            'redirect_url': redirect_url,
+        },
     })
 
 
