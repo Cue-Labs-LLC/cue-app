@@ -267,6 +267,22 @@ APPLE_PAY_DOMAIN_ASSOCIATION = os.environ.get('APPLE_PAY_DOMAIN_ASSOCIATION', ''
 # through Setup re-acceptance on next app open.
 TAP_TO_PAY_TERMS_VERSION = os.environ.get('TAP_TO_PAY_TERMS_VERSION', '2026-03-01')
 
+# ISO-3166 alpha-2 country codes where Apple supports Tap to Pay on iPhone.
+# Source: https://developer.apple.com/tap-to-pay/regions/ (last reviewed 2026-05).
+TAP_TO_PAY_SUPPORTED_COUNTRIES = {
+    c.strip().upper()
+    for c in os.environ.get(
+        'TAP_TO_PAY_SUPPORTED_COUNTRIES',
+        'US,GB,AU,CA,FR,IT,NL,JP,BR,DE,CZ,AT,CH,DK,FI,NO,SE,IE,ES,PT,BE,PL,UA,TW,HK,SG',
+    ).split(',')
+    if c.strip()
+}
+
+# Seconds to cache the Stripe Connect account lookup behind /merchant/status/.
+# The iOS app may poll on every foreground transition — caching keeps the
+# Stripe API call cheap without making the splash trigger feel laggy.
+TAP_TO_PAY_STATUS_CACHE_TTL = int(os.environ.get('TAP_TO_PAY_STATUS_CACHE_TTL', '60'))
+
 # Meta Ads integration
 FACEBOOK_APP_ID = os.environ.get('FACEBOOK_APP_ID', '')
 FACEBOOK_APP_SECRET = os.environ.get('FACEBOOK_APP_SECRET', '')
