@@ -93,6 +93,16 @@ class Organization(BaseModel):
         default=False,
         help_text='True after Stripe confirms details_submitted, charges_enabled, and payouts_enabled.',
     )
+    stripe_terminal_location_id = models.CharField(
+        max_length=64,
+        blank=True,
+        default='',
+        help_text=(
+            "Stripe Terminal Location ID (tml_xxx) scoped to this merchant's "
+            "Connect account. Created lazily on first in-person sale and cached "
+            "forever — Locations don't expire and aren't per-sale."
+        ),
+    )
     meta_capi_access_token = models.CharField(
         max_length=255, blank=True, default='',
         help_text='Meta Conversions API access token for server-side event reporting.',

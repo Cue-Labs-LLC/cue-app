@@ -289,6 +289,7 @@ urlpatterns = [
     path('finance/stripe/refresh/', views.stripe_connect_refresh, name='stripe_connect_refresh'),
     path('finance/stripe/manage/', views.stripe_account_login, name='stripe_account_login'),
     path('finance/stripe/disconnect/', views.stripe_disconnect, name='stripe_disconnect'),
+    path('finance/stripe/tap-to-pay/enable/', views.enable_tap_to_pay, name='enable_tap_to_pay'),
     path('finance/payout/', views.initiate_payout, name='initiate_payout'),
     path('finance/payout/recover/', views.recover_pending_payouts, name='recover_pending_payouts'),
 ]
