@@ -2435,3 +2435,60 @@ class OrganizerWaitlist(BaseModel):
 
     def __str__(self):
         return f"{self.name} <{self.email}> ({self.status})"
+
+
+class TapToPayTermsAcceptance(BaseModel):
+    """Audit log of merchant acceptances of Apple's Tap to Pay on iPhone T&Cs.
+
+    Append-only — one row per acceptance event, never deduped. Apple may ask
+    for the audit trail showing the merchant re-accepted on each version bump.
+    """
+    scanner_session = models.ForeignKey(
+        'ScannerSession',
+        on_delete=models.CASCADE,
+        related_name='tap_to_pay_acceptances',
+    )
+    organization = models.ForeignKey(
+        'Organization',
+        on_delete=models.CASCADE,
+        related_name='tap_to_pay_acceptances',
+    )
+    version = models.CharField(max_length=64)
+    accepted_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    client_ip = models.GenericIPAddressField(null=True, blank=True)
+    user_agent = models.CharField(max_length=512, blank=True, default='')
+
+    class Meta:
+        indexes = [models.Index(fields=['organization', '-accepted_at'])]
+        verbose_name = 'Tap to Pay Terms Acceptance'
+        verbose_name_plural = 'Tap to Pay Terms Acceptances'
+
+    def __str__(self):
+        return f"{self.organization.name} accepted {self.version} at {self.accepted_at:%Y-%m-%d %H:%M}"
+
+
+class ReceiptSend(BaseModel):
+    """Log of receipt sends initiated by the scanner app (successful sales and declined attempts)."""
+    organization = models.ForeignKey(
+        'Organization',
+        on_delete=models.CASCADE,
+        related_name='receipt_sends',
+    )
+    ticket_order = models.ForeignKey(
+        'TicketOrder',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='receipt_sends',
+    )
+    payment_intent_id = models.CharField(max_length=255, blank=True, default='', db_index=True)
+    channel = models.CharField(max_length=10)
+    contact = models.CharField(max_length=255)
+    status = models.CharField(max_length=20)
+    error_message = models.TextField(blank=True, default='')
+
+    class Meta:
+        indexes = [models.Index(fields=['organization', '-created_at'])]
+
+    def __str__(self):
+        return f"{self.channel} to {self.contact} ({self.status})"

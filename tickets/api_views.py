@@ -28,8 +28,10 @@ from .models import (
     EventExpense,
     EventIncome,
     OrganizationAPIKey,
+    ReceiptSend,
     SaleableTicketType,
     ScannerSession,
+    TapToPayTermsAcceptance,
     Ticket,
     TicketOrder,
     TICKETING_TYPE_DIRECT,
@@ -1463,3 +1465,290 @@ def scanner_orders(request):
         for o in orders
     ]
     return Response(data)
+
+
+# ---------------------------------------------------------------------------
+# Tap to Pay on iPhone (Apple entitlement compliance)
+# ---------------------------------------------------------------------------
+
+def _client_ip(request):
+    """Best-effort client IP, honoring X-Forwarded-For when present."""
+    xff = request.META.get('HTTP_X_FORWARDED_FOR', '')
+    if xff:
+        return xff.split(',')[0].strip() or None
+    return request.META.get('REMOTE_ADDR') or None
+
+
+def _send_receipt_email_for_order(order, to_email):
+    """Send the standard order-confirmation email synchronously to an arbitrary address.
+
+    Mirrors send_order_confirmation_email_task in tickets/tasks.py but runs inline
+    (this is a manual scanner action — no need to queue Celery) and lets the caller
+    override the recipient.
+    Returns (status, error_message): ('sent', '') or ('failed', '<reason>').
+    """
+    from email.mime.image import MIMEImage
+    from decimal import Decimal as _Decimal
+
+    from django.core.mail import EmailMultiAlternatives
+    from django.template.loader import render_to_string
+    from django.conf import settings as django_settings
+    from tickets.utils import generate_qr_png_bytes
+
+    qr_png_bytes = generate_qr_png_bytes(order.order_number)
+    try:
+        service_fee = _Decimal(order.stripe_checkout_session.platform_fee_cents) / 100
+    except Exception:
+        service_fee = _Decimal('0.00')
+
+    context = {
+        'order': order,
+        'customer': order.customer,
+        'event': order.event,
+        'tickets': list(order.tickets.all()),
+        'show_qr_code': bool(qr_png_bytes),
+        'service_fee': service_fee,
+    }
+    html_body = render_to_string('tickets/buy/order_confirmation_email.html', context)
+    text_body = render_to_string('tickets/buy/order_confirmation_email.txt', context)
+
+    msg = EmailMultiAlternatives(
+        subject=f"Your receipt - {order.event.name}",
+        body=text_body,
+        from_email=django_settings.DEFAULT_FROM_EMAIL,
+        to=[to_email],
+    )
+    msg.attach_alternative(html_body, 'text/html')
+    if qr_png_bytes:
+        qr_attachment = MIMEImage(qr_png_bytes)
+        qr_attachment.add_header('Content-ID', '<qrcode>')
+        qr_attachment.add_header('Content-Disposition', 'inline', filename='qrcode.png')
+        msg.attach(qr_attachment)
+
+    try:
+        msg.send()
+        return 'sent', ''
+    except Exception as exc:
+        logger.exception("Failed to send order receipt email for order %s", order.pk)
+        return 'failed', str(exc)[:1000]
+
+
+def _send_receipt_email_for_intent(summary, to_email):
+    """Send the attempt-receipt email (declined/cancelled/etc.) for a PaymentIntent.
+
+    summary is the dict built in scanner_receipt's payment_intent_id branch.
+    Returns (status, error_message).
+    """
+    from django.core.mail import EmailMultiAlternatives
+    from django.template.loader import render_to_string
+    from django.conf import settings as django_settings
+
+    html_body = render_to_string('tickets/buy/tap_to_pay_attempt_receipt.html', summary)
+    text_body = render_to_string('tickets/buy/tap_to_pay_attempt_receipt.txt', summary)
+
+    subject_event = summary.get('event_name') or summary.get('merchant_business_name') or 'your purchase'
+    msg = EmailMultiAlternatives(
+        subject=f"Transaction receipt - {subject_event}",
+        body=text_body,
+        from_email=django_settings.DEFAULT_FROM_EMAIL,
+        to=[to_email],
+    )
+    msg.attach_alternative(html_body, 'text/html')
+    try:
+        msg.send()
+        return 'sent', ''
+    except Exception as exc:
+        logger.exception("Failed to send Tap-to-Pay attempt receipt email")
+        return 'failed', str(exc)[:1000]
+
+
+@api_view(['GET'])
+@authentication_classes([ScannerSessionAuthentication])
+@permission_classes([IsScannerAuthenticated])
+def tap_to_pay_terms_version(request):
+    """
+    GET /api/tap-to-pay/terms-version/
+    Returns the opaque version identifier of Apple's currently-published
+    Tap to Pay on iPhone Terms & Conditions. The client treats it as an
+    equality check (no semver / date math).
+    """
+    from django.conf import settings as django_settings
+    return Response({'version': django_settings.TAP_TO_PAY_TERMS_VERSION})
+
+
+@api_view(['POST'])
+@authentication_classes([ScannerSessionAuthentication])
+@permission_classes([IsScannerAuthenticated])
+def tap_to_pay_terms_acceptance(request):
+    """
+    POST /api/tap-to-pay/terms-acceptance/
+    Body: {version}
+    Records a merchant acceptance of Apple's Tap to Pay T&Cs for audit.
+    Append-only — never dedupes.
+    """
+    version = (request.data.get('version') or '').strip()
+    if not version:
+        return Response({'error': 'version is required'}, status=400)
+
+    session = request.auth
+    user_agent = request.META.get('HTTP_USER_AGENT', '')[:512]
+
+    TapToPayTermsAcceptance.objects.create(
+        scanner_session=session,
+        organization=session.event.organization,
+        version=version[:64],
+        client_ip=_client_ip(request),
+        user_agent=user_agent,
+    )
+    return Response({'ok': True}, status=201)
+
+
+# ---------------------------------------------------------------------------
+# Scanner — Receipt (success by order_id, or declined/cancelled by payment_intent_id)
+# ---------------------------------------------------------------------------
+
+@api_view(['POST'])
+@authentication_classes([ScannerSessionAuthentication])
+@permission_classes([IsScannerAuthenticated])
+def scanner_receipt(request):
+    """
+    POST /api/scanner/receipt/
+    Body: {order_id?, payment_intent_id?, channel, contact}
+
+    Exactly one of order_id or payment_intent_id must be supplied. When
+    order_id is present we send the standard order confirmation. When
+    payment_intent_id is present we look up the PaymentIntent in Stripe and
+    send a transaction-attempt summary (Apple §5.10: receipts must be
+    available even for declined/cancelled transactions, which have no order).
+    """
+    session = request.auth
+    event = session.event
+    org = event.organization
+
+    order_id = (request.data.get('order_id') or '').strip()
+    payment_intent_id = (request.data.get('payment_intent_id') or '').strip()
+    channel = (request.data.get('channel') or '').strip().lower()
+    contact = (request.data.get('contact') or '').strip()
+
+    if bool(order_id) == bool(payment_intent_id):
+        return Response(
+            {'error': 'exactly one of order_id and payment_intent_id is required'},
+            status=400,
+        )
+    if channel not in ('email', 'sms'):
+        return Response({'error': "channel must be 'email' or 'sms'"}, status=400)
+    if not contact:
+        return Response({'error': 'contact is required'}, status=400)
+    if channel == 'sms':
+        # No transactional SMS sender wired up; iOS treats 422 as the
+        # "Receipts unavailable" fallback per the entitlement spec.
+        return Response({'error': 'channel not supported'}, status=422)
+
+    if order_id:
+        order = (
+            TicketOrder.objects
+            .select_related('customer', 'event', 'event__venue', 'stripe_checkout_session')
+            .prefetch_related('tickets')
+            .filter(customer__organization=org, event=event, order_number=order_id)
+            .first()
+        )
+        if order is None:
+            return Response({'error': 'order not found'}, status=404)
+
+        send_status, error_message = _send_receipt_email_for_order(order, contact)
+        ReceiptSend.objects.create(
+            organization=org,
+            ticket_order=order,
+            payment_intent_id='',
+            channel=channel,
+            contact=contact,
+            status=send_status,
+            error_message=error_message,
+        )
+        if send_status != 'sent':
+            return Response({'error': 'failed to send receipt'}, status=502)
+        return Response({'ok': True})
+
+    # payment_intent_id branch
+    import stripe as stripe_lib
+    from django.conf import settings as django_settings
+    from datetime import datetime, timezone as _tz
+
+    stripe_lib.api_key = django_settings.STRIPE_SECRET_KEY
+
+    try:
+        pi = stripe_lib.PaymentIntent.retrieve(payment_intent_id)
+    except stripe_lib.error.InvalidRequestError:
+        return Response({'error': 'payment intent not found'}, status=404)
+    except stripe_lib.error.StripeError as exc:
+        logger.error("Stripe PaymentIntent retrieve error: %s", exc)
+        return Response({'error': str(exc)}, status=502)
+
+    # Resolve event from PI metadata if our /organizer/sell/ flow stamped it;
+    # otherwise fall back to the scanner session's event (best effort).
+    pi_event = None
+    try:
+        metadata = getattr(pi, 'metadata', None)
+        if metadata is not None and hasattr(metadata, 'get'):
+            pi_event_id = metadata.get('event_id')
+        else:
+            pi_event_id = None
+    except Exception:
+        pi_event_id = None
+    if pi_event_id:
+        pi_event = Event.objects.filter(organization=org, id=pi_event_id).first()
+    if pi_event is None:
+        pi_event = event
+
+    status_raw = (getattr(pi, 'status', '') or '').lower()
+    status_labels = {
+        'succeeded': 'Approved',
+        'canceled': 'Cancelled',
+        'cancelled': 'Cancelled',
+        'requires_payment_method': 'Declined',
+        'requires_confirmation': 'Incomplete',
+        'requires_action': 'Incomplete',
+        'requires_capture': 'Authorized',
+        'processing': 'Processing',
+    }
+    status_label = status_labels.get(status_raw, status_raw.replace('_', ' ').title() or 'Unknown')
+
+    decline_message = ''
+    try:
+        lpe = getattr(pi, 'last_payment_error', None)
+        if lpe is not None:
+            decline_message = (
+                getattr(lpe, 'message', None)
+                or (lpe.get('message', '') if isinstance(lpe, dict) else '')
+                or ''
+            )
+    except Exception:
+        decline_message = ''
+
+    succeeded = status_raw == 'succeeded'
+    summary = {
+        'merchant_business_name': org.name,
+        'event_name': pi_event.name if pi_event else '',
+        'amount': (pi.amount / 100.0) if getattr(pi, 'amount', None) is not None else None,
+        'currency': (getattr(pi, 'currency', '') or '').upper(),
+        'created': datetime.fromtimestamp(pi.created, tz=_tz.utc) if getattr(pi, 'created', None) else None,
+        'status_label': status_label,
+        'decline_message': decline_message,
+        'succeeded': succeeded,
+        'note': '' if succeeded else 'No charge was made to your card.',
+        'payment_intent_id': getattr(pi, 'id', payment_intent_id),
+    }
+
+    send_status, error_message = _send_receipt_email_for_intent(summary, contact)
+    ReceiptSend.objects.create(
+        organization=org,
+        ticket_order=None,
+        payment_intent_id=payment_intent_id[:255],
+        channel=channel,
+        contact=contact,
+        status=send_status,
+        error_message=error_message,
+    )
+    if send_status != 'sent':
+        return Response({'error': 'failed to send receipt'}, status=502)
+    return Response({'ok': True})

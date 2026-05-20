@@ -6489,3 +6489,240 @@ class ScannerCheckinAPITests(TestCase):
             HTTP_AUTHORIZATION=self.auth,
         )
         self.assertEqual(res.status_code, 404)
+
+
+class TapToPayEndpointsTests(TestCase):
+    """Tests for the three Tap-to-Pay-on-iPhone backend endpoints."""
+
+    def setUp(self):
+        from .models import ScannerSession
+
+        self.org = Organization.objects.create(name='TTP Org', slug='ttp-org')
+        self.venue = Venue.objects.create(organization=self.org, name='TTP Venue', city='SF')
+        self.event = Event.objects.create(
+            organization=self.org,
+            name='TTP Event',
+            venue=self.venue,
+            start_date=date.today(),
+            scanner_pin='9999',
+        )
+        self.customer = Customer.objects.create(
+            organization=self.org, name='TTP Buyer', email='ttp-buyer@example.com',
+        )
+        self.order = TicketOrder.objects.create(
+            customer=self.customer,
+            event=self.event,
+            order_number='#TTP001',
+            order_date=timezone.now(),
+            total_amount=Decimal('25.00'),
+        )
+        self.session = ScannerSession.objects.create(event=self.event)
+        self.auth = f'Scanner {self.session.token}'
+
+    # ---- terms-version ----
+
+    def test_terms_version_returns_setting(self):
+        from django.test import override_settings
+
+        with override_settings(TAP_TO_PAY_TERMS_VERSION='2026-03-01'):
+            res = self.client.get(
+                '/api/tap-to-pay/terms-version/',
+                HTTP_AUTHORIZATION=self.auth,
+            )
+        self.assertEqual(res.status_code, 200, res.content)
+        self.assertEqual(res.json(), {'version': '2026-03-01'})
+
+    def test_terms_version_rejects_bad_token(self):
+        # DRF returns 403 for AuthenticationFailed when no WWW-Authenticate
+        # header is provided — matches every other scanner endpoint.
+        res = self.client.get(
+            '/api/tap-to-pay/terms-version/',
+            HTTP_AUTHORIZATION='Scanner ' + str(uuid.uuid4()),
+        )
+        self.assertEqual(res.status_code, 403)
+
+    # ---- terms-acceptance ----
+
+    def test_terms_acceptance_appends_row(self):
+        from .models import TapToPayTermsAcceptance
+
+        res = self.client.post(
+            '/api/tap-to-pay/terms-acceptance/',
+            data=json.dumps({'version': '2026-03-01'}),
+            content_type='application/json',
+            HTTP_AUTHORIZATION=self.auth,
+            HTTP_USER_AGENT='Cue-iOS/1.0',
+        )
+        self.assertEqual(res.status_code, 201, res.content)
+        self.assertEqual(res.json(), {'ok': True})
+        rows = list(TapToPayTermsAcceptance.objects.filter(organization=self.org))
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0].version, '2026-03-01')
+        self.assertEqual(rows[0].scanner_session_id, self.session.pk)
+        self.assertEqual(rows[0].user_agent, 'Cue-iOS/1.0')
+
+    def test_terms_acceptance_does_not_dedupe(self):
+        from .models import TapToPayTermsAcceptance
+
+        for _ in range(2):
+            self.client.post(
+                '/api/tap-to-pay/terms-acceptance/',
+                data=json.dumps({'version': '2026-03-01'}),
+                content_type='application/json',
+                HTTP_AUTHORIZATION=self.auth,
+            )
+        self.assertEqual(
+            TapToPayTermsAcceptance.objects.filter(organization=self.org).count(),
+            2,
+        )
+
+    def test_terms_acceptance_rejects_missing_version(self):
+        res = self.client.post(
+            '/api/tap-to-pay/terms-acceptance/',
+            data=json.dumps({}),
+            content_type='application/json',
+            HTTP_AUTHORIZATION=self.auth,
+        )
+        self.assertEqual(res.status_code, 400)
+
+    def test_terms_acceptance_rejects_bad_token(self):
+        res = self.client.post(
+            '/api/tap-to-pay/terms-acceptance/',
+            data=json.dumps({'version': '2026-03-01'}),
+            content_type='application/json',
+            HTTP_AUTHORIZATION='Scanner ' + str(uuid.uuid4()),
+        )
+        self.assertEqual(res.status_code, 403)
+
+    # ---- scanner_receipt ----
+
+    def test_receipt_by_order_id_sends_and_logs(self):
+        from django.core import mail
+        from .models import ReceiptSend
+
+        res = self.client.post(
+            '/api/scanner/receipt/',
+            data=json.dumps({
+                'order_id': '#TTP001',
+                'channel': 'email',
+                'contact': 'guest@example.com',
+            }),
+            content_type='application/json',
+            HTTP_AUTHORIZATION=self.auth,
+        )
+        self.assertEqual(res.status_code, 200, res.content)
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertEqual(mail.outbox[0].to, ['guest@example.com'])
+        log = ReceiptSend.objects.get(organization=self.org)
+        self.assertEqual(log.ticket_order_id, self.order.pk)
+        self.assertEqual(log.channel, 'email')
+        self.assertEqual(log.status, 'sent')
+
+    def test_receipt_order_not_found(self):
+        res = self.client.post(
+            '/api/scanner/receipt/',
+            data=json.dumps({
+                'order_id': '#NOPE',
+                'channel': 'email',
+                'contact': 'guest@example.com',
+            }),
+            content_type='application/json',
+            HTTP_AUTHORIZATION=self.auth,
+        )
+        self.assertEqual(res.status_code, 404)
+
+    def test_receipt_rejects_both_identifiers(self):
+        res = self.client.post(
+            '/api/scanner/receipt/',
+            data=json.dumps({
+                'order_id': '#TTP001',
+                'payment_intent_id': 'pi_abc',
+                'channel': 'email',
+                'contact': 'guest@example.com',
+            }),
+            content_type='application/json',
+            HTTP_AUTHORIZATION=self.auth,
+        )
+        self.assertEqual(res.status_code, 400)
+
+    def test_receipt_rejects_neither_identifier(self):
+        res = self.client.post(
+            '/api/scanner/receipt/',
+            data=json.dumps({
+                'channel': 'email',
+                'contact': 'guest@example.com',
+            }),
+            content_type='application/json',
+            HTTP_AUTHORIZATION=self.auth,
+        )
+        self.assertEqual(res.status_code, 400)
+
+    def test_receipt_sms_returns_422(self):
+        res = self.client.post(
+            '/api/scanner/receipt/',
+            data=json.dumps({
+                'order_id': '#TTP001',
+                'channel': 'sms',
+                'contact': '+15555550100',
+            }),
+            content_type='application/json',
+            HTTP_AUTHORIZATION=self.auth,
+        )
+        self.assertEqual(res.status_code, 422)
+
+    def test_receipt_by_payment_intent_id_declined(self):
+        from django.core import mail
+        from .models import ReceiptSend
+
+        fake_pi = MagicMock()
+        fake_pi.id = 'pi_3OBxYzABC'
+        fake_pi.status = 'requires_payment_method'
+        fake_pi.amount = 2500
+        fake_pi.currency = 'usd'
+        fake_pi.created = 1700000000
+        fake_pi.metadata = {}
+        lpe = MagicMock()
+        lpe.message = 'Your card was declined.'
+        fake_pi.last_payment_error = lpe
+
+        with patch('stripe.PaymentIntent.retrieve', return_value=fake_pi):
+            res = self.client.post(
+                '/api/scanner/receipt/',
+                data=json.dumps({
+                    'payment_intent_id': 'pi_3OBxYzABC',
+                    'channel': 'email',
+                    'contact': 'guest@example.com',
+                }),
+                content_type='application/json',
+                HTTP_AUTHORIZATION=self.auth,
+            )
+
+        self.assertEqual(res.status_code, 200, res.content)
+        self.assertEqual(len(mail.outbox), 1)
+        body = mail.outbox[0].body
+        self.assertIn('Declined', body)
+        self.assertIn('No charge was made to your card.', body)
+        log = ReceiptSend.objects.get(organization=self.org)
+        self.assertEqual(log.payment_intent_id, 'pi_3OBxYzABC')
+        self.assertIsNone(log.ticket_order_id)
+        self.assertEqual(log.status, 'sent')
+
+    def test_receipt_payment_intent_not_found(self):
+        import stripe as stripe_lib
+
+        with patch(
+            'stripe.PaymentIntent.retrieve',
+            side_effect=stripe_lib.error.InvalidRequestError('No such PI', 'id'),
+        ):
+            res = self.client.post(
+                '/api/scanner/receipt/',
+                data=json.dumps({
+                    'payment_intent_id': 'pi_missing',
+                    'channel': 'email',
+                    'contact': 'guest@example.com',
+                }),
+                content_type='application/json',
+                HTTP_AUTHORIZATION=self.auth,
+            )
+        self.assertEqual(res.status_code, 404)
+        self.assertEqual(res.json(), {'error': 'payment intent not found'})

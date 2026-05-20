@@ -11,6 +11,11 @@ urlpatterns = [
     path('scanner/checkin/', api_views.scanner_checkin, name='api_scanner_checkin'),
     path('scanner/checkin-stats/', api_views.scanner_checkin_stats, name='api_scanner_checkin_stats'),
     path('scanner/orders/', api_views.scanner_orders, name='api_scanner_orders'),
+    path('scanner/receipt/', api_views.scanner_receipt, name='api_scanner_receipt'),
+
+    # Tap to Pay on iPhone (Apple entitlement compliance)
+    path('tap-to-pay/terms-version/', api_views.tap_to_pay_terms_version, name='api_ttp_terms_version'),
+    path('tap-to-pay/terms-acceptance/', api_views.tap_to_pay_terms_acceptance, name='api_ttp_terms_acceptance'),
 
     # Organizer
     path('organizer/events/', api_views.organizer_events, name='api_organizer_events'),
