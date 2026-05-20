@@ -262,6 +262,11 @@ STRIPE_CURRENCY        = os.environ.get('STRIPE_CURRENCY', 'usd')
 STRIPE_TERMINAL_LOCATION_ID = os.environ.get('STRIPE_TERMINAL_LOCATION_ID', '')
 APPLE_PAY_DOMAIN_ASSOCIATION = os.environ.get('APPLE_PAY_DOMAIN_ASSOCIATION', '')
 
+# Apple Tap to Pay on iPhone — opaque version string for Apple's T&Cs.
+# Bump (via env var) when Apple publishes new terms to force merchants
+# through Setup re-acceptance on next app open.
+TAP_TO_PAY_TERMS_VERSION = os.environ.get('TAP_TO_PAY_TERMS_VERSION', '2026-03-01')
+
 # Meta Ads integration
 FACEBOOK_APP_ID = os.environ.get('FACEBOOK_APP_ID', '')
 FACEBOOK_APP_SECRET = os.environ.get('FACEBOOK_APP_SECRET', '')
