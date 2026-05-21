@@ -5,6 +5,8 @@ urlpatterns = [
     # Auth
     path('auth/login/', api_views.api_login, name='api_login'),
     path('auth/scanner-login/', api_views.scanner_login, name='api_scanner_login'),
+    path('auth/phone/start/', api_views.api_phone_start, name='api_phone_start'),
+    path('auth/phone/verify/', api_views.api_phone_verify, name='api_phone_verify'),
 
     # Scanner (PIN-based guest check-in)
     path('scanner/event/', api_views.scanner_event, name='api_scanner_event'),
@@ -44,4 +46,7 @@ urlpatterns = [
     # Stripe Terminal
     path('stripe/connection-token/', api_views.stripe_connection_token, name='api_stripe_connection_token'),
     path('stripe/terminal-payment-intent/', api_views.stripe_terminal_payment_intent, name='api_stripe_terminal_pi'),
+
+    # Stripe Connect — mobile onboarding (organizer Token auth, cueup:// deep-links)
+    path('stripe/connect/onboarding-url/', api_views.stripe_connect_onboarding_url, name='api_stripe_connect_onboarding_url'),
 ]

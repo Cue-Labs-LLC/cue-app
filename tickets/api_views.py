@@ -31,7 +31,9 @@ from .models import (
     EventCustomFieldValue,
     EventExpense,
     EventIncome,
+    Organization,
     OrganizationAPIKey,
+    OrganizationMembership,
     ReceiptSend,
     SaleableTicketType,
     ScannerSession,
@@ -819,6 +821,199 @@ def api_login(request):
         'user_name': user.get_full_name() or user.username,
         'org_name': org_name,
         'org_id': org_id,
+    })
+
+
+@api_view(['POST'])
+@authentication_classes([ScannerSessionAuthentication])
+@permission_classes([])
+def api_phone_start(request):
+    """
+    POST /api/auth/phone/start/
+    Body: {phone}
+    Sends a Twilio Verify SMS code. Returns 200 on success, 400 on any failure.
+    """
+    from django.conf import settings as django_settings
+    from .sms import start_phone_verification
+
+    phone = (request.data.get('phone') or '').strip()
+    if not phone:
+        return Response({'error': 'phone is required'}, status=400)
+
+    if phone in django_settings.APP_REVIEW_TEST_PHONES:
+        return Response({})
+
+    if not start_phone_verification(phone):
+        return Response({'error': 'Could not send verification code'}, status=400)
+
+    return Response({})
+
+
+@api_view(['POST'])
+@authentication_classes([ScannerSessionAuthentication])
+@permission_classes([])
+def api_phone_verify(request):
+    """
+    POST /api/auth/phone/verify/
+    Body: {phone, code}
+    Verifies the SMS code, mints a DRF Token, and creates a User+UserProfile
+    on first sight of the phone. Returns 400 on any verification failure.
+    """
+    import uuid as _uuid
+    from django.conf import settings as django_settings
+    from django.contrib.auth.models import User
+    from django.db import IntegrityError
+    from .sms import check_phone_verification
+
+    phone = (request.data.get('phone') or '').strip()
+    code = (request.data.get('code') or '').strip()
+    if not phone or not code:
+        return Response({'error': 'phone and code are required'}, status=400)
+
+    expected = django_settings.APP_REVIEW_TEST_PHONES.get(phone)
+    if expected is not None:
+        if code != expected:
+            return Response({'error': 'Invalid or expired code'}, status=400)
+    elif not check_phone_verification(phone, code):
+        return Response({'error': 'Invalid or expired code'}, status=400)
+
+    profile = UserProfile.objects.select_related('user', 'organization').filter(
+        phone_number=phone
+    ).first()
+
+    if profile is None:
+        try:
+            with transaction.atomic():
+                for _ in range(5):
+                    username = f'user_{_uuid.uuid4().hex[:12]}'
+                    if not User.objects.filter(username=username).exists():
+                        break
+                user = User.objects.create(
+                    username=username,
+                    email='',
+                    first_name='',
+                    last_name='',
+                )
+                user.set_unusable_password()
+                user.save()
+                profile = UserProfile.objects.create(user=user, phone_number=phone)
+        except IntegrityError:
+            profile = UserProfile.objects.select_related('user', 'organization').get(
+                phone_number=phone
+            )
+
+    user = profile.user
+    token, _ = Token.objects.get_or_create(user=user)
+    org = profile.organization
+
+    profile_incomplete = (
+        not user.first_name
+        or not user.last_name
+        or not user.email
+        or org is None
+    )
+
+    return Response({
+        'token': token.key,
+        'user_type': profile.role,
+        'user_name': user.get_full_name() or '',
+        'org_name': org.name if org else '',
+        'org_id': str(org.pk) if org else None,
+        'profile_incomplete': profile_incomplete,
+    })
+
+
+# ---------------------------------------------------------------------------
+# Stripe Connect — onboarding URL (organizer Token auth)
+# ---------------------------------------------------------------------------
+
+def _ensure_organization_for_user(user):
+    """Get or auto-create a placeholder Organization for a token-authed user.
+
+    Brand-new phone-OTP organizers have no Organization yet; this lazily
+    creates one when they begin Stripe Connect onboarding. Returns the
+    Organization (existing or new). Raises UserProfile.DoesNotExist if
+    the user has no profile.
+    """
+    import uuid as _uuid
+    from django.db import IntegrityError
+
+    profile = UserProfile.objects.select_related('organization').get(user=user)
+    if profile.organization is not None:
+        return profile.organization
+
+    with transaction.atomic():
+        for _ in range(5):
+            slug = f'org-{_uuid.uuid4().hex[:8]}'
+            try:
+                org = Organization.objects.create(name='', slug=slug)
+                break
+            except IntegrityError:
+                continue
+        else:
+            raise IntegrityError('Could not allocate a unique organization slug.')
+
+        OrganizationMembership.objects.create(
+            user=user,
+            organization=org,
+            org_role=UserProfile.OrgRole.OWNER,
+        )
+        profile.organization = org
+        profile.role = UserProfile.Role.ORGANIZER
+        profile.org_role = UserProfile.OrgRole.OWNER
+        profile.save(update_fields=['organization', 'role', 'org_role'])
+    return org
+
+
+@api_view(['GET'])
+@authentication_classes([TokenAuthentication])
+@permission_classes([IsAuthenticated])
+def stripe_connect_onboarding_url(request):
+    """
+    GET /api/stripe/connect/onboarding-url/
+    Creates (or reuses) the org's Stripe Express account and returns a
+    fresh AccountLink URL with cueup:// deep-link return/refresh redirects.
+    Auto-creates a placeholder Organization if the user doesn't have one.
+    """
+    import stripe as stripe_lib
+    from django.conf import settings as django_settings
+    from django.urls import reverse
+
+    org = _ensure_organization_for_user(request.user)
+
+    # Stripe's AccountLink validator requires http(s):// — custom URI schemes
+    # (cueup://) fail with url_invalid. We hand Stripe HTTPS bridge URLs that
+    # 302 to the app's cueup:// deep link (see mobile_stripe_connect_return).
+    return_url = request.build_absolute_uri(reverse('tickets:mobile_stripe_connect_return'))
+    refresh_url = request.build_absolute_uri(reverse('tickets:mobile_stripe_connect_refresh'))
+
+    stripe_lib.api_key = django_settings.STRIPE_SECRET_KEY
+    try:
+        if not org.stripe_account_id:
+            account = stripe_lib.Account.create(
+                type='express',
+                metadata={'org_id': str(org.id)},
+                capabilities={
+                    'card_payments': {'requested': True},
+                    'transfers': {'requested': True},
+                },
+            )
+            org.stripe_account_id = account.id
+            org.save(update_fields=['stripe_account_id'])
+
+        link = stripe_lib.AccountLink.create(
+            account=org.stripe_account_id,
+            refresh_url=refresh_url,
+            return_url=return_url,
+            type='account_onboarding',
+        )
+    except stripe_lib.error.StripeError as exc:
+        logger.warning("Stripe Connect onboarding-url failed for org %s: %s", org.pk, exc)
+        return Response({'error': 'Stripe unavailable'}, status=503)
+
+    return Response({
+        'url': link.url,
+        'expires_at': getattr(link, 'expires_at', None),
     })
 
 
@@ -2019,20 +2214,27 @@ def _resolve_tap_to_pay_status(org):
 
 
 @api_view(['GET'])
-@authentication_classes([ScannerSessionAuthentication])
-@permission_classes([IsScannerAuthenticated])
+@authentication_classes([ScannerSessionAuthentication, TokenAuthentication])
+@permission_classes([IsScannerOrAuthenticatedUser])
 def merchant_status(request):
     """
     GET /api/merchant/status/
-    Returns the current Tap to Pay enablement state for the merchant tied
-    to the scanner session. Designed to be polled on every iOS foreground
-    transition; the first 'enabled' result fires the Apple §3.3 awareness
-    splash on the client.
+    Returns the current Tap to Pay enablement state for the merchant.
+    Polled by both the iOS scanner app (Scanner session auth) and the iOS
+    organizer app (DRF Token auth) on every foreground transition; the
+    first 'enabled' result fires the Apple §3.3 awareness splash on the
+    client.
+
+    A Token-authed organizer with no Organization yet (brand-new phone-OTP
+    signup, before /stripe/connect/onboarding-url/ has been hit) gets
+    'pending' so the app can route them into the onboarding screen.
 
     Response shape is composable — future phases will add sibling keys
     (kyc, payouts, country) alongside tap_to_pay rather than nesting them.
     """
-    org = request.auth.event.organization
+    org = _resolve_dual_auth_org(request)
+    if org is None:
+        return Response({'tap_to_pay': {'status': 'pending'}})
     status = _resolve_tap_to_pay_status(org)
     return Response({'tap_to_pay': {'status': status}})
 
