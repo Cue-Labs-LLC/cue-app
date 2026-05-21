@@ -4770,9 +4770,7 @@ def event_create(request, ticketing_type):
                     _invalidate_event_list_cache(org)
                     _invalidate_marketing_cache(org)
                     messages.success(request, f"Event '{event.name}' created successfully.")
-                    # TODO: re-enable when calendar sync is ready
-                    # if event.start_date >= date.today():
-                    #     _sync_event_to_google_calendar(event)
+                    _sync_event_to_google_calendar(event)
                     return redirect('tickets:event_detail', event_id=event.id)
         else:
             form = DirectEventForm(organization=org)
