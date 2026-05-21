@@ -271,6 +271,12 @@ urlpatterns = [
     path('webhooks/stripe/', views.stripe_webhook, name='stripe_webhook'),
     path('webhooks/stripe/connect/', views.stripe_connect_webhook, name='stripe_connect_webhook'),
 
+    # Mobile Stripe Connect deep-link bridges. Stripe's AccountLink validator
+    # rejects custom URI schemes (cueup://), so we hand it HTTPS URLs and 302
+    # to the cueup:// deep link from these views.
+    path('m/stripe-connect-return/', views.mobile_stripe_connect_return, name='mobile_stripe_connect_return'),
+    path('m/stripe-connect-refresh/', views.mobile_stripe_connect_refresh, name='mobile_stripe_connect_refresh'),
+
     # Finance / Stripe Connect
     path('finance/', views.finance_overview, name='finance_overview'),
     path('finance/stripe/onboard/', views.stripe_connect_onboard, name='stripe_connect_onboard'),

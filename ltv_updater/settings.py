@@ -283,6 +283,14 @@ TAP_TO_PAY_SUPPORTED_COUNTRIES = {
 # Stripe API call cheap without making the splash trigger feel laggy.
 TAP_TO_PAY_STATUS_CACHE_TTL = int(os.environ.get('TAP_TO_PAY_STATUS_CACHE_TTL', '60'))
 
+# App Store reviewer bypass for the phone-OTP flow. Phones in this dict skip
+# Twilio Verify entirely and accept the mapped fixed OTP code. Use the NANP
+# fictional range (+1 555-01xx) so the numbers can never reach a real person.
+# Document the active phone + OTP in App Store Connect review notes.
+APP_REVIEW_TEST_PHONES = {
+    '+15555550100': '424242',
+}
+
 # Meta Ads integration
 FACEBOOK_APP_ID = os.environ.get('FACEBOOK_APP_ID', '')
 FACEBOOK_APP_SECRET = os.environ.get('FACEBOOK_APP_SECRET', '')
@@ -304,6 +312,10 @@ DEFAULT_FROM_EMAIL = os.environ.get('DEFAULT_FROM_EMAIL', 'noreply@cueup.co')
 # Custom error views
 CSRF_FAILURE_VIEW = 'tickets.views.csrf_failure'
 
+# Trust the SSL-terminating proxy in all envs (Render in prod, ngrok in dev) so
+# request.is_secure() / build_absolute_uri() produce https:// URLs for Stripe.
+SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+
 # Security settings for production
 if IS_RENDER or not DEBUG:
     SECURE_SSL_REDIRECT = True
@@ -315,9 +327,6 @@ if IS_RENDER or not DEBUG:
     SECURE_HSTS_SECONDS = 31536000  # 1 year
     SECURE_HSTS_INCLUDE_SUBDOMAINS = True
     SECURE_HSTS_PRELOAD = True
-    # Tell Django to trust Render's SSL-terminating proxy so it correctly
-    # identifies requests as HTTPS (required for accurate CSRF origin matching).
-    SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
     # Explicitly list trusted origins so mobile browsers (which always send the
     # Origin header) are not rejected by the CSRF middleware due to a scheme
     # mismatch when Django infers http:// behind the proxy.

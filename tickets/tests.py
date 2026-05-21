@@ -7763,3 +7763,356 @@ class RequestCardPaymentsCapabilityCommandTests(TestCase):
         self.assertIn('Before:', output)
         self.assertIn('card_payments=active', output)
         self.assertNotIn('card_payments=unrequested', output)
+
+
+class PhoneAuthAPITests(TestCase):
+    """Regression coverage for /api/auth/phone/{start,verify}/ endpoints."""
+
+    START_URL = '/api/auth/phone/start/'
+    VERIFY_URL = '/api/auth/phone/verify/'
+    PHONE = '+15555550199'
+
+    def setUp(self):
+        from .models import ScannerSession
+        self.client = Client()
+        self.org = Organization.objects.create(name='Existing Org', slug='existing-org')
+        self.existing_user = User.objects.create_user(
+            username='existing-organizer',
+            email='owner@example.com',
+            password='unused',
+            first_name='Jane',
+            last_name='Doe',
+        )
+        UserProfile.objects.create(
+            user=self.existing_user,
+            organization=self.org,
+            role=UserProfile.Role.ORGANIZER,
+            phone_number=self.PHONE,
+        )
+        # Scanner session for the scanner-header tolerance tests.
+        self.scanner_event = Event.objects.create(
+            organization=self.org,
+            name='Scan Show',
+            venue=Venue.objects.create(organization=self.org, name='V', city='C'),
+            start_date=timezone.localdate(),
+        )
+        self.scanner_session = ScannerSession.objects.create(event=self.scanner_event)
+
+    def _post(self, url, body, **extra):
+        return self.client.post(
+            url, data=json.dumps(body), content_type='application/json', **extra
+        )
+
+    # ---- /start/ ---------------------------------------------------------
+
+    @patch('tickets.sms.start_phone_verification', return_value=True)
+    def test_phone_start_success(self, mock_start):
+        res = self._post(self.START_URL, {'phone': self.PHONE})
+        self.assertEqual(res.status_code, 200, res.content)
+        mock_start.assert_called_once_with(self.PHONE)
+
+    @patch('tickets.sms.start_phone_verification', return_value=False)
+    def test_phone_start_failure_returns_400(self, mock_start):
+        res = self._post(self.START_URL, {'phone': self.PHONE})
+        self.assertEqual(res.status_code, 400)
+
+    def test_phone_start_missing_phone_returns_400(self):
+        res = self._post(self.START_URL, {})
+        self.assertEqual(res.status_code, 400)
+
+    # ---- /verify/ existing user -----------------------------------------
+
+    @patch('tickets.sms.check_phone_verification', return_value=True)
+    def test_phone_verify_existing_user_returns_token(self, mock_check):
+        res = self._post(self.VERIFY_URL, {'phone': self.PHONE, 'code': '123456'})
+        self.assertEqual(res.status_code, 200, res.content)
+        body = res.json()
+        self.assertTrue(body['token'])
+        self.assertEqual(body['user_type'], UserProfile.Role.ORGANIZER)
+        self.assertEqual(body['user_name'], 'Jane Doe')
+        self.assertEqual(body['org_name'], 'Existing Org')
+        self.assertEqual(body['org_id'], str(self.org.pk))
+        self.assertFalse(body['profile_incomplete'])
+        # Token is real and belongs to the existing user
+        token = Token.objects.get(key=body['token'])
+        self.assertEqual(token.user_id, self.existing_user.pk)
+
+    # ---- /verify/ first-time signup -------------------------------------
+
+    @patch('tickets.sms.check_phone_verification', return_value=True)
+    def test_phone_verify_new_user_creates_account(self, mock_check):
+        new_phone = '+15555550200'
+        res = self._post(self.VERIFY_URL, {'phone': new_phone, 'code': '123456'})
+        self.assertEqual(res.status_code, 200, res.content)
+        body = res.json()
+        self.assertTrue(body['token'])
+        self.assertTrue(body['profile_incomplete'])
+        self.assertEqual(body['org_id'], None)
+        self.assertEqual(body['org_name'], '')
+        self.assertEqual(body['user_type'], UserProfile.Role.ORGANIZER)
+
+        profile = UserProfile.objects.get(phone_number=new_phone)
+        self.assertEqual(profile.role, UserProfile.Role.ORGANIZER)
+        self.assertIsNone(profile.organization_id)
+        self.assertFalse(profile.user.has_usable_password())
+
+    # ---- /verify/ failures ----------------------------------------------
+
+    @patch('tickets.sms.check_phone_verification', return_value=False)
+    def test_phone_verify_wrong_code_returns_400(self, mock_check):
+        new_phone = '+15555550201'
+        res = self._post(self.VERIFY_URL, {'phone': new_phone, 'code': '999999'})
+        self.assertEqual(res.status_code, 400)
+        # No User created on failure
+        self.assertFalse(UserProfile.objects.filter(phone_number=new_phone).exists())
+
+    def test_phone_verify_missing_fields_returns_400(self):
+        res = self._post(self.VERIFY_URL, {'phone': self.PHONE})
+        self.assertEqual(res.status_code, 400)
+
+    # ---- Scanner header tolerance ---------------------------------------
+
+    @patch('tickets.sms.check_phone_verification', return_value=True)
+    def test_phone_verify_with_valid_scanner_header_still_mints_token(self, mock_check):
+        res = self._post(
+            self.VERIFY_URL,
+            {'phone': self.PHONE, 'code': '123456'},
+            HTTP_AUTHORIZATION=f'Scanner {self.scanner_session.token}',
+        )
+        self.assertEqual(res.status_code, 200, res.content)
+        body = res.json()
+        # Returned token is for the phone owner, not tied to the scanner session.
+        token = Token.objects.get(key=body['token'])
+        self.assertEqual(token.user_id, self.existing_user.pk)
+
+    def test_phone_verify_with_invalid_scanner_header_rejected(self):
+        bogus = uuid.uuid4()
+        res = self._post(
+            self.VERIFY_URL,
+            {'phone': self.PHONE, 'code': '123456'},
+            HTTP_AUTHORIZATION=f'Scanner {bogus}',
+        )
+        self.assertIn(res.status_code, (401, 403))
+
+    # ---- App Store reviewer bypass (APP_REVIEW_TEST_PHONES) ------------
+
+    REVIEW_PHONE = '+15555550150'
+    REVIEW_OTP = '424242'
+    REVIEW_OVERRIDE = {'+15555550150': '424242'}
+
+    def test_phone_start_bypasses_twilio_for_whitelisted_phone(self):
+        from django.test import override_settings
+        with override_settings(APP_REVIEW_TEST_PHONES=self.REVIEW_OVERRIDE), \
+             patch('tickets.sms.start_phone_verification') as mock_start:
+            res = self._post(self.START_URL, {'phone': self.REVIEW_PHONE})
+        self.assertEqual(res.status_code, 200, res.content)
+        mock_start.assert_not_called()
+
+    def test_phone_verify_bypasses_twilio_for_whitelisted_phone_correct_code(self):
+        from django.test import override_settings
+        with override_settings(APP_REVIEW_TEST_PHONES=self.REVIEW_OVERRIDE), \
+             patch('tickets.sms.check_phone_verification') as mock_check:
+            res = self._post(
+                self.VERIFY_URL,
+                {'phone': self.REVIEW_PHONE, 'code': self.REVIEW_OTP},
+            )
+        self.assertEqual(res.status_code, 200, res.content)
+        mock_check.assert_not_called()
+        body = res.json()
+        self.assertTrue(body['token'])
+        self.assertTrue(body['profile_incomplete'])
+        # First-time auto-create still happens via the shared downstream path.
+        self.assertTrue(UserProfile.objects.filter(phone_number=self.REVIEW_PHONE).exists())
+
+    def test_phone_verify_bypass_rejects_wrong_code(self):
+        from django.test import override_settings
+        with override_settings(APP_REVIEW_TEST_PHONES=self.REVIEW_OVERRIDE), \
+             patch('tickets.sms.check_phone_verification') as mock_check:
+            res = self._post(
+                self.VERIFY_URL,
+                {'phone': self.REVIEW_PHONE, 'code': '999999'},
+            )
+        self.assertEqual(res.status_code, 400)
+        mock_check.assert_not_called()
+        self.assertFalse(UserProfile.objects.filter(phone_number=self.REVIEW_PHONE).exists())
+
+    @patch('tickets.sms.check_phone_verification', return_value=True)
+    def test_phone_verify_non_whitelisted_phone_still_uses_twilio(self, mock_check):
+        from django.test import override_settings
+        # Default override has only REVIEW_PHONE; self.PHONE is NOT whitelisted.
+        with override_settings(APP_REVIEW_TEST_PHONES=self.REVIEW_OVERRIDE):
+            res = self._post(self.VERIFY_URL, {'phone': self.PHONE, 'code': '123456'})
+        self.assertEqual(res.status_code, 200, res.content)
+        mock_check.assert_called_once_with(self.PHONE, '123456')
+
+
+class StripeConnectOnboardingURLAPITests(TestCase):
+    """Regression coverage for GET /api/stripe/connect/onboarding-url/."""
+
+    URL = '/api/stripe/connect/onboarding-url/'
+
+    def setUp(self):
+        from django.core.cache import cache as django_cache
+        django_cache.clear()
+        self.client = Client()
+        self.org = Organization.objects.create(name='Connect Org', slug='connect-org')
+        self.user = User.objects.create_user(username='org-owner', email='', password='unused')
+        self.profile = UserProfile.objects.create(
+            user=self.user,
+            organization=self.org,
+            role=UserProfile.Role.ORGANIZER,
+            org_role=UserProfile.OrgRole.OWNER,
+            phone_number='+15555550300',
+        )
+        self.token = Token.objects.create(user=self.user)
+        self.auth = {'HTTP_AUTHORIZATION': f'Token {self.token.key}'}
+
+    def _fake_link(self, url='https://connect.stripe.com/setup/abc', expires_at=1716242400):
+        link = MagicMock()
+        link.url = url
+        link.expires_at = expires_at
+        return link
+
+    def test_requires_token(self):
+        res = self.client.get(self.URL)
+        self.assertIn(res.status_code, (401, 403))
+
+    def test_reuses_existing_stripe_account(self):
+        self.org.stripe_account_id = 'acct_existing'
+        self.org.save(update_fields=['stripe_account_id'])
+        with patch('stripe.Account.create') as create_mock, \
+             patch('stripe.AccountLink.create', return_value=self._fake_link()) as link_mock:
+            res = self.client.get(self.URL, **self.auth)
+        self.assertEqual(res.status_code, 200, res.content)
+        body = res.json()
+        self.assertEqual(body['url'], 'https://connect.stripe.com/setup/abc')
+        self.assertEqual(body['expires_at'], 1716242400)
+        create_mock.assert_not_called()
+        link_mock.assert_called_once()
+        kwargs = link_mock.call_args.kwargs
+        self.assertEqual(kwargs['account'], 'acct_existing')
+        # Stripe AccountLink rejects custom schemes; we hand it HTTPS URLs
+        # that 302 to cueup:// from the server-side bridge views.
+        self.assertTrue(kwargs['refresh_url'].endswith('/m/stripe-connect-refresh/'))
+        self.assertTrue(kwargs['return_url'].endswith('/m/stripe-connect-return/'))
+        self.assertTrue(kwargs['refresh_url'].startswith('http'))
+        self.assertEqual(kwargs['type'], 'account_onboarding')
+
+    def test_bridge_return_redirects_to_cueup_scheme(self):
+        res = self.client.get('/m/stripe-connect-return/')
+        self.assertEqual(res.status_code, 302)
+        self.assertEqual(res['Location'], 'cueup://stripe-connect-return')
+
+    def test_bridge_refresh_redirects_to_cueup_scheme(self):
+        res = self.client.get('/m/stripe-connect-refresh/')
+        self.assertEqual(res.status_code, 302)
+        self.assertEqual(res['Location'], 'cueup://stripe-connect-refresh')
+
+    def test_creates_stripe_account_when_missing(self):
+        self.assertEqual(self.org.stripe_account_id, '')
+        account = MagicMock()
+        account.id = 'acct_new_123'
+        with patch('stripe.Account.create', return_value=account) as create_mock, \
+             patch('stripe.AccountLink.create', return_value=self._fake_link()):
+            res = self.client.get(self.URL, **self.auth)
+        self.assertEqual(res.status_code, 200, res.content)
+        create_mock.assert_called_once()
+        kwargs = create_mock.call_args.kwargs
+        self.assertEqual(kwargs['type'], 'express')
+        self.assertEqual(kwargs['capabilities'], {
+            'card_payments': {'requested': True},
+            'transfers': {'requested': True},
+        })
+        self.org.refresh_from_db()
+        self.assertEqual(self.org.stripe_account_id, 'acct_new_123')
+
+    def test_auto_creates_org_for_org_less_user(self):
+        # Strip the org off the profile to simulate brand-new phone-OTP signup.
+        self.profile.organization = None
+        self.profile.org_role = None
+        self.profile.save(update_fields=['organization', 'org_role'])
+
+        account = MagicMock()
+        account.id = 'acct_for_new_org'
+        with patch('stripe.Account.create', return_value=account), \
+             patch('stripe.AccountLink.create', return_value=self._fake_link()):
+            res = self.client.get(self.URL, **self.auth)
+
+        self.assertEqual(res.status_code, 200, res.content)
+        self.profile.refresh_from_db()
+        self.assertIsNotNone(self.profile.organization_id)
+        new_org = self.profile.organization
+        self.assertNotEqual(new_org.pk, self.org.pk)
+        self.assertEqual(new_org.stripe_account_id, 'acct_for_new_org')
+        self.assertEqual(self.profile.org_role, UserProfile.OrgRole.OWNER)
+        # Membership row created with OWNER role.
+        self.assertTrue(OrganizationMembership.objects.filter(
+            user=self.user,
+            organization=new_org,
+            org_role=UserProfile.OrgRole.OWNER,
+        ).exists())
+
+    def test_returns_503_when_stripe_errors(self):
+        import stripe as stripe_lib
+        with patch(
+            'stripe.Account.create',
+            side_effect=stripe_lib.error.APIConnectionError('boom'),
+        ):
+            res = self.client.get(self.URL, **self.auth)
+        self.assertEqual(res.status_code, 503)
+        self.org.refresh_from_db()
+        self.assertEqual(self.org.stripe_account_id, '')
+
+
+class MerchantStatusOrganizerAuthTests(TestCase):
+    """Coverage for /api/merchant/status/ widening to accept Token auth."""
+
+    URL = '/api/merchant/status/'
+
+    def setUp(self):
+        from django.core.cache import cache as django_cache
+        django_cache.clear()
+        self.client = Client()
+        self.org = Organization.objects.create(name='Status Org', slug='status-org')
+        self.user = User.objects.create_user(username='status-owner', email='', password='unused')
+        self.profile = UserProfile.objects.create(
+            user=self.user,
+            organization=self.org,
+            role=UserProfile.Role.ORGANIZER,
+            phone_number='+15555550400',
+        )
+        self.token = Token.objects.create(user=self.user)
+        self.token_auth = {'HTTP_AUTHORIZATION': f'Token {self.token.key}'}
+
+    def test_organizer_token_returns_pending_when_no_stripe_account(self):
+        res = self.client.get(self.URL, **self.token_auth)
+        self.assertEqual(res.status_code, 200, res.content)
+        self.assertEqual(res.json(), {'tap_to_pay': {'status': 'pending'}})
+
+    def test_organizer_token_returns_enabled_when_capability_active(self):
+        self.org.stripe_account_id = 'acct_enabled_org_tok'
+        self.org.save(update_fields=['stripe_account_id'])
+        account = MagicMock()
+        account.country = 'US'
+        account.capabilities = {'card_payments': 'active'}
+        with patch('stripe.Account.retrieve', return_value=account):
+            res = self.client.get(self.URL, **self.token_auth)
+        self.assertEqual(res.status_code, 200, res.content)
+        self.assertEqual(res.json(), {'tap_to_pay': {'status': 'enabled'}})
+
+    def test_organizer_without_org_returns_pending(self):
+        self.profile.organization = None
+        self.profile.save(update_fields=['organization'])
+        with patch('stripe.Account.retrieve') as retrieve_mock:
+            res = self.client.get(self.URL, **self.token_auth)
+        self.assertEqual(res.status_code, 200, res.content)
+        self.assertEqual(res.json(), {'tap_to_pay': {'status': 'pending'}})
+        retrieve_mock.assert_not_called()
+
+    def test_missing_auth_rejected(self):
+        res = self.client.get(self.URL)
+        self.assertIn(res.status_code, (401, 403))
+
+    def test_invalid_token_rejected(self):
+        res = self.client.get(self.URL, HTTP_AUTHORIZATION='Token notarealkey')
+        self.assertIn(res.status_code, (401, 403))

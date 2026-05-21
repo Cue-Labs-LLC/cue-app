@@ -10722,6 +10722,31 @@ def stripe_connect_onboard(request):
         return redirect('tickets:finance_overview')
 
 
+def _redirect_to_custom_scheme(target):
+    # Django's HttpResponseRedirect blocks non-http(s)/ftp schemes for safety,
+    # so we hand-roll the 302 to let iOS Safari follow the cueup:// link.
+    from django.http import HttpResponse
+    resp = HttpResponse(status=302)
+    resp['Location'] = target
+    return resp
+
+
+def mobile_stripe_connect_return(request):
+    """HTTPS bridge that Stripe Connect redirects to after KYC completes.
+
+    Stripe's AccountLink API rejects custom URI schemes on return_url /
+    refresh_url, so we hand Stripe an https://.../m/stripe-connect-return/
+    URL and 302 to the iOS app's cueup:// deep link from here. iOS Safari
+    follows the 302 and hands control back to the app's Linking listener.
+    """
+    return _redirect_to_custom_scheme('cueup://stripe-connect-return')
+
+
+def mobile_stripe_connect_refresh(request):
+    """HTTPS bridge for the Stripe AccountLink refresh_url (link expired)."""
+    return _redirect_to_custom_scheme('cueup://stripe-connect-refresh')
+
+
 @login_required
 @require_org
 @require_admin
