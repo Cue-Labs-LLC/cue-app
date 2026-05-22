@@ -783,10 +783,7 @@
         {% else %}
         <div class="empty-state" style="padding: 24px;">
             <i class="bi bi-megaphone"></i>
-            <p class="mb-2">Connect Meta Ads to match campaigns and pull campaign spend into this event.</p>
-            {% if is_org_admin %}
-            <a href="{% url 'tickets:meta_ads_settings' %}" class="btn btn-primary">Connect Meta Ads</a>
-            {% endif %}
+            <p class="mb-0">Connect Meta Ads to match campaigns and pull campaign spend into this event.</p>
         </div>
         {% endif %}
     </div>
@@ -918,10 +915,7 @@
         {% else %}
         <div class="empty-state" style="padding: 24px;">
             <i class="bi bi-envelope-paper"></i>
-            <p class="mb-2">Connect Mailchimp to match email campaigns and attach campaign results to this event.</p>
-            {% if is_org_admin %}
-            <a href="{% url 'tickets:mailchimp_settings' %}" class="btn btn-primary">Connect Mailchimp</a>
-            {% endif %}
+            <p class="mb-0">Connect Mailchimp to match email campaigns and attach campaign results to this event.</p>
         </div>
         {% endif %}
     </div>
@@ -1053,10 +1047,7 @@
         {% else %}
         <div class="empty-state" style="padding: 24px;">
             <i class="bi bi-chat-dots"></i>
-            <p class="mb-2">Connect SlickText to match SMS broadcasts and attach campaign results to this event.</p>
-            {% if is_org_admin %}
-            <a href="{% url 'tickets:slicktext_settings' %}" class="btn btn-primary">Connect SlickText</a>
-            {% endif %}
+            <p class="mb-0">Connect SlickText to match SMS broadcasts and attach campaign results to this event.</p>
         </div>
         {% endif %}
     </div>
