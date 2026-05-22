@@ -44,7 +44,7 @@
     </div>
     <div class="list-group list-group-flush">
         {% for recommendation in ai_recommendations %}
-        <div class="list-group-item d-flex flex-column flex-lg-row justify-content-between gap-3">
+        <div class="list-group-item d-flex flex-column flex-lg-row justify-content-between gap-3" id="rec-card-{{ recommendation.id }}">
             <div>
                 <div class="d-flex align-items-center gap-2 mb-1">
                     <span class="badge {% if recommendation.priority == 'high' %}bg-danger{% elif recommendation.priority == 'medium' %}bg-warning text-dark{% else %}bg-secondary{% endif %}">
@@ -85,9 +85,24 @@
             </div>
             {% elif recommendation.kind == 'marketing_unconfirmed' and recommendation.event %}
             <div class="d-flex align-items-start">
+                {% if is_org_admin %}
+                <button type="button" class="btn btn-sm btn-primary"
+                        data-bs-toggle="modal"
+                        data-bs-target="#unconfirmedMatchesModal"
+                        data-recommendation-id="{{ recommendation.id }}"
+                        data-event-id="{{ recommendation.event.id }}"
+                        data-event-name="{{ recommendation.event.name }}"
+                        data-fetch-url="{% url 'tickets:ai_recommendation_unconfirmed_matches' recommendation.id %}"
+                        data-resolve-url="{% url 'tickets:ai_recommendation_resolve' recommendation.id %}"
+                        data-event-marketing-url="{{ recommendation.recommended_action_json.url }}"
+                        data-card-id="rec-card-{{ recommendation.id }}">
+                    {{ recommendation.recommended_action_json.label|default:"Review and confirm" }}
+                </button>
+                {% else %}
                 <a class="btn btn-sm btn-primary" href="{{ recommendation.recommended_action_json.url }}">
                     {{ recommendation.recommended_action_json.label|default:"Review and confirm" }}
                 </a>
+                {% endif %}
             </div>
             {% else %}
             <form method="post" action="{% url 'tickets:ai_recommendation_review' recommendation.id %}" class="d-flex align-items-start">
@@ -263,4 +278,5 @@
 </div>
 
 {% include 'tickets/partials/_link_campaigns_modal.html' %}
+{% include 'tickets/partials/_unconfirmed_matches_modal.html' %}
 {% endblock %}

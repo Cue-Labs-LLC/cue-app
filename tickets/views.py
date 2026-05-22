@@ -1925,8 +1925,111 @@ def ai_recommendation_resolve(request, recommendation_id):
         id=recommendation_id,
     )
     recommendation.resolve()
+    if request.headers.get('X-Requested-With') == 'XMLHttpRequest':
+        return JsonResponse({'ok': True})
     messages.success(request, 'Recommendation marked resolved.')
     return _ai_recommendation_redirect(request)
+
+
+@login_required
+@require_org
+@require_organizer
+@require_http_methods(["GET"])
+def ai_recommendation_unconfirmed_matches(request, recommendation_id):
+    """JSON: unconfirmed Meta Ads / Mailchimp / SlickText matches for a recommendation's event.
+
+    Powers the "Review and confirm" modal on the Action Center and home dashboard.
+    Mirrors the same filters as ``detect_unconfirmed_marketing_matches`` so the totals
+    line up with the recommendation summary.
+    """
+    org = get_organization(request)
+    recommendation = get_object_or_404(
+        AIRecommendation.objects.filter(organization=org).select_related('event'),
+        id=recommendation_id,
+    )
+    if (
+        recommendation.kind != AIRecommendation.Kind.MARKETING_UNCONFIRMED
+        or recommendation.event is None
+    ):
+        return JsonResponse({'ok': False, 'error': 'Not a marketing match recommendation.'}, status=404)
+
+    event = recommendation.event
+
+    meta_ads = list(
+        EventExpense.objects.filter(
+            event=event,
+            deleted_at__isnull=True,
+            confirmed_at__isnull=True,
+            source='meta_ads',
+        ).order_by('-amount', 'description')
+    )
+    mailchimp = list(
+        EventEmailCampaign.objects.filter(
+            event=event,
+            deleted_at__isnull=True,
+            confirmed_at__isnull=True,
+        ).order_by('-send_time', 'campaign_title')
+    )
+    slicktext = list(
+        EventSMSCampaign.objects.filter(
+            event=event,
+            deleted_at__isnull=True,
+            confirmed_at__isnull=True,
+        ).order_by('-send_time', 'name')
+    )
+
+    def ads_payload(e):
+        meta = e.external_metadata or {}
+        return {
+            'id': str(e.id),
+            'label': meta.get('campaign_name') or e.description or 'Meta Ads campaign',
+            'sublabel': e.external_id or '',
+            'amount': f'{(e.amount or Decimal("0.00")):.2f}',
+            'confirm_url': reverse('tickets:event_meta_ads_confirm', args=[event.id, e.id]),
+            'remove_url': reverse('tickets:event_meta_ads_remove', args=[event.id, e.id]),
+        }
+
+    def fmt_send_time(value):
+        if not value:
+            return ''
+        return _format_meta_ads_datetime(value.isoformat()) or ''
+
+    def email_payload(c):
+        return {
+            'id': str(c.id),
+            'label': c.campaign_title or c.external_id or 'Mailchimp campaign',
+            'sublabel': c.subject_line or '',
+            'send_time': fmt_send_time(c.send_time),
+            'confirm_url': reverse('tickets:event_mailchimp_confirm', args=[event.id, c.id]),
+            'remove_url': reverse('tickets:event_mailchimp_remove', args=[event.id, c.id]),
+        }
+
+    def sms_payload(c):
+        return {
+            'id': str(c.id),
+            'label': c.name or c.external_id or 'SlickText broadcast',
+            'sublabel': (c.message or '')[:120],
+            'send_time': fmt_send_time(c.send_time),
+            'confirm_url': reverse('tickets:event_slicktext_confirm', args=[event.id, c.id]),
+            'remove_url': reverse('tickets:event_slicktext_remove', args=[event.id, c.id]),
+        }
+
+    payload = {
+        'ok': True,
+        'event_id': str(event.id),
+        'event_name': event.name,
+        'meta_ads': [ads_payload(e) for e in meta_ads],
+        'mailchimp': [email_payload(c) for c in mailchimp],
+        'slicktext': [sms_payload(c) for c in slicktext],
+        'confirm_all_urls': {
+            'meta_ads': reverse('tickets:event_meta_ads_confirm_all', args=[event.id]),
+            'mailchimp': reverse('tickets:event_mailchimp_confirm_all', args=[event.id]),
+            'slicktext': reverse('tickets:event_slicktext_confirm_all', args=[event.id]),
+        },
+        'event_marketing_url': reverse('tickets:event_detail', args=[event.id]) + '#marketing',
+    }
+    payload['total'] = len(payload['meta_ads']) + len(payload['mailchimp']) + len(payload['slicktext'])
+    return JsonResponse(payload)
 
 
 @login_required

@@ -8375,3 +8375,131 @@ class PartialRefundTests(TestCase):
         self.order.save(update_fields=['refunded_at', 'refunded_amount'])
         ltv = self.customer.calculate_lifetime_value()
         self.assertEqual(ltv, Decimal('0.00'))
+
+
+class UnconfirmedMatchesEndpointTests(TestCase):
+    """JSON endpoint that powers the Action Center 'Review and confirm' modal."""
+
+    def setUp(self):
+        from .models import EventEmailCampaign, EventSMSCampaign
+
+        self.client = Client()
+        self.org = Organization.objects.create(name='Modal Org', slug='modal-org')
+        self.user = User.objects.create_user(
+            username='modaladmin', email='modaladmin@example.com', password='testpass123',
+        )
+        UserProfile.objects.create(
+            user=self.user, organization=self.org, org_role=UserProfile.OrgRole.OWNER,
+        )
+        OrganizationMembership.objects.create(
+            user=self.user, organization=self.org, org_role=UserProfile.OrgRole.OWNER,
+        )
+        venue = Venue.objects.create(organization=self.org, name='V', city='SF')
+        self.event = Event.objects.create(
+            organization=self.org, name='Match Modal Show', venue=venue,
+            start_date=date.today() - timedelta(days=5), start_time=time(20, 0, 0),
+        )
+
+        # One unconfirmed row per channel + one confirmed Mailchimp row that must be excluded.
+        EventExpense.objects.create(
+            event=self.event, category='marketing', description='ad1',
+            amount=Decimal('250.00'), source='meta_ads', external_id='ad-1',
+            external_metadata={'campaign_name': 'Spring Push'},
+        )
+        EventEmailCampaign.objects.create(
+            event=self.event, source='mailchimp', external_id='mc-1',
+            campaign_title='Newsletter', subject_line='Hello',
+            send_time=timezone.now() - timedelta(days=3),
+        )
+        EventEmailCampaign.objects.create(
+            event=self.event, source='mailchimp', external_id='mc-2',
+            campaign_title='Already confirmed', send_time=timezone.now() - timedelta(days=4),
+            confirmed_at=timezone.now(), confirmed_by=self.user,
+        )
+        EventSMSCampaign.objects.create(
+            event=self.event, source='slicktext', external_id='st-1',
+            name='SMS blast', message='Doors at 8',
+            send_time=timezone.now() - timedelta(days=2),
+        )
+
+        self.unconfirmed_rec = AIRecommendation.objects.create(
+            organization=self.org,
+            event=self.event,
+            kind=AIRecommendation.Kind.MARKETING_UNCONFIRMED,
+            priority=AIRecommendation.Priority.HIGH,
+            confidence=Decimal('0.900'),
+            title='3 matches to confirm',
+            summary='Review and confirm',
+            dedupe_key=f'marketing_unconfirmed:{self.event.id}',
+            recommended_action_json={'type': 'open_url', 'label': 'Review and confirm', 'url': '/x/'},
+        )
+        self.other_kind_rec = AIRecommendation.objects.create(
+            organization=self.org,
+            event=self.event,
+            kind=AIRecommendation.Kind.MARKETING_ATTRIBUTION,
+            priority=AIRecommendation.Priority.MEDIUM,
+            confidence=Decimal('0.500'),
+            title='Link campaigns',
+            summary='Link',
+            dedupe_key=f'marketing_attribution:{self.event.id}',
+        )
+
+    def _login(self):
+        self.client.login(username='modaladmin@example.com', password='testpass123')
+        self.client.get(reverse('tickets:home'))
+
+    def test_requires_login(self):
+        url = reverse('tickets:ai_recommendation_unconfirmed_matches', args=[self.unconfirmed_rec.id])
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, 302)
+        self.assertIn('/login', response['Location'])
+
+    def test_returns_unconfirmed_rows_grouped_by_channel(self):
+        self._login()
+        url = reverse('tickets:ai_recommendation_unconfirmed_matches', args=[self.unconfirmed_rec.id])
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertTrue(body['ok'])
+        self.assertEqual(body['event_id'], str(self.event.id))
+        self.assertEqual(body['event_name'], 'Match Modal Show')
+        self.assertEqual(len(body['meta_ads']), 1)
+        self.assertEqual(len(body['mailchimp']), 1)  # confirmed row excluded
+        self.assertEqual(len(body['slicktext']), 1)
+        self.assertEqual(body['total'], 3)
+        self.assertEqual(body['meta_ads'][0]['label'], 'Spring Push')
+        self.assertEqual(body['meta_ads'][0]['amount'], '250.00')
+        self.assertEqual(body['mailchimp'][0]['label'], 'Newsletter')
+        self.assertEqual(body['slicktext'][0]['label'], 'SMS blast')
+        self.assertIn('confirm_url', body['meta_ads'][0])
+        self.assertIn('remove_url', body['meta_ads'][0])
+        self.assertIn('meta_ads', body['confirm_all_urls'])
+
+    def test_rejects_non_marketing_unconfirmed_kind(self):
+        self._login()
+        url = reverse('tickets:ai_recommendation_unconfirmed_matches', args=[self.other_kind_rec.id])
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, 404)
+        self.assertFalse(response.json()['ok'])
+
+    def test_does_not_leak_across_orgs(self):
+        other_org = Organization.objects.create(name='Outsider', slug='outsider')
+        other_venue = Venue.objects.create(organization=other_org, name='V2', city='LA')
+        other_event = Event.objects.create(
+            organization=other_org, name='Other', venue=other_venue,
+            start_date=date.today(), start_time=time(20, 0, 0),
+        )
+        outside_rec = AIRecommendation.objects.create(
+            organization=other_org,
+            event=other_event,
+            kind=AIRecommendation.Kind.MARKETING_UNCONFIRMED,
+            priority=AIRecommendation.Priority.HIGH,
+            confidence=Decimal('0.900'),
+            title='not yours',
+            summary='nope',
+            dedupe_key=f'marketing_unconfirmed:{other_event.id}',
+        )
+        self._login()
+        url = reverse('tickets:ai_recommendation_unconfirmed_matches', args=[outside_rec.id])
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, 404)
