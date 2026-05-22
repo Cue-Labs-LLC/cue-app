@@ -4680,11 +4680,20 @@ class AIRecommendationTests(TestCase):
         )
         response = self.client.get(reverse('tickets:action_center'))
         self.assertContains(response, rec.title)
-        # CTA should be a link to the marketing tab, not the modal trigger.
         self.assertContains(response, 'Review and confirm')
-        self.assertContains(response, reverse('tickets:event_detail', args=[self.event.id]) + '#marketing')
-        # The empty-modal-bug shouldn't recur: this kind must not attach the modal trigger.
-        self.assertNotIn(f'data-recommendation-id="{rec.id}"', response.content.decode())
+        content = response.content.decode()
+        # Admin sees the unconfirmed-matches modal trigger with a marketing-tab fallback URL.
+        self.assertIn('data-bs-target="#unconfirmedMatchesModal"', content)
+        self.assertIn(f'data-recommendation-id="{rec.id}"', content)
+        self.assertIn(
+            reverse('tickets:event_detail', args=[self.event.id]) + '#marketing',
+            content,
+        )
+        # The empty-modal-bug shouldn't recur: this kind must not attach the link-campaigns modal.
+        self.assertNotIn(
+            f'data-bs-target="#linkCampaignsModal" data-recommendation-id="{rec.id}"',
+            content,
+        )
 
     def test_recommendation_review_dismiss_and_resolve_views(self):
         rec = self._recommendation()
