@@ -1669,6 +1669,7 @@ class AIRecommendation(BaseModel):
         POST_EVENT_WRAPUP = 'post_event_wrapup', 'Post-event wrap-up'
         WINBACK_AUDIENCE = 'winback_audience', 'Win-back audience'
         MARKETING_ATTRIBUTION = 'marketing_attribution', 'Marketing attribution'
+        MARKETING_UNCONFIRMED = 'marketing_unconfirmed', 'Marketing match unconfirmed'
 
     class Status(models.TextChoices):
         NEW = 'new', 'New'

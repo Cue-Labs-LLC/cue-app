@@ -83,6 +83,12 @@
                     {{ recommendation.recommended_action_json.label|default:"Link campaigns" }}
                 </button>
             </div>
+            {% elif recommendation.kind == 'marketing_unconfirmed' and recommendation.event %}
+            <div class="d-flex align-items-start">
+                <a class="btn btn-sm btn-primary" href="{{ recommendation.recommended_action_json.url }}">
+                    {{ recommendation.recommended_action_json.label|default:"Review and confirm" }}
+                </a>
+            </div>
             {% else %}
             <form method="post" action="{% url 'tickets:ai_recommendation_review' recommendation.id %}" class="d-flex align-items-start">
                 {% csrf_token %}

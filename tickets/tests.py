@@ -4667,6 +4667,25 @@ class AIRecommendationTests(TestCase):
         self.assertContains(response, visible.title)
         self.assertNotContains(response, hidden.title)
 
+    def test_action_center_renders_review_link_for_marketing_unconfirmed(self):
+        rec = self._recommendation(
+            kind=AIRecommendation.Kind.MARKETING_UNCONFIRMED,
+            dedupe_key=f'marketing_unconfirmed:{self.event.id}',
+            title='AI Event has 1 marketing match to confirm',
+            recommended_action_json={
+                'type': 'open_url',
+                'label': 'Review and confirm',
+                'url': reverse('tickets:event_detail', args=[self.event.id]) + '#marketing',
+            },
+        )
+        response = self.client.get(reverse('tickets:action_center'))
+        self.assertContains(response, rec.title)
+        # CTA should be a link to the marketing tab, not the modal trigger.
+        self.assertContains(response, 'Review and confirm')
+        self.assertContains(response, reverse('tickets:event_detail', args=[self.event.id]) + '#marketing')
+        # The empty-modal-bug shouldn't recur: this kind must not attach the modal trigger.
+        self.assertNotIn(f'data-recommendation-id="{rec.id}"', response.content.decode())
+
     def test_recommendation_review_dismiss_and_resolve_views(self):
         rec = self._recommendation()
         response = self.client.post(reverse('tickets:ai_recommendation_review', args=[rec.id]))
@@ -6432,6 +6451,95 @@ class MarketingDetectorTests(TestCase):
         gen.detect_high_unsubscribe_rate()
         kept = AIRecommendation.objects.get(id=recs[0].id)
         self.assertEqual(kept.status, AIRecommendation.Status.DISMISSED)
+
+    def test_channel_imbalance_detector_resolves_when_email_linked(self):
+        from tickets.services.ai_recommendations.generator import AIRecommendationGenerator
+        from .models import EventEmailCampaign
+
+        # Start with no email campaigns and a confirmed Meta Ads expense already in setUp.
+        self.high_unsub_email.hard_delete()
+        gen = AIRecommendationGenerator(self.org)
+        recs = gen.detect_channel_imbalance()
+        self.assertEqual(len(recs), 1)
+        rec = recs[0]
+        self.assertEqual(rec.status, AIRecommendation.Status.NEW)
+
+        # User links a Mailchimp campaign; rerunning the detector should resolve the stale rec.
+        EventEmailCampaign.objects.create(
+            event=self.event, source='mailchimp', external_id='em-new',
+            campaign_title='Linked blast', send_time=timezone.now() - timedelta(days=3),
+            emails_sent=500,
+        )
+        gen.detect_channel_imbalance()
+        rec.refresh_from_db()
+        self.assertEqual(rec.status, AIRecommendation.Status.RESOLVED)
+
+    def test_channel_imbalance_detector_emits_modal_evidence_keys(self):
+        from tickets.services.ai_recommendations.generator import AIRecommendationGenerator
+
+        self.org.mailchimp_access_token = 'fake-token'
+        self.org.mailchimp_dc = 'us1'
+        self.org.meta_ads_account_id = '12345'
+        self.org.save(update_fields=['mailchimp_access_token', 'mailchimp_dc', 'meta_ads_account_id'])
+
+        self.high_unsub_email.hard_delete()
+        recs = AIRecommendationGenerator(self.org).detect_channel_imbalance()
+        self.assertEqual(len(recs), 1)
+        evidence = recs[0].evidence_json
+        self.assertEqual(evidence.get('missing_items'), ['Mailchimp campaign report'])
+        self.assertTrue(evidence.get('mailchimp_connected'))
+        self.assertTrue(evidence.get('meta_connected'))
+
+    def test_unconfirmed_matches_detector_fires_for_unconfirmed_email(self):
+        from tickets.services.ai_recommendations.generator import AIRecommendationGenerator
+
+        # setUp already created an unconfirmed Mailchimp email campaign for self.event.
+        recs = AIRecommendationGenerator(self.org).detect_unconfirmed_marketing_matches()
+        matching = [r for r in recs if r.dedupe_key == f'marketing_unconfirmed:{self.event.id}']
+        self.assertEqual(len(matching), 1)
+        rec = matching[0]
+        self.assertEqual(rec.kind, AIRecommendation.Kind.MARKETING_UNCONFIRMED)
+        self.assertEqual(rec.evidence_json['channels']['mailchimp'], 1)
+        self.assertEqual(rec.evidence_json['channels']['slicktext'], 0)
+        self.assertEqual(rec.evidence_json['channels']['meta_ads'], 0)
+        self.assertEqual(rec.evidence_json['total'], 1)
+        self.assertTrue(rec.recommended_action_json['url'].endswith('#marketing'))
+
+    def test_unconfirmed_matches_detector_resolves_when_confirmed(self):
+        from tickets.services.ai_recommendations.generator import AIRecommendationGenerator
+
+        gen = AIRecommendationGenerator(self.org)
+        recs = gen.detect_unconfirmed_marketing_matches()
+        rec = next(r for r in recs if r.dedupe_key == f'marketing_unconfirmed:{self.event.id}')
+        self.assertEqual(rec.status, AIRecommendation.Status.NEW)
+
+        self.high_unsub_email.confirmed_at = timezone.now()
+        self.high_unsub_email.save(update_fields=['confirmed_at'])
+
+        gen.detect_unconfirmed_marketing_matches()
+        rec.refresh_from_db()
+        self.assertEqual(rec.status, AIRecommendation.Status.RESOLVED)
+
+    def test_unconfirmed_matches_detector_counts_across_channels(self):
+        from tickets.services.ai_recommendations.generator import AIRecommendationGenerator
+        from .models import EventSMSCampaign
+
+        EventSMSCampaign.objects.create(
+            event=self.event, source='slicktext', external_id='sms-1',
+            name='SMS blast', send_time=timezone.now() - timedelta(days=2),
+        )
+        EventExpense.objects.create(
+            event=self.event, category='marketing', description='Another Meta Ads campaign',
+            amount=Decimal('100.00'), expense_date=date.today() - timedelta(days=2),
+            source='meta_ads', external_id='ad-unconfirmed',
+        )
+
+        recs = AIRecommendationGenerator(self.org).detect_unconfirmed_marketing_matches()
+        rec = next(r for r in recs if r.dedupe_key == f'marketing_unconfirmed:{self.event.id}')
+        self.assertEqual(rec.evidence_json['channels']['mailchimp'], 1)
+        self.assertEqual(rec.evidence_json['channels']['slicktext'], 1)
+        self.assertEqual(rec.evidence_json['channels']['meta_ads'], 1)
+        self.assertEqual(rec.evidence_json['total'], 3)
 
 
 class ScannerCheckinAPITests(TestCase):

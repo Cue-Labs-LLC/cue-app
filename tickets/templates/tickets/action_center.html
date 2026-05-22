@@ -97,6 +97,10 @@
                             data-resolve-url="{% url 'tickets:ai_recommendation_resolve' recommendation.id %}">
                         {{ recommendation.recommended_action_json.label|default:"Link campaigns" }}
                     </button>
+                    {% elif recommendation.kind == 'marketing_unconfirmed' and recommendation.event %}
+                    <a class="btn btn-primary w-100" href="{{ recommendation.recommended_action_json.url }}">
+                        {{ recommendation.recommended_action_json.label|default:"Review and confirm" }}
+                    </a>
                     {% else %}
                     <form method="post" action="{% url 'tickets:ai_recommendation_review' recommendation.id %}">
                         {% csrf_token %}

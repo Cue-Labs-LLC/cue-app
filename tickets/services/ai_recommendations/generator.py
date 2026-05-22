@@ -47,6 +47,7 @@ class AIRecommendationGenerator:
             self.detect_high_unsubscribe_rate,
             self.detect_low_channel_roi,
             self.detect_channel_imbalance,
+            self.detect_unconfirmed_marketing_matches,
         ):
             try:
                 recommendations.extend(detector())
@@ -462,6 +463,7 @@ class AIRecommendationGenerator:
                 deleted_at__isnull=True,
             ).exists()
             if has_email:
+                self._resolve_marketing_imbalance_recommendation(event)
                 continue
             results.append(self._upsert(
                 dedupe_key=f'marketing_imbalance:{event.id}',
@@ -477,10 +479,104 @@ class AIRecommendationGenerator:
                     'channel': 'ads+email',
                     'event_id': str(event.id),
                     'event_date': event.start_date.isoformat() if event.start_date else None,
+                    'missing_items': ['Mailchimp campaign report'],
+                    'meta_connected': bool(org.meta_ads_account_id),
+                    'mailchimp_connected': bool(org.mailchimp_access_token and org.mailchimp_dc),
                 },
                 action={
                     'type': 'open_url',
                     'label': 'Open event marketing',
+                    'url': reverse('tickets:event_detail', args=[event.id]) + '#marketing',
+                    'payload': {'event_id': str(event.id)},
+                },
+                event=event,
+            ))
+        return results
+
+    def detect_unconfirmed_marketing_matches(self) -> list[AIRecommendation]:
+        """Flag events with linked marketing records that haven't been confirmed.
+
+        Unconfirmed Meta Ads expenses are excluded from EventExpense.visible(), so
+        ROI/profitability reports treat them as missing until a human reviews them.
+        Email and SMS rows behave similarly downstream — surface them so the
+        organizer knows to confirm.
+        """
+        org = self.organization
+        today = timezone.localdate()
+        window_start = today - timedelta(days=90)
+
+        events = (
+            Event.objects.filter(
+                organization=org,
+                deleted_at__isnull=True,
+                start_date__gte=window_start,
+            )
+            .select_related('venue')
+        )
+
+        results = []
+        for event in events:
+            email_count = EventEmailCampaign.objects.filter(
+                event=event,
+                deleted_at__isnull=True,
+                confirmed_at__isnull=True,
+            ).count()
+            sms_count = EventSMSCampaign.objects.filter(
+                event=event,
+                deleted_at__isnull=True,
+                confirmed_at__isnull=True,
+            ).count()
+            ads_count = EventExpense.objects.filter(
+                event=event,
+                deleted_at__isnull=True,
+                confirmed_at__isnull=True,
+                source='meta_ads',
+            ).count()
+            total = email_count + sms_count + ads_count
+
+            if total == 0:
+                self._resolve_unconfirmed_matches_recommendation(event)
+                continue
+
+            channel_parts = []
+            if email_count:
+                channel_parts.append(f'{email_count} email')
+            if sms_count:
+                channel_parts.append(f'{sms_count} SMS')
+            if ads_count:
+                channel_parts.append(f'{ads_count} Meta Ads')
+            channel_label = ', '.join(channel_parts)
+
+            is_past_event = bool(event.start_date and event.start_date < today)
+            priority = (
+                AIRecommendation.Priority.HIGH
+                if is_past_event
+                else AIRecommendation.Priority.MEDIUM
+            )
+
+            results.append(self._upsert(
+                dedupe_key=f'marketing_unconfirmed:{event.id}',
+                kind=AIRecommendation.Kind.MARKETING_UNCONFIRMED,
+                priority=priority,
+                confidence=Decimal('0.900'),
+                title=f'{event.name} has {total} marketing match{"es" if total != 1 else ""} to confirm',
+                summary=(
+                    f'{event.name} has {channel_label} linked but not yet confirmed. '
+                    f'Unconfirmed matches are excluded from ROI and profitability views until reviewed.'
+                ),
+                evidence={
+                    'event_id': str(event.id),
+                    'event_date': event.start_date.isoformat() if event.start_date else None,
+                    'channels': {
+                        'mailchimp': email_count,
+                        'slicktext': sms_count,
+                        'meta_ads': ads_count,
+                    },
+                    'total': total,
+                },
+                action={
+                    'type': 'open_url',
+                    'label': 'Review and confirm',
                     'url': reverse('tickets:event_detail', args=[event.id]) + '#marketing',
                     'payload': {'event_id': str(event.id)},
                 },
@@ -519,6 +615,24 @@ class AIRecommendationGenerator:
         recommendation = AIRecommendation.objects.filter(
             organization=self.organization,
             dedupe_key=f'marketing_attribution:{event.id}',
+            status__in=UNRESOLVED_STATUSES,
+        ).first()
+        if recommendation:
+            recommendation.resolve()
+
+    def _resolve_marketing_imbalance_recommendation(self, event):
+        recommendation = AIRecommendation.objects.filter(
+            organization=self.organization,
+            dedupe_key=f'marketing_imbalance:{event.id}',
+            status__in=UNRESOLVED_STATUSES,
+        ).first()
+        if recommendation:
+            recommendation.resolve()
+
+    def _resolve_unconfirmed_matches_recommendation(self, event):
+        recommendation = AIRecommendation.objects.filter(
+            organization=self.organization,
+            dedupe_key=f'marketing_unconfirmed:{event.id}',
             status__in=UNRESOLVED_STATUSES,
         ).first()
         if recommendation:
