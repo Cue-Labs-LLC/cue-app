@@ -2571,3 +2571,23 @@ gmp-place-autocomplete#venue-address-autocomplete {
     background-color: #7c3aed;
     color: #fff;
 }
+
+/* Surveys tab — suggestion list */
+.suggest-row {
+    transition: background-color 120ms ease;
+}
+.suggest-row:hover {
+    background-color: var(--bg-surface);
+}
+.suggest-row:last-child {
+    border-bottom: 0 !important;
+}
+.rating-stars {
+    color: #f5a623;
+    letter-spacing: 1px;
+    font-size: 1.05rem;
+}
+.survey-suggest-bulk-bar.d-flex {
+    background: var(--bg-surface);
+    border: 1px solid var(--border-light);
+}

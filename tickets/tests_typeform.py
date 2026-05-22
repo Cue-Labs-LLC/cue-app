@@ -105,6 +105,20 @@ def _sample_webhook_payload(response_id='resp_123', submitted_at=None):
     }
 
 
+def _extract_select_block(html: str, select_name: str) -> str:
+    """Return the substring covering one specific `<select name="X">…</select>`.
+
+    Lets tests assert on the contents of a single dropdown (e.g. which option
+    has the `selected` attribute) without false positives from other selects.
+    """
+    needle = f'name="{select_name}"'
+    start = html.find(needle)
+    if start == -1:
+        return ''
+    end = html.find('</select>', start)
+    return html[start:end] if end != -1 else html[start:]
+
+
 # ── Ingest ─────────────────────────────────────────────────────────────────
 
 class TypeformIngestTests(TestCase):
@@ -186,6 +200,45 @@ class TypeformIngestTests(TestCase):
         self.assertEqual(response.city, 'San Francisco')
         self.assertEqual(response.enjoyed, ['DJ set', 'Lighting'])
         self.assertIn('Cobra Lounge', response.text_feedback)
+
+    def test_ingest_response_uses_subscription_snapshot_for_missing_titles(self):
+        # Persist a question snapshot on the subscription so ingest can resolve
+        # titles even when the webhook payload omits definition.fields.
+        self.subscription.questions = [
+            {'id': 'fid_rating', 'ref': 'rating_ref', 'type': 'rating',
+             'title': 'How was the show?', 'group_title': ''},
+            {'id': 'fid_email', 'ref': 'email_ref', 'type': 'email',
+             'title': 'Your email', 'group_title': ''},
+        ]
+        self.subscription.save(update_fields=['questions'])
+
+        payload = _sample_webhook_payload()['form_response']
+        # Drop the inline definition so titles must come from the snapshot.
+        payload.pop('definition', None)
+
+        response, created = ingest_response(self.subscription, payload)
+        self.assertTrue(created)
+        by_key = {a['ref']: a for a in response.raw_answers}
+        self.assertEqual(by_key['rating_ref']['title'], 'How was the show?')
+        self.assertEqual(by_key['email_ref']['title'], 'Your email')
+
+    def test_ingest_response_walks_group_in_payload_definition(self):
+        # If the webhook payload's definition wraps fields in a group, leaf titles
+        # should still resolve (the prior bug — titles stayed empty for grouped forms).
+        payload = _sample_webhook_payload()['form_response']
+        # Rewrap the definition's fields into a single group container.
+        original_fields = payload['definition']['fields']
+        payload['definition'] = {
+            'fields': [{
+                'id': 'fid_group', 'ref': 'group_ref', 'type': 'inline_group',
+                'title': 'Main', 'properties': {'fields': original_fields},
+            }],
+        }
+        response, _ = ingest_response(self.subscription, payload)
+        by_key = {a['ref']: a for a in response.raw_answers}
+        # Sub-question titles came through despite living inside a group.
+        self.assertEqual(by_key['rating_ref']['title'], 'How was it?')
+        self.assertEqual(by_key['email_ref']['title'], 'Your email')
 
 
 # ── Field mapping service ─────────────────────────────────────────────────
@@ -312,6 +365,28 @@ class TypeformFieldMappingTests(TestCase):
         ]}
         flat = flatten_form_fields(form)
         self.assertEqual(flat[0]['group_title'], 'Demographics')
+
+    def test_snapshot_questions_walks_groups_and_skips_non_answerable(self):
+        from tickets.services.typeform.field_mapping import snapshot_questions
+
+        form = {'fields': [
+            {'id': 'fid_w', 'ref': 'welcome', 'type': 'statement', 'title': 'Welcome'},
+            {'id': 'fid_g', 'ref': 'sect1', 'type': 'group', 'title': 'Section 1',
+             'properties': {'fields': [
+                 {'id': 'fid_r', 'ref': 'rating_ref', 'type': 'rating',
+                  'title': 'How was it?', 'properties': {}},
+                 {'id': 'fid_e', 'ref': 'email_ref', 'type': 'email',
+                  'title': 'Your email', 'properties': {}},
+             ]}},
+        ]}
+        snap = snapshot_questions(form)
+        # The statement and the group wrapper are excluded; only leaves remain.
+        self.assertEqual(len(snap), 2)
+        by_ref = {q['ref']: q for q in snap}
+        self.assertEqual(by_ref['rating_ref']['title'], 'How was it?')
+        self.assertEqual(by_ref['rating_ref']['type'], 'rating')
+        self.assertEqual(by_ref['rating_ref']['group_title'], 'Section 1')
+        self.assertEqual(by_ref['email_ref']['title'], 'Your email')
 
 
 # ── Webhook view ──────────────────────────────────────────────────────────
@@ -537,6 +612,18 @@ class EventSurveyTabViewTests(TestCase):
         # data-match-url should point at the per-form match endpoint.
         self.assertIn(expected, body)
 
+    def test_event_detail_renders_questions_tracked_disclosure(self):
+        """The per-form card on the Surveys tab shows the persisted question list."""
+        self.subscription.questions = [
+            {'id': 'fid_r', 'ref': 'rating_ref', 'type': 'rating',
+             'title': 'How was the show?', 'group_title': ''},
+        ]
+        self.subscription.save(update_fields=['questions'])
+        response = self.client.get(reverse('tickets:event_detail', args=[self.event.id]))
+        body = response.content.decode()
+        self.assertIn('question', body.lower())  # disclosure label
+        self.assertIn('How was the show?', body)
+
     def test_unlink_view_refuses_other_orgs_response(self):
         other_org, _ = _make_org_and_user(slug='other-unlink-org')
         other_sub = _make_subscription(other_org, form_id='zzz-other')
@@ -653,6 +740,35 @@ class EventSurveyMatchViewTests(TestCase):
         self.assertNotIn(str(self.already_linked.id), ids)
         self.assertEqual(data[0]['confidence_pct'], 81)
         self.assertEqual(data[0]['confidence_class'], 'bg-success')
+
+    @patch('tickets.services.typeform.event_matcher.EventSurveyMatcher.rank')
+    @patch('tickets.services.typeform.client.TypeformClient.list_responses')
+    def test_match_json_includes_answer_type_in_preview(self, mock_list, mock_rank):
+        """The compact list renderer needs `type` per preview answer so it can
+        format ratings as stars, NPS as a chip, long_text as a quote, etc.
+        """
+        from tickets.services.typeform.event_matcher import (
+            ResponseCandidate, ResponseRankResult,
+        )
+        mock_list.return_value = {'items': [], 'page_count': 0, 'page': 1}
+        mock_rank.return_value = ResponseRankResult(candidates=[
+            ResponseCandidate(response_id=str(self.cand.id), confidence=0.6, reasoning=''),
+        ])
+
+        url = reverse('tickets:event_survey_match', args=[self.event.id]) + '?format=json'
+        response = self.client.get(url)
+        data = response.json()['data']['candidates']
+        self.assertEqual(len(data), 1)
+        previews = data[0]['preview_answers']
+        # Every preview answer must carry its Typeform type so JS can render it correctly.
+        self.assertTrue(previews, 'sample fixture should yield non-empty preview_answers')
+        for ans in previews:
+            self.assertIn('type', ans)
+            self.assertIn('title', ans)
+            self.assertIn('value', ans)
+        # And the types come straight from raw_answers (e.g. 'rating', 'email', etc.).
+        types = {a['type'] for a in previews}
+        self.assertTrue(types & {'rating', 'opinion_scale', 'email', 'long_text', 'choices', 'short_text'})
 
 
 # ── Apply view (links selected responses to event) ────────────────────────
@@ -862,3 +978,124 @@ class TypeformFormMappingViewTests(TestCase):
         self.assertNotIn('name="map_group_ref"', body)
         # Group title is surfaced above the question title for context.
         self.assertIn('Section A', body)
+
+    @patch('tickets.services.typeform.client.TypeformClient.get_form')
+    def test_get_after_save_reflects_saved_selections_exactly(self, mock_get_form):
+        """Re-opening the page after save shows the user's saved selections, with
+        no auto-detect bleed-through on fields the user explicitly left as Ignore.
+        """
+        mock_get_form.return_value = self.SAMPLE_DEFINITION
+        url = reverse('tickets:typeform_form_mapping', args=[self.subscription.id])
+        # Save: map rating + email, leave nps explicitly Ignored.
+        self.client.post(url, {
+            'map_rating_ref': 'overall_rating',
+            'map_nps_ref': '',
+            'map_email_ref': 'email',
+        })
+        self.subscription.refresh_from_db()
+        self.assertEqual(self.subscription.field_map,
+                         {'rating_ref': 'overall_rating', 'email_ref': 'email'})
+
+        # GET the page back. The saved selections must be reflected as `selected`;
+        # the Ignored nps_ref must NOT silently auto-revive to nps_score.
+        response = self.client.get(url)
+        body = response.content.decode()
+        # rating_ref dropdown: overall_rating is selected.
+        rating_block = _extract_select_block(body, 'map_rating_ref')
+        self.assertIn('value="overall_rating" selected', rating_block)
+        # email_ref dropdown: email is selected.
+        email_block = _extract_select_block(body, 'map_email_ref')
+        self.assertIn('value="email" selected', email_block)
+        # nps_ref dropdown: only the empty "Ignore" option is selected — not nps_score.
+        nps_block = _extract_select_block(body, 'map_nps_ref')
+        self.assertNotIn('value="nps_score" selected', nps_block)
+
+    @patch('tickets.services.typeform.client.TypeformClient.get_form')
+    def test_get_with_explicit_empty_field_map_does_not_auto_suggest(self, mock_get_form):
+        """An explicitly-saved empty {} mapping must NOT trigger the auto-detect
+        prefill — every dropdown stays on Ignore.
+        """
+        mock_get_form.return_value = self.SAMPLE_DEFINITION
+        self.subscription.field_map = {}
+        self.subscription.save(update_fields=['field_map'])
+        url = reverse('tickets:typeform_form_mapping', args=[self.subscription.id])
+        response = self.client.get(url)
+        body = response.content.decode()
+        for ref in ('map_rating_ref', 'map_nps_ref', 'map_email_ref'):
+            block = _extract_select_block(body, ref)
+            # No target option should be `selected` — only the empty Ignore.
+            self.assertNotIn('value="overall_rating" selected', block)
+            self.assertNotIn('value="nps_score" selected', block)
+            self.assertNotIn('value="email" selected', block)
+
+    @patch('tickets.services.typeform.client.TypeformClient.get_form')
+    def test_get_with_null_field_map_triggers_auto_suggest(self, mock_get_form):
+        """A null field_map (never saved through the editor) triggers auto-detect
+        prefill so the user sees Cue's best guess on first visit.
+        """
+        mock_get_form.return_value = self.SAMPLE_DEFINITION
+        self.subscription.field_map = None
+        self.subscription.save(update_fields=['field_map'])
+        url = reverse('tickets:typeform_form_mapping', args=[self.subscription.id])
+        response = self.client.get(url)
+        body = response.content.decode()
+        # rating_ref auto-detects to overall_rating.
+        rating_block = _extract_select_block(body, 'map_rating_ref')
+        self.assertIn('value="overall_rating" selected', rating_block)
+
+    @patch('tickets.services.typeform.client.TypeformClient.get_form')
+    def test_get_persists_questions_snapshot_on_subscription(self, mock_get_form):
+        """GET refreshes the persisted question snapshot from the form definition."""
+        mock_get_form.return_value = {
+            'fields': [
+                {'id': 'fid_g', 'ref': 'sect', 'type': 'group', 'title': 'Section A',
+                 'properties': {'fields': [
+                     {'id': 'fid_r', 'ref': 'rating_ref', 'type': 'rating',
+                      'title': 'How was it?', 'properties': {}},
+                     {'id': 'fid_e', 'ref': 'email_ref', 'type': 'email',
+                      'title': 'Your email', 'properties': {}},
+                 ]}},
+            ],
+        }
+        url = reverse('tickets:typeform_form_mapping', args=[self.subscription.id])
+        self.client.get(url)
+        self.subscription.refresh_from_db()
+        by_ref = {q['ref']: q for q in self.subscription.questions}
+        self.assertEqual(by_ref['rating_ref']['title'], 'How was it?')
+        self.assertEqual(by_ref['rating_ref']['group_title'], 'Section A')
+        self.assertEqual(by_ref['email_ref']['title'], 'Your email')
+
+    @patch('tickets.services.typeform.client.TypeformClient.get_form')
+    def test_backfill_repairs_missing_titles_in_raw_answers(self, mock_get_form):
+        """When backfill is ticked, existing raw_answers entries with empty
+        titles get filled in from the persisted question snapshot."""
+        mock_get_form.return_value = self.SAMPLE_DEFINITION
+        # Set the question snapshot directly (simulating a prior mapping-page GET).
+        self.subscription.questions = [
+            {'id': 'fid_r', 'ref': 'rating_ref', 'type': 'rating',
+             'title': 'How was it?', 'group_title': ''},
+        ]
+        self.subscription.save(update_fields=['questions'])
+
+        # Create an existing response with title='' on the rating answer to mimic
+        # a row ingested before the title-walk fix.
+        response = ingest_response(
+            self.subscription,
+            _sample_webhook_payload(response_id='r_old')['form_response'],
+        )[0]
+        broken = [
+            {**ans, 'title': ''} if ans.get('ref') == 'rating_ref' else ans
+            for ans in response.raw_answers
+        ]
+        ExternalSurveyResponse.objects.filter(pk=response.pk).update(raw_answers=broken)
+
+        # POST the mapping with backfill ticked.
+        url = reverse('tickets:typeform_form_mapping', args=[self.subscription.id])
+        self.client.post(url, {
+            'map_rating_ref': 'overall_rating',
+            'backfill': '1',
+        })
+
+        response.refresh_from_db()
+        by_key = {a['ref']: a for a in response.raw_answers}
+        self.assertEqual(by_key['rating_ref']['title'], 'How was it?')

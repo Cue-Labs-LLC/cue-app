@@ -2402,11 +2402,23 @@ class TypeformFormSubscription(AuditBaseModel):
     webhook_id = models.CharField(max_length=64, blank=True, default='')
     webhook_secret = models.CharField(max_length=64, default=_generate_typeform_webhook_secret)
     field_map = models.JSONField(
-        default=dict, blank=True,
+        null=True, blank=True, default=None,
         help_text=(
             'Map of Typeform field ref/id → ExternalSurveyResponse column name '
             '(e.g. {"q1_ref": "overall_rating", "email_id": "email"}). '
-            'Empty = only raw_answers populated; no structured columns set.'
+            'null = never saved through the editor (auto-suggest on first visit); '
+            '{} = saved with everything explicitly Ignored; '
+            '{...} = saved with at least one mapped field.'
+        ),
+    )
+    questions = models.JSONField(
+        default=list, blank=True,
+        help_text=(
+            "Cached snapshot of the form's leaf questions: "
+            "[{id, ref, type, title, group_title}, ...]. Refreshed whenever we "
+            "call TypeformClient.get_form() — used as the source of truth for "
+            "question titles when rendering responses (raw_answers may have empty "
+            "titles for older rows ingested before group-walking was fixed)."
         ),
     )
     upload = models.ForeignKey(

@@ -11464,6 +11464,19 @@ def _is_publicly_reachable(url: str) -> bool:
     return True
 
 
+def _refresh_subscription_questions(subscription, definition):
+    """Persist the form's leaf questions on the subscription. Cheap and idempotent;
+    call whenever we already have a fresh `definition` in hand (mapping page GET,
+    form-picker POST, etc.). Skips the write when nothing changed.
+    """
+    from .services.typeform.field_mapping import snapshot_questions
+
+    questions = snapshot_questions(definition or {})
+    if subscription.questions != questions:
+        subscription.questions = questions
+        subscription.save(update_fields=['questions'])
+
+
 @login_required
 @require_org
 @require_admin
@@ -11516,6 +11529,17 @@ def typeform_form_picker(request):
                 sub.form_title = (form_meta.get('title') or sub.form_title)[:255]
                 sub.last_sync_error = ''
                 sub.save(update_fields=['is_active', 'form_title', 'last_sync_error'])
+
+            # Snapshot the form's questions so we can render them on Surveys pages
+            # without re-fetching the definition on every read. Best-effort: a
+            # Typeform hiccup here just means we keep the existing snapshot.
+            try:
+                definition = client.get_form(form_id)
+                _refresh_subscription_questions(sub, definition)
+            except TypeformAPIError as exc:
+                logger.warning(
+                    'Could not snapshot questions for sub %s: %s', sub.id, exc,
+                )
 
             webhook_url = _typeform_webhook_url(request, sub.id)
             if not _is_publicly_reachable(webhook_url):
@@ -11651,6 +11675,10 @@ def typeform_form_mapping(request, sub_id):
     except TypeformAPIError as exc:
         messages.error(request, f'Could not load form definition: {exc}')
         definition = {'fields': []}
+    else:
+        # Refresh the persisted question snapshot used to display titles on the
+        # Surveys tab without re-fetching the definition on every render.
+        _refresh_subscription_questions(subscription, definition)
 
     flat_fields = flatten_form_fields(definition)
 
@@ -11671,6 +11699,13 @@ def typeform_form_mapping(request, sub_id):
             # Re-project the mapping over the most recent 500 responses from this
             # form. update() bypasses signals — keep cache invalidation cheap by
             # touching the event stats cache for affected events.
+            # While we're walking each row, also repair missing titles in
+            # `raw_answers` using the persisted subscription.questions snapshot.
+            title_lookup = {
+                (q.get('ref') or q.get('id')): (q.get('title') or '').strip()
+                for q in (subscription.questions or [])
+                if isinstance(q, dict)
+            }
             qs = (
                 ExternalSurveyResponse.objects
                 .filter(organization=org, upload_id=subscription.upload_id)
@@ -11680,6 +11715,23 @@ def typeform_form_mapping(request, sub_id):
             affected_event_ids: set[str] = set()
             for resp in qs:
                 update = apply_field_map(resp.raw_answers or [], new_map)
+
+                # Patch missing/empty titles in raw_answers from the snapshot.
+                fixed_raw = []
+                titles_changed = False
+                for ans in (resp.raw_answers or []):
+                    if not isinstance(ans, dict):
+                        fixed_raw.append(ans)
+                        continue
+                    key = ans.get('ref') or ans.get('id')
+                    correct = title_lookup.get(key) if key else ''
+                    if correct and (ans.get('title') or '') != correct:
+                        ans = {**ans, 'title': correct}
+                        titles_changed = True
+                    fixed_raw.append(ans)
+                if titles_changed:
+                    update['raw_answers'] = fixed_raw
+
                 if update:
                     ExternalSurveyResponse.objects.filter(pk=resp.pk).update(**update)
                     if resp.event_id:
@@ -11728,8 +11780,14 @@ def typeform_form_mapping(request, sub_id):
                     bucket[text] = None
         samples_by_key = {k: list(v.keys()) for k, v in seen.items()}
 
-    # Build the rows for the editor. If field_map is empty, pre-fill from auto-detect.
-    current_map = subscription.field_map or auto_field_map(definition)
+    # `field_map is None` means the subscription has never been saved through this
+    # editor — only then do we pre-fill the dropdowns with auto-detect suggestions.
+    # An empty `{}` is a deliberate "everything Ignored" save and must be respected
+    # on reload (no auto-detect bleed-through).
+    if subscription.field_map is None:
+        current_map = auto_field_map(definition)
+    else:
+        current_map = subscription.field_map
     fields = []
     for field in flat_fields:
         key = field.get('ref') or field.get('id')
@@ -11748,7 +11806,7 @@ def typeform_form_mapping(request, sub_id):
         'subscription': subscription,
         'fields': fields,
         'target_fields': TARGET_FIELDS,
-        'has_saved_mapping': bool(subscription.field_map),
+        'has_saved_mapping': subscription.field_map is not None,
     })
 
 
@@ -11811,11 +11869,14 @@ def _survey_candidate_dict(response, candidate):
     else:
         confidence_class = 'bg-secondary'
     preview = []
-    for ans in (response.raw_answers or [])[:3]:
+    # Cap at 4 so the JS formatter has enough material to pick a primary line and
+    # up to two secondaries; rendering decides which to show.
+    for ans in (response.raw_answers or [])[:4]:
         if not isinstance(ans, dict):
             continue
         preview.append({
             'title': str(ans.get('title') or '')[:120],
+            'type': str(ans.get('type') or ''),
             'value': ans.get('value'),
         })
     return {

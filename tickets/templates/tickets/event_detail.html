@@ -1073,6 +1073,33 @@
         </div>
         <div class="card-body p-0">
 
+            {% if sub.questions %}
+            <div class="px-3 pt-3 small">
+                <button class="btn btn-sm btn-link p-0 text-decoration-none text-body-secondary"
+                        type="button" data-bs-toggle="collapse"
+                        data-bs-target="#questions-{{ sub.id }}"
+                        aria-expanded="false">
+                    <i class="bi bi-list-ul me-1"></i>
+                    {{ sub.questions|length }} question{{ sub.questions|length|pluralize }} tracked from this form
+                </button>
+                <div class="collapse mt-2" id="questions-{{ sub.id }}">
+                    <ol class="list-unstyled mb-0 ps-0">
+                        {% for q in sub.questions %}
+                        <li class="border-start border-2 ps-2 mb-1 small">
+                            {% if q.group_title %}
+                            <span class="text-body-secondary text-uppercase me-1" style="font-size: 0.7rem;">{{ q.group_title|truncatechars:40 }} &middot;</span>
+                            {% endif %}
+                            <span>{{ q.title|default:'(untitled)' }}</span>
+                            {% if q.type %}
+                            <span class="badge bg-secondary-subtle text-secondary ms-1">{{ q.type }}</span>
+                            {% endif %}
+                        </li>
+                        {% endfor %}
+                    </ol>
+                </div>
+            </div>
+            {% endif %}
+
             <!-- Inline auto-loaded suggestion section (mirrors Marketing tab's Meta Ads pattern) -->
             <div class="px-3 pt-3 survey-suggest-section"
                  data-match-url="{% url 'tickets:event_survey_match' event.id %}?sub_id={{ sub.id }}&format=json"
@@ -1083,12 +1110,30 @@
                         <i class="bi bi-arrow-clockwise"></i> Refresh
                     </button>
                 </div>
-                <div class="survey-suggest-loading text-muted small py-2">
-                    <span class="spinner-border spinner-border-sm me-2"></span> Fetching responses from Typeform&hellip;
+                <div class="survey-suggest-bulk-bar d-none align-items-center justify-content-between py-2 mb-2 px-3 rounded">
+                    <div class="small">
+                        <strong class="survey-bulk-count">0</strong> selected
+                    </div>
+                    <div class="d-flex gap-2">
+                        <button type="button" class="btn btn-sm btn-primary survey-bulk-link">
+                            Link <span class="survey-bulk-count">0</span> selected
+                        </button>
+                        <button type="button" class="btn btn-sm btn-link text-decoration-none survey-bulk-clear">
+                            Clear
+                        </button>
+                    </div>
+                </div>
+                <div class="survey-suggest-loading text-body-secondary small py-2">
+                    Loading suggestions&hellip;
                 </div>
                 <div class="survey-suggest-results d-none"></div>
-                <div class="survey-suggest-empty text-muted small py-2 d-none">No unlinked responses match this event yet.</div>
-                <div class="survey-suggest-error text-danger small py-2 d-none">Could not load suggestions. Click Refresh to try again.</div>
+                <div class="survey-suggest-empty text-body-secondary small py-2 d-none">
+                    No unlinked responses match this event yet.
+                </div>
+                <div class="survey-suggest-error text-body-secondary small py-2 d-none">
+                    Couldn&rsquo;t load suggestions.
+                    <button type="button" class="btn btn-link btn-sm p-0 align-baseline text-decoration-none survey-refresh-btn">Try again</button>
+                </div>
             </div>
 
             {% if sub.linked_responses %}
@@ -3645,35 +3690,142 @@ function copyScannnerPin() {
         return el ? el.value : '';
     }
 
+    var MONTH_ABBR = ['JAN','FEB','MAR','APR','MAY','JUN','JUL','AUG','SEP','OCT','NOV','DEC'];
+
+    function formatDateLabel(iso) {
+        if (!iso) return '';
+        var d = new Date(iso);
+        if (isNaN(d.getTime())) return iso.substring(0, 10);
+        return MONTH_ABBR[d.getMonth()] + ' ' + d.getDate();
+    }
+
+    function formatRelativeLabel(iso) {
+        if (!iso) return '';
+        var then = new Date(iso);
+        if (isNaN(then.getTime())) return '';
+        var diffMs = Date.now() - then.getTime();
+        var day = 24 * 60 * 60 * 1000;
+        var days = Math.floor(diffMs / day);
+        if (days < 0) return '';
+        if (days === 0) return 'today';
+        if (days === 1) return 'yesterday';
+        if (days < 7) return days + 'd ago';
+        if (days < 30) return Math.floor(days / 7) + 'w ago';
+        if (days < 365) return Math.floor(days / 30) + 'mo ago';
+        return Math.floor(days / 365) + 'y ago';
+    }
+
+    function formatRating(value, max) {
+        var n = parseInt(value, 10);
+        if (isNaN(n) || n < 0) return null;
+        var cap = max || 5;
+        if (n > cap) cap = n;
+        var stars = '';
+        for (var i = 0; i < cap; i++) stars += (i < n ? '★' : '☆');
+        return '<span class="rating-stars" title="' + n + '/' + cap + '">' + stars + '</span>';
+    }
+
+    function formatNps(value) {
+        var n = parseInt(value, 10);
+        if (isNaN(n) || n < 0 || n > 10) return null;
+        var cls = n >= 9 ? 'bg-success-subtle text-success'
+                : n >= 7 ? 'bg-warning-subtle text-warning'
+                : 'bg-danger-subtle text-danger';
+        return '<span class="badge ' + cls + '">' + n + '/10 NPS</span>';
+    }
+
+    function answerToString(a) {
+        var v = a.value;
+        if (v == null || v === '') return '';
+        if (Array.isArray(v)) return v.join(', ');
+        return String(v);
+    }
+
+    // Picks the answer that best summarizes the response for the primary line.
+    // Returns {html, index} so we know which answer to exclude from secondaries.
+    function renderTypedValue(a) {
+        // Type-aware rendering of an answer value. No truncation — show in full.
+        var t = (a.type || '').toLowerCase();
+        var v = a.value;
+        if (t === 'rating') return formatRating(v);
+        if (t === 'opinion_scale') return formatNps(v);
+        if (t === 'long_text') {
+            var s = answerToString(a);
+            return s
+                ? '<span class="fst-italic">&ldquo;' + escapeHtml(s) + '&rdquo;</span>'
+                : null;
+        }
+        if (t === 'email') {
+            var em = answerToString(a);
+            return em
+                ? '<span class="font-monospace small">' + escapeHtml(em) + '</span>'
+                : null;
+        }
+        if (t === 'choices' || (t === 'multiple_choice' && Array.isArray(v))) {
+            var arr = Array.isArray(v) ? v : [v];
+            var joined = arr.filter(Boolean).join(', ');
+            return joined ? '<span>' + escapeHtml(joined) + '</span>' : null;
+        }
+        var str = answerToString(a);
+        return str ? '<span>' + escapeHtml(str) + '</span>' : null;
+    }
+
     function renderCandidate(c, applyUrl, csrf) {
         var pct = c.confidence_pct || 0;
-        var cls = c.confidence_class || 'bg-secondary';
-        var preview = (c.preview_answers || []).map(function (a) {
-            var v = a.value;
-            if (Array.isArray(v)) v = v.join(', ');
-            return '<div class="text-truncate small"><strong>' + escapeHtml(a.title) + ':</strong> ' +
-                   escapeHtml(v == null ? '' : String(v)) + '</div>';
-        }).join('');
-        var datePart = c.responded_at ? c.responded_at.substring(0, 10) : '';
+        var answers = c.preview_answers || [];
+        var showBadge = pct >= 30;
+        var badgeClass = pct >= 70 ? 'bg-success-subtle text-success'
+                       : pct >= 50 ? 'bg-warning-subtle text-warning'
+                       : 'bg-secondary-subtle text-secondary';
+        var rid = String(c.response_id || '');
+        var dateLabel = formatDateLabel(c.responded_at);
+        var relLabel = formatRelativeLabel(c.responded_at);
+
+        // Full Q&A block: every answer, question + value, no truncation.
+        var qaBlock = answers.map(function (a) {
+            var rendered = renderTypedValue(a);
+            if (!rendered) return '';
+            var title = a.title
+                ? '<div class="small text-body-secondary mb-1">' + escapeHtml(a.title) + '</div>'
+                : '';
+            return '<div class="mb-2">' + title + '<div>' + rendered + '</div></div>';
+        }).filter(Boolean).join('');
+
+        var reasoningBlock = c.reasoning
+            ? '<div class="mt-2 pt-2 border-top">' +
+                '<div class="small text-body-secondary text-uppercase mb-1" style="letter-spacing: 0.05em;">Why this match</div>' +
+                '<p class="text-body-secondary small mb-0">' + escapeHtml(c.reasoning) + '</p>' +
+              '</div>'
+            : '';
+
         return (
-            '<div class="border-bottom py-2 d-flex align-items-start gap-3">' +
-              '<div class="flex-grow-1">' +
-                '<div class="d-flex justify-content-between small">' +
-                  '<span class="text-muted">' + escapeHtml(datePart) + '</span>' +
-                  '<span class="text-muted">' + pct + '% match</span>' +
-                '</div>' + preview +
-                '<div class="progress mt-1" style="height: 3px;">' +
-                  '<div class="progress-bar ' + cls + '" style="width: ' + pct + '%;"></div>' +
+            '<div class="suggest-row py-3 border-bottom" data-response-id="' + escapeHtml(rid) + '">' +
+              '<div class="d-flex align-items-center justify-content-between mb-2 gap-3">' +
+                '<div class="d-flex align-items-center gap-3">' +
+                  '<input type="checkbox" class="form-check-input survey-suggest-check" ' +
+                         'value="' + escapeHtml(rid) + '" ' +
+                         'data-confidence="' + (c.confidence || 0) + '" ' +
+                         'data-reasoning="' + escapeHtml(c.reasoning || '') + '">' +
+                  '<div class="small text-body-secondary">' +
+                    '<span class="text-uppercase fw-medium">' + escapeHtml(dateLabel) + '</span>' +
+                    ' &middot; ' + escapeHtml(relLabel) +
+                    (showBadge
+                      ? ' &middot; <span class="badge ' + badgeClass + '">' + pct + '%</span>'
+                      : '') +
+                  '</div>' +
                 '</div>' +
-                '<div class="small text-muted mt-1">' + escapeHtml(c.reasoning || '') + '</div>' +
+                '<form method="post" action="' + escapeHtml(applyUrl) + '" class="survey-confirm-form">' +
+                  '<input type="hidden" name="csrfmiddlewaretoken" value="' + escapeHtml(csrf) + '">' +
+                  '<input type="hidden" name="response_id" value="' + escapeHtml(rid) + '">' +
+                  '<input type="hidden" name="confidence" value="' + (c.confidence || 0) + '">' +
+                  '<input type="hidden" name="reasoning" value="' + escapeHtml(c.reasoning || '') + '">' +
+                  '<button type="submit" class="btn btn-sm btn-primary">Link</button>' +
+                '</form>' +
               '</div>' +
-              '<form method="post" action="' + escapeHtml(applyUrl) + '" class="survey-confirm-form">' +
-                '<input type="hidden" name="csrfmiddlewaretoken" value="' + escapeHtml(csrf) + '">' +
-                '<input type="hidden" name="response_id" value="' + escapeHtml(c.response_id) + '">' +
-                '<input type="hidden" name="confidence" value="' + (c.confidence || 0) + '">' +
-                '<input type="hidden" name="reasoning" value="' + escapeHtml(c.reasoning || '') + '">' +
-                '<button type="submit" class="btn btn-sm btn-outline-primary">Link</button>' +
-              '</form>' +
+              '<div class="ps-4">' +
+                qaBlock +
+                reasoningBlock +
+              '</div>' +
             '</div>'
         );
     }
@@ -3753,6 +3905,78 @@ function copyScannnerPin() {
             }
         })
         .catch(function () { if (btn) btn.disabled = false; });
+    });
+
+    // Bulk-select: show the sticky bar when any checkbox is ticked; submit all
+    // checked rows together via one POST that supplies parallel response_id[] /
+    // confidence[] / reasoning[] arrays (the apply view already iterates them).
+    function refreshBulkBar(sectionEl) {
+        var bar = sectionEl.querySelector('.survey-suggest-bulk-bar');
+        if (!bar) return;
+        var checked = sectionEl.querySelectorAll('.survey-suggest-check:checked');
+        sectionEl.querySelectorAll('.survey-bulk-count').forEach(function (n) {
+            n.textContent = checked.length;
+        });
+        if (checked.length > 0) {
+            bar.classList.remove('d-none');
+            bar.classList.add('d-flex');
+        } else {
+            bar.classList.add('d-none');
+            bar.classList.remove('d-flex');
+        }
+    }
+
+    document.addEventListener('change', function (e) {
+        var cb = e.target.closest('.survey-suggest-check');
+        if (!cb) return;
+        var section = cb.closest('.survey-suggest-section');
+        if (section) refreshBulkBar(section);
+    });
+
+    document.addEventListener('click', function (e) {
+        var linkBtn = e.target.closest('.survey-bulk-link');
+        if (!linkBtn) return;
+        var section = linkBtn.closest('.survey-suggest-section');
+        if (!section) return;
+        var checked = section.querySelectorAll('.survey-suggest-check:checked');
+        if (!checked.length) return;
+
+        var applyUrl = section.dataset.applyUrl;
+        var fd = new FormData();
+        fd.append('csrfmiddlewaretoken', getCsrfToken());
+        checked.forEach(function (cb) {
+            fd.append('response_id', cb.value);
+            fd.append('confidence', cb.dataset.confidence || '0');
+            fd.append('reasoning', cb.dataset.reasoning || '');
+        });
+
+        linkBtn.disabled = true;
+        fetch(applyUrl, {
+            method: 'POST',
+            body: fd,
+            headers: {'X-Requested-With': 'XMLHttpRequest'},
+            credentials: 'same-origin',
+        })
+        .then(function (r) { return r.json().then(function (data) { return {ok: r.ok, data: data}; }); })
+        .then(function (result) {
+            if (result.ok && result.data && result.data.success) {
+                window.location.reload();
+            } else {
+                linkBtn.disabled = false;
+            }
+        })
+        .catch(function () { linkBtn.disabled = false; });
+    });
+
+    document.addEventListener('click', function (e) {
+        var clearBtn = e.target.closest('.survey-bulk-clear');
+        if (!clearBtn) return;
+        var section = clearBtn.closest('.survey-suggest-section');
+        if (!section) return;
+        section.querySelectorAll('.survey-suggest-check:checked').forEach(function (cb) {
+            cb.checked = false;
+        });
+        refreshBulkBar(section);
     });
 })();
 </script>

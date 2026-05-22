@@ -55,6 +55,31 @@ def flatten_form_fields(form_definition: dict) -> list[dict]:
     walk((form_definition or {}).get('fields') or [])
     return out
 
+
+def snapshot_questions(form_definition: dict) -> list[dict]:
+    """Return a flat list of {id, ref, type, title, group_title} per leaf question.
+
+    Walks `group`/`inline_group` containers and skips non-answerable types.
+    Designed for persistence on `TypeformFormSubscription.questions` so the app
+    has a reliable source of truth for question titles without re-fetching the
+    form definition from Typeform on every render.
+    """
+    out: list[dict] = []
+    for field in flatten_form_fields(form_definition):
+        ref = field.get('ref') or ''
+        fid = field.get('id') or ''
+        if not (ref or fid):
+            continue
+        out.append({
+            'id': fid,
+            'ref': ref,
+            'type': field.get('type') or '',
+            'title': (field.get('title') or '').strip(),
+            'group_title': field.get('group_title') or '',
+        })
+    return out
+
+
 # CharField max_lengths on ExternalSurveyResponse. Kept here so apply_field_map
 # can safely truncate without importing the model (avoids circular import in tests).
 _MAX_LENGTHS: dict[str, int] = {

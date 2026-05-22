@@ -88,8 +88,10 @@
                             <div class="text-body-secondary small">Form ID: <code>{{ sub.form_id }}</code></div>
                             {% if sub.field_map %}
                             <div class="text-success small"><i class="bi bi-check2"></i> {{ sub.field_map|length }} field{{ sub.field_map|length|pluralize }} mapped</div>
+                            {% elif sub.field_map is not None %}
+                            <div class="text-body-secondary small"><i class="bi bi-dash-circle"></i> Saved — all fields Ignored, only raw answers stored</div>
                             {% else %}
-                            <div class="text-body-secondary small"><i class="bi bi-dash-circle"></i> No fields mapped — only raw answers stored</div>
+                            <div class="text-body-secondary small"><i class="bi bi-magic"></i> Mapping not configured yet</div>
                             {% endif %}
                             {% if sub.last_sync_error %}
                             <div class="text-danger small">Last error: {{ sub.last_sync_error|truncatechars:160 }}</div>
