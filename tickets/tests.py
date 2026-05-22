@@ -8131,3 +8131,139 @@ class MerchantStatusOrganizerAuthTests(TestCase):
     def test_invalid_token_rejected(self):
         res = self.client.get(self.URL, HTTP_AUTHORIZATION='Token notarealkey')
         self.assertIn(res.status_code, (401, 403))
+
+
+class PartialRefundTests(TestCase):
+    """Tests for full + partial refunds on Direct Ticketing orders."""
+
+    def setUp(self):
+        self.org = Organization.objects.create(name='Refund Test Org', slug='refund-test-org')
+        self.user = User.objects.create_user(username='refunder', email='refunder@example.com', password='pw')
+        OrganizationMembership.objects.create(user=self.user, organization=self.org, org_role='owner')
+        self.venue = Venue.objects.create(organization=self.org, name='Venue', city='City')
+        self.event = Event.objects.create(
+            organization=self.org, name='Direct Event', venue=self.venue,
+            start_date=date.today() + timedelta(days=14),
+            ticketing_type='direct',
+        )
+        self.ticket_type = SaleableTicketType.objects.create(
+            event=self.event, name='General', price=Decimal('50.00'),
+            quantity_limit=100, quantity_sold=2,
+        )
+        self.customer = Customer.objects.create(
+            organization=self.org, email='buyer@example.com', name='Buyer',
+        )
+        self.order = TicketOrder.objects.create(
+            event=self.event,
+            customer=self.customer,
+            order_number='REF-001',
+            order_date=timezone.now(),
+            total_amount=Decimal('100.00'),
+        )
+        Ticket.objects.create(ticket_order=self.order, price=Decimal('50.00'), ticket_type='General')
+        Ticket.objects.create(ticket_order=self.order, price=Decimal('50.00'), ticket_type='General')
+        self.session = StripeCheckoutSession.objects.create(
+            event=self.event,
+            organization=self.org,
+            stripe_session_id='pi_test_partial',
+            stripe_payment_intent_id='pi_test_partial',
+            buyer_email='buyer@example.com',
+            buyer_name='Buyer',
+            status=StripeCheckoutSession.Status.COMPLETED,
+            amount_total_cents=10000,
+            platform_fee_cents=0,
+            line_items_snapshot=[{
+                'saleable_ticket_type_id': str(self.ticket_type.id),
+                'name': 'General', 'price': '50.00', 'quantity': 2,
+                'tier_id': None, 'tier_name': None,
+            }],
+            ticket_order=self.order,
+        )
+        self.client.force_login(self.user)
+        self.url = reverse('tickets:refund_order', args=[self.order.id])
+
+    @patch('stripe.Refund.create')
+    def test_partial_refund_happy_path(self, mock_refund):
+        response = self.client.post(self.url, {'refund_type': 'partial', 'refund_amount': '10.00'})
+        self.assertEqual(response.status_code, 302)
+
+        mock_refund.assert_called_once_with(payment_intent='pi_test_partial', amount=1000)
+
+        self.order.refresh_from_db()
+        self.session.refresh_from_db()
+        self.ticket_type.refresh_from_db()
+        self.assertEqual(self.order.refunded_amount, Decimal('10.00'))
+        self.assertIsNone(self.order.refunded_at)
+        self.assertEqual(self.session.status, StripeCheckoutSession.Status.PARTIALLY_REFUNDED)
+        self.assertEqual(self.ticket_type.quantity_sold, 2)
+
+    @patch('stripe.Refund.create')
+    def test_second_partial_accumulates(self, mock_refund):
+        self.client.post(self.url, {'refund_type': 'partial', 'refund_amount': '10.00'})
+        self.client.post(self.url, {'refund_type': 'partial', 'refund_amount': '15.00'})
+
+        self.order.refresh_from_db()
+        self.session.refresh_from_db()
+        self.assertEqual(self.order.refunded_amount, Decimal('25.00'))
+        self.assertIsNone(self.order.refunded_at)
+        self.assertEqual(self.session.status, StripeCheckoutSession.Status.PARTIALLY_REFUNDED)
+        self.assertEqual(mock_refund.call_count, 2)
+
+    @patch('stripe.Refund.create')
+    def test_full_refund_after_partials(self, mock_refund):
+        self.client.post(self.url, {'refund_type': 'partial', 'refund_amount': '30.00'})
+        response = self.client.post(self.url, {'refund_type': 'full'})
+        self.assertEqual(response.status_code, 302)
+
+        self.order.refresh_from_db()
+        self.session.refresh_from_db()
+        self.ticket_type.refresh_from_db()
+        self.assertEqual(self.order.refunded_amount, Decimal('100.00'))
+        self.assertIsNotNone(self.order.refunded_at)
+        self.assertEqual(self.session.status, StripeCheckoutSession.Status.REFUNDED)
+        # Inventory reversed only on the full step (2 tickets sold -> 0)
+        self.assertEqual(self.ticket_type.quantity_sold, 0)
+
+        # Final Stripe call had no `amount` (refunds the remaining balance).
+        last_call = mock_refund.call_args_list[-1]
+        self.assertEqual(last_call.kwargs, {'payment_intent': 'pi_test_partial'})
+
+    @patch('stripe.Refund.create')
+    def test_partial_exceeds_remaining_rejected(self, mock_refund):
+        response = self.client.post(self.url, {'refund_type': 'partial', 'refund_amount': '200.00'})
+        self.assertEqual(response.status_code, 302)
+        mock_refund.assert_not_called()
+        self.order.refresh_from_db()
+        self.assertEqual(self.order.refunded_amount, Decimal('0.00'))
+
+    @patch('stripe.Refund.create')
+    def test_partial_on_fully_refunded_rejected(self, mock_refund):
+        self.order.refunded_at = timezone.now()
+        self.order.refunded_amount = Decimal('100.00')
+        self.order.save(update_fields=['refunded_at', 'refunded_amount'])
+        response = self.client.post(self.url, {'refund_type': 'partial', 'refund_amount': '5.00'})
+        self.assertEqual(response.status_code, 302)
+        mock_refund.assert_not_called()
+
+    @patch('stripe.Refund.create')
+    def test_invalid_refund_amount_rejected(self, mock_refund):
+        for bad_amount in ('abc', '', '0', '-5'):
+            mock_refund.reset_mock()
+            response = self.client.post(self.url, {'refund_type': 'partial', 'refund_amount': bad_amount})
+            self.assertEqual(response.status_code, 302)
+            mock_refund.assert_not_called()
+        self.order.refresh_from_db()
+        self.assertEqual(self.order.refunded_amount, Decimal('0.00'))
+
+    def test_ltv_reflects_partial_refund(self):
+        self.order.refunded_amount = Decimal('30.00')
+        self.order.save(update_fields=['refunded_amount'])
+        ltv = self.customer.calculate_lifetime_value()
+        self.assertEqual(ltv, Decimal('70.00'))
+
+    def test_ltv_excludes_fully_refunded(self):
+        self.order.refunded_at = timezone.now()
+        self.order.refunded_amount = Decimal('100.00')
+        self.order.save(update_fields=['refunded_at', 'refunded_amount'])
+        ltv = self.customer.calculate_lifetime_value()
+        self.assertEqual(ltv, Decimal('0.00'))
