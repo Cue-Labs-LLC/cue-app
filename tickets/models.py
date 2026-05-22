@@ -4,7 +4,7 @@ import string
 from decimal import Decimal
 from django.db import models
 from django.conf import settings
-from django.db.models import Sum, Max
+from django.db.models import Sum, Max, F
 from django.utils import timezone
 from django.core.exceptions import ValidationError
 
@@ -750,7 +750,9 @@ class Customer(BaseModel):
         what the organizer actually receives, not the gross amount the customer paid.
         """
         orders = self.ticket_orders.filter(refunded_at__isnull=True)
-        total = orders.aggregate(total=Sum('total_amount'))['total'] or Decimal('0.00')
+        total = orders.aggregate(
+            total=Sum(F('total_amount') - F('refunded_amount'))
+        )['total'] or Decimal('0.00')
         fees_cents = (
             StripeCheckoutSession.objects.filter(ticket_order__in=orders)
             .aggregate(total=Sum('platform_fee_cents'))['total'] or 0
@@ -1499,6 +1501,10 @@ class TicketOrder(AuditBaseModel):
     order_date = models.DateTimeField(db_index=True)
     total_amount = models.DecimalField(max_digits=10, decimal_places=2)
     refunded_at = models.DateTimeField(null=True, blank=True)
+    refunded_amount = models.DecimalField(
+        max_digits=10, decimal_places=2, default=Decimal('0.00'),
+        help_text="Cumulative dollars refunded (partial + full). Equals total_amount when fully refunded.",
+    )
     promo_code = models.ForeignKey(
         'PromoCode',
         null=True,
@@ -2081,11 +2087,12 @@ class StripeCheckoutSession(BaseModel):
     """One row per Stripe Checkout Session - idempotency anchor for webhook processing."""
 
     class Status(models.TextChoices):
-        PENDING   = 'pending',   'Pending'
-        COMPLETED = 'completed', 'Completed'
-        EXPIRED   = 'expired',   'Expired'
-        CANCELED  = 'canceled',  'Canceled'
-        REFUNDED  = 'refunded',  'Refunded'
+        PENDING            = 'pending',            'Pending'
+        COMPLETED          = 'completed',          'Completed'
+        EXPIRED            = 'expired',            'Expired'
+        CANCELED           = 'canceled',           'Canceled'
+        PARTIALLY_REFUNDED = 'partially_refunded', 'Partially refunded'
+        REFUNDED           = 'refunded',           'Refunded'
 
     event = models.ForeignKey(
         Event,

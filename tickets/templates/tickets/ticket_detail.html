@@ -42,6 +42,8 @@
     </div>
     {% if order.refunded_at %}
     <span class="a-badge a-badge--danger ticket-header-badge" style="flex-shrink:0;margin-top:6px;">Refunded</span>
+    {% elif order.refunded_amount > 0 %}
+    <span class="a-badge a-badge--warning ticket-header-badge" style="flex-shrink:0;margin-top:6px;">Partially refunded</span>
     {% elif order.checked_in_at %}
     <span class="a-badge a-badge--success ticket-header-badge" style="flex-shrink:0;margin-top:6px;"><i class="bi bi-check-circle"></i> Checked In</span>
     {% endif %}
@@ -90,6 +92,11 @@
                 <div class="detail-row">
                     <span class="detail-label">Refunded</span>
                     <span class="detail-value" style="color:var(--danger);">{{ order.refunded_at|date:"F j, Y" }}</span>
+                </div>
+                {% elif order.refunded_amount > 0 %}
+                <div class="detail-row">
+                    <span class="detail-label">Partially refunded</span>
+                    <span class="detail-value" style="color:var(--warning);font-family:var(--font-mono);">${{ order.refunded_amount|currency }} of ${{ order.total_amount|currency }}</span>
                 </div>
                 {% endif %}
             </div>

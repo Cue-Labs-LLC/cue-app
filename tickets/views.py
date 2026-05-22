@@ -46,6 +46,7 @@ from .models import (
     WaitlistEntry, OrganizerWaitlist,
     ScannerSession, generate_unique_scanner_pin, TrackingLink, _generate_tracking_token,
     EVENT_STATUS_DRAFT, EVENT_STATUS_LIVE, EVENT_STATUS_ENDED, EVENT_STATUS_CANCELLED,
+    TICKETING_TYPE_DIRECT,
 )
 from .forms import (
     EventCSVUploadForm, EventExpenseForm, TicketPriceEntryForm, CSVFormatForm,
@@ -4470,10 +4471,16 @@ def order_detail(request, order_id):
         ticket_types[ticket_type]['total_price'] += ticket.price
 
     stripe_session = getattr(order, 'stripe_checkout_session', None)
+    remaining_refundable = order.total_amount - order.refunded_amount
     can_refund = (
-        stripe_session is not None
-        and stripe_session.status == StripeCheckoutSession.Status.COMPLETED
+        order.event.ticketing_type == TICKETING_TYPE_DIRECT
+        and stripe_session is not None
+        and stripe_session.status in (
+            StripeCheckoutSession.Status.COMPLETED,
+            StripeCheckoutSession.Status.PARTIALLY_REFUNDED,
+        )
         and order.refunded_at is None
+        and remaining_refundable > 0
     )
 
     context = {
@@ -4483,6 +4490,7 @@ def order_detail(request, order_id):
         'ticket_types': ticket_types,
         'stripe_session': stripe_session,
         'can_refund': can_refund,
+        'remaining_refundable': remaining_refundable,
     }
     return render(request, 'tickets/order_detail.html', context)
 
@@ -4492,65 +4500,113 @@ def order_detail(request, order_id):
 @require_admin
 @require_http_methods(["POST"])
 def refund_order(request, order_id):
-    """Issue a full Stripe refund for a completed order."""
+    """Issue a full or partial Stripe refund for a completed order."""
     from django.conf import settings as django_settings
+    from decimal import InvalidOperation
     import stripe as stripe_lib
 
     org = get_organization(request)
     order = get_object_or_404(
         TicketOrder.objects.filter(event__organization=org).select_related(
-            'customer', 'stripe_checkout_session',
+            'customer', 'event', 'stripe_checkout_session',
         ),
         id=order_id
     )
 
     session = getattr(order, 'stripe_checkout_session', None)
+    remaining = order.total_amount - order.refunded_amount
     if (
-        session is None
-        or session.status != StripeCheckoutSession.Status.COMPLETED
+        order.event.ticketing_type != TICKETING_TYPE_DIRECT
+        or session is None
+        or session.status not in (
+            StripeCheckoutSession.Status.COMPLETED,
+            StripeCheckoutSession.Status.PARTIALLY_REFUNDED,
+        )
         or order.refunded_at is not None
+        or remaining <= 0
     ):
         messages.error(request, 'This order cannot be refunded.')
         return redirect('tickets:order_detail', order_id=order_id)
 
+    refund_type = request.POST.get('refund_type', 'full')
+    if refund_type == 'partial':
+        raw_amount = request.POST.get('refund_amount', '').strip()
+        try:
+            refund_amount = Decimal(raw_amount).quantize(Decimal('0.01'))
+        except (InvalidOperation, ValueError):
+            messages.error(request, 'Invalid refund amount.')
+            return redirect('tickets:order_detail', order_id=order_id)
+        if refund_amount <= 0 or refund_amount > remaining:
+            messages.error(
+                request,
+                f'Refund amount must be between $0.01 and ${remaining}.',
+            )
+            return redirect('tickets:order_detail', order_id=order_id)
+    else:
+        refund_type = 'full'
+        refund_amount = remaining
+    refund_cents = int(refund_amount * 100)
+
     stripe_lib.api_key = django_settings.STRIPE_SECRET_KEY
     try:
-        stripe_lib.Refund.create(payment_intent=session.stripe_session_id)
+        if refund_type == 'partial':
+            stripe_lib.Refund.create(
+                payment_intent=session.stripe_session_id,
+                amount=refund_cents,
+            )
+        else:
+            stripe_lib.Refund.create(payment_intent=session.stripe_session_id)
     except stripe_lib.error.StripeError as e:
         logger.error("Stripe refund failed for order %s: %s", order_id, e)
         messages.error(request, f'Refund failed: {e.user_message or str(e)}')
         return redirect('tickets:order_detail', order_id=order_id)
 
     with transaction.atomic():
-        order.refunded_at = django_tz.now()
-        order.save(update_fields=['refunded_at'])
+        order.refunded_amount = order.refunded_amount + refund_amount
+        update_fields = ['refunded_amount']
+        if refund_type == 'full':
+            order.refunded_at = django_tz.now()
+            update_fields.append('refunded_at')
+        order.save(update_fields=update_fields)
 
-        session.status = StripeCheckoutSession.Status.REFUNDED
+        if refund_type == 'full':
+            session.status = StripeCheckoutSession.Status.REFUNDED
+        else:
+            session.status = StripeCheckoutSession.Status.PARTIALLY_REFUNDED
         session.save(update_fields=['status'])
 
-        for item in session.line_items_snapshot:
-            tt_id = item.get('saleable_ticket_type_id')
-            qty = item.get('quantity', 0)
-            if tt_id and qty:
-                SaleableTicketType.objects.filter(id=tt_id).update(
-                    quantity_sold=Greatest(F('quantity_sold') - qty, Value(0))
-                )
+        if refund_type == 'full':
+            for item in session.line_items_snapshot:
+                tt_id = item.get('saleable_ticket_type_id')
+                qty = item.get('quantity', 0)
+                if tt_id and qty:
+                    SaleableTicketType.objects.filter(id=tt_id).update(
+                        quantity_sold=Greatest(F('quantity_sold') - qty, Value(0))
+                    )
 
         order.customer.update_lifetime_value()
         _invalidate_event_list_cache(org)
         _invalidate_marketing_cache(org)
 
-    # Trigger waitlist notifications for any ticket types that opened up
-    from tickets.tasks import notify_next_waitlist_entry
-    for item in session.line_items_snapshot:
-        tt_id = item.get('saleable_ticket_type_id')
-        qty = item.get('quantity', 0)
-        if tt_id and qty:
-            tt = SaleableTicketType.objects.filter(id=tt_id, waitlist_enabled=True).first()
-            if tt:
-                notify_next_waitlist_entry.delay(tt_id)
+    if refund_type == 'full':
+        # Trigger waitlist notifications for any ticket types that opened up
+        from tickets.tasks import notify_next_waitlist_entry
+        for item in session.line_items_snapshot:
+            tt_id = item.get('saleable_ticket_type_id')
+            qty = item.get('quantity', 0)
+            if tt_id and qty:
+                tt = SaleableTicketType.objects.filter(id=tt_id, waitlist_enabled=True).first()
+                if tt:
+                    notify_next_waitlist_entry.delay(tt_id)
 
-    messages.success(request, f'Order {order.display_order_number} has been refunded.')
+        messages.success(request, f'Order {order.display_order_number} has been refunded.')
+    else:
+        new_remaining = order.total_amount - order.refunded_amount
+        messages.success(
+            request,
+            f'Refunded ${refund_amount} on order {order.display_order_number}. '
+            f'Remaining refundable: ${new_remaining}.',
+        )
     return redirect('tickets:order_detail', order_id=order_id)
 
 

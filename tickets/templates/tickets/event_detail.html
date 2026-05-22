@@ -512,6 +512,8 @@
                         <td>
                             {% if order.refunded_at %}
                             <span class="badge bg-danger">Refunded</span>
+                            {% elif order.refunded_amount > 0 %}
+                            <span class="badge bg-warning text-dark">Partially refunded</span>
                             {% elif order.checked_in_at %}
                             <span class="badge bg-success">Checked in</span>
                             {% else %}
