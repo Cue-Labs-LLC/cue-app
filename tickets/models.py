@@ -2401,6 +2401,14 @@ class TypeformFormSubscription(AuditBaseModel):
     form_title = models.CharField(max_length=255)
     webhook_id = models.CharField(max_length=64, blank=True, default='')
     webhook_secret = models.CharField(max_length=64, default=_generate_typeform_webhook_secret)
+    field_map = models.JSONField(
+        default=dict, blank=True,
+        help_text=(
+            'Map of Typeform field ref/id → ExternalSurveyResponse column name '
+            '(e.g. {"q1_ref": "overall_rating", "email_id": "email"}). '
+            'Empty = only raw_answers populated; no structured columns set.'
+        ),
+    )
     upload = models.ForeignKey(
         ExternalSurveyUpload, null=True, blank=True, on_delete=models.SET_NULL,
         related_name='typeform_subscriptions',

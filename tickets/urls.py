@@ -124,6 +124,7 @@ urlpatterns = [
     path('settings/typeform/connect/', views.typeform_connect, name='typeform_connect'),
     path('settings/typeform/disconnect/', views.typeform_disconnect, name='typeform_disconnect'),
     path('settings/typeform/forms/', views.typeform_form_picker, name='typeform_form_picker'),
+    path('settings/typeform/forms/<uuid:sub_id>/mapping/', views.typeform_form_mapping, name='typeform_form_mapping'),
     path('settings/typeform/forms/<uuid:sub_id>/sync/', views.typeform_form_sync, name='typeform_form_sync'),
     path('settings/typeform/forms/<uuid:sub_id>/delete/', views.typeform_form_unsubscribe, name='typeform_form_unsubscribe'),
     path('webhooks/typeform/<uuid:sub_id>/', views.typeform_webhook, name='typeform_webhook'),

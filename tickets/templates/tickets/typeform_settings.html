@@ -86,6 +86,11 @@
                         <td>
                             <strong>{{ sub.form_title }}</strong>
                             <div class="text-body-secondary small">Form ID: <code>{{ sub.form_id }}</code></div>
+                            {% if sub.field_map %}
+                            <div class="text-success small"><i class="bi bi-check2"></i> {{ sub.field_map|length }} field{{ sub.field_map|length|pluralize }} mapped</div>
+                            {% else %}
+                            <div class="text-body-secondary small"><i class="bi bi-dash-circle"></i> No fields mapped — only raw answers stored</div>
+                            {% endif %}
                             {% if sub.last_sync_error %}
                             <div class="text-danger small">Last error: {{ sub.last_sync_error|truncatechars:160 }}</div>
                             {% endif %}
@@ -100,6 +105,10 @@
                         <td class="text-body-secondary small">{{ sub.last_synced_at|default:'Never' }}</td>
                         <td class="text-end">
                             {% if sub.is_active %}
+                            <a href="{% url 'tickets:typeform_form_mapping' sub_id=sub.id %}"
+                               class="btn btn-sm btn-outline-secondary">
+                                <i class="bi bi-sliders"></i> Edit fields
+                            </a>
                             <form method="post" action="{% url 'tickets:typeform_form_sync' sub_id=sub.id %}" class="d-inline">
                                 {% csrf_token %}
                                 <button type="submit" class="btn btn-sm btn-outline-primary">Sync recent</button>
