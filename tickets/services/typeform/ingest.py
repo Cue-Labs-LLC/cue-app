@@ -10,7 +10,7 @@ import logging
 
 from django.utils.dateparse import parse_datetime
 
-from tickets.services.typeform.field_mapping import apply_field_map
+from tickets.services.typeform.field_mapping import apply_field_map, flatten_form_fields
 
 
 logger = logging.getLogger(__name__)
@@ -31,6 +31,17 @@ def ingest_response(subscription, form_response: dict):
 
     definition_fields = (form_response.get('definition') or {}).get('fields') or []
     titles_by_key = _index_titles(definition_fields)
+    # Webhook payloads don't always include a full definition.fields list, and
+    # even when they do, group children may be missing. Layer the persisted
+    # subscription snapshot underneath so leaf-question titles still resolve.
+    for q in (subscription.questions or []):
+        if not isinstance(q, dict):
+            continue
+        key = q.get('ref') or q.get('id')
+        if key and not titles_by_key.get(key):
+            title = (q.get('title') or '').strip()
+            if title:
+                titles_by_key[key] = title
 
     raw_answers = []
     for answer in form_response.get('answers') or []:
@@ -65,11 +76,18 @@ def ingest_response(subscription, form_response: dict):
 
 
 def _index_titles(definition_fields: list[dict]) -> dict:
+    """Build {field-key → title} from a webhook payload's `definition.fields`.
+
+    Walks `group`/`inline_group` containers via `flatten_form_fields` so leaf
+    questions nested inside a group still get their titles indexed.
+    """
+    if not definition_fields:
+        return {}
     out: dict = {}
-    for field in definition_fields:
+    for field in flatten_form_fields({'fields': definition_fields}):
         key = field.get('ref') or field.get('id')
         if key:
-            out[key] = field.get('title') or ''
+            out[key] = (field.get('title') or '').strip()
     return out
 
 
