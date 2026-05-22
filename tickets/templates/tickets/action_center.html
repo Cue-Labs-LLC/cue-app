@@ -50,7 +50,7 @@
 {% if page_obj %}
 <div class="d-flex flex-column gap-3">
     {% for recommendation in page_obj %}
-    <div class="card">
+    <div class="card" id="rec-card-{{ recommendation.id }}">
         <div class="card-body">
             <div class="d-flex flex-column flex-lg-row justify-content-between gap-3">
                 <div>
@@ -98,9 +98,24 @@
                         {{ recommendation.recommended_action_json.label|default:"Link campaigns" }}
                     </button>
                     {% elif recommendation.kind == 'marketing_unconfirmed' and recommendation.event %}
+                    {% if is_org_admin %}
+                    <button type="button" class="btn btn-primary w-100"
+                            data-bs-toggle="modal"
+                            data-bs-target="#unconfirmedMatchesModal"
+                            data-recommendation-id="{{ recommendation.id }}"
+                            data-event-id="{{ recommendation.event.id }}"
+                            data-event-name="{{ recommendation.event.name }}"
+                            data-fetch-url="{% url 'tickets:ai_recommendation_unconfirmed_matches' recommendation.id %}"
+                            data-resolve-url="{% url 'tickets:ai_recommendation_resolve' recommendation.id %}"
+                            data-event-marketing-url="{{ recommendation.recommended_action_json.url }}"
+                            data-card-id="rec-card-{{ recommendation.id }}">
+                        {{ recommendation.recommended_action_json.label|default:"Review and confirm" }}
+                    </button>
+                    {% else %}
                     <a class="btn btn-primary w-100" href="{{ recommendation.recommended_action_json.url }}">
                         {{ recommendation.recommended_action_json.label|default:"Review and confirm" }}
                     </a>
+                    {% endif %}
                     {% else %}
                     <form method="post" action="{% url 'tickets:ai_recommendation_review' recommendation.id %}">
                         {% csrf_token %}
@@ -153,4 +168,5 @@
 {% endif %}
 
 {% include 'tickets/partials/_link_campaigns_modal.html' %}
+{% include 'tickets/partials/_unconfirmed_matches_modal.html' %}
 {% endblock %}
