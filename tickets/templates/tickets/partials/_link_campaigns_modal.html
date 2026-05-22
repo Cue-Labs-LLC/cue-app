@@ -1,0 +1,379 @@
+{# Shared "Link campaigns" modal used by home.html and action_center.html. #}
+{# Trigger button must carry data-* attrs: event-id, event-name, recommendation-id, resolve-url, #}
+{# and at least one of: meta-match-url + meta-apply-url and/or mailchimp-match-url + mailchimp-apply-url. #}
+<div class="modal fade" id="linkCampaignsModal" tabindex="-1" aria-labelledby="linkCampaignsModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-xl modal-dialog-scrollable">
+        <div class="modal-content">
+            <div class="modal-header">
+                <div>
+                    <h5 class="modal-title" id="linkCampaignsModalLabel">Link campaigns</h5>
+                    <div class="text-body-secondary small" id="linkCampaignsEventName"></div>
+                </div>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <form id="linkCampaignsForm" class="d-flex flex-column" style="flex: 1 1 auto; min-height: 0; overflow: hidden;">
+                {% csrf_token %}
+                <div class="modal-body" style="flex: 1 1 auto; min-height: 0; overflow-y: auto;">
+                    <div id="linkCampaignsLoading" class="py-5 text-center">
+                        <div class="spinner-border text-primary" role="status" aria-hidden="true"></div>
+                        <p class="text-body-secondary mt-3 mb-0">Ranking campaigns...</p>
+                    </div>
+                    <div id="linkCampaignsFlash" class="alert d-none mb-3"></div>
+
+                    <div id="linkCampaignsMetaSection" class="link-campaigns-section d-none mb-4">
+                        <h6 class="mb-2"><i class="bi bi-megaphone me-1"></i>Meta Ads</h6>
+                        <div class="link-campaigns-meta-error alert alert-danger d-none mb-2"></div>
+                        <div class="link-campaigns-meta-empty empty-state d-none" style="padding: 24px;">
+                            <p class="mb-0">No matching Meta Ads campaigns found.</p>
+                        </div>
+                        <div class="link-campaigns-meta-results"></div>
+                    </div>
+
+                    <div id="linkCampaignsMailchimpSection" class="link-campaigns-section d-none">
+                        <h6 class="mb-2"><i class="bi bi-envelope me-1"></i>Mailchimp</h6>
+                        <div class="link-campaigns-mailchimp-error alert alert-danger d-none mb-2"></div>
+                        <div class="link-campaigns-mailchimp-empty empty-state d-none" style="padding: 24px;">
+                            <p class="mb-0">No matching Mailchimp campaigns found.</p>
+                        </div>
+                        <div class="link-campaigns-mailchimp-results"></div>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="submit" id="linkCampaignsApply" class="btn btn-primary" disabled>
+                        <i class="bi bi-check2-circle me-1"></i> Apply selected (0)
+                    </button>
+                    <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Close</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
+<script>
+(function() {
+    var modalEl = document.getElementById('linkCampaignsModal');
+    if (!modalEl) return;
+
+    var titleSubEl = document.getElementById('linkCampaignsEventName');
+    var loadingEl = document.getElementById('linkCampaignsLoading');
+    var flashEl = document.getElementById('linkCampaignsFlash');
+    var formEl = document.getElementById('linkCampaignsForm');
+    var applyBtn = document.getElementById('linkCampaignsApply');
+
+    var metaSection = document.getElementById('linkCampaignsMetaSection');
+    var metaResults = metaSection.querySelector('.link-campaigns-meta-results');
+    var metaError = metaSection.querySelector('.link-campaigns-meta-error');
+    var metaEmpty = metaSection.querySelector('.link-campaigns-meta-empty');
+
+    var mcSection = document.getElementById('linkCampaignsMailchimpSection');
+    var mcResults = mcSection.querySelector('.link-campaigns-mailchimp-results');
+    var mcError = mcSection.querySelector('.link-campaigns-mailchimp-error');
+    var mcEmpty = mcSection.querySelector('.link-campaigns-mailchimp-empty');
+
+    var state = {
+        recommendationId: null,
+        resolveUrl: null,
+        metaApplyUrl: null,
+        mailchimpApplyUrl: null,
+    };
+
+    function escapeHtml(value) {
+        return String(value == null ? '' : value).replace(/[&<>"']/g, function(char) {
+            return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[char];
+        });
+    }
+
+    function showFlash(message, isError) {
+        flashEl.textContent = message;
+        flashEl.classList.toggle('alert-success', !isError);
+        flashEl.classList.toggle('alert-danger', !!isError);
+        flashEl.classList.remove('d-none');
+    }
+
+    function hideFlash() {
+        flashEl.classList.add('d-none');
+        flashEl.classList.remove('alert-success', 'alert-danger');
+        flashEl.textContent = '';
+    }
+
+    function resetSection(section, resultsEl, errorEl, emptyEl) {
+        section.classList.add('d-none');
+        resultsEl.innerHTML = '';
+        errorEl.classList.add('d-none');
+        errorEl.textContent = '';
+        emptyEl.classList.add('d-none');
+    }
+
+    function updateApplyButton() {
+        var count = formEl.querySelectorAll('input.link-campaigns-checkbox:checked').length;
+        applyBtn.disabled = count === 0;
+        applyBtn.innerHTML = '<i class="bi bi-check2-circle me-1"></i> Apply selected (' + count + ')';
+    }
+
+    function wireCheckboxes(container) {
+        var checkboxes = container.querySelectorAll('input.link-campaigns-checkbox:not(:disabled)');
+        var master = container.querySelector('input.link-campaigns-master');
+        checkboxes.forEach(function(cb) {
+            cb.addEventListener('change', function() {
+                updateMaster(container);
+                updateApplyButton();
+            });
+        });
+        if (master) {
+            if (!checkboxes.length) {
+                master.disabled = true;
+            } else {
+                master.addEventListener('change', function() {
+                    checkboxes.forEach(function(cb) { cb.checked = master.checked; });
+                    updateApplyButton();
+                });
+            }
+        }
+    }
+
+    function updateMaster(container) {
+        var master = container.querySelector('input.link-campaigns-master');
+        if (!master) return;
+        var checkboxes = container.querySelectorAll('input.link-campaigns-checkbox:not(:disabled)');
+        var checked = container.querySelectorAll('input.link-campaigns-checkbox:checked').length;
+        master.checked = checked > 0 && checked === checkboxes.length;
+        master.indeterminate = checked > 0 && checked < checkboxes.length;
+    }
+
+    function confidenceCell(pct, klass) {
+        pct = Number(pct || 0);
+        klass = escapeHtml(klass || 'bg-secondary');
+        return '<div class="d-flex justify-content-between small mb-1"><span>' + pct + '%</span></div>' +
+               '<div class="progress" style="height: 8px;">' +
+                   '<div class="progress-bar ' + klass + '" role="progressbar" style="width: ' + pct + '%;" aria-valuenow="' + pct + '" aria-valuemin="0" aria-valuemax="100"></div>' +
+               '</div>';
+    }
+
+    function renderMetaTable(candidates) {
+        return '<div class="table-responsive">' +
+            '<table class="table table-hover mb-0">' +
+                '<thead><tr>' +
+                    '<th style="width: 36px;"><input type="checkbox" class="form-check-input link-campaigns-master" data-channel="meta" aria-label="Select all Meta Ads candidates"></th>' +
+                    '<th>Campaign</th>' +
+                    '<th>Dates</th>' +
+                    '<th style="min-width: 130px;">Confidence</th>' +
+                    '<th>Reason</th>' +
+                '</tr></thead>' +
+                '<tbody>' +
+                    candidates.map(function(c) {
+                        var name = escapeHtml(c.campaign_name || c.campaign_id);
+                        var objective = escapeHtml(c.objective || 'No objective');
+                        var startTime = escapeHtml(c.start_time || 'Unknown');
+                        var stopTime = escapeHtml(c.stop_time || 'Not set');
+                        var reasoning = escapeHtml(c.reasoning || '');
+                        var campaignId = escapeHtml(c.campaign_id || '');
+                        return '<tr>' +
+                            '<td><input type="checkbox" class="form-check-input link-campaigns-checkbox" data-channel="meta" name="meta_campaign_id" value="' + campaignId + '" aria-label="Select campaign"></td>' +
+                            '<td><strong>' + name + '</strong><div class="small text-body-secondary">' + objective + '</div></td>' +
+                            '<td class="small">' + startTime + ' &rarr; ' + stopTime + '</td>' +
+                            '<td>' + confidenceCell(c.confidence_pct, c.confidence_class) + '</td>' +
+                            '<td class="small text-body-secondary">' + reasoning + '</td>' +
+                        '</tr>';
+                    }).join('') +
+                '</tbody>' +
+            '</table>' +
+        '</div>';
+    }
+
+    function renderMailchimpTable(candidates) {
+        return '<div class="table-responsive">' +
+            '<table class="table table-hover mb-0">' +
+                '<thead><tr>' +
+                    '<th style="width: 36px;"><input type="checkbox" class="form-check-input link-campaigns-master" data-channel="mailchimp" aria-label="Select all Mailchimp candidates"></th>' +
+                    '<th>Campaign</th>' +
+                    '<th>Sent</th>' +
+                    '<th>Emails</th>' +
+                    '<th style="min-width: 130px;">Confidence</th>' +
+                    '<th>Reason</th>' +
+                '</tr></thead>' +
+                '<tbody>' +
+                    candidates.map(function(c) {
+                        var title = escapeHtml(c.campaign_title || c.campaign_id);
+                        var subject = escapeHtml(c.subject_line || 'No subject');
+                        var sendTime = escapeHtml(c.send_time || 'Unknown');
+                        var emailsSent = escapeHtml(c.emails_sent || 0);
+                        var reasoning = escapeHtml(c.reasoning || '');
+                        var confidenceRaw = escapeHtml(c.confidence || 0);
+                        var reasoningAttr = escapeHtml(c.reasoning || '');
+                        var campaignId = escapeHtml(c.campaign_id || '');
+                        var isLinked = !!c.is_linked;
+                        var checkboxCell = isLinked
+                            ? '<input type="checkbox" class="form-check-input link-campaigns-checkbox" disabled aria-label="Already linked">'
+                            : '<input type="checkbox" class="form-check-input link-campaigns-checkbox" data-channel="mailchimp" name="mailchimp_campaign_id" value="' + campaignId + '" data-confidence="' + confidenceRaw + '" data-reasoning="' + reasoningAttr + '" aria-label="Select campaign">';
+                        var statusBadge = isLinked ? '<span class="badge bg-success ms-2">Linked</span>' : '';
+                        return '<tr>' +
+                            '<td>' + checkboxCell + '</td>' +
+                            '<td><strong>' + title + '</strong>' + statusBadge + '<div class="small text-body-secondary">' + subject + '</div></td>' +
+                            '<td>' + sendTime + '</td>' +
+                            '<td>' + emailsSent + '</td>' +
+                            '<td>' + confidenceCell(Math.round((Number(c.confidence) || 0) * 100), c.confidence_class) + '</td>' +
+                            '<td class="small text-body-secondary">' + reasoning + '</td>' +
+                        '</tr>';
+                    }).join('') +
+                '</tbody>' +
+            '</table>' +
+        '</div>';
+    }
+
+    function loadChannel(matchUrl, resultsEl, errorEl, emptyEl, renderFn, channelLabel) {
+        return fetch(matchUrl, { headers: { 'X-Requested-With': 'XMLHttpRequest' } })
+            .then(function(response) {
+                return response.json().then(function(data) { return { ok: response.ok, data: data }; });
+            })
+            .then(function(result) {
+                if (!result.ok || !result.data.success) {
+                    errorEl.textContent = (result.data && result.data.error) || ('Could not load ' + channelLabel + ' campaigns.');
+                    errorEl.classList.remove('d-none');
+                    return;
+                }
+                var candidates = result.data.candidates || [];
+                if (!candidates.length) {
+                    emptyEl.classList.remove('d-none');
+                    return;
+                }
+                resultsEl.innerHTML = renderFn(candidates);
+                wireCheckboxes(resultsEl);
+            })
+            .catch(function() {
+                errorEl.textContent = 'Could not load ' + channelLabel + ' campaigns. Please try again.';
+                errorEl.classList.remove('d-none');
+            });
+    }
+
+    modalEl.addEventListener('show.bs.modal', function(event) {
+        var trigger = event.relatedTarget;
+        if (!trigger) return;
+
+        var eventName = trigger.getAttribute('data-event-name') || '';
+        var metaMatchUrl = trigger.getAttribute('data-meta-match-url');
+        var mcMatchUrl = trigger.getAttribute('data-mailchimp-match-url');
+
+        state.recommendationId = trigger.getAttribute('data-recommendation-id');
+        state.resolveUrl = trigger.getAttribute('data-resolve-url');
+        state.metaApplyUrl = trigger.getAttribute('data-meta-apply-url');
+        state.mailchimpApplyUrl = trigger.getAttribute('data-mailchimp-apply-url');
+
+        titleSubEl.textContent = eventName;
+        hideFlash();
+        resetSection(metaSection, metaResults, metaError, metaEmpty);
+        resetSection(mcSection, mcResults, mcError, mcEmpty);
+        applyBtn.disabled = true;
+        applyBtn.innerHTML = '<i class="bi bi-check2-circle me-1"></i> Apply selected (0)';
+        loadingEl.classList.remove('d-none');
+
+        var pending = [];
+        if (metaMatchUrl) {
+            metaSection.classList.remove('d-none');
+            pending.push(loadChannel(metaMatchUrl, metaResults, metaError, metaEmpty, renderMetaTable, 'Meta Ads'));
+        }
+        if (mcMatchUrl) {
+            mcSection.classList.remove('d-none');
+            pending.push(loadChannel(mcMatchUrl, mcResults, mcError, mcEmpty, renderMailchimpTable, 'Mailchimp'));
+        }
+        Promise.all(pending).then(function() {
+            loadingEl.classList.add('d-none');
+            updateApplyButton();
+        });
+    });
+
+    function csrfToken() {
+        var input = formEl.querySelector('input[name="csrfmiddlewaretoken"]');
+        return input ? input.value : '';
+    }
+
+    function applyMetaCampaigns() {
+        var checkboxes = formEl.querySelectorAll('input.link-campaigns-checkbox[data-channel="meta"]:checked');
+        if (!checkboxes.length || !state.metaApplyUrl) return Promise.resolve({ ok: true });
+        var token = csrfToken();
+        var posts = Array.prototype.map.call(checkboxes, function(cb) {
+            var fd = new FormData();
+            fd.append('csrfmiddlewaretoken', token);
+            fd.append('campaign_id', cb.value);
+            return fetch(state.metaApplyUrl, {
+                method: 'POST',
+                body: fd,
+                headers: { 'X-Requested-With': 'XMLHttpRequest' },
+                credentials: 'same-origin',
+            }).then(function(response) {
+                return response.json().then(function(data) { return { ok: response.ok, data: data }; });
+            });
+        });
+        return Promise.all(posts).then(function(results) {
+            var failures = results.filter(function(r) { return !r.ok || !r.data.success; });
+            if (failures.length) {
+                var msg = (failures[0].data && failures[0].data.error) || 'Could not apply one or more Meta Ads campaigns.';
+                return { ok: false, error: msg };
+            }
+            return { ok: true };
+        }).catch(function() {
+            return { ok: false, error: 'Could not apply Meta Ads campaigns. Please try again.' };
+        });
+    }
+
+    function applyMailchimpCampaigns() {
+        var checkboxes = formEl.querySelectorAll('input.link-campaigns-checkbox[data-channel="mailchimp"]:checked');
+        if (!checkboxes.length || !state.mailchimpApplyUrl) return Promise.resolve({ ok: true });
+        var fd = new FormData();
+        fd.append('csrfmiddlewaretoken', csrfToken());
+        Array.prototype.forEach.call(checkboxes, function(cb) {
+            fd.append('campaign_id', cb.value);
+            fd.append('confidence', cb.getAttribute('data-confidence') || '');
+            fd.append('reasoning', cb.getAttribute('data-reasoning') || '');
+        });
+        return fetch(state.mailchimpApplyUrl, {
+            method: 'POST',
+            body: fd,
+            headers: { 'X-Requested-With': 'XMLHttpRequest' },
+            credentials: 'same-origin',
+        }).then(function(response) {
+            return response.json().then(function(data) { return { ok: response.ok, data: data }; });
+        }).then(function(result) {
+            if (!result.ok || !result.data.success) {
+                return { ok: false, error: (result.data && result.data.error) || 'Could not apply Mailchimp campaigns.' };
+            }
+            return { ok: true };
+        }).catch(function() {
+            return { ok: false, error: 'Could not apply Mailchimp campaigns. Please try again.' };
+        });
+    }
+
+    function resolveRecommendation() {
+        if (!state.resolveUrl) return Promise.resolve();
+        var fd = new FormData();
+        fd.append('csrfmiddlewaretoken', csrfToken());
+        return fetch(state.resolveUrl, {
+            method: 'POST',
+            body: fd,
+            headers: { 'X-Requested-With': 'XMLHttpRequest' },
+            credentials: 'same-origin',
+        }).catch(function() { /* swallow — reload will refresh state regardless */ });
+    }
+
+    formEl.addEventListener('submit', function(event) {
+        event.preventDefault();
+        var totalSelected = formEl.querySelectorAll('input.link-campaigns-checkbox:checked').length;
+        if (!totalSelected) return;
+
+        hideFlash();
+        applyBtn.disabled = true;
+        applyBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>Applying...';
+
+        Promise.all([applyMetaCampaigns(), applyMailchimpCampaigns()]).then(function(results) {
+            var failure = results.find(function(r) { return !r.ok; });
+            if (failure) {
+                showFlash(failure.error, true);
+                updateApplyButton();
+                return;
+            }
+            return resolveRecommendation().then(function() {
+                window.location.reload();
+            });
+        });
+    });
+})();
+</script>
