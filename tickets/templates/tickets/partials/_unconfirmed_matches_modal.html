@@ -34,6 +34,8 @@
                                 <tr>
                                     <th>Campaign</th>
                                     <th class="text-end">Spend</th>
+                                    <th class="text-end">Orders</th>
+                                    <th class="text-end">Revenue</th>
                                     <th class="text-end" style="width: 1%; white-space: nowrap;">Action</th>
                                 </tr>
                             </thead>
@@ -53,6 +55,11 @@
                                 <tr>
                                     <th>Campaign</th>
                                     <th>Sent</th>
+                                    <th class="text-end">Emails</th>
+                                    <th class="text-end">Unique Opens</th>
+                                    <th class="text-end">Clicks</th>
+                                    <th class="text-end">Orders</th>
+                                    <th class="text-end">Revenue</th>
                                     <th class="text-end" style="width: 1%; white-space: nowrap;">Action</th>
                                 </tr>
                             </thead>
@@ -72,6 +79,10 @@
                                 <tr>
                                     <th>Broadcast</th>
                                     <th>Sent</th>
+                                    <th class="text-end">Audience</th>
+                                    <th class="text-end">Clicks</th>
+                                    <th class="text-end">Orders</th>
+                                    <th class="text-end">Revenue</th>
                                     <th class="text-end" style="width: 1%; white-space: nowrap;">Action</th>
                                 </tr>
                             </thead>
@@ -146,6 +157,8 @@
             if (countEl) countEl.textContent = '0';
         });
         state.counts = { meta_ads: 0, mailchimp: 0, slicktext: 0 };
+        activeEditor = null;
+        pendingSaves = { meta_ads: [], mailchimp: [], slicktext: [] };
         emptyEl.classList.add('d-none');
     }
 
@@ -173,12 +186,65 @@
         );
     }
 
+    function formatInt(value) {
+        var n = Number(value || 0);
+        if (!isFinite(n)) return '0';
+        return n.toLocaleString();
+    }
+
+    function formatMoney(value) {
+        var n = Number(value || 0);
+        if (!isFinite(n)) n = 0;
+        return '$' + n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    }
+
+    // Build a click-to-edit cell. `manualRaw` is the underlying manual override (may be null/'').
+    // `effectiveValue` is what shows when no manual override is set.
+    function buildEditableCell(opts) {
+        // opts: editUrl, fieldName, step, manualRaw, effectiveValue, isMoney
+        var numericForInput;
+        if (opts.manualRaw !== null && opts.manualRaw !== undefined && opts.manualRaw !== '') {
+            numericForInput = String(opts.manualRaw);
+        } else {
+            numericForInput = String(opts.effectiveValue == null ? 0 : opts.effectiveValue);
+        }
+        var display = opts.isMoney ? formatMoney(opts.effectiveValue) : formatInt(opts.effectiveValue);
+        return (
+            '<td class="text-end editable-cell" style="cursor: pointer;" ' +
+                'data-editable="true" ' +
+                'data-edit-url="' + escapeHtml(opts.editUrl) + '" ' +
+                'data-field-name="' + escapeHtml(opts.fieldName) + '" ' +
+                'data-step="' + escapeHtml(opts.step) + '" ' +
+                'data-numeric-value="' + escapeHtml(numericForInput) + '" ' +
+                'data-is-money="' + (opts.isMoney ? '1' : '0') + '" ' +
+                'title="Click to edit">' +
+                escapeHtml(display) +
+            '</td>'
+        );
+    }
+
     function renderMetaRow(row) {
         var sub = row.sublabel ? '<div class="small text-body-secondary">' + escapeHtml(row.sublabel) + '</div>' : '';
         return (
             '<tr data-row-id="' + escapeHtml(row.id) + '">' +
                 '<td><strong>' + escapeHtml(row.label) + '</strong>' + sub + '</td>' +
                 '<td class="text-end">$' + escapeHtml(row.amount) + '</td>' +
+                buildEditableCell({
+                    editUrl: row.metrics_edit_url,
+                    fieldName: 'manual_attributed_orders',
+                    step: '1',
+                    manualRaw: row.manual_attributed_orders,
+                    effectiveValue: row.effective_attributed_orders,
+                    isMoney: false,
+                }) +
+                buildEditableCell({
+                    editUrl: row.metrics_edit_url,
+                    fieldName: 'manual_attributed_revenue',
+                    step: '0.01',
+                    manualRaw: row.manual_attributed_revenue,
+                    effectiveValue: row.effective_attributed_revenue,
+                    isMoney: true,
+                }) +
                 '<td class="text-end">' + buildActionCell(row) + '</td>' +
             '</tr>'
         );
@@ -190,6 +256,46 @@
             '<tr data-row-id="' + escapeHtml(row.id) + '">' +
                 '<td><strong>' + escapeHtml(row.label) + '</strong>' + sub + '</td>' +
                 '<td class="small text-body-secondary">' + escapeHtml(row.send_time || 'Unknown') + '</td>' +
+                buildEditableCell({
+                    editUrl: row.metrics_edit_url,
+                    fieldName: 'manual_emails_sent',
+                    step: '1',
+                    manualRaw: row.manual_emails_sent,
+                    effectiveValue: row.effective_emails_sent,
+                    isMoney: false,
+                }) +
+                buildEditableCell({
+                    editUrl: row.metrics_edit_url,
+                    fieldName: 'manual_unique_opens',
+                    step: '1',
+                    manualRaw: row.manual_unique_opens,
+                    effectiveValue: row.effective_unique_opens,
+                    isMoney: false,
+                }) +
+                buildEditableCell({
+                    editUrl: row.metrics_edit_url,
+                    fieldName: 'manual_clicks',
+                    step: '1',
+                    manualRaw: row.manual_clicks,
+                    effectiveValue: row.effective_clicks,
+                    isMoney: false,
+                }) +
+                buildEditableCell({
+                    editUrl: row.metrics_edit_url,
+                    fieldName: 'manual_orders',
+                    step: '1',
+                    manualRaw: row.manual_orders,
+                    effectiveValue: row.effective_orders,
+                    isMoney: false,
+                }) +
+                buildEditableCell({
+                    editUrl: row.metrics_edit_url,
+                    fieldName: 'manual_revenue',
+                    step: '0.01',
+                    manualRaw: row.manual_revenue,
+                    effectiveValue: row.effective_revenue,
+                    isMoney: true,
+                }) +
                 '<td class="text-end">' + buildActionCell(row) + '</td>' +
             '</tr>'
         );
@@ -201,6 +307,38 @@
             '<tr data-row-id="' + escapeHtml(row.id) + '">' +
                 '<td><strong>' + escapeHtml(row.label) + '</strong>' + sub + '</td>' +
                 '<td class="small text-body-secondary">' + escapeHtml(row.send_time || 'Unknown') + '</td>' +
+                buildEditableCell({
+                    editUrl: row.metrics_edit_url,
+                    fieldName: 'manual_audience',
+                    step: '1',
+                    manualRaw: row.manual_audience,
+                    effectiveValue: row.effective_audience,
+                    isMoney: false,
+                }) +
+                buildEditableCell({
+                    editUrl: row.metrics_edit_url,
+                    fieldName: 'manual_clicks',
+                    step: '1',
+                    manualRaw: row.manual_clicks,
+                    effectiveValue: row.effective_clicks,
+                    isMoney: false,
+                }) +
+                buildEditableCell({
+                    editUrl: row.metrics_edit_url,
+                    fieldName: 'manual_orders',
+                    step: '1',
+                    manualRaw: row.manual_orders,
+                    effectiveValue: row.effective_orders,
+                    isMoney: false,
+                }) +
+                buildEditableCell({
+                    editUrl: row.metrics_edit_url,
+                    fieldName: 'manual_revenue',
+                    step: '0.01',
+                    manualRaw: row.manual_revenue,
+                    effectiveValue: row.effective_revenue,
+                    isMoney: true,
+                }) +
                 '<td class="text-end">' + buildActionCell(row) + '</td>' +
             '</tr>'
         );
@@ -224,9 +362,14 @@
         });
     }
 
-    function postUrl(url) {
+    function postUrl(url, extraFields) {
         var fd = new FormData();
         fd.append('csrfmiddlewaretoken', csrfToken());
+        if (extraFields) {
+            Object.keys(extraFields).forEach(function(key) {
+                fd.append(key, extraFields[key]);
+            });
+        }
         return fetch(url, {
             method: 'POST',
             body: fd,
@@ -241,6 +384,152 @@
         }).catch(function() {
             return { ok: false, data: { error: 'Network error. Please try again.' } };
         });
+    }
+
+    // Per-channel pending-save tracking so "Confirm all" can wait for in-flight edits.
+    var pendingSaves = { meta_ads: [], mailchimp: [], slicktext: [] };
+
+    function channelForElement(el) {
+        var section = el && el.closest ? el.closest('.unconfirmed-section') : null;
+        if (!section) return null;
+        if (section === sections.meta_ads) return 'meta_ads';
+        if (section === sections.mailchimp) return 'mailchimp';
+        if (section === sections.slicktext) return 'slicktext';
+        return null;
+    }
+
+    // Apply updated row payload (from metrics_edit response) back into the displayed cells.
+    function applyRowUpdate(rowEl, payload) {
+        if (!rowEl || !payload) return;
+        rowEl.querySelectorAll('td[data-editable="true"]').forEach(function(cell) {
+            var fieldName = cell.getAttribute('data-field-name');
+            // manual_X → effective_X (manual_attributed_revenue → effective_attributed_revenue, etc.)
+            var effectiveKey = fieldName.replace(/^manual_/, 'effective_');
+            if (!(effectiveKey in payload)) return;
+            var isMoney = cell.getAttribute('data-is-money') === '1';
+            var effective = payload[effectiveKey];
+            var manualRaw = payload[fieldName];
+            var numericForInput;
+            if (manualRaw !== null && manualRaw !== undefined && manualRaw !== '') {
+                numericForInput = String(manualRaw);
+            } else {
+                numericForInput = String(effective == null ? 0 : effective);
+            }
+            cell.setAttribute('data-numeric-value', numericForInput);
+            cell.textContent = isMoney ? formatMoney(effective) : formatInt(effective);
+        });
+    }
+
+    function restoreCellDisplay(cell) {
+        var isMoney = cell.getAttribute('data-is-money') === '1';
+        var raw = cell.getAttribute('data-numeric-value');
+        cell.textContent = isMoney ? formatMoney(raw) : formatInt(raw);
+        cell.classList.remove('is-editing');
+    }
+
+    var activeEditor = null;  // { cell, input, originalNumeric, savePromise }
+
+    function startEdit(cell) {
+        if (activeEditor) {
+            commitEdit(activeEditor);
+        }
+        var step = cell.getAttribute('data-step') || '1';
+        var current = cell.getAttribute('data-numeric-value') || '';
+        var input = document.createElement('input');
+        input.type = 'number';
+        input.step = step;
+        input.min = '0';
+        input.className = 'form-control form-control-sm text-end';
+        input.style.minWidth = '6rem';
+        input.value = current;
+        cell.classList.add('is-editing');
+        cell.textContent = '';
+        cell.appendChild(input);
+        input.focus();
+        input.select();
+        activeEditor = { cell: cell, input: input, originalNumeric: current, savePromise: null };
+
+        input.addEventListener('keydown', function(evt) {
+            if (evt.key === 'Enter') {
+                evt.preventDefault();
+                input.blur();
+            } else if (evt.key === 'Escape') {
+                evt.preventDefault();
+                cancelEdit();
+            }
+        });
+        input.addEventListener('blur', function() {
+            if (activeEditor && activeEditor.input === input) {
+                commitEdit(activeEditor, false);
+            }
+        });
+    }
+
+    function cancelEdit() {
+        if (!activeEditor) return;
+        var cell = activeEditor.cell;
+        activeEditor = null;
+        restoreCellDisplay(cell);
+    }
+
+    function commitEdit(editor) {
+        if (!editor || !editor.cell || !editor.input) return Promise.resolve({ ok: true });
+        var cell = editor.cell;
+        var input = editor.input;
+        var newValue = input.value.trim();
+        var originalNumeric = editor.originalNumeric;
+        activeEditor = null;
+        restoreCellDisplay(cell);
+
+        if (newValue === originalNumeric) {
+            return Promise.resolve({ ok: true });
+        }
+
+        var fieldName = cell.getAttribute('data-field-name');
+        var editUrl = cell.getAttribute('data-edit-url');
+        var payload = {};
+        payload[fieldName] = newValue;
+
+        var channel = channelForElement(cell);
+        var promise = postUrl(editUrl, payload).then(function(result) {
+            if (!result.ok) {
+                showFlash((result.data && result.data.error) || 'Could not save edit.', true);
+                // Revert numeric value so future displays show the prior value.
+                cell.setAttribute('data-numeric-value', originalNumeric);
+                restoreCellDisplay(cell);
+            } else {
+                hideFlash();
+                if (result.data && result.data.row) {
+                    var rowEl = cell.closest('tr');
+                    applyRowUpdate(rowEl, result.data.row);
+                }
+            }
+            return result;
+        });
+
+        if (channel) {
+            pendingSaves[channel].push(promise);
+            promise.finally(function() {
+                var idx = pendingSaves[channel].indexOf(promise);
+                if (idx >= 0) pendingSaves[channel].splice(idx, 1);
+            });
+        }
+        return promise;
+    }
+
+    function flushChannelEdits(channel) {
+        // If an editor is currently open in this channel, commit it. Then wait for all pending
+        // saves in this channel.
+        if (activeEditor && channelForElement(activeEditor.cell) === channel) {
+            commitEdit(activeEditor);
+        }
+        return Promise.all(pendingSaves[channel].slice());
+    }
+
+    function flushAllEdits() {
+        if (activeEditor) commitEdit(activeEditor);
+        var all = [].concat(pendingSaves.meta_ads, pendingSaves.mailchimp, pendingSaves.slicktext);
+        return Promise.all(all);
     }
 
     function removeRow(channel, rowEl) {
@@ -270,6 +559,15 @@
 
     // Row-level actions.
     modalEl.addEventListener('click', function(evt) {
+        // Don't intercept clicks inside an open editor input.
+        if (evt.target.tagName === 'INPUT') return;
+
+        var editableCell = evt.target.closest('td[data-editable="true"]');
+        if (editableCell && !editableCell.classList.contains('is-editing')) {
+            startEdit(editableCell);
+            return;
+        }
+
         var actionBtn = evt.target.closest('button[data-action]');
         if (actionBtn) {
             evt.preventDefault();
@@ -283,7 +581,10 @@
                 : section === sections.mailchimp ? 'mailchimp'
                 : 'slicktext';
             row.querySelectorAll('button[data-action]').forEach(function(b) { b.disabled = true; });
-            postUrl(url).then(function(result) {
+            // Flush any in-progress edit in this row/channel before acting.
+            flushChannelEdits(channel).then(function() {
+                return postUrl(url);
+            }).then(function(result) {
                 if (!result.ok) {
                     showFlash((result.data && result.data.error) || ('Could not ' + action + ' this match.'), true);
                     row.querySelectorAll('button[data-action]').forEach(function(b) { b.disabled = false; });
@@ -303,7 +604,16 @@
             var bulkUrl = state.confirmAllUrls[channelKey];
             if (!bulkUrl) return;
             bulkBtn.disabled = true;
-            postUrl(bulkUrl).then(function(result) {
+            flushChannelEdits(channelKey).then(function(results) {
+                var anyFailed = (results || []).some(function(r) { return r && r.ok === false; });
+                if (anyFailed) {
+                    showFlash('Could not save one or more edits — confirm cancelled.', true);
+                    bulkBtn.disabled = false;
+                    return null;
+                }
+                return postUrl(bulkUrl);
+            }).then(function(result) {
+                if (!result) return;
                 if (!result.ok) {
                     showFlash((result.data && result.data.error) || 'Could not confirm all matches.', true);
                     bulkBtn.disabled = false;
