@@ -1,0 +1,99 @@
+"""Convert a Typeform response payload into an ExternalSurveyResponse row.
+
+We store the full answer payload verbatim in `raw_answers`. The LLM event matcher
+later reads from this blob; no per-field mapping is attempted.
+"""
+
+import logging
+
+from django.utils.dateparse import parse_datetime
+
+
+logger = logging.getLogger(__name__)
+
+
+def ingest_response(subscription, form_response: dict):
+    """Upsert one Typeform `form_response` into an ExternalSurveyResponse.
+
+    Returns (response, created). Idempotent on (organization, typeform_response_id).
+    """
+    from tickets.models import ExternalSurveyResponse
+
+    response_id = form_response.get('response_id') or form_response.get('token')
+    submitted_at = parse_datetime(form_response.get('submitted_at') or '')
+    if not response_id or not submitted_at:
+        logger.warning('Typeform payload missing response_id or submitted_at; skipping.')
+        return None, False
+
+    definition_fields = (form_response.get('definition') or {}).get('fields') or []
+    titles_by_key = _index_titles(definition_fields)
+
+    raw_answers = []
+    for answer in form_response.get('answers') or []:
+        field = answer.get('field') or {}
+        field_id = field.get('id') or ''
+        ref = field.get('ref') or ''
+        atype = answer.get('type') or field.get('type') or ''
+        key = ref or field_id
+        title = titles_by_key.get(key) or field.get('title') or ''
+        raw_answers.append({
+            'id': field_id,
+            'ref': ref,
+            'type': atype,
+            'title': title,
+            'value': _field_value(answer),
+        })
+
+    response, created = ExternalSurveyResponse.objects.update_or_create(
+        organization=subscription.organization,
+        typeform_response_id=response_id,
+        defaults={
+            'upload': subscription.upload,
+            'responded_at': submitted_at,
+            'raw_answers': raw_answers,
+        },
+    )
+    return response, created
+
+
+def _index_titles(definition_fields: list[dict]) -> dict:
+    out: dict = {}
+    for field in definition_fields:
+        key = field.get('ref') or field.get('id')
+        if key:
+            out[key] = field.get('title') or ''
+    return out
+
+
+def _field_value(answer: dict):
+    """Read the answer's value in whatever shape Typeform sent it."""
+    atype = answer.get('type')
+    if atype == 'text':
+        return answer.get('text')
+    if atype == 'email':
+        return answer.get('email')
+    if atype == 'number':
+        return answer.get('number')
+    if atype == 'boolean':
+        return 'Yes' if answer.get('boolean') else 'No'
+    if atype == 'date':
+        return answer.get('date')
+    if atype == 'choice':
+        choice = answer.get('choice') or {}
+        return choice.get('label') or choice.get('other')
+    if atype == 'choices':
+        choices = answer.get('choices') or {}
+        labels = list(choices.get('labels') or [])
+        if choices.get('other'):
+            labels.append(choices['other'])
+        return labels
+    if atype == 'url':
+        return answer.get('url')
+    if atype == 'file_url':
+        return answer.get('file_url')
+    if atype == 'payment':
+        payment = answer.get('payment') or {}
+        return payment.get('amount')
+    if atype == 'phone_number':
+        return answer.get('phone_number')
+    return None

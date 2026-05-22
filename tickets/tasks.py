@@ -437,3 +437,109 @@ def process_csv_task(self, uploaded_file_id, manual_prices=None, tier_definition
         "process_csv_task complete for %s: %d success, %d errors",
         uploaded_file_id, results['success_count'], results['error_count'],
     )
+
+
+@shared_task(bind=True, max_retries=2, default_retry_delay=30)
+def sync_typeform_form_task(self, subscription_id):
+    """Pull recent Typeform responses for one subscription and ingest them."""
+    import traceback
+
+    from django.utils import timezone
+
+    from tickets.models import TypeformFormSubscription
+    from tickets.services.typeform.client import TypeformAPIError, TypeformClient
+    from tickets.services.typeform.ingest import ingest_response
+
+    try:
+        subscription = TypeformFormSubscription.objects.select_related('organization').get(
+            id=subscription_id,
+        )
+    except TypeformFormSubscription.DoesNotExist:
+        logger.warning("Typeform subscription %s not found", subscription_id)
+        return
+
+    if not subscription.is_active:
+        return
+
+    org = subscription.organization
+    access_token = org.typeform_access_token
+    if not access_token:
+        subscription.last_sync_error = 'Organization is not connected to Typeform.'
+        subscription.save(update_fields=['last_sync_error'])
+        return
+
+    started_at = timezone.now()
+    client = TypeformClient(access_token=access_token)
+    new_response_ids: list[str] = []
+
+    try:
+        after_token: str | None = None
+        while True:
+            payload = client.list_responses(
+                form_id=subscription.form_id,
+                since=subscription.last_synced_at,
+                after=after_token,
+            )
+            items = payload.get('items') or []
+            for item in items:
+                response, created = ingest_response(subscription, item)
+                if response and created and response.id:
+                    new_response_ids.append(str(response.id))
+            page_count = payload.get('page_count') or 0
+            current_page = payload.get('page') or 1
+            if current_page >= page_count or not items:
+                break
+            after_token = items[-1].get('token') or items[-1].get('response_id')
+            if not after_token:
+                break
+
+        subscription.last_synced_at = started_at
+        subscription.last_sync_error = ''
+        subscription.save(update_fields=['last_synced_at', 'last_sync_error'])
+    except TypeformAPIError as exc:
+        subscription.last_sync_error = str(exc)
+        subscription.save(update_fields=['last_sync_error'])
+        logger.warning("Typeform sync failed for sub %s: %s", subscription_id, exc)
+        try:
+            raise self.retry(exc=exc)
+        except self.MaxRetriesExceededError:
+            return
+    except Exception as exc:  # noqa: BLE001
+        subscription.last_sync_error = traceback.format_exc()
+        subscription.save(update_fields=['last_sync_error'])
+        logger.exception("Typeform sync unexpected error for sub %s", subscription_id)
+        try:
+            raise self.retry(exc=exc)
+        except self.MaxRetriesExceededError:
+            return
+
+    for response_id in new_response_ids:
+        match_survey_response_to_event_task.delay(response_id)
+
+
+@shared_task(bind=True, max_retries=1, default_retry_delay=30)
+def match_survey_response_to_event_task(self, response_id):
+    """Run the LLM event matcher for one survey response and save the suggestion."""
+    from tickets.models import ExternalSurveyResponse
+    from tickets.services.typeform.event_matcher import (
+        SurveyEventMatcher, apply_top_candidate,
+    )
+
+    try:
+        response = ExternalSurveyResponse.objects.select_related('organization').get(
+            id=response_id,
+        )
+    except ExternalSurveyResponse.DoesNotExist:
+        return
+
+    if response.event_id:
+        return
+
+    try:
+        matcher = SurveyEventMatcher(response.organization)
+        result = matcher.suggest(response)
+    except Exception:
+        logger.exception("Survey-to-event match failed for %s", response_id)
+        return
+
+    apply_top_candidate(response, result)

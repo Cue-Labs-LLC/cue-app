@@ -61,11 +61,16 @@
                                     <option value="">- no event -</option>
                                     {% for event in events %}
                                     <option value="{{ event.id }}"
-                                        {% if resp.event_id and resp.event_id|stringformat:'s' == event.id|stringformat:'s' %}selected{% endif %}>
+                                        {% if resp.event_id and resp.event_id|stringformat:'s' == event.id|stringformat:'s' %}selected{% elif not resp.event_id and resp.suggested_event_id and resp.suggested_event_id|stringformat:'s' == event.id|stringformat:'s' %}selected{% endif %}>
                                         {{ event.name }}{% if event.start_date %} ({{ event.start_date|date:"M j, Y" }}){% endif %}
                                     </option>
                                     {% endfor %}
                                 </select>
+                                {% if resp.suggested_event_id and not resp.event_id %}
+                                <div class="text-body-secondary small mt-1" title="{{ resp.match_reasoning }}">
+                                    <i class="bi bi-stars me-1"></i>AI suggestion{% if resp.match_confidence %} &middot; {{ resp.match_confidence|floatformat:2 }} confidence{% endif %}
+                                </div>
+                                {% endif %}
                             </td>
                         </tr>
                         {% empty %}

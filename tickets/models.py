@@ -121,6 +121,9 @@ class Organization(BaseModel):
     slicktext_brand_id = models.CharField(max_length=100, blank=True, default='')
     slicktext_brand_name = models.CharField(max_length=255, blank=True, default='')
     slicktext_validated_at = models.DateTimeField(null=True, blank=True)
+    typeform_access_token = models.CharField(max_length=255, blank=True, default='')
+    typeform_account_email = models.EmailField(blank=True, default='')
+    typeform_validated_at = models.DateTimeField(null=True, blank=True)
     waitlist_feature_enabled = models.BooleanField(
         default=False,
         help_text='Enable the waitlist feature for this organization.',
@@ -1755,6 +1758,7 @@ class AITokenUsage(BaseModel):
     FEATURE_MAILCHIMP_CAMPAIGN_MATCH = 'mailchimp_campaign_match'
     FEATURE_SLICKTEXT_CAMPAIGN_MATCH = 'slicktext_campaign_match'
     FEATURE_MARKETING_NARRATIVE = 'marketing_narrative'
+    FEATURE_TYPEFORM_EVENT_MATCH = 'typeform_event_match'
 
     FEATURE_CHOICES = [
         (FEATURE_CHAT_AGENT, 'Chat agent'),
@@ -1762,6 +1766,7 @@ class AITokenUsage(BaseModel):
         (FEATURE_MAILCHIMP_CAMPAIGN_MATCH, 'Mailchimp campaign match'),
         (FEATURE_SLICKTEXT_CAMPAIGN_MATCH, 'SlickText campaign match'),
         (FEATURE_MARKETING_NARRATIVE, 'Marketing narrative'),
+        (FEATURE_TYPEFORM_EVENT_MATCH, 'Typeform event match'),
     ]
 
     organization = models.ForeignKey(
@@ -2355,6 +2360,17 @@ class ExternalSurveyResponse(BaseModel):
     found_out_how = models.CharField(max_length=200, blank=True)
     text_feedback = models.TextField(blank=True)
     raffle_email = models.EmailField(blank=True)
+    typeform_response_id = models.CharField(max_length=64, blank=True, default='', db_index=True)
+    raw_answers = models.JSONField(
+        default=list, blank=True,
+        help_text='Full list of {id, ref, type, title, value} dicts from Typeform.',
+    )
+    suggested_event = models.ForeignKey(
+        'Event', null=True, blank=True, on_delete=models.SET_NULL,
+        related_name='suggested_survey_responses',
+    )
+    match_confidence = models.DecimalField(max_digits=4, decimal_places=3, null=True, blank=True)
+    match_reasoning = models.TextField(blank=True, default='')
 
     class Meta:
         ordering = ['-responded_at']
@@ -2364,10 +2380,47 @@ class ExternalSurveyResponse(BaseModel):
             models.Index(fields=['organization', 'nps_score']),
             models.Index(fields=['upload', 'city']),
             models.Index(fields=['event', '-responded_at']),
+            models.Index(fields=['organization', 'typeform_response_id']),
         ]
 
     def __str__(self):
         return f"Survey response ({self.city or 'no city'}) at {self.responded_at:%Y-%m-%d}"
+
+
+def _generate_typeform_webhook_secret():
+    return secrets.token_urlsafe(32)
+
+
+class TypeformFormSubscription(AuditBaseModel):
+    """A Typeform form an organization has wired up for response sync."""
+
+    organization = models.ForeignKey(
+        Organization, on_delete=models.CASCADE, related_name='typeform_subscriptions',
+    )
+    form_id = models.CharField(max_length=64)
+    form_title = models.CharField(max_length=255)
+    webhook_id = models.CharField(max_length=64, blank=True, default='')
+    webhook_secret = models.CharField(max_length=64, default=_generate_typeform_webhook_secret)
+    upload = models.ForeignKey(
+        ExternalSurveyUpload, null=True, blank=True, on_delete=models.SET_NULL,
+        related_name='typeform_subscriptions',
+        help_text='Synthetic upload row so the existing surveys UI groups responses by form.',
+    )
+    last_synced_at = models.DateTimeField(null=True, blank=True)
+    last_sync_error = models.TextField(blank=True, default='')
+    is_active = models.BooleanField(default=True)
+
+    class Meta:
+        ordering = ['-created_at']
+        unique_together = [('organization', 'form_id')]
+        indexes = [
+            models.Index(fields=['organization', 'is_active']),
+        ]
+        verbose_name = 'Typeform form subscription'
+        verbose_name_plural = 'Typeform form subscriptions'
+
+    def __str__(self):
+        return f"{self.form_title} ({self.organization.name})"
 
 
 class Payout(BaseModel):

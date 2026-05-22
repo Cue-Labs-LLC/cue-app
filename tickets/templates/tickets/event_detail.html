@@ -242,6 +242,10 @@
     <button class="nav-link" id="tab-orders-btn" data-bs-toggle="tab" data-bs-target="#tab-orders" type="button" role="tab">Orders{% if total_orders %} ({{ total_orders }}){% endif %}</button>
     <button class="nav-link" id="tab-finance-btn" data-bs-toggle="tab" data-bs-target="#tab-finance" type="button" role="tab">Finance</button>
     <button class="nav-link" id="tab-marketing-btn" data-bs-toggle="tab" data-bs-target="#tab-marketing" type="button" role="tab">Marketing</button>
+    <button class="nav-link" id="tab-surveys-btn" data-bs-toggle="tab" data-bs-target="#tab-surveys" type="button" role="tab">
+        Surveys{% if linked_survey_responses %} ({{ linked_survey_responses|length }}){% endif %}
+        {% if suggested_survey_responses %}<span class="badge text-bg-warning ms-1">{{ suggested_survey_responses|length }}</span>{% endif %}
+    </button>
     <button class="nav-link" id="tab-manage-btn" data-bs-toggle="tab" data-bs-target="#tab-manage" type="button" role="tab">Manage</button>
 </nav>
 <div class="tab-content">
@@ -396,6 +400,10 @@
             {% else %}
                 {{ survey_total_response_count }} responses
             {% endif %}
+            <a href="#tab-surveys" class="ms-2"
+               onclick="document.getElementById('tab-surveys-btn').click(); return false;">
+                View all responses &rarr;
+            </a>
         </span>
     </div>
     <div class="card-body">
@@ -1056,7 +1064,119 @@
 
 </div><!-- /tab-marketing -->
 
-<!-- ===== TAB 5: Manage ===== -->
+<!-- ===== TAB 5: Surveys ===== -->
+<div class="tab-pane fade" id="tab-surveys" role="tabpanel">
+
+{% if typeform_subscriptions %}
+    {% for sub in typeform_subscriptions %}
+    <div class="card mb-4">
+        <div class="card-header">
+            <h5 class="mb-0">{{ sub.form_title }}</h5>
+            <small class="text-muted">
+                Synced from Typeform &middot; Last synced
+                {% if sub.last_synced_at %}{{ sub.last_synced_at|date:"M j, Y H:i" }}{% else %}never{% endif %}
+            </small>
+            {% if sub.last_sync_error %}
+            <div class="text-danger small mt-1">{{ sub.last_sync_error|truncatechars:140 }}</div>
+            {% endif %}
+        </div>
+        <div class="card-body p-0">
+
+            <!-- Inline auto-loaded suggestion section (mirrors Marketing tab's Meta Ads pattern) -->
+            <div class="px-3 pt-3 survey-suggest-section"
+                 data-match-url="{% url 'tickets:event_survey_match' event.id %}?sub_id={{ sub.id }}&format=json"
+                 data-apply-url="{% url 'tickets:event_survey_apply' event.id %}">
+                <div class="d-flex justify-content-between align-items-center mb-2">
+                    <h6 class="mb-0 text-muted">Suggested matches</h6>
+                    <button type="button" class="btn btn-sm btn-link survey-refresh-btn p-0 text-decoration-none">
+                        <i class="bi bi-arrow-clockwise"></i> Refresh
+                    </button>
+                </div>
+                <div class="survey-suggest-loading text-muted small py-2">
+                    <span class="spinner-border spinner-border-sm me-2"></span> Fetching responses from Typeform&hellip;
+                </div>
+                <div class="survey-suggest-results d-none"></div>
+                <div class="survey-suggest-empty text-muted small py-2 d-none">No unlinked responses match this event yet.</div>
+                <div class="survey-suggest-error text-danger small py-2 d-none">Could not load suggestions. Click Refresh to try again.</div>
+            </div>
+
+            {% if sub.linked_responses %}
+            <hr class="my-3">
+            <div class="px-3 pb-2 small text-muted">Linked from this form</div>
+            <div class="table-responsive">
+                <table class="table table-hover mb-0 align-middle">
+                    <thead>
+                        <tr>
+                            <th style="width: 32px;"></th>
+                            <th>Date</th>
+                            <th>Preview</th>
+                            <th class="text-end" style="width: 110px;">Action</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for resp in sub.linked_responses %}
+                        <tr>
+                            <td>
+                                <button class="btn btn-sm btn-link p-0" type="button" data-bs-toggle="collapse"
+                                        data-bs-target="#resp-{{ resp.id }}" aria-expanded="false">
+                                    <i class="bi bi-chevron-right"></i>
+                                </button>
+                            </td>
+                            <td class="text-muted small" style="white-space: nowrap;">{{ resp.responded_at|date:"M j, Y" }}</td>
+                            <td class="small" style="max-width: 480px;">
+                                {% if resp.raw_answers %}
+                                    {% for ans in resp.raw_answers|slice:":1" %}
+                                    <span class="text-truncate d-inline-block" style="max-width: 100%;">
+                                        <strong>{{ ans.title|truncatechars:40 }}:</strong> {{ ans.value|stringformat:'s'|truncatechars:120 }}
+                                    </span>
+                                    {% endfor %}
+                                {% else %}<span class="text-muted">—</span>{% endif %}
+                            </td>
+                            <td class="text-end">
+                                <form method="post" action="{% url 'tickets:event_survey_unlink' event.id %}" class="d-inline"
+                                      onsubmit="return confirm('Unlink this response from the event?');">
+                                    {% csrf_token %}
+                                    <input type="hidden" name="response_id" value="{{ resp.id }}">
+                                    <button type="submit" class="btn btn-sm btn-outline-danger">Unlink</button>
+                                </form>
+                            </td>
+                        </tr>
+                        <tr class="collapse" id="resp-{{ resp.id }}">
+                            <td colspan="4" class="bg-light">
+                                <dl class="row mb-0 small">
+                                    {% for ans in resp.raw_answers %}
+                                    <dt class="col-sm-4">{{ ans.title|default:'(untitled)' }}</dt>
+                                    <dd class="col-sm-8">
+                                        {% if ans.value is None %}<span class="text-muted">(no answer)</span>
+                                        {% else %}{{ ans.value }}{% endif %}
+                                    </dd>
+                                    {% endfor %}
+                                </dl>
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+            {% endif %}
+
+        </div>
+    </div>
+    {% endfor %}
+{% else %}
+    <div class="empty-state" style="padding: 48px 0;">
+        <i class="bi bi-clipboard2-data fs-2 text-muted"></i>
+        <p class="text-muted mt-2 mb-1">No Typeform forms are syncing to this organization yet.</p>
+        <p class="text-muted small">
+            <a href="{% url 'tickets:typeform_settings' %}">Sync a Typeform form</a>
+            to start collecting responses for your events.
+        </p>
+    </div>
+{% endif %}
+
+</div><!-- /tab-surveys -->
+
+<!-- ===== TAB 6: Manage ===== -->
 <div class="tab-pane fade" id="tab-manage" role="tabpanel">
 
 {% if event.ticketing_type == 'direct' %}
@@ -3511,6 +3631,137 @@ function copyScannnerPin() {
             }
             showError(form, 'Network error. Please retry.');
         });
+    });
+})();
+</script>
+
+<script>
+// Survey-response inline auto-loader. Fires when the Surveys tab is shown.
+// Mirrors the Marketing tab's Meta Ads inline pattern (loadInlineSuggestions / shown.bs.tab).
+(function () {
+    var tabBtn = document.getElementById('tab-surveys-btn');
+    if (!tabBtn) return;
+    var loadedSections = new WeakSet();
+
+    function escapeHtml(s) {
+        return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
+            return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c];
+        });
+    }
+
+    function getCsrfToken() {
+        var el = document.querySelector('[name=csrfmiddlewaretoken]');
+        return el ? el.value : '';
+    }
+
+    function renderCandidate(c, applyUrl, csrf) {
+        var pct = c.confidence_pct || 0;
+        var cls = c.confidence_class || 'bg-secondary';
+        var preview = (c.preview_answers || []).map(function (a) {
+            var v = a.value;
+            if (Array.isArray(v)) v = v.join(', ');
+            return '<div class="text-truncate small"><strong>' + escapeHtml(a.title) + ':</strong> ' +
+                   escapeHtml(v == null ? '' : String(v)) + '</div>';
+        }).join('');
+        var datePart = c.responded_at ? c.responded_at.substring(0, 10) : '';
+        return (
+            '<div class="border-bottom py-2 d-flex align-items-start gap-3">' +
+              '<div class="flex-grow-1">' +
+                '<div class="d-flex justify-content-between small">' +
+                  '<span class="text-muted">' + escapeHtml(datePart) + '</span>' +
+                  '<span class="text-muted">' + pct + '% match</span>' +
+                '</div>' + preview +
+                '<div class="progress mt-1" style="height: 3px;">' +
+                  '<div class="progress-bar ' + cls + '" style="width: ' + pct + '%;"></div>' +
+                '</div>' +
+                '<div class="small text-muted mt-1">' + escapeHtml(c.reasoning || '') + '</div>' +
+              '</div>' +
+              '<form method="post" action="' + escapeHtml(applyUrl) + '" class="survey-confirm-form">' +
+                '<input type="hidden" name="csrfmiddlewaretoken" value="' + escapeHtml(csrf) + '">' +
+                '<input type="hidden" name="response_id" value="' + escapeHtml(c.response_id) + '">' +
+                '<input type="hidden" name="confidence" value="' + (c.confidence || 0) + '">' +
+                '<input type="hidden" name="reasoning" value="' + escapeHtml(c.reasoning || '') + '">' +
+                '<button type="submit" class="btn btn-sm btn-outline-primary">Link</button>' +
+              '</form>' +
+            '</div>'
+        );
+    }
+
+    function loadSection(sectionEl, forceReload) {
+        if (loadedSections.has(sectionEl) && !forceReload) return;
+        loadedSections.add(sectionEl);
+
+        var loadingEl = sectionEl.querySelector('.survey-suggest-loading');
+        var resultsEl = sectionEl.querySelector('.survey-suggest-results');
+        var emptyEl   = sectionEl.querySelector('.survey-suggest-empty');
+        var errorEl   = sectionEl.querySelector('.survey-suggest-error');
+        var matchUrl  = sectionEl.dataset.matchUrl;
+        var applyUrl  = sectionEl.dataset.applyUrl;
+        var csrf      = getCsrfToken();
+
+        resultsEl.classList.add('d-none'); resultsEl.innerHTML = '';
+        emptyEl.classList.add('d-none');
+        errorEl.classList.add('d-none');
+        loadingEl.classList.remove('d-none');
+
+        fetch(matchUrl, {headers: {'X-Requested-With': 'XMLHttpRequest'}})
+            .then(function (r) { return r.json(); })
+            .then(function (payload) {
+                loadingEl.classList.add('d-none');
+                var candidates = (payload && payload.data && payload.data.candidates) || [];
+                if (!candidates.length) { emptyEl.classList.remove('d-none'); return; }
+                resultsEl.innerHTML = candidates.map(function (c) {
+                    return renderCandidate(c, applyUrl, csrf);
+                }).join('');
+                resultsEl.classList.remove('d-none');
+            })
+            .catch(function () {
+                loadingEl.classList.add('d-none');
+                errorEl.classList.remove('d-none');
+                loadedSections.delete(sectionEl);  // allow retry
+            });
+    }
+
+    function loadAllSections(force) {
+        document.querySelectorAll('.survey-suggest-section').forEach(function (s) {
+            loadSection(s, force);
+        });
+    }
+
+    tabBtn.addEventListener('shown.bs.tab', function () { loadAllSections(false); });
+    if (tabBtn.classList.contains('active')) loadAllSections(false);
+
+    // Per-card Refresh button → force-reload that one section.
+    document.addEventListener('click', function (e) {
+        var btn = e.target.closest('.survey-refresh-btn');
+        if (!btn) return;
+        var section = btn.closest('.survey-suggest-section');
+        if (section) loadSection(section, true);
+    });
+
+    // Per-row Link form → AJAX so the candidate vanishes on success and we reload to
+    // render the now-linked row in the table below.
+    document.addEventListener('submit', function (e) {
+        var form = e.target.closest('.survey-confirm-form');
+        if (!form) return;
+        e.preventDefault();
+        var btn = form.querySelector('button[type=submit]');
+        if (btn) btn.disabled = true;
+        fetch(form.action, {
+            method: 'POST',
+            body: new FormData(form),
+            headers: {'X-Requested-With': 'XMLHttpRequest'},
+            credentials: 'same-origin',
+        })
+        .then(function (r) { return r.json().then(function (data) { return {ok: r.ok, data: data}; }); })
+        .then(function (result) {
+            if (result.ok && result.data && result.data.success) {
+                window.location.reload();
+            } else if (btn) {
+                btn.disabled = false;
+            }
+        })
+        .catch(function () { if (btn) btn.disabled = false; });
     });
 })();
 </script>

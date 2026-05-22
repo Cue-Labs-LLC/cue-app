@@ -119,6 +119,15 @@ urlpatterns = [
     path('analytics/surveys/<uuid:upload_id>/delete/', views.survey_upload_delete, name='survey_upload_delete'),
     path('analytics/surveys/<uuid:upload_id>/link-events/', views.survey_event_link, name='survey_event_link'),
 
+    # Typeform integration (organizer settings)
+    path('settings/typeform/', views.typeform_settings, name='typeform_settings'),
+    path('settings/typeform/connect/', views.typeform_connect, name='typeform_connect'),
+    path('settings/typeform/disconnect/', views.typeform_disconnect, name='typeform_disconnect'),
+    path('settings/typeform/forms/', views.typeform_form_picker, name='typeform_form_picker'),
+    path('settings/typeform/forms/<uuid:sub_id>/sync/', views.typeform_form_sync, name='typeform_form_sync'),
+    path('settings/typeform/forms/<uuid:sub_id>/delete/', views.typeform_form_unsubscribe, name='typeform_form_unsubscribe'),
+    path('webhooks/typeform/<uuid:sub_id>/', views.typeform_webhook, name='typeform_webhook'),
+
     # Surveys (public - no login required)
     path('survey/<uuid:token>/', views.survey_form, name='survey_form'),
     path('survey/thank-you/', views.survey_thank_you, name='survey_thank_you'),
@@ -129,6 +138,9 @@ urlpatterns = [
     path('events/create/', views.event_type_select, name='event_type_select'),
     path('events/create/<str:ticketing_type>/', views.event_create, name='event_create'),
     path('events/<uuid:event_id>/', views.event_detail, name='event_detail'),
+    path('events/<uuid:event_id>/surveys/match/',  views.event_survey_match,  name='event_survey_match'),
+    path('events/<uuid:event_id>/surveys/apply/',  views.event_survey_apply,  name='event_survey_apply'),
+    path('events/<uuid:event_id>/surveys/unlink/', views.event_survey_unlink, name='event_survey_unlink'),
     path('events/<uuid:event_id>/uploads-summary/', views.event_uploads_summary, name='event_uploads_summary'),
     path('events/<uuid:event_id>/scanner-pin/generate/', views.generate_scanner_pin, name='generate_scanner_pin'),
     path('events/<uuid:event_id>/scanner-pin/revoke/', views.revoke_scanner_pin, name='revoke_scanner_pin'),
