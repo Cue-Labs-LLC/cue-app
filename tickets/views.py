@@ -4298,8 +4298,12 @@ def event_detail(request, event_id):
             .order_by('-responded_at')
         ):
             upload_to_linked.setdefault(resp.upload_id, []).append(resp)
+    from .services.typeform.helpers import enrich_answers_with_titles, pick_preview_pairs
     for sub in typeform_subscriptions:
         sub.linked_responses = upload_to_linked.get(sub.upload_id, [])
+        for resp in sub.linked_responses:
+            resp.enriched_answers = enrich_answers_with_titles(resp.raw_answers, sub.questions)
+            resp.preview_pairs = pick_preview_pairs(resp.enriched_answers, limit=2)
     context['typeform_subscriptions'] = typeform_subscriptions
 
     return render(request, 'tickets/event_detail.html', context)
@@ -11858,8 +11862,14 @@ def typeform_webhook(request, sub_id):
     return JsonResponse({'ok': True, 'created': bool(created)})
 
 
-def _survey_candidate_dict(response, candidate):
-    """Shape one (ExternalSurveyResponse, ResponseCandidate) pair for the modal JSON."""
+def _survey_candidate_dict(response, candidate, subscription=None):
+    """Shape one (ExternalSurveyResponse, ResponseCandidate) pair for the modal JSON.
+
+    When `subscription` is provided, titles missing from raw_answers are backfilled
+    from `subscription.questions` so the UI never renders "(untitled)".
+    """
+    from .services.typeform.helpers import enrich_answers_with_titles
+
     confidence = float(candidate.confidence or 0)
     pct = int(round(confidence * 100))
     if confidence >= 0.7:
@@ -11868,10 +11878,13 @@ def _survey_candidate_dict(response, candidate):
         confidence_class = 'bg-warning'
     else:
         confidence_class = 'bg-secondary'
+    raw = response.raw_answers or []
+    if subscription is not None:
+        raw = enrich_answers_with_titles(raw, subscription.questions)
     preview = []
     # Cap at 4 so the JS formatter has enough material to pick a primary line and
     # up to two secondaries; rendering decides which to show.
-    for ans in (response.raw_answers or [])[:4]:
+    for ans in raw[:4]:
         if not isinstance(ans, dict):
             continue
         preview.append({
@@ -11895,7 +11908,11 @@ def _survey_candidate_dict(response, candidate):
 def event_survey_match(request, event_id):
     """Fetch + LLM-rank unlinked Typeform responses for one event. Returns JSON for the modal."""
     from .services.typeform.client import TypeformAPIError, TypeformClient
-    from .services.typeform.event_matcher import EventSurveyMatcher, EVENT_WINDOW_DAYS
+    from .services.typeform.event_matcher import (
+        CONFIDENCE_THRESHOLD,
+        EventSurveyMatcher,
+        EVENT_WINDOW_DAYS,
+    )
     from .services.typeform.ingest import ingest_response
 
     org = get_organization(request)
@@ -11967,11 +11984,16 @@ def event_survey_match(request, event_id):
             ranking = None
         if ranking and ranking.candidates:
             by_id = {str(r.id): r for r in candidate_responses}
+            sub_by_upload = {sub.upload_id: sub for sub in subscriptions if sub.upload_id}
+            threshold = float(CONFIDENCE_THRESHOLD)
             for cand in ranking.candidates:
+                if float(cand.confidence or 0) < threshold:
+                    continue
                 resp = by_id.get(str(cand.response_id))
                 if not resp:
                     continue
-                candidate_dicts.append(_survey_candidate_dict(resp, cand))
+                sub = sub_by_upload.get(resp.upload_id)
+                candidate_dicts.append(_survey_candidate_dict(resp, cand, subscription=sub))
 
     if request.GET.get('format') == 'json':
         return JsonResponse({'data': {'candidates': candidate_dicts}})

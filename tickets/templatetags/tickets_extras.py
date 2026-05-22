@@ -63,3 +63,15 @@ def currency(value):
         return f"{Decimal(str(value)):,.2f}"
     except (TypeError, ValueError, InvalidOperation):
         return '0.00'
+
+
+@register.filter
+def survey_value(value):
+    """Render a Typeform answer value as plain text. Lists become comma-joined
+    strings (no quotes, no brackets); everything else stringifies normally.
+    Example: ['Afrobeats', 'Dancehall'] → 'Afrobeats, Dancehall'."""
+    if value is None:
+        return ''
+    if isinstance(value, (list, tuple)):
+        return ', '.join(str(v) for v in value if v not in (None, ''))
+    return str(value)
