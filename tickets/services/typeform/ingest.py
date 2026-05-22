@@ -1,12 +1,16 @@
 """Convert a Typeform response payload into an ExternalSurveyResponse row.
 
 We store the full answer payload verbatim in `raw_answers`. The LLM event matcher
-later reads from this blob; no per-field mapping is attempted.
+reads from this blob. If the subscription has a `field_map` configured, the
+matching answers are also projected into the structured ExternalSurveyResponse
+columns (overall_rating, nps_score, city, etc.) via `apply_field_map`.
 """
 
 import logging
 
 from django.utils.dateparse import parse_datetime
+
+from tickets.services.typeform.field_mapping import apply_field_map
 
 
 logger = logging.getLogger(__name__)
@@ -44,14 +48,18 @@ def ingest_response(subscription, form_response: dict):
             'value': _field_value(answer),
         })
 
+    defaults = {
+        'upload': subscription.upload,
+        'responded_at': submitted_at,
+        'raw_answers': raw_answers,
+    }
+    # Project mapped columns when the subscription has a field_map configured.
+    defaults.update(apply_field_map(raw_answers, subscription.field_map or {}))
+
     response, created = ExternalSurveyResponse.objects.update_or_create(
         organization=subscription.organization,
         typeform_response_id=response_id,
-        defaults={
-            'upload': subscription.upload,
-            'responded_at': submitted_at,
-            'raw_answers': raw_answers,
-        },
+        defaults=defaults,
     )
     return response, created
 

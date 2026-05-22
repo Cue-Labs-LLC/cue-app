@@ -11407,7 +11407,8 @@ def typeform_disconnect(request):
             logger.warning('Failed to delete Typeform webhook for sub %s: %s', sub.id, exc)
         sub.is_active = False
         sub.webhook_id = ''
-        sub.save(update_fields=['is_active', 'webhook_id'])
+        sub.last_sync_error = ''
+        sub.save(update_fields=['is_active', 'webhook_id', 'last_sync_error'])
 
     org.typeform_access_token = ''
     org.typeform_account_email = ''
@@ -11483,9 +11484,13 @@ def typeform_form_picker(request):
                     upload=upload,
                 )
             else:
+                # Re-activating a previously deactivated subscription. Clear any stale
+                # last_sync_error from a prior (possibly expired) token so the row
+                # doesn't show a misleading red error line after reconnect.
                 sub.is_active = True
                 sub.form_title = (form_meta.get('title') or sub.form_title)[:255]
-                sub.save(update_fields=['is_active', 'form_title'])
+                sub.last_sync_error = ''
+                sub.save(update_fields=['is_active', 'form_title', 'last_sync_error'])
 
             webhook_url = _typeform_webhook_url(request, sub.id)
             if not _is_publicly_reachable(webhook_url):
@@ -11586,6 +11591,140 @@ def typeform_form_unsubscribe(request, sub_id):
     subscription.save(update_fields=['is_active', 'webhook_id'])
     messages.success(request, f'Unsubscribed from "{subscription.form_title}".')
     return redirect('tickets:typeform_settings')
+
+
+@login_required
+@require_org
+@require_admin
+def typeform_form_mapping(request, sub_id):
+    """Per-form field mapping editor: pick which Typeform question feeds which
+    ExternalSurveyResponse column. New ingests use the saved map; existing rows
+    can be re-projected by ticking the backfill checkbox.
+    """
+    from collections import OrderedDict
+
+    from .services.typeform.client import TypeformAPIError, TypeformClient
+    from .services.typeform.field_mapping import (
+        TARGET_FIELDS, apply_field_map, auto_field_map, flatten_form_fields,
+    )
+
+    SAMPLE_RESPONSE_LIMIT = 50
+    SAMPLE_VALUES_PER_FIELD = 3
+
+    org = get_organization(request)
+    subscription = get_object_or_404(
+        TypeformFormSubscription.objects.filter(organization=org), id=sub_id,
+    )
+
+    if not org.typeform_access_token:
+        messages.error(request, 'Connect Typeform first to edit field mappings.')
+        return redirect('tickets:typeform_settings')
+
+    client = TypeformClient(access_token=org.typeform_access_token)
+    try:
+        definition = client.get_form(subscription.form_id)
+    except TypeformAPIError as exc:
+        messages.error(request, f'Could not load form definition: {exc}')
+        definition = {'fields': []}
+
+    flat_fields = flatten_form_fields(definition)
+
+    if request.method == 'POST':
+        new_map: dict = {}
+        for field in flat_fields:
+            key = field.get('ref') or field.get('id')
+            if not key:
+                continue
+            value = (request.POST.get(f'map_{key}') or '').strip()
+            if value and value in TARGET_FIELDS:
+                new_map[key] = value
+        subscription.field_map = new_map
+        subscription.save(update_fields=['field_map'])
+
+        backfilled = 0
+        if request.POST.get('backfill') == '1' and subscription.upload_id:
+            # Re-project the mapping over the most recent 500 responses from this
+            # form. update() bypasses signals — keep cache invalidation cheap by
+            # touching the event stats cache for affected events.
+            qs = (
+                ExternalSurveyResponse.objects
+                .filter(organization=org, upload_id=subscription.upload_id)
+                .exclude(typeform_response_id='')
+                .order_by('-responded_at')[:500]
+            )
+            affected_event_ids: set[str] = set()
+            for resp in qs:
+                update = apply_field_map(resp.raw_answers or [], new_map)
+                if update:
+                    ExternalSurveyResponse.objects.filter(pk=resp.pk).update(**update)
+                    if resp.event_id:
+                        affected_event_ids.add(str(resp.event_id))
+                    backfilled += 1
+            for eid in affected_event_ids:
+                django_cache.delete(_event_stats_cache_key(eid))
+                _invalidate_event_upload_stats_cache(eid)
+
+        msg = f'Field mapping saved ({len(new_map)} field(s)).'
+        if backfilled:
+            msg += f' Re-applied to {backfilled} existing response(s).'
+        messages.success(request, msg)
+        return redirect('tickets:typeform_form_mapping', sub_id=subscription.id)
+
+    # Collect up to 3 distinct sample values per question, scanning the most
+    # recent 50 ingested responses for this form. Lets the user map deterministically.
+    samples_by_key: dict[str, list[str]] = {}
+    if subscription.upload_id:
+        recent_raws = (
+            ExternalSurveyResponse.objects
+            .filter(organization=org, upload_id=subscription.upload_id)
+            .exclude(typeform_response_id='')
+            .order_by('-responded_at')
+            .values_list('raw_answers', flat=True)[:SAMPLE_RESPONSE_LIMIT]
+        )
+        seen: dict[str, OrderedDict] = {}
+        for raw in recent_raws:
+            for ans in raw or []:
+                if not isinstance(ans, dict):
+                    continue
+                key = ans.get('ref') or ans.get('id')
+                if not key:
+                    continue
+                value = ans.get('value')
+                if value in (None, '', []):
+                    continue
+                text = (
+                    ', '.join(str(v) for v in value)
+                    if isinstance(value, list) else str(value)
+                ).strip()
+                if not text:
+                    continue
+                bucket = seen.setdefault(key, OrderedDict())
+                if text not in bucket and len(bucket) < SAMPLE_VALUES_PER_FIELD:
+                    bucket[text] = None
+        samples_by_key = {k: list(v.keys()) for k, v in seen.items()}
+
+    # Build the rows for the editor. If field_map is empty, pre-fill from auto-detect.
+    current_map = subscription.field_map or auto_field_map(definition)
+    fields = []
+    for field in flat_fields:
+        key = field.get('ref') or field.get('id')
+        if not key:
+            continue
+        fields.append({
+            'key': key,
+            'title': field.get('title') or '(untitled)',
+            'group_title': field.get('group_title') or '',
+            'type': field.get('type'),
+            'mapped_to': current_map.get(key, ''),
+            'samples': samples_by_key.get(key, []),
+        })
+
+    return render(request, 'tickets/typeform_form_mapping.html', {
+        'subscription': subscription,
+        'fields': fields,
+        'target_fields': TARGET_FIELDS,
+        'has_saved_mapping': bool(subscription.field_map),
+    })
 
 
 @csrf_exempt

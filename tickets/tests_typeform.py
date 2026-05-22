@@ -161,6 +161,158 @@ class TypeformIngestTests(TestCase):
         self.assertIsNone(response)
         self.assertFalse(created)
 
+    def test_ingest_response_populates_structured_columns_when_field_map_set(self):
+        # Configure a mapping that targets every interesting structured column.
+        self.subscription.field_map = {
+            'rating_ref': 'overall_rating',
+            'nps_ref': 'nps_score',
+            'email_ref': 'email',
+            'city_ref': 'city',
+            'enjoyed_ref': 'enjoyed',
+            'feedback_ref': 'text_feedback',
+        }
+        self.subscription.save(update_fields=['field_map'])
+
+        payload = _sample_webhook_payload()['form_response']
+        response, created = ingest_response(self.subscription, payload)
+
+        self.assertTrue(created)
+        # Raw answers still populated unchanged.
+        self.assertEqual(len(response.raw_answers), 6)
+        # Mapped structured columns now have values.
+        self.assertEqual(response.overall_rating, '5')
+        self.assertEqual(response.nps_score, 9)
+        self.assertEqual(response.email, 'attendee@example.com')
+        self.assertEqual(response.city, 'San Francisco')
+        self.assertEqual(response.enjoyed, ['DJ set', 'Lighting'])
+        self.assertIn('Cobra Lounge', response.text_feedback)
+
+
+# ── Field mapping service ─────────────────────────────────────────────────
+
+class TypeformFieldMappingTests(TestCase):
+    def test_auto_field_map_detects_common_question_types(self):
+        from tickets.services.typeform.field_mapping import auto_field_map
+
+        form = {
+            'fields': [
+                {'ref': 'rating', 'type': 'rating', 'title': 'How was it?', 'properties': {}},
+                {'ref': 'nps', 'type': 'opinion_scale', 'title': 'Recommend?',
+                 'properties': {'steps': 11}},
+                {'ref': 'email', 'type': 'email', 'title': 'Your email', 'properties': {}},
+                {'ref': 'city', 'type': 'short_text', 'title': 'Which city?', 'properties': {}},
+                {'ref': 'enjoyed', 'type': 'multiple_choice', 'title': 'What did you enjoy?',
+                 'properties': {'allow_multiple_selection': True}},
+                {'ref': 'genres', 'type': 'multiple_choice', 'title': 'Music genre?',
+                 'properties': {'allow_multiple_selection': True}},
+                {'ref': 'feedback', 'type': 'long_text', 'title': 'Any other comments?',
+                 'properties': {}},
+                {'ref': 'raffle', 'type': 'email', 'title': 'Raffle email to win',
+                 'properties': {}},
+            ],
+        }
+        mapping = auto_field_map(form)
+        self.assertEqual(mapping['rating'], 'overall_rating')
+        self.assertEqual(mapping['nps'], 'nps_score')
+        self.assertEqual(mapping['email'], 'email')
+        self.assertEqual(mapping['city'], 'city')
+        self.assertEqual(mapping['enjoyed'], 'enjoyed')
+        self.assertEqual(mapping['genres'], 'genres')
+        self.assertEqual(mapping['feedback'], 'text_feedback')
+        self.assertEqual(mapping['raffle'], 'raffle_email')
+
+    def test_apply_field_map_projects_values_with_correct_types(self):
+        from tickets.services.typeform.field_mapping import apply_field_map
+
+        raw_answers = [
+            {'id': 'fr', 'ref': 'rating', 'type': 'rating', 'title': 'Rating', 'value': 5},
+            {'id': 'fn', 'ref': 'nps', 'type': 'opinion_scale', 'title': 'NPS', 'value': 9},
+            {'id': 'fc', 'ref': 'city', 'type': 'short_text', 'title': 'City', 'value': 'SF'},
+            {'id': 'fe', 'ref': 'enjoyed', 'type': 'choices', 'title': 'Enjoyed',
+             'value': ['DJ', 'Lights']},
+            {'id': 'ft', 'ref': 'fb', 'type': 'long_text', 'title': 'Feedback', 'value': 'Loved it'},
+        ]
+        field_map = {
+            'rating': 'overall_rating',
+            'nps': 'nps_score',
+            'city': 'city',
+            'enjoyed': 'enjoyed',
+            'fb': 'text_feedback',
+        }
+        result = apply_field_map(raw_answers, field_map)
+        self.assertEqual(result['overall_rating'], '5')      # coerced to str
+        self.assertEqual(result['nps_score'], 9)             # int 0-10
+        self.assertEqual(result['city'], 'SF')
+        self.assertEqual(result['enjoyed'], ['DJ', 'Lights'])  # list preserved
+        self.assertEqual(result['text_feedback'], 'Loved it')
+
+    def test_apply_field_map_handles_empty_inputs(self):
+        from tickets.services.typeform.field_mapping import apply_field_map
+
+        self.assertEqual(apply_field_map([], {'x': 'email'}), {})
+        self.assertEqual(apply_field_map([{'ref': 'x', 'value': 'a'}], {}), {})
+
+    def test_apply_field_map_truncates_to_model_max_lengths(self):
+        from tickets.services.typeform.field_mapping import apply_field_map
+
+        raw = [{'ref': 'c', 'value': 'x' * 250}]
+        result = apply_field_map(raw, {'c': 'city'})
+        self.assertEqual(len(result['city']), 100)  # city max_length=100
+
+    def test_apply_field_map_drops_invalid_nps_values(self):
+        from tickets.services.typeform.field_mapping import apply_field_map
+
+        # Out-of-range and non-numeric NPS values get coerced to None.
+        for bad in [11, -1, 'high', None]:
+            result = apply_field_map(
+                [{'ref': 'n', 'value': bad}], {'n': 'nps_score'},
+            )
+            self.assertIsNone(result.get('nps_score'))
+
+    def test_auto_field_map_recurses_into_group_fields(self):
+        from tickets.services.typeform.field_mapping import auto_field_map
+
+        form = {'fields': [
+            {'ref': 'sect1', 'type': 'group', 'title': 'Section 1', 'properties': {'fields': [
+                {'ref': 'rating', 'type': 'rating', 'title': 'How was it?', 'properties': {}},
+                {'ref': 'email', 'type': 'email', 'title': 'Your email', 'properties': {}},
+            ]}},
+            {'ref': 'sect2', 'type': 'inline_group', 'title': 'Section 2', 'properties': {'fields': [
+                {'ref': 'feedback', 'type': 'long_text', 'title': 'Comments?', 'properties': {}},
+            ]}},
+        ]}
+        mapping = auto_field_map(form)
+        # Group wrappers contribute no entries; their children do.
+        self.assertNotIn('sect1', mapping)
+        self.assertNotIn('sect2', mapping)
+        self.assertEqual(mapping['rating'], 'overall_rating')
+        self.assertEqual(mapping['email'], 'email')
+        self.assertEqual(mapping['feedback'], 'text_feedback')
+
+    def test_flatten_form_fields_skips_non_answerable_types(self):
+        from tickets.services.typeform.field_mapping import flatten_form_fields
+
+        form = {'fields': [
+            {'ref': 'welcome', 'type': 'statement', 'title': 'Welcome'},
+            {'ref': 'thankyou', 'type': 'thankyou_screen', 'title': 'Thanks'},
+            {'ref': 'r', 'type': 'rating', 'title': 'How was it?', 'properties': {}},
+        ]}
+        flat = flatten_form_fields(form)
+        refs = [f['ref'] for f in flat]
+        self.assertEqual(refs, ['r'])
+        self.assertEqual(flat[0]['group_title'], '')
+
+    def test_flatten_form_fields_propagates_parent_group_title(self):
+        from tickets.services.typeform.field_mapping import flatten_form_fields
+
+        form = {'fields': [
+            {'ref': 'group', 'type': 'group', 'title': 'Demographics', 'properties': {'fields': [
+                {'ref': 'city', 'type': 'short_text', 'title': 'City', 'properties': {}},
+            ]}},
+        ]}
+        flat = flatten_form_fields(form)
+        self.assertEqual(flat[0]['group_title'], 'Demographics')
+
 
 # ── Webhook view ──────────────────────────────────────────────────────────
 
@@ -570,3 +722,143 @@ class EventSurveyApplyViewTests(TestCase):
         })
         self.r1.refresh_from_db()
         self.assertEqual(self.r1.event_id, other_event.id)
+
+
+# ── Field-mapping editor view ─────────────────────────────────────────────
+
+class TypeformFormMappingViewTests(TestCase):
+    SAMPLE_DEFINITION = {
+        'id': 'abc123',
+        'title': 'Test form',
+        'fields': [
+            {'id': 'fid_rating', 'ref': 'rating_ref', 'type': 'rating',
+             'title': 'How was it?', 'properties': {}},
+            {'id': 'fid_nps', 'ref': 'nps_ref', 'type': 'opinion_scale',
+             'title': 'Would you recommend?', 'properties': {'steps': 11}},
+            {'id': 'fid_email', 'ref': 'email_ref', 'type': 'email',
+             'title': 'Your email', 'properties': {}},
+        ],
+    }
+
+    def setUp(self):
+        self.org, self.user = _make_org_and_user(slug='mapview-org', org_role='owner')
+        self.org.typeform_access_token = 'tfp_test_token'
+        self.org.save(update_fields=['typeform_access_token'])
+        self.subscription = _make_subscription(self.org)
+        self.client = Client()
+        self.client.force_login(self.user)
+
+    @patch('tickets.services.typeform.client.TypeformClient.get_form')
+    def test_get_prefills_dropdowns_with_auto_detected_mapping(self, mock_get_form):
+        mock_get_form.return_value = self.SAMPLE_DEFINITION
+        url = reverse('tickets:typeform_form_mapping', args=[self.subscription.id])
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, 200)
+        # Each question rendered; auto_field_map suggests overall_rating + nps_score + email.
+        body = response.content.decode()
+        self.assertIn('rating_ref', body)
+        self.assertIn('overall_rating', body)
+        self.assertIn('nps_score', body)
+
+    @patch('tickets.services.typeform.client.TypeformClient.get_form')
+    def test_post_saves_field_map_to_subscription(self, mock_get_form):
+        mock_get_form.return_value = self.SAMPLE_DEFINITION
+        url = reverse('tickets:typeform_form_mapping', args=[self.subscription.id])
+        response = self.client.post(url, {
+            'map_rating_ref': 'overall_rating',
+            'map_nps_ref': 'nps_score',
+            'map_email_ref': 'email',
+        })
+        self.assertEqual(response.status_code, 302)
+        self.subscription.refresh_from_db()
+        self.assertEqual(self.subscription.field_map, {
+            'rating_ref': 'overall_rating',
+            'nps_ref': 'nps_score',
+            'email_ref': 'email',
+        })
+
+    @patch('tickets.services.typeform.client.TypeformClient.get_form')
+    def test_post_with_invalid_target_is_ignored(self, mock_get_form):
+        mock_get_form.return_value = self.SAMPLE_DEFINITION
+        url = reverse('tickets:typeform_form_mapping', args=[self.subscription.id])
+        self.client.post(url, {
+            'map_rating_ref': 'not_a_real_field',  # not in TARGET_FIELDS → dropped
+            'map_email_ref': 'email',
+        })
+        self.subscription.refresh_from_db()
+        self.assertEqual(self.subscription.field_map, {'email_ref': 'email'})
+
+    @patch('tickets.services.typeform.client.TypeformClient.get_form')
+    def test_post_with_backfill_reapplies_mapping_to_existing_rows(self, mock_get_form):
+        mock_get_form.return_value = self.SAMPLE_DEFINITION
+        # Pre-existing response ingested before any mapping was configured.
+        existing = ingest_response(
+            self.subscription,
+            _sample_webhook_payload(response_id='r_old')['form_response'],
+        )[0]
+        self.assertEqual(existing.email, '')
+        self.assertEqual(existing.overall_rating, '')
+
+        url = reverse('tickets:typeform_form_mapping', args=[self.subscription.id])
+        self.client.post(url, {
+            'map_rating_ref': 'overall_rating',
+            'map_nps_ref': 'nps_score',
+            'map_email_ref': 'email',
+            'backfill': '1',
+        })
+
+        existing.refresh_from_db()
+        self.assertEqual(existing.overall_rating, '5')
+        self.assertEqual(existing.nps_score, 9)
+        self.assertEqual(existing.email, 'attendee@example.com')
+
+    @patch('tickets.services.typeform.client.TypeformClient.get_form')
+    def test_get_renders_sample_values_from_recent_responses(self, mock_get_form):
+        mock_get_form.return_value = self.SAMPLE_DEFINITION
+        # Ingest one response so its raw_answers can seed the sample column.
+        ingest_response(
+            self.subscription,
+            _sample_webhook_payload(response_id='r_sample')['form_response'],
+        )
+        url = reverse('tickets:typeform_form_mapping', args=[self.subscription.id])
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, 200)
+        body = response.content.decode()
+        # Sample values for refs that exist in the form definition should appear in
+        # the rendered Sample answers column (email_ref and rating_ref are in
+        # SAMPLE_DEFINITION; the webhook payload provides answers for both).
+        self.assertIn('attendee@example.com', body)
+        # The rating answer (number 5) should also render as a sample.
+        self.assertIn('&ldquo;5&rdquo;', body)
+
+    @patch('tickets.services.typeform.client.TypeformClient.get_form')
+    def test_get_renders_no_responses_placeholder_when_no_ingest_yet(self, mock_get_form):
+        mock_get_form.return_value = self.SAMPLE_DEFINITION
+        url = reverse('tickets:typeform_form_mapping', args=[self.subscription.id])
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('No responses yet', response.content.decode())
+
+    @patch('tickets.services.typeform.client.TypeformClient.get_form')
+    def test_get_walks_into_group_field_and_renders_each_child(self, mock_get_form):
+        # Wrap the same three questions in a group container — the editor should
+        # surface one row per child, not a single opaque group row.
+        mock_get_form.return_value = {
+            'id': 'abc123', 'title': 'Test form',
+            'fields': [{
+                'id': 'fid_group', 'ref': 'group_ref', 'type': 'group',
+                'title': 'Section A',
+                'properties': {'fields': self.SAMPLE_DEFINITION['fields']},
+            }],
+        }
+        url = reverse('tickets:typeform_form_mapping', args=[self.subscription.id])
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, 200)
+        body = response.content.decode()
+        # Each child question's ref renders as a dropdown name; the group's does not.
+        self.assertIn('name="map_rating_ref"', body)
+        self.assertIn('name="map_nps_ref"', body)
+        self.assertIn('name="map_email_ref"', body)
+        self.assertNotIn('name="map_group_ref"', body)
+        # Group title is surfaced above the question title for context.
+        self.assertIn('Section A', body)
