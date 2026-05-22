@@ -1985,8 +1985,13 @@ def ai_recommendation_unconfirmed_matches(request, recommendation_id):
             'label': meta.get('campaign_name') or e.description or 'Meta Ads campaign',
             'sublabel': e.external_id or '',
             'amount': f'{(e.amount or Decimal("0.00")):.2f}',
+            'effective_attributed_orders': e.effective_attributed_orders or 0,
+            'effective_attributed_revenue': f'{(e.effective_attributed_revenue or Decimal("0.00")):.2f}',
+            'manual_attributed_orders': e.manual_attributed_orders,
+            'manual_attributed_revenue': f'{e.manual_attributed_revenue:.2f}' if e.manual_attributed_revenue is not None else '',
             'confirm_url': reverse('tickets:event_meta_ads_confirm', args=[event.id, e.id]),
             'remove_url': reverse('tickets:event_meta_ads_remove', args=[event.id, e.id]),
+            'metrics_edit_url': reverse('tickets:event_meta_ads_metrics_edit', args=[event.id, e.id]),
         }
 
     def fmt_send_time(value):
@@ -2000,8 +2005,19 @@ def ai_recommendation_unconfirmed_matches(request, recommendation_id):
             'label': c.campaign_title or c.external_id or 'Mailchimp campaign',
             'sublabel': c.subject_line or '',
             'send_time': fmt_send_time(c.send_time),
+            'effective_emails_sent': c.effective_emails_sent or 0,
+            'effective_unique_opens': c.effective_unique_opens or 0,
+            'effective_clicks': c.effective_clicks or 0,
+            'effective_orders': c.effective_orders or 0,
+            'effective_revenue': f'{(c.effective_revenue or Decimal("0.00")):.2f}',
+            'manual_emails_sent': c.manual_emails_sent,
+            'manual_unique_opens': c.manual_unique_opens,
+            'manual_clicks': c.manual_clicks,
+            'manual_orders': c.manual_orders,
+            'manual_revenue': f'{c.manual_revenue:.2f}' if c.manual_revenue is not None else '',
             'confirm_url': reverse('tickets:event_mailchimp_confirm', args=[event.id, c.id]),
             'remove_url': reverse('tickets:event_mailchimp_remove', args=[event.id, c.id]),
+            'metrics_edit_url': reverse('tickets:event_mailchimp_metrics_edit', args=[event.id, c.id]),
         }
 
     def sms_payload(c):
@@ -2010,8 +2026,17 @@ def ai_recommendation_unconfirmed_matches(request, recommendation_id):
             'label': c.name or c.external_id or 'SlickText broadcast',
             'sublabel': (c.message or '')[:120],
             'send_time': fmt_send_time(c.send_time),
+            'effective_audience': c.effective_audience or 0,
+            'effective_clicks': c.effective_clicks or 0,
+            'effective_orders': c.effective_orders or 0,
+            'effective_revenue': f'{(c.effective_revenue or Decimal("0.00")):.2f}',
+            'manual_audience': c.manual_audience,
+            'manual_clicks': c.manual_clicks,
+            'manual_orders': c.manual_orders,
+            'manual_revenue': f'{c.manual_revenue:.2f}' if c.manual_revenue is not None else '',
             'confirm_url': reverse('tickets:event_slicktext_confirm', args=[event.id, c.id]),
             'remove_url': reverse('tickets:event_slicktext_remove', args=[event.id, c.id]),
+            'metrics_edit_url': reverse('tickets:event_slicktext_metrics_edit', args=[event.id, c.id]),
         }
 
     payload = {
