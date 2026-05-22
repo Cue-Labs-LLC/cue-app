@@ -2,6 +2,7 @@ name: Tests
 
 on:
   push:
+  pull_request:
 
 jobs:
   test:
@@ -51,3 +52,60 @@ jobs:
           DEBUG: "True"
           E2E_TEST_MODE: "True"
         run: python manage.py test e2e --verbosity=2
+
+  migrations:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: cue
+          POSTGRES_PASSWORD: cue
+          POSTGRES_DB: cue_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U cue"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      SECRET_KEY: "ci-test-secret-key-not-used-in-prod"
+      DEBUG: "True"
+      DJANGO_SETTINGS_MODULE: "ltv_updater.settings"
+      DATABASE_URL: "postgres://cue:cue@localhost:5432/cue_ci"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Check for missing migrations
+        run: python manage.py makemigrations --check --dry-run
+
+      - name: Detect unmerged migration leaves
+        run: |
+          python <<'PY'
+          import sys
+          import django
+          django.setup()
+          from django.db.migrations.loader import MigrationLoader
+          loader = MigrationLoader(None, ignore_no_migrations=True)
+          conflicts = loader.detect_conflicts()
+          if conflicts:
+              for app, names in conflicts.items():
+                  print(f"Conflicting leaves in {app}: {names}", file=sys.stderr)
+              sys.exit(1)
+          PY
+
+      - name: Apply migrations against Postgres
+        run: python manage.py migrate --noinput
