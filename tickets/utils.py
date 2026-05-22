@@ -2,9 +2,13 @@
 
 import base64
 import io
+import logging
 from functools import wraps
 
 from django.shortcuts import redirect
+
+
+logger = logging.getLogger(__name__)
 
 
 def generate_qr_b64(data: str) -> str:
@@ -55,7 +59,7 @@ def get_organization(request):
     if getattr(request, _sentinel, False):
         return getattr(request, _attr, None)
 
-    from .models import Organization, UserProfile
+    from .models import Organization, OrganizationMembership, UserProfile
 
     org = None
     org_id = request.session.get('_org_id')
@@ -71,9 +75,23 @@ def get_organization(request):
             # Stale session value - fall through to DB lookup
             org = None
 
+        # Validate that the user is still a member of this org. Superusers
+        # bypass the check so they can impersonate any org via session.
+        if org is not None and not request.user.is_superuser:
+            is_member = OrganizationMembership.objects.filter(
+                user=request.user, organization_id=org_id
+            ).exists()
+            if not is_member:
+                logger.warning(
+                    "Stale _org_id in session for user %s: org %s has no membership; falling back.",
+                    request.user.pk,
+                    org_id,
+                )
+                org = None
+                request.session.pop('_org_id', None)
+
     if org is None and org_id != '':
         # Slow path: check membership table first (multi-org), fall back to legacy profile.organization
-        from .models import OrganizationMembership
         profile, _ = UserProfile.objects.select_related('organization').get_or_create(
             user=request.user,
             defaults={'organization_id': None},

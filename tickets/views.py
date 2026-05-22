@@ -10334,6 +10334,10 @@ def org_switch(request):
     )
     clear_org_cache(request)
     request.session['_org_id'] = str(membership.organization_id)
+    # Seed the per-request cache so any subsequent get_organization() call in
+    # this same request sees the new org without re-querying.
+    request._cached_org = membership.organization
+    request._cached_org_set = True
     messages.success(request, f"Switched to {membership.organization.name}.")
     next_url = request.POST.get('next', '')
     if next_url and url_has_allowed_host_and_scheme(next_url, allowed_hosts={request.get_host()}):
