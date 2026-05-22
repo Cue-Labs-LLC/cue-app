@@ -47,14 +47,62 @@
             <table class="table table-hover mb-0 mobile-card-table customer-list-table">
                 <thead>
                     <tr>
-                        <th><a href="?sort=name&search={{ search_query }}&segment={{ segment_filter }}&tag={{ tag_filter }}">Name <i class="bi bi-arrow-down-up"></i></a></th>
-                        <th><a href="?sort=email&search={{ search_query }}&segment={{ segment_filter }}&tag={{ tag_filter }}">Email <i class="bi bi-arrow-down-up"></i></a></th>
+                        <th>
+                            {% with asc='name' desc='-name' %}
+                            <a href="?sort={% if sort_by == asc %}{{ desc }}{% else %}{{ asc }}{% endif %}&search={{ search_query }}&segment={{ segment_filter }}&tag={{ tag_filter }}">Name
+                                {% if sort_by == asc %}<i class="bi bi-arrow-up"></i>
+                                {% elif sort_by == desc %}<i class="bi bi-arrow-down"></i>
+                                {% else %}<i class="bi bi-arrow-down-up"></i>{% endif %}
+                            </a>
+                            {% endwith %}
+                        </th>
+                        <th>
+                            {% with asc='email' desc='-email' %}
+                            <a href="?sort={% if sort_by == asc %}{{ desc }}{% else %}{{ asc }}{% endif %}&search={{ search_query }}&segment={{ segment_filter }}&tag={{ tag_filter }}">Email
+                                {% if sort_by == asc %}<i class="bi bi-arrow-up"></i>
+                                {% elif sort_by == desc %}<i class="bi bi-arrow-down"></i>
+                                {% else %}<i class="bi bi-arrow-down-up"></i>{% endif %}
+                            </a>
+                            {% endwith %}
+                        </th>
                         <th class="d-none d-sm-table-cell">Phone</th>
-                        <th>Segment</th>
-                        <th><a href="?sort=-lifetime_value&search={{ search_query }}&segment={{ segment_filter }}&tag={{ tag_filter }}">Lifetime Value <i class="bi bi-arrow-down-up"></i></a></th>
-                        <th class="d-none d-sm-table-cell"><a href="?sort=-last_order_date&search={{ search_query }}&segment={{ segment_filter }}&tag={{ tag_filter }}">Last Order <i class="bi bi-arrow-down-up"></i></a></th>
+                        <th>
+                            {% with asc='rfm_segment' desc='-rfm_segment' %}
+                            <a href="?sort={% if sort_by == asc %}{{ desc }}{% else %}{{ asc }}{% endif %}&search={{ search_query }}&segment={{ segment_filter }}&tag={{ tag_filter }}">Segment
+                                {% if sort_by == asc %}<i class="bi bi-arrow-up"></i>
+                                {% elif sort_by == desc %}<i class="bi bi-arrow-down"></i>
+                                {% else %}<i class="bi bi-arrow-down-up"></i>{% endif %}
+                            </a>
+                            {% endwith %}
+                        </th>
+                        <th>
+                            {% with asc='lifetime_value' desc='-lifetime_value' %}
+                            <a href="?sort={% if sort_by == desc %}{{ asc }}{% else %}{{ desc }}{% endif %}&search={{ search_query }}&segment={{ segment_filter }}&tag={{ tag_filter }}">Lifetime Value
+                                {% if sort_by == asc %}<i class="bi bi-arrow-up"></i>
+                                {% elif sort_by == desc %}<i class="bi bi-arrow-down"></i>
+                                {% else %}<i class="bi bi-arrow-down-up"></i>{% endif %}
+                            </a>
+                            {% endwith %}
+                        </th>
+                        <th class="d-none d-sm-table-cell">
+                            {% with asc='last_order_date' desc='-last_order_date' %}
+                            <a href="?sort={% if sort_by == desc %}{{ asc }}{% else %}{{ desc }}{% endif %}&search={{ search_query }}&segment={{ segment_filter }}&tag={{ tag_filter }}">Last Order
+                                {% if sort_by == asc %}<i class="bi bi-arrow-up"></i>
+                                {% elif sort_by == desc %}<i class="bi bi-arrow-down"></i>
+                                {% else %}<i class="bi bi-arrow-down-up"></i>{% endif %}
+                            </a>
+                            {% endwith %}
+                        </th>
                         <th class="d-none d-sm-table-cell">Total Orders</th>
-                        <th class="d-none d-md-table-cell">Tags</th>
+                        <th class="d-none d-md-table-cell">
+                            {% with asc='first_tag_name' desc='-first_tag_name' %}
+                            <a href="?sort={% if sort_by == asc %}{{ desc }}{% else %}{{ asc }}{% endif %}&search={{ search_query }}&segment={{ segment_filter }}&tag={{ tag_filter }}">Tags
+                                {% if sort_by == asc %}<i class="bi bi-arrow-up"></i>
+                                {% elif sort_by == desc %}<i class="bi bi-arrow-down"></i>
+                                {% else %}<i class="bi bi-arrow-down-up"></i>{% endif %}
+                            </a>
+                            {% endwith %}
+                        </th>
                     </tr>
                 </thead>
                 <tbody>

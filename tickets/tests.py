@@ -4762,6 +4762,21 @@ class MultiOrgTests(TestCase):
         # Session should be unchanged
         self.assertEqual(self.client.session.get('_org_id'), str(self.org_a.pk))
 
+    def test_stale_session_org_id_falls_back_to_membership(self):
+        """If session._org_id points at an org the user has no membership in,
+        get_organization() ignores it and falls back to a real membership."""
+        # Tamper the session: point _org_id at an org the user is NOT a member of.
+        session = self.client.session
+        session['_org_id'] = str(self.org_other.pk)
+        session.save()
+
+        # Hit any @require_org view. Home is fine.
+        response = self.client.get(reverse('tickets:home'))
+        # Should not 500; should resolve to the user's actual membership org.
+        self.assertEqual(response.status_code, 200)
+        # Session should now reflect the user's real org (org_a), not org_other.
+        self.assertEqual(self.client.session.get('_org_id'), str(self.org_a.pk))
+
     def test_invite_accept_does_not_overwrite_existing_org(self):
         """Accepting an invite to org_b should not change profile.organization from org_a."""
         from datetime import timedelta

@@ -561,5 +561,32 @@ document.addEventListener('DOMContentLoaded', function () {
 </script>
 <script src="https://instant.page/5.2.0" type="module"
   integrity="sha384-jnZyxPjiipYXnSU0ygqeac2q7CVYMbh84q0uHVRRxEtvFPiQYbXWUorga2aqZJ0z"></script>
+<script>
+document.addEventListener('DOMContentLoaded', function () {
+    var KEY = 'cue:dismissed_upload_warnings';
+    var dismissed;
+    try {
+        dismissed = new Set(JSON.parse(localStorage.getItem(KEY) || '[]'));
+    } catch (e) {
+        dismissed = new Set();
+    }
+    var save = function () {
+        try { localStorage.setItem(KEY, JSON.stringify([].concat(Array.from(dismissed)))); } catch (e) {}
+    };
+    document.querySelectorAll('.js-dismiss-upload-warning').forEach(function (btn) {
+        var id = btn.dataset.eventId;
+        if (dismissed.has(id)) {
+            btn.style.display = 'none';
+            return;
+        }
+        btn.addEventListener('click', function (e) {
+            e.preventDefault();
+            dismissed.add(id);
+            save();
+            btn.style.display = 'none';
+        });
+    });
+});
+</script>
 </body>
 </html>

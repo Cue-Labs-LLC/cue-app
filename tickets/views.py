@@ -1751,7 +1751,8 @@ def home(request):
         end_time = ev.end_time or ev.start_time or time(23, 59, 59)
         event_end = datetime.combine(end_date, end_time)
         if now_local > event_end:
-            event_ids_show_warning.add(ev.id)
+            if ev.ticketing_type == 'external':
+                event_ids_show_warning.add(ev.id)
         elif ev.ticketing_type == 'external':
             event_ids_show_placeholder.add(ev.id)
 
@@ -2318,11 +2319,30 @@ def customer_list(request):
     customers = customers.annotate(order_count=Count('ticket_orders'))
 
     # Sorting
+    allowed_sorts = {
+        'name', '-name',
+        'email', '-email',
+        'lifetime_value', '-lifetime_value',
+        'last_order_date', '-last_order_date',
+        'rfm_segment', '-rfm_segment',
+        'first_tag_name', '-first_tag_name',
+    }
     sort_by = request.GET.get('sort', '-lifetime_value')
-    if sort_by in ['name', 'email', 'lifetime_value', 'last_order_date']:
+    if sort_by not in allowed_sorts:
+        sort_by = '-lifetime_value'
+
+    if sort_by in ('first_tag_name', '-first_tag_name'):
+        # Isolated subquery so we don't join through the M2M and inflate other annotations.
+        first_tag_subquery = CustomerTag.objects.filter(
+            customers=OuterRef('pk')
+        ).order_by('name').values('name')[:1]
+        customers = customers.annotate(first_tag_name=Subquery(first_tag_subquery))
+        tag_order = F('first_tag_name')
+        customers = customers.order_by(
+            tag_order.desc(nulls_last=True) if sort_by.startswith('-') else tag_order.asc(nulls_last=True)
+        )
+    else:
         customers = customers.order_by(sort_by)
-    elif sort_by == '-lifetime_value':
-        customers = customers.order_by('-lifetime_value')
 
     # prefetch_related must go AFTER the OR search chain to avoid Django dropping it
     customers = customers.prefetch_related('tags')
@@ -3214,7 +3234,8 @@ def event_list(request):
         end_time = ev.end_time or ev.start_time or time(23, 59, 59)
         event_end = datetime.combine(end_date, end_time)
         if now_local > event_end:
-            event_ids_show_warning.add(ev.id)
+            if ev.ticketing_type == 'external':
+                event_ids_show_warning.add(ev.id)
         elif ev.ticketing_type == 'external':
             event_ids_show_placeholder.add(ev.id)
 
@@ -10313,6 +10334,10 @@ def org_switch(request):
     )
     clear_org_cache(request)
     request.session['_org_id'] = str(membership.organization_id)
+    # Seed the per-request cache so any subsequent get_organization() call in
+    # this same request sees the new org without re-querying.
+    request._cached_org = membership.organization
+    request._cached_org_set = True
     messages.success(request, f"Switched to {membership.organization.name}.")
     next_url = request.POST.get('next', '')
     if next_url and url_has_allowed_host_and_scheme(next_url, allowed_hosts={request.get_host()}):
