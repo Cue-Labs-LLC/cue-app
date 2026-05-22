@@ -1,0 +1,726 @@
+{% load static %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SMS Messaging Terms &mdash; Cue</title>
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='5' fill='%230F0E0D'/%3E%3Cpath d='M6 11a1 1 0 0 1 1-1h18a1 1 0 0 1 1 1v3a2 2 0 0 0 0 4v3a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1v-3a2 2 0 0 0 0-4v-3z' fill='%2300FF87'/%3E%3Cline x1='13' y1='10' x2='13' y2='22' stroke='%230F0E0D' stroke-width='1.5' stroke-dasharray='2 2'/%3E%3C/svg%3E">
+    <meta name="description" content="Cue Labs LLC SMS messaging program — how attendees opt in, what messages we send, and how to opt out.">
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link rel="preload"
+          href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700;800;900&family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;1,9..40,300&display=swap"
+          as="style" onload="this.rel='stylesheet'">
+    <noscript>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700;800;900&family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;1,9..40,300&display=swap">
+    </noscript>
+    <link rel="preload" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" as="style" onload="this.rel='stylesheet'">
+    <noscript><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css"></noscript>
+
+    <style>
+        :root {
+            --bg:             #0F0E0D;
+            --surface:        #191817;
+            --surface-2:      #232220;
+            --ink:            #EDE8E3;
+            --ink-2:          #7A7672;
+            --ink-3:          #4A4846;
+            --accent:         #00FF87;
+            --accent-dim:     rgba(0,255,135,0.10);
+            --accent-glow:    rgba(0,255,135,0.22);
+            --border:         rgba(255,255,255,0.07);
+            --border-mid:     rgba(255,255,255,0.11);
+            --border-strong:  rgba(255,255,255,0.18);
+            --font-display:   'Barlow Condensed', 'Arial Narrow', sans-serif;
+            --font-body:      'DM Sans', system-ui, sans-serif;
+            --font-mono:      'DM Sans', system-ui, sans-serif;
+            --nav-h:          56px;
+            --gutter:         clamp(20px, 5vw, 64px);
+            --max-w:          720px;
+        }
+
+        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+        html { scroll-behavior: smooth; }
+
+        body {
+            background: var(--bg);
+            color: var(--ink);
+            font-family: var(--font-body);
+            font-weight: 300;
+            line-height: 1.6;
+            min-height: 100vh;
+            -webkit-font-smoothing: antialiased;
+            background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.03'/%3E%3C/svg%3E");
+        }
+
+        .site-nav {
+            position: sticky;
+            top: 0;
+            z-index: 100;
+            height: var(--nav-h);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0 var(--gutter);
+            background: rgba(15,14,13,0.88);
+            backdrop-filter: blur(16px);
+            -webkit-backdrop-filter: blur(16px);
+            border-bottom: 1px solid transparent;
+            transition: border-color 0.2s;
+        }
+        .site-nav.scrolled { border-bottom-color: var(--border-mid); }
+        .nav-brand {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            text-decoration: none;
+            color: var(--ink);
+        }
+        .nav-brand-wordmark {
+            font-family: var(--font-display);
+            font-weight: 900;
+            font-size: 1.5rem;
+            letter-spacing: 0.05em;
+            text-transform: uppercase;
+            line-height: 1;
+        }
+        .nav-brand-dot {
+            width: 7px;
+            height: 7px;
+            border-radius: 50%;
+            background: var(--accent);
+            flex-shrink: 0;
+            box-shadow: 0 0 8px var(--accent-glow);
+        }
+        .nav-actions { display: flex; align-items: center; gap: 8px; }
+
+        .btn {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 8px 18px;
+            font-family: var(--font-body);
+            font-size: 0.8rem;
+            font-weight: 500;
+            text-decoration: none;
+            cursor: pointer;
+            border: 1px solid transparent;
+            letter-spacing: 0.06em;
+            text-transform: uppercase;
+            transition: background 0.15s, color 0.15s, border-color 0.15s;
+        }
+        .btn-ghost {
+            color: var(--ink-2);
+            border-color: var(--border-mid);
+            background: transparent;
+        }
+        .btn-ghost:hover { color: var(--ink); border-color: var(--border-strong); }
+
+        .wrap {
+            max-width: var(--max-w);
+            margin: 0 auto;
+            padding-left: var(--gutter);
+            padding-right: var(--gutter);
+        }
+
+        .policy-hero {
+            padding: clamp(56px, 10vw, 100px) 0 clamp(40px, 6vw, 56px);
+            border-bottom: 1px solid var(--border);
+        }
+        .hero-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            font-family: var(--font-mono);
+            font-size: 0.65rem;
+            letter-spacing: 0.14em;
+            text-transform: uppercase;
+            color: var(--accent);
+            border: 1px solid rgba(0,255,135,0.22);
+            background: var(--accent-dim);
+            padding: 5px 12px;
+            margin-bottom: 28px;
+            opacity: 0;
+            animation: fadeUp 0.5s ease forwards;
+        }
+        .hero-badge::before {
+            content: '';
+            width: 5px;
+            height: 5px;
+            border-radius: 50%;
+            background: var(--accent);
+            box-shadow: 0 0 6px var(--accent);
+            flex-shrink: 0;
+        }
+        .policy-headline {
+            font-family: var(--font-display);
+            font-weight: 900;
+            font-size: clamp(3.2rem, 8vw, 6rem);
+            line-height: 0.92;
+            letter-spacing: 0.01em;
+            text-transform: uppercase;
+            color: var(--ink);
+            margin-bottom: 24px;
+            opacity: 0;
+            animation: fadeUp 0.55s ease 0.1s forwards;
+        }
+        .policy-headline .accent-word {
+            color: var(--accent);
+            text-shadow: 0 0 40px rgba(0,255,135,0.3);
+        }
+        .policy-meta {
+            display: flex;
+            align-items: center;
+            gap: 20px;
+            flex-wrap: wrap;
+            opacity: 0;
+            animation: fadeUp 0.55s ease 0.18s forwards;
+        }
+        .policy-meta-item {
+            display: flex;
+            align-items: center;
+            gap: 7px;
+            font-family: var(--font-mono);
+            font-size: 0.68rem;
+            letter-spacing: 0.1em;
+            text-transform: uppercase;
+            color: var(--ink-3);
+        }
+        .policy-meta-item i { color: var(--ink-3); font-size: 0.85rem; }
+
+        .toc-strip {
+            padding: 28px 0;
+            border-bottom: 1px solid var(--border);
+            opacity: 0;
+            animation: fadeUp 0.55s ease 0.24s forwards;
+        }
+        .toc-label {
+            font-family: var(--font-mono);
+            font-size: 0.6rem;
+            letter-spacing: 0.18em;
+            text-transform: uppercase;
+            color: var(--ink-3);
+            margin-bottom: 14px;
+        }
+        .toc-links {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+        }
+        .toc-link {
+            font-family: var(--font-mono);
+            font-size: 0.68rem;
+            letter-spacing: 0.06em;
+            text-transform: uppercase;
+            color: var(--ink-2);
+            text-decoration: none;
+            padding: 5px 12px;
+            border: 1px solid var(--border);
+            background: var(--surface);
+            transition: color 0.15s, border-color 0.15s;
+        }
+        .toc-link:hover { color: var(--accent); border-color: rgba(0,255,135,0.22); }
+
+        .policy-body { padding: clamp(48px, 8vw, 80px) 0; }
+
+        .policy-section {
+            margin-bottom: 56px;
+            padding-bottom: 56px;
+            border-bottom: 1px solid var(--border);
+        }
+        .policy-section:last-child {
+            margin-bottom: 0;
+            padding-bottom: 0;
+            border-bottom: none;
+        }
+
+        .section-number {
+            font-family: var(--font-mono);
+            font-size: 0.62rem;
+            letter-spacing: 0.18em;
+            text-transform: uppercase;
+            color: var(--accent);
+            margin-bottom: 10px;
+        }
+        .section-title {
+            font-family: var(--font-display);
+            font-weight: 800;
+            font-size: 1.6rem;
+            letter-spacing: 0.04em;
+            text-transform: uppercase;
+            color: var(--ink);
+            margin-bottom: 20px;
+            scroll-margin-top: calc(var(--nav-h) + 24px);
+        }
+
+        .policy-text {
+            font-size: 0.875rem;
+            font-weight: 300;
+            color: var(--ink-2);
+            line-height: 1.85;
+            margin-bottom: 16px;
+        }
+        .policy-text:last-child { margin-bottom: 0; }
+
+        .policy-text a { color: var(--accent); text-decoration: none; }
+        .policy-text a:hover { text-decoration: underline; }
+        .policy-text strong { color: var(--ink); font-weight: 500; }
+
+        .policy-list {
+            font-size: 0.875rem;
+            font-weight: 300;
+            color: var(--ink-2);
+            line-height: 1.85;
+            margin: 16px 0 16px 22px;
+        }
+        .policy-list li { margin-bottom: 8px; }
+        .policy-list li strong { color: var(--ink); font-weight: 500; }
+
+        .inline-card {
+            background: var(--surface);
+            border: 1px solid var(--border-mid);
+            border-left: 3px solid var(--accent);
+            padding: 16px 20px;
+            margin: 20px 0;
+        }
+        .inline-card p {
+            font-size: 0.82rem;
+            font-weight: 300;
+            color: var(--ink-2);
+            line-height: 1.75;
+        }
+        .inline-card p strong { color: var(--ink); font-weight: 500; }
+
+        /* Consent screenshot mockup */
+        .consent-mockup {
+            background: var(--surface);
+            border: 1px solid var(--border-mid);
+            padding: 22px 24px;
+            margin: 24px 0;
+            position: relative;
+        }
+        .consent-mockup-label {
+            position: absolute;
+            top: -10px;
+            left: 18px;
+            background: var(--bg);
+            padding: 0 10px;
+            font-family: var(--font-mono);
+            font-size: 0.6rem;
+            letter-spacing: 0.16em;
+            text-transform: uppercase;
+            color: var(--ink-3);
+        }
+        .consent-row {
+            display: flex;
+            align-items: flex-start;
+            gap: 12px;
+        }
+        .consent-checkbox {
+            width: 16px;
+            height: 16px;
+            border: 1.5px solid var(--ink-3);
+            border-radius: 3px;
+            background: transparent;
+            flex-shrink: 0;
+            margin-top: 3px;
+        }
+        .consent-copy {
+            font-size: 0.82rem;
+            font-weight: 300;
+            color: var(--ink-2);
+            line-height: 1.6;
+        }
+
+        /* Sample message bubbles */
+        .sms-thread {
+            background: var(--surface);
+            border: 1px solid var(--border-mid);
+            padding: 22px;
+            margin: 20px 0;
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+            max-width: 460px;
+        }
+        .sms-bubble {
+            background: var(--surface-2);
+            border-left: 2px solid var(--accent);
+            padding: 12px 14px;
+            font-size: 0.82rem;
+            font-weight: 300;
+            color: var(--ink);
+            line-height: 1.55;
+        }
+        .sms-bubble-meta {
+            font-family: var(--font-mono);
+            font-size: 0.6rem;
+            letter-spacing: 0.12em;
+            text-transform: uppercase;
+            color: var(--ink-3);
+            margin-bottom: 6px;
+        }
+
+        /* Keyword table */
+        .keyword-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 20px 0;
+            font-size: 0.85rem;
+        }
+        .keyword-table th,
+        .keyword-table td {
+            text-align: left;
+            padding: 12px 14px;
+            border-bottom: 1px solid var(--border);
+            vertical-align: top;
+        }
+        .keyword-table th {
+            font-family: var(--font-mono);
+            font-size: 0.62rem;
+            letter-spacing: 0.14em;
+            text-transform: uppercase;
+            color: var(--ink-3);
+            font-weight: 500;
+            border-bottom-color: var(--border-mid);
+        }
+        .keyword-table td { color: var(--ink-2); font-weight: 300; line-height: 1.55; }
+        .keyword-table td code {
+            display: inline-block;
+            background: var(--surface);
+            border: 1px solid var(--border-mid);
+            padding: 2px 8px;
+            font-family: var(--font-mono);
+            font-size: 0.78rem;
+            color: var(--accent);
+            letter-spacing: 0.04em;
+        }
+
+        .contact-closer {
+            border-top: 1px solid var(--border);
+            padding: clamp(40px, 6vw, 64px) 0;
+        }
+        .contact-closer-inner {
+            background: var(--surface);
+            border: 1px solid var(--border-mid);
+            padding: clamp(28px, 4vw, 44px);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 28px;
+            flex-wrap: wrap;
+        }
+        .closer-overline {
+            font-family: var(--font-mono);
+            font-size: 0.62rem;
+            letter-spacing: 0.16em;
+            text-transform: uppercase;
+            color: var(--ink-3);
+            margin-bottom: 8px;
+        }
+        .closer-title {
+            font-family: var(--font-display);
+            font-weight: 800;
+            font-size: 1.5rem;
+            letter-spacing: 0.04em;
+            text-transform: uppercase;
+            color: var(--ink);
+            margin-bottom: 8px;
+        }
+        .closer-title .accent-word { color: var(--accent); }
+        .closer-body {
+            font-size: 0.82rem;
+            font-weight: 300;
+            color: var(--ink-2);
+        }
+        .contact-email-link {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            font-family: var(--font-mono);
+            font-size: 0.78rem;
+            letter-spacing: 0.08em;
+            color: var(--accent);
+            text-decoration: none;
+            padding: 12px 20px;
+            border: 1px solid rgba(0,255,135,0.22);
+            background: var(--accent-dim);
+            white-space: nowrap;
+            transition: background 0.15s, box-shadow 0.15s;
+        }
+        .contact-email-link:hover {
+            background: rgba(0,255,135,0.16);
+            box-shadow: 0 0 14px var(--accent-glow);
+        }
+
+        .site-footer {
+            border-top: 1px solid var(--border);
+            padding: 24px var(--gutter);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            flex-wrap: wrap;
+            gap: 12px;
+        }
+        .footer-brand {
+            font-family: var(--font-display);
+            font-weight: 900;
+            font-size: 1rem;
+            letter-spacing: 0.06em;
+            text-transform: uppercase;
+            color: var(--ink-3);
+        }
+        .footer-links { display: flex; gap: 20px; align-items: center; }
+        .footer-link {
+            font-family: var(--font-mono);
+            font-size: 0.68rem;
+            color: var(--ink-3);
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+            text-decoration: none;
+            transition: color 0.15s;
+        }
+        .footer-link:hover { color: var(--ink-2); }
+        .footer-copy {
+            font-family: var(--font-mono);
+            font-size: 0.68rem;
+            color: var(--ink-3);
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+        }
+
+        .reveal {
+            opacity: 0;
+            transform: translateY(14px);
+            transition: opacity 0.5s ease, transform 0.5s ease;
+        }
+        .reveal.visible { opacity: 1; transform: none; }
+
+        @keyframes fadeUp {
+            from { opacity: 0; transform: translateY(16px); }
+            to   { opacity: 1; transform: translateY(0); }
+        }
+    </style>
+</head>
+<body>
+
+    <nav class="site-nav" id="siteNav">
+        <a href="/" class="nav-brand">
+            <span class="nav-brand-dot"></span>
+            <span class="nav-brand-wordmark">Cue</span>
+        </a>
+        <div class="nav-actions">
+            <a href="{% url 'tickets:login' %}" class="btn btn-ghost">Sign in</a>
+        </div>
+    </nav>
+
+    <section class="policy-hero">
+        <div class="wrap">
+            <div class="hero-badge">SMS Program</div>
+            <h1 class="policy-headline">Messaging<br><span class="accent-word">Terms.</span></h1>
+            <div class="policy-meta">
+                <span class="policy-meta-item"><i class="bi bi-calendar3"></i> Effective March 25, 2026</span>
+                <span class="policy-meta-item"><i class="bi bi-chat-dots"></i> Program: Cue</span>
+            </div>
+        </div>
+    </section>
+
+    <div class="toc-strip">
+        <div class="wrap">
+            <p class="toc-label">Jump to section</p>
+            <div class="toc-links">
+                <a href="#program" class="toc-link">Program</a>
+                <a href="#opt-in" class="toc-link">How to opt in</a>
+                <a href="#messages" class="toc-link">Sample messages</a>
+                <a href="#frequency" class="toc-link">Frequency &amp; fees</a>
+                <a href="#keywords" class="toc-link">Keywords</a>
+                <a href="#carriers" class="toc-link">Carriers</a>
+                <a href="#privacy" class="toc-link">Privacy</a>
+                <a href="#contact" class="toc-link">Contact</a>
+            </div>
+        </div>
+    </div>
+
+    <main class="policy-body">
+        <div class="wrap">
+
+            <div class="inline-card reveal">
+                <p><strong>The short version:</strong> Cue sends transactional and promotional SMS only to people who explicitly opt in. We send a few messages a month at most. Reply <strong>STOP</strong> at any time to unsubscribe, <strong>HELP</strong> for assistance. Msg &amp; data rates may apply.</p>
+            </div>
+
+            <div class="policy-section reveal" style="transition-delay:0.04s">
+                <p class="section-number">01</p>
+                <h2 class="section-title" id="program">The Cue messaging program</h2>
+                <p class="policy-text">Cue Labs LLC operates a customer analytics and event ticketing platform at <a href="https://cueup.co">cueup.co</a>. The Cue SMS program sends text messages to attendees who have purchased tickets through Cue and to account holders who have created a Cue account.</p>
+                <p class="policy-text">Messages are sent from a Cue-operated toll-free phone number on behalf of Cue and the event organizers that Cue customers have purchased tickets from. Messages fall into two categories:</p>
+                <ul class="policy-list">
+                    <li><strong>Transactional.</strong> Order confirmations, event reminders, schedule or venue changes, ticket transfer notifications, and login verification codes.</li>
+                    <li><strong>Promotional.</strong> Announcements about upcoming events from organizers the recipient has previously purchased from, and occasional product updates from Cue.</li>
+                </ul>
+            </div>
+
+            <div class="policy-section reveal" style="transition-delay:0.06s">
+                <p class="section-number">02</p>
+                <h2 class="section-title" id="opt-in">How recipients opt in</h2>
+                <p class="policy-text">Cue collects SMS consent in two places. In both cases, the consent checkbox is <strong>unchecked by default</strong> and the recipient must affirmatively check it. Consent is not a condition of purchase or of creating an account.</p>
+
+                <p class="policy-text" style="margin-top:24px;"><strong>1. At ticket checkout.</strong> When buying tickets through Cue, the checkout page shows this opt-in:</p>
+
+                <div class="consent-mockup">
+                    <span class="consent-mockup-label">Checkout page</span>
+                    <div class="consent-row">
+                        <span class="consent-checkbox"></span>
+                        <span class="consent-copy">Yes, I'd like to receive promotional texts from [Event Organizer Name] about upcoming events and ticket offers. Msg &amp; data rates may apply. Reply STOP to opt out.</span>
+                    </div>
+                </div>
+
+                <p class="policy-text"><strong>2. At account creation.</strong> When a user creates a Cue account and provides a phone number, the profile-completion screen shows this opt-in:</p>
+
+                <div class="consent-mockup">
+                    <span class="consent-mockup-label">Account signup</span>
+                    <div class="consent-row">
+                        <span class="consent-checkbox"></span>
+                        <span class="consent-copy">By checking this box, you authorize Cue and event organizers you register with to send you automated informational and marketing texts. Your consent is not a condition of any purchase. Messages may be sent any time of day and message frequency varies. Msg &amp; data rates may apply. Reply STOP to unsubscribe.</span>
+                    </div>
+                </div>
+
+                <p class="policy-text">Phone numbers are not shared, sold, or rented to third parties. SMS consent is stored separately from other marketing preferences and is honored independently — opting out of SMS does not opt you out of email, and vice versa.</p>
+            </div>
+
+            <div class="policy-section reveal" style="transition-delay:0.08s">
+                <p class="section-number">03</p>
+                <h2 class="section-title" id="messages">Sample messages</h2>
+                <p class="policy-text">Every message identifies Cue as the sender and includes opt-out instructions where applicable. Examples of what subscribers receive:</p>
+
+                <div class="sms-thread">
+                    <div class="sms-bubble">
+                        <p class="sms-bubble-meta">Transactional &middot; Order confirmation</p>
+                        Cue: Your tickets for [Event Name] on [Date] are confirmed. View at cueup.co/o/abc123. Reply STOP to opt out.
+                    </div>
+                    <div class="sms-bubble">
+                        <p class="sms-bubble-meta">Transactional &middot; Event reminder</p>
+                        Cue: Reminder &mdash; [Event Name] is tomorrow at [Time], [Venue]. Doors open [Time]. Reply STOP to opt out.
+                    </div>
+                    <div class="sms-bubble">
+                        <p class="sms-bubble-meta">Promotional &middot; New event announcement</p>
+                        Cue: [Organizer Name] just announced a new show on [Date]. Get early access: cueup.co/e/xyz. Reply STOP to opt out, HELP for help.
+                    </div>
+                </div>
+            </div>
+
+            <div class="policy-section reveal" style="transition-delay:0.1s">
+                <p class="section-number">04</p>
+                <h2 class="section-title" id="frequency">Message frequency &amp; fees</h2>
+                <p class="policy-text"><strong>Frequency.</strong> Message frequency varies based on event activity and the organizers a recipient has purchased from. A typical subscriber receives 2&ndash;6 messages per month. Around an event they have tickets to, frequency may briefly increase (e.g., the day-before reminder and a day-of reminder).</p>
+                <p class="policy-text"><strong>Cost.</strong> Cue does not charge for SMS messages. However, message and data rates may apply depending on the recipient's mobile carrier and plan. Cue is not responsible for carrier fees.</p>
+                <p class="policy-text"><strong>Carrier support.</strong> Cue's messaging program is supported on all major US carriers (AT&amp;T, Verizon, T-Mobile, US Cellular) and most regional carriers.</p>
+            </div>
+
+            <div class="policy-section reveal" style="transition-delay:0.12s">
+                <p class="section-number">05</p>
+                <h2 class="section-title" id="keywords">Keywords &amp; commands</h2>
+                <p class="policy-text">Reply to any Cue message with one of the following keywords to control your subscription:</p>
+
+                <table class="keyword-table">
+                    <thead>
+                        <tr>
+                            <th>Keyword</th>
+                            <th>What happens</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td><code>STOP</code></td>
+                            <td>You will be unsubscribed from all Cue marketing messages. We will send one final confirmation message and then nothing further. <code>STOPALL</code>, <code>UNSUBSCRIBE</code>, <code>CANCEL</code>, <code>END</code>, and <code>QUIT</code> behave the same way.</td>
+                        </tr>
+                        <tr>
+                            <td><code>HELP</code></td>
+                            <td>You will receive a message with our support email and a reminder of how to opt out. <code>INFO</code> behaves the same way.</td>
+                        </tr>
+                        <tr>
+                            <td><code>START</code></td>
+                            <td>If you previously opted out, you will be resubscribed. <code>UNSTOP</code> and <code>YES</code> behave the same way.</td>
+                        </tr>
+                    </tbody>
+                </table>
+
+                <p class="policy-text"><strong>Standard responses</strong> recipients receive:</p>
+                <ul class="policy-list">
+                    <li><strong>After STOP:</strong> "You have been unsubscribed from Cue messages. No more messages will be sent. Reply START to resubscribe."</li>
+                    <li><strong>After HELP:</strong> "Cue: For help, contact support@cueup.co. Msg &amp; data rates may apply. Reply STOP to unsubscribe."</li>
+                    <li><strong>After START:</strong> "You are resubscribed to Cue messages. Msg frequency varies. Reply STOP to opt out, HELP for help."</li>
+                </ul>
+            </div>
+
+            <div class="policy-section reveal" style="transition-delay:0.14s">
+                <p class="section-number">06</p>
+                <h2 class="section-title" id="carriers">Carrier disclaimer</h2>
+                <p class="policy-text">Mobile carriers are not liable for delayed or undelivered messages. Cue uses Twilio as our messaging provider and a registered toll-free number that complies with carrier requirements for transactional and promotional messaging.</p>
+                <p class="policy-text">Delivery to ported numbers, prepaid plans, and certain international carriers may be limited.</p>
+            </div>
+
+            <div class="policy-section reveal" style="transition-delay:0.16s">
+                <p class="section-number">07</p>
+                <h2 class="section-title" id="privacy">Privacy</h2>
+                <p class="policy-text">Phone numbers and SMS consent records are stored according to our <a href="{% url 'tickets:privacy' %}">privacy policy</a>. We do not share, sell, or rent phone numbers to third parties for marketing purposes. Phone numbers are used only to deliver the messages described above.</p>
+                <p class="policy-text">If you delete your Cue account, your phone number and SMS consent record are permanently removed within 30 days, except where retention is required by law.</p>
+            </div>
+
+            <div class="policy-section reveal" style="transition-delay:0.18s">
+                <p class="section-number">08</p>
+                <h2 class="section-title" id="contact">Contact</h2>
+                <p class="policy-text">Questions about Cue's SMS program, opt-out problems, or compliance inquiries:</p>
+                <p class="policy-text">
+                    <strong>Cue Labs LLC</strong><br>
+                    <a href="mailto:support@cueup.co">support@cueup.co</a><br>
+                    <a href="https://cueup.co">cueup.co</a>
+                </p>
+            </div>
+
+        </div>
+    </main>
+
+    <div class="contact-closer">
+        <div class="wrap">
+            <div class="contact-closer-inner reveal">
+                <div class="closer-text">
+                    <p class="closer-overline">Need to opt out by email?</p>
+                    <h2 class="closer-title">We'll <span class="accent-word">handle it.</span></h2>
+                    <p class="closer-body">If reply-STOP isn't working for you, email us from the number's account and we'll unsubscribe you within one business day.</p>
+                </div>
+                <a href="mailto:support@cueup.co" class="contact-email-link">
+                    <i class="bi bi-envelope"></i> support@cueup.co
+                </a>
+            </div>
+        </div>
+    </div>
+
+    <footer class="site-footer">
+        <span class="footer-brand">Cue &mdash; cueup.co</span>
+        <div class="footer-links">
+            <a href="/support/" class="footer-link">Support</a>
+            <a href="/privacy/" class="footer-link">Privacy</a>
+            <a href="/terms/" class="footer-link">Terms</a>
+            <span class="footer-link-current" style="font-family:var(--font-mono);font-size:0.68rem;color:var(--accent);letter-spacing:0.08em;text-transform:uppercase;">SMS</span>
+        </div>
+        <span class="footer-copy">&copy; {% now "Y" %} Cue Labs LLC</span>
+    </footer>
+
+    <script>
+        const nav = document.getElementById('siteNav');
+        window.addEventListener('scroll', () => {
+            nav.classList.toggle('scrolled', window.scrollY > 8);
+        }, { passive: true });
+
+        const io = new IntersectionObserver((entries) => {
+            entries.forEach(e => {
+                if (e.isIntersecting) { e.target.classList.add('visible'); io.unobserve(e.target); }
+            });
+        }, { threshold: 0.08 });
+        document.querySelectorAll('.reveal').forEach(el => io.observe(el));
+    </script>
+
+</body>
+</html>
