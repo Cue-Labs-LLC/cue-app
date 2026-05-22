@@ -2591,3 +2591,38 @@ gmp-place-autocomplete#venue-address-autocomplete {
     background: var(--bg-surface);
     border: 1px solid var(--border-light);
 }
+
+/* Confidence chip — promoted from a tiny badge to the primary visual signal
+   on each suggestion row. Background/text colors come from utility classes
+   (bg-success-subtle text-success, etc.) applied alongside. */
+.confidence-chip {
+    min-width: 56px;
+    padding: 0.25rem 0.5rem;
+    border-radius: 0.375rem;
+    font-size: 0.8125rem;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    text-align: center;
+    display: inline-block;
+}
+
+/* Survey sub-tabs (Suggestions / Linked) — soften the default Bootstrap
+   nav-pills so they feel like part of dashboard.css rather than a stock
+   component. The active pill picks up the project accent. */
+.survey-form-tabs .nav-link {
+    color: var(--text-secondary, var(--bs-secondary-color));
+    font-weight: 500;
+    border-radius: 0.375rem;
+    padding: 0.35rem 0.75rem;
+}
+.survey-form-tabs .nav-link:hover {
+    color: var(--text-primary, var(--bs-body-color));
+    background-color: var(--bs-tertiary-bg);
+}
+.survey-form-tabs .nav-link.active {
+    color: var(--bs-emphasis-color);
+    background-color: var(--bs-tertiary-bg);
+}
+.survey-form-tabs .nav-link.active .badge {
+    background-color: var(--bs-body-bg) !important;
+}
