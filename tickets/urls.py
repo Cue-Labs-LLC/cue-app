@@ -78,6 +78,7 @@ urlpatterns = [
     path('support/', views.support, name='support'),
     path('privacy/', views.privacy, name='privacy'),
     path('terms/', views.terms, name='terms'),
+    path('sms-consent/', views.sms_consent, name='sms_consent'),
     path('', views.landing),
     path('dashboard/', views.home, name='home'),
     path('actions/', views.action_center, name='action_center'),

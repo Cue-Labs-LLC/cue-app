@@ -1340,6 +1340,11 @@ def terms(request):
     return render(request, 'tickets/terms.html')
 
 
+def sms_consent(request):
+    """Public SMS messaging terms page — used for Twilio toll-free verification opt-in URL."""
+    return render(request, 'tickets/sms_consent.html')
+
+
 def landing(request):
     """Public landing page (no login required). Logged-in users are redirected to the dashboard."""
     if request.user.is_authenticated:
