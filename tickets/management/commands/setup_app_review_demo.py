@@ -52,12 +52,22 @@ class Command(BaseCommand):
                             help='Demo phone (must be a key in APP_REVIEW_TEST_PHONES).')
         parser.add_argument('--email', default='app-review-demo@cueup.co',
                             help="Demo user's email — used for web dashboard login.")
-        parser.add_argument('--password', required=True,
+        parser.add_argument('--password', default=None,
                             help="Password for the demo user's web login. "
-                                 "Pick something only you and Stripe-onboarding-time-you know.")
+                                 "Pick something only you and Stripe-onboarding-time-you know. "
+                                 "Required unless --skip-user is set.")
+        parser.add_argument('--skip-user', action='store_true',
+                            help='Skip creating/updating the User, UserProfile, and '
+                                 'OrganizationMembership. Only the Venue/Event/TicketType '
+                                 'are written. Useful when the org already has its operator '
+                                 'wired up (e.g., via phone-OTP signup).')
         parser.add_argument('--first-name', default='App Review')
         parser.add_argument('--last-name', default='Demo')
         parser.add_argument('--org-name', default='App Review Demo, LLC')
+        parser.add_argument('--org-slug', default=None,
+                            help='If set, reuse the existing org with this slug '
+                                 'instead of creating/looking up by --org-name. '
+                                 'Useful when the org was auto-minted by phone-OTP signup.')
         parser.add_argument('--venue-name', default='App Review Demo Venue')
         parser.add_argument('--venue-city', default='Los Angeles')
         parser.add_argument('--venue-state', default='CA')
@@ -70,22 +80,35 @@ class Command(BaseCommand):
     @transaction.atomic
     def handle(self, *args, **opts):
         phone = opts['phone']
-        if phone not in getattr(settings, 'APP_REVIEW_TEST_PHONES', {}):
+        skip_user = opts['skip_user']
+
+        if not skip_user and not opts['password']:
+            raise CommandError('--password is required unless --skip-user is set.')
+
+        if not skip_user and phone not in getattr(settings, 'APP_REVIEW_TEST_PHONES', {}):
             self.stdout.write(self.style.WARNING(
                 f"Heads up: {phone} is NOT in settings.APP_REVIEW_TEST_PHONES. "
                 f"Add it (with a fixed OTP code) before submitting to App Review, "
                 f"or the bypass won't trigger and the reviewer can't sign in."
             ))
 
-        org = self._get_or_create_org(opts['org_name'])
-        user = self._get_or_create_user(
-            email=opts['email'],
-            password=opts['password'],
-            first_name=opts['first_name'],
-            last_name=opts['last_name'],
-        )
-        self._get_or_create_profile(user, phone, org)
-        self._get_or_create_membership(user, org)
+        org = self._get_or_create_org(opts['org_name'], opts['org_slug'])
+
+        user = None
+        if not skip_user:
+            user = self._get_or_create_user(
+                email=opts['email'],
+                password=opts['password'],
+                first_name=opts['first_name'],
+                last_name=opts['last_name'],
+            )
+            self._get_or_create_profile(user, phone, org)
+            self._get_or_create_membership(user, org)
+        else:
+            self.stdout.write(self.style.NOTICE(
+                '  Skipping User/UserProfile/Membership (--skip-user).'
+            ))
+
         venue = self._get_or_create_venue(org, opts['venue_name'],
                                           opts['venue_city'], opts['venue_state'])
         event = self._get_or_create_event(org, venue, opts['event_name'],
@@ -106,7 +129,17 @@ class Command(BaseCommand):
 
     # ------------------------------------------------------------------ creators
 
-    def _get_or_create_org(self, name):
+    def _get_or_create_org(self, name, slug=None):
+        if slug:
+            try:
+                org = Organization.objects.get(slug=slug)
+            except Organization.DoesNotExist:
+                raise CommandError(
+                    f'No organization found with slug "{slug}". '
+                    f'Drop --org-slug to create a new org by name, or pass an existing slug.'
+                )
+            self._note('Organization', org, created=False)
+            return org
         org, created = Organization.objects.get_or_create(
             name=name,
             defaults={'slug': self._unique_slug(name)},
@@ -251,15 +284,22 @@ class Command(BaseCommand):
         self.stdout.write(self.style.SUCCESS('App Review demo merchant ready.'))
         self.stdout.write(self.style.SUCCESS('=' * 70))
         self.stdout.write('')
-        self.stdout.write('iOS app review credentials (paste into App Store Connect):')
-        self.stdout.write(f'  Phone: {phone}')
-        self.stdout.write(f'  OTP:   {otp}')
-        self.stdout.write('')
-        self.stdout.write('Web dashboard credentials (for YOU to complete Stripe KYC):')
-        self.stdout.write(f'  URL:      /login/email/  (or /admin/ if you want to impersonate)')
-        self.stdout.write(f'  Email:    {user.email}')
-        self.stdout.write(f'  Password: {password}')
-        self.stdout.write('')
+        if user is not None:
+            self.stdout.write('iOS app review credentials (paste into App Store Connect):')
+            self.stdout.write(f'  Phone: {phone}')
+            self.stdout.write(f'  OTP:   {otp}')
+            self.stdout.write('')
+            self.stdout.write('Web dashboard credentials (for YOU to complete Stripe KYC):')
+            self.stdout.write(f'  URL:      /login/email/  (or /admin/ if you want to impersonate)')
+            self.stdout.write(f'  Email:    {user.email}')
+            self.stdout.write(f'  Password: {password}')
+            self.stdout.write('')
+        else:
+            self.stdout.write(self.style.NOTICE(
+                'User/profile/membership were skipped (--skip-user). '
+                'Make sure the org already has an operator user wired up.'
+            ))
+            self.stdout.write('')
         self.stdout.write('Resources created:')
         self.stdout.write(f'  Org:    {org.name} (slug={org.slug}, pk={org.pk})')
         self.stdout.write(f'  Venue:  {venue}')
