@@ -57,7 +57,13 @@
                             <div class="event-card-name-area">
                                 <div class="event-card-name-line">
                                     {% if event.id in event_ids_show_warning %}
-                                        <i class="bi bi-exclamation-triangle-fill text-warning me-1" title="No uploads for past event"></i>
+                                        <button type="button"
+                                                class="js-dismiss-upload-warning btn btn-link p-0 border-0 align-baseline me-1"
+                                                data-event-id="{{ event.id }}"
+                                                title="No uploads for past event — click to dismiss"
+                                                aria-label="Dismiss missing uploads warning">
+                                            <i class="bi bi-exclamation-triangle-fill text-warning"></i>
+                                        </button>
                                     {% endif %}
                                     <a href="{% url 'tickets:event_detail' event.id %}" class="text-body text-decoration-none"><strong>{{ event.name }}</strong></a>
                                     <div class="event-card-badges">

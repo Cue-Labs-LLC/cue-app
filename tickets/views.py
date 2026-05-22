@@ -1751,7 +1751,8 @@ def home(request):
         end_time = ev.end_time or ev.start_time or time(23, 59, 59)
         event_end = datetime.combine(end_date, end_time)
         if now_local > event_end:
-            event_ids_show_warning.add(ev.id)
+            if ev.ticketing_type == 'external':
+                event_ids_show_warning.add(ev.id)
         elif ev.ticketing_type == 'external':
             event_ids_show_placeholder.add(ev.id)
 
@@ -3233,7 +3234,8 @@ def event_list(request):
         end_time = ev.end_time or ev.start_time or time(23, 59, 59)
         event_end = datetime.combine(end_date, end_time)
         if now_local > event_end:
-            event_ids_show_warning.add(ev.id)
+            if ev.ticketing_type == 'external':
+                event_ids_show_warning.add(ev.id)
         elif ev.ticketing_type == 'external':
             event_ids_show_placeholder.add(ev.id)
 
