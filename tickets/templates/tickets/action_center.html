@@ -79,12 +79,32 @@
                     </div>
                 </div>
                 <div class="d-flex flex-column gap-2" style="min-width: 180px;">
+                    {% if recommendation.kind == 'marketing_attribution' and recommendation.event %}
+                    <button type="button" class="btn btn-primary w-100"
+                            data-bs-toggle="modal"
+                            data-bs-target="#linkCampaignsModal"
+                            data-recommendation-id="{{ recommendation.id }}"
+                            data-event-id="{{ recommendation.event.id }}"
+                            data-event-name="{{ recommendation.event.name }}"
+                            {% if recommendation.evidence_json.meta_connected and "Meta Ads spend" in recommendation.evidence_json.missing_items %}
+                            data-meta-match-url="{% url 'tickets:event_meta_ads_match' recommendation.event.id %}?format=json"
+                            data-meta-apply-url="{% url 'tickets:event_meta_ads_apply' recommendation.event.id %}"
+                            {% endif %}
+                            {% if recommendation.evidence_json.mailchimp_connected and "Mailchimp campaign report" in recommendation.evidence_json.missing_items %}
+                            data-mailchimp-match-url="{% url 'tickets:event_mailchimp_match' recommendation.event.id %}?format=json"
+                            data-mailchimp-apply-url="{% url 'tickets:event_mailchimp_apply' recommendation.event.id %}"
+                            {% endif %}
+                            data-resolve-url="{% url 'tickets:ai_recommendation_resolve' recommendation.id %}">
+                        {{ recommendation.recommended_action_json.label|default:"Link campaigns" }}
+                    </button>
+                    {% else %}
                     <form method="post" action="{% url 'tickets:ai_recommendation_review' recommendation.id %}">
                         {% csrf_token %}
                         <button class="btn btn-primary w-100" type="submit">
                             {{ recommendation.recommended_action_json.label|default:"Review" }}
                         </button>
                     </form>
+                    {% endif %}
                     {% if recommendation.status != 'resolved' %}
                     <form method="post" action="{% url 'tickets:ai_recommendation_resolve' recommendation.id %}">
                         {% csrf_token %}
@@ -127,4 +147,6 @@
     <p>No recommendations match these filters.</p>
 </div>
 {% endif %}
+
+{% include 'tickets/partials/_link_campaigns_modal.html' %}
 {% endblock %}
