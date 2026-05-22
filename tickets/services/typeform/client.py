@@ -1,5 +1,7 @@
 """Typeform REST API client (Personal Access Token auth)."""
 
+from datetime import datetime, timezone as dt_timezone
+
 import requests
 from django.conf import settings
 
@@ -60,9 +62,9 @@ class TypeformClient:
         """GET /forms/{id}/responses. `since`/`until` accept ISO datetime; `after` is a token cursor."""
         params: dict = {'page_size': min(page_size, 1000)}
         if since:
-            params['since'] = since.isoformat() if hasattr(since, 'isoformat') else str(since)
+            params['since'] = _format_typeform_datetime(since)
         if until:
-            params['until'] = until.isoformat() if hasattr(until, 'isoformat') else str(until)
+            params['until'] = _format_typeform_datetime(until)
         if after:
             params['after'] = after
         return self._request('GET', f'/forms/{form_id}/responses', params=params)
@@ -113,6 +115,17 @@ class TypeformClient:
             return response.json()
         except ValueError as exc:
             raise TypeformAPIError('Typeform returned an invalid JSON response.') from exc
+
+
+def _format_typeform_datetime(value) -> str:
+    """Typeform's since/until params accept only `YYYY-MM-DDTHH:MM:SSZ` (UTC, no offset, no fractional)
+    or an integer epoch. Anything else (e.g. `+00:00` offset, microseconds) is rejected with HTTP 400.
+    """
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=dt_timezone.utc)
+        return value.astimezone(dt_timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+    return str(value)
 
 
 def _extract_error_message(response) -> str:

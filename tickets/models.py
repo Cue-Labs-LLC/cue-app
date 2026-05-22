@@ -2361,6 +2361,10 @@ class ExternalSurveyResponse(BaseModel):
     text_feedback = models.TextField(blank=True)
     raffle_email = models.EmailField(blank=True)
     typeform_response_id = models.CharField(max_length=64, blank=True, default='', db_index=True)
+    raw_answers = models.JSONField(
+        default=list, blank=True,
+        help_text='Full list of {id, ref, type, title, value} dicts from Typeform.',
+    )
     suggested_event = models.ForeignKey(
         'Event', null=True, blank=True, on_delete=models.SET_NULL,
         related_name='suggested_survey_responses',
@@ -2397,10 +2401,6 @@ class TypeformFormSubscription(AuditBaseModel):
     form_title = models.CharField(max_length=255)
     webhook_id = models.CharField(max_length=64, blank=True, default='')
     webhook_secret = models.CharField(max_length=64, default=_generate_typeform_webhook_secret)
-    field_map = models.JSONField(
-        default=dict,
-        help_text='Map of Typeform field ref/id → ExternalSurveyResponse field name.',
-    )
     upload = models.ForeignKey(
         ExternalSurveyUpload, null=True, blank=True, on_delete=models.SET_NULL,
         related_name='typeform_subscriptions',

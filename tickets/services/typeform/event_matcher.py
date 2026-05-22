@@ -19,6 +19,8 @@ CONFIDENCE_THRESHOLD = Decimal('0.30')
 EVENT_WINDOW_DAYS = 60
 MAX_CANDIDATES = 3
 MAX_EVENTS_IN_PROMPT = 40
+MAX_RESPONSES_IN_PROMPT = 30
+MAX_RESPONSE_CANDIDATES = 10
 
 
 class EventCandidate(BaseModel):
@@ -108,17 +110,7 @@ class SurveyEventMatcher:
     def _build_prompt(self, response, events) -> str:
         response_payload = {
             'responded_at': response.responded_at.isoformat() if response.responded_at else None,
-            'email': response.email,
-            'city': response.city,
-            'overall_rating': response.overall_rating,
-            'nps_score': response.nps_score,
-            'enjoyed': response.enjoyed,
-            'genres': response.genres,
-            'improvements': response.improvements,
-            'crowd_vibe': response.crowd_vibe,
-            'venue_feel': response.venue_feel,
-            'found_out_how': response.found_out_how,
-            'text_feedback': response.text_feedback,
+            'answers': response.raw_answers or [],
         }
         event_payload = [
             {
@@ -148,6 +140,113 @@ class SurveyEventMatcher:
             result.candidates, key=lambda item: item.confidence, reverse=True,
         )[:MAX_CANDIDATES]
         return MatchResult(candidates=candidates)
+
+
+class ResponseCandidate(BaseModel):
+    response_id: str
+    confidence: float = Field(ge=0, le=1)
+    reasoning: str
+
+
+class ResponseRankResult(BaseModel):
+    candidates: list[ResponseCandidate] = Field(default_factory=list)
+
+
+class EventSurveyMatcher:
+    """Inverse of SurveyEventMatcher: ranks N ExternalSurveyResponse rows against ONE event."""
+
+    def __init__(self, organization):
+        self.organization = organization
+
+    def rank(self, event, responses) -> ResponseRankResult:
+        responses = list(responses)[:MAX_RESPONSES_IN_PROMPT]
+        if not responses:
+            return ResponseRankResult()
+
+        prompt = self._build_prompt(event, responses)
+
+        from langchain_openai import ChatOpenAI
+
+        model_name = getattr(settings, 'OPENAI_MODEL', 'gpt-4o')
+        llm = ChatOpenAI(
+            model=model_name,
+            api_key=getattr(settings, 'OPENAI_API_KEY', ''),
+            temperature=0.0,
+            stream_usage=True,
+        )
+        structured_llm = llm.with_structured_output(ResponseRankResult, include_raw=True)
+        raw_result = structured_llm.invoke([
+            {
+                'role': 'system',
+                'content': (
+                    'Rank post-event survey responses by how likely each one is to belong '
+                    'to the given event. Use response date proximity to the event, city or '
+                    'venue mentions in the answers, and any other contextual hints. Return '
+                    'up to 10 candidates sorted by confidence. Use confidence below 0.3 for '
+                    'weak matches; omit responses you are confident do not belong.'
+                ),
+            },
+            {'role': 'user', 'content': prompt},
+        ])
+
+        if isinstance(raw_result, dict) and {'raw', 'parsed', 'parsing_error'} <= set(raw_result):
+            record_ai_token_usage(
+                organization=self.organization,
+                feature=AITokenUsage.FEATURE_TYPEFORM_EVENT_MATCH,
+                model_name=model_name,
+                usage=raw_result.get('raw'),
+                metadata={
+                    'event_id': str(event.id),
+                    'response_count': len(responses),
+                    'direction': 'event_to_responses',
+                },
+            )
+            if raw_result.get('parsing_error'):
+                raise raw_result['parsing_error']
+            result = raw_result.get('parsed')
+        else:
+            result = raw_result
+
+        if isinstance(result, ResponseRankResult):
+            return self._limit_result(result)
+        if hasattr(ResponseRankResult, 'model_validate'):
+            return self._limit_result(ResponseRankResult.model_validate(result))
+        return self._limit_result(ResponseRankResult.parse_obj(result))
+
+    def _build_prompt(self, event, responses) -> str:
+        event_payload = {
+            'id': str(event.id),
+            'name': event.name,
+            'summary': getattr(event, 'summary', ''),
+            'start_date': event.start_date.isoformat() if event.start_date else None,
+            'end_date': event.end_date.isoformat() if event.end_date else None,
+            'venue': {
+                'name': getattr(event.venue, 'name', '') if event.venue_id else '',
+                'city': getattr(event.venue, 'city', '') if event.venue_id else '',
+                'state': getattr(event.venue, 'state', '') if event.venue_id else '',
+            },
+        }
+        response_payload = [
+            {
+                'id': str(r.id),
+                'responded_at': r.responded_at.isoformat() if r.responded_at else None,
+                'answers': r.raw_answers or [],
+            }
+            for r in responses
+        ]
+        return (
+            'Event:\n'
+            f"{json.dumps(event_payload, indent=2, default=str)}\n\n"
+            'Candidate survey responses:\n'
+            f"{json.dumps(response_payload, indent=2, default=str)}"
+        )
+
+    @staticmethod
+    def _limit_result(result: ResponseRankResult) -> ResponseRankResult:
+        candidates = sorted(
+            result.candidates, key=lambda item: item.confidence, reverse=True,
+        )[:MAX_RESPONSE_CANDIDATES]
+        return ResponseRankResult(candidates=candidates)
 
 
 def apply_top_candidate(response, match: MatchResult) -> bool:

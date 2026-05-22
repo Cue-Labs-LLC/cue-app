@@ -295,6 +295,9 @@ MAILCHIMP_CLIENT_SECRET = os.environ.get('MAILCHIMP_CLIENT_SECRET', '')
 # Typeform integration
 TYPEFORM_API_BASE = os.environ.get('TYPEFORM_API_BASE', 'https://api.typeform.com')
 TYPEFORM_WEBHOOK_TAG = os.environ.get('TYPEFORM_WEBHOOK_TAG', 'cue')
+# Optional override for the public host Typeform should POST to (e.g. an ngrok tunnel
+# during local development). Falls back to SITE_URL when empty.
+TYPEFORM_WEBHOOK_BASE_URL = os.environ.get('TYPEFORM_WEBHOOK_BASE_URL', '')
 
 # Email backend configuration — SendGrid SMTP for all environments
 EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'

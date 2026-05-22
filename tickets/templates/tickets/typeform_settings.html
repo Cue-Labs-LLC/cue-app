@@ -66,12 +66,7 @@
 {% if is_connected %}
 <div class="card">
     <div class="card-header bg-transparent">
-        <div class="d-flex justify-content-between align-items-center">
-            <h2 class="h6 mb-0">Synced forms</h2>
-            <a href="{% url 'tickets:typeform_review' %}" class="btn btn-sm btn-outline-secondary">
-                <i class="bi bi-list-check me-1"></i> Review pending matches
-            </a>
-        </div>
+        <h2 class="h6 mb-0">Synced forms</h2>
     </div>
     {% if subscriptions %}
     <div class="card-body p-0">
@@ -89,7 +84,7 @@
                     {% for sub in subscriptions %}
                     <tr>
                         <td>
-                            <a href="{% url 'tickets:typeform_form_detail' sub_id=sub.id %}">{{ sub.form_title }}</a>
+                            <strong>{{ sub.form_title }}</strong>
                             <div class="text-body-secondary small">Form ID: <code>{{ sub.form_id }}</code></div>
                             {% if sub.last_sync_error %}
                             <div class="text-danger small">Last error: {{ sub.last_sync_error|truncatechars:160 }}</div>

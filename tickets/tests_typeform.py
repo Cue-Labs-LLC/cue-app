@@ -16,7 +16,6 @@ from tickets.models import (
     AITokenUsage, Event, ExternalSurveyResponse, ExternalSurveyUpload, Organization,
     OrganizationMembership, TypeformFormSubscription, UserProfile, Venue,
 )
-from tickets.services.typeform import field_mapping
 from tickets.services.typeform.event_matcher import (
     EventCandidate, MatchResult, SurveyEventMatcher, apply_top_candidate,
 )
@@ -45,14 +44,6 @@ def _make_subscription(org, **kwargs):
         'form_title': 'Test form',
         'webhook_secret': 'secret-xyz',
         'upload': upload,
-        'field_map': {
-            'rating_ref': 'overall_rating',
-            'nps_ref': 'nps_score',
-            'email_ref': 'email',
-            'city_ref': 'city',
-            'enjoyed_ref': 'enjoyed',
-            'feedback_ref': 'text_feedback',
-        },
     }
     defaults.update(kwargs)
     return TypeformFormSubscription.objects.create(**defaults)
@@ -68,92 +59,50 @@ def _sample_webhook_payload(response_id='resp_123', submitted_at=None):
             'token': response_id,
             'response_id': response_id,
             'submitted_at': submitted_at,
+            'definition': {
+                'fields': [
+                    {'id': 'fid_rating', 'ref': 'rating_ref', 'type': 'rating',
+                     'title': 'How was it?'},
+                    {'id': 'fid_nps', 'ref': 'nps_ref', 'type': 'opinion_scale',
+                     'title': 'Would you recommend?'},
+                    {'id': 'fid_email', 'ref': 'email_ref', 'type': 'email',
+                     'title': 'Your email'},
+                    {'id': 'fid_city', 'ref': 'city_ref', 'type': 'short_text',
+                     'title': 'Which city?'},
+                    {'id': 'fid_enjoyed', 'ref': 'enjoyed_ref', 'type': 'multiple_choice',
+                     'title': 'What did you enjoy?'},
+                    {'id': 'fid_feedback', 'ref': 'feedback_ref', 'type': 'long_text',
+                     'title': 'Any other comments?'},
+                ],
+            },
             'answers': [
                 {
-                    'type': 'number',
-                    'number': 5,
-                    'field': {'ref': 'rating_ref', 'type': 'rating'},
+                    'type': 'number', 'number': 5,
+                    'field': {'id': 'fid_rating', 'ref': 'rating_ref', 'type': 'rating'},
                 },
                 {
-                    'type': 'number',
-                    'number': 9,
-                    'field': {'ref': 'nps_ref', 'type': 'opinion_scale'},
+                    'type': 'number', 'number': 9,
+                    'field': {'id': 'fid_nps', 'ref': 'nps_ref', 'type': 'opinion_scale'},
                 },
                 {
-                    'type': 'email',
-                    'email': 'attendee@example.com',
-                    'field': {'ref': 'email_ref', 'type': 'email'},
+                    'type': 'email', 'email': 'attendee@example.com',
+                    'field': {'id': 'fid_email', 'ref': 'email_ref', 'type': 'email'},
                 },
                 {
-                    'type': 'text',
-                    'text': 'San Francisco',
-                    'field': {'ref': 'city_ref', 'type': 'short_text'},
+                    'type': 'text', 'text': 'San Francisco',
+                    'field': {'id': 'fid_city', 'ref': 'city_ref', 'type': 'short_text'},
                 },
                 {
-                    'type': 'choices',
-                    'choices': {'labels': ['DJ set', 'Lighting']},
-                    'field': {'ref': 'enjoyed_ref', 'type': 'multiple_choice'},
+                    'type': 'choices', 'choices': {'labels': ['DJ set', 'Lighting']},
+                    'field': {'id': 'fid_enjoyed', 'ref': 'enjoyed_ref', 'type': 'multiple_choice'},
                 },
                 {
-                    'type': 'text',
-                    'text': 'Loved the headliner at Cobra Lounge!',
-                    'field': {'ref': 'feedback_ref', 'type': 'long_text'},
+                    'type': 'text', 'text': 'Loved the headliner at Cobra Lounge!',
+                    'field': {'id': 'fid_feedback', 'ref': 'feedback_ref', 'type': 'long_text'},
                 },
             ],
         },
     }
-
-
-# ── Field mapping ──────────────────────────────────────────────────────────
-
-class TypeformFieldMappingTests(TestCase):
-    def test_auto_field_map_detects_common_question_types(self):
-        form = {
-            'fields': [
-                {'ref': 'rating', 'type': 'rating', 'title': 'How was it?',
-                 'properties': {}},
-                {'ref': 'nps', 'type': 'opinion_scale', 'title': 'Would you recommend?',
-                 'properties': {'steps': 11}},
-                {'ref': 'email', 'type': 'email', 'title': 'Your email',
-                 'properties': {}},
-                {'ref': 'city', 'type': 'short_text', 'title': 'Which city?',
-                 'properties': {}},
-                {'ref': 'enjoyed', 'type': 'multiple_choice', 'title': 'What did you enjoy?',
-                 'properties': {'allow_multiple_selection': True}},
-                {'ref': 'genres', 'type': 'multiple_choice', 'title': 'Favorite music genre?',
-                 'properties': {'allow_multiple_selection': True}},
-                {'ref': 'improvements', 'type': 'multiple_choice', 'title': 'What could we improve?',
-                 'properties': {'allow_multiple_selection': True}},
-                {'ref': 'feedback', 'type': 'long_text', 'title': 'Any other comments?',
-                 'properties': {}},
-                {'ref': 'raffle', 'type': 'email', 'title': 'Raffle email to win prizes',
-                 'properties': {}},
-            ],
-        }
-        mapping = field_mapping.auto_field_map(form)
-        self.assertEqual(mapping['rating'], 'overall_rating')
-        self.assertEqual(mapping['nps'], 'nps_score')
-        self.assertEqual(mapping['email'], 'email')
-        self.assertEqual(mapping['city'], 'city')
-        self.assertEqual(mapping['enjoyed'], 'enjoyed')
-        self.assertEqual(mapping['genres'], 'genres')
-        self.assertEqual(mapping['improvements'], 'improvements')
-        self.assertEqual(mapping['feedback'], 'text_feedback')
-        self.assertEqual(mapping['raffle'], 'raffle_email')
-
-    def test_auto_field_map_skips_unknown_or_unmappable_fields(self):
-        form = {
-            'fields': [
-                {'ref': 'random', 'type': 'short_text', 'title': 'Pet name?',
-                 'properties': {}},
-                {'ref': 'no_id', 'type': 'long_text', 'title': 'Tell us anything'},
-            ],
-        }
-        mapping = field_mapping.auto_field_map(form)
-        # 'random' short_text doesn't have a "city"-style title — skipped.
-        self.assertNotIn('random', mapping)
-        # long_text → text_feedback (and 'no_id' uses its id or ref).
-        self.assertEqual(mapping.get('no_id'), 'text_feedback')
 
 
 # ── Ingest ─────────────────────────────────────────────────────────────────
@@ -163,7 +112,7 @@ class TypeformIngestTests(TestCase):
         self.org, _ = _make_org_and_user(slug='ingest-org')
         self.subscription = _make_subscription(self.org)
 
-    def test_ingest_response_creates_external_survey_response(self):
+    def test_ingest_response_stores_raw_answers_verbatim(self):
         payload = _sample_webhook_payload()['form_response']
         response, created = ingest_response(self.subscription, payload)
 
@@ -171,13 +120,25 @@ class TypeformIngestTests(TestCase):
         self.assertIsNotNone(response)
         self.assertEqual(response.organization, self.org)
         self.assertEqual(response.typeform_response_id, 'resp_123')
-        self.assertEqual(response.email, 'attendee@example.com')
-        self.assertEqual(response.city, 'San Francisco')
-        self.assertEqual(response.overall_rating, '5')
-        self.assertEqual(response.nps_score, 9)
-        self.assertEqual(response.enjoyed, ['DJ set', 'Lighting'])
         self.assertEqual(response.upload, self.subscription.upload)
-        self.assertIn('Cobra Lounge', response.text_feedback)
+
+        # Raw answers populated for every Typeform answer, with titles from the definition.
+        self.assertEqual(len(response.raw_answers), 6)
+        by_title = {a['title']: a for a in response.raw_answers}
+        self.assertEqual(by_title['How was it?']['value'], 5)
+        self.assertEqual(by_title['Would you recommend?']['value'], 9)
+        self.assertEqual(by_title['Your email']['value'], 'attendee@example.com')
+        self.assertEqual(by_title['Which city?']['value'], 'San Francisco')
+        self.assertEqual(by_title['What did you enjoy?']['value'], ['DJ set', 'Lighting'])
+        self.assertIn('Cobra Lounge', by_title['Any other comments?']['value'])
+
+        # Structured CSV-shaped columns stay blank for Typeform-sourced rows.
+        self.assertEqual(response.email, '')
+        self.assertEqual(response.city, '')
+        self.assertEqual(response.overall_rating, '')
+        self.assertIsNone(response.nps_score)
+        self.assertEqual(response.enjoyed, [])
+        self.assertEqual(response.text_feedback, '')
 
     def test_ingest_response_is_idempotent_on_response_id(self):
         payload = _sample_webhook_payload()['form_response']
@@ -300,6 +261,10 @@ class SurveyEventMatcherTests(TestCase):
                 feature=AITokenUsage.FEATURE_TYPEFORM_EVENT_MATCH,
             ).exists()
         )
+        # Prompt body should include the raw answers (not the legacy structured columns).
+        prompt_arg = structured.invoke.call_args.args[0][1]['content']
+        self.assertIn('Cobra Lounge', prompt_arg)
+        self.assertIn('Which city?', prompt_arg)
 
     def test_apply_top_candidate_writes_suggested_event_when_confident(self):
         match = MatchResult(candidates=[
@@ -355,3 +320,253 @@ class TypeformConnectViewTests(TestCase):
         self.assertEqual(response.status_code, 302)
         self.org.refresh_from_db()
         self.assertEqual(self.org.typeform_access_token, '')
+
+
+# ── Surveys tab on the event detail page ──────────────────────────────────
+
+class EventSurveyTabViewTests(TestCase):
+    """Per-form card structure (event_detail GET) + unlink view."""
+
+    def setUp(self):
+        self.org, self.user = _make_org_and_user(slug='evt-tab-org', org_role='owner')
+        self.subscription = _make_subscription(self.org)
+        self.venue = Venue.objects.create(
+            organization=self.org, name='Cobra Lounge', city='San Francisco', state='CA',
+        )
+        self.event = Event.objects.create(
+            organization=self.org, venue=self.venue,
+            name='Pulse SF May', summary='House music night',
+            start_date=date(2026, 5, 14), end_date=date(2026, 5, 14),
+            start_time=time(20, 0), end_time=time(23, 0),
+        )
+        self.linked = ingest_response(
+            self.subscription,
+            _sample_webhook_payload(response_id='r_linked')['form_response'],
+        )[0]
+        self.linked.event = self.event
+        self.linked.save()
+
+        self.client = Client()
+        self.client.force_login(self.user)
+
+    def test_event_detail_attaches_linked_responses_to_each_subscription(self):
+        response = self.client.get(reverse('tickets:event_detail', args=[self.event.id]))
+        self.assertEqual(response.status_code, 200)
+        subs = response.context['typeform_subscriptions']
+        self.assertEqual(len(subs), 1)
+        # Each subscription carries its own linked-response list as an attribute.
+        linked_ids = {r.id for r in subs[0].linked_responses}
+        self.assertIn(self.linked.id, linked_ids)
+
+    def test_event_detail_excludes_inactive_subscriptions(self):
+        inactive = _make_subscription(self.org, form_id='zzz-inactive', is_active=False)
+        response = self.client.get(reverse('tickets:event_detail', args=[self.event.id]))
+        sub_ids = {s.id for s in response.context['typeform_subscriptions']}
+        self.assertIn(self.subscription.id, sub_ids)
+        self.assertNotIn(inactive.id, sub_ids)
+
+    def test_unlink_view_clears_event_link(self):
+        url = reverse('tickets:event_survey_unlink', args=[self.event.id])
+        response = self.client.post(url, {'response_id': str(self.linked.id)})
+        self.assertEqual(response.status_code, 302)
+        self.linked.refresh_from_db()
+        self.assertIsNone(self.linked.event_id)
+
+    def test_event_detail_renders_inline_suggest_section_with_match_url(self):
+        response = self.client.get(reverse('tickets:event_detail', args=[self.event.id]))
+        self.assertEqual(response.status_code, 200)
+        body = response.content.decode()
+        # The inline auto-load entrypoint must be present so the JS can fire on tab show.
+        self.assertIn('survey-suggest-section', body)
+        expected = (
+            reverse('tickets:event_survey_match', args=[self.event.id])
+            + f'?sub_id={self.subscription.id}&format=json'
+        )
+        # data-match-url should point at the per-form match endpoint.
+        self.assertIn(expected, body)
+
+    def test_unlink_view_refuses_other_orgs_response(self):
+        other_org, _ = _make_org_and_user(slug='other-unlink-org')
+        other_sub = _make_subscription(other_org, form_id='zzz-other')
+        other_resp = ingest_response(
+            other_sub, _sample_webhook_payload(response_id='r_other')['form_response'],
+        )[0]
+        other_resp.event = self.event  # spoof attempt
+        other_resp.save()
+
+        url = reverse('tickets:event_survey_unlink', args=[self.event.id])
+        self.client.post(url, {'response_id': str(other_resp.id)})
+        other_resp.refresh_from_db()
+        # event FK should still be set — other org's caller can't clear it.
+        self.assertEqual(other_resp.event_id, self.event.id)
+
+
+# ── EventSurveyMatcher (event → responses ranker) ─────────────────────────
+
+class EventSurveyMatcherRankTests(TestCase):
+    def setUp(self):
+        self.org, _ = _make_org_and_user(slug='rank-org')
+        self.subscription = _make_subscription(self.org)
+        self.venue = Venue.objects.create(
+            organization=self.org, name='Cobra Lounge', city='San Francisco', state='CA',
+        )
+        self.event = Event.objects.create(
+            organization=self.org, venue=self.venue,
+            name='Pulse SF May',
+            start_date=date(2026, 5, 14), end_date=date(2026, 5, 14),
+            start_time=time(20, 0), end_time=time(23, 0),
+        )
+        self.r1 = ingest_response(
+            self.subscription, _sample_webhook_payload(response_id='r1')['form_response'],
+        )[0]
+        self.r2 = ingest_response(
+            self.subscription, _sample_webhook_payload(response_id='r2')['form_response'],
+        )[0]
+
+    @patch('langchain_openai.ChatOpenAI')
+    def test_rank_returns_candidates_sorted_by_confidence_and_records_token_usage(self, mock_chat):
+        from tickets.services.typeform.event_matcher import (
+            EventSurveyMatcher, ResponseCandidate, ResponseRankResult,
+        )
+
+        fake_llm = MagicMock()
+        structured = MagicMock()
+        structured.invoke.return_value = {
+            'parsed': ResponseRankResult(candidates=[
+                ResponseCandidate(response_id=str(self.r2.id), confidence=0.4, reasoning='Some signal'),
+                ResponseCandidate(response_id=str(self.r1.id), confidence=0.9, reasoning='Strong match'),
+            ]),
+            'raw': MagicMock(usage_metadata={
+                'input_tokens': 100, 'output_tokens': 30, 'total_tokens': 130,
+            }),
+            'parsing_error': None,
+        }
+        fake_llm.with_structured_output.return_value = structured
+        mock_chat.return_value = fake_llm
+
+        result = EventSurveyMatcher(self.org).rank(self.event, [self.r1, self.r2])
+        ids = [c.response_id for c in result.candidates]
+        self.assertEqual(ids, [str(self.r1.id), str(self.r2.id)])  # sorted desc by confidence
+        self.assertTrue(
+            AITokenUsage.objects.filter(
+                organization=self.org, feature=AITokenUsage.FEATURE_TYPEFORM_EVENT_MATCH,
+            ).exists()
+        )
+
+
+# ── Match view (returns ranked JSON) ──────────────────────────────────────
+
+class EventSurveyMatchViewTests(TestCase):
+    def setUp(self):
+        self.org, self.user = _make_org_and_user(slug='match-view-org', org_role='owner')
+        self.subscription = _make_subscription(self.org)
+        self.venue = Venue.objects.create(organization=self.org, name='V', city='X', state='Y')
+        self.event = Event.objects.create(
+            organization=self.org, venue=self.venue, name='E',
+            start_date=date(2026, 5, 14), end_date=date(2026, 5, 14),
+            start_time=time(20, 0), end_time=time(23, 0),
+        )
+        # One unlinked candidate (in range), one already linked (excluded), one out-of-range.
+        self.cand = ingest_response(
+            self.subscription, _sample_webhook_payload(response_id='r_cand')['form_response'],
+        )[0]
+        self.already_linked = ingest_response(
+            self.subscription, _sample_webhook_payload(response_id='r_done')['form_response'],
+        )[0]
+        self.already_linked.event = self.event
+        self.already_linked.save()
+        self.client = Client()
+        self.client.force_login(self.user)
+
+    @patch('tickets.services.typeform.event_matcher.EventSurveyMatcher.rank')
+    @patch('tickets.services.typeform.client.TypeformClient.list_responses')
+    def test_match_json_excludes_already_linked_and_returns_ranked_candidates(
+        self, mock_list, mock_rank,
+    ):
+        from tickets.services.typeform.event_matcher import (
+            ResponseCandidate, ResponseRankResult,
+        )
+        # Token is unset → list_responses won't be called, but mock for safety:
+        mock_list.return_value = {'items': [], 'page_count': 0, 'page': 1}
+        mock_rank.return_value = ResponseRankResult(candidates=[
+            ResponseCandidate(response_id=str(self.cand.id), confidence=0.81, reasoning='X'),
+        ])
+
+        url = reverse('tickets:event_survey_match', args=[self.event.id]) + '?format=json'
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, 200)
+        data = response.json()['data']['candidates']
+        ids = [c['response_id'] for c in data]
+        self.assertIn(str(self.cand.id), ids)
+        self.assertNotIn(str(self.already_linked.id), ids)
+        self.assertEqual(data[0]['confidence_pct'], 81)
+        self.assertEqual(data[0]['confidence_class'], 'bg-success')
+
+
+# ── Apply view (links selected responses to event) ────────────────────────
+
+class EventSurveyApplyViewTests(TestCase):
+    def setUp(self):
+        self.org, self.user = _make_org_and_user(slug='apply-view-org', org_role='owner')
+        self.subscription = _make_subscription(self.org)
+        self.venue = Venue.objects.create(organization=self.org, name='V', city='X', state='Y')
+        self.event = Event.objects.create(
+            organization=self.org, venue=self.venue, name='E',
+            start_date=date(2026, 5, 14), end_date=date(2026, 5, 14),
+            start_time=time(20, 0), end_time=time(23, 0),
+        )
+        self.r1 = ingest_response(
+            self.subscription, _sample_webhook_payload(response_id='ra1')['form_response'],
+        )[0]
+        self.r2 = ingest_response(
+            self.subscription, _sample_webhook_payload(response_id='ra2')['form_response'],
+        )[0]
+        self.client = Client()
+        self.client.force_login(self.user)
+
+    def test_apply_links_selected_responses_with_confidence_and_reasoning(self):
+        url = reverse('tickets:event_survey_apply', args=[self.event.id])
+        response = self.client.post(url, {
+            'response_id': [str(self.r1.id), str(self.r2.id)],
+            'confidence': ['0.9', '0.55'],
+            'reasoning': ['Strong', 'Maybe'],
+        })
+        self.assertEqual(response.status_code, 302)
+        self.r1.refresh_from_db()
+        self.r2.refresh_from_db()
+        self.assertEqual(self.r1.event_id, self.event.id)
+        self.assertEqual(self.r2.event_id, self.event.id)
+        self.assertEqual(self.r1.match_confidence, Decimal('0.9'))
+        self.assertEqual(self.r2.match_confidence, Decimal('0.55'))
+        self.assertEqual(self.r1.match_reasoning, 'Strong')
+
+    def test_apply_silently_skips_cross_org_responses(self):
+        other_org, _ = _make_org_and_user(slug='cross-org-apply')
+        other_sub = _make_subscription(other_org, form_id='zzz')
+        other_resp = ingest_response(
+            other_sub, _sample_webhook_payload(response_id='other')['form_response'],
+        )[0]
+        url = reverse('tickets:event_survey_apply', args=[self.event.id])
+        self.client.post(url, {
+            'response_id': [str(other_resp.id)],
+            'confidence': ['0.9'], 'reasoning': ['x'],
+        })
+        other_resp.refresh_from_db()
+        self.assertIsNone(other_resp.event_id)
+
+    def test_apply_does_not_overwrite_already_linked_responses(self):
+        # r1 is already linked to a different event — apply must not steal it.
+        other_event = Event.objects.create(
+            organization=self.org, venue=self.venue, name='Other',
+            start_date=date(2026, 5, 1), end_date=date(2026, 5, 1),
+            start_time=time(20, 0), end_time=time(23, 0),
+        )
+        self.r1.event = other_event
+        self.r1.save()
+        url = reverse('tickets:event_survey_apply', args=[self.event.id])
+        self.client.post(url, {
+            'response_id': [str(self.r1.id)],
+            'confidence': ['0.9'], 'reasoning': ['x'],
+        })
+        self.r1.refresh_from_db()
+        self.assertEqual(self.r1.event_id, other_event.id)
