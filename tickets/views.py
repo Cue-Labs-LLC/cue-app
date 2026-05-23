@@ -9422,7 +9422,7 @@ def checkout_payment(request, public_id):
 
     buyer_phone = ''
     if request.user.is_authenticated:
-        profile = getattr(request.user, 'userprofile', None)
+        profile = getattr(request.user, 'profile', None)
         if profile and profile.phone_number:
             buyer_phone = profile.phone_number
 
