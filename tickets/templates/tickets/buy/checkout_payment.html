@@ -264,6 +264,93 @@
             user-select: none;
         }
 
+        /* SMS opt-in (Twilio toll-free compliant) */
+        .sms-optin {
+            margin: 14px 0 12px;
+            padding-top: 14px;
+            border-top: 1px solid var(--border-mid);
+        }
+        .sms-optin-eyebrow {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            font-family: var(--font-body);
+            font-size: 0.65rem;
+            font-weight: 500;
+            letter-spacing: 0.14em;
+            text-transform: uppercase;
+            color: rgba(255, 255, 255, 0.58);
+            margin-bottom: 10px;
+        }
+        .sms-optin-eyebrow-tick {
+            width: 14px;
+            height: 1px;
+            background: currentColor;
+            display: inline-block;
+            flex-shrink: 0;
+        }
+        .sms-optin-eyebrow-number {
+            color: var(--text);
+            font-variant-numeric: tabular-nums;
+            letter-spacing: 0.06em;
+        }
+        .sms-optin-consent {
+            display: flex;
+            align-items: flex-start;
+            gap: 11px;
+            cursor: pointer;
+            user-select: none;
+            margin: 0;
+        }
+        .sms-optin-check {
+            width: 16px;
+            height: 16px;
+            accent-color: var(--cta);
+            margin-top: 2px;
+            cursor: pointer;
+            flex-shrink: 0;
+        }
+        .sms-optin-content {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+            flex: 1;
+            min-width: 0;
+        }
+        .sms-optin-headline {
+            font-family: var(--font-body);
+            font-size: 0.84rem;
+            line-height: 1.45;
+            color: var(--text);
+        }
+        .sms-optin-headline strong {
+            font-weight: 500;
+        }
+        .sms-optin-fine {
+            font-family: var(--font-body);
+            font-size: 0.72rem;
+            line-height: 1.55;
+            color: var(--text-3);
+            opacity: 0.62;
+            letter-spacing: 0.01em;
+        }
+        .sms-optin-fine em {
+            font-style: normal;
+            letter-spacing: 0.08em;
+            color: var(--text-2);
+        }
+        .sms-optin-fine a {
+            color: var(--text-2);
+            text-decoration: underline;
+            text-decoration-color: var(--border-strong);
+            text-underline-offset: 2px;
+            transition: color 0.15s;
+        }
+        .sms-optin-fine a:hover {
+            color: var(--text);
+            text-decoration-color: var(--text-2);
+        }
+
         /* Buttons */
         .btn-pay {
             display: flex;
@@ -538,10 +625,20 @@
         {% if is_free %}
         <form method="post" id="checkout-form">
             {% csrf_token %}
-            <div class="checkbox-row" style="margin-bottom:14px;">
-                <input type="checkbox" class="form-check-input" id="sms-opt-in-checkbox" name="sms_opt_in" value="1">
-                <label for="sms-opt-in-checkbox" style="font-size:0.75rem; color:var(--text-2); line-height:1.4;">
-                    Yes, I'd like to receive promotional texts from {{ event.organization.name }} about upcoming events and ticket offers. Msg &amp; data rates may apply. Reply STOP to opt out.
+            <div class="sms-optin">
+                <div class="sms-optin-eyebrow">
+                    <span class="sms-optin-eyebrow-tick"></span>Messaging{% if buyer_phone %} to <span class="sms-optin-eyebrow-number">{{ buyer_phone }}</span>{% endif %}
+                </div>
+                <label class="sms-optin-consent" for="sms-opt-in-checkbox">
+                    <input type="checkbox" class="sms-optin-check" id="sms-opt-in-checkbox" name="sms_opt_in" value="1">
+                    <span class="sms-optin-content">
+                        <span class="sms-optin-headline">
+                            Yes, send me promotional event texts from Cue on behalf of <strong>{{ event.organization.name }}</strong>.
+                        </span>
+                        <span class="sms-optin-fine">
+                            Msg frequency varies, typically 2&ndash;4/month (more around your events) &middot; Reply <em>STOP</em>/<em>HELP</em> &middot; Msg &amp; data rates may apply &middot; <a href="{% url 'tickets:terms' %}" target="_blank" rel="noopener">Terms</a> &amp; <a href="{% url 'tickets:privacy' %}" target="_blank" rel="noopener">Privacy</a>
+                        </span>
+                    </span>
                 </label>
             </div>
             <button type="submit" class="btn-pay">
@@ -586,10 +683,20 @@
         </div>
         {% endif %}
 
-        <div class="checkbox-row" style="margin-bottom:14px;">
-            <input type="checkbox" class="form-check-input" id="sms-opt-in-checkbox">
-            <label for="sms-opt-in-checkbox" style="font-size:0.75rem; color:var(--text-2); line-height:1.4;">
-                Yes, I'd like to receive promotional texts from {{ event.organization.name }} about upcoming events and ticket offers. Msg &amp; data rates may apply. Reply STOP to opt out.
+        <div class="sms-optin">
+            <div class="sms-optin-eyebrow">
+                <span class="sms-optin-eyebrow-tick"></span>Messaging{% if buyer_phone %} to <span class="sms-optin-eyebrow-number">{{ buyer_phone }}</span>{% endif %}
+            </div>
+            <label class="sms-optin-consent" for="sms-opt-in-checkbox">
+                <input type="checkbox" class="sms-optin-check" id="sms-opt-in-checkbox">
+                <span class="sms-optin-content">
+                    <span class="sms-optin-headline">
+                        Yes, send me promotional event texts from Cue on behalf of <strong>{{ event.organization.name }}</strong>.
+                    </span>
+                    <span class="sms-optin-fine">
+                        Msg frequency varies, typically 2&ndash;4/month (more around your events) &middot; Reply <em>STOP</em>/<em>HELP</em> &middot; Msg &amp; data rates may apply &middot; <a href="{% url 'tickets:terms' %}" target="_blank" rel="noopener">Terms</a> &amp; <a href="{% url 'tickets:privacy' %}" target="_blank" rel="noopener">Privacy</a>
+                    </span>
+                </span>
             </label>
         </div>
         <button type="button" id="pay-btn" class="btn-pay">
