@@ -6870,6 +6870,87 @@ class TapToPayEndpointsTests(TestCase):
         self.assertEqual(res.status_code, 404)
         self.assertEqual(res.json(), {'error': 'payment intent not found'})
 
+    def test_receipt_rejects_blank_contact(self):
+        res = self.client.post(
+            '/api/scanner/receipt/',
+            data=json.dumps({
+                'order_id': '#TTP001',
+                'channel': 'email',
+                'contact': '   ',
+            }),
+            content_type='application/json',
+            HTTP_AUTHORIZATION=self.auth,
+        )
+        self.assertEqual(res.status_code, 400)
+
+    def test_receipt_accepts_organizer_token_auth(self):
+        """Spec: dual auth — organizer DRF Token works without a scanner PIN session."""
+        from django.core import mail
+        from .models import ReceiptSend
+
+        user = User.objects.create_user(username='organizer-ttp', password='x')
+        UserProfile.objects.create(user=user, organization=self.org)
+        token = Token.objects.create(user=user)
+
+        res = self.client.post(
+            '/api/scanner/receipt/',
+            data=json.dumps({
+                'order_id': '#TTP001',
+                'channel': 'email',
+                'contact': 'guest@example.com',
+            }),
+            content_type='application/json',
+            HTTP_AUTHORIZATION=f'Token {token.key}',
+        )
+        self.assertEqual(res.status_code, 200, res.content)
+        self.assertEqual(len(mail.outbox), 1)
+        log = ReceiptSend.objects.get(organization=self.org)
+        self.assertEqual(log.status, 'sent')
+
+    def test_receipt_finds_order_across_events_in_same_org(self):
+        """An order from a different event in the same org is resolvable —
+        the lookup is org-scoped, not session-event-scoped."""
+        other_event = Event.objects.create(
+            organization=self.org,
+            name='Other TTP Event',
+            venue=self.venue,
+            start_date=date.today(),
+        )
+        other_order = TicketOrder.objects.create(
+            customer=self.customer,
+            event=other_event,
+            order_number='#TTP002',
+            order_date=timezone.now(),
+            total_amount=Decimal('15.00'),
+        )
+
+        res = self.client.post(
+            '/api/scanner/receipt/',
+            data=json.dumps({
+                'order_id': '#TTP002',
+                'channel': 'email',
+                'contact': 'guest@example.com',
+            }),
+            content_type='application/json',
+            HTTP_AUTHORIZATION=self.auth,
+        )
+        self.assertEqual(res.status_code, 200, res.content)
+        from .models import ReceiptSend
+        log = ReceiptSend.objects.get(organization=self.org)
+        self.assertEqual(log.ticket_order_id, other_order.pk)
+
+    def test_receipt_rejects_unauthenticated(self):
+        res = self.client.post(
+            '/api/scanner/receipt/',
+            data=json.dumps({
+                'order_id': '#TTP001',
+                'channel': 'email',
+                'contact': 'guest@example.com',
+            }),
+            content_type='application/json',
+        )
+        self.assertEqual(res.status_code, 403)
+
     # ---- merchant_status ----
 
     def _fake_account(self, country='US', ttp='active'):

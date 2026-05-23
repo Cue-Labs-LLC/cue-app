@@ -2285,8 +2285,8 @@ def tap_to_pay_terms_acceptance(request):
 # ---------------------------------------------------------------------------
 
 @api_view(['POST'])
-@authentication_classes([ScannerSessionAuthentication])
-@permission_classes([IsScannerAuthenticated])
+@authentication_classes([ScannerSessionAuthentication, TokenAuthentication])
+@permission_classes([IsScannerOrAuthenticatedUser])
 def scanner_receipt(request):
     """
     POST /api/scanner/receipt/
@@ -2297,10 +2297,16 @@ def scanner_receipt(request):
     payment_intent_id is present we look up the PaymentIntent in Stripe and
     send a transaction-attempt summary (Apple §5.10: receipts must be
     available even for declined/cancelled transactions, which have no order).
+
+    Dual auth: accepts both Scanner PIN sessions and organizer DRF Tokens —
+    the iOS scanner app uses Scanner auth and a future organizer client
+    (or the same app using its organizer Token after sign-in) uses Token.
     """
-    session = request.auth
-    event = session.event
-    org = event.organization
+    org = _resolve_dual_auth_org(request)
+    if org is None:
+        return Response({'error': 'no organization'}, status=403)
+    session = request.auth if isinstance(request.auth, ScannerSession) else None
+    scanner_event = session.event if session else None
 
     order_id = (request.data.get('order_id') or '').strip()
     payment_intent_id = (request.data.get('payment_intent_id') or '').strip()
@@ -2324,32 +2330,30 @@ def scanner_receipt(request):
     if order_id:
         order = (
             TicketOrder.objects
-            .select_related('customer', 'event', 'event__venue', 'stripe_checkout_session')
-            .prefetch_related('tickets')
-            .filter(customer__organization=org, event=event, order_number=order_id)
+            .filter(customer__organization=org, order_number=order_id)
+            .only('id')
             .first()
         )
         if order is None:
             return Response({'error': 'order not found'}, status=404)
 
-        send_status, error_message = _send_receipt_email_for_order(order, contact)
-        ReceiptSend.objects.create(
+        receipt_send = ReceiptSend.objects.create(
             organization=org,
             ticket_order=order,
             payment_intent_id='',
             channel=channel,
             contact=contact,
-            status=send_status,
-            error_message=error_message,
+            status='queued',
+            error_message='',
         )
-        if send_status != 'sent':
-            return Response({'error': 'failed to send receipt'}, status=502)
+        from tickets.tasks import send_receipt_email_task
+        send_receipt_email_task.delay(str(receipt_send.id))
         return Response({'ok': True})
 
-    # payment_intent_id branch
+    # payment_intent_id branch — verify the PI exists synchronously so we can
+    # honor the spec's 404 contract, then enqueue the actual send.
     import stripe as stripe_lib
     from django.conf import settings as django_settings
-    from datetime import datetime, timezone as _tz
 
     stripe_lib.api_key = django_settings.STRIPE_SECRET_KEY
 
@@ -2357,78 +2361,23 @@ def scanner_receipt(request):
     if org.stripe_account_id:
         retrieve_kwargs['stripe_account'] = org.stripe_account_id
     try:
-        pi = stripe_lib.PaymentIntent.retrieve(payment_intent_id, **retrieve_kwargs)
+        stripe_lib.PaymentIntent.retrieve(payment_intent_id, **retrieve_kwargs)
     except stripe_lib.error.InvalidRequestError:
         return Response({'error': 'payment intent not found'}, status=404)
     except stripe_lib.error.StripeError as exc:
         logger.error("Stripe PaymentIntent retrieve error: %s", exc)
         return Response({'error': str(exc)}, status=502)
 
-    # Resolve event from PI metadata if our /organizer/sell/ flow stamped it;
-    # otherwise fall back to the scanner session's event (best effort).
-    pi_event = None
-    try:
-        metadata = getattr(pi, 'metadata', None)
-        if metadata is not None and hasattr(metadata, 'get'):
-            pi_event_id = metadata.get('event_id')
-        else:
-            pi_event_id = None
-    except Exception:
-        pi_event_id = None
-    if pi_event_id:
-        pi_event = Event.objects.filter(organization=org, id=pi_event_id).first()
-    if pi_event is None:
-        pi_event = event
-
-    status_raw = (getattr(pi, 'status', '') or '').lower()
-    status_labels = {
-        'succeeded': 'Approved',
-        'canceled': 'Cancelled',
-        'cancelled': 'Cancelled',
-        'requires_payment_method': 'Declined',
-        'requires_confirmation': 'Incomplete',
-        'requires_action': 'Incomplete',
-        'requires_capture': 'Authorized',
-        'processing': 'Processing',
-    }
-    status_label = status_labels.get(status_raw, status_raw.replace('_', ' ').title() or 'Unknown')
-
-    decline_message = ''
-    try:
-        lpe = getattr(pi, 'last_payment_error', None)
-        if lpe is not None:
-            decline_message = (
-                getattr(lpe, 'message', None)
-                or (lpe.get('message', '') if isinstance(lpe, dict) else '')
-                or ''
-            )
-    except Exception:
-        decline_message = ''
-
-    succeeded = status_raw == 'succeeded'
-    summary = {
-        'merchant_business_name': org.name,
-        'event_name': pi_event.name if pi_event else '',
-        'amount': (pi.amount / 100.0) if getattr(pi, 'amount', None) is not None else None,
-        'currency': (getattr(pi, 'currency', '') or '').upper(),
-        'created': datetime.fromtimestamp(pi.created, tz=_tz.utc) if getattr(pi, 'created', None) else None,
-        'status_label': status_label,
-        'decline_message': decline_message,
-        'succeeded': succeeded,
-        'note': '' if succeeded else 'No charge was made to your card.',
-        'payment_intent_id': getattr(pi, 'id', payment_intent_id),
-    }
-
-    send_status, error_message = _send_receipt_email_for_intent(summary, contact)
-    ReceiptSend.objects.create(
+    fallback_event_id = str(scanner_event.id) if scanner_event else ''
+    receipt_send = ReceiptSend.objects.create(
         organization=org,
         ticket_order=None,
         payment_intent_id=payment_intent_id[:255],
         channel=channel,
         contact=contact,
-        status=send_status,
-        error_message=error_message,
+        status='queued',
+        error_message='',
     )
-    if send_status != 'sent':
-        return Response({'error': 'failed to send receipt'}, status=502)
+    from tickets.tasks import send_receipt_email_task
+    send_receipt_email_task.delay(str(receipt_send.id), fallback_event_id)
     return Response({'ok': True})

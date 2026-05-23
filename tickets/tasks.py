@@ -8,6 +8,123 @@ logger = get_task_logger(__name__)
 
 
 @shared_task(bind=True, max_retries=2, default_retry_delay=30)
+def send_receipt_email_task(self, receipt_send_id, fallback_event_id=''):
+    """Dispatch a queued scanner receipt email.
+
+    The ReceiptSend row is created by /api/scanner/receipt/ in 'queued' state.
+    If it has a ticket_order we send the standard order confirmation; otherwise
+    we re-retrieve the PaymentIntent and send a transaction-attempt summary
+    (Apple §5.10).
+
+    Updates ReceiptSend.status to 'sent' or 'failed' in place — used for the
+    audit trail surfaced via /api/scanner/receipt-status/ (future) and Apple
+    review compliance.
+    """
+    from datetime import datetime, timezone as _tz
+    from django.conf import settings
+
+    from tickets.api_views import (
+        _send_receipt_email_for_order,
+        _send_receipt_email_for_intent,
+    )
+    from tickets.models import Event, ReceiptSend, TicketOrder
+
+    try:
+        rs = ReceiptSend.objects.select_related('organization', 'ticket_order').get(id=receipt_send_id)
+    except ReceiptSend.DoesNotExist:
+        logger.warning("ReceiptSend %s not found, skipping", receipt_send_id)
+        return
+
+    try:
+        if rs.ticket_order_id:
+            order = (
+                TicketOrder.objects
+                .select_related('customer', 'event', 'event__venue', 'stripe_checkout_session')
+                .prefetch_related('tickets')
+                .get(id=rs.ticket_order_id)
+            )
+            status, error_message = _send_receipt_email_for_order(order, rs.contact)
+        else:
+            import stripe as stripe_lib
+            stripe_lib.api_key = settings.STRIPE_SECRET_KEY
+            retrieve_kwargs = {}
+            if rs.organization.stripe_account_id:
+                retrieve_kwargs['stripe_account'] = rs.organization.stripe_account_id
+            try:
+                pi = stripe_lib.PaymentIntent.retrieve(rs.payment_intent_id, **retrieve_kwargs)
+            except Exception as exc:
+                logger.exception("Stripe PaymentIntent retrieve failed in receipt task")
+                rs.status = 'failed'
+                rs.error_message = str(exc)[:1000]
+                rs.save(update_fields=['status', 'error_message', 'updated_at'])
+                return
+
+            pi_event = None
+            try:
+                metadata = getattr(pi, 'metadata', None)
+                pi_event_id = metadata.get('event_id') if metadata is not None and hasattr(metadata, 'get') else None
+            except Exception:
+                pi_event_id = None
+            if pi_event_id:
+                pi_event = Event.objects.filter(organization=rs.organization, id=pi_event_id).first()
+            if pi_event is None and fallback_event_id:
+                pi_event = Event.objects.filter(organization=rs.organization, id=fallback_event_id).first()
+
+            status_raw = (getattr(pi, 'status', '') or '').lower()
+            status_labels = {
+                'succeeded': 'Approved',
+                'canceled': 'Cancelled',
+                'cancelled': 'Cancelled',
+                'requires_payment_method': 'Declined',
+                'requires_confirmation': 'Incomplete',
+                'requires_action': 'Incomplete',
+                'requires_capture': 'Authorized',
+                'processing': 'Processing',
+            }
+            status_label = status_labels.get(status_raw, status_raw.replace('_', ' ').title() or 'Unknown')
+
+            decline_message = ''
+            try:
+                lpe = getattr(pi, 'last_payment_error', None)
+                if lpe is not None:
+                    decline_message = (
+                        getattr(lpe, 'message', None)
+                        or (lpe.get('message', '') if isinstance(lpe, dict) else '')
+                        or ''
+                    )
+            except Exception:
+                decline_message = ''
+
+            succeeded = status_raw == 'succeeded'
+            summary = {
+                'merchant_business_name': rs.organization.name,
+                'event_name': pi_event.name if pi_event else '',
+                'amount': (pi.amount / 100.0) if getattr(pi, 'amount', None) is not None else None,
+                'currency': (getattr(pi, 'currency', '') or '').upper(),
+                'created': datetime.fromtimestamp(pi.created, tz=_tz.utc) if getattr(pi, 'created', None) else None,
+                'status_label': status_label,
+                'decline_message': decline_message,
+                'succeeded': succeeded,
+                'note': '' if succeeded else 'No charge was made to your card.',
+                'payment_intent_id': getattr(pi, 'id', rs.payment_intent_id),
+            }
+            status, error_message = _send_receipt_email_for_intent(summary, rs.contact)
+    except Exception as exc:
+        logger.exception("Receipt email task crashed for ReceiptSend %s", receipt_send_id)
+        try:
+            rs.status = 'failed'
+            rs.error_message = str(exc)[:1000]
+            rs.save(update_fields=['status', 'error_message', 'updated_at'])
+        except Exception:
+            pass
+        raise self.retry(exc=exc)
+
+    rs.status = status
+    rs.error_message = error_message
+    rs.save(update_fields=['status', 'error_message', 'updated_at'])
+
+
+@shared_task(bind=True, max_retries=2, default_retry_delay=30)
 def send_otp_email_task(self, otp_id):
     """Send an OTP verification email."""
     from django.core.mail import send_mail
