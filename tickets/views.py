@@ -9420,6 +9420,12 @@ def checkout_payment(request, public_id):
             event_source_url=request.build_absolute_uri(),
         )
 
+    buyer_phone = ''
+    if request.user.is_authenticated:
+        profile = getattr(request.user, 'userprofile', None)
+        if profile and profile.phone_number:
+            buyer_phone = profile.phone_number
+
     return render(request, 'tickets/buy/checkout_payment.html', {
         'event': event,
         'cart': cart,
@@ -9429,6 +9435,7 @@ def checkout_payment(request, public_id):
         'stripe_publishable_key': django_settings.STRIPE_PUBLISHABLE_KEY,
         'saved_pm': saved_pm,
         'user_is_authenticated': request.user.is_authenticated,
+        'buyer_phone': buyer_phone,
         'subtotal': Decimal(total_cents) / 100,
         'service_fee': Decimal(fee_cents) / 100,
         'grand_total': Decimal(grand_total_cents) / 100,
