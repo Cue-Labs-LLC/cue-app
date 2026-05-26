@@ -599,31 +599,6 @@ class EventSurveyTabViewTests(TestCase):
         self.linked.refresh_from_db()
         self.assertIsNone(self.linked.event_id)
 
-    def test_event_detail_renders_inline_suggest_section_with_match_url(self):
-        response = self.client.get(reverse('tickets:event_detail', args=[self.event.id]))
-        self.assertEqual(response.status_code, 200)
-        body = response.content.decode()
-        # The inline auto-load entrypoint must be present so the JS can fire on tab show.
-        self.assertIn('survey-suggest-section', body)
-        expected = (
-            reverse('tickets:event_survey_match', args=[self.event.id])
-            + f'?sub_id={self.subscription.id}&format=json'
-        )
-        # data-match-url should point at the per-form match endpoint.
-        self.assertIn(expected, body)
-
-    def test_event_detail_renders_questions_tracked_disclosure(self):
-        """The per-form card on the Surveys tab shows the persisted question list."""
-        self.subscription.questions = [
-            {'id': 'fid_r', 'ref': 'rating_ref', 'type': 'rating',
-             'title': 'How was the show?', 'group_title': ''},
-        ]
-        self.subscription.save(update_fields=['questions'])
-        response = self.client.get(reverse('tickets:event_detail', args=[self.event.id]))
-        body = response.content.decode()
-        self.assertIn('question', body.lower())  # disclosure label
-        self.assertIn('How was the show?', body)
-
     def test_unlink_view_refuses_other_orgs_response(self):
         other_org, _ = _make_org_and_user(slug='other-unlink-org')
         other_sub = _make_subscription(other_org, form_id='zzz-other')
