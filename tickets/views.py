@@ -300,7 +300,7 @@ def _invalidate_event_list_cache(org):
         pass
 
 
-EVENT_STATS_CACHE_VERSION = 4
+EVENT_STATS_CACHE_VERSION = 5
 
 EVENT_STATS_REQUIRED_KEYS = frozenset({
     'total_orders',
@@ -3600,7 +3600,7 @@ def _compute_event_stats(event):
     survey_responses_count = SurveyResponse.objects.filter(event=event).count()
 
     star_avg = None
-    int_nps_total = int_promoters = int_detractors = 0
+    int_nps_total = int_promoters = int_passives = int_detractors = 0
     internal_comments = []
 
     if survey_responses_count > 0:
@@ -3608,16 +3608,18 @@ def _compute_event_stats(event):
             response__event=event, star_rating__isnull=False
         ).aggregate(avg=Avg('star_rating'))['avg']
 
-        # Single aggregate instead of 3 separate .count() calls
+        # Single aggregate instead of 4 separate .count() calls
         nps_agg = SurveyAnswer.objects.filter(
             response__event=event, nps_score__isnull=False
         ).aggregate(
             total=Count('id'),
             promoters=Count('id', filter=Q(nps_score__gte=9)),
+            passives=Count('id', filter=Q(nps_score__gte=7, nps_score__lte=8)),
             detractors=Count('id', filter=Q(nps_score__lte=6)),
         )
         int_nps_total = nps_agg['total']
         int_promoters = nps_agg['promoters']
+        int_passives = nps_agg['passives']
         int_detractors = nps_agg['detractors']
 
         internal_comments = [
@@ -3640,19 +3642,21 @@ def _compute_event_stats(event):
     # Survey results — external (ExternalSurveyResponse from CSV uploads)
     ext_qs = ExternalSurveyResponse.objects.filter(event=event)
     ext_count = ext_qs.count()
-    ext_nps_total = ext_promoters = ext_detractors = 0
+    ext_nps_total = ext_promoters = ext_passives = ext_detractors = 0
     ext_comments = []
     ext_rating_breakdown = []
 
     if ext_count > 0:
-        # Single aggregate instead of 3 separate .count() calls
+        # Single aggregate instead of 4 separate .count() calls
         nps_agg = ext_qs.filter(nps_score__isnull=False).aggregate(
             total=Count('id'),
             promoters=Count('id', filter=Q(nps_score__gte=9)),
+            passives=Count('id', filter=Q(nps_score__gte=7, nps_score__lte=8)),
             detractors=Count('id', filter=Q(nps_score__lte=6)),
         )
         ext_nps_total = nps_agg['total']
         ext_promoters = nps_agg['promoters']
+        ext_passives = nps_agg['passives']
         ext_detractors = nps_agg['detractors']
 
         ext_comments = [
@@ -3681,12 +3685,17 @@ def _compute_event_stats(event):
     survey_total_response_count = survey_responses_count + ext_count
     if survey_responses_count > 0 or ext_count > 0:
         combined_nps_total = int_nps_total + ext_nps_total
+        combined_promoters = int_promoters + ext_promoters
+        combined_passives = int_passives + ext_passives
+        combined_detractors = int_detractors + ext_detractors
         if combined_nps_total > 0:
-            combined_promoters = int_promoters + ext_promoters
-            combined_detractors = int_detractors + ext_detractors
             nps_score = round((combined_promoters - combined_detractors) / combined_nps_total * 100)
+            promoters_pct = round(combined_promoters / combined_nps_total * 100)
+            passives_pct = round(combined_passives / combined_nps_total * 100)
+            detractors_pct = round(combined_detractors / combined_nps_total * 100)
         else:
             nps_score = None
+            promoters_pct = passives_pct = detractors_pct = 0
 
         all_comments = sorted(
             internal_comments + ext_comments,
@@ -3698,6 +3707,13 @@ def _compute_event_stats(event):
             'avg_star_rating': round(star_avg, 1) if star_avg else None,
             'nps_score': nps_score,
             'nps_total': combined_nps_total,
+            'total': survey_total_response_count,
+            'promoters': combined_promoters,
+            'passives': combined_passives,
+            'detractors': combined_detractors,
+            'promoters_pct': promoters_pct,
+            'passives_pct': passives_pct,
+            'detractors_pct': detractors_pct,
             'recent_comments': all_comments,
             'internal_response_count': survey_responses_count,
             'ext_response_count': ext_count,
@@ -4439,6 +4455,67 @@ def event_detail(request, event_id):
             resp.enriched_answers = enrich_answers_with_titles(resp.raw_answers, sub.questions)
             resp.preview_pairs = pick_preview_pairs(resp.enriched_answers, limit=2)
     context['typeform_subscriptions'] = typeform_subscriptions
+
+    # Unified list of individual survey responses for the Surveys tab table.
+    # Merges internal SurveyAnswer rows (one row per response with an NPS or
+    # star_rating answer) with external/Typeform ExternalSurveyResponse rows.
+    survey_response_rows = []
+    if survey_responses_count > 0:
+        # Group SurveyAnswer rows by response so we get one row per submission.
+        # nps_score lives on the SurveyAnswer with question.question_type == 'nps';
+        # star_rating on the question_type == 'star'; text_answer on text-type.
+        internal_responses = (
+            SurveyResponse.objects.filter(event=event)
+            .select_related('customer')
+            .prefetch_related('answers')
+        )
+        for resp in internal_responses:
+            nps = None
+            stars = None
+            feedback_parts = []
+            for ans in resp.answers.all():
+                if ans.nps_score is not None and nps is None:
+                    nps = ans.nps_score
+                if ans.star_rating is not None and stars is None:
+                    stars = ans.star_rating
+                if ans.text_answer:
+                    feedback_parts.append(ans.text_answer)
+            survey_response_rows.append({
+                'date': resp.submitted_at,
+                'nps': nps,
+                'rating': str(stars) if stars is not None else '',
+                'rating_is_stars': stars is not None,
+                'feedback': ' • '.join(feedback_parts),
+                'source': 'Cue survey',
+                'response_id': None,
+            })
+    if external_survey_responses_count > 0:
+        for resp in (
+            ExternalSurveyResponse.objects.filter(event=event)
+            .order_by('-responded_at')
+        ):
+            survey_response_rows.append({
+                'date': resp.responded_at,
+                'nps': resp.nps_score,
+                'rating': resp.overall_rating or '',
+                'rating_is_stars': False,
+                'feedback': resp.text_feedback or '',
+                'source': 'Typeform' if resp.typeform_response_id else 'External upload',
+                'response_id': resp.id,
+            })
+    survey_response_rows.sort(key=lambda r: r['date'] or datetime.min, reverse=True)
+    responses_paginator = Paginator(survey_response_rows, 25)
+    responses_page_obj = responses_paginator.get_page(request.GET.get('responses_page'))
+    context['survey_responses_page'] = responses_page_obj
+
+    # Chart data for the rating breakdown bar (external-only — internal uses star_rating
+    # on a different scale and is surfaced separately as avg_star_rating).
+    if survey_results and survey_results.get('overall_rating_breakdown'):
+        context['rating_labels'] = [r['overall_rating'] for r in survey_results['overall_rating_breakdown']]
+        context['rating_counts'] = [r['count'] for r in survey_results['overall_rating_breakdown']]
+    else:
+        context['rating_labels'] = []
+        context['rating_counts'] = []
 
     return render(request, 'tickets/event_detail.html', context)
 

@@ -4,7 +4,7 @@
 {% block title %}{{ event.name }} - Event Details{% endblock %}
 
 {% block extra_head %}
-{% if ticket_type_breakdown or total_orders or event.ticketing_type == 'direct' %}
+{% if ticket_type_breakdown or total_orders or event.ticketing_type == 'direct' or survey_results %}
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js" defer></script>
 {% endif %}
 {% if event.ticketing_type != 'direct' %}
@@ -83,6 +83,23 @@
     color: var(--text-tertiary, rgba(255,255,255,0.3));
     line-height: 1;
 }
+
+/* -- Surveys tab: NPS gauge overlay -- */
+.nps-gauge-wrap {
+    position: relative;
+    width: 220px;
+    max-width: 100%;
+    height: 200px;
+    margin: 0 auto;
+}
+.nps-gauge-wrap canvas { width: 100% !important; height: 100% !important; }
+.nps-score-overlay {
+    position: absolute; top: 50%; left: 50%;
+    transform: translate(-50%, -50%);
+    text-align: center; pointer-events: none;
+}
+.nps-score-overlay .score-num { font-size: 2.4rem; font-weight: 700; line-height: 1; }
+.nps-score-overlay .score-label { font-size: 0.75rem; color: var(--color-muted); }
 
 </style>
 {% endblock %}
@@ -1060,16 +1077,139 @@
 <!-- ===== TAB 5: Surveys ===== -->
 <div class="tab-pane fade" id="tab-surveys" role="tabpanel">
 
+{% if survey_results %}
+{# --- STAT CARDS --- #}
+<div class="row g-3 mb-4">
+    <div class="col-6 col-lg-3">
+        <div class="stat-card">
+            <div class="stat-label">Total Responses</div>
+            <div class="stat-value">{{ survey_results.total }}</div>
+            {% if survey_invitations_count > 0 %}
+            <div class="stat-sub">of {{ survey_invitations_count }} invited</div>
+            {% endif %}
+        </div>
+    </div>
+    <div class="col-6 col-lg-3">
+        <div class="stat-card stat-card--success">
+            <div class="stat-label">
+                Promoters
+                <i class="bi bi-info-circle" data-bs-toggle="tooltip"
+                   title="Scored 9–10. Enthusiastic fans likely to recommend the event to others."
+                   style="cursor:help; font-size:0.8em;"></i>
+            </div>
+            <div class="stat-value">{{ survey_results.promoters_pct }}%</div>
+            <div class="stat-sub">{{ survey_results.promoters }} respondents (9–10)</div>
+        </div>
+    </div>
+    <div class="col-6 col-lg-3">
+        <div class="stat-card">
+            <div class="stat-label">
+                Passives
+                <i class="bi bi-info-circle" data-bs-toggle="tooltip"
+                   title="Scored 7–8. Satisfied but not enthusiastic - unlikely to actively promote or criticize."
+                   style="cursor:help; font-size:0.8em;"></i>
+            </div>
+            <div class="stat-value">{{ survey_results.passives_pct }}%</div>
+            <div class="stat-sub">{{ survey_results.passives }} respondents (7–8)</div>
+        </div>
+    </div>
+    <div class="col-6 col-lg-3">
+        <div class="stat-card stat-card--accent">
+            <div class="stat-label">
+                Detractors
+                <i class="bi bi-info-circle" data-bs-toggle="tooltip"
+                   title="Scored 0–6. Unhappy respondents who may discourage others from attending."
+                   style="cursor:help; font-size:0.8em;"></i>
+            </div>
+            <div class="stat-value">{{ survey_results.detractors_pct }}%</div>
+            <div class="stat-sub">{{ survey_results.detractors }} respondents (0–6)</div>
+        </div>
+    </div>
+</div>
+
+{# --- CHARTS ROW --- #}
+<div class="row g-4 mb-4">
+    <div class="col-lg-4">
+        <div class="card h-100">
+            <div class="card-header">
+                <strong>NPS Score</strong>
+                <i class="bi bi-info-circle ms-1" data-bs-toggle="tooltip"
+                   title="Net Promoter Score: % Promoters minus % Detractors. Ranges from -100 to 100."
+                   style="cursor:help; font-size:0.85em;"></i>
+                {% if survey_results.nps_total > 0 %}
+                <small class="text-muted">(n={{ survey_results.nps_total }})</small>
+                {% endif %}
+            </div>
+            <div class="card-body d-flex flex-column align-items-center justify-content-center">
+                {% if survey_results.nps_score is not None %}
+                <div class="nps-gauge-wrap">
+                    <canvas id="npsDonut" height="200"></canvas>
+                    <div class="nps-score-overlay">
+                        <div class="score-num">{{ survey_results.nps_score }}</div>
+                        <div class="score-label">NPS</div>
+                    </div>
+                </div>
+                <div class="mt-3 text-center small text-muted">
+                    {% if survey_results.nps_score >= 50 %}Excellent
+                    {% elif survey_results.nps_score >= 30 %}Good
+                    {% elif survey_results.nps_score >= 0 %}Needs improvement
+                    {% else %}Critical
+                    {% endif %}
+                </div>
+                {% else %}
+                <div class="empty-state py-4">
+                    <i class="bi bi-dash-circle d-block"></i>
+                    <p>No NPS data</p>
+                </div>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+    <div class="col-lg-8">
+        <div class="card h-100">
+            <div class="card-header"><strong>Overall Rating Breakdown</strong></div>
+            <div class="card-body">
+                {% if rating_labels %}
+                <div style="height: 260px; position: relative;">
+                    <canvas id="ratingBar"></canvas>
+                </div>
+                {% elif survey_results.avg_star_rating %}
+                <div class="text-center py-4">
+                    <div style="font-size: 2rem; font-weight: 700; color: #f5a623;">
+                        {{ survey_results.avg_star_rating }}
+                    </div>
+                    <div style="color: #f5a623; font-size: 1.2rem;">
+                        {% for i in "12345" %}
+                            {% if forloop.counter <= survey_results.avg_star_rating %}
+                                <i class="bi bi-star-fill"></i>
+                            {% else %}
+                                <i class="bi bi-star"></i>
+                            {% endif %}
+                        {% endfor %}
+                    </div>
+                    <div class="text-muted small mt-1">Average star rating</div>
+                </div>
+                {% else %}
+                <div class="empty-state py-3">
+                    <p class="mb-0">No rating data</p>
+                </div>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</div>
+
+{# --- TYPEFORM SYNC STATUS STRIP (one row per linked form) --- #}
 {% if typeform_subscriptions %}
-    {% for sub in typeform_subscriptions %}
-    <div class="card mb-4 survey-suggest-section"
-         data-match-url="{% url 'tickets:event_survey_match' event.id %}?sub_id={{ sub.id }}&format=json"
-         data-apply-url="{% url 'tickets:event_survey_apply' event.id %}">
-        <div class="card-header d-flex justify-content-between align-items-start gap-3 flex-wrap">
+<div class="card mb-4">
+    <div class="card-header"><strong>Typeform forms</strong></div>
+    <ul class="list-group list-group-flush">
+        {% for sub in typeform_subscriptions %}
+        <li class="list-group-item d-flex justify-content-between align-items-center gap-3 flex-wrap">
             <div class="flex-grow-1">
-                <h5 class="mb-0">{{ sub.form_title }}</h5>
+                <div class="fw-semibold">{{ sub.form_title }}</div>
                 <small class="text-muted">
-                    Synced from Typeform &middot; last synced
+                    Last synced
                     {% if sub.last_synced_at %}{{ sub.last_synced_at|date:"M j, Y H:i" }}{% else %}never{% endif %}
                 </small>
                 {% if sub.last_sync_error %}
@@ -1078,201 +1218,123 @@
                 </span>
                 {% endif %}
             </div>
-            <div class="d-flex align-items-center gap-2 flex-shrink-0">
-                <button type="button" class="btn btn-sm btn-link p-0 text-decoration-none text-body-secondary survey-refresh-btn">
+            <div class="d-flex align-items-center gap-2">
+                <span class="badge bg-secondary-subtle text-secondary">
+                    {{ sub.linked_responses|length }} linked
+                </span>
+                <button type="button"
+                        class="btn btn-sm btn-link p-0 text-decoration-none text-body-secondary survey-refresh-btn"
+                        data-sub-id="{{ sub.id }}">
                     <i class="bi bi-arrow-clockwise me-1"></i>Refresh
                 </button>
-                {% if sub.questions %}
-                <button class="btn btn-sm btn-link p-0 text-decoration-none text-body-secondary"
-                        type="button" data-bs-toggle="collapse"
-                        data-bs-target="#questions-{{ sub.id }}"
-                        aria-expanded="false"
-                        aria-controls="questions-{{ sub.id }}">
-                    <i class="bi bi-list-ul me-1"></i>
-                    {{ sub.questions|length }} question{{ sub.questions|length|pluralize }}
-                </button>
-                {% endif %}
             </div>
-        </div>
-        <div class="card-body p-0">
+        </li>
+        {% endfor %}
+    </ul>
+</div>
+{% endif %}
 
-            {% if sub.questions %}
-            <div class="collapse px-3 pt-3" id="questions-{{ sub.id }}">
-                <ol class="list-unstyled mb-0 ps-0">
-                    {% for q in sub.questions %}
-                    <li class="border-start border-2 ps-2 mb-1 small">
-                        {% if q.group_title %}
-                        <span class="text-body-secondary text-uppercase me-1" style="font-size: 0.7rem;">{{ q.group_title|truncatechars:40 }} &middot;</span>
-                        {% endif %}
-                        <span>{{ q.title|default:'(untitled)' }}</span>
-                        {% if q.type %}
-                        <span class="badge bg-secondary-subtle text-secondary ms-1">{{ q.type }}</span>
-                        {% endif %}
-                    </li>
+{# --- INDIVIDUAL RESPONSES TABLE --- #}
+<div class="card">
+    <div class="card-header d-flex justify-content-between align-items-center">
+        <strong>Individual Responses</strong>
+        <small class="text-muted">{{ survey_responses_page.paginator.count }} total</small>
+    </div>
+    <div class="card-body p-0">
+        <div class="table-responsive">
+            <table class="table table-hover mb-0" style="font-size: 0.875rem;">
+                <thead>
+                    <tr>
+                        <th>Date</th>
+                        <th>Source</th>
+                        <th class="d-none d-sm-table-cell">Rating</th>
+                        <th>NPS <i class="bi bi-info-circle" data-bs-toggle="tooltip"
+                            title="NPS score given by the respondent (0–10). 9–10 = Promoter, 7–8 = Passive, 0–6 = Detractor."
+                            style="cursor:help;"></i></th>
+                        <th>Feedback</th>
+                        <th class="text-end" style="width: 90px;"></th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for row in survey_responses_page %}
+                    <tr>
+                        <td class="text-nowrap">{{ row.date|date:"M j, Y" }}</td>
+                        <td>
+                            <span class="badge bg-secondary-subtle text-secondary">{{ row.source }}</span>
+                        </td>
+                        <td class="d-none d-sm-table-cell">
+                            {% if row.rating_is_stars %}
+                                <span style="color:#f5a623;">{{ row.rating }} <i class="bi bi-star-fill"></i></span>
+                            {% else %}{{ row.rating|default:"-" }}{% endif %}
+                        </td>
+                        <td>
+                            {% if row.nps is not None %}
+                            <span class="badge {% if row.nps >= 9 %}bg-success{% elif row.nps >= 7 %}bg-warning text-dark{% else %}bg-danger{% endif %}">
+                                {{ row.nps }}
+                            </span>
+                            {% else %}-{% endif %}
+                        </td>
+                        <td style="max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"
+                            title="{{ row.feedback }}">
+                            {{ row.feedback|default:"-" }}
+                        </td>
+                        <td class="text-end">
+                            {% if row.response_id %}
+                            <form method="post" action="{% url 'tickets:event_survey_unlink' event.id %}" class="d-inline"
+                                  onsubmit="return confirm('Unlink this response from the event?');">
+                                {% csrf_token %}
+                                <input type="hidden" name="response_id" value="{{ row.response_id }}">
+                                <button type="submit" class="btn btn-sm btn-outline-danger">Unlink</button>
+                            </form>
+                            {% endif %}
+                        </td>
+                    </tr>
+                    {% empty %}
+                    <tr><td colspan="6" class="text-center text-muted py-3">No responses yet.</td></tr>
                     {% endfor %}
-                </ol>
-            </div>
-            {% endif %}
-
-            <!-- Tabs: Suggestions (AJAX-loaded) | Linked (server-rendered) -->
-            <ul class="nav nav-pills px-3 pt-3 mb-0 gap-2 survey-form-tabs"
-                role="tablist"
-                data-sub-id="{{ sub.id }}"
-                data-linked-count="{{ sub.linked_responses|length }}">
-                <li class="nav-item" role="presentation">
-                    <button class="nav-link survey-tab-suggestions" type="button" role="tab"
-                            data-bs-toggle="tab"
-                            data-bs-target="#suggest-pane-{{ sub.id }}"
-                            aria-controls="suggest-pane-{{ sub.id }}">
-                        Suggestions
-                        <span class="badge bg-secondary-subtle text-secondary ms-1 survey-suggestions-count">0</span>
-                    </button>
-                </li>
-                <li class="nav-item" role="presentation">
-                    <button class="nav-link survey-tab-linked" type="button" role="tab"
-                            data-bs-toggle="tab"
-                            data-bs-target="#linked-pane-{{ sub.id }}"
-                            aria-controls="linked-pane-{{ sub.id }}">
-                        Linked
-                        <span class="badge bg-secondary-subtle text-secondary ms-1">{{ sub.linked_responses|length }}</span>
-                    </button>
-                </li>
-            </ul>
-
-            <div class="tab-content survey-form-tabcontent pt-3">
-                <!-- Suggestions tab-pane -->
-                <div class="tab-pane fade" id="suggest-pane-{{ sub.id }}" role="tabpanel" aria-labelledby="suggest-pane-{{ sub.id }}-tab">
-                    <div class="survey-suggest-bulk-bar d-none flex-wrap align-items-center justify-content-between gap-2 py-2 mb-2 mx-3 px-3 rounded"
-                         style="background-color: var(--bs-tertiary-bg);">
-                        <div class="small">
-                            <strong class="survey-bulk-count">0</strong> selected
-                        </div>
-                        <div class="d-flex gap-2">
-                            <button type="button" class="btn btn-sm btn-primary survey-bulk-link">
-                                Link <span class="survey-bulk-count">0</span> selected
-                            </button>
-                            <button type="button" class="btn btn-sm btn-link text-decoration-none survey-bulk-clear">
-                                Clear
-                            </button>
-                        </div>
-                    </div>
-                    <div class="survey-suggest-loading text-body-secondary small px-3 py-3">
-                        Loading suggestions&hellip;
-                    </div>
-                    <div class="survey-suggest-empty text-body-secondary small px-3 py-3 d-none">
-                        No new responses to review.
-                    </div>
-                    <div class="survey-suggest-error text-body-secondary small px-3 py-3 d-none">
-                        Couldn&rsquo;t load suggestions.
-                        <button type="button" class="btn btn-link btn-sm p-0 align-baseline text-decoration-none survey-refresh-btn">Try again</button>
-                    </div>
-                    <div class="survey-suggest-results d-none table-responsive">
-                        <table class="table table-hover align-middle mb-0">
-                            <thead>
-                                <tr>
-                                    <th style="width: 32px;"></th>
-                                    <th style="width: 80px;">Match</th>
-                                    <th style="width: 110px;">Date</th>
-                                    <th>Preview</th>
-                                    <th style="width: 32px;"></th>
-                                    <th class="text-end" style="width: 90px;">Action</th>
-                                </tr>
-                            </thead>
-                            <tbody class="survey-suggest-tbody"></tbody>
-                        </table>
-                    </div>
-                </div>
-
-                <!-- Linked tab-pane -->
-                <div class="tab-pane fade" id="linked-pane-{{ sub.id }}" role="tabpanel" aria-labelledby="linked-pane-{{ sub.id }}-tab">
-                    {% if sub.linked_responses %}
-                    <div class="table-responsive">
-                        <table class="table table-hover align-middle mb-0">
-                            <thead>
-                                <tr>
-                                    <th style="width: 32px;"></th>
-                                    <th style="width: 110px;">Date</th>
-                                    <th>Preview</th>
-                                    <th class="text-end" style="width: 110px;">Action</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                {% for resp in sub.linked_responses %}
-                                <tr>
-                                    <td>
-                                        <button class="btn btn-sm btn-link p-0" type="button" data-bs-toggle="collapse"
-                                                data-bs-target="#resp-{{ resp.id }}"
-                                                aria-expanded="false"
-                                                aria-controls="resp-{{ resp.id }}"
-                                                aria-label="Toggle answer details">
-                                            <i class="bi bi-chevron-right"></i>
-                                        </button>
-                                    </td>
-                                    <td class="text-muted small" style="white-space: nowrap;">{{ resp.responded_at|date:"M j, Y" }}</td>
-                                    <td class="small" style="max-width: 480px;">
-                                        {% if resp.preview_pairs %}
-                                            {% for p in resp.preview_pairs %}
-                                            <div class="text-truncate" style="max-width: 100%;">
-                                                <span class="text-body-secondary">{{ p.title|truncatechars:30|default:'Answer' }}:</span>
-                                                {{ p.value|survey_value|truncatechars:120 }}
-                                            </div>
-                                            {% endfor %}
-                                        {% else %}<span class="text-body-secondary">—</span>{% endif %}
-                                    </td>
-                                    <td class="text-end">
-                                        <form method="post" action="{% url 'tickets:event_survey_unlink' event.id %}" class="d-inline"
-                                              onsubmit="return confirm('Unlink this response from the event?');">
-                                            {% csrf_token %}
-                                            <input type="hidden" name="response_id" value="{{ resp.id }}">
-                                            <button type="submit" class="btn btn-sm btn-outline-danger">Unlink</button>
-                                        </form>
-                                    </td>
-                                </tr>
-                                <tr class="collapse" id="resp-{{ resp.id }}">
-                                    <td colspan="4" style="background-color: var(--bs-tertiary-bg);">
-                                        <div class="row row-cols-1 row-cols-md-2 g-2 small mb-0">
-                                            {% for ans in resp.enriched_answers %}
-                                            {% if ans.value %}
-                                            <div class="col">
-                                                <div class="text-body-secondary text-uppercase" style="font-size: 0.7rem; letter-spacing: 0.04em;">
-                                                    {{ ans.title|default:'(untitled)' }}
-                                                </div>
-                                                <div>{{ ans.value|survey_value }}</div>
-                                            </div>
-                                            {% endif %}
-                                            {% endfor %}
-                                        </div>
-                                    </td>
-                                </tr>
-                                {% endfor %}
-                            </tbody>
-                        </table>
-                    </div>
-                    {% else %}
-                    <div class="text-body-secondary small px-3 py-3 survey-linked-empty">
-                        Nothing linked yet. Confirm a suggestion to add it here.
-                    </div>
-                    {% endif %}
-                </div>
-            </div>
-
-            <!-- Shown only when both Suggestions = 0 and Linked = 0 (JS toggles after AJAX). -->
-            <div class="survey-form-empty empty-state d-none" style="padding: 48px 0;">
-                <i class="bi bi-clipboard2-data fs-2 text-muted"></i>
-                <p class="text-muted mt-2 mb-0">No survey responses for this event yet.</p>
-            </div>
-
+                </tbody>
+            </table>
         </div>
     </div>
-    {% endfor %}
+    {% if survey_responses_page.has_other_pages %}
+    <div class="card-footer d-flex justify-content-between align-items-center">
+        <small class="text-muted">
+            Page {{ survey_responses_page.number }} of {{ survey_responses_page.paginator.num_pages }}
+        </small>
+        <div class="d-flex gap-1">
+            {% if survey_responses_page.has_previous %}
+            <a href="?tab=surveys&responses_page={{ survey_responses_page.previous_page_number }}"
+               class="btn btn-sm btn-outline-secondary">&laquo; Prev</a>
+            {% endif %}
+            {% if survey_responses_page.has_next %}
+            <a href="?tab=surveys&responses_page={{ survey_responses_page.next_page_number }}"
+               class="btn btn-sm btn-outline-secondary">Next &raquo;</a>
+            {% endif %}
+        </div>
+    </div>
+    {% endif %}
+</div>
+
+{{ rating_labels|json_script:"eventRatingLabels" }}
+{{ rating_counts|json_script:"eventRatingCounts" }}
+
 {% else %}
     <div class="empty-state" style="padding: 48px 0;">
         <i class="bi bi-clipboard2-data fs-2 text-muted"></i>
+        {% if typeform_subscriptions %}
+        <p class="text-muted mt-2 mb-1">No survey responses for this event yet.</p>
+        <p class="text-muted small">
+            Responses synced from
+            {% for sub in typeform_subscriptions %}{{ sub.form_title }}{% if not forloop.last %}, {% endif %}{% endfor %}
+            will appear here once they're matched to this event.
+        </p>
+        {% else %}
         <p class="text-muted mt-2 mb-1">No Typeform forms are syncing to this organization yet.</p>
         <p class="text-muted small">
             <a href="{% url 'tickets:typeform_settings' %}">Sync a Typeform form</a>
             to start collecting responses for your events.
         </p>
+        {% endif %}
     </div>
 {% endif %}
 
@@ -3737,436 +3799,83 @@ function copyScannnerPin() {
 })();
 </script>
 
+{% if survey_results %}
 <script>
-// Survey-response inline auto-loader. Fires when the Surveys tab is shown.
-// Mirrors the Marketing tab's Meta Ads inline pattern (loadInlineSuggestions / shown.bs.tab).
-(function () {
-    var tabBtn = document.getElementById('tab-surveys-btn');
-    if (!tabBtn) return;
-    var loadedSections = new WeakSet();
+// Surveys tab: NPS donut + rating bar chart + tooltip init. Mirrors survey_analytics.html.
+document.addEventListener('DOMContentLoaded', function () {
+    document.querySelectorAll('#tab-surveys [data-bs-toggle="tooltip"]').forEach(function (el) {
+        if (window.bootstrap && bootstrap.Tooltip) new bootstrap.Tooltip(el);
+    });
 
-    function escapeHtml(s) {
-        return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
-            return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c];
+    var isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+    var textColor = isDark ? '#e2e8f0' : '#1e293b';
+    var gridColor = isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.07)';
+
+    var npsCanvas = document.getElementById('npsDonut');
+    if (npsCanvas && window.Chart) {
+        var promoters = {{ survey_results.promoters_pct|default:0 }};
+        var passives = {{ survey_results.passives_pct|default:0 }};
+        var detractors = {{ survey_results.detractors_pct|default:0 }};
+        var remainder = Math.max(0, 100 - promoters - passives - detractors);
+        new Chart(npsCanvas, {
+            type: 'doughnut',
+            data: {
+                labels: ['Promoters', 'Passives', 'Detractors', ''],
+                datasets: [{
+                    data: [promoters, passives, detractors, remainder],
+                    backgroundColor: ['#22c55e', '#f59e0b', '#ef4444', isDark ? '#334155' : '#e2e8f0'],
+                    borderWidth: 0,
+                }],
+            },
+            options: {
+                cutout: '68%',
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {
+                    legend: { display: false },
+                    tooltip: {
+                        filter: function (item) { return item.label !== ''; },
+                        callbacks: { label: function (ctx) { return ' ' + ctx.label + ': ' + ctx.raw + '%'; } },
+                    },
+                },
+                animation: { animateRotate: true },
+            },
         });
     }
 
-    function getCsrfToken() {
-        var el = document.querySelector('[name=csrfmiddlewaretoken]');
-        return el ? el.value : '';
-    }
-
-    var MONTH_ABBR = ['JAN','FEB','MAR','APR','MAY','JUN','JUL','AUG','SEP','OCT','NOV','DEC'];
-
-    function formatDateLabel(iso) {
-        if (!iso) return '';
-        var d = new Date(iso);
-        if (isNaN(d.getTime())) return iso.substring(0, 10);
-        return MONTH_ABBR[d.getMonth()] + ' ' + d.getDate();
-    }
-
-    function formatRelativeLabel(iso) {
-        if (!iso) return '';
-        var then = new Date(iso);
-        if (isNaN(then.getTime())) return '';
-        var diffMs = Date.now() - then.getTime();
-        var day = 24 * 60 * 60 * 1000;
-        var days = Math.floor(diffMs / day);
-        if (days < 0) return '';
-        if (days === 0) return 'today';
-        if (days === 1) return 'yesterday';
-        if (days < 7) return days + 'd ago';
-        if (days < 30) return Math.floor(days / 7) + 'w ago';
-        if (days < 365) return Math.floor(days / 30) + 'mo ago';
-        return Math.floor(days / 365) + 'y ago';
-    }
-
-    function formatRating(value, max) {
-        var n = parseInt(value, 10);
-        if (isNaN(n) || n < 0) return null;
-        var cap = max || 5;
-        if (n > cap) cap = n;
-        var stars = '';
-        for (var i = 0; i < cap; i++) stars += (i < n ? '★' : '☆');
-        return '<span class="rating-stars" title="' + n + '/' + cap + '">' + stars + '</span>';
-    }
-
-    function formatNps(value) {
-        var n = parseInt(value, 10);
-        if (isNaN(n) || n < 0 || n > 10) return null;
-        var cls = n >= 9 ? 'bg-success-subtle text-success'
-                : n >= 7 ? 'bg-warning-subtle text-warning'
-                : 'bg-danger-subtle text-danger';
-        return '<span class="badge ' + cls + '">' + n + '/10 NPS</span>';
-    }
-
-    function answerToString(a) {
-        var v = a.value;
-        if (v == null || v === '') return '';
-        if (Array.isArray(v)) return v.join(', ');
-        return String(v);
-    }
-
-    // Picks the answer that best summarizes the response for the primary line.
-    // Returns {html, index} so we know which answer to exclude from secondaries.
-    function renderTypedValue(a) {
-        // Type-aware rendering of an answer value. No truncation — show in full.
-        var t = (a.type || '').toLowerCase();
-        var v = a.value;
-        if (t === 'rating') return formatRating(v);
-        if (t === 'opinion_scale') return formatNps(v);
-        if (t === 'long_text') {
-            var s = answerToString(a);
-            return s
-                ? '<span class="fst-italic">&ldquo;' + escapeHtml(s) + '&rdquo;</span>'
-                : null;
-        }
-        if (t === 'email') {
-            var em = answerToString(a);
-            return em
-                ? '<span class="font-monospace small">' + escapeHtml(em) + '</span>'
-                : null;
-        }
-        if (t === 'choices' || (t === 'multiple_choice' && Array.isArray(v))) {
-            var arr = Array.isArray(v) ? v : [v];
-            var joined = arr.filter(Boolean).join(', ');
-            return joined ? '<span>' + escapeHtml(joined) + '</span>' : null;
-        }
-        var str = answerToString(a);
-        return str ? '<span>' + escapeHtml(str) + '</span>' : null;
-    }
-
-    // Mirror tickets/services/typeform/helpers.py:pick_preview_pairs so the JS
-    // candidate row and the server-rendered linked-table row agree on which
-    // answers count as the headline. Priority: NPS → rating → long/short text →
-    // first non-empty.
-    function isEmptyValue(v) {
-        if (v == null) return true;
-        if (typeof v === 'string' && v.trim() === '') return true;
-        if (Array.isArray(v) && v.length === 0) return true;
-        return false;
-    }
-
-    function pickPreviewAnswers(answers, limit) {
-        if (!answers || !answers.length) return [];
-        limit = limit || 2;
-        var picked = [];
-        var used = new Set();
-        function take(a) {
-            if (used.has(a)) return false;
-            if (isEmptyValue(a.value)) return false;
-            picked.push(a);
-            used.add(a);
-            return true;
-        }
-        function pickByType(types) {
-            for (var i = 0; i < answers.length && picked.length < limit; i++) {
-                var a = answers[i];
-                if (!a || typeof a !== 'object') continue;
-                if (types.indexOf(a.type) !== -1) { take(a); break; }
-            }
-        }
-        pickByType(['opinion_scale']);
-        if (picked.length < limit) pickByType(['rating']);
-        if (picked.length < limit) {
-            for (var i = 0; i < answers.length && picked.length < limit; i++) {
-                var a = answers[i];
-                if (!a || typeof a !== 'object') continue;
-                if (a.type === 'long_text' || a.type === 'short_text') { take(a); break; }
-            }
-        }
-        if (picked.length < limit) {
-            for (var j = 0; j < answers.length && picked.length < limit; j++) {
-                var b = answers[j];
-                if (!b || typeof b !== 'object') continue;
-                take(b);
-            }
-        }
-        return picked;
-    }
-
-    // Builds the two <tr> rows for one candidate: a visible summary row and
-    // a sibling collapse row holding the full Q&A grid + "Why this match".
-    function renderCandidateRows(c, applyUrl, csrf) {
-        var pct = c.confidence_pct || 0;
-        var answers = c.preview_answers || [];
-        var chipClass = pct >= 70 ? 'bg-success-subtle text-success'
-                      : pct >= 50 ? 'bg-warning-subtle text-warning'
-                      : 'bg-secondary-subtle text-secondary';
-        var rid = String(c.response_id || '');
-        var dateLabel = formatDateLabel(c.responded_at);
-        var relLabel = formatRelativeLabel(c.responded_at);
-
-        var priorityAnswers = pickPreviewAnswers(answers, 2);
-        var previewCell = priorityAnswers.length
-            ? priorityAnswers.map(function (a) {
-                var rendered = renderTypedValue(a);
-                if (!rendered) return '';
-                var label = a.title
-                    ? '<span class="text-body-secondary">' + escapeHtml(a.title) + ':</span> '
-                    : '';
-                return '<div class="text-truncate" style="max-width: 100%;">' + label + rendered + '</div>';
-              }).filter(Boolean).join('')
-            : '<span class="text-body-secondary">—</span>';
-
-        // Q&A grid for the expand row (same shape as the linked-table expand).
-        var qaGrid = answers.map(function (a) {
-            if (isEmptyValue(a.value)) return '';
-            var rendered = renderTypedValue(a);
-            if (!rendered) return '';
-            var title = a.title
-                ? '<div class="text-body-secondary text-uppercase" style="font-size: 0.7rem; letter-spacing: 0.04em;">' + escapeHtml(a.title) + '</div>'
-                : '';
-            return '<div class="col">' + title + '<div>' + rendered + '</div></div>';
-        }).filter(Boolean).join('');
-
-        var whyBlock = c.reasoning
-            ? '<div class="mt-3 pt-3 border-top">' +
-                '<div class="text-body-secondary text-uppercase mb-1" style="font-size: 0.7rem; letter-spacing: 0.05em;">' +
-                  '<i class="bi bi-info-circle me-1"></i>Why this match' +
-                '</div>' +
-                '<p class="text-body-secondary small mb-0">' + escapeHtml(c.reasoning) + '</p>' +
-              '</div>'
-            : '';
-
-        var head = (
-            '<tr data-response-id="' + escapeHtml(rid) + '">' +
-              '<td>' +
-                '<input type="checkbox" id="check-' + escapeHtml(rid) + '" ' +
-                       'class="form-check-input survey-suggest-check" ' +
-                       'value="' + escapeHtml(rid) + '" ' +
-                       'data-confidence="' + (c.confidence || 0) + '" ' +
-                       'data-reasoning="' + escapeHtml(c.reasoning || '') + '">' +
-                '<label class="visually-hidden" for="check-' + escapeHtml(rid) + '">' +
-                  'Select response from ' + escapeHtml(dateLabel) +
-                '</label>' +
-              '</td>' +
-              '<td>' +
-                '<span class="confidence-chip ' + chipClass + '" ' +
-                      'aria-label="Match confidence: ' + pct + ' percent">' + pct + '%</span>' +
-              '</td>' +
-              '<td class="text-muted small" style="white-space: nowrap;">' +
-                '<span class="text-uppercase fw-medium">' + escapeHtml(dateLabel) + '</span>' +
-                '<div class="text-body-secondary" style="font-size: 0.75rem;">' + escapeHtml(relLabel) + '</div>' +
-              '</td>' +
-              '<td class="small" style="max-width: 480px;">' + previewCell + '</td>' +
-              '<td>' +
-                '<button class="btn btn-sm btn-link p-0" type="button" data-bs-toggle="collapse" ' +
-                        'data-bs-target="#cand-' + escapeHtml(rid) + '" ' +
-                        'aria-expanded="false" aria-controls="cand-' + escapeHtml(rid) + '" ' +
-                        'aria-label="Toggle answer details">' +
-                  '<i class="bi bi-chevron-right"></i>' +
-                '</button>' +
-              '</td>' +
-              '<td class="text-end">' +
-                '<form method="post" action="' + escapeHtml(applyUrl) + '" class="survey-confirm-form d-inline">' +
-                  '<input type="hidden" name="csrfmiddlewaretoken" value="' + escapeHtml(csrf) + '">' +
-                  '<input type="hidden" name="response_id" value="' + escapeHtml(rid) + '">' +
-                  '<input type="hidden" name="confidence" value="' + (c.confidence || 0) + '">' +
-                  '<input type="hidden" name="reasoning" value="' + escapeHtml(c.reasoning || '') + '">' +
-                  '<button type="submit" class="btn btn-sm btn-primary">Link</button>' +
-                '</form>' +
-              '</td>' +
-            '</tr>'
-        );
-
-        var expand = (
-            '<tr class="collapse" id="cand-' + escapeHtml(rid) + '">' +
-              '<td colspan="6" style="background-color: var(--bs-tertiary-bg);">' +
-                '<div class="row row-cols-1 row-cols-md-2 g-2 small mb-0">' + qaGrid + '</div>' +
-                whyBlock +
-              '</td>' +
-            '</tr>'
-        );
-
-        return head + expand;
-    }
-
-    // Decide which sub-tab to activate after the AJAX returns. Runs once per
-    // form card. If both Suggestions = 0 and Linked = 0, hide tabs entirely.
-    function activateDefaultTab(formCard, suggestionsCount) {
-        var tabs = formCard.querySelector('.survey-form-tabs');
-        if (!tabs) return;
-        var linkedCount = parseInt(tabs.dataset.linkedCount || '0', 10) || 0;
-        var suggestBtn = tabs.querySelector('.survey-tab-suggestions');
-        var linkedBtn = tabs.querySelector('.survey-tab-linked');
-        var tabContent = formCard.querySelector('.survey-form-tabcontent');
-        var emptyEl = formCard.querySelector('.survey-form-empty');
-
-        if (suggestionsCount === 0 && linkedCount === 0) {
-            tabs.classList.add('d-none');
-            if (tabContent) tabContent.classList.add('d-none');
-            if (emptyEl) emptyEl.classList.remove('d-none');
-            return;
-        }
-
-        var target = suggestionsCount > 0 ? suggestBtn : linkedBtn;
-        if (target && window.bootstrap && bootstrap.Tab) {
-            bootstrap.Tab.getOrCreateInstance(target).show();
-        }
-    }
-
-    function loadSection(sectionEl, forceReload) {
-        var firstLoad = !loadedSections.has(sectionEl);
-        if (!firstLoad && !forceReload) return;
-        loadedSections.add(sectionEl);
-
-        var loadingEl = sectionEl.querySelector('.survey-suggest-loading');
-        var resultsEl = sectionEl.querySelector('.survey-suggest-results');
-        var emptyEl   = sectionEl.querySelector('.survey-suggest-empty');
-        var errorEl   = sectionEl.querySelector('.survey-suggest-error');
-        var tbodyEl   = sectionEl.querySelector('.survey-suggest-tbody');
-        var countEl   = sectionEl.querySelector('.survey-suggestions-count');
-        var matchUrl  = sectionEl.dataset.matchUrl;
-        var applyUrl  = sectionEl.dataset.applyUrl;
-        var csrf      = getCsrfToken();
-
-        resultsEl.classList.add('d-none');
-        if (tbodyEl) tbodyEl.innerHTML = '';
-        emptyEl.classList.add('d-none');
-        errorEl.classList.add('d-none');
-        loadingEl.classList.remove('d-none');
-
-        fetch(matchUrl, {headers: {'X-Requested-With': 'XMLHttpRequest'}})
-            .then(function (r) { return r.json(); })
-            .then(function (payload) {
-                loadingEl.classList.add('d-none');
-                var candidates = (payload && payload.data && payload.data.candidates) || [];
-                if (countEl) countEl.textContent = candidates.length;
-                if (!candidates.length) {
-                    emptyEl.classList.remove('d-none');
-                } else {
-                    if (tbodyEl) {
-                        tbodyEl.innerHTML = candidates.map(function (c) {
-                            return renderCandidateRows(c, applyUrl, csrf);
-                        }).join('');
-                    }
-                    resultsEl.classList.remove('d-none');
-                }
-                if (firstLoad) activateDefaultTab(sectionEl, candidates.length);
-            })
-            .catch(function () {
-                loadingEl.classList.add('d-none');
-                errorEl.classList.remove('d-none');
-                loadedSections.delete(sectionEl);  // allow retry
-                if (firstLoad) activateDefaultTab(sectionEl, 0);
+    var ratingCanvas = document.getElementById('ratingBar');
+    var ratingLabelsEl = document.getElementById('eventRatingLabels');
+    var ratingCountsEl = document.getElementById('eventRatingCounts');
+    if (ratingCanvas && ratingLabelsEl && ratingCountsEl && window.Chart) {
+        var labels = JSON.parse(ratingLabelsEl.textContent);
+        var counts = JSON.parse(ratingCountsEl.textContent);
+        if (labels.length) {
+            new Chart(ratingCanvas, {
+                type: 'bar',
+                data: {
+                    labels: labels,
+                    datasets: [{
+                        label: 'Responses',
+                        data: counts,
+                        backgroundColor: 'rgba(99, 102, 241, 0.7)',
+                        borderRadius: 4,
+                    }],
+                },
+                options: {
+                    indexAxis: 'y',
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: { legend: { display: false } },
+                    scales: {
+                        x: { ticks: { color: textColor, precision: 0 }, grid: { color: gridColor } },
+                        y: { ticks: { color: textColor } },
+                    },
+                },
             });
-    }
-
-    function loadAllSections(force) {
-        document.querySelectorAll('.survey-suggest-section').forEach(function (s) {
-            loadSection(s, force);
-        });
-    }
-
-    tabBtn.addEventListener('shown.bs.tab', function () { loadAllSections(false); });
-    if (tabBtn.classList.contains('active')) loadAllSections(false);
-
-    // Per-card Refresh button → force-reload that one section.
-    document.addEventListener('click', function (e) {
-        var btn = e.target.closest('.survey-refresh-btn');
-        if (!btn) return;
-        var section = btn.closest('.survey-suggest-section');
-        if (section) loadSection(section, true);
-    });
-
-    // Per-row Link form → AJAX so the candidate vanishes on success and we reload to
-    // render the now-linked row in the table below.
-    document.addEventListener('submit', function (e) {
-        var form = e.target.closest('.survey-confirm-form');
-        if (!form) return;
-        e.preventDefault();
-        var btn = form.querySelector('button[type=submit]');
-        if (btn) btn.disabled = true;
-        fetch(form.action, {
-            method: 'POST',
-            body: new FormData(form),
-            headers: {'X-Requested-With': 'XMLHttpRequest'},
-            credentials: 'same-origin',
-        })
-        .then(function (r) { return r.json().then(function (data) { return {ok: r.ok, data: data}; }); })
-        .then(function (result) {
-            if (result.ok && result.data && result.data.success) {
-                window.location.reload();
-            } else if (btn) {
-                btn.disabled = false;
-            }
-        })
-        .catch(function () { if (btn) btn.disabled = false; });
-    });
-
-    // Bulk-select: show the sticky bar when any checkbox is ticked; submit all
-    // checked rows together via one POST that supplies parallel response_id[] /
-    // confidence[] / reasoning[] arrays (the apply view already iterates them).
-    function refreshBulkBar(sectionEl) {
-        var bar = sectionEl.querySelector('.survey-suggest-bulk-bar');
-        if (!bar) return;
-        var checked = sectionEl.querySelectorAll('.survey-suggest-check:checked');
-        sectionEl.querySelectorAll('.survey-bulk-count').forEach(function (n) {
-            n.textContent = checked.length;
-        });
-        if (checked.length > 0) {
-            bar.classList.remove('d-none');
-            bar.classList.add('d-flex');
-        } else {
-            bar.classList.add('d-none');
-            bar.classList.remove('d-flex');
         }
     }
-
-    document.addEventListener('change', function (e) {
-        var cb = e.target.closest('.survey-suggest-check');
-        if (!cb) return;
-        var section = cb.closest('.survey-suggest-section');
-        if (section) refreshBulkBar(section);
-    });
-
-    document.addEventListener('click', function (e) {
-        var linkBtn = e.target.closest('.survey-bulk-link');
-        if (!linkBtn) return;
-        var section = linkBtn.closest('.survey-suggest-section');
-        if (!section) return;
-        var checked = section.querySelectorAll('.survey-suggest-check:checked');
-        if (!checked.length) return;
-
-        var applyUrl = section.dataset.applyUrl;
-        var fd = new FormData();
-        fd.append('csrfmiddlewaretoken', getCsrfToken());
-        checked.forEach(function (cb) {
-            fd.append('response_id', cb.value);
-            fd.append('confidence', cb.dataset.confidence || '0');
-            fd.append('reasoning', cb.dataset.reasoning || '');
-        });
-
-        linkBtn.disabled = true;
-        fetch(applyUrl, {
-            method: 'POST',
-            body: fd,
-            headers: {'X-Requested-With': 'XMLHttpRequest'},
-            credentials: 'same-origin',
-        })
-        .then(function (r) { return r.json().then(function (data) { return {ok: r.ok, data: data}; }); })
-        .then(function (result) {
-            if (result.ok && result.data && result.data.success) {
-                window.location.reload();
-            } else {
-                linkBtn.disabled = false;
-            }
-        })
-        .catch(function () { linkBtn.disabled = false; });
-    });
-
-    document.addEventListener('click', function (e) {
-        var clearBtn = e.target.closest('.survey-bulk-clear');
-        if (!clearBtn) return;
-        var section = clearBtn.closest('.survey-suggest-section');
-        if (!section) return;
-        section.querySelectorAll('.survey-suggest-check:checked').forEach(function (cb) {
-            cb.checked = false;
-        });
-        refreshBulkBar(section);
-    });
-})();
+});
 </script>
+{% endif %}
 
 {% endblock %}
