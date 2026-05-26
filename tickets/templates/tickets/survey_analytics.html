@@ -46,6 +46,21 @@
     </div>
 </div>
 
+{% if unmapped_subscriptions %}
+<div class="alert alert-warning d-flex justify-content-between align-items-center mb-3 gap-3 flex-wrap">
+    <div>
+        <strong>Some Typeform responses are missing structured data.</strong>
+        <span class="ms-1">
+            {{ unmapped_subscriptions|length }} form{{ unmapped_subscriptions|pluralize }}
+            ({% for sub in unmapped_subscriptions %}{{ sub.form_title }}{% if not forloop.last %}, {% endif %}{% endfor %})
+            {% if unmapped_subscriptions|length == 1 %}is{% else %}are{% endif %}
+            syncing responses but have no field mapping configured — those rows aren't counted in the totals below.
+        </span>
+    </div>
+    <a href="{% url 'tickets:typeform_settings' %}" class="btn btn-sm btn-warning flex-shrink-0">Configure</a>
+</div>
+{% endif %}
+
 {# --- Stat cards --- #}
 <div class="row g-3 mb-4">
     <div class="col-6 col-lg-3">
