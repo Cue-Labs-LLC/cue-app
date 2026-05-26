@@ -2450,6 +2450,13 @@ class TypeformFormSubscription(AuditBaseModel):
     def __str__(self):
         return f"{self.form_title} ({self.organization.name})"
 
+    @property
+    def field_map_is_unconfigured(self) -> bool:
+        """True only when ``field_map`` was never saved (``None``). An explicit
+        empty dict means "ignore everything" and must NOT trigger a warning.
+        """
+        return self.field_map is None
+
 
 class Payout(BaseModel):
     """Platform-to-organizer Stripe Transfer record."""

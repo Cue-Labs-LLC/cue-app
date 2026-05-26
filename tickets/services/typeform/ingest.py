@@ -75,6 +75,62 @@ def ingest_response(subscription, form_response: dict):
     return response, created
 
 
+def apply_field_map_to_subscription(subscription, new_map: dict, limit: int = 500) -> tuple[int, set[str]]:
+    """Re-project ``new_map`` over the most recent ``limit`` responses for ``subscription``.
+
+    Also repairs missing/empty answer titles in ``raw_answers`` using the persisted
+    ``subscription.questions`` snapshot. Uses ``QuerySet.update()`` so signals are
+    bypassed; the caller (or this helper's caller) is responsible for invalidating
+    any downstream event-stats / upload-stats caches via the returned event IDs.
+
+    Returns ``(backfilled_count, affected_event_ids)``.
+    """
+    from tickets.models import ExternalSurveyResponse
+
+    if not subscription.upload_id:
+        return 0, set()
+
+    title_lookup = {
+        (q.get('ref') or q.get('id')): (q.get('title') or '').strip()
+        for q in (subscription.questions or [])
+        if isinstance(q, dict)
+    }
+    qs = (
+        ExternalSurveyResponse.objects
+        .filter(organization=subscription.organization, upload_id=subscription.upload_id)
+        .exclude(typeform_response_id='')
+        .order_by('-responded_at')[:limit]
+    )
+
+    backfilled = 0
+    affected_event_ids: set[str] = set()
+    for resp in qs:
+        update = apply_field_map(resp.raw_answers or [], new_map)
+
+        fixed_raw = []
+        titles_changed = False
+        for ans in (resp.raw_answers or []):
+            if not isinstance(ans, dict):
+                fixed_raw.append(ans)
+                continue
+            key = ans.get('ref') or ans.get('id')
+            correct = title_lookup.get(key) if key else ''
+            if correct and (ans.get('title') or '') != correct:
+                ans = {**ans, 'title': correct}
+                titles_changed = True
+            fixed_raw.append(ans)
+        if titles_changed:
+            update['raw_answers'] = fixed_raw
+
+        if update:
+            ExternalSurveyResponse.objects.filter(pk=resp.pk).update(**update)
+            if resp.event_id:
+                affected_event_ids.add(str(resp.event_id))
+            backfilled += 1
+
+    return backfilled, affected_event_ids
+
+
 def _index_titles(definition_fields: list[dict]) -> dict:
     """Build {field-key → title} from a webhook payload's `definition.fields`.
 

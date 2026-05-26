@@ -11627,6 +11627,20 @@ def survey_analytics(request):
         if c
     ))
 
+    # Subscriptions that are syncing rows but have no field_map saved — those
+    # rows show up in the DB but contribute nothing to the totals here because
+    # nps_score / overall_rating / text_feedback stay NULL without a mapping.
+    unmapped_subscriptions = list(
+        TypeformFormSubscription.objects.filter(
+            organization=org, is_active=True, field_map__isnull=True,
+        ).annotate(
+            response_count=Count(
+                'upload__responses',
+                filter=~Q(upload__responses__typeform_response_id=''),
+            ),
+        ).filter(response_count__gt=0)
+    )
+
     return render(request, 'tickets/survey_analytics.html', {
         'stats': stats,
         'city_filter': city_filter,
@@ -11634,6 +11648,7 @@ def survey_analytics(request):
         'page_obj': page_obj,
         'rating_labels': [r['overall_rating'] for r in stats['rating_breakdown']],
         'rating_counts': [r['count'] for r in stats['rating_breakdown']],
+        'unmapped_subscriptions': unmapped_subscriptions,
     })
 
 
@@ -11817,6 +11832,19 @@ def typeform_form_picker(request):
                 logger.warning(
                     'Could not snapshot questions for sub %s: %s', sub.id, exc,
                 )
+                definition = None
+
+            # Seed a starting field_map from the form definition so structured
+            # columns (nps_score, overall_rating, text_feedback, …) populate on
+            # first sync without the user having to visit the mapping editor.
+            # Only when never configured before (None) — an explicit `{}` save
+            # means "ignore everything" and must be preserved.
+            if definition and sub.field_map is None:
+                from .services.typeform.field_mapping import auto_field_map
+                suggested = auto_field_map(definition)
+                if suggested:
+                    sub.field_map = suggested
+                    sub.save(update_fields=['field_map'])
 
             webhook_url = _typeform_webhook_url(request, sub.id)
             if not _is_publicly_reachable(webhook_url):
@@ -11973,47 +12001,10 @@ def typeform_form_mapping(request, sub_id):
 
         backfilled = 0
         if request.POST.get('backfill') == '1' and subscription.upload_id:
-            # Re-project the mapping over the most recent 500 responses from this
-            # form. update() bypasses signals — keep cache invalidation cheap by
-            # touching the event stats cache for affected events.
-            # While we're walking each row, also repair missing titles in
-            # `raw_answers` using the persisted subscription.questions snapshot.
-            title_lookup = {
-                (q.get('ref') or q.get('id')): (q.get('title') or '').strip()
-                for q in (subscription.questions or [])
-                if isinstance(q, dict)
-            }
-            qs = (
-                ExternalSurveyResponse.objects
-                .filter(organization=org, upload_id=subscription.upload_id)
-                .exclude(typeform_response_id='')
-                .order_by('-responded_at')[:500]
+            from .services.typeform.ingest import apply_field_map_to_subscription
+            backfilled, affected_event_ids = apply_field_map_to_subscription(
+                subscription, new_map, limit=500,
             )
-            affected_event_ids: set[str] = set()
-            for resp in qs:
-                update = apply_field_map(resp.raw_answers or [], new_map)
-
-                # Patch missing/empty titles in raw_answers from the snapshot.
-                fixed_raw = []
-                titles_changed = False
-                for ans in (resp.raw_answers or []):
-                    if not isinstance(ans, dict):
-                        fixed_raw.append(ans)
-                        continue
-                    key = ans.get('ref') or ans.get('id')
-                    correct = title_lookup.get(key) if key else ''
-                    if correct and (ans.get('title') or '') != correct:
-                        ans = {**ans, 'title': correct}
-                        titles_changed = True
-                    fixed_raw.append(ans)
-                if titles_changed:
-                    update['raw_answers'] = fixed_raw
-
-                if update:
-                    ExternalSurveyResponse.objects.filter(pk=resp.pk).update(**update)
-                    if resp.event_id:
-                        affected_event_ids.add(str(resp.event_id))
-                    backfilled += 1
             for eid in affected_event_ids:
                 django_cache.delete(_event_stats_cache_key(eid))
                 _invalidate_event_upload_stats_cache(eid)
