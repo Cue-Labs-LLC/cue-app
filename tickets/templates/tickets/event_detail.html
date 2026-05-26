@@ -1319,23 +1319,80 @@
 {{ rating_counts|json_script:"eventRatingCounts" }}
 
 {% else %}
+    {% if typeform_subscriptions %}
+    <div class="event-survey-matcher"
+         data-match-url="{% url 'tickets:event_survey_match' event.id %}?format=json"
+         data-apply-url="{% url 'tickets:event_survey_apply' event.id %}">
+        <div class="empty-state matcher-intro" style="padding: 48px 0;">
+            <i class="bi bi-clipboard2-data fs-2 text-muted"></i>
+            <p class="text-muted mt-2 mb-1">No survey responses for this event yet.</p>
+            <p class="text-muted small mb-3">
+                Search
+                {% for sub in typeform_subscriptions %}{{ sub.form_title }}{% if not forloop.last %}, {% endif %}{% endfor %}
+                for responses that look like a match for this event.
+            </p>
+            <button type="button" class="btn btn-sm btn-primary matcher-find-btn">
+                <i class="bi bi-magic me-1"></i>Find matches
+            </button>
+        </div>
+        <div class="matcher-loading d-none text-center" style="padding: 48px 0;">
+            <div class="spinner-border text-primary" role="status">
+                <span class="visually-hidden">Searching Typeform…</span>
+            </div>
+            <p class="text-muted small mt-3 mb-0">
+                Querying Typeform and ranking candidates…
+            </p>
+        </div>
+        <div class="matcher-empty empty-state d-none" style="padding: 48px 0;">
+            <i class="bi bi-search fs-2 text-muted"></i>
+            <p class="text-muted mt-2 mb-1">No matching responses found.</p>
+            <p class="text-muted small mb-3">
+                We couldn't find any unlinked Typeform responses that look like a match for this event.
+            </p>
+            <button type="button" class="btn btn-outline-secondary btn-sm matcher-find-btn">
+                <i class="bi bi-arrow-clockwise me-1"></i>Try again
+            </button>
+        </div>
+        <div class="matcher-error empty-state d-none" style="padding: 48px 0;">
+            <i class="bi bi-exclamation-triangle fs-2 text-warning"></i>
+            <p class="text-muted mt-2 mb-1">Couldn't load suggestions.</p>
+            <p class="text-muted small mb-3 matcher-error-detail">Try again in a moment.</p>
+            <button type="button" class="btn btn-outline-secondary btn-sm matcher-find-btn">
+                <i class="bi bi-arrow-clockwise me-1"></i>Try again
+            </button>
+        </div>
+        <div class="matcher-results card d-none">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <strong>Suggested matches</strong>
+                <button type="button" class="btn btn-sm btn-link p-0 text-decoration-none text-body-secondary matcher-find-btn">
+                    <i class="bi bi-arrow-clockwise me-1"></i>Refresh
+                </button>
+            </div>
+            <div class="table-responsive">
+                <table class="table table-hover align-middle mb-0">
+                    <thead>
+                        <tr>
+                            <th style="width: 110px;">Date</th>
+                            <th style="width: 90px;">Match</th>
+                            <th>Preview</th>
+                            <th class="text-end" style="width: 90px;">Action</th>
+                        </tr>
+                    </thead>
+                    <tbody class="matcher-tbody"></tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+    {% else %}
     <div class="empty-state" style="padding: 48px 0;">
         <i class="bi bi-clipboard2-data fs-2 text-muted"></i>
-        {% if typeform_subscriptions %}
-        <p class="text-muted mt-2 mb-1">No survey responses for this event yet.</p>
-        <p class="text-muted small">
-            Responses synced from
-            {% for sub in typeform_subscriptions %}{{ sub.form_title }}{% if not forloop.last %}, {% endif %}{% endfor %}
-            will appear here once they're matched to this event.
-        </p>
-        {% else %}
         <p class="text-muted mt-2 mb-1">No Typeform forms are syncing to this organization yet.</p>
         <p class="text-muted small">
             <a href="{% url 'tickets:typeform_settings' %}">Sync a Typeform form</a>
             to start collecting responses for your events.
         </p>
-        {% endif %}
     </div>
+    {% endif %}
 {% endif %}
 
 </div><!-- /tab-surveys -->
@@ -3877,5 +3934,162 @@ document.addEventListener('DOMContentLoaded', function () {
 });
 </script>
 {% endif %}
+
+<script>
+// Surveys tab: empty-state AI matcher. Wires the "Find matching responses"
+// button to the existing event_survey_match endpoint, renders candidates with
+// a single-row Link button that POSTs to event_survey_apply.
+(function () {
+    var container = document.querySelector('.event-survey-matcher');
+    if (!container) return;
+
+    var introEl     = container.querySelector('.matcher-intro');
+    var loadingEl   = container.querySelector('.matcher-loading');
+    var emptyEl     = container.querySelector('.matcher-empty');
+    var errorEl     = container.querySelector('.matcher-error');
+    var errorDetail = container.querySelector('.matcher-error-detail');
+    var resultsEl   = container.querySelector('.matcher-results');
+    var tbodyEl     = container.querySelector('.matcher-tbody');
+    var matchUrl    = container.dataset.matchUrl;
+    var applyUrl    = container.dataset.applyUrl;
+
+    function showOnly(panel) {
+        [introEl, loadingEl, emptyEl, errorEl, resultsEl].forEach(function (el) {
+            if (!el) return;
+            if (el === panel) el.classList.remove('d-none');
+            else el.classList.add('d-none');
+        });
+    }
+
+    function escapeHtml(s) {
+        return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
+            return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c];
+        });
+    }
+
+    function getCsrfToken() {
+        var input = document.querySelector('input[name=csrfmiddlewaretoken]');
+        if (input) return input.value;
+        var match = document.cookie.match(/(?:^|;\s*)csrftoken=([^;]+)/);
+        return match ? decodeURIComponent(match[1]) : '';
+    }
+
+    function formatDate(iso) {
+        if (!iso) return '—';
+        var d = new Date(iso);
+        if (isNaN(d.getTime())) return iso;
+        return d.toLocaleDateString(undefined, {year: 'numeric', month: 'short', day: 'numeric'});
+    }
+
+    function previewText(answers) {
+        if (!Array.isArray(answers) || !answers.length) return '<span class="text-body-secondary">—</span>';
+        return answers.slice(0, 2).map(function (a) {
+            var title = a.title ? '<span class="text-body-secondary">' + escapeHtml(a.title) + ':</span> ' : '';
+            var value = a.value;
+            if (value === null || value === undefined || value === '') return '';
+            if (Array.isArray(value)) value = value.join(', ');
+            var text = String(value);
+            if (text.length > 120) text = text.slice(0, 120) + '…';
+            return '<div class="text-truncate" style="max-width: 100%;">' + title + escapeHtml(text) + '</div>';
+        }).filter(Boolean).join('') || '<span class="text-body-secondary">—</span>';
+    }
+
+    function renderRow(c) {
+        var pct = c.confidence_pct != null ? c.confidence_pct : Math.round((c.confidence || 0) * 100);
+        var chipClass = c.confidence_class || 'bg-secondary-subtle text-secondary';
+        var rid = String(c.response_id || '');
+        var reasoning = c.reasoning || '';
+        return (
+            '<tr data-response-id="' + escapeHtml(rid) + '">' +
+              '<td class="text-muted small text-nowrap">' + escapeHtml(formatDate(c.responded_at)) + '</td>' +
+              '<td>' +
+                '<span class="badge ' + escapeHtml(chipClass) + '" ' +
+                       'title="' + escapeHtml(reasoning) + '" ' +
+                       'aria-label="Match confidence: ' + pct + ' percent">' + pct + '%</span>' +
+              '</td>' +
+              '<td class="small" style="max-width: 480px;">' + previewText(c.preview_answers) + '</td>' +
+              '<td class="text-end">' +
+                '<button type="button" class="btn btn-sm btn-primary matcher-link-btn" ' +
+                        'data-response-id="' + escapeHtml(rid) + '" ' +
+                        'data-confidence="' + (c.confidence || 0) + '" ' +
+                        'data-reasoning="' + escapeHtml(reasoning) + '">Link</button>' +
+              '</td>' +
+            '</tr>'
+        );
+    }
+
+    function loadCandidates() {
+        showOnly(loadingEl);
+        fetch(matchUrl, {
+            headers: {'X-Requested-With': 'XMLHttpRequest'},
+            credentials: 'same-origin',
+        })
+            .then(function (r) {
+                return r.json().then(function (data) { return {ok: r.ok, data: data}; });
+            })
+            .then(function (result) {
+                if (!result.ok || !result.data || !result.data.data) {
+                    var msg = (result.data && (result.data.error || result.data.message)) || 'Try again in a moment.';
+                    if (errorDetail) errorDetail.textContent = msg;
+                    showOnly(errorEl);
+                    return;
+                }
+                var candidates = (result.data.data.candidates) || [];
+                if (!candidates.length) {
+                    showOnly(emptyEl);
+                    return;
+                }
+                if (tbodyEl) {
+                    tbodyEl.innerHTML = candidates.map(renderRow).join('');
+                }
+                showOnly(resultsEl);
+            })
+            .catch(function () {
+                if (errorDetail) errorDetail.textContent = 'Network error. Try again in a moment.';
+                showOnly(errorEl);
+            });
+    }
+
+    container.addEventListener('click', function (e) {
+        if (e.target.closest('.matcher-find-btn')) {
+            loadCandidates();
+            return;
+        }
+        var linkBtn = e.target.closest('.matcher-link-btn');
+        if (linkBtn) {
+            linkBtn.disabled = true;
+            linkBtn.innerHTML = 'Linking…';
+            var fd = new FormData();
+            fd.append('csrfmiddlewaretoken', getCsrfToken());
+            fd.append('response_id', linkBtn.dataset.responseId || '');
+            fd.append('confidence', linkBtn.dataset.confidence || '0');
+            fd.append('reasoning', linkBtn.dataset.reasoning || '');
+            fetch(applyUrl, {
+                method: 'POST',
+                body: fd,
+                headers: {'X-Requested-With': 'XMLHttpRequest'},
+                credentials: 'same-origin',
+            })
+                .then(function (r) { return r.json().then(function (data) { return {ok: r.ok, data: data}; }); })
+                .then(function (result) {
+                    if (result.ok && result.data && result.data.success) {
+                        window.location.reload();
+                    } else {
+                        linkBtn.disabled = false;
+                        linkBtn.innerHTML = 'Link';
+                        if (errorDetail) errorDetail.textContent = (result.data && result.data.error) || 'Couldn’t link this response.';
+                        showOnly(errorEl);
+                    }
+                })
+                .catch(function () {
+                    linkBtn.disabled = false;
+                    linkBtn.innerHTML = 'Link';
+                    if (errorDetail) errorDetail.textContent = 'Network error. Try again in a moment.';
+                    showOnly(errorEl);
+                });
+        }
+    });
+})();
+</script>
 
 {% endblock %}
