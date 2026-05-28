@@ -694,6 +694,14 @@ class Customer(BaseModel):
         on_delete=models.CASCADE,
         related_name='customers',
     )
+    user = models.ForeignKey(
+        'auth.User',
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name='customer_profiles',
+        help_text="Linked auth.User account, if the buyer has one. Null for CSV-imported customers without a backing account.",
+    )
     email = models.EmailField(db_index=True)
     name = models.CharField(max_length=200)
     phone = models.CharField(max_length=50, blank=True)

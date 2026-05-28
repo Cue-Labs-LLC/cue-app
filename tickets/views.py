@@ -132,7 +132,7 @@ from .services.marketing import (
     generate_marketing_narrative,
 )
 from .services.marketing.analytics import DEFAULT_WINDOW, resolve_window
-from .utils import get_organization, require_org, require_organizer, require_host, require_admin, require_owner, clear_org_cache, next_order_number, generate_qr_b64
+from .utils import get_organization, require_org, require_organizer, require_host, require_admin, require_owner, clear_org_cache, next_order_number, generate_qr_b64, link_customer_to_buyer
 from .feature_flags import (
     smart_pricing_recommendations_enabled,
     browse_events_enabled,
@@ -9393,6 +9393,7 @@ def checkout_payment(request, public_id):
                 organization=org,
                 defaults={'name': buyer_name},
             )
+            link_customer_to_buyer(customer, buyer_email)
             sms_opt_in = request.POST.get('sms_opt_in') == '1'
             if sms_opt_in and not customer.sms_opt_in:
                 customer.sms_opt_in = True
@@ -10093,6 +10094,7 @@ def _fulfill_payment_intent(payment_intent):
             organization=org,
             defaults={'name': name},
         )
+        link_customer_to_buyer(customer, email)
         if session_obj.sms_opt_in and not customer.sms_opt_in:
             customer.sms_opt_in = True
             customer.sms_opt_in_date = django_tz.now()

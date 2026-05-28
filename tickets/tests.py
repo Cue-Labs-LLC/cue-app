@@ -8593,3 +8593,66 @@ class UnconfirmedMatchesEndpointTests(TestCase):
         url = reverse('tickets:ai_recommendation_unconfirmed_matches', args=[outside_rec.id])
         response = self.client.get(url)
         self.assertEqual(response.status_code, 404)
+
+
+class LinkCustomerToBuyerTests(TestCase):
+    """Tests for tickets.utils.link_customer_to_buyer."""
+
+    def setUp(self):
+        self.org = Organization.objects.create(name='Link Org', slug='link-org')
+        self.user = User.objects.create_user(
+            username='alice', email='Alice@Example.com', password='x',
+        )
+        self.profile = UserProfile.objects.create(
+            user=self.user, organization=self.org, phone_number='+15551234567',
+        )
+
+    def _new_customer(self, **kwargs):
+        defaults = {
+            'organization': self.org,
+            'email': 'alice@example.com',
+            'name': 'Alice',
+            'phone': '',
+        }
+        defaults.update(kwargs)
+        return Customer.objects.create(**defaults)
+
+    def test_links_user_and_copies_phone_for_matching_buyer(self):
+        from .utils import link_customer_to_buyer
+        customer = self._new_customer()
+
+        link_customer_to_buyer(customer, 'alice@example.com')
+
+        customer.refresh_from_db()
+        self.assertEqual(customer.user_id, self.user.id)
+        self.assertEqual(customer.phone, '+15551234567')
+
+    def test_does_not_overwrite_existing_phone(self):
+        from .utils import link_customer_to_buyer
+        customer = self._new_customer(phone='+15550000000')
+
+        link_customer_to_buyer(customer, 'alice@example.com')
+
+        customer.refresh_from_db()
+        self.assertEqual(customer.user_id, self.user.id)
+        self.assertEqual(customer.phone, '+15550000000')
+
+    def test_no_op_when_no_matching_user(self):
+        from .utils import link_customer_to_buyer
+        customer = self._new_customer(email='nobody@example.com')
+
+        link_customer_to_buyer(customer, 'nobody@example.com')
+
+        customer.refresh_from_db()
+        self.assertIsNone(customer.user_id)
+        self.assertEqual(customer.phone, '')
+
+    def test_sets_phone_when_user_already_linked(self):
+        from .utils import link_customer_to_buyer
+        customer = self._new_customer(user=self.user)
+
+        link_customer_to_buyer(customer, 'alice@example.com')
+
+        customer.refresh_from_db()
+        self.assertEqual(customer.user_id, self.user.id)
+        self.assertEqual(customer.phone, '+15551234567')
