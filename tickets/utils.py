@@ -219,6 +219,38 @@ def next_order_number():
     return f"#{seq:05d}"
 
 
+def link_customer_to_buyer(customer, buyer_email):
+    """Link Customer to its auth.User account and copy verified phone if blank.
+
+    Direct-ticketing buyers authenticate before checkout, so we can resolve
+    the buyer's User account by email. Sets Customer.user (if NULL) and copies
+    UserProfile.phone_number onto Customer.phone (if blank). Never overwrites
+    existing values.
+    """
+    if customer.user_id and customer.phone:
+        return
+    from django.contrib.auth.models import User
+    user = (
+        User.objects
+        .filter(email__iexact=buyer_email)
+        .select_related('profile')
+        .first()
+    )
+    if user is None:
+        return
+    fields_to_update = []
+    if not customer.user_id:
+        customer.user = user
+        fields_to_update.append('user')
+    if not customer.phone:
+        phone = getattr(getattr(user, 'profile', None), 'phone_number', None)
+        if phone:
+            customer.phone = phone
+            fields_to_update.append('phone')
+    if fields_to_update:
+        customer.save(update_fields=fields_to_update)
+
+
 def calculate_platform_fee_cents(subtotal_cents: int) -> int:
     """Platform service fee: 8% of subtotal + $0.99, in cents."""
     return round(subtotal_cents * 0.08) + 99

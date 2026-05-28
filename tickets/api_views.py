@@ -43,7 +43,7 @@ from .models import (
     TICKETING_TYPE_DIRECT,
     UserProfile,
 )
-from .utils import next_order_number
+from .utils import next_order_number, link_customer_to_buyer
 
 logger = logging.getLogger(__name__)
 
@@ -1566,6 +1566,7 @@ def _finalize_in_person_sale(event, payment_intent_id, buyer_name, buyer_email, 
         organization=org,
         defaults={'name': buyer_name or buyer_email},
     )
+    link_customer_to_buyer(customer, buyer_email)
 
     with transaction.atomic():
         order = TicketOrder.objects.create(
