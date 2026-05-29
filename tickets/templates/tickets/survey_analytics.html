@@ -129,7 +129,7 @@
     </div>
 
     {# Rating breakdown #}
-    <div class="col-lg-8">
+    <div class="col-lg-4">
         <div class="card h-100">
             <div class="card-header"><strong>Overall Rating Breakdown</strong></div>
             <div class="card-body">
@@ -140,6 +140,27 @@
                 {% else %}
                 <div class="empty-state py-3">
                     <p>No rating data</p>
+                </div>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+
+    {# NPS over time #}
+    <div class="col-lg-4">
+        <div class="card h-100">
+            <div class="card-header">
+                <strong>NPS Over Time</strong>
+                {% if city_filter %}<small class="text-muted">— {{ city_filter }}</small>{% endif %}
+            </div>
+            <div class="card-body">
+                {% if stats.nps_over_time|length > 1 %}
+                <div style="height: 260px; position: relative;">
+                    <canvas id="npsOverTime"></canvas>
+                </div>
+                {% else %}
+                <div class="empty-state py-3">
+                    <p>Not enough data to chart yet</p>
                 </div>
                 {% endif %}
             </div>
@@ -264,6 +285,7 @@
 
 {{ rating_labels|json_script:"ratingLabels" }}
 {{ rating_counts|json_script:"ratingCounts" }}
+{{ stats.nps_over_time|json_script:"npsOverTimeData" }}
 {% endblock %}
 
 {% block extra_js %}
@@ -304,6 +326,55 @@ document.addEventListener('DOMContentLoaded', function () {
                     }
                 },
                 animation: { animateRotate: true }
+            }
+        });
+    }
+
+    // NPS over time line
+    const npsTimeCanvas = document.getElementById('npsOverTime');
+    if (npsTimeCanvas) {
+        const series = JSON.parse(document.getElementById('npsOverTimeData').textContent);
+        new Chart(npsTimeCanvas, {
+            type: 'line',
+            data: {
+                labels: series.map(r => r.label),
+                datasets: [{
+                    label: 'NPS',
+                    data: series.map(r => r.nps_score),
+                    borderColor: '#6366f1',
+                    backgroundColor: 'rgba(99, 102, 241, 0.15)',
+                    tension: 0.3,
+                    pointRadius: 4,
+                    pointBackgroundColor: '#6366f1',
+                    fill: true,
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {
+                    legend: { display: false },
+                    tooltip: {
+                        callbacks: {
+                            label: ctx => {
+                                const row = series[ctx.dataIndex];
+                                return ` NPS: ${row.nps_score} (n=${row.n})`;
+                            }
+                        }
+                    }
+                },
+                scales: {
+                    y: {
+                        min: -100,
+                        max: 100,
+                        ticks: { color: textColor },
+                        grid: { color: gridColor }
+                    },
+                    x: {
+                        ticks: { color: textColor },
+                        grid: { color: gridColor }
+                    }
+                }
             }
         });
     }

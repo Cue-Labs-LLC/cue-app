@@ -37,6 +37,8 @@ from tickets.models import (
     EVENT_STATUS_DRAFT,
     EVENT_STATUS_ENDED,
     EVENT_STATUS_LIVE,
+    ExternalSurveyResponse,
+    ExternalSurveyUpload,
     IncomeSource,
     OrderCounter,
     Organization,
@@ -136,6 +138,7 @@ class Command(BaseCommand):
             self._create_tracking_links(org, events, rng)
             self._create_expenses_and_income(org, events, owner, rng)
             self._create_surveys(org, events, customers, owner, rng)
+            self._create_external_survey_responses(org, events, owner, rng)
 
             for customer in Customer.objects.filter(organization=org):
                 customer.update_lifetime_value()
@@ -607,6 +610,99 @@ class Command(BaseCommand):
                     "sent_at": timezone.now() - timedelta(days=rng.randint(1, 30)),
                 },
             )
+
+    def _create_external_survey_responses(self, org, events, owner, rng):
+        """Seed ExternalSurveyResponse rows so the Survey Analytics page has
+        NPS + city + over-time data to render."""
+        past_events = [
+            e for e in events
+            if e.status == EVENT_STATUS_ENDED and e.venue and e.venue.city
+        ]
+        if not past_events:
+            return
+
+        upload = ExternalSurveyUpload.objects.create(
+            organization=org,
+            filename='typeform-nps-export.csv',
+            status=ExternalSurveyUpload.Status.COMPLETED,
+            created_by=owner,
+        )
+
+        # Per-city NPS bias so the city filter feels meaningful in the demo.
+        city_bias = {
+            'Los Angeles': (0.58, 0.27),   # promoter %, passive % (detractor = remainder)
+            'Brooklyn':    (0.46, 0.32),
+            'Austin':      (0.38, 0.30),
+        }
+        default_bias = (0.45, 0.32)
+
+        rating_choices = ['Loved it', 'Great', 'Good', 'OK', 'Meh']
+        enjoyed_pool = ['Music', 'Vibe', 'Crowd', 'Lighting', 'Venue', 'DJs', 'Drinks']
+        genres_pool = ['House', 'Techno', 'Disco', 'Indie', 'Hip-Hop', 'Soul']
+        improvements_pool = ['Sound', 'Lines at bar', 'Ventilation', 'Bathrooms', 'Set times']
+        crowd_vibes = ['Friendly', 'Energetic', 'Chill', 'Mixed']
+        venue_feels = ['Intimate', 'Spacious', 'Cramped', 'Iconic']
+        found_outs = ['Instagram', 'Friend', 'Newsletter', 'Walked by', 'Reddit', 'TikTok']
+        text_pool = [
+            '', '', '', '', '',
+            'Best night out in months.',
+            'Sound got muddy near the end.',
+            'Crowd was incredible.',
+            'Would come back. Bring more local DJs.',
+            'Bathroom lines were rough.',
+            'Loved the lighting design.',
+            'Drink prices crept up. Music made up for it.',
+            'Door was slow but worth the wait.',
+        ]
+
+        now = timezone.now()
+        total = 0
+        # 8 months of data so the time-series chart has a real trend
+        for months_ago in range(8):
+            month_count = rng.randint(18, 42)
+            for _ in range(month_count):
+                days_offset = months_ago * 30 + rng.randint(0, 29)
+                responded_at = now - timedelta(
+                    days=days_offset,
+                    hours=rng.randint(0, 23),
+                    minutes=rng.randint(0, 59),
+                )
+                event = rng.choice(past_events)
+                city = event.venue.city
+                promoter_p, passive_p = city_bias.get(city, default_bias)
+
+                roll = rng.random()
+                if roll < promoter_p:
+                    nps = rng.randint(9, 10)
+                elif roll < promoter_p + passive_p:
+                    nps = rng.randint(7, 8)
+                else:
+                    nps = rng.randint(0, 6)
+                # 12% of rows leave NPS blank, like real surveys
+                nps_value = None if rng.random() < 0.12 else nps
+
+                ExternalSurveyResponse.objects.create(
+                    organization=org,
+                    upload=upload,
+                    event=event,
+                    responded_at=responded_at,
+                    email=f"guest{total:04d}@example.test",
+                    overall_rating=rng.choice(rating_choices) if rng.random() < 0.85 else '',
+                    nps_score=nps_value,
+                    city=city,
+                    enjoyed=rng.sample(enjoyed_pool, k=rng.randint(1, 3)),
+                    genres=rng.sample(genres_pool, k=rng.randint(1, 2)),
+                    improvements=rng.sample(improvements_pool, k=rng.randint(0, 2)),
+                    crowd_vibe=rng.choice(crowd_vibes) if rng.random() < 0.6 else '',
+                    venue_feel=rng.choice(venue_feels) if rng.random() < 0.6 else '',
+                    found_out_how=rng.choice(found_outs) if rng.random() < 0.7 else '',
+                    text_feedback=rng.choice(text_pool),
+                )
+                total += 1
+
+        upload.row_count = total
+        upload.save(update_fields=['row_count'])
+        self.stdout.write(self.style.SUCCESS(f"External survey responses: {total}"))
 
     # ------------------------------------------------------------------
     # Output
