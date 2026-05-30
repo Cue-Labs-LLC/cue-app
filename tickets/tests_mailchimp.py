@@ -1,9 +1,10 @@
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from urllib.parse import parse_qs, urlparse
 from unittest.mock import MagicMock, patch
 
 from django.contrib.auth.models import User
+from django.core.cache import cache as django_cache
 from django.test import TestCase, override_settings
 from django.urls import reverse
 
@@ -20,6 +21,7 @@ from .services.mailchimp import (
     MailchimpClient,
     build_authorize_url,
     exchange_code_for_token,
+    fetch_org_reports_cached,
     get_oauth_metadata,
     normalize_campaign_report,
 )
@@ -93,31 +95,78 @@ class MailchimpClientTests(TestCase):
         self.assertEqual(mock_request.call_args.kwargs['headers']['Authorization'], 'OAuth token_123')
 
     @patch('tickets.services.mailchimp.requests.request')
-    def test_client_uses_bearer_auth_and_paginates_reports(self, mock_request):
-        first_page = [_report(f'cmp_{idx}', f'Campaign {idx}') for idx in range(50)]
-        second_page = [_report(f'cmp_{idx}', f'Campaign {idx}') for idx in range(50, 100)]
-        third_page = [_report(f'cmp_{idx}', f'Campaign {idx}') for idx in range(100, 150)]
-        mock_request.side_effect = [
-            _response(payload={'reports': first_page, 'total_items': 150}),
-            _response(payload={'reports': second_page, 'total_items': 150}),
-            _response(payload={'reports': third_page, 'total_items': 150}),
-        ]
+    def test_client_uses_bearer_auth_and_requests_full_page(self, mock_request):
+        single_page = [_report(f'cmp_{idx}', f'Campaign {idx}') for idx in range(150)]
+        mock_request.return_value = _response(payload={'reports': single_page, 'total_items': 150})
 
         reports = MailchimpClient('token_123', 'us18').list_campaign_reports(limit=150)
 
         self.assertEqual(len(reports), 150)
         self.assertEqual(reports[0]['id'], 'cmp_0')
-        self.assertEqual(mock_request.call_count, 3)
-        first_call = mock_request.call_args_list[0]
-        second_call = mock_request.call_args_list[1]
-        third_call = mock_request.call_args_list[2]
-        self.assertEqual(first_call.kwargs['headers']['Authorization'], 'Bearer token_123')
-        self.assertEqual(first_call.kwargs['params']['count'], 50)
-        self.assertEqual(first_call.kwargs['params']['offset'], 0)
-        self.assertIn('reports.id', first_call.kwargs['params']['fields'])
-        self.assertIn('total_items', first_call.kwargs['params']['fields'])
-        self.assertEqual(second_call.kwargs['params']['offset'], 50)
-        self.assertEqual(third_call.kwargs['params']['offset'], 100)
+        self.assertEqual(mock_request.call_count, 1)
+        call = mock_request.call_args_list[0]
+        self.assertEqual(call.kwargs['headers']['Authorization'], 'Bearer token_123')
+        self.assertEqual(call.kwargs['params']['count'], 150)
+        self.assertEqual(call.kwargs['params']['offset'], 0)
+        self.assertIn('reports.id', call.kwargs['params']['fields'])
+        self.assertIn('total_items', call.kwargs['params']['fields'])
+
+    @patch('tickets.services.mailchimp.requests.request')
+    def test_list_campaign_reports_unbounded_paginates_until_total_items(self, mock_request):
+        pages = [
+            [_report(f'cmp_{i}') for i in range(1000)],
+            [_report(f'cmp_{i}') for i in range(1000, 2000)],
+            [_report(f'cmp_{i}') for i in range(2000, 3000)],
+            [_report(f'cmp_{i}') for i in range(3000, 3250)],
+        ]
+        total = 3250
+        mock_request.side_effect = [
+            _response(payload={'reports': page, 'total_items': total}) for page in pages
+        ]
+
+        reports = MailchimpClient('token_123', 'us18').list_campaign_reports()
+
+        self.assertEqual(len(reports), total)
+        self.assertEqual(mock_request.call_count, 4)
+        offsets = [c.kwargs['params']['offset'] for c in mock_request.call_args_list]
+        self.assertEqual(offsets, [0, 1000, 2000, 3000])
+        for call in mock_request.call_args_list:
+            self.assertEqual(call.kwargs['params']['count'], 1000)
+
+    @patch('tickets.services.mailchimp.requests.request')
+    def test_list_campaign_reports_unbounded_stops_on_empty_page(self, mock_request):
+        full_page = [_report(f'cmp_{i}') for i in range(1000)]
+        mock_request.side_effect = [
+            _response(payload={'reports': full_page}),
+            _response(payload={'reports': []}),
+        ]
+
+        reports = MailchimpClient('token_123', 'us18').list_campaign_reports()
+
+        self.assertEqual(len(reports), 1000)
+        self.assertEqual(mock_request.call_count, 2)
+
+    @patch('tickets.services.mailchimp.requests.request')
+    def test_list_campaign_reports_bounded_returns_exactly_limit(self, mock_request):
+        page = [_report(f'cmp_{i}') for i in range(200)]
+        mock_request.return_value = _response(payload={'reports': page, 'total_items': 5000})
+
+        reports = MailchimpClient('token_123', 'us18').list_campaign_reports(limit=200)
+
+        self.assertEqual(len(reports), 200)
+        self.assertEqual(mock_request.call_count, 1)
+        self.assertEqual(mock_request.call_args_list[0].kwargs['params']['count'], 200)
+
+    @patch('tickets.services.mailchimp.requests.request')
+    def test_list_campaign_reports_mid_fetch_failure_raises(self, mock_request):
+        first_page = [_report(f'cmp_{i}') for i in range(1000)]
+        mock_request.side_effect = [
+            _response(payload={'reports': first_page, 'total_items': 3000}),
+            _response(status_code=500, payload={'detail': 'Mailchimp is down'}),
+        ]
+
+        with self.assertRaisesMessage(MailchimpAPIError, 'Mailchimp is down'):
+            MailchimpClient('token_123', 'us18').list_campaign_reports()
 
     @patch('tickets.services.mailchimp.requests.request')
     def test_get_campaign_report_uses_report_endpoint(self, mock_request):
@@ -155,8 +204,9 @@ class MailchimpCampaignMatcherTests(TestCase):
 
         self.assertEqual(result.candidates, [])
 
+    @override_settings(MAILCHIMP_MATCH_MAX_CANDIDATES=10)
     @patch('langchain_openai.ChatOpenAI')
-    def test_rank_returns_top_ten_sorted(self, mock_chat):
+    def test_rank_returns_top_candidates_sorted(self, mock_chat):
         org = Organization.objects.create(name='Org', slug='org')
         venue = Venue.objects.create(organization=org, name='Room', city='Oakland')
         event = Event.objects.create(
@@ -178,10 +228,128 @@ class MailchimpCampaignMatcherTests(TestCase):
         self.assertEqual(len(result.candidates), 10)
         self.assertEqual([item.campaign_id for item in result.candidates[:3]], ['cmp_12', 'cmp_11', 'cmp_10'])
 
+    def test_prefilter_returns_input_when_under_max(self):
+        org = Organization.objects.create(name='Org', slug='org')
+        event = MagicMock(start_date=date(2026, 6, 1))
+        reports = [_report(f'cmp_{i}', send_time='2026-05-15T12:00:00+00:00') for i in range(10)]
+
+        result = MailchimpCampaignMatcher(org)._prefilter_reports(event, reports)
+
+        self.assertEqual(len(result), 10)
+        self.assertEqual([r['id'] for r in result], [f'cmp_{i}' for i in range(10)])
+
+    @override_settings(MAILCHIMP_MATCH_PREFILTER_MAX=5)
+    def test_prefilter_returns_proximity_sorted_slice_when_over_max(self):
+        org = Organization.objects.create(name='Org', slug='org')
+        anchor = date(2026, 6, 1)
+        event = MagicMock(start_date=anchor)
+        days_offsets = [-365, -180, -7, 0, 1, 14, 90, 200]
+        reports = [
+            _report(
+                f'cmp_{offset}',
+                send_time=(anchor + timedelta(days=offset)).isoformat() + 'T12:00:00+00:00',
+            )
+            for offset in days_offsets
+        ]
+
+        result = MailchimpCampaignMatcher(org)._prefilter_reports(event, reports)
+
+        self.assertEqual(len(result), 5)
+        self.assertEqual([r['id'] for r in result], ['cmp_0', 'cmp_1', 'cmp_-7', 'cmp_14', 'cmp_90'])
+
+    def test_prefilter_drops_reports_without_send_time(self):
+        org = Organization.objects.create(name='Org', slug='org')
+        event = MagicMock(start_date=date(2026, 6, 1))
+        reports = [
+            _report('sent', send_time='2026-05-15T12:00:00+00:00'),
+            _report('draft', send_time=None),
+            _report('also_draft', send_time=''),
+            _report('bad_format', send_time='not-a-date'),
+        ]
+
+        result = MailchimpCampaignMatcher(org)._prefilter_reports(event, reports)
+
+        self.assertEqual([r['id'] for r in result], ['sent'])
+
+
+@override_settings(MAILCHIMP_REPORTS_CACHE_TTL=900)
+class FetchOrgReportsCachedTests(TestCase):
+    def setUp(self):
+        django_cache.clear()
+        self.org = Organization.objects.create(
+            name='Cache Org',
+            slug='cache-org',
+            mailchimp_access_token='token_A',
+            mailchimp_dc='us18',
+            mailchimp_account_id='acct_A',
+        )
+
+    @patch('tickets.services.mailchimp.MailchimpClient')
+    def test_first_call_hits_api_second_call_hits_cache(self, mock_client_cls):
+        reports = [_report('cmp_1'), _report('cmp_2')]
+        mock_client_cls.return_value.list_campaign_reports.return_value = reports
+
+        first = fetch_org_reports_cached(self.org)
+        second = fetch_org_reports_cached(self.org)
+
+        self.assertEqual(first, reports)
+        self.assertEqual(second, reports)
+        self.assertEqual(mock_client_cls.return_value.list_campaign_reports.call_count, 1)
+        mock_client_cls.assert_called_once_with('token_A', 'us18')
+
+    @patch('tickets.services.mailchimp.MailchimpClient')
+    def test_cache_key_isolates_orgs_and_accounts(self, mock_client_cls):
+        other_org = Organization.objects.create(
+            name='Other Org',
+            slug='other-org',
+            mailchimp_access_token='token_B',
+            mailchimp_dc='us20',
+            mailchimp_account_id='acct_B',
+        )
+        mock_client_cls.return_value.list_campaign_reports.side_effect = [
+            [_report('A1')],
+            [_report('B1')],
+            [_report('A2_NEW_ACCOUNT')],
+        ]
+
+        a_reports = fetch_org_reports_cached(self.org)
+        b_reports = fetch_org_reports_cached(other_org)
+        # Same org, new account_id → new cache key, new fetch
+        self.org.mailchimp_account_id = 'acct_A_NEW'
+        a_new = fetch_org_reports_cached(self.org)
+
+        self.assertEqual([r['id'] for r in a_reports], ['A1'])
+        self.assertEqual([r['id'] for r in b_reports], ['B1'])
+        self.assertEqual([r['id'] for r in a_new], ['A2_NEW_ACCOUNT'])
+        self.assertEqual(mock_client_cls.return_value.list_campaign_reports.call_count, 3)
+
+    @patch('tickets.services.mailchimp.MailchimpClient')
+    def test_api_failure_does_not_populate_cache(self, mock_client_cls):
+        mock_client_cls.return_value.list_campaign_reports.side_effect = [
+            MailchimpAPIError('boom'),
+            [_report('recovered')],
+        ]
+
+        with self.assertRaises(MailchimpAPIError):
+            fetch_org_reports_cached(self.org)
+        # Next call should retry the API (cache was not populated)
+        recovered = fetch_org_reports_cached(self.org)
+
+        self.assertEqual([r['id'] for r in recovered], ['recovered'])
+        self.assertEqual(mock_client_cls.return_value.list_campaign_reports.call_count, 2)
+
+    def test_unconnected_org_raises_without_api_call(self):
+        self.org.mailchimp_access_token = ''
+        self.org.save(update_fields=['mailchimp_access_token'])
+
+        with self.assertRaises(MailchimpAPIError):
+            fetch_org_reports_cached(self.org)
+
 
 @override_settings(MAILCHIMP_CLIENT_ID='client', MAILCHIMP_CLIENT_SECRET='secret')
 class MailchimpViewTests(TestCase):
     def setUp(self):
+        django_cache.clear()
         self.org = Organization.objects.create(
             name='Mailchimp Org',
             slug='mailchimp-org',
@@ -316,10 +484,9 @@ class MailchimpViewTests(TestCase):
         self.assertEqual(self.org.mailchimp_login_email, '')
 
     @patch('tickets.views.MailchimpCampaignMatcher')
-    @patch('tickets.views.MailchimpClient')
-    def test_match_endpoint_returns_modal_json(self, mock_client_cls, mock_matcher_cls):
-        client = mock_client_cls.return_value
-        client.list_campaign_reports.return_value = [
+    @patch('tickets.views.fetch_org_reports_cached')
+    def test_match_endpoint_returns_modal_json(self, mock_fetch, mock_matcher_cls):
+        mock_fetch.return_value = [
             _report(f'cmp_{idx}', f'Event Campaign {idx}', '2026-05-08T15:00:00+00:00')
             for idx in range(1, 11)
         ]
@@ -341,10 +508,10 @@ class MailchimpViewTests(TestCase):
         self.assertEqual(payload['candidates'][0]['campaign_id'], 'cmp_1')
         self.assertEqual(payload['candidates'][0]['confidence_pct'], 84)
         self.assertEqual(payload['candidates'][0]['send_time'], 'Friday, May 8th 2026 at 8:00 AM PST')
-        mock_client_cls.assert_called_with('token_123', 'us18')
+        mock_fetch.assert_called_once_with(self.org)
 
-    @patch('tickets.views.MailchimpClient')
-    def test_match_endpoint_rejects_unconnected_org(self, mock_client_cls):
+    @patch('tickets.views.fetch_org_reports_cached')
+    def test_match_endpoint_rejects_unconnected_org(self, mock_fetch):
         self._disconnect_org()
 
         response = self.client.get(
@@ -353,12 +520,13 @@ class MailchimpViewTests(TestCase):
         )
 
         self.assertEqual(response.status_code, 400)
-        mock_client_cls.assert_not_called()
+        mock_fetch.assert_not_called()
 
     @patch('tickets.views.MailchimpClient')
-    def test_apply_upserts_single_mailchimp_campaign(self, mock_client_cls):
+    @patch('tickets.views.fetch_org_reports_cached')
+    def test_apply_upserts_single_mailchimp_campaign(self, mock_fetch, mock_client_cls):
+        mock_fetch.return_value = [_report('cmp_1', 'Event Campaign')]
         client = mock_client_cls.return_value
-        client.list_campaign_reports.return_value = [_report('cmp_1', 'Event Campaign')]
         client.get_campaign_report.side_effect = [
             _report('cmp_1', 'Event Campaign'),
             _report('cmp_1', 'Updated Event Campaign'),
@@ -382,12 +550,36 @@ class MailchimpViewTests(TestCase):
         self.assertEqual(campaign.version, 2)
 
     @patch('tickets.views.MailchimpClient')
-    def test_apply_allows_multiple_linked_campaigns(self, mock_client_cls):
-        client = mock_client_cls.return_value
-        client.list_campaign_reports.return_value = [
+    @patch('tickets.services.mailchimp.MailchimpClient')
+    def test_regression_apply_succeeds_for_campaign_beyond_old_cap(self, mock_helper_client_cls, mock_view_client_cls):
+        """An 'older' campaign — outside the legacy 200 most-recent slice — must now
+        round-trip through match + apply without silently failing validation."""
+        all_reports = [_report(f'cmp_{i}', f'Campaign {i}') for i in range(500)]
+        older_campaign = all_reports[450]
+        mock_helper_client_cls.return_value.list_campaign_reports.return_value = all_reports
+        mock_view_client_cls.return_value.get_campaign_report.return_value = older_campaign
+        url = reverse('tickets:event_mailchimp_apply', kwargs={'event_id': self.event.id})
+
+        response = self.client.post(url, {
+            'campaign_id': older_campaign['id'],
+            'confidence': '0.81',
+            'reasoning': 'Older promo.',
+        })
+
+        self.assertEqual(response.status_code, 302)
+        campaigns = EventEmailCampaign.objects.filter(event=self.event, source='mailchimp', deleted_at__isnull=True)
+        self.assertEqual(campaigns.count(), 1)
+        self.assertEqual(campaigns.get().external_id, older_campaign['id'])
+        mock_view_client_cls.return_value.get_campaign_report.assert_called_once_with(older_campaign['id'])
+
+    @patch('tickets.views.MailchimpClient')
+    @patch('tickets.views.fetch_org_reports_cached')
+    def test_apply_allows_multiple_linked_campaigns(self, mock_fetch, mock_client_cls):
+        mock_fetch.return_value = [
             _report('cmp_1', 'Event Campaign'),
             _report('cmp_2', 'Retargeting Campaign'),
         ]
+        client = mock_client_cls.return_value
         client.get_campaign_report.side_effect = [
             _report('cmp_1', 'Event Campaign'),
             _report('cmp_2', 'Retargeting Campaign'),
@@ -402,12 +594,13 @@ class MailchimpViewTests(TestCase):
         self.assertEqual(set(campaigns.values_list('external_id', flat=True)), {'cmp_1', 'cmp_2'})
 
     @patch('tickets.views.MailchimpClient')
-    def test_apply_accepts_multiple_campaign_ids_in_one_request(self, mock_client_cls):
-        client = mock_client_cls.return_value
-        client.list_campaign_reports.return_value = [
+    @patch('tickets.views.fetch_org_reports_cached')
+    def test_apply_accepts_multiple_campaign_ids_in_one_request(self, mock_fetch, mock_client_cls):
+        mock_fetch.return_value = [
             _report('cmp_1', 'Event Campaign'),
             _report('cmp_2', 'Retargeting Campaign'),
         ]
+        client = mock_client_cls.return_value
         client.get_campaign_report.side_effect = [
             _report('cmp_1', 'Event Campaign'),
             _report('cmp_2', 'Retargeting Campaign'),
@@ -430,12 +623,13 @@ class MailchimpViewTests(TestCase):
         self.assertTrue(any('Linked 2 Mailchimp campaigns' in m for m in flash_messages), flash_messages)
 
     @patch('tickets.views.MailchimpClient')
-    def test_apply_partial_failure_keeps_successes(self, mock_client_cls):
-        client = mock_client_cls.return_value
-        client.list_campaign_reports.return_value = [
+    @patch('tickets.views.fetch_org_reports_cached')
+    def test_apply_partial_failure_keeps_successes(self, mock_fetch, mock_client_cls):
+        mock_fetch.return_value = [
             _report('cmp_1', 'Event Campaign'),
             _report('cmp_2', 'Retargeting Campaign'),
         ]
+        client = mock_client_cls.return_value
         client.get_campaign_report.side_effect = [
             _report('cmp_1', 'Event Campaign'),
             MailchimpAPIError('boom'),
@@ -456,9 +650,10 @@ class MailchimpViewTests(TestCase):
         self.assertTrue(any('cmp_2' in m for m in flash_messages), flash_messages)
 
     @patch('tickets.views.MailchimpClient')
-    def test_apply_rejects_unknown_campaign_id(self, mock_client_cls):
+    @patch('tickets.views.fetch_org_reports_cached')
+    def test_apply_rejects_unknown_campaign_id(self, mock_fetch, mock_client_cls):
+        mock_fetch.return_value = [_report('cmp_1', 'Event Campaign')]
         client = mock_client_cls.return_value
-        client.list_campaign_reports.return_value = [_report('cmp_1', 'Event Campaign')]
         url = reverse('tickets:event_mailchimp_apply', kwargs={'event_id': self.event.id})
 
         response = self.client.post(url, {'campaign_id': 'cmp_unknown'})
@@ -473,16 +668,15 @@ class MailchimpViewTests(TestCase):
         self.assertTrue(any('cmp_unknown' in m for m in flash_messages), flash_messages)
 
     @patch('tickets.views.MailchimpCampaignMatcher')
-    @patch('tickets.views.MailchimpClient')
-    def test_match_json_marks_linked_candidates(self, mock_client_cls, mock_matcher_cls):
+    @patch('tickets.views.fetch_org_reports_cached')
+    def test_match_json_marks_linked_candidates(self, mock_fetch, mock_matcher_cls):
         EventEmailCampaign.objects.create(
             event=self.event,
             source='mailchimp',
             external_id='cmp_1',
             campaign_title='Already linked',
         )
-        client = mock_client_cls.return_value
-        client.list_campaign_reports.return_value = [
+        mock_fetch.return_value = [
             _report('cmp_1', 'Event Campaign'),
             _report('cmp_2', 'Retargeting Campaign'),
         ]

@@ -115,6 +115,7 @@ from .services.mailchimp import (
     MailchimpClient,
     build_authorize_url,
     exchange_code_for_token,
+    fetch_org_reports_cached,
     get_oauth_metadata,
     normalize_campaign_report,
 )
@@ -6385,8 +6386,7 @@ def event_mailchimp_match(request, event_id):
         return redirect('tickets:mailchimp_settings')
 
     try:
-        client = MailchimpClient(connection.mailchimp_access_token, connection.mailchimp_dc)
-        reports = client.list_campaign_reports()
+        reports = fetch_org_reports_cached(org)
         match_result = MailchimpCampaignMatcher(org).rank(event, reports)
     except MailchimpAPIError as exc:
         if wants_json:
@@ -6488,13 +6488,13 @@ def event_mailchimp_apply(request, event_id):
     reasonings = request.POST.getlist('reasoning')
 
     try:
-        client = MailchimpClient(connection.mailchimp_access_token, connection.mailchimp_dc)
-        reports = client.list_campaign_reports()
+        reports = fetch_org_reports_cached(org)
     except MailchimpAPIError as exc:
         if wants_json:
             return JsonResponse({'success': False, 'error': f'Could not load Mailchimp campaigns: {exc}'}, status=502)
         messages.error(request, f'Could not load Mailchimp campaigns: {exc}')
         return redirect('tickets:event_mailchimp_match', event_id=event.id)
+    client = MailchimpClient(connection.mailchimp_access_token, connection.mailchimp_dc)
 
     available_ids = {str(item.get('id')) for item in reports}
     unknown_ids = [cid for cid in campaign_ids if cid not in available_ids]

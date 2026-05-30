@@ -4,6 +4,7 @@ from urllib.parse import urlencode
 
 import requests
 from django.conf import settings
+from django.core.cache import cache as django_cache
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 
@@ -81,13 +82,14 @@ class MailchimpClient:
     def get_account_root(self) -> dict:
         return self._request("GET", "/")
 
-    def list_campaign_reports(self, limit: int = 200) -> list[dict]:
-        reports = []
+    def list_campaign_reports(self, limit: int | None = None) -> list[dict]:
+        reports: list[dict] = []
         offset = 0
-        page_size = min(50, max(1, limit))
+        max_page = 1000
+        page_size = min(max_page, max(1, limit)) if limit is not None else max_page
         fields = ",".join(f"reports.{name}" for name in REPORT_FIELDS) + ",total_items"
-        while len(reports) < limit:
-            count = min(page_size, limit - len(reports))
+        while limit is None or len(reports) < limit:
+            count = page_size if limit is None else min(page_size, limit - len(reports))
             payload = self._request(
                 "GET",
                 "/reports",
@@ -99,7 +101,7 @@ class MailchimpClient:
             total_items = payload.get("total_items")
             if not page or len(page) < count or (total_items is not None and offset >= total_items):
                 break
-        return reports[:limit]
+        return reports if limit is None else reports[:limit]
 
     def get_campaign_report(self, campaign_id: str) -> dict:
         return self._request(
@@ -131,6 +133,20 @@ class MailchimpClient:
             return response.json()
         except ValueError as exc:
             raise MailchimpAPIError("Mailchimp returned an invalid JSON response.") from exc
+
+
+def fetch_org_reports_cached(org) -> list[dict]:
+    if not org.mailchimp_access_token or not org.mailchimp_dc or not org.mailchimp_account_id:
+        raise MailchimpAPIError("Mailchimp is not connected for this organization.")
+    cache_key = f"mailchimp_reports:{org.id}:{org.mailchimp_account_id}"
+    cached = django_cache.get(cache_key)
+    if cached is not None:
+        return cached
+    client = MailchimpClient(org.mailchimp_access_token, org.mailchimp_dc)
+    reports = client.list_campaign_reports()
+    ttl = getattr(settings, "MAILCHIMP_REPORTS_CACHE_TTL", 900)
+    django_cache.set(cache_key, reports, ttl)
+    return reports
 
 
 def normalize_campaign_report(report: dict) -> dict:

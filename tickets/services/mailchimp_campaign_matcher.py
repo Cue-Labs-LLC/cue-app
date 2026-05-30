@@ -1,5 +1,5 @@
 import json
-from datetime import date, timedelta
+from datetime import date
 
 from django.conf import settings
 from pydantic import BaseModel, Field
@@ -30,6 +30,7 @@ class MailchimpCampaignMatcher:
 
         filtered_reports = self._prefilter_reports(event, reports)
         prompt = self._build_prompt(event, filtered_reports)
+        max_candidates = getattr(settings, "MAILCHIMP_MATCH_MAX_CANDIDATES", 25)
 
         from langchain_openai import ChatOpenAI
 
@@ -47,7 +48,8 @@ class MailchimpCampaignMatcher:
                 "content": (
                     "Match Mailchimp email campaigns to an event. Rank by event name overlap, "
                     "subject/title hints, date proximity, venue/city hints, and engagement relevance. "
-                    "Return up to 10 candidates sorted by confidence. Use confidence below 0.3 for weak matches."
+                    f"Return up to {max_candidates} candidates sorted by confidence. "
+                    "Use confidence below 0.3 for weak matches."
                 ),
             },
             {"role": "user", "content": prompt},
@@ -77,18 +79,15 @@ class MailchimpCampaignMatcher:
         return self._limit_result(MailchimpMatchResult.parse_obj(result))
 
     def _prefilter_reports(self, event, reports: list[dict]) -> list[dict]:
-        if len(reports) <= 50:
-            return reports
-
-        window_start = event.start_date - timedelta(days=90)
-        window_end = event.start_date + timedelta(days=7)
-        filtered = []
-        for report in reports:
-            sent_date = _parse_date(report.get("send_time"))
-            if sent_date and window_start <= sent_date <= window_end:
-                filtered.append(report)
-
-        return filtered[:50] if filtered else reports[:50]
+        max_candidates = getattr(settings, "MAILCHIMP_MATCH_PREFILTER_MAX", 150)
+        sent_reports = [r for r in reports if _parse_date(r.get("send_time")) is not None]
+        if len(sent_reports) <= max_candidates:
+            return sent_reports
+        anchor = event.start_date
+        if anchor is None:
+            return sent_reports[:max_candidates]
+        sent_reports.sort(key=lambda r: abs((_parse_date(r["send_time"]) - anchor).days))
+        return sent_reports[:max_candidates]
 
     def _build_prompt(self, event, reports: list[dict]) -> str:
         venue = getattr(event, "venue", None)
@@ -127,7 +126,8 @@ class MailchimpCampaignMatcher:
 
     @staticmethod
     def _limit_result(result: MailchimpMatchResult) -> MailchimpMatchResult:
-        candidates = sorted(result.candidates, key=lambda item: item.confidence, reverse=True)[:10]
+        max_candidates = getattr(settings, "MAILCHIMP_MATCH_MAX_CANDIDATES", 25)
+        candidates = sorted(result.candidates, key=lambda item: item.confidence, reverse=True)[:max_candidates]
         return MailchimpMatchResult(candidates=candidates)
 
 
