@@ -271,6 +271,32 @@ class MailchimpCampaignMatcherTests(TestCase):
 
         self.assertEqual([r['id'] for r in result], ['sent'])
 
+    def test_build_prompt_excludes_heavy_engagement_fields(self):
+        # Regression guard: heavy nested Mailchimp objects pushed the prompt past the
+        # OpenAI 30k TPM ceiling. They must not reappear in the prompt payload.
+        org = Organization.objects.create(name='Org', slug='org')
+        venue = Venue.objects.create(organization=org, name='Room', city='Oakland')
+        event = Event.objects.create(
+            organization=org,
+            venue=venue,
+            name='Night Market',
+            start_date=date(2026, 6, 1),
+        )
+
+        prompt = MailchimpCampaignMatcher(org)._build_prompt(event, [_report()])
+
+        for forbidden in (
+            'opens', 'clicks', 'ecommerce', 'archive_url',
+            'emails_sent', 'open_rate', 'total_revenue', 'bounces',
+        ):
+            self.assertNotIn(
+                forbidden, prompt,
+                f"{forbidden!r} must not appear in prompt (regression of 30k TPM bug)",
+            )
+        self.assertIn('campaign_title', prompt)
+        self.assertIn('subject_line', prompt)
+        self.assertIn('send_time', prompt)
+
 
 @override_settings(MAILCHIMP_REPORTS_CACHE_TTL=900)
 class FetchOrgReportsCachedTests(TestCase):

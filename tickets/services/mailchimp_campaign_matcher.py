@@ -47,7 +47,7 @@ class MailchimpCampaignMatcher:
                 "role": "system",
                 "content": (
                     "Match Mailchimp email campaigns to an event. Rank by event name overlap, "
-                    "subject/title hints, date proximity, venue/city hints, and engagement relevance. "
+                    "subject/title hints, date proximity, and venue/city hints. "
                     f"Return up to {max_candidates} candidates sorted by confidence. "
                     "Use confidence below 0.3 for weak matches."
                 ),
@@ -107,13 +107,7 @@ class MailchimpCampaignMatcher:
                 "id": report.get("id"),
                 "campaign_title": report.get("campaign_title"),
                 "subject_line": report.get("subject_line"),
-                "type": report.get("type"),
                 "send_time": report.get("send_time"),
-                "archive_url": report.get("archive_url"),
-                "emails_sent": report.get("emails_sent"),
-                "opens": report.get("opens"),
-                "clicks": report.get("clicks"),
-                "ecommerce": report.get("ecommerce"),
             }
             for report in reports
         ]
@@ -121,7 +115,7 @@ class MailchimpCampaignMatcher:
             "Event:\n"
             f"{json.dumps(event_payload, indent=2)}\n\n"
             "Mailchimp campaign reports:\n"
-            f"{json.dumps(report_payload, indent=2, default=str)}"
+            f"{json.dumps(report_payload, default=str)}"
         )
 
     @staticmethod
