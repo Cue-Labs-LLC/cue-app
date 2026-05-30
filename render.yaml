@@ -3,7 +3,7 @@ services:
   - type: web
     name: ltv-updater
     runtime: python
-    plan: standard
+    plan: pro
     buildCommand: pip install -r requirements.txt && python manage.py collectstatic --noinput && python manage.py migrate --noinput && python manage.py create_initial_superuser
     startCommand: gunicorn ltv_updater.asgi:application -k uvicorn.workers.UvicornWorker --workers 4 --timeout 120
     envVars:
@@ -52,7 +52,7 @@ services:
   # Redis for Celery broker (schema requires ipAllowList)
   - type: redis
     name: ltv-updater-redis
-    plan: starter
+    plan: standard
     maxmemoryPolicy: noeviction
     ipAllowList:
       - source: 0.0.0.0/0
@@ -63,7 +63,7 @@ services:
   - type: worker
     name: ltv-updater-worker
     runtime: python
-    plan: starter
+    plan: standard
     buildCommand: pip install -r requirements.txt
     startCommand: celery -A ltv_updater worker --loglevel=info --concurrency=2
     envVars:
