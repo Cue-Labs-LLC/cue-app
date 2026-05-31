@@ -326,6 +326,18 @@
             font-weight: 300;
         }
 
+        .ticket-desc-wrap { position: relative; }
+        .ticket-desc-wrap.collapsed .ticket-desc { max-height: 54px; overflow: hidden; }
+        .ticket-desc-wrap.collapsed::after {
+            content: "";
+            position: absolute;
+            bottom: 0; left: 0; right: 0;
+            height: 28px;
+            background: linear-gradient(to bottom, transparent, var(--surface));
+            pointer-events: none;
+        }
+        .btn-view-more.ticket-desc-toggle { margin: 4px 0 6px; }
+
         .ticket-price {
             font-family: var(--font-display);
             font-size: 14px;
@@ -449,6 +461,7 @@
             align-items: center;
             gap: 0;
             flex-shrink: 0;
+            align-self: flex-start;
         }
 
         .qty-control input[type=number] {
@@ -1098,7 +1111,7 @@
 </div>
 
 <div class="modal fade" id="buyModal" tabindex="-1" aria-labelledby="buyModalLabel" aria-hidden="true">
-  <div class="modal-dialog modal-dialog-scrollable" style="max-width:520px;">
+  <div class="modal-dialog modal-dialog-scrollable" style="max-width:520px;max-height:min(720px, 85vh);">
     <div class="modal-content">
       <div class="modal-header">
         <h5 class="modal-title" id="buyModalLabel">Select Tickets</h5>
@@ -1143,7 +1156,12 @@
                   <div class="ticket-name">
                       {{ tt.name }}{% if at %} <span class="badge bg-primary ms-1">{{ at.name }}</span>{% endif %}
                   </div>
-                  {% if tt.description %}<div class="ticket-desc">{{ tt.description }}</div>{% endif %}
+                  {% if tt.description %}
+                  <div class="ticket-desc-wrap collapsed">
+                      <div class="ticket-desc">{{ tt.description|linebreaksbr }}</div>
+                  </div>
+                  <button type="button" class="btn-view-more ticket-desc-toggle" style="display:none;">View more</button>
+                  {% endif %}
                   <div class="ticket-price">{% if ep == 0 %}Free{% else %}${{ ep|currency }}{% endif %}</div>
                   {% if not tt.is_sold_out %}
                   {% if at %}
@@ -1182,7 +1200,12 @@
           <div class="ticket-card" style="opacity:0.3;">
               <div class="ticket-info">
                   <div class="ticket-name">{{ tt.name }}</div>
-                  {% if tt.description %}<div class="ticket-desc">{{ tt.description }}</div>{% endif %}
+                  {% if tt.description %}
+                  <div class="ticket-desc-wrap collapsed">
+                      <div class="ticket-desc">{{ tt.description|linebreaksbr }}</div>
+                  </div>
+                  <button type="button" class="btn-view-more ticket-desc-toggle" style="display:none;">View more</button>
+                  {% endif %}
                   <div class="ticket-price">{% if ep == 0 %}Free{% else %}${{ ep|currency }}{% endif %}</div>
                   {% if tt.unlocks_after %}
                   <div class="ticket-desc" style="margin-top:4px;">Available after <strong style="color:var(--text-2);">{{ tt.unlocks_after.name }}</strong> sells out</div>
@@ -1206,7 +1229,12 @@
                   <div class="ticket-name">
                       {{ tt.name }}{% if at %} <span class="badge bg-primary ms-1">{{ at.name }}</span>{% endif %}
                   </div>
-                  {% if tt.description %}<div class="ticket-desc">{{ tt.description }}</div>{% endif %}
+                  {% if tt.description %}
+                  <div class="ticket-desc-wrap collapsed">
+                      <div class="ticket-desc">{{ tt.description|linebreaksbr }}</div>
+                  </div>
+                  <button type="button" class="btn-view-more ticket-desc-toggle" style="display:none;">View more</button>
+                  {% endif %}
                   <div class="ticket-price">{% if ep == 0 %}Free{% else %}${{ ep|currency }}{% endif %}</div>
                   {% if not tt.is_sold_out %}
                   {% if at %}
@@ -1256,7 +1284,12 @@
         <div class="ticket-card sold-out" style="opacity:0.85;margin-top:6px;" id="wl-card-{{ tt.id.hex }}">
             <div class="ticket-info">
                 <div class="ticket-name">{{ tt.name }}</div>
-                {% if tt.description %}<div class="ticket-desc">{{ tt.description }}</div>{% endif %}
+                {% if tt.description %}
+                <div class="ticket-desc-wrap collapsed">
+                    <div class="ticket-desc">{{ tt.description|linebreaksbr }}</div>
+                </div>
+                <button type="button" class="btn-view-more ticket-desc-toggle" style="display:none;">View more</button>
+                {% endif %}
                 <div class="ticket-price">{% if ep == 0 %}Free{% else %}${{ ep|currency }}{% endif %}</div>
             </div>
             <div class="qty-control" style="align-items:flex-end;">
@@ -1465,6 +1498,41 @@ document.addEventListener('DOMContentLoaded', function() {
             toggle.textContent = 'View more';
         }
     });
+})();
+
+(function() {
+    function initTicketDescToggles() {
+        document.querySelectorAll('.ticket-desc-wrap').forEach(function(wrap) {
+            var toggle = wrap.nextElementSibling;
+            if (!toggle || !toggle.classList.contains('ticket-desc-toggle')) return;
+            var desc = wrap.querySelector('.ticket-desc');
+            if (!desc) return;
+            // scrollHeight is 0 while the modal is display:none — skip until visible.
+            if (desc.scrollHeight === 0) return;
+            if (desc.scrollHeight <= 54) {
+                wrap.classList.remove('collapsed');
+                toggle.style.display = 'none';
+                return;
+            }
+            toggle.style.display = '';
+            if (wrap.dataset.toggleInit === '1') return;
+            wrap.dataset.toggleInit = '1';
+            toggle.addEventListener('click', function() {
+                if (wrap.classList.contains('collapsed')) {
+                    wrap.classList.remove('collapsed');
+                    toggle.textContent = 'View less';
+                } else {
+                    wrap.classList.add('collapsed');
+                    toggle.textContent = 'View more';
+                }
+            });
+        });
+    }
+    initTicketDescToggles();
+    var buyModal = document.getElementById('buyModal');
+    if (buyModal) {
+        buyModal.addEventListener('shown.bs.modal', initTicketDescToggles);
+    }
 })();
 </script>
 
