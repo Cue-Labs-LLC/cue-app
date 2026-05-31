@@ -58,6 +58,13 @@
             --font-body:     'DM Sans', system-ui, sans-serif;
             --font-mono:     'DM Sans', system-ui, sans-serif;
             --radius:        3px;
+
+            --fs-micro:      11px;
+            --fs-sm:         13px;
+            --fs-base:       15px;
+            --fs-md:         16px;
+            --fs-lg:         20px;
+            --fs-hero:       clamp(1.9rem, 8vw, 2.8rem);
         }
 
         *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -105,7 +112,7 @@
 
         .event-hero__location {
             font-family: var(--font-mono);
-            font-size: 10px;
+            font-size: var(--fs-micro);
             letter-spacing: 0.18em;
             text-transform: uppercase;
             color: var(--text-2);
@@ -115,7 +122,7 @@
 
         .event-hero__title {
             font-family: var(--font-display);
-            font-size: clamp(1.9rem, 8vw, 2.8rem);
+            font-size: var(--fs-hero);
             font-weight: 800;
             line-height: 1.05;
             letter-spacing: -0.02em;
@@ -131,7 +138,7 @@
 
         .event-hero__meta-row {
             font-family: var(--font-mono);
-            font-size: 11px;
+            font-size: var(--fs-sm);
             color: var(--text);
             letter-spacing: 0.04em;
             display: flex;
@@ -139,7 +146,7 @@
             gap: 8px;
         }
 
-        .event-hero__meta-row i { font-size: 10px; opacity: 0.5; }
+        .event-hero__meta-row i { font-size: var(--fs-sm); opacity: 0.5; }
 
         .event-organizer {
             display: flex;
@@ -173,7 +180,7 @@
             display: flex;
             align-items: center;
             justify-content: center;
-            font-size: 11px;
+            font-size: var(--fs-micro);
             font-weight: 700;
             color: var(--text-3);
             flex-shrink: 0;
@@ -182,14 +189,14 @@
 
         .event-organizer__name {
             font-family: var(--font-mono);
-            font-size: 11px;
+            font-size: var(--fs-sm);
             color: var(--text-3);
             letter-spacing: 0.04em;
         }
 
         .event-hero__summary {
             margin-top: 14px;
-            font-size: 14px;
+            font-size: var(--fs-base);
             color: var(--text);
             line-height: 1.65;
             font-weight: 300;
@@ -204,16 +211,16 @@
 
         /* ── DESCRIPTION ── */
         .event-desc {
-            font-size: 13px;
+            font-size: var(--fs-md);
             color: var(--text);
-            line-height: 1.75;
+            line-height: 1.7;
             font-weight: 300;
         }
 
-        .event-desc p { margin-bottom: 8px; }
-        .event-desc ul, .event-desc ol { padding-left: 1.3rem; margin-bottom: 8px; }
+        .event-desc p { margin-bottom: 10px; }
+        .event-desc ul, .event-desc ol { padding-left: 1.3rem; margin-bottom: 10px; }
 
-        .event-description-wrap.collapsed .event-description { max-height: 440px; overflow: hidden; }
+        .event-description-wrap.collapsed .event-description { max-height: 520px; overflow: hidden; }
         .event-description-wrap.collapsed .event-description-fade { display: block; }
         .event-description-fade {
             display: none;
@@ -230,7 +237,7 @@
             padding: 0;
             margin-top: 10px;
             font-family: var(--font-mono);
-            font-size: 10px;
+            font-size: var(--fs-micro);
             letter-spacing: 0.14em;
             text-transform: uppercase;
             color: var(--text-3);
@@ -261,7 +268,7 @@
         .venue-map-caption {
             margin-top: 8px;
             font-family: var(--font-mono);
-            font-size: 10px;
+            font-size: var(--fs-micro);
             color: var(--text-3);
             letter-spacing: 0.04em;
             display: flex;
@@ -311,7 +318,7 @@
 
         .ticket-name {
             font-family: var(--font-display);
-            font-size: 14px;
+            font-size: var(--fs-base);
             font-weight: 600;
             color: var(--text);
             margin-bottom: 3px;
@@ -319,7 +326,7 @@
         }
 
         .ticket-desc {
-            font-size: 12px;
+            font-size: var(--fs-sm);
             color: var(--text-2);
             margin-bottom: 5px;
             line-height: 1.5;
@@ -340,14 +347,14 @@
 
         .ticket-price {
             font-family: var(--font-display);
-            font-size: 14px;
+            font-size: var(--fs-base);
             font-weight: 600;
             color: var(--text);
         }
 
         .ticket-fee-preview {
             font-family: var(--font-body);
-            font-size: 11px;
+            font-size: var(--fs-micro);
             font-weight: 500;
             letter-spacing: 0.02em;
             color: var(--text-2);
@@ -356,7 +363,7 @@
 
         .ticket-remaining {
             font-family: var(--font-body);
-            font-size: 11px;
+            font-size: var(--fs-micro);
             font-weight: 600;
             color: var(--danger);
             margin-top: 4px;
@@ -365,7 +372,7 @@
 
         .ticket-limit-note {
             font-family: var(--font-body);
-            font-size: 11px;
+            font-size: var(--fs-micro);
             color: var(--text-3);
             margin-top: 4px;
             letter-spacing: 0.01em;
@@ -373,7 +380,7 @@
 
         .sold-out-badge {
             font-family: var(--font-mono);
-            font-size: 10px;
+            font-size: var(--fs-micro);
             letter-spacing: 0.1em;
             text-transform: uppercase;
             color: var(--text-3);
@@ -391,7 +398,7 @@
         }
         .waitlist-count {
             font-family: var(--font-mono);
-            font-size: 10px;
+            font-size: var(--fs-micro);
             color: var(--text-3);
             letter-spacing: 0.04em;
         }
@@ -409,7 +416,7 @@
             padding: 6px 10px;
             color: var(--text);
             font-family: var(--font-mono);
-            font-size: 11px;
+            font-size: var(--fs-micro);
             width: 100%;
             outline: none;
             transition: border-color 0.15s;
@@ -417,7 +424,7 @@
         .waitlist-form input:focus { border-color: var(--border-strong); }
         .btn-join-waitlist {
             font-family: var(--font-mono);
-            font-size: 11px;
+            font-size: var(--fs-micro);
             letter-spacing: 0.04em;
             padding: 7px 12px;
             background: transparent;
@@ -432,13 +439,13 @@
         .btn-join-waitlist:disabled { opacity: 0.5; cursor: not-allowed; }
         .waitlist-success {
             font-family: var(--font-mono);
-            font-size: 11px;
+            font-size: var(--fs-micro);
             color: var(--success);
             text-align: right;
         }
         .waitlist-error {
             font-family: var(--font-mono);
-            font-size: 11px;
+            font-size: var(--fs-micro);
             color: var(--danger);
             text-align: right;
         }
@@ -449,7 +456,7 @@
             color: var(--text-2) !important;
             border: 1px solid var(--border-mid) !important;
             font-family: var(--font-mono) !important;
-            font-size: 9px !important;
+            font-size: var(--fs-micro) !important;
             letter-spacing: 0.06em !important;
             border-radius: 2px !important;
             padding: 2px 6px !important;
@@ -474,7 +481,7 @@
             border-radius: 0;
             padding: 8px 2px;
             font-family: var(--font-body);
-            font-size: 15px;
+            font-size: var(--fs-base);
             font-weight: 500;
             color: var(--text);
             -moz-appearance: textfield;
@@ -500,7 +507,7 @@
             background: var(--surface-2);
             border: 1px solid var(--border-mid);
             color: var(--text-2);
-            font-size: 17px;
+            font-size: var(--fs-md);
             line-height: 1;
             cursor: pointer;
             transition: background 0.12s, color 0.12s;
@@ -532,7 +539,7 @@
             gap: 12px;
             padding: 7px 0;
             font-family: var(--font-body);
-            font-size: 12px;
+            font-size: var(--fs-sm);
             font-weight: 400;
             color: var(--text-2);
             border-bottom: 1px solid var(--border);
@@ -553,7 +560,7 @@
             padding-top: 12px;
             margin-top: 2px;
             font-family: var(--font-body);
-            font-size: 14px;
+            font-size: var(--fs-base);
             font-weight: 600;
             color: var(--text);
             letter-spacing: 0.01em;
@@ -561,14 +568,14 @@
 
         .os-total-row span:last-child {
             font-family: var(--font-body);
-            font-size: 15px;
+            font-size: var(--fs-base);
             font-weight: 700;
         }
 
         /* ── FIELD ERRORS ── */
         .field-error {
             font-family: var(--font-mono);
-            font-size: 10px;
+            font-size: var(--fs-micro);
             color: var(--danger);
             margin: -2px 0 8px;
             padding: 0 4px;
@@ -581,7 +588,7 @@
             border: 1px solid rgba(217,112,96,0.2) !important;
             color: var(--danger) !important;
             border-radius: var(--radius) !important;
-            font-size: 13px !important;
+            font-size: var(--fs-sm) !important;
             font-family: var(--font-body) !important;
         }
 
@@ -612,7 +619,7 @@
             border: none;
             border-radius: var(--radius);
             font-family: var(--font-display);
-            font-size: 15px;
+            font-size: var(--fs-base);
             font-weight: 700;
             letter-spacing: -0.01em;
             padding: 14px 40px;
@@ -641,7 +648,7 @@
 
         .modal-title {
             font-family: var(--font-display) !important;
-            font-size: 16px !important;
+            font-size: var(--fs-md) !important;
             font-weight: 700 !important;
             letter-spacing: -0.01em !important;
             color: var(--text) !important;
@@ -666,7 +673,7 @@
             border-color: var(--cta) !important;
             color: var(--bg) !important;
             font-family: var(--font-display) !important;
-            font-size: 14px !important;
+            font-size: var(--fs-base) !important;
             font-weight: 700 !important;
             letter-spacing: -0.01em !important;
             border-radius: var(--radius) !important;
@@ -680,7 +687,7 @@
             border-color: var(--border-mid) !important;
             background: transparent !important;
             border-radius: var(--radius) !important;
-            font-size: 13px !important;
+            font-size: var(--fs-sm) !important;
             font-family: var(--font-body) !important;
         }
 
@@ -695,7 +702,7 @@
             color: var(--text) !important;
             border-radius: var(--radius) 0 0 var(--radius) !important;
             font-family: var(--font-mono) !important;
-            font-size: 12px !important;
+            font-size: var(--fs-sm) !important;
         }
 
         #global-unlock-input::placeholder { color: var(--text-3) !important; }
@@ -711,7 +718,7 @@
             border: 1px solid var(--border-mid) !important;
             color: var(--text-2) !important;
             font-family: var(--font-mono) !important;
-            font-size: 10px !important;
+            font-size: var(--fs-micro) !important;
             letter-spacing: 0.1em !important;
             text-transform: uppercase !important;
             border-radius: 0 var(--radius) var(--radius) 0 !important;
@@ -727,13 +734,13 @@
         #global-unlock-error {
             color: var(--danger) !important;
             font-family: var(--font-mono) !important;
-            font-size: 10px !important;
+            font-size: var(--fs-micro) !important;
         }
 
         #global-unlock-success {
             color: var(--success) !important;
             font-family: var(--font-mono) !important;
-            font-size: 10px !important;
+            font-size: var(--fs-micro) !important;
         }
 
         /* ── EMPTY STATE ── */
@@ -741,7 +748,7 @@
             text-align: center;
             padding: 56px 20px;
             font-family: var(--font-mono);
-            font-size: 11px;
+            font-size: var(--fs-micro);
             color: var(--text-3);
             letter-spacing: 0.1em;
             text-transform: uppercase;
@@ -786,7 +793,7 @@
             border-radius: 50%;
             border: 2px solid var(--bg);
             font-family: var(--font-display);
-            font-size: 10px;
+            font-size: var(--fs-micro);
             font-weight: 700;
             letter-spacing: 0.01em;
             display: flex;
@@ -807,7 +814,7 @@
 
         .social-proof-text {
             font-family: var(--font-body);
-            font-size: 11px;
+            font-size: var(--fs-sm);
             color: var(--text-3);
             letter-spacing: 0;
             line-height: 1.4;
@@ -827,21 +834,21 @@
         }
         #signupPromptModal .modal-body { padding: 32px 28px; }
         .modal-icon {
-            font-size: 1.75rem;
+            font-size: var(--fs-lg);
             color: var(--text-2);
             margin-bottom: 16px;
         }
         .modal-title-text {
             font-family: var(--font-display);
             font-weight: 700;
-            font-size: 1.2rem;
+            font-size: var(--fs-lg);
             text-align: center;
             color: var(--text);
             margin-bottom: 6px;
         }
         .modal-subtitle {
             text-align: center;
-            font-size: 0.85rem;
+            font-size: var(--fs-sm);
             color: var(--text-2);
             margin-bottom: 24px;
             line-height: 1.5;
@@ -851,7 +858,7 @@
             border: 1px solid rgba(217, 112, 96, 0.3);
             border-radius: var(--radius);
             padding: 9px 12px;
-            font-size: 0.82rem;
+            font-size: var(--fs-sm);
             color: var(--danger);
             margin-bottom: 14px;
             display: none;
@@ -861,14 +868,14 @@
             text-align: center;
             letter-spacing: 0.35em;
             font-family: var(--font-mono);
-            font-size: 1.2rem;
+            font-size: var(--fs-lg);
         }
         .modal-link {
             background: none;
             border: none;
             padding: 0;
             font-family: var(--font-mono);
-            font-size: 0.72rem;
+            font-size: var(--fs-micro);
             letter-spacing: 0.06em;
             text-transform: uppercase;
             color: var(--text-2);
@@ -892,7 +899,7 @@
             border-radius: var(--radius);
             padding: 15px 24px;
             font-family: var(--font-mono);
-            font-size: 0.85rem;
+            font-size: var(--fs-sm);
             font-weight: 500;
             letter-spacing: 0.1em;
             text-transform: uppercase;
@@ -922,7 +929,7 @@
             border-radius: var(--radius);
             color: var(--text);
             font-family: var(--font-body);
-            font-size: 0.9rem;
+            font-size: var(--fs-base);
             padding: 10px 12px;
             transition: border-color 0.15s;
         }
@@ -1268,7 +1275,7 @@
 
           <div id="order-summary" class="ticket-card" style="display:none;">
               <div class="os-total-row"><span>Total</span><span id="os-total">$0.00</span></div>
-              <div class="os-row" style="font-size:0.8rem; opacity:0.65;"><span>Includes service fee</span><span id="os-fee">$0.00</span></div>
+              <div class="os-row" style="font-size:var(--fs-sm); opacity:0.65;"><span>Includes service fee</span><span id="os-fee">$0.00</span></div>
           </div>
 
           {% if available_pairs or locked_pairs %}
@@ -1691,7 +1698,7 @@ document.addEventListener('DOMContentLoaded', function () {
           </div>
           <div style="display:flex;align-items:flex-start;gap:10px;margin-bottom:18px;">
             <input type="checkbox" id="modal-marketing-opt-in" checked style="margin-top:3px;flex-shrink:0;">
-            <label for="modal-marketing-opt-in" style="font-size:0.78rem;color:var(--text-2);line-height:1.45;cursor:pointer;">
+            <label for="modal-marketing-opt-in" style="font-size:var(--fs-sm);color:var(--text-2);line-height:1.45;cursor:pointer;">
               Send me updates about this event and future events from this organizer.
             </label>
           </div>
