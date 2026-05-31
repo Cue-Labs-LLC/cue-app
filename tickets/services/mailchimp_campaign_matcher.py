@@ -30,7 +30,7 @@ class MailchimpCampaignMatcher:
 
         filtered_reports = self._prefilter_reports(event, reports)
         prompt = self._build_prompt(event, filtered_reports)
-        max_candidates = getattr(settings, "MAILCHIMP_MATCH_MAX_CANDIDATES", 25)
+        max_candidates = getattr(settings, "MAILCHIMP_MATCH_MAX_CANDIDATES", 50)
 
         from langchain_openai import ChatOpenAI
 
@@ -43,15 +43,7 @@ class MailchimpCampaignMatcher:
         )
         structured_llm = llm.with_structured_output(MailchimpMatchResult, include_raw=True)
         raw_result = structured_llm.invoke([
-            {
-                "role": "system",
-                "content": (
-                    "Match Mailchimp email campaigns to an event. Rank by event name overlap, "
-                    "subject/title hints, date proximity, and venue/city hints. "
-                    f"Return up to {max_candidates} candidates sorted by confidence. "
-                    "Use confidence below 0.3 for weak matches."
-                ),
-            },
+            {"role": "system", "content": self._build_system_prompt(max_candidates)},
             {"role": "user", "content": prompt},
         ])
 
@@ -89,6 +81,30 @@ class MailchimpCampaignMatcher:
         sent_reports.sort(key=lambda r: abs((_parse_date(r["send_time"]) - anchor).days))
         return sent_reports[:max_candidates]
 
+    def _build_system_prompt(self, max_candidates: int) -> str:
+        hints = (getattr(self.organization, "mailchimp_campaign_title_hints", "") or "").strip()
+        hints_block = (
+            "\n\nThe organization has provided these hints about their campaign "
+            f"naming conventions:\n{hints}"
+        ) if hints else ""
+        return (
+            "Match Mailchimp email campaigns to an event. Signals (in order of reliability):\n"
+            "1. subject_line that mentions the event name, city, or date.\n"
+            "2. send_time proximity to the event's start_date.\n"
+            "3. list_name that matches the event's venue city or region.\n"
+            "4. campaign_title - often a cryptic internal code. Look for short "
+            "city abbreviations (e.g. 2-3 letter prefixes) and embedded dates "
+            "(MMDDYYYY, YYYYMMDD, MMDDYY) that match the event.\n\n"
+            "Confidence calibration:\n"
+            "- HIGH (0.7-0.95): subject_line clearly references the event, OR "
+            "campaign_title encodes the event's city AND date, OR list_name matches "
+            "the event's city/region and send_time is within 90 days.\n"
+            "- MEDIUM (0.4-0.7): plausible match on 1-2 signals.\n"
+            "- LOW (below 0.3): no clear identification signal.\n\n"
+            f"Return up to {max_candidates} candidates sorted by confidence."
+            f"{hints_block}"
+        )
+
     def _build_prompt(self, event, reports: list[dict]) -> str:
         venue = getattr(event, "venue", None)
         event_payload = {
@@ -108,6 +124,7 @@ class MailchimpCampaignMatcher:
                 "campaign_title": report.get("campaign_title"),
                 "subject_line": report.get("subject_line"),
                 "send_time": report.get("send_time"),
+                "list_name": report.get("list_name"),
             }
             for report in reports
         ]
@@ -120,7 +137,7 @@ class MailchimpCampaignMatcher:
 
     @staticmethod
     def _limit_result(result: MailchimpMatchResult) -> MailchimpMatchResult:
-        max_candidates = getattr(settings, "MAILCHIMP_MATCH_MAX_CANDIDATES", 25)
+        max_candidates = getattr(settings, "MAILCHIMP_MATCH_MAX_CANDIDATES", 50)
         candidates = sorted(result.candidates, key=lambda item: item.confidence, reverse=True)[:max_candidates]
         return MailchimpMatchResult(candidates=candidates)
 
