@@ -2048,6 +2048,9 @@ document.addEventListener('DOMContentLoaded', function() {
             }
             // Reload so the new row renders with full server-side markup
             // (Edit/Confirm/Status buttons + manual-override columns).
+            var url = new URL(window.location.href);
+            url.searchParams.set('tab', 'marketing');
+            history.replaceState(null, '', url.toString());
             window.location.reload();
             return;
 
@@ -2280,6 +2283,9 @@ document.addEventListener('DOMContentLoaded', function() {
             return;
         }
         // Reload so server-side markup (Edit/Confirm/Status) renders for the new row.
+        var url = new URL(window.location.href);
+        url.searchParams.set('tab', 'marketing');
+        history.replaceState(null, '', url.toString());
         window.location.reload();
     }
 
@@ -2675,6 +2681,9 @@ document.addEventListener('DOMContentLoaded', function() {
             return;
         }
         // Reload so server-side markup (Edit/Confirm/Status) renders for the new row.
+        var url = new URL(window.location.href);
+        url.searchParams.set('tab', 'marketing');
+        history.replaceState(null, '', url.toString());
         window.location.reload();
     }
 
