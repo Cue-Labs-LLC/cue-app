@@ -302,6 +302,16 @@ def _invalidate_event_list_cache(org):
         pass
 
 
+def _invalidate_event_campaign_match_cache(event_id):
+    """Drop cached Mailchimp/SlickText/Meta match rankings for this event."""
+    from tickets.services import campaign_match_cache
+    for source in ("mailchimp", "slicktext", "meta"):
+        try:
+            campaign_match_cache.invalidate(source, event_id)
+        except Exception:
+            pass
+
+
 EVENT_STATS_CACHE_VERSION = 5
 
 EVENT_STATS_REQUIRED_KEYS = frozenset({
@@ -5228,6 +5238,7 @@ def event_edit(request, event_id):
                     event.save()
                     _invalidate_event_list_cache(org)
                     _invalidate_marketing_cache(org)
+                    _invalidate_event_campaign_match_cache(event.id)
                     messages.success(request, f"Event '{event.name}' updated successfully.")
                     return redirect('tickets:event_detail', event_id=event.id)
         else:
@@ -5289,6 +5300,7 @@ def event_edit(request, event_id):
                 value.save()
             _invalidate_event_list_cache(org)
             _invalidate_marketing_cache(org)
+            _invalidate_event_campaign_match_cache(event.id)
             messages.success(request, f"Event '{event.name}' updated successfully.")
             return redirect('tickets:event_detail', event_id=event.id)
     else:

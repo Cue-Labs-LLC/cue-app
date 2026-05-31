@@ -5,6 +5,7 @@ from django.conf import settings
 from pydantic import BaseModel, Field
 
 from tickets.models import AITokenUsage
+from tickets.services import campaign_match_cache
 from tickets.services.ai_metering import record_ai_token_usage
 
 
@@ -29,6 +30,11 @@ class SlickTextCampaignMatcher:
             return SlickTextMatchResult()
 
         filtered = self._prefilter(event, campaigns)
+        candidate_ids = [c.get("campaign_id") or c.get("id") for c in filtered]
+        cached = campaign_match_cache.get("slicktext", event.id, candidate_ids)
+        if cached is not None:
+            return self._limit_result(SlickTextMatchResult.model_validate(cached))
+
         prompt = self._build_prompt(event, filtered)
 
         from langchain_openai import ChatOpenAI
@@ -71,10 +77,14 @@ class SlickTextCampaignMatcher:
             result = raw_result
 
         if isinstance(result, SlickTextMatchResult):
-            return self._limit_result(result)
-        if hasattr(SlickTextMatchResult, "model_validate"):
-            return self._limit_result(SlickTextMatchResult.model_validate(result))
-        return self._limit_result(SlickTextMatchResult.parse_obj(result))
+            final = result
+        elif hasattr(SlickTextMatchResult, "model_validate"):
+            final = SlickTextMatchResult.model_validate(result)
+        else:
+            final = SlickTextMatchResult.parse_obj(result)
+
+        campaign_match_cache.set("slicktext", event.id, candidate_ids, final.model_dump())
+        return self._limit_result(final)
 
     def _prefilter(self, event, campaigns: list[dict]) -> list[dict]:
         if len(campaigns) <= 50:
@@ -107,24 +117,27 @@ class SlickTextCampaignMatcher:
                 "state": getattr(venue, "state", ""),
             },
         }
-        campaign_payload = [
-            {
+        campaign_payload = []
+        for campaign in campaigns:
+            body = campaign.get("body") or campaign.get("message") or ""
+            if len(body) > 120:
+                body = body[:120]
+            campaign_payload.append({
                 "id": campaign.get("campaign_id") or campaign.get("id"),
                 "name": campaign.get("name"),
-                "body": campaign.get("body") or campaign.get("message"),
-                "status": campaign.get("status"),
-                "scheduled": campaign.get("scheduled"),
-                "started": campaign.get("started"),
-                "finished": campaign.get("finished"),
+                "body": body,
+                "sent": (
+                    campaign.get("finished")
+                    or campaign.get("started")
+                    or campaign.get("scheduled")
+                ),
                 "audience_size": campaign.get("audience_size"),
-            }
-            for campaign in campaigns
-        ]
+            })
         return (
             "Event:\n"
-            f"{json.dumps(event_payload, indent=2)}\n\n"
+            f"{json.dumps(event_payload)}\n\n"
             "SlickText SMS broadcasts:\n"
-            f"{json.dumps(campaign_payload, indent=2, default=str)}"
+            f"{json.dumps(campaign_payload, default=str)}"
         )
 
     @staticmethod

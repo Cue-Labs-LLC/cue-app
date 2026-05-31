@@ -303,6 +303,9 @@ MAILCHIMP_REPORTS_CACHE_TTL = int(os.environ.get('MAILCHIMP_REPORTS_CACHE_TTL', 
 MAILCHIMP_MATCH_PREFILTER_MAX = int(os.environ.get('MAILCHIMP_MATCH_PREFILTER_MAX', 150))
 MAILCHIMP_MATCH_MAX_CANDIDATES = int(os.environ.get('MAILCHIMP_MATCH_MAX_CANDIDATES', 50))
 
+# Per-event cache TTL (seconds) for Mailchimp/SlickText/Meta campaign matcher results.
+CAMPAIGN_MATCH_CACHE_TTL = int(os.environ.get('CAMPAIGN_MATCH_CACHE_TTL', 3600))
+
 # Typeform integration
 TYPEFORM_API_BASE = os.environ.get('TYPEFORM_API_BASE', 'https://api.typeform.com')
 TYPEFORM_WEBHOOK_TAG = os.environ.get('TYPEFORM_WEBHOOK_TAG', 'cue')

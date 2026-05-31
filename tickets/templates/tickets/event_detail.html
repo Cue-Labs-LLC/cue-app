@@ -1896,7 +1896,7 @@ document.addEventListener('DOMContentLoaded', function() {
     var inlineLoaded = false;
 
     function loadInlineSuggestions() {
-        if (!inlineEl || inlineLoaded) return;
+        if (!inlineEl || inlineLoaded) return Promise.resolve();
         inlineLoaded = true;
         var inlineLoadingEl = inlineEl.querySelector('.meta-ads-inline-loading');
         var inlineErrorEl = inlineEl.querySelector('.meta-ads-inline-error');
@@ -1904,7 +1904,7 @@ document.addEventListener('DOMContentLoaded', function() {
         var inlineEmptyEl = inlineEl.querySelector('.meta-ads-inline-empty');
         var applyUrl = inlineEl.getAttribute('data-apply-url');
 
-        fetch(inlineEl.getAttribute('data-match-url'), {
+        return fetch(inlineEl.getAttribute('data-match-url'), {
             headers: { 'X-Requested-With': 'XMLHttpRequest' }
         })
         .then(function(response) {
@@ -1938,9 +1938,21 @@ document.addEventListener('DOMContentLoaded', function() {
     }
 
     if (inlineEl && marketingTabBtn) {
-        marketingTabBtn.addEventListener('shown.bs.tab', loadInlineSuggestions);
-        if (marketingTabBtn.classList.contains('active')) {
-            loadInlineSuggestions();
+        window.CueMarketingMatchQueue = window.CueMarketingMatchQueue || [];
+        window.CueMarketingMatchQueue.push(loadInlineSuggestions);
+        if (!window.CueMarketingMatchBound) {
+            window.CueMarketingMatchBound = true;
+            var drainMatchQueue = async function() {
+                var queue = window.CueMarketingMatchQueue || [];
+                for (var i = 0; i < queue.length; i++) {
+                    try { await Promise.resolve(queue[i]()); } catch (_) {}
+                }
+            };
+            marketingTabBtn.addEventListener('shown.bs.tab', function() { drainMatchQueue(); }, { once: true });
+            if (marketingTabBtn.classList.contains('active')) {
+                // Defer so all three matcher loaders register before we drain.
+                setTimeout(drainMatchQueue, 0);
+            }
         }
     }
 
@@ -2172,7 +2184,7 @@ document.addEventListener('DOMContentLoaded', function() {
     var inlineLoaded = false;
 
     function loadInlineSuggestions() {
-        if (!inlineEl || inlineLoaded) return;
+        if (!inlineEl || inlineLoaded) return Promise.resolve();
         inlineLoaded = true;
         var inlineLoadingEl = inlineEl.querySelector('.mailchimp-inline-loading');
         var inlineErrorEl = inlineEl.querySelector('.mailchimp-inline-error');
@@ -2180,7 +2192,7 @@ document.addEventListener('DOMContentLoaded', function() {
         var inlineEmptyEl = inlineEl.querySelector('.mailchimp-inline-empty');
         inlineFormEl.setAttribute('action', inlineEl.getAttribute('data-apply-url'));
 
-        fetch(inlineEl.getAttribute('data-match-url'), {
+        return fetch(inlineEl.getAttribute('data-match-url'), {
             headers: { 'X-Requested-With': 'XMLHttpRequest' }
         })
         .then(function(response) {
@@ -2330,9 +2342,21 @@ document.addEventListener('DOMContentLoaded', function() {
     }
 
     if (inlineEl && marketingTabBtn) {
-        marketingTabBtn.addEventListener('shown.bs.tab', loadInlineSuggestions);
-        if (marketingTabBtn.classList.contains('active')) {
-            loadInlineSuggestions();
+        window.CueMarketingMatchQueue = window.CueMarketingMatchQueue || [];
+        window.CueMarketingMatchQueue.push(loadInlineSuggestions);
+        if (!window.CueMarketingMatchBound) {
+            window.CueMarketingMatchBound = true;
+            var drainMatchQueue = async function() {
+                var queue = window.CueMarketingMatchQueue || [];
+                for (var i = 0; i < queue.length; i++) {
+                    try { await Promise.resolve(queue[i]()); } catch (_) {}
+                }
+            };
+            marketingTabBtn.addEventListener('shown.bs.tab', function() { drainMatchQueue(); }, { once: true });
+            if (marketingTabBtn.classList.contains('active')) {
+                // Defer so all three matcher loaders register before we drain.
+                setTimeout(drainMatchQueue, 0);
+            }
         }
     }
 
@@ -2577,7 +2601,7 @@ document.addEventListener('DOMContentLoaded', function() {
     var inlineLoaded = false;
 
     function loadInlineSuggestions() {
-        if (!inlineEl || inlineLoaded) return;
+        if (!inlineEl || inlineLoaded) return Promise.resolve();
         inlineLoaded = true;
         var inlineLoadingEl = inlineEl.querySelector('.slicktext-inline-loading');
         var inlineErrorEl = inlineEl.querySelector('.slicktext-inline-error');
@@ -2585,7 +2609,7 @@ document.addEventListener('DOMContentLoaded', function() {
         var inlineEmptyEl = inlineEl.querySelector('.slicktext-inline-empty');
         inlineFormEl.setAttribute('action', inlineEl.getAttribute('data-apply-url'));
 
-        fetch(inlineEl.getAttribute('data-match-url'), {
+        return fetch(inlineEl.getAttribute('data-match-url'), {
             headers: { 'X-Requested-With': 'XMLHttpRequest' }
         })
         .then(function(response) {
@@ -2728,9 +2752,21 @@ document.addEventListener('DOMContentLoaded', function() {
     }
 
     if (inlineEl && marketingTabBtn) {
-        marketingTabBtn.addEventListener('shown.bs.tab', loadInlineSuggestions);
-        if (marketingTabBtn.classList.contains('active')) {
-            loadInlineSuggestions();
+        window.CueMarketingMatchQueue = window.CueMarketingMatchQueue || [];
+        window.CueMarketingMatchQueue.push(loadInlineSuggestions);
+        if (!window.CueMarketingMatchBound) {
+            window.CueMarketingMatchBound = true;
+            var drainMatchQueue = async function() {
+                var queue = window.CueMarketingMatchQueue || [];
+                for (var i = 0; i < queue.length; i++) {
+                    try { await Promise.resolve(queue[i]()); } catch (_) {}
+                }
+            };
+            marketingTabBtn.addEventListener('shown.bs.tab', function() { drainMatchQueue(); }, { once: true });
+            if (marketingTabBtn.classList.contains('active')) {
+                // Defer so all three matcher loaders register before we drain.
+                setTimeout(drainMatchQueue, 0);
+            }
         }
     }
 
