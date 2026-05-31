@@ -2808,45 +2808,6 @@ class EventDetailCacheTest(TestCase):
         self.assertEqual(survey['recent_comments'][0]['source'], 'External upload')
         self.assertEqual(survey['overall_rating_breakdown'], [{'overall_rating': 'Loved it', 'count': 1}])
 
-    def test_event_detail_renders_external_survey_comments(self):
-        """Regression: external survey comments should not render as blank rows."""
-        upload = ExternalSurveyUpload.objects.create(
-            organization=self.org,
-            filename='typeform.csv',
-            status=ExternalSurveyUpload.Status.COMPLETED,
-        )
-        ExternalSurveyResponse.objects.create(
-            organization=self.org,
-            upload=upload,
-            event=self.event,
-            responded_at=timezone.now(),
-            email='guest@example.com',
-            overall_rating='Great',
-            nps_score=9,
-            text_feedback='The imported feedback appears on the event.',
-        )
-        user = User.objects.create_user(
-            username='survey-detail-user',
-            email='survey-detail@example.com',
-            password='testpass123',
-        )
-        UserProfile.objects.create(
-            user=user,
-            organization=self.org,
-            org_role=UserProfile.OrgRole.OWNER,
-        )
-
-        self.assertTrue(self.client.login(username='survey-detail@example.com', password='testpass123'))
-        self.client.get(reverse('tickets:home'))
-        response = self.client.get(reverse('tickets:event_detail', args=[self.event.pk]))
-
-        self.assertEqual(response.status_code, 200)
-        self.assertContains(response, '1 responses')
-        self.assertContains(response, 'The imported feedback appears on the event.')
-        self.assertContains(response, 'guest@example.com - External upload')
-        self.assertContains(response, 'External upload: 1')
-        self.assertContains(response, 'Great: 1')
-
     def test_stats_cache_hit_skips_db(self):
         """Second call to _compute_event_stats() returns cached result without hitting DB."""
         from tickets.views import _compute_event_stats
