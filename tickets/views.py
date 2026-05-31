@@ -134,6 +134,7 @@ from .services.marketing import (
     generate_marketing_narrative,
 )
 from .services.marketing.analytics import DEFAULT_WINDOW, resolve_window
+from .services.weather import get_event_weather_forecast
 from .utils import get_organization, require_org, require_organizer, require_host, require_admin, require_owner, clear_org_cache, next_order_number, generate_qr_b64, link_customer_to_buyer
 from .feature_flags import (
     smart_pricing_recommendations_enabled,
@@ -4243,6 +4244,8 @@ def event_detail(request, event_id):
         messages.warning(request, 'Could not refresh one or more Meta Ads campaign spends.')
     mailchimp_connection = _get_mailchimp_connection(org)
 
+    weather_forecast = get_event_weather_forecast(event)
+
     # Compute event stats via shared helper
     stats = _compute_event_stats(event)
     total_orders = stats['total_orders']
@@ -4376,6 +4379,7 @@ def event_detail(request, event_id):
 
     context = {
         'event': event,
+        'weather_forecast': weather_forecast,
         'active_scanner_sessions': active_scanner_sessions,
         'total_orders': total_orders,
         'ticket_revenue': ticket_revenue,
