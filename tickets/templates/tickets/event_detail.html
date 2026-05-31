@@ -101,6 +101,25 @@
 .nps-score-overlay .score-num { font-size: 2.4rem; font-weight: 700; line-height: 1; }
 .nps-score-overlay .score-label { font-size: 0.75rem; color: var(--color-muted); }
 
+/* -- Event Detail: Weather chip severity highlight -- */
+.detail-meta-weather--caution,
+.detail-meta-weather--severe {
+    padding: 2px 8px;
+    border-radius: 6px;
+}
+.detail-meta-weather--caution {
+    color: var(--warning);
+    background: var(--warning-muted);
+    font-weight: 500;
+}
+.detail-meta-weather--severe {
+    color: var(--danger);
+    background: var(--danger-muted);
+    font-weight: 600;
+}
+.detail-meta-weather--caution i,
+.detail-meta-weather--severe i { opacity: 1; }
+
 </style>
 {% endblock %}
 
@@ -140,6 +159,15 @@
             {% if event.capacity %}
             <div class="detail-meta-divider"></div>
             <div class="detail-meta-item"><i class="bi bi-people"></i> Capacity: {{ event.capacity }}</div>
+            {% endif %}
+            {% if weather_forecast %}
+            <div class="detail-meta-divider"></div>
+            <div class="detail-meta-item detail-meta-weather detail-meta-weather--{{ weather_forecast.severity }}"
+                 aria-label="Weather forecast for event day{% if weather_forecast.severity != 'normal' %} &mdash; {{ weather_forecast.severity }} conditions{% endif %}">
+                {% if weather_forecast.severity != 'normal' %}<i class="bi bi-exclamation-triangle-fill"></i>{% endif %}
+                <i class="bi {{ weather_forecast.condition_icon }}"></i>
+                <span>{{ weather_forecast.condition_label }}, {{ weather_forecast.temp_high|floatformat:0 }}&deg;/{{ weather_forecast.temp_low|floatformat:0 }}&deg;F{% if weather_forecast.precip_prob %} &middot; {{ weather_forecast.precip_prob|floatformat:0 }}% rain{% endif %}</span>
+            </div>
             {% endif %}
         </div>
     </div>
