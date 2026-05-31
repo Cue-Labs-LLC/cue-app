@@ -7,6 +7,7 @@ from django.conf import settings
 from pydantic import BaseModel, Field
 
 from tickets.models import AITokenUsage
+from tickets.services import campaign_match_cache
 from tickets.services.ai_metering import record_ai_token_usage
 
 logger = logging.getLogger(__name__)
@@ -33,6 +34,11 @@ class MetaCampaignMatcher:
             return MatchResult()
 
         filtered_campaigns = self._prefilter_campaigns(event, campaigns)
+        candidate_ids = [c.get("id") for c in filtered_campaigns]
+        cached = campaign_match_cache.get("meta", event.id, candidate_ids)
+        if cached is not None:
+            return self._limit_result(MatchResult.model_validate(cached))
+
         prompt = self._build_prompt(event, filtered_campaigns)
 
         from langchain_openai import ChatOpenAI
@@ -75,10 +81,14 @@ class MetaCampaignMatcher:
             result = raw_result
 
         if isinstance(result, MatchResult):
-            return self._limit_result(result)
-        if hasattr(MatchResult, "model_validate"):
-            return self._limit_result(MatchResult.model_validate(result))
-        return self._limit_result(MatchResult.parse_obj(result))
+            final = result
+        elif hasattr(MatchResult, "model_validate"):
+            final = MatchResult.model_validate(result)
+        else:
+            final = MatchResult.parse_obj(result)
+
+        campaign_match_cache.set("meta", event.id, candidate_ids, final.model_dump())
+        return self._limit_result(final)
 
     def _prefilter_campaigns(self, event, campaigns: list[dict]) -> list[dict]:
         if len(campaigns) <= 50:
@@ -122,9 +132,9 @@ class MetaCampaignMatcher:
         ]
         return (
             "Event:\n"
-            f"{json.dumps(event_payload, indent=2)}\n\n"
+            f"{json.dumps(event_payload)}\n\n"
             "Campaigns:\n"
-            f"{json.dumps(campaign_payload, indent=2)}"
+            f"{json.dumps(campaign_payload, default=str)}"
         )
 
     @staticmethod

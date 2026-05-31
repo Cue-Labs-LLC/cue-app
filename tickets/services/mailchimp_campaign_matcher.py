@@ -5,6 +5,7 @@ from django.conf import settings
 from pydantic import BaseModel, Field
 
 from tickets.models import AITokenUsage
+from tickets.services import campaign_match_cache
 from tickets.services.ai_metering import record_ai_token_usage
 
 
@@ -29,6 +30,11 @@ class MailchimpCampaignMatcher:
             return MailchimpMatchResult()
 
         filtered_reports = self._prefilter_reports(event, reports)
+        candidate_ids = [r.get("id") for r in filtered_reports]
+        cached = campaign_match_cache.get("mailchimp", event.id, candidate_ids)
+        if cached is not None:
+            return self._limit_result(MailchimpMatchResult.model_validate(cached))
+
         prompt = self._build_prompt(event, filtered_reports)
         max_candidates = getattr(settings, "MAILCHIMP_MATCH_MAX_CANDIDATES", 50)
 
@@ -65,10 +71,14 @@ class MailchimpCampaignMatcher:
             result = raw_result
 
         if isinstance(result, MailchimpMatchResult):
-            return self._limit_result(result)
-        if hasattr(MailchimpMatchResult, "model_validate"):
-            return self._limit_result(MailchimpMatchResult.model_validate(result))
-        return self._limit_result(MailchimpMatchResult.parse_obj(result))
+            final = result
+        elif hasattr(MailchimpMatchResult, "model_validate"):
+            final = MailchimpMatchResult.model_validate(result)
+        else:
+            final = MailchimpMatchResult.parse_obj(result)
+
+        campaign_match_cache.set("mailchimp", event.id, candidate_ids, final.model_dump())
+        return self._limit_result(final)
 
     def _prefilter_reports(self, event, reports: list[dict]) -> list[dict]:
         max_candidates = getattr(settings, "MAILCHIMP_MATCH_PREFILTER_MAX", 150)
@@ -130,7 +140,7 @@ class MailchimpCampaignMatcher:
         ]
         return (
             "Event:\n"
-            f"{json.dumps(event_payload, indent=2)}\n\n"
+            f"{json.dumps(event_payload)}\n\n"
             "Mailchimp campaign reports:\n"
             f"{json.dumps(report_payload, default=str)}"
         )
