@@ -346,6 +346,7 @@ class Command(BaseCommand):
             # (name, days_offset, status, ticketing, capacity, summary)
             ("Late Bloom — Winter", -120, EVENT_STATUS_ENDED, TICKETING_TYPE_EXTERNAL, 320, "Sold out winter showcase."),
             ("Open Decks Vol. 4",   -45,  EVENT_STATUS_ENDED, TICKETING_TYPE_EXTERNAL, 280, "Local DJs spinning all night."),
+            ("Bloom — Last Weekend", -2, EVENT_STATUS_ENDED, TICKETING_TYPE_DIRECT,    350, "Closed out the weekend at The Echo. Sold via Cue direct."),
             ("Bloom — Spring Edition",  14, EVENT_STATUS_LIVE, TICKETING_TYPE_DIRECT,   400, "Six-act bill at The Echo."),
             ("Daylight: Brooklyn Pop-Up", 60, EVENT_STATUS_LIVE, TICKETING_TYPE_DIRECT,  300, "Day-into-night warehouse party."),
             ("Solstice Festival",         110, EVENT_STATUS_DRAFT, TICKETING_TYPE_DIRECT, 800, "TBA lineup. Save the date."),
@@ -471,8 +472,12 @@ class Command(BaseCommand):
         self.stdout.write(self.style.SUCCESS(f"Orders: {orders_count} | Tickets: {tickets_count}"))
 
     def _create_direct_ticketing(self, events, now, rng):
-        live_direct = [e for e in events if e.ticketing_type == TICKETING_TYPE_DIRECT and e.status == EVENT_STATUS_LIVE]
-        for i, event in enumerate(live_direct):
+        direct_events = [
+            e for e in events
+            if e.ticketing_type == TICKETING_TYPE_DIRECT
+            and e.status in (EVENT_STATUS_LIVE, EVENT_STATUS_ENDED)
+        ]
+        for i, event in enumerate(direct_events):
             ga = SaleableTicketType.objects.create(
                 event=event, name="General Admission", price=_decimal(30),
                 quantity_limit=200, max_per_customer=6, quantity_sold=rng.randint(40, 120),
@@ -505,12 +510,16 @@ class Command(BaseCommand):
             )
 
     def _create_stripe_sessions(self, org, events, customers, now, rng):
-        live_direct = [e for e in events if e.ticketing_type == TICKETING_TYPE_DIRECT and e.status == EVENT_STATUS_LIVE]
-        if not live_direct:
+        direct_events = [
+            e for e in events
+            if e.ticketing_type == TICKETING_TYPE_DIRECT
+            and e.status in (EVENT_STATUS_LIVE, EVENT_STATUS_ENDED)
+        ]
+        if not direct_events:
             return
         # Pick distinct orders so the OneToOne on ticket_order doesn't collide.
         candidate_orders = list(
-            TicketOrder.objects.filter(event__in=live_direct)
+            TicketOrder.objects.filter(event__in=direct_events)
             .order_by("?")[:12]
         )
         for order in candidate_orders[:8]:
