@@ -361,6 +361,28 @@
 </div>
 {% endif %}
 
+{% if show_checkin_chart %}
+<div class="card mb-4">
+    <div class="card-header">
+        <h5 class="mb-0">Check-ins</h5>
+    </div>
+    <div class="card-body">
+        <div style="position: relative; height: 220px; max-width: 260px; margin: 0 auto;">
+            <canvas id="checkinDonut"
+                    data-checked-in="{{ checkin_count }}"
+                    data-total="{{ checkin_total_tickets }}"></canvas>
+            <div style="position:absolute; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center; pointer-events:none;">
+                <div style="font-size:2rem; font-weight:600; line-height:1;">{{ checkin_percent }}%</div>
+                <div class="text-muted small mt-1">checked in</div>
+            </div>
+        </div>
+        <div class="text-center text-muted small mt-3">
+            {{ checkin_count|intcomma }} of {{ checkin_total_tickets|intcomma }} ticket{{ checkin_total_tickets|pluralize }}
+        </div>
+    </div>
+</div>
+{% endif %}
+
 {% if event.ticketing_type == 'direct' and ticket_type_allocation_charts %}
 <div class="card mb-4">
     <div class="card-header">
@@ -3355,6 +3377,51 @@ document.addEventListener('DOMContentLoaded', function () {
             }
         });
     }
+});
+</script>
+<script>
+document.addEventListener('DOMContentLoaded', function () {
+    var canvas = document.getElementById('checkinDonut');
+    if (!canvas) return;
+    var checkedIn = parseInt(canvas.dataset.checkedIn || '0', 10);
+    var total = parseInt(canvas.dataset.total || '0', 10);
+    var remaining = Math.max(total - checkedIn, 0);
+    var isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+    var emptyColor = isDark ? '#334155' : '#e2e8f0';
+    // When no tickets have been sold, render an all-empty ring so the card
+    // still has a visual.
+    var hasData = total > 0;
+    new Chart(canvas, {
+        type: 'doughnut',
+        data: {
+            labels: ['Checked in', 'Not checked in'],
+            datasets: [{
+                data: hasData ? [checkedIn, remaining] : [0, 1],
+                backgroundColor: hasData
+                    ? ['rgb(25,135,84)', emptyColor]
+                    : [emptyColor, emptyColor],
+                borderWidth: 0,
+            }]
+        },
+        options: {
+            cutout: '70%',
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+                legend: { display: false },
+                tooltip: {
+                    enabled: hasData,
+                    callbacks: {
+                        label: function (ctx) {
+                            var n = ctx.parsed;
+                            var pct = total ? Math.round(n / total * 100) : 0;
+                            return ' ' + ctx.label + ': ' + n + ' (' + pct + '%)';
+                        }
+                    }
+                }
+            }
+        }
+    });
 });
 </script>
 <script>

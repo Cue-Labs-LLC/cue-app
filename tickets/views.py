@@ -9,6 +9,7 @@ import uuid as _uuid
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal, InvalidOperation
 from urllib.parse import urlencode
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from django import forms as django_forms
 from django.shortcuts import render, redirect, get_object_or_404
 from django.contrib import messages
@@ -3774,6 +3775,35 @@ def _compute_event_stats(event):
     return result
 
 
+def _compute_event_checkin_stats(event):
+    """Return (should_show, total_tickets, checked_in_tickets).
+
+    should_show is True when the event is direct ticketing AND its local start
+    datetime has passed. Tickets are counted at the ticket level (a TicketOrder
+    can hold multiple tickets, and a single check-in admits the whole order).
+    """
+    if event.ticketing_type != 'direct':
+        return False, 0, 0
+
+    tz_name = event.timezone or 'America/Los_Angeles'
+    try:
+        tz = ZoneInfo(tz_name)
+    except ZoneInfoNotFoundError:
+        tz = ZoneInfo('America/Los_Angeles')
+
+    start_local = datetime.combine(
+        event.start_date, event.start_time or time(0, 0)
+    ).replace(tzinfo=tz)
+    if start_local > django_tz.now():
+        return False, 0, 0
+
+    agg = event.ticket_orders.aggregate(
+        total=Count('tickets'),
+        checked_in=Count('tickets', filter=Q(checked_in_at__isnull=False)),
+    )
+    return True, agg['total'] or 0, agg['checked_in'] or 0
+
+
 def _get_adjacent_event(org, event, direction):
     """Return the previous or next event in newest-first event-list order."""
     current_start_time = event.start_time or time.min
@@ -4328,6 +4358,9 @@ def event_detail(request, event_id):
 
     active_scanner_sessions = ScannerSession.objects.filter(event=event, is_active=True).count()
 
+    show_checkin_chart, checkin_total_tickets, checkin_count = _compute_event_checkin_stats(event)
+    checkin_percent = round(checkin_count / checkin_total_tickets * 100) if checkin_total_tickets else 0
+
     prev_event = _get_adjacent_event(org, event, 'prev')
     next_event = _get_adjacent_event(org, event, 'next')
 
@@ -4378,6 +4411,10 @@ def event_detail(request, event_id):
         'page_views_over_time_json': page_views_over_time_json,
         'has_page_view_data': bool(stats['page_views_over_time']),
         'show_page_views_chart': event.ticketing_type == 'direct',
+        'show_checkin_chart': show_checkin_chart,
+        'checkin_total_tickets': checkin_total_tickets,
+        'checkin_count': checkin_count,
+        'checkin_percent': checkin_percent,
         'prev_event_id': prev_event.id if prev_event else None,
         'next_event_id': next_event.id if next_event else None,
         'prev_event_name': prev_event.name if prev_event else None,
