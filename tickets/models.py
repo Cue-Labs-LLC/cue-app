@@ -117,6 +117,16 @@ class Organization(BaseModel):
     mailchimp_account_id = models.CharField(max_length=100, blank=True, default='')
     mailchimp_account_name = models.CharField(max_length=255, blank=True, default='')
     mailchimp_login_email = models.EmailField(blank=True, default='')
+    mailchimp_campaign_title_hints = models.TextField(
+        blank=True,
+        default='',
+        help_text=(
+            "Optional guidance for the AI campaign matcher about your "
+            "campaign naming conventions. Example: 'Campaigns prefixed "
+            "lv- are for Las Vegas events. Format is lv-MMDDYYYY-email-NN "
+            "where MMDDYYYY is the event date.'"
+        ),
+    )
     slicktext_api_key = models.CharField(max_length=255, blank=True, default='')
     slicktext_brand_id = models.CharField(max_length=100, blank=True, default='')
     slicktext_brand_name = models.CharField(max_length=255, blank=True, default='')

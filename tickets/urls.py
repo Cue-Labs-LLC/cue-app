@@ -229,6 +229,7 @@ urlpatterns = [
     path('settings/mailchimp/connect/', views.mailchimp_connect, name='mailchimp_connect'),
     path('settings/mailchimp/callback/', views.mailchimp_callback, name='mailchimp_callback'),
     path('settings/mailchimp/disconnect/', views.mailchimp_disconnect, name='mailchimp_disconnect'),
+    path('settings/mailchimp/hints/', views.mailchimp_save_hints, name='mailchimp_save_hints'),
     path('settings/slicktext/', views.slicktext_settings, name='slicktext_settings'),
     path('settings/slicktext/save/', views.slicktext_save, name='slicktext_save'),
     path('settings/slicktext/disconnect/', views.slicktext_disconnect, name='slicktext_disconnect'),

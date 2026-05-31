@@ -296,6 +296,35 @@ class MailchimpCampaignMatcherTests(TestCase):
         self.assertIn('campaign_title', prompt)
         self.assertIn('subject_line', prompt)
         self.assertIn('send_time', prompt)
+        self.assertIn('list_name', prompt)
+
+    def test_system_prompt_includes_confidence_calibration(self):
+        org = Organization.objects.create(name='Org', slug='org')
+
+        system_prompt = MailchimpCampaignMatcher(org)._build_system_prompt(50)
+
+        self.assertIn('HIGH (0.7', system_prompt)
+        self.assertIn('MEDIUM (0.4', system_prompt)
+        self.assertIn('LOW', system_prompt)
+        self.assertIn('list_name', system_prompt)
+
+    def test_system_prompt_injects_org_campaign_title_hints(self):
+        org = Organization.objects.create(
+            name='Org', slug='org',
+            mailchimp_campaign_title_hints='lv = Las Vegas, dates in MMDDYYYY.',
+        )
+
+        system_prompt = MailchimpCampaignMatcher(org)._build_system_prompt(50)
+
+        self.assertIn('lv = Las Vegas, dates in MMDDYYYY.', system_prompt)
+        self.assertIn('hints about their campaign', system_prompt)
+
+    def test_system_prompt_omits_hints_block_when_unset(self):
+        org = Organization.objects.create(name='Org', slug='org')
+
+        system_prompt = MailchimpCampaignMatcher(org)._build_system_prompt(50)
+
+        self.assertNotIn('hints about their campaign', system_prompt)
 
 
 @override_settings(MAILCHIMP_REPORTS_CACHE_TTL=900)

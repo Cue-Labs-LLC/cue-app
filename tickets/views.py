@@ -5669,6 +5669,23 @@ def mailchimp_disconnect(request):
 @login_required
 @require_org
 @require_admin
+@require_http_methods(["POST"])
+def mailchimp_save_hints(request):
+    """Save the org's free-form campaign naming hints for the AI matcher."""
+    org = get_organization(request)
+    hints = request.POST.get('campaign_title_hints', '').strip()
+    if len(hints) > 2000:
+        messages.error(request, 'Campaign naming hints must be 2000 characters or fewer.')
+        return redirect('tickets:mailchimp_settings')
+    org.mailchimp_campaign_title_hints = hints
+    org.save(update_fields=['mailchimp_campaign_title_hints'])
+    messages.success(request, 'Campaign naming hints saved.')
+    return redirect('tickets:mailchimp_settings')
+
+
+@login_required
+@require_org
+@require_admin
 def slicktext_settings(request):
     """Show SlickText connection status and the credential form."""
     org = get_organization(request)
