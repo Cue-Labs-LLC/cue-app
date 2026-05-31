@@ -1,9 +1,12 @@
 """Weather forecast service for event detail pages.
 
-Uses Open-Meteo (https://open-meteo.com) — free, no API key required.
-Geocodes the venue address once and caches; fetches a daily forecast for the
-event's start date and caches that too. Fails silently (logs a warning and
-returns None) so a weather outage never breaks the event page.
+Primary provider: Open-Meteo (https://open-meteo.com) — free, no key, ~14 day
+horizon. Fallback: wttr.in (https://wttr.in) — free, no key, ~3 day horizon,
+used when Open-Meteo errors or rate-limits us.
+
+Geocodes the venue once and caches; fetches a daily forecast for the event's
+start date and caches that too. Fails silently (logs a warning and returns
+None) so a weather outage never breaks the event page.
 """
 
 import logging
@@ -18,12 +21,24 @@ logger = logging.getLogger(__name__)
 
 GEOCODE_URL = "https://geocoding-api.open-meteo.com/v1/search"
 FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
+WTTR_URL_TEMPLATE = "https://wttr.in/{lat},{lng}"
 
 GEOCODE_TTL_SECONDS = 60 * 60 * 24 * 30  # 30 days — venue coords don't move
 FORECAST_TTL_SECONDS = 60 * 60 * 3       # 3 hours — daily forecast is stable
+FORECAST_FAILURE_TTL_SECONDS = 60 * 30   # 30 min — back off when both providers fail
 FORECAST_HORIZON_DAYS = 14               # Open-Meteo's reliable daily window
+WTTR_HORIZON_DAYS = 2                    # wttr.in returns today + next 2 days
 
 HTTP_TIMEOUT_SECONDS = 5
+
+# Identifying ourselves keeps Open-Meteo from lumping us in with anonymous
+# bot traffic that gets rate-limited first.
+USER_AGENT = "cue-events (+https://cueup.co) weather forecast widget"
+DEFAULT_HEADERS = {"User-Agent": USER_AGENT, "Accept": "application/json"}
+
+# Bumped when the on-disk cache shape or provider routing changes so old
+# `{}` failure entries from previous deploys don't keep suppressing the chip.
+_FORECAST_CACHE_VERSION = 2
 
 
 class WeatherAPIError(Exception):
@@ -203,6 +218,7 @@ def _resolve_venue_coords(venue):
         resp = requests.get(
             GEOCODE_URL,
             params={"name": venue.city, "count": 10, "language": "en", "format": "json"},
+            headers=DEFAULT_HEADERS,
             timeout=HTTP_TIMEOUT_SECONDS,
         )
         resp.raise_for_status()
@@ -245,13 +261,34 @@ def _resolve_venue_coords(venue):
 
 
 def _fetch_daily_forecast(lat, lng, target_date):
-    """Fetch the daily forecast for target_date at (lat, lng), with caching."""
+    """Fetch the daily forecast for target_date at (lat, lng), with caching.
+
+    Tries Open-Meteo first; falls back to wttr.in when Open-Meteo errors or
+    returns no data. Either provider's success is cached for FORECAST_TTL.
+    A combined failure caches an empty sentinel for FORECAST_FAILURE_TTL so
+    repeat page loads don't keep hammering rate-limited APIs.
+    """
     date_str = target_date.isoformat()
-    cache_key = f"weather:forecast:{lat:.3f}:{lng:.3f}:{date_str}"
+    cache_key = f"weather:forecast:v{_FORECAST_CACHE_VERSION}:{lat:.3f}:{lng:.3f}:{date_str}"
     cached = django_cache.get(cache_key)
     if cached is not None:
         return cached or None  # falsy sentinel means previous failure
 
+    forecast = _fetch_open_meteo_day(lat, lng, target_date)
+    if forecast is None and (target_date - date.today()).days <= WTTR_HORIZON_DAYS:
+        forecast = _fetch_wttr_in_day(lat, lng, target_date)
+
+    if forecast is None:
+        django_cache.set(cache_key, {}, FORECAST_FAILURE_TTL_SECONDS)
+        return None
+
+    django_cache.set(cache_key, forecast, FORECAST_TTL_SECONDS)
+    return forecast
+
+
+def _fetch_open_meteo_day(lat, lng, target_date):
+    """Call Open-Meteo for one day's forecast. Returns the unified dict or None."""
+    date_str = target_date.isoformat()
     params = {
         "latitude": f"{lat:.4f}",
         "longitude": f"{lng:.4f}",
@@ -272,39 +309,145 @@ def _fetch_daily_forecast(lat, lng, target_date):
     }
 
     try:
-        resp = requests.get(FORECAST_URL, params=params, timeout=HTTP_TIMEOUT_SECONDS)
+        resp = requests.get(
+            FORECAST_URL,
+            params=params,
+            headers=DEFAULT_HEADERS,
+            timeout=HTTP_TIMEOUT_SECONDS,
+        )
         resp.raise_for_status()
         data = resp.json()
     except (requests.RequestException, ValueError) as exc:
-        logger.warning('Weather forecast failed for (%s, %s) on %s: %s', lat, lng, date_str, exc)
-        # Short-cache the failure so we don't retry on every page reload.
-        django_cache.set(cache_key, {}, 60 * 5)
+        logger.warning('Open-Meteo forecast failed for (%s, %s) on %s: %s — will try wttr.in fallback',
+                       lat, lng, date_str, exc)
         return None
 
     daily = data.get("daily") or {}
     times = daily.get("time") or []
     if not times:
-        django_cache.set(cache_key, {}, FORECAST_TTL_SECONDS)
         return None
 
-    # Open-Meteo returns parallel arrays keyed by date; index 0 is the only entry.
     try:
         weather_code = int(daily.get("weather_code", [None])[0] or 0)
     except (TypeError, ValueError):
         weather_code = 0
-    label, icon = _describe_weather_code(weather_code)
 
     def _first(name):
         arr = daily.get(name) or [None]
         return arr[0] if arr else None
 
-    temp_high = _first("temperature_2m_max")
-    temp_low = _first("temperature_2m_min")
-    precip_prob = _first("precipitation_probability_max") or 0
-    precip_amount = _first("precipitation_sum") or 0
-    wind_max = _first("wind_speed_10m_max") or 0
+    return _build_forecast(
+        target_date=target_date,
+        weather_code=weather_code,
+        temp_high=_first("temperature_2m_max"),
+        temp_low=_first("temperature_2m_min"),
+        precip_prob=_first("precipitation_probability_max") or 0,
+        precip_amount=_first("precipitation_sum") or 0,
+        wind_max=_first("wind_speed_10m_max") or 0,
+        source="open-meteo",
+    )
 
-    forecast = {
+
+def _fetch_wttr_in_day(lat, lng, target_date):
+    """Call wttr.in for one day's forecast. Returns the unified dict or None.
+
+    wttr.in returns today + the next 2 days. We pick the matching date from
+    the `weather` array and derive daily max/min from its hourly samples.
+    """
+    date_str = target_date.isoformat()
+    url = WTTR_URL_TEMPLATE.format(lat=f"{lat:.4f}", lng=f"{lng:.4f}")
+    try:
+        resp = requests.get(
+            url,
+            params={"format": "j1"},
+            headers=DEFAULT_HEADERS,
+            timeout=HTTP_TIMEOUT_SECONDS,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+    except (requests.RequestException, ValueError) as exc:
+        logger.warning('wttr.in forecast failed for (%s, %s) on %s: %s',
+                       lat, lng, date_str, exc)
+        return None
+
+    days = data.get("weather") or []
+    day = next((d for d in days if d.get("date") == date_str), None)
+    if day is None:
+        return None
+
+    try:
+        temp_high = float(day.get("maxtempF")) if day.get("maxtempF") is not None else None
+        temp_low = float(day.get("minTempF") or day.get("mintempF")) if (day.get("minTempF") or day.get("mintempF")) is not None else None
+    except (TypeError, ValueError):
+        temp_high = temp_low = None
+
+    hourly = day.get("hourly") or []
+    precip_prob = 0
+    wind_max = 0
+    desc_counts = {}
+    for h in hourly:
+        try:
+            precip_prob = max(precip_prob, int(h.get("chanceofrain") or 0), int(h.get("chanceofsnow") or 0))
+            wind_max = max(wind_max, float(h.get("windspeedMiles") or 0))
+        except (TypeError, ValueError):
+            pass
+        desc_list = h.get("weatherDesc") or []
+        if desc_list and isinstance(desc_list, list):
+            d = (desc_list[0] or {}).get("value", "")
+            if d:
+                desc_counts[d] = desc_counts.get(d, 0) + 1
+
+    # Pick the most-frequent hourly description as the day's representative.
+    representative_desc = max(desc_counts, key=desc_counts.get) if desc_counts else ""
+    weather_code = _wmo_code_from_wttr_desc(representative_desc)
+
+    return _build_forecast(
+        target_date=target_date,
+        weather_code=weather_code,
+        temp_high=temp_high,
+        temp_low=temp_low,
+        precip_prob=precip_prob,
+        precip_amount=0,  # wttr.in's hourly precipMM is per-hour; daily sum not surfaced
+        wind_max=wind_max,
+        source="wttr.in",
+    )
+
+
+def _wmo_code_from_wttr_desc(desc):
+    """Map a wttr.in weather description to a WMO code we already understand.
+
+    Lets us reuse `_describe_weather_code` and `_classify_severity` without a
+    separate WWO mapping table. Order matters — more specific terms first.
+    """
+    d = (desc or "").lower()
+    if "thunder" in d:
+        return 95
+    if "torrential" in d or "heavy rain" in d:
+        return 65
+    if "heavy snow" in d or "blizzard" in d:
+        return 75
+    if "freezing rain" in d or "ice pellet" in d or "sleet" in d:
+        return 67
+    if "snow" in d:
+        return 71
+    if "rain" in d or "drizzle" in d or "shower" in d:
+        return 61
+    if "fog" in d or "mist" in d or "haze" in d:
+        return 45
+    if "overcast" in d:
+        return 3
+    if "cloud" in d:
+        return 2
+    if "clear" in d or "sunny" in d:
+        return 0
+    return 0
+
+
+def _build_forecast(target_date, weather_code, temp_high, temp_low,
+                    precip_prob, precip_amount, wind_max, source):
+    """Assemble the unified forecast dict used by the template."""
+    label, icon = _describe_weather_code(weather_code)
+    return {
         "date": target_date,
         "temp_high": temp_high,
         "temp_low": temp_low,
@@ -315,6 +458,5 @@ def _fetch_daily_forecast(lat, lng, target_date):
         "condition_label": label,
         "condition_icon": icon,
         "severity": _classify_severity(weather_code, precip_prob, temp_high, temp_low, wind_max),
+        "source": source,
     }
-    django_cache.set(cache_key, forecast, FORECAST_TTL_SECONDS)
-    return forecast
