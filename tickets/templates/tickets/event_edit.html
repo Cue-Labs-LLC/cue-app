@@ -14,8 +14,9 @@
 .tt-row-ghost { opacity: 0.4; background: rgba(var(--bs-primary-rgb), 0.08); }
 .tt-row-chosen { background: rgba(var(--bs-primary-rgb), 0.04); }
 .tt-row-drag { cursor: grabbing !important; }
-.tt-quill-wrap { display: flex; flex-direction: column; min-height: 220px; margin-bottom: 1rem; }
-.tt-quill-wrap .ql-container { flex: 1 1 auto; }
+.tt-quill-wrap { display: flex; flex-direction: column; height: 260px; margin-bottom: 1rem; }
+.tt-quill-wrap .ql-container { flex: 1 1 auto; min-height: 0; }
+.tt-quill-wrap .ql-editor { overflow-y: auto; }
 #addTicketTypeModal .modal-body .form-label,
 #editTicketTypeModal .modal-body .form-label {
     font-weight: 500;
