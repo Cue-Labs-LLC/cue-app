@@ -9,6 +9,26 @@
 #event-flyer-card { max-width: 380px; }
 .flyer-drop-zone { border: 2px dashed var(--bs-border-color); border-radius: var(--bs-border-radius); overflow: hidden; }
 .flyer-drop-zone.flyer-dragover { border-color: var(--bs-primary); background: rgba(var(--bs-primary-rgb), 0.05); }
+.tt-drag-handle { user-select: none; }
+.tt-drag-handle:hover { color: var(--bs-body-color) !important; }
+.tt-row-ghost { opacity: 0.4; background: rgba(var(--bs-primary-rgb), 0.08); }
+.tt-row-chosen { background: rgba(var(--bs-primary-rgb), 0.04); }
+.tt-row-drag { cursor: grabbing !important; }
+.tt-quill-wrap { display: flex; flex-direction: column; min-height: 220px; margin-bottom: 1rem; }
+.tt-quill-wrap .ql-container { flex: 1 1 auto; }
+#addTicketTypeModal .modal-body .form-label,
+#editTicketTypeModal .modal-body .form-label {
+    font-weight: 500;
+    font-size: 0.85rem;
+    color: var(--bs-secondary-color);
+    margin-bottom: 4px;
+}
+#addTicketTypeModal .modal-body .form-text,
+#editTicketTypeModal .modal-body .form-text {
+    font-size: 0.75rem;
+}
+.tt-adv-caret { transition: transform 0.15s ease; }
+[aria-expanded="true"] > .tt-adv-caret { transform: rotate(90deg); }
 .pricing-reco-card {
     background:
         radial-gradient(circle at top right, rgba(var(--bs-info-rgb), 0.12), transparent 32%),
@@ -208,6 +228,7 @@
                     <table class="table table-hover mb-0">
                         <thead>
                             <tr>
+                                <th style="width:32px;"></th>
                                 <th>Ticket Type</th><th>Display&nbsp;Price / Gross</th><th>Sold</th>
                                 <th class="d-none d-md-table-cell">Inventory</th><th class="d-none d-md-table-cell">Max / Customer</th><th>Revenue</th>
                                 <th class="d-none d-md-table-cell">Unlocks After</th>
@@ -215,10 +236,11 @@
                                 <th class="d-none d-md-table-cell">Status</th><th></th>
                             </tr>
                         </thead>
-                        <tbody>
+                        <tbody id="ticket-types-tbody" data-reorder-url="{% url 'tickets:saleable_ticket_type_reorder' event.id %}">
                             {% for tt in saleable_ticket_types %}
-                            <tr>
-                                <td><strong>{{ tt.name }}</strong>{% if tt.description %}<br><small class="text-muted">{{ tt.description|truncatechars:60 }}</small>{% endif %}</td>
+                            <tr class="tt-row" data-tt-id="{{ tt.id }}">
+                                <td class="tt-drag-handle text-muted" style="cursor:grab;width:32px;" title="Drag to reorder"><i class="bi bi-grip-vertical"></i></td>
+                                <td><strong>{{ tt.name }}</strong></td>
                                 <td>{% with at=tt.get_active_tier %}{% if at %}${{ at.price|currency }}<br><small class="text-muted">{{ at.name }}</small>{% else %}${{ tt.price|currency }}{% endif %}{% endwith %}<br><small class="text-muted">Gross: ${{ tt.gross_price|currency }}</small></td>
                                 <td>{{ tt.quantity_sold }}</td>
                                 <td class="d-none d-md-table-cell">{% if tt.quantity_limit %}{{ tt.quantity_limit }}{% else %}<span class="text-muted">&infin;</span>{% endif %}</td>
@@ -255,7 +277,7 @@
                         </tbody>
                         <tfoot>
                             <tr class="table-light">
-                                <td colspan="5"><strong>Total Revenue</strong></td>
+                                <td colspan="6"><strong>Total Revenue</strong></td>
                                 <td colspan="4"><strong>${{ direct_total_revenue|currency }}</strong></td>
                             </tr>
                         </tfoot>
@@ -416,6 +438,109 @@ document.addEventListener('DOMContentLoaded', function() {
     var form = textarea.closest('form');
     if (form) form.addEventListener('submit', function() {
         textarea.value = quill.root.innerHTML === '<p><br></p>' ? '' : quill.root.innerHTML;
+    });
+});
+window._ttQuill = window._ttQuill || { add: null, edit: null };
+function syncTtQuill(key, textareaId) {
+    var q = window._ttQuill && window._ttQuill[key];
+    if (!q) return;
+    var ta = document.getElementById(textareaId);
+    if (!ta) return;
+    var html = q.root.innerHTML;
+    ta.value = html === '<p><br></p>' ? '' : html;
+}
+function setTtQuill(key, html) {
+    var q = window._ttQuill && window._ttQuill[key];
+    if (q) q.root.innerHTML = html || '';
+}
+document.addEventListener('DOMContentLoaded', function() {
+    function initTtQuill(textareaId) {
+        var ta = document.getElementById(textareaId);
+        if (!ta || ta.dataset.quillInit) return null;
+        ta.dataset.quillInit = '1';
+        var outerWrap = document.createElement('div');
+        outerWrap.className = 'tt-quill-wrap';
+        var inner = document.createElement('div');
+        outerWrap.appendChild(inner);
+        ta.parentNode.insertBefore(outerWrap, ta);
+        ta.style.display = 'none';
+        var q = new Quill(inner, {
+            theme: 'snow',
+            placeholder: 'Short buyer-facing copy (optional)…',
+            modules: { toolbar: [
+                ['bold', 'italic', 'underline'],
+                [{ list: 'ordered' }, { list: 'bullet' }],
+                ['link'],
+                ['clean']
+            ]}
+        });
+        if (ta.value) q.root.innerHTML = ta.value;
+        return q;
+    }
+    function attachTtQuill(modalId, textareaId, key) {
+        var modal = document.getElementById(modalId);
+        if (!modal) return;
+        modal.addEventListener('show.bs.modal', function() {
+            if (!window._ttQuill[key]) window._ttQuill[key] = initTtQuill(textareaId);
+        });
+    }
+    attachTtQuill('addTicketTypeModal', 'add_description', 'add');
+    attachTtQuill('editTicketTypeModal', 'edit_description', 'edit');
+});
+function refreshTicketTypesCard() {
+    var tbody = document.getElementById('ticket-types-tbody');
+    if (!tbody) return;
+    fetch(window.location.pathname, {
+        headers: { 'X-Requested-With': 'XMLHttpRequest' },
+        credentials: 'same-origin',
+        cache: 'no-cache'
+    })
+    .then(function(r) { return r.text(); })
+    .then(function(html) {
+        var doc = new DOMParser().parseFromString(html, 'text/html');
+        var newTbody = doc.getElementById('ticket-types-tbody');
+        if (newTbody) tbody.innerHTML = newTbody.innerHTML;
+        var newFoot = doc.querySelector('#ticket-types-tbody ~ tfoot');
+        var oldFoot = tbody.parentNode.querySelector('tfoot');
+        if (newFoot && oldFoot) oldFoot.innerHTML = newFoot.innerHTML;
+    })
+    .catch(function() { /* leave stale rows if refetch fails */ });
+}
+</script>
+<script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.6/Sortable.min.js" defer></script>
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    var tbody = document.getElementById('ticket-types-tbody');
+    if (!tbody || typeof Sortable === 'undefined') return;
+    var url = tbody.getAttribute('data-reorder-url');
+    if (!url) return;
+    function ttCsrf() {
+        var t = document.querySelector('form input[name="csrfmiddlewaretoken"]');
+        return t ? t.value : '';
+    }
+    Sortable.create(tbody, {
+        handle: '.tt-drag-handle',
+        animation: 150,
+        ghostClass: 'tt-row-ghost',
+        chosenClass: 'tt-row-chosen',
+        dragClass: 'tt-row-drag',
+        onEnd: function() {
+            var ids = Array.from(tbody.querySelectorAll('.tt-row')).map(function(r) {
+                return r.getAttribute('data-tt-id');
+            });
+            fetch(url, {
+                method: 'POST',
+                credentials: 'same-origin',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-CSRFToken': ttCsrf(),
+                    'X-Requested-With': 'XMLHttpRequest'
+                },
+                body: JSON.stringify({ order: ids })
+            }).catch(function() {
+                // Best effort. A failed save leaves the visual order but no persistence.
+            });
+        }
     });
 });
 document.addEventListener('DOMContentLoaded', function() {
@@ -735,6 +860,7 @@ document.addEventListener('DOMContentLoaded', function () {
   var modal = document.getElementById('addTicketTypeModal');
   modal.addEventListener('hidden.bs.modal', function () {
     form.reset();
+    setTtQuill('add', '');
     pwField.classList.add('d-none');
     document.getElementById('add-tt-global-error').classList.add('d-none');
     form.querySelectorAll('.is-invalid').forEach(function (el) { el.classList.remove('is-invalid'); });
@@ -744,6 +870,7 @@ document.addEventListener('DOMContentLoaded', function () {
 
   form.addEventListener('submit', function (e) {
     e.preventDefault();
+    syncTtQuill('add', 'add_description');
     var btn = document.getElementById('add-tt-submit');
     btn.disabled = true;
     btn.textContent = 'Saving\u2026';
@@ -756,7 +883,10 @@ document.addEventListener('DOMContentLoaded', function () {
       .then(function (r) { return r.json().then(function (d) { return { ok: r.ok, data: d }; }); })
       .then(function (res) {
         if (res.ok && res.data.success) {
-          window.location.href = res.data.redirect;
+          refreshTicketTypesCard();
+          bootstrap.Modal.getInstance(modal).hide();
+          btn.disabled = false;
+          btn.textContent = 'Create Ticket Type';
         } else {
           form.querySelectorAll('.is-invalid').forEach(function (el) { el.classList.remove('is-invalid'); });
           form.querySelectorAll('.invalid-feedback').forEach(function (el) { el.textContent = ''; });
@@ -815,7 +945,8 @@ document.addEventListener('DOMContentLoaded', function () {
         .then(function (r) { return r.json(); })
         .then(function (d) {
           document.getElementById('edit_name').value = d.name;
-          document.getElementById('edit_description').value = d.description;
+          document.getElementById('edit_description').value = d.description || '';
+          setTtQuill('edit', d.description);
           document.getElementById('edit_price').value = d.price;
           var _editGross = document.getElementById('edit_gross');
           if (_editGross) {
@@ -824,7 +955,6 @@ document.addEventListener('DOMContentLoaded', function () {
           }
           document.getElementById('edit_quantity_limit').value = d.quantity_limit;
           document.getElementById('edit_max_per_customer').value = d.max_per_customer;
-          document.getElementById('edit_order').value = d.order;
           document.getElementById('edit_sale_start').value = d.sale_start;
           document.getElementById('edit_sale_end').value = d.sale_end;
           document.getElementById('edit_is_active').checked = d.is_active;
@@ -855,6 +985,7 @@ document.addEventListener('DOMContentLoaded', function () {
 
   document.getElementById('editTicketTypeModal').addEventListener('hidden.bs.modal', function () {
     editForm.reset();
+    setTtQuill('edit', '');
     editPwField.classList.add('d-none');
     document.getElementById('edit-tt-loading').classList.remove('d-none');
     document.getElementById('edit-tt-fields').classList.add('d-none');
@@ -867,6 +998,7 @@ document.addEventListener('DOMContentLoaded', function () {
 
   editForm.addEventListener('submit', function (e) {
     e.preventDefault();
+    syncTtQuill('edit', 'edit_description');
     var btn = document.getElementById('edit-tt-submit');
     btn.disabled = true;
     btn.textContent = 'Saving\u2026';
@@ -879,7 +1011,10 @@ document.addEventListener('DOMContentLoaded', function () {
       .then(function (r) { return r.json().then(function (d) { return { ok: r.ok, data: d }; }); })
       .then(function (res) {
         if (res.ok && res.data.success) {
-          window.location.href = res.data.redirect;
+          refreshTicketTypesCard();
+          bootstrap.Modal.getInstance(document.getElementById('editTicketTypeModal')).hide();
+          btn.disabled = false;
+          btn.textContent = 'Save Changes';
         } else {
           editForm.querySelectorAll('.is-invalid').forEach(function (el) { el.classList.remove('is-invalid'); });
           editForm.querySelectorAll('.invalid-feedback').forEach(function (el) { el.textContent = ''; });
@@ -959,94 +1094,99 @@ document.addEventListener('DOMContentLoaded', function () {
         <input type="hidden" name="tiers-MAX_NUM_FORMS" value="1000">
         <div class="modal-body">
           <div id="add-tt-global-error" class="alert alert-danger d-none"></div>
-          <div class="row g-3">
+          <div class="row g-2">
             <div class="col-12">
-              <label class="form-label fw-semibold">Name <span class="text-danger">*</span></label>
+              <label class="form-label">Name <span class="text-danger">*</span></label>
               <input type="text" name="name" class="form-control" placeholder="e.g. General Admission" required>
               <div class="invalid-feedback" id="err-name"></div>
             </div>
             <div class="col-12">
-              <label class="form-label fw-semibold">Description</label>
-              <textarea name="description" class="form-control" rows="2" placeholder="Short buyer-facing copy (optional)"></textarea>
+              <label class="form-label">Description</label>
+              <textarea name="description" id="add_description" class="form-control" rows="2" placeholder="Short buyer-facing copy (optional)"></textarea>
               <div class="invalid-feedback" id="err-description"></div>
             </div>
             <div class="col-md-6">
-              <label class="form-label fw-semibold">Display Price ($) <span class="text-danger">*</span></label>
+              <label class="form-label">Display Price ($) <span class="text-danger">*</span></label>
               <div class="input-group">
                 <span class="input-group-text">$</span>
                 <input type="number" name="price" id="add_price" class="form-control" step="0.01" min="0" placeholder="0.00" required>
               </div>
-              <div class="form-text text-muted">What the buyer pays</div>
               <div class="invalid-feedback" id="err-price"></div>
             </div>
             <div class="col-md-6">
-              <label class="form-label fw-semibold">You Receive ($)</label>
+              <label class="form-label">You Receive ($)</label>
               <div class="input-group">
                 <span class="input-group-text">$</span>
                 <input type="number" id="add_gross" class="form-control" step="0.01" min="0" placeholder="0.00">
               </div>
             </div>
-            <div class="col-md-4">
-              <label class="form-label fw-semibold">Inventory Limit</label>
+            <div class="col-12">
+              <label class="form-label">Inventory Limit</label>
               <input type="number" name="quantity_limit" class="form-control" min="1" placeholder="Unlimited">
               <div class="invalid-feedback" id="err-quantity_limit"></div>
             </div>
-            <div class="col-md-4">
-              <label class="form-label fw-semibold">Max Per Customer</label>
-              <input type="number" name="max_per_customer" class="form-control" min="1" placeholder="Unlimited">
-              <div class="invalid-feedback" id="err-max_per_customer"></div>
-            </div>
-            <div class="col-md-4">
-              <label class="form-label fw-semibold">Order</label>
-              <input type="number" name="order" class="form-control" min="0" value="0">
-              <div class="invalid-feedback" id="err-order"></div>
-            </div>
-            <div class="col-12">
-              <label class="form-label fw-semibold">Unlocks After</label>
-              <select name="unlocks_after" class="form-select" id="add_unlocks_after">
-                <option value="">- None -</option>
-                {% for tt in saleable_ticket_types %}
-                <option value="{{ tt.id }}">{{ tt.name }}</option>
-                {% endfor %}
-              </select>
-              <div class="form-text text-muted">This ticket type becomes available only after the selected type sells out.</div>
-            </div>
-            <div class="col-md-6">
-              <label class="form-label fw-semibold">Sale Start</label>
-              <input type="datetime-local" name="sale_start" class="form-control">
-              <div class="invalid-feedback" id="err-sale_start"></div>
-            </div>
-            <div class="col-md-6">
-              <label class="form-label fw-semibold">Sale End</label>
-              <input type="datetime-local" name="sale_end" class="form-control">
-              <div class="invalid-feedback" id="err-sale_end"></div>
-            </div>
-            <div class="col-12">
+            <div class="col-12 pt-1">
               <div class="form-check">
                 <input class="form-check-input" type="checkbox" name="is_active" id="modal_is_active" checked>
                 <label class="form-check-label" for="modal_is_active">Active (visible on buy page)</label>
               </div>
             </div>
-            <div class="col-12">
-              <div class="form-check">
-                <input class="form-check-input" type="checkbox" name="is_password_protected" id="modal_is_pw">
-                <label class="form-check-label" for="modal_is_pw">Password protected</label>
+            <div class="col-12 pt-1">
+              <button class="btn btn-link btn-sm text-decoration-none px-0 py-1 d-inline-flex align-items-center gap-1"
+                      type="button" data-bs-toggle="collapse" data-bs-target="#add-tt-advanced"
+                      aria-expanded="false" aria-controls="add-tt-advanced">
+                <i class="bi bi-chevron-right tt-adv-caret"></i>
+                <span>Advanced settings</span>
+              </button>
+            </div>
+            <div class="col-12 collapse" id="add-tt-advanced">
+              <div class="row g-2 pt-2 border-top">
+                <div class="col-md-6">
+                  <label class="form-label">Max Per Customer</label>
+                  <input type="number" name="max_per_customer" class="form-control" min="1" placeholder="Unlimited">
+                  <div class="invalid-feedback" id="err-max_per_customer"></div>
+                </div>
+                <div class="col-md-6">
+                  <label class="form-label">Unlocks After</label>
+                  <select name="unlocks_after" class="form-select" id="add_unlocks_after">
+                    <option value="">- None -</option>
+                    {% for tt in saleable_ticket_types %}
+                    <option value="{{ tt.id }}">{{ tt.name }}</option>
+                    {% endfor %}
+                  </select>
+                </div>
+                <div class="col-md-6">
+                  <label class="form-label">Sale Start</label>
+                  <input type="datetime-local" name="sale_start" class="form-control">
+                  <div class="invalid-feedback" id="err-sale_start"></div>
+                </div>
+                <div class="col-md-6">
+                  <label class="form-label">Sale End</label>
+                  <input type="datetime-local" name="sale_end" class="form-control">
+                  <div class="invalid-feedback" id="err-sale_end"></div>
+                </div>
+                <div class="col-12 pt-1">
+                  <div class="form-check">
+                    <input class="form-check-input" type="checkbox" name="is_password_protected" id="modal_is_pw">
+                    <label class="form-check-label" for="modal_is_pw">Password protected</label>
+                  </div>
+                </div>
+                <div class="col-12 d-none" id="modal-pw-field">
+                  <label class="form-label">Password</label>
+                  <input type="text" name="password" class="form-control" placeholder="Enter password" autocomplete="off">
+                  <div class="invalid-feedback" id="err-password"></div>
+                </div>
+                {% if waitlist_feature_enabled %}
+                <div class="col-12 pt-1">
+                  <div class="form-check">
+                    <input class="form-check-input" type="checkbox" name="waitlist_enabled" id="modal_waitlist_enabled">
+                    <label class="form-check-label" for="modal_waitlist_enabled">Enable waitlist when sold out</label>
+                  </div>
+                  <div class="form-text text-muted">Buyers can join a waitlist if this ticket type sells out.</div>
+                </div>
+                {% endif %}
               </div>
             </div>
-            <div class="col-12 d-none" id="modal-pw-field">
-              <label class="form-label fw-semibold">Password</label>
-              <input type="text" name="password" class="form-control" placeholder="Enter password" autocomplete="off">
-              <div class="invalid-feedback" id="err-password"></div>
-            </div>
-            {% if waitlist_feature_enabled %}
-            <div class="col-12">
-              <div class="form-check">
-                <input class="form-check-input" type="checkbox" name="waitlist_enabled" id="modal_waitlist_enabled">
-                <label class="form-check-label" for="modal_waitlist_enabled">Enable waitlist when sold out</label>
-              </div>
-              <div class="form-text text-muted">When checked, buyers can join a waitlist when this ticket type sells out. They'll receive an email if a spot opens up.</div>
-            </div>
-            {% endif %}
           </div>
         </div>
         <div class="modal-footer">
@@ -1077,93 +1217,99 @@ document.addEventListener('DOMContentLoaded', function () {
           <div id="edit-tt-loading" class="text-center py-4">
             <span class="spinner-border spinner-border-sm"></span> Loading&hellip;
           </div>
-          <div id="edit-tt-fields" class="row g-3 d-none">
+          <div id="edit-tt-fields" class="row g-2 d-none">
             <div class="col-12">
-              <label class="form-label fw-semibold">Name <span class="text-danger">*</span></label>
+              <label class="form-label">Name <span class="text-danger">*</span></label>
               <input type="text" name="name" id="edit_name" class="form-control" required>
               <div class="invalid-feedback" id="edit-err-name"></div>
             </div>
             <div class="col-12">
-              <label class="form-label fw-semibold">Description</label>
+              <label class="form-label">Description</label>
               <textarea name="description" id="edit_description" class="form-control" rows="2"></textarea>
               <div class="invalid-feedback" id="edit-err-description"></div>
             </div>
             <div class="col-md-6">
-              <label class="form-label fw-semibold">Display Price ($) <span class="text-danger">*</span></label>
+              <label class="form-label">Display Price ($) <span class="text-danger">*</span></label>
               <div class="input-group">
                 <span class="input-group-text">$</span>
                 <input type="number" name="price" id="edit_price" class="form-control" step="0.01" min="0" required>
               </div>
-              <div class="form-text text-muted">What the buyer pays</div>
               <div class="invalid-feedback" id="edit-err-price"></div>
             </div>
             <div class="col-md-6">
-              <label class="form-label fw-semibold">You Receive ($)</label>
+              <label class="form-label">You Receive ($)</label>
               <div class="input-group">
                 <span class="input-group-text">$</span>
                 <input type="number" id="edit_gross" class="form-control" step="0.01" min="0" placeholder="0.00">
               </div>
             </div>
-            <div class="col-md-4">
-              <label class="form-label fw-semibold">Inventory Limit</label>
+            <div class="col-12">
+              <label class="form-label">Inventory Limit</label>
               <input type="number" name="quantity_limit" id="edit_quantity_limit" class="form-control" min="1" placeholder="Unlimited">
               <div class="invalid-feedback" id="edit-err-quantity_limit"></div>
             </div>
-            <div class="col-md-4">
-              <label class="form-label fw-semibold">Max Per Customer</label>
-              <input type="number" name="max_per_customer" id="edit_max_per_customer" class="form-control" min="1" placeholder="Unlimited">
-              <div class="invalid-feedback" id="edit-err-max_per_customer"></div>
-            </div>
-            <div class="col-md-4">
-              <label class="form-label fw-semibold">Order</label>
-              <input type="number" name="order" id="edit_order" class="form-control" min="0">
-              <div class="invalid-feedback" id="edit-err-order"></div>
-            </div>
-            <div class="col-12">
-              <label class="form-label fw-semibold">Unlocks After</label>
-              <select name="unlocks_after" class="form-select" id="edit_unlocks_after">
-                <option value="">- None -</option>
-                {% for tt in saleable_ticket_types %}
-                <option value="{{ tt.id }}">{{ tt.name }}</option>
-                {% endfor %}
-              </select>
-            </div>
-            <div class="col-md-6">
-              <label class="form-label fw-semibold">Sale Start</label>
-              <input type="datetime-local" name="sale_start" id="edit_sale_start" class="form-control">
-              <div class="invalid-feedback" id="edit-err-sale_start"></div>
-            </div>
-            <div class="col-md-6">
-              <label class="form-label fw-semibold">Sale End</label>
-              <input type="datetime-local" name="sale_end" id="edit_sale_end" class="form-control">
-              <div class="invalid-feedback" id="edit-err-sale_end"></div>
-            </div>
-            <div class="col-12">
+            <div class="col-12 pt-1">
               <div class="form-check">
                 <input class="form-check-input" type="checkbox" name="is_active" id="edit_is_active">
                 <label class="form-check-label" for="edit_is_active">Active (visible on buy page)</label>
               </div>
             </div>
-            <div class="col-12">
-              <div class="form-check">
-                <input class="form-check-input" type="checkbox" name="is_password_protected" id="edit_is_pw">
-                <label class="form-check-label" for="edit_is_pw">Password protected</label>
+            <div class="col-12 pt-1">
+              <button class="btn btn-link btn-sm text-decoration-none px-0 py-1 d-inline-flex align-items-center gap-1"
+                      type="button" data-bs-toggle="collapse" data-bs-target="#edit-tt-advanced"
+                      aria-expanded="false" aria-controls="edit-tt-advanced">
+                <i class="bi bi-chevron-right tt-adv-caret"></i>
+                <span>Advanced settings</span>
+              </button>
+            </div>
+            <div class="col-12 collapse" id="edit-tt-advanced">
+              <div class="row g-2 pt-2 border-top">
+                <div class="col-md-6">
+                  <label class="form-label">Max Per Customer</label>
+                  <input type="number" name="max_per_customer" id="edit_max_per_customer" class="form-control" min="1" placeholder="Unlimited">
+                  <div class="invalid-feedback" id="edit-err-max_per_customer"></div>
+                </div>
+                <div class="col-md-6">
+                  <label class="form-label">Unlocks After</label>
+                  <select name="unlocks_after" class="form-select" id="edit_unlocks_after">
+                    <option value="">- None -</option>
+                    {% for tt in saleable_ticket_types %}
+                    <option value="{{ tt.id }}">{{ tt.name }}</option>
+                    {% endfor %}
+                  </select>
+                </div>
+                <div class="col-md-6">
+                  <label class="form-label">Sale Start</label>
+                  <input type="datetime-local" name="sale_start" id="edit_sale_start" class="form-control">
+                  <div class="invalid-feedback" id="edit-err-sale_start"></div>
+                </div>
+                <div class="col-md-6">
+                  <label class="form-label">Sale End</label>
+                  <input type="datetime-local" name="sale_end" id="edit_sale_end" class="form-control">
+                  <div class="invalid-feedback" id="edit-err-sale_end"></div>
+                </div>
+                <div class="col-12 pt-1">
+                  <div class="form-check">
+                    <input class="form-check-input" type="checkbox" name="is_password_protected" id="edit_is_pw">
+                    <label class="form-check-label" for="edit_is_pw">Password protected</label>
+                  </div>
+                </div>
+                <div class="col-12 d-none" id="edit-pw-field">
+                  <label class="form-label">Password</label>
+                  <input type="text" name="password" id="edit_password" class="form-control" placeholder="Enter password" autocomplete="off">
+                  <div class="invalid-feedback" id="edit-err-password"></div>
+                </div>
+                {% if waitlist_feature_enabled %}
+                <div class="col-12 pt-1">
+                  <div class="form-check">
+                    <input class="form-check-input" type="checkbox" name="waitlist_enabled" id="edit_waitlist_enabled">
+                    <label class="form-check-label" for="edit_waitlist_enabled">Enable waitlist when sold out</label>
+                  </div>
+                  <div class="form-text text-muted">Buyers can join a waitlist if this ticket type sells out.</div>
+                </div>
+                {% endif %}
               </div>
             </div>
-            <div class="col-12 d-none" id="edit-pw-field">
-              <label class="form-label fw-semibold">Password</label>
-              <input type="text" name="password" id="edit_password" class="form-control" placeholder="Enter password" autocomplete="off">
-              <div class="invalid-feedback" id="edit-err-password"></div>
-            </div>
-            {% if waitlist_feature_enabled %}
-            <div class="col-12">
-              <div class="form-check">
-                <input class="form-check-input" type="checkbox" name="waitlist_enabled" id="edit_waitlist_enabled">
-                <label class="form-check-label" for="edit_waitlist_enabled">Enable waitlist when sold out</label>
-              </div>
-              <div class="form-text text-muted">When checked, buyers can join a waitlist when this ticket type sells out.</div>
-            </div>
-            {% endif %}
           </div>
         </div>
         <div class="modal-footer">

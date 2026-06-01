@@ -3,6 +3,11 @@
 
 {% block title %}{% if editing %}Edit{% else %}Create{% endif %} Ticket Type - {{ event.name }}{% endblock %}
 
+{% block extra_css %}
+<link rel="preload" href="https://cdn.jsdelivr.net/npm/quill@2.0.3/dist/quill.snow.css" as="style" onload="this.rel='stylesheet'">
+<noscript><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/quill@2.0.3/dist/quill.snow.css"></noscript>
+{% endblock %}
+
 {% block content %}
 <nav aria-label="breadcrumb">
     <ol class="breadcrumb">
@@ -54,7 +59,32 @@
 {% endblock %}
 
 {% block extra_js %}
+<script src="https://cdn.jsdelivr.net/npm/quill@2.0.3/dist/quill.js" defer></script>
 <script>
+document.addEventListener('DOMContentLoaded', function() {
+    var textarea = document.getElementById('id_description');
+    if (!textarea) return;
+    var container = document.createElement('div');
+    container.id = 'quill-editor-description';
+    container.style.minHeight = '120px';
+    textarea.parentNode.insertBefore(container, textarea);
+    textarea.style.display = 'none';
+    var quill = new Quill('#quill-editor-description', {
+        theme: 'snow',
+        placeholder: 'Optional ticket description…',
+        modules: { toolbar: [
+            ['bold', 'italic', 'underline'],
+            [{ list: 'ordered' }, { list: 'bullet' }],
+            ['link'],
+            ['clean']
+        ]}
+    });
+    if (textarea.value) quill.root.innerHTML = textarea.value;
+    var form = textarea.closest('form');
+    if (form) form.addEventListener('submit', function() {
+        textarea.value = quill.root.innerHTML === '<p><br></p>' ? '' : quill.root.innerHTML;
+    });
+});
 document.addEventListener('DOMContentLoaded', function () {
     var checkbox = document.getElementById('id_is_password_protected');
     var passwordField = document.getElementById('id_password');

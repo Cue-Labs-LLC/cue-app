@@ -8557,6 +8557,43 @@ def saleable_ticket_type_data(request, event_id, ticket_type_id):
 @require_org
 @require_host
 @require_http_methods(["POST"])
+def saleable_ticket_type_reorder(request, event_id):
+    """Persist a new display order for an event's ticket types.
+
+    Accepts JSON {"order": ["<uuid>", "<uuid>", ...]}. Writes `order` = index
+    for each matching ticket type belonging to this event.
+    """
+    org = get_organization(request)
+    event = get_object_or_404(Event.objects.filter(organization=org), id=event_id)
+
+    try:
+        payload = json.loads(request.body.decode('utf-8'))
+        ids = payload.get('order') or []
+        if not isinstance(ids, list):
+            raise ValueError('order must be a list')
+    except (ValueError, json.JSONDecodeError):
+        return JsonResponse({'success': False, 'error': 'Invalid payload'}, status=400)
+
+    tts = {str(tt.id): tt for tt in SaleableTicketType.objects.filter(event=event)}
+    to_update = []
+    for index, raw_id in enumerate(ids):
+        tt = tts.get(str(raw_id))
+        if tt is None:
+            continue
+        if tt.order != index:
+            tt.order = index
+            to_update.append(tt)
+    if to_update:
+        SaleableTicketType.objects.bulk_update(to_update, ['order'], batch_size=100)
+        _invalidate_event_list_cache(org)
+
+    return JsonResponse({'success': True, 'updated': len(to_update)})
+
+
+@login_required
+@require_org
+@require_host
+@require_http_methods(["POST"])
 def saleable_ticket_type_toggle(request, event_id, ticket_type_id):
     """Toggle is_active on a SaleableTicketType."""
 
