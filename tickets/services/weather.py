@@ -1,8 +1,10 @@
 """Weather forecast service for event detail pages.
 
-Primary provider: Open-Meteo (https://open-meteo.com) — free, no key, ~14 day
-horizon. Fallback: wttr.in (https://wttr.in) — free, no key, ~3 day horizon,
-used when Open-Meteo errors or rate-limits us.
+Provider waterfall:
+  1. NWS (https://api.weather.gov) — US-only, no key, no rate limit, 7-day forecast.
+  2. Open-Meteo (https://open-meteo.com) — global, no key, ~14-day horizon.
+     Fallback for non-US venues; can hit per-IP rate limits in production.
+  3. wttr.in (https://wttr.in) — global, no key, ~3-day horizon, last resort.
 
 Geocodes the venue once and caches; fetches a daily forecast for the event's
 start date and caches that too. Fails silently (logs a warning and returns
@@ -10,6 +12,7 @@ None) so a weather outage never breaks the event page.
 """
 
 import logging
+import re
 from datetime import date, timedelta
 
 import requests
@@ -22,23 +25,25 @@ logger = logging.getLogger(__name__)
 GEOCODE_URL = "https://geocoding-api.open-meteo.com/v1/search"
 FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
 WTTR_URL_TEMPLATE = "https://wttr.in/{lat},{lng}"
+NWS_POINTS_URL_TEMPLATE = "https://api.weather.gov/points/{lat},{lng}"
 
 GEOCODE_TTL_SECONDS = 60 * 60 * 24 * 30  # 30 days — venue coords don't move
 FORECAST_TTL_SECONDS = 60 * 60 * 3       # 3 hours — daily forecast is stable
-FORECAST_FAILURE_TTL_SECONDS = 60 * 30   # 30 min — back off when both providers fail
+FORECAST_FAILURE_TTL_SECONDS = 60 * 30   # 30 min — back off when all providers fail
 FORECAST_HORIZON_DAYS = 14               # Open-Meteo's reliable daily window
 WTTR_HORIZON_DAYS = 2                    # wttr.in returns today + next 2 days
+NWS_GRIDPOINT_TTL_SECONDS = 60 * 60 * 24 * 30  # 30 days — gridpoints don't move
 
 HTTP_TIMEOUT_SECONDS = 5
 
 # Identifying ourselves keeps Open-Meteo from lumping us in with anonymous
-# bot traffic that gets rate-limited first.
+# bot traffic that gets rate-limited first. NWS *requires* a non-empty UA.
 USER_AGENT = "cue-events (+https://cueup.co) weather forecast widget"
 DEFAULT_HEADERS = {"User-Agent": USER_AGENT, "Accept": "application/json"}
 
 # Bumped when the on-disk cache shape or provider routing changes so old
 # `{}` failure entries from previous deploys don't keep suppressing the chip.
-_FORECAST_CACHE_VERSION = 2
+_FORECAST_CACHE_VERSION = 3
 
 
 class WeatherAPIError(Exception):
@@ -263,10 +268,10 @@ def _resolve_venue_coords(venue):
 def _fetch_daily_forecast(lat, lng, target_date):
     """Fetch the daily forecast for target_date at (lat, lng), with caching.
 
-    Tries Open-Meteo first; falls back to wttr.in when Open-Meteo errors or
-    returns no data. Either provider's success is cached for FORECAST_TTL.
-    A combined failure caches an empty sentinel for FORECAST_FAILURE_TTL so
-    repeat page loads don't keep hammering rate-limited APIs.
+    Waterfall: NWS (US only) → Open-Meteo → wttr.in. The first provider that
+    returns data wins; the result is cached for FORECAST_TTL. A combined
+    failure caches an empty sentinel for FORECAST_FAILURE_TTL so repeat page
+    loads don't keep hammering rate-limited APIs.
     """
     date_str = target_date.isoformat()
     cache_key = f"weather:forecast:v{_FORECAST_CACHE_VERSION}:{lat:.3f}:{lng:.3f}:{date_str}"
@@ -274,7 +279,9 @@ def _fetch_daily_forecast(lat, lng, target_date):
     if cached is not None:
         return cached or None  # falsy sentinel means previous failure
 
-    forecast = _fetch_open_meteo_day(lat, lng, target_date)
+    forecast = _fetch_nws_day(lat, lng, target_date)
+    if forecast is None:
+        forecast = _fetch_open_meteo_day(lat, lng, target_date)
     if forecast is None and (target_date - date.today()).days <= WTTR_HORIZON_DAYS:
         forecast = _fetch_wttr_in_day(lat, lng, target_date)
 
@@ -441,6 +448,129 @@ def _wmo_code_from_wttr_desc(desc):
     if "clear" in d or "sunny" in d:
         return 0
     return 0
+
+
+def _resolve_nws_gridpoint(lat, lng):
+    """Return the NWS gridpoint forecast URL for (lat, lng), or None.
+
+    NWS's points endpoint returns 404 for coordinates outside US territory —
+    that's how we silently fall through to Open-Meteo for international
+    venues. We cache the URL (or a "miss" sentinel) for 30 days because
+    gridpoints don't move and the response is large.
+    """
+    cache_key = f"weather:nws:points:v1:{lat:.3f}:{lng:.3f}"
+    cached = django_cache.get(cache_key)
+    if cached is not None:
+        return None if cached == "miss" else cached
+
+    url = NWS_POINTS_URL_TEMPLATE.format(lat=f"{lat:.4f}", lng=f"{lng:.4f}")
+    try:
+        resp = requests.get(url, headers=DEFAULT_HEADERS, timeout=HTTP_TIMEOUT_SECONDS)
+        if resp.status_code == 404:
+            django_cache.set(cache_key, "miss", NWS_GRIDPOINT_TTL_SECONDS)
+            return None
+        resp.raise_for_status()
+        data = resp.json()
+    except (requests.RequestException, ValueError) as exc:
+        logger.warning('NWS points lookup failed for (%s, %s): %s', lat, lng, exc)
+        return None
+
+    forecast_url = (data.get("properties") or {}).get("forecast")
+    if not forecast_url:
+        django_cache.set(cache_key, "miss", NWS_GRIDPOINT_TTL_SECONDS)
+        return None
+
+    django_cache.set(cache_key, forecast_url, NWS_GRIDPOINT_TTL_SECONDS)
+    return forecast_url
+
+
+def _fetch_nws_day(lat, lng, target_date):
+    """Call NWS for one day's forecast. Returns the unified dict or None.
+
+    Returns None for non-US venues (404 from points endpoint), network errors,
+    or dates past NWS's ~7-day forecast window.
+    """
+    forecast_url = _resolve_nws_gridpoint(lat, lng)
+    if forecast_url is None:
+        return None
+
+    date_str = target_date.isoformat()
+    try:
+        resp = requests.get(forecast_url, headers=DEFAULT_HEADERS, timeout=HTTP_TIMEOUT_SECONDS)
+        resp.raise_for_status()
+        data = resp.json()
+    except (requests.RequestException, ValueError) as exc:
+        logger.warning('NWS forecast failed for (%s, %s) on %s: %s — will try Open-Meteo fallback',
+                       lat, lng, date_str, exc)
+        return None
+
+    periods = ((data.get("properties") or {}).get("periods")) or []
+    day_period = next(
+        (p for p in periods if p.get("isDaytime") and (p.get("startTime") or "")[:10] == date_str),
+        None,
+    )
+    night_period = next(
+        (p for p in periods if not p.get("isDaytime") and (p.get("startTime") or "")[:10] == date_str),
+        None,
+    )
+    if day_period is None and night_period is None:
+        return None  # target_date is past NWS's horizon
+
+    # Prefer the day period for the "headline" condition; an evening-only forecast
+    # (event starts past noon today) falls back to the night period.
+    headline = day_period or night_period
+    temp_high = (day_period or night_period).get("temperature")
+    temp_low = (night_period or day_period).get("temperature")
+
+    precip_values = []
+    for p in (day_period, night_period):
+        if not p:
+            continue
+        v = (p.get("probabilityOfPrecipitation") or {}).get("value")
+        if v is not None:
+            precip_values.append(v)
+    precip_prob = max(precip_values) if precip_values else 0
+
+    wind_max = _parse_nws_wind(headline.get("windSpeed") or "")
+    weather_code = _wmo_code_from_nws_short_forecast(headline.get("shortForecast") or "")
+
+    return _build_forecast(
+        target_date=target_date,
+        weather_code=weather_code,
+        temp_high=temp_high,
+        temp_low=temp_low,
+        precip_prob=precip_prob,
+        precip_amount=0,  # NWS daily quantitative precip lives on a different endpoint
+        wind_max=wind_max,
+        source="nws",
+    )
+
+
+_WIND_NUMBER_RE = re.compile(r"\d+(?:\.\d+)?")
+
+
+def _parse_nws_wind(text):
+    """Extract the max numeric mph from NWS windSpeed text.
+
+    NWS returns strings like '5 to 10 mph', 'Around 7 mph', '15 mph', or ''.
+    Returns 0.0 when no number is present.
+    """
+    nums = _WIND_NUMBER_RE.findall(text or "")
+    return max((float(n) for n in nums), default=0.0)
+
+
+def _wmo_code_from_nws_short_forecast(desc):
+    """Map an NWS shortForecast to a WMO code.
+
+    NWS often chains conditions like 'Patchy Fog then Mostly Sunny' or
+    'Sunny then Thunderstorms'. The trailing clause reflects the end-of-day
+    condition that matters most for evening Cue events, so we split on
+    ' then ' and classify the LAST clause through the existing matcher.
+    """
+    if not desc:
+        return 0
+    last_clause = desc.rsplit(" then ", 1)[-1]
+    return _wmo_code_from_wttr_desc(last_clause)
 
 
 def _build_forecast(target_date, weather_code, temp_high, temp_low,
