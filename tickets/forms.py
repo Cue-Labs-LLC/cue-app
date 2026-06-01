@@ -1107,7 +1107,7 @@ class SaleableTicketTypeForm(forms.ModelForm):
 
     class Meta:
         model = SaleableTicketType
-        fields = ['name', 'description', 'price', 'quantity_limit', 'max_per_customer', 'is_active', 'sale_start', 'sale_end', 'order', 'is_password_protected', 'password', 'unlocks_after', 'waitlist_enabled']
+        fields = ['name', 'description', 'price', 'quantity_limit', 'max_per_customer', 'is_active', 'sale_start', 'sale_end', 'is_password_protected', 'password', 'unlocks_after', 'waitlist_enabled']
         widgets = {
             'name': forms.TextInput(attrs={'class': 'form-control', 'placeholder': 'e.g. General Admission'}),
             'description': forms.Textarea(attrs={'rows': 2, 'class': 'form-control', 'placeholder': 'Short buyer-facing copy (optional)'}),
@@ -1117,7 +1117,6 @@ class SaleableTicketTypeForm(forms.ModelForm):
             'is_active': forms.CheckboxInput(attrs={'class': 'form-check-input'}),
             'sale_start': forms.DateTimeInput(attrs={'type': 'datetime-local', 'class': 'form-control'}),
             'sale_end': forms.DateTimeInput(attrs={'type': 'datetime-local', 'class': 'form-control'}),
-            'order': forms.NumberInput(attrs={'class': 'form-control', 'min': '0'}),
             'is_password_protected': forms.CheckboxInput(attrs={'class': 'form-check-input', 'id': 'id_is_password_protected'}),
             'password': forms.TextInput(attrs={
                 'class': 'form-control',
@@ -1145,10 +1144,9 @@ class SaleableTicketTypeForm(forms.ModelForm):
             Field('name'),
             Field('description'),
             Row(
-                Column('price', css_class='form-group col-md-3 mb-0'),
-                Column('quantity_limit', css_class='form-group col-md-3 mb-0'),
-                Column('max_per_customer', css_class='form-group col-md-3 mb-0'),
-                Column('order', css_class='form-group col-md-3 mb-0'),
+                Column('price', css_class='form-group col-md-4 mb-0'),
+                Column('quantity_limit', css_class='form-group col-md-4 mb-0'),
+                Column('max_per_customer', css_class='form-group col-md-4 mb-0'),
             ),
             Row(
                 Column('sale_start', css_class='form-group col-md-6 mb-0'),

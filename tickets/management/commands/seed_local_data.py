@@ -363,6 +363,7 @@ class Command(BaseCommand):
                 description=f"{summary}\n\nFollow @familiar.faces for the lineup and last-minute drops.",
                 venue=venue,
                 start_date=start_date,
+                end_date=start_date,
                 start_time=timezone.now().time().replace(microsecond=0),
                 capacity=cap,
                 max_tickets_per_customer=8,

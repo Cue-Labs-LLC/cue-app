@@ -333,6 +333,12 @@
             font-weight: 300;
         }
 
+        .ticket-desc p { margin-bottom: 6px; }
+        .ticket-desc p:last-child { margin-bottom: 0; }
+        .ticket-desc ul, .ticket-desc ol { padding-left: 1.2rem; margin-bottom: 6px; }
+        .ticket-desc a { color: var(--text); text-decoration: underline; }
+        .ticket-desc strong { font-weight: 600; }
+
         .ticket-desc-wrap { position: relative; }
         .ticket-desc-wrap.collapsed .ticket-desc { max-height: 54px; overflow: hidden; }
         .ticket-desc-wrap.collapsed::after {
@@ -1165,7 +1171,7 @@
                   </div>
                   {% if tt.description %}
                   <div class="ticket-desc-wrap collapsed">
-                      <div class="ticket-desc">{{ tt.description|linebreaksbr }}</div>
+                      <div class="ticket-desc">{{ tt.description|safe }}</div>
                   </div>
                   <button type="button" class="btn-view-more ticket-desc-toggle" style="display:none;">View more</button>
                   {% endif %}
@@ -1209,7 +1215,7 @@
                   <div class="ticket-name">{{ tt.name }}</div>
                   {% if tt.description %}
                   <div class="ticket-desc-wrap collapsed">
-                      <div class="ticket-desc">{{ tt.description|linebreaksbr }}</div>
+                      <div class="ticket-desc">{{ tt.description|safe }}</div>
                   </div>
                   <button type="button" class="btn-view-more ticket-desc-toggle" style="display:none;">View more</button>
                   {% endif %}
@@ -1238,7 +1244,7 @@
                   </div>
                   {% if tt.description %}
                   <div class="ticket-desc-wrap collapsed">
-                      <div class="ticket-desc">{{ tt.description|linebreaksbr }}</div>
+                      <div class="ticket-desc">{{ tt.description|safe }}</div>
                   </div>
                   <button type="button" class="btn-view-more ticket-desc-toggle" style="display:none;">View more</button>
                   {% endif %}
@@ -1293,7 +1299,7 @@
                 <div class="ticket-name">{{ tt.name }}</div>
                 {% if tt.description %}
                 <div class="ticket-desc-wrap collapsed">
-                    <div class="ticket-desc">{{ tt.description|linebreaksbr }}</div>
+                    <div class="ticket-desc">{{ tt.description|safe }}</div>
                 </div>
                 <button type="button" class="btn-view-more ticket-desc-toggle" style="display:none;">View more</button>
                 {% endif %}
