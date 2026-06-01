@@ -134,7 +134,7 @@ from .services.marketing import (
     generate_marketing_narrative,
 )
 from .services.marketing.analytics import DEFAULT_WINDOW, resolve_window
-from .services.weather import get_event_weather_forecast
+from .services.weather import get_event_weather_forecast, get_event_hourly_forecast
 from .utils import get_organization, require_org, require_organizer, require_host, require_admin, require_owner, clear_org_cache, next_order_number, generate_qr_b64, link_customer_to_buyer
 from .feature_flags import (
     smart_pricing_recommendations_enabled,
@@ -4570,6 +4570,22 @@ def event_detail(request, event_id):
         context['rating_counts'] = []
 
     return render(request, 'tickets/event_detail.html', context)
+
+
+@login_required
+@require_org
+@require_organizer
+def event_weather_hourly(request, event_id):
+    """Return JSON hourly forecast for every day the event spans."""
+    org = get_organization(request)
+    event = get_object_or_404(
+        Event.objects.filter(organization=org).select_related('venue'),
+        id=event_id,
+    )
+    data = get_event_hourly_forecast(event)
+    if data is None:
+        return JsonResponse({'days': [], 'venue_name': None})
+    return JsonResponse(data)
 
 
 @login_required

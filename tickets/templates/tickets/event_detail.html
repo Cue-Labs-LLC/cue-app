@@ -101,11 +101,22 @@
 .nps-score-overlay .score-num { font-size: 2.4rem; font-weight: 700; line-height: 1; }
 .nps-score-overlay .score-label { font-size: 0.75rem; color: var(--color-muted); }
 
-/* -- Event Detail: Weather chip severity highlight -- */
-.detail-meta-weather--caution,
-.detail-meta-weather--severe {
+/* -- Event Detail: Weather chip severity highlight + click affordance -- */
+button.detail-meta-weather {
+    /* Strip default <button> chrome so the chip still reads as a meta item. */
+    border: none;
+    font: inherit;
+    color: inherit;
+    background: transparent;
+    cursor: pointer;
+    transition: background 0.12s, filter 0.12s;
     padding: 2px 8px;
     border-radius: 6px;
+}
+button.detail-meta-weather:hover,
+button.detail-meta-weather:focus-visible {
+    background: var(--bg-inset, rgba(127, 127, 127, 0.08));
+    outline: none;
 }
 .detail-meta-weather--caution {
     color: var(--warning);
@@ -117,8 +128,56 @@
     background: var(--danger-muted);
     font-weight: 600;
 }
+button.detail-meta-weather--caution:hover,
+button.detail-meta-weather--caution:focus-visible {
+    background: var(--warning-muted);
+    filter: brightness(0.94);
+}
+button.detail-meta-weather--severe:hover,
+button.detail-meta-weather--severe:focus-visible {
+    background: var(--danger-muted);
+    filter: brightness(0.94);
+}
 .detail-meta-weather--caution i,
 .detail-meta-weather--severe i { opacity: 1; }
+
+/* -- Event Detail: Hourly forecast modal -- */
+.weather-hourly-table {
+    width: 100%;
+    font-size: 13px;
+}
+.weather-hourly-table th {
+    font-weight: 500;
+    color: var(--text-secondary);
+    padding: 6px 8px;
+    border-bottom: 1px solid var(--border-light);
+    text-align: left;
+}
+.weather-hourly-table td {
+    padding: 6px 8px;
+    border-bottom: 1px solid var(--border-light);
+    color: var(--text-primary);
+    font-variant-numeric: tabular-nums;
+}
+.weather-hourly-table td.weather-condition i { margin-right: 6px; opacity: 0.7; }
+.weather-hourly-table tr:last-child td { border-bottom: none; }
+.weather-hourly-day-tabs { margin-bottom: 12px; }
+.weather-hourly-day-tabs .nav-link {
+    font-size: 13px;
+    padding: 4px 12px;
+}
+.weather-hourly-source {
+    font-size: 11px;
+    color: var(--text-tertiary, rgba(127, 127, 127, 0.7));
+    margin-top: 10px;
+    text-align: right;
+}
+.weather-hourly-empty {
+    color: var(--text-secondary);
+    padding: 24px 8px;
+    text-align: center;
+    font-size: 13px;
+}
 
 </style>
 {% endblock %}
@@ -162,12 +221,15 @@
             {% endif %}
             {% if weather_forecast %}
             <div class="detail-meta-divider"></div>
-            <div class="detail-meta-item detail-meta-weather detail-meta-weather--{{ weather_forecast.severity }}"
-                 aria-label="Weather forecast for event day{% if weather_forecast.severity != 'normal' %} &mdash; {{ weather_forecast.severity }} conditions{% endif %}">
+            <button type="button"
+                    class="detail-meta-item detail-meta-weather detail-meta-weather--{{ weather_forecast.severity }}"
+                    data-bs-toggle="modal"
+                    data-bs-target="#weatherModal"
+                    aria-label="Weather forecast for event day{% if weather_forecast.severity != 'normal' %} &mdash; {{ weather_forecast.severity }} conditions{% endif %}. Click for hourly forecast.">
                 {% if weather_forecast.severity != 'normal' %}<i class="bi bi-exclamation-triangle-fill"></i>{% endif %}
                 <i class="bi {{ weather_forecast.condition_icon }}"></i>
                 <span>{{ weather_forecast.condition_label }}, {{ weather_forecast.temp_high|floatformat:0 }}&deg;/{{ weather_forecast.temp_low|floatformat:0 }}&deg;F{% if weather_forecast.precip_prob %} &middot; {{ weather_forecast.precip_prob|floatformat:0 }}% rain{% endif %}</span>
-            </div>
+            </button>
             {% endif %}
         </div>
     </div>
@@ -1656,6 +1718,29 @@
         </div>
     </div>
 </div>
+
+{% if weather_forecast %}
+<div class="modal fade" id="weatherModal" tabindex="-1" aria-labelledby="weatherModalLabel" aria-hidden="true"
+     data-fetch-url="{% url 'tickets:event_weather_hourly' event.id %}">
+    <div class="modal-dialog modal-lg modal-dialog-scrollable">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="weatherModalLabel">
+                    <i class="bi {{ weather_forecast.condition_icon }}"></i>
+                    Hourly forecast
+                </h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <div id="weatherModalBody" class="text-center text-secondary py-4">
+                    <div class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></div>
+                    <span class="ms-2">Loading hourly forecast&hellip;</span>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endif %}
 
 {% if org_has_custom_fields %}
 <div class="modal fade" id="customFieldsModal" tabindex="-1" aria-labelledby="customFieldsModalLabel" aria-hidden="true">
@@ -4156,5 +4241,109 @@ document.addEventListener('DOMContentLoaded', function () {
     });
 })();
 </script>
+
+{% if weather_forecast %}
+<script>
+(function () {
+    'use strict';
+    const modal = document.getElementById('weatherModal');
+    if (!modal) return;
+
+    function escapeHtml(s) {
+        return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
+            return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c];
+        });
+    }
+
+    function formatTime(hhmm) {
+        // "15:00" -> "3 PM"; "09:00" -> "9 AM"; "00:00" -> "12 AM"
+        const h = parseInt((hhmm || '').slice(0, 2), 10);
+        if (isNaN(h)) return escapeHtml(hhmm);
+        const period = h >= 12 ? 'PM' : 'AM';
+        const display = h === 0 ? 12 : (h > 12 ? h - 12 : h);
+        return display + ' ' + period;
+    }
+
+    function formatDate(iso) {
+        // "2026-06-14" -> "Sun, Jun 14"
+        if (!iso) return '';
+        const parts = iso.split('-');
+        if (parts.length !== 3) return iso;
+        const d = new Date(parseInt(parts[0], 10), parseInt(parts[1], 10) - 1, parseInt(parts[2], 10));
+        if (isNaN(d.getTime())) return iso;
+        return d.toLocaleDateString(undefined, {weekday: 'short', month: 'short', day: 'numeric'});
+    }
+
+    function renderDayBody(day) {
+        if (!day.hours || day.hours.length === 0) {
+            return '<div class="weather-hourly-empty">' +
+                escapeHtml(day.note || 'Hourly forecast unavailable for this day.') +
+                '</div>';
+        }
+        let rows = '';
+        day.hours.forEach(function (h) {
+            rows += '<tr>' +
+                '<td>' + formatTime(h.time) + '</td>' +
+                '<td class="weather-condition"><i class="bi ' + escapeHtml(h.condition_icon) + '"></i>' +
+                escapeHtml(h.condition_label) + '</td>' +
+                '<td>' + (h.temp == null ? '&mdash;' : (h.temp + '&deg;F')) + '</td>' +
+                '<td>' + (h.precip_prob || 0) + '%</td>' +
+                '<td>' + (h.wind || 0) + ' mph</td>' +
+                '</tr>';
+        });
+        let source = '';
+        if (day.source) {
+            const labels = {nws: 'National Weather Service', 'open-meteo': 'Open-Meteo', 'wttr.in': 'wttr.in'};
+            source = '<div class="weather-hourly-source">Source: ' +
+                escapeHtml(labels[day.source] || day.source) + '</div>';
+        }
+        return '<table class="weather-hourly-table"><thead><tr>' +
+            '<th>Time</th><th>Condition</th><th>Temp</th><th>Rain</th><th>Wind</th>' +
+            '</tr></thead><tbody>' + rows + '</tbody></table>' + source;
+    }
+
+    function renderModal(data) {
+        const days = (data && data.days) || [];
+        if (days.length === 0) {
+            return '<div class="weather-hourly-empty">No hourly forecast available.</div>';
+        }
+        if (days.length === 1) {
+            return renderDayBody(days[0]);
+        }
+        // Multi-day: nav-pills + tab panes
+        let tabs = '<ul class="nav nav-pills weather-hourly-day-tabs" role="tablist">';
+        let panes = '<div class="tab-content">';
+        days.forEach(function (day, i) {
+            const id = 'weatherDay-' + i;
+            const active = i === 0 ? ' active' : '';
+            const selected = i === 0 ? 'true' : 'false';
+            tabs += '<li class="nav-item" role="presentation">' +
+                '<button class="nav-link' + active + '" id="' + id + '-tab" data-bs-toggle="pill"' +
+                ' data-bs-target="#' + id + '" type="button" role="tab" aria-controls="' + id +
+                '" aria-selected="' + selected + '">' + escapeHtml(formatDate(day.date)) + '</button></li>';
+            panes += '<div class="tab-pane fade show' + (active ? ' active' : '') + '" id="' + id +
+                '" role="tabpanel" aria-labelledby="' + id + '-tab">' + renderDayBody(day) + '</div>';
+        });
+        tabs += '</ul>';
+        panes += '</div>';
+        return tabs + panes;
+    }
+
+    modal.addEventListener('show.bs.modal', function () {
+        if (modal.dataset.loaded === '1') return;
+        const body = document.getElementById('weatherModalBody');
+        fetch(modal.dataset.fetchUrl, {headers: {'Accept': 'application/json'}, credentials: 'same-origin'})
+            .then(function (r) { if (!r.ok) throw new Error('http ' + r.status); return r.json(); })
+            .then(function (data) {
+                body.innerHTML = renderModal(data);
+                modal.dataset.loaded = '1';
+            })
+            .catch(function () {
+                body.innerHTML = '<div class="weather-hourly-empty">Could not load hourly forecast. Try again later.</div>';
+            });
+    });
+})();
+</script>
+{% endif %}
 
 {% endblock %}

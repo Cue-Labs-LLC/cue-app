@@ -8617,3 +8617,88 @@ class LinkCustomerToBuyerTests(TestCase):
         customer.refresh_from_db()
         self.assertEqual(customer.user_id, self.user.id)
         self.assertEqual(customer.phone, '+15551234567')
+
+
+class EventWeatherHourlyEndpointTest(TestCase):
+    """Tests for the hourly weather forecast JSON endpoint."""
+
+    def setUp(self):
+        from django.core.cache import cache as django_cache
+        self.client = Client()
+        self.org = Organization.objects.create(name='Weather Org', slug='weather-org')
+        self.user = User.objects.create_user(
+            username='weather', email='weather@example.com', password='testpass123',
+        )
+        UserProfile.objects.create(
+            user=self.user, organization=self.org, org_role=UserProfile.OrgRole.OWNER,
+        )
+        self.venue = Venue.objects.create(
+            organization=self.org, name='Weather Venue', city='Los Angeles',
+        )
+        self.event = Event.objects.create(
+            organization=self.org, name='Weather Event', venue=self.venue,
+            start_date=date.today() + timedelta(days=3),
+        )
+
+        self.other_org = Organization.objects.create(name='Other Org', slug='other-weather-org')
+        self.other_venue = Venue.objects.create(
+            organization=self.other_org, name='Other Venue', city='Seattle',
+        )
+        self.other_event = Event.objects.create(
+            organization=self.other_org, name='Other Event', venue=self.other_venue,
+            start_date=date.today() + timedelta(days=3),
+        )
+        django_cache.clear()
+
+    def tearDown(self):
+        from django.core.cache import cache as django_cache
+        django_cache.clear()
+
+    def _login(self):
+        self.assertTrue(self.client.login(username='weather@example.com', password='testpass123'))
+        self.client.get(reverse('tickets:home'))
+
+    def _fake_forecast(self, *args, **kwargs):
+        return {
+            'venue_name': 'Weather Venue',
+            'days': [{
+                'date': (date.today() + timedelta(days=3)).isoformat(),
+                'source': 'nws',
+                'hours': [{
+                    'time': '15:00', 'temp': 75, 'precip_prob': 0, 'wind': 8,
+                    'weather_code': 0, 'condition_label': 'Clear', 'condition_icon': 'bi-sun',
+                }],
+            }],
+        }
+
+    def test_endpoint_returns_json_for_owner(self):
+        self._login()
+        with patch('tickets.views.get_event_hourly_forecast', side_effect=self._fake_forecast):
+            url = reverse('tickets:event_weather_hourly', args=[self.event.id])
+            resp = self.client.get(url)
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertIn('days', body)
+        self.assertEqual(len(body['days']), 1)
+        self.assertEqual(body['days'][0]['hours'][0]['temp'], 75)
+        self.assertEqual(body['venue_name'], 'Weather Venue')
+
+    def test_endpoint_returns_404_for_other_org_event(self):
+        self._login()
+        url = reverse('tickets:event_weather_hourly', args=[self.other_event.id])
+        resp = self.client.get(url)
+        self.assertEqual(resp.status_code, 404)
+
+    def test_endpoint_returns_empty_payload_when_service_returns_none(self):
+        self._login()
+        with patch('tickets.views.get_event_hourly_forecast', return_value=None):
+            url = reverse('tickets:event_weather_hourly', args=[self.event.id])
+            resp = self.client.get(url)
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertEqual(body, {'days': [], 'venue_name': None})
+
+    def test_endpoint_redirects_unauthenticated(self):
+        url = reverse('tickets:event_weather_hourly', args=[self.event.id])
+        resp = self.client.get(url)
+        self.assertIn(resp.status_code, (302, 401, 403))
