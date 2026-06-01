@@ -469,6 +469,22 @@ button.detail-meta-weather--severe:focus-visible {
         <div class="text-center text-muted small mt-3">
             {{ checkin_count|intcomma }} of {{ checkin_total_tickets|intcomma }} ticket{{ checkin_total_tickets|pluralize }}
         </div>
+        {% if checkin_by_type|length > 1 %}
+        <div class="ta-list mt-4">
+            {% for row in checkin_by_type %}
+            <div class="ta-row">
+                <span class="ta-name">{{ row.label }}</span>
+                <div class="ta-bar-wrap">
+                    <div class="ta-bar-fill" style="width:{{ row.percent }}%"></div>
+                </div>
+                <span class="ta-count">
+                    {{ row.checked_in|intcomma }} / {{ row.total|intcomma }}
+                    <span class="ta-pct">{{ row.percent }}%</span>
+                </span>
+            </div>
+            {% endfor %}
+        </div>
+        {% endif %}
     </div>
 </div>
 {% endif %}
