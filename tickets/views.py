@@ -3594,14 +3594,34 @@ def _compute_event_stats(event):
             if row['ticket_type']
         ]
 
-    # Sales over time — for the chart; cached here so it's not re-run on every page load
-    sales_over_time = list(
-        event.ticket_orders
-        .annotate(date=TruncDate('order_date'))
+    # Sales over time — for the chart; cached here so it's not re-run on every page load.
+    # Tickets and revenue are aggregated independently to avoid join inflation of revenue
+    # when grouping through the tickets relation.
+    revenue_by_date = {
+        row['date']: row['revenue']
+        for row in (
+            event.ticket_orders
+            .annotate(date=TruncDate('order_date'))
+            .values('date')
+            .annotate(revenue=Sum('total_amount'))
+        )
+    }
+    tickets_by_date = (
+        Ticket.objects
+        .filter(ticket_order__event=event)
+        .annotate(date=TruncDate('ticket_order__order_date'))
         .values('date')
-        .annotate(count=Count('id'), revenue=Sum('total_amount'))
+        .annotate(count=Count('id'))
         .order_by('date')
     )
+    sales_over_time = [
+        {
+            'date': row['date'],
+            'count': row['count'],
+            'revenue': revenue_by_date.get(row['date'], 0),
+        }
+        for row in tickets_by_date
+    ]
     page_views_over_time = list(
         EventDailyPageView.objects.filter(event=event)
         .order_by('date')
