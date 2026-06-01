@@ -3787,14 +3787,16 @@ def _compute_event_stats(event):
 
 
 def _compute_event_checkin_stats(event):
-    """Return (should_show, total_tickets, checked_in_tickets).
+    """Return (should_show, total_tickets, checked_in_tickets, by_type).
 
     should_show is True when the event is direct ticketing AND its local start
     datetime has passed. Tickets are counted at the ticket level (a TicketOrder
     can hold multiple tickets, and a single check-in admits the whole order).
+    by_type is a list of {label, total, checked_in, percent} dicts grouped by
+    Ticket.ticket_type, sorted by total desc.
     """
     if event.ticketing_type != 'direct':
-        return False, 0, 0
+        return False, 0, 0, []
 
     tz_name = event.timezone or 'America/Los_Angeles'
     try:
@@ -3806,13 +3808,34 @@ def _compute_event_checkin_stats(event):
         event.start_date, event.start_time or time(0, 0)
     ).replace(tzinfo=tz)
     if start_local > django_tz.now():
-        return False, 0, 0
+        return False, 0, 0, []
 
     agg = event.ticket_orders.aggregate(
         total=Count('tickets'),
         checked_in=Count('tickets', filter=Q(checked_in_at__isnull=False)),
     )
-    return True, agg['total'] or 0, agg['checked_in'] or 0
+
+    by_type_qs = (
+        Ticket.objects.filter(ticket_order__event=event)
+        .values('ticket_type')
+        .annotate(
+            total=Count('id'),
+            checked_in=Count('id', filter=Q(ticket_order__checked_in_at__isnull=False)),
+        )
+        .order_by('-total')
+    )
+    by_type = [
+        {
+            'label': row['ticket_type'] or 'Unspecified',
+            'total': row['total'],
+            'checked_in': row['checked_in'],
+            'percent': round(row['checked_in'] / row['total'] * 100) if row['total'] else 0,
+        }
+        for row in by_type_qs
+        if row['total']
+    ]
+
+    return True, agg['total'] or 0, agg['checked_in'] or 0, by_type
 
 
 def _get_adjacent_event(org, event, direction):
@@ -4371,7 +4394,7 @@ def event_detail(request, event_id):
 
     active_scanner_sessions = ScannerSession.objects.filter(event=event, is_active=True).count()
 
-    show_checkin_chart, checkin_total_tickets, checkin_count = _compute_event_checkin_stats(event)
+    show_checkin_chart, checkin_total_tickets, checkin_count, checkin_by_type = _compute_event_checkin_stats(event)
     checkin_percent = round(checkin_count / checkin_total_tickets * 100) if checkin_total_tickets else 0
 
     prev_event = _get_adjacent_event(org, event, 'prev')
@@ -4429,6 +4452,7 @@ def event_detail(request, event_id):
         'checkin_total_tickets': checkin_total_tickets,
         'checkin_count': checkin_count,
         'checkin_percent': checkin_percent,
+        'checkin_by_type': checkin_by_type,
         'prev_event_id': prev_event.id if prev_event else None,
         'next_event_id': next_event.id if next_event else None,
         'prev_event_name': prev_event.name if prev_event else None,
