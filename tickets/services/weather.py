@@ -44,6 +44,11 @@ DEFAULT_HEADERS = {"User-Agent": USER_AGENT, "Accept": "application/json"}
 # Bumped when the on-disk cache shape or provider routing changes so old
 # `{}` failure entries from previous deploys don't keep suppressing the chip.
 _FORECAST_CACHE_VERSION = 3
+_HOURLY_CACHE_VERSION = 1
+
+# Hours we surface in the modal — every 3 hours covers load-in through tear-down
+# without flooding the table.
+_HOURLY_SUBSAMPLE = (0, 3, 6, 9, 12, 15, 18, 21)
 
 
 class WeatherAPIError(Exception):
@@ -590,3 +595,229 @@ def _build_forecast(target_date, weather_code, temp_high, temp_low,
         "severity": _classify_severity(weather_code, precip_prob, temp_high, temp_low, wind_max),
         "source": source,
     }
+
+
+def _build_hour(time_str, temp, precip_prob, wind, weather_code):
+    """Assemble the unified hour dict used by the hourly modal."""
+    label, icon = _describe_weather_code(weather_code)
+    return {
+        "time": time_str,
+        "temp": int(round(temp)) if temp is not None else None,
+        "precip_prob": int(round(precip_prob or 0)),
+        "wind": int(round(wind or 0)),
+        "weather_code": weather_code,
+        "condition_label": label,
+        "condition_icon": icon,
+    }
+
+
+# --- Hourly forecast (modal) ----------------------------------------------
+
+def get_event_hourly_forecast(event):
+    """Return hourly forecasts for every day the event spans.
+
+    Shape:
+        {
+            "days": [
+                {"date": "2026-06-14", "source": "nws",
+                 "hours": [{time, temp, precip_prob, wind, weather_code,
+                            condition_label, condition_icon}, ...]},
+                ...
+            ],
+            "venue_name": "...",
+        }
+
+    Days past the provider horizons are returned with `hours: []` and a
+    `note` so the modal can show "Hourly forecast unavailable for {date}".
+    Returns `None` if the event has no resolvable venue.
+    """
+    venue = getattr(event, 'venue', None)
+    if venue is None or not venue.city:
+        return None
+
+    start = getattr(event, 'start_date', None)
+    if start is None:
+        return None
+    end = getattr(event, 'end_date', None) or start
+    if end < start:
+        end = start
+
+    coords = _resolve_venue_coords(venue)
+    if coords is None:
+        return None
+    lat, lng = coords
+
+    days = []
+    cursor = start
+    max_days = FORECAST_HORIZON_DAYS  # cap to prevent runaway loops on bad data
+    while cursor <= end and len(days) < max_days:
+        hours = _fetch_hourly_day(lat, lng, cursor)
+        if hours is None:
+            days.append({"date": cursor.isoformat(), "hours": [], "source": None,
+                         "note": f"Hourly forecast unavailable for {cursor.isoformat()}."})
+        else:
+            days.append(hours)
+        cursor += timedelta(days=1)
+
+    return {"days": days, "venue_name": venue.name}
+
+
+def _fetch_hourly_day(lat, lng, target_date):
+    """Cached hourly fetch for one date. Same waterfall order as daily.
+
+    Returns a dict {date, source, hours: [...]} or None on combined failure.
+    """
+    date_str = target_date.isoformat()
+    cache_key = f"weather:hourly:v{_HOURLY_CACHE_VERSION}:{lat:.3f}:{lng:.3f}:{date_str}"
+    cached = django_cache.get(cache_key)
+    if cached is not None:
+        return cached or None  # falsy sentinel = previous failure
+
+    result = _fetch_nws_hourly_day(lat, lng, target_date)
+    if result is None:
+        result = _fetch_open_meteo_hourly_day(lat, lng, target_date)
+    if result is None and (target_date - date.today()).days <= WTTR_HORIZON_DAYS:
+        result = _fetch_wttr_in_hourly_day(lat, lng, target_date)
+
+    if result is None:
+        django_cache.set(cache_key, {}, FORECAST_FAILURE_TTL_SECONDS)
+        return None
+
+    django_cache.set(cache_key, result, FORECAST_TTL_SECONDS)
+    return result
+
+
+def _fetch_nws_hourly_day(lat, lng, target_date):
+    """Hourly periods from NWS for one date, subsampled to every 3 hours."""
+    daily_url = _resolve_nws_gridpoint(lat, lng)
+    if daily_url is None:
+        return None
+    hourly_url = daily_url.rstrip("/") + "/hourly"
+
+    date_str = target_date.isoformat()
+    try:
+        resp = requests.get(hourly_url, headers=DEFAULT_HEADERS, timeout=HTTP_TIMEOUT_SECONDS)
+        resp.raise_for_status()
+        data = resp.json()
+    except (requests.RequestException, ValueError) as exc:
+        logger.warning('NWS hourly fetch failed for (%s, %s) on %s: %s — will try Open-Meteo fallback',
+                       lat, lng, date_str, exc)
+        return None
+
+    periods = ((data.get("properties") or {}).get("periods")) or []
+    matching = [p for p in periods if (p.get("startTime") or "")[:10] == date_str]
+    if not matching:
+        return None
+
+    hours = []
+    for p in matching:
+        hour = int(p["startTime"][11:13])
+        if hour not in _HOURLY_SUBSAMPLE:
+            continue
+        hours.append(_build_hour(
+            time_str=f"{hour:02d}:00",
+            temp=p.get("temperature"),
+            precip_prob=(p.get("probabilityOfPrecipitation") or {}).get("value") or 0,
+            wind=_parse_nws_wind(p.get("windSpeed") or ""),
+            weather_code=_wmo_code_from_nws_short_forecast(p.get("shortForecast") or ""),
+        ))
+
+    if not hours:
+        return None
+    return {"date": date_str, "source": "nws", "hours": hours}
+
+
+def _fetch_open_meteo_hourly_day(lat, lng, target_date):
+    """Hourly arrays from Open-Meteo for one date, subsampled to every 3 hours."""
+    date_str = target_date.isoformat()
+    params = {
+        "latitude": f"{lat:.4f}",
+        "longitude": f"{lng:.4f}",
+        "hourly": "temperature_2m,precipitation_probability,weather_code,wind_speed_10m",
+        "temperature_unit": "fahrenheit",
+        "wind_speed_unit": "mph",
+        "timezone": "auto",
+        "start_date": date_str,
+        "end_date": date_str,
+    }
+    try:
+        resp = requests.get(FORECAST_URL, params=params, headers=DEFAULT_HEADERS, timeout=HTTP_TIMEOUT_SECONDS)
+        resp.raise_for_status()
+        data = resp.json()
+    except (requests.RequestException, ValueError) as exc:
+        logger.warning('Open-Meteo hourly failed for (%s, %s) on %s: %s', lat, lng, date_str, exc)
+        return None
+
+    h = data.get("hourly") or {}
+    times = h.get("time") or []
+    temps = h.get("temperature_2m") or []
+    precips = h.get("precipitation_probability") or []
+    codes = h.get("weather_code") or []
+    winds = h.get("wind_speed_10m") or []
+    if not times:
+        return None
+
+    hours = []
+    for i, t in enumerate(times):
+        try:
+            hour = int(t[11:13])
+        except (TypeError, ValueError):
+            continue
+        if hour not in _HOURLY_SUBSAMPLE:
+            continue
+        hours.append(_build_hour(
+            time_str=f"{hour:02d}:00",
+            temp=temps[i] if i < len(temps) else None,
+            precip_prob=precips[i] if i < len(precips) else 0,
+            wind=winds[i] if i < len(winds) else 0,
+            weather_code=int(codes[i]) if i < len(codes) and codes[i] is not None else 0,
+        ))
+
+    if not hours:
+        return None
+    return {"date": date_str, "source": "open-meteo", "hours": hours}
+
+
+def _fetch_wttr_in_hourly_day(lat, lng, target_date):
+    """Hourly entries from wttr.in's existing 3-hour blocks for one date."""
+    date_str = target_date.isoformat()
+    url = WTTR_URL_TEMPLATE.format(lat=f"{lat:.4f}", lng=f"{lng:.4f}")
+    try:
+        resp = requests.get(url, params={"format": "j1"}, headers=DEFAULT_HEADERS, timeout=HTTP_TIMEOUT_SECONDS)
+        resp.raise_for_status()
+        data = resp.json()
+    except (requests.RequestException, ValueError) as exc:
+        logger.warning('wttr.in hourly failed for (%s, %s) on %s: %s', lat, lng, date_str, exc)
+        return None
+
+    day = next((d for d in (data.get("weather") or []) if d.get("date") == date_str), None)
+    if day is None:
+        return None
+
+    hours = []
+    for entry in day.get("hourly") or []:
+        # wttr.in time is "0", "300", "600", ... — minutes-encoded.
+        raw_time = entry.get("time") or "0"
+        try:
+            hour = int(raw_time) // 100
+        except (TypeError, ValueError):
+            continue
+        if hour not in _HOURLY_SUBSAMPLE:
+            continue
+        try:
+            temp = float(entry.get("tempF") or 0)
+        except (TypeError, ValueError):
+            temp = None
+        desc_list = entry.get("weatherDesc") or []
+        desc = (desc_list[0] or {}).get("value", "") if desc_list else ""
+        hours.append(_build_hour(
+            time_str=f"{hour:02d}:00",
+            temp=temp,
+            precip_prob=int(entry.get("chanceofrain") or 0),
+            wind=float(entry.get("windspeedMiles") or 0),
+            weather_code=_wmo_code_from_wttr_desc(desc),
+        ))
+
+    if not hours:
+        return None
+    return {"date": date_str, "source": "wttr.in", "hours": hours}
