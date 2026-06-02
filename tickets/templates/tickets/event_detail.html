@@ -33,55 +33,192 @@
 .stat-sections { margin-bottom: 24px; }
 .stat-section { margin-bottom: 6px; }
 .stat-section .stats-grid { margin-bottom: 0; }
+
+/* Check-ins hero: donut + scoreboard readout */
+.checkin-hero {
+    display: grid;
+    grid-template-columns: 168px 1fr;
+    gap: 32px;
+    align-items: center;
+    padding: 4px 4px 8px;
+}
+.checkin-hero__donut { position: relative; height: 168px; width: 168px; }
+.checkin-hero__readout { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.checkin-hero__sub {
+    font: 500 10px/1 var(--font-mono);
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--text-tertiary);
+}
+.checkin-hero__big {
+    font: 500 2.75rem/1 var(--font-display);
+    letter-spacing: -0.04em;
+    color: var(--text-primary);
+    font-variant-numeric: tabular-nums;
+    display: inline-flex;
+    align-items: baseline;
+    gap: 2px;
+}
+.checkin-hero__big-unit {
+    font-size: 1.25rem;
+    font-weight: 500;
+    color: var(--text-tertiary);
+    letter-spacing: -0.02em;
+}
+.checkin-hero__count {
+    font: 500 13px var(--font-body);
+    color: var(--text-secondary);
+    font-variant-numeric: tabular-nums;
+    margin-top: 8px;
+}
+
+/* Allocation summary strip */
+.ta-summary {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 24px;
+    padding: 16px 20px;
+    border-bottom: 1px solid var(--border-light);
+}
+.ta-summary__stat { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.ta-summary__stat-label {
+    font: 500 10px/1 var(--font-mono);
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--text-tertiary);
+}
+.ta-summary__stat-value {
+    font: 500 18px/1.1 var(--font-display);
+    color: var(--text-primary);
+    font-variant-numeric: tabular-nums;
+    letter-spacing: -0.01em;
+}
+.ta-summary__stat-value--accent { color: var(--accent); }
+
+/* Shared row: dot + name + bar + count */
 .ta-list { display: flex; flex-direction: column; }
 .ta-row {
     display: grid;
-    grid-template-columns: minmax(0, 1.2fr) minmax(0, 2fr) auto;
+    grid-template-columns: 8px minmax(0, 1.1fr) minmax(0, 2.2fr) auto;
     align-items: center;
-    gap: 14px;
-    padding: 10px 16px;
+    gap: 16px;
+    padding: 14px 20px;
     border-bottom: 1px solid var(--border-light);
     transition: background 0.12s;
 }
 .ta-row:last-child { border-bottom: none; }
-.ta-row:hover { background: var(--bg-inset); }
+.ta-row:hover { background: rgba(255, 255, 255, 0.02); }
+.ta-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--accent);
+    box-shadow: 0 0 8px rgba(0, 255, 135, 0.4);
+}
+.ta-dot--mid { opacity: 0.55; box-shadow: none; }
+.ta-dot--low { opacity: 0.22; box-shadow: none; }
+.ta-dot--pulse { animation: ta-pulse 1.6s ease-in-out infinite; }
+@keyframes ta-pulse {
+    0%, 100% { opacity: 1; transform: scale(1); box-shadow: 0 0 8px rgba(0, 255, 135, 0.4); }
+    50%      { opacity: 0.45; transform: scale(0.7); box-shadow: 0 0 4px rgba(0, 255, 135, 0.2); }
+}
 .ta-name {
-    font-size: 13px;
-    font-weight: 500;
+    font: 500 14px var(--font-body);
     color: var(--text-primary);
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+    min-width: 0;
+}
+.ta-name__text {
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
 }
 .ta-bar-wrap {
-    height: 10px;
+    height: 14px;
     background: var(--border);
     border-radius: 999px;
     overflow: hidden;
+    position: relative;
 }
 .ta-bar-fill {
     height: 100%;
     border-radius: 999px;
     max-width: 100%;
-    background: rgba(25, 135, 84, 0.85);
+    background: var(--accent);
+    transform-origin: left center;
+    animation: ta-bar-in 700ms cubic-bezier(.2, .8, .2, 1) both;
+    box-shadow: 0 0 12px rgba(0, 255, 135, 0.18) inset;
 }
-.ta-bar--unlimited { background: rgba(13, 110, 253, 0.65); }
-.ta-row--soldout .ta-bar-fill { background: var(--success, #6A9E7F); }
+@keyframes ta-bar-in {
+    from { transform: scaleX(0); }
+    to   { transform: scaleX(1); }
+}
+.ta-bar--unlimited {
+    background: repeating-linear-gradient(
+        45deg,
+        var(--accent) 0 6px,
+        rgba(0, 255, 135, 0.12) 6px 14px
+    );
+    opacity: 0.85;
+    box-shadow: none;
+}
+.ta-row--soldout .ta-bar-fill { opacity: 0.55; }
 .ta-count {
-    font-size: 12px;
-    color: var(--text-secondary);
-    white-space: nowrap;
+    font: 500 14px var(--font-body);
+    color: var(--text-primary);
     font-variant-numeric: tabular-nums;
     text-align: right;
-    display: flex;
-    flex-direction: column;
-    align-items: flex-end;
-    gap: 1px;
+    line-height: 1.1;
+    white-space: nowrap;
 }
-.ta-pct {
-    font-size: 10px;
-    color: var(--text-tertiary, rgba(255,255,255,0.3));
-    line-height: 1;
+.ta-count__pct {
+    display: block;
+    font: 500 10px var(--font-mono);
+    letter-spacing: 0.1em;
+    color: var(--text-tertiary);
+    margin-top: 4px;
+}
+
+/* Remaining / sold-out chips */
+.ta-chip {
+    font: 500 10px/1 var(--font-mono);
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    padding: 4px 8px;
+    border-radius: 999px;
+    background: var(--accent-muted);
+    color: var(--accent);
+    border: 1px solid var(--accent-muted-border);
+    white-space: nowrap;
+}
+.ta-chip--soldout {
+    background: transparent;
+    color: var(--text-tertiary);
+    border-color: var(--border);
+}
+.ta-chip--low {
+    background: rgba(255, 196, 0, 0.08);
+    color: #FFC400;
+    border-color: rgba(255, 196, 0, 0.22);
+}
+
+/* Responsive */
+@media (max-width: 600px) {
+    .checkin-hero {
+        grid-template-columns: 1fr;
+        gap: 16px;
+        text-align: center;
+    }
+    .checkin-hero__donut { margin: 0 auto; }
+    .checkin-hero__readout { align-items: center; }
+    .ta-summary { grid-template-columns: 1fr 1fr; gap: 16px; }
+    .ta-row {
+        grid-template-columns: 8px 1fr auto;
+        row-gap: 10px;
+    }
+    .ta-row .ta-bar-wrap { grid-column: 1 / -1; }
 }
 
 /* -- Surveys tab: NPS gauge overlay -- */
@@ -452,34 +589,37 @@ button.detail-meta-weather--severe:focus-visible {
 {% endif %}
 
 {% if show_checkin_chart %}
-<div class="card mb-4">
+<div class="card checkin-card mb-4">
     <div class="card-header">
         <h5 class="mb-0">Check-ins</h5>
     </div>
     <div class="card-body">
-        <div style="position: relative; height: 220px; max-width: 260px; margin: 0 auto;">
-            <canvas id="checkinDonut"
-                    data-checked-in="{{ checkin_count }}"
-                    data-total="{{ checkin_total_tickets }}"></canvas>
-            <div style="position:absolute; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center; pointer-events:none;">
-                <div style="font-size:2rem; font-weight:600; line-height:1;">{{ checkin_percent }}%</div>
-                <div class="text-muted small mt-1">checked in</div>
+        <div class="checkin-hero">
+            <div class="checkin-hero__donut">
+                <canvas id="checkinDonut"
+                        data-checked-in="{{ checkin_count }}"
+                        data-total="{{ checkin_total_tickets }}"></canvas>
+            </div>
+            <div class="checkin-hero__readout">
+                <span class="checkin-hero__sub">Checked in</span>
+                <span class="checkin-hero__big">{{ checkin_percent }}<span class="checkin-hero__big-unit">%</span></span>
+                <span class="checkin-hero__count">
+                    {{ checkin_count|intcomma }} of {{ checkin_total_tickets|intcomma }} ticket{{ checkin_total_tickets|pluralize }}
+                </span>
             </div>
         </div>
-        <div class="text-center text-muted small mt-3">
-            {{ checkin_count|intcomma }} of {{ checkin_total_tickets|intcomma }} ticket{{ checkin_total_tickets|pluralize }}
-        </div>
         {% if checkin_by_type|length > 1 %}
-        <div class="ta-list mt-4">
+        <div class="ta-list" style="margin: 20px -20px -20px; border-top: 1px solid var(--border-light);">
             {% for row in checkin_by_type %}
             <div class="ta-row">
-                <span class="ta-name">{{ row.label }}</span>
+                <span class="ta-dot{% if row.percent < 50 %} ta-dot--low{% elif row.percent < 75 %} ta-dot--mid{% endif %}"></span>
+                <span class="ta-name"><span class="ta-name__text">{{ row.label }}</span></span>
                 <div class="ta-bar-wrap">
                     <div class="ta-bar-fill" style="width:{{ row.percent }}%"></div>
                 </div>
                 <span class="ta-count">
                     {{ row.checked_in|intcomma }} / {{ row.total|intcomma }}
-                    <span class="ta-pct">{{ row.percent }}%</span>
+                    <span class="ta-count__pct">{{ row.percent }}%</span>
                 </span>
             </div>
             {% endfor %}
@@ -495,26 +635,59 @@ button.detail-meta-weather--severe:focus-visible {
         <h5>Ticket Allocation</h5>
     </div>
     <div class="card-body p-0">
+        {% if allocation_alloc_total %}
+        <div class="ta-summary">
+            <div class="ta-summary__stat">
+                <span class="ta-summary__stat-label">Sold</span>
+                <span class="ta-summary__stat-value">{{ allocation_sold_total|intcomma }} <span style="color: var(--text-tertiary); font-weight: 400;">/ {{ allocation_alloc_total|intcomma }}</span></span>
+            </div>
+            <div class="ta-summary__stat">
+                <span class="ta-summary__stat-label">Remaining</span>
+                <span class="ta-summary__stat-value ta-summary__stat-value--accent">{{ allocation_remaining_total|intcomma }}</span>
+            </div>
+            <div class="ta-summary__stat">
+                <span class="ta-summary__stat-label">Capacity</span>
+                <span class="ta-summary__stat-value">{{ allocation_percent_total }}%</span>
+            </div>
+        </div>
+        {% endif %}
         <div class="ta-list">
             {% for chart in ticket_type_allocation_charts %}
             {% if chart.is_unlimited %}
             <div class="ta-row">
-                <span class="ta-name">{{ chart.label }}</span>
+                <span class="ta-dot"></span>
+                <span class="ta-name">
+                    <span class="ta-name__text">{{ chart.label }}</span>
+                    <span class="ta-chip">Unlimited</span>
+                </span>
                 <div class="ta-bar-wrap">
                     <div class="ta-bar-fill ta-bar--unlimited" style="width:100%"></div>
                 </div>
-                <span class="ta-count">{{ chart.sold|intcomma }} sold</span>
+                <span class="ta-count">
+                    {{ chart.sold|intcomma }}
+                    <span class="ta-count__pct">SOLD</span>
+                </span>
             </div>
             {% else %}
             {% widthratio chart.sold chart.allocated 100 as pct %}
             <div class="ta-row{% if chart.remaining == 0 %} ta-row--soldout{% endif %}">
-                <span class="ta-name">{{ chart.label }}</span>
+                <span class="ta-dot{% if chart.remaining == 0 %} ta-dot--pulse{% elif chart.percent_sold >= 90 %} ta-dot--pulse{% elif chart.percent_sold < 50 %} ta-dot--low{% elif chart.percent_sold < 75 %} ta-dot--mid{% endif %}"></span>
+                <span class="ta-name">
+                    <span class="ta-name__text">{{ chart.label }}</span>
+                    {% if chart.remaining == 0 %}
+                        <span class="ta-chip ta-chip--soldout">Sold out</span>
+                    {% elif chart.remaining <= 10 %}
+                        <span class="ta-chip ta-chip--low">{{ chart.remaining|intcomma }} left</span>
+                    {% else %}
+                        <span class="ta-chip">{{ chart.remaining|intcomma }} left</span>
+                    {% endif %}
+                </span>
                 <div class="ta-bar-wrap">
                     <div class="ta-bar-fill" style="width:{{ pct }}%"></div>
                 </div>
                 <span class="ta-count">
                     {{ chart.sold|intcomma }} / {{ chart.allocated|intcomma }}
-                    <span class="ta-pct">{{ pct }}%</span>
+                    <span class="ta-count__pct">{{ pct }}%</span>
                 </span>
             </div>
             {% endif %}
@@ -3475,10 +3648,9 @@ document.addEventListener('DOMContentLoaded', function () {
     var checkedIn = parseInt(canvas.dataset.checkedIn || '0', 10);
     var total = parseInt(canvas.dataset.total || '0', 10);
     var remaining = Math.max(total - checkedIn, 0);
-    var isDark = document.documentElement.getAttribute('data-theme') === 'dark';
-    var emptyColor = isDark ? '#334155' : '#e2e8f0';
-    // When no tickets have been sold, render an all-empty ring so the card
-    // still has a visual.
+    var rootStyle = getComputedStyle(document.documentElement);
+    var accentColor = (rootStyle.getPropertyValue('--accent') || '').trim() || '#00FF87';
+    var trackColor = 'rgba(255, 255, 255, 0.06)';
     var hasData = total > 0;
     new Chart(canvas, {
         type: 'doughnut',
@@ -3487,15 +3659,22 @@ document.addEventListener('DOMContentLoaded', function () {
             datasets: [{
                 data: hasData ? [checkedIn, remaining] : [0, 1],
                 backgroundColor: hasData
-                    ? ['rgb(25,135,84)', emptyColor]
-                    : [emptyColor, emptyColor],
+                    ? [accentColor, trackColor]
+                    : [trackColor, trackColor],
                 borderWidth: 0,
+                borderRadius: hasData ? [6, 0] : 0,
+                spacing: hasData && remaining > 0 ? 2 : 0,
             }]
         },
         options: {
-            cutout: '70%',
+            cutout: '78%',
             responsive: true,
             maintainAspectRatio: false,
+            animation: {
+                animateRotate: true,
+                duration: 900,
+                easing: 'easeOutCubic'
+            },
             plugins: {
                 legend: { display: false },
                 tooltip: {
