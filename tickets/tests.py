@@ -2682,15 +2682,35 @@ class EventCachedStatsTest(TestCase):
 
 
 class HealthCheckTest(TestCase):
-    """Tests for the /health/ endpoint."""
+    """Tests for the /health/ (liveness) endpoint."""
 
     def test_health_check_returns_200(self):
         resp = self.client.get('/health/')
         self.assertEqual(resp.status_code, 200)
-        self.assertIn(b'db', resp.content)
+        self.assertIn(b'status: ok', resp.content)
 
     def test_health_check_json_format(self):
         resp = self.client.get('/health/?fmt=json')
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json(), {'status': 'ok'})
+
+    def test_health_check_does_not_query_db(self):
+        # Liveness must not depend on the DB — a saturated pool must not kill the pod.
+        with self.assertNumQueries(0):
+            resp = self.client.get('/health/')
+        self.assertEqual(resp.status_code, 200)
+
+
+class ReadinessCheckTest(TestCase):
+    """Tests for the /ready/ (readiness) endpoint."""
+
+    def test_readiness_check_returns_200(self):
+        resp = self.client.get('/ready/')
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn(b'db', resp.content)
+
+    def test_readiness_check_json_format(self):
+        resp = self.client.get('/ready/?fmt=json')
         self.assertEqual(resp.status_code, 200)
         data = resp.json()
         self.assertIn('db', data)
