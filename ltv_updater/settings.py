@@ -24,6 +24,10 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # Detect if we're running on Render
 IS_RENDER = os.environ.get('RENDER') == 'true'
 
+# Environment name: 'production', 'staging', or 'development'.
+# Set explicitly in Render dashboard per service; falls back sensibly for local dev.
+DJANGO_ENV = os.environ.get('DJANGO_ENV', 'production' if IS_RENDER else 'development')
+
 # SECURITY WARNING: keep the secret key used in production secret!
 SECRET_KEY = os.environ.get('SECRET_KEY', 'django-insecure-099e&9k@*#s!*=_@u02!id83oe30(ie@bou!$p+9#e%s_*fb7u')
 
@@ -426,7 +430,7 @@ if _SENTRY_DSN:
             CeleryIntegration(),
             RedisIntegration(),
         ],
-        environment='production' if IS_RENDER else 'development',
+        environment=DJANGO_ENV,
         # Capture 100% of transactions for performance monitoring.
         # Lower to 0.2 (20%) if volume gets large and costs become a concern.
         traces_sample_rate=1.0,

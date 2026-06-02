@@ -1,14 +1,21 @@
 services:
+  # ----------------------------------------------------------------------
+  # PRODUCTION — deploys from `main`
+  # ----------------------------------------------------------------------
+
   # Web service
   - type: web
     name: ltv-updater
     runtime: python
     plan: pro
+    branch: main
     buildCommand: pip install -r requirements.txt && python manage.py collectstatic --noinput && python manage.py migrate --noinput && python manage.py create_initial_superuser
     startCommand: gunicorn ltv_updater.asgi:application -k uvicorn.workers.UvicornWorker --workers 4 --timeout 120
     envVars:
       - key: PYTHON_VERSION
         value: 3.12.0
+      - key: DJANGO_ENV
+        value: production
       - key: SECRET_KEY
         generateValue: true
       - key: DEBUG
@@ -64,11 +71,14 @@ services:
     name: ltv-updater-worker
     runtime: python
     plan: standard
+    branch: main
     buildCommand: pip install -r requirements.txt
     startCommand: celery -A ltv_updater worker --loglevel=info --concurrency=2
     envVars:
       - key: PYTHON_VERSION
         value: 3.12.0
+      - key: DJANGO_ENV
+        value: production
       - key: SECRET_KEY
         sync: false
       - key: DATABASE_URL
@@ -90,11 +100,14 @@ services:
     name: ltv-updater-ai-opportunities
     runtime: python
     schedule: "0 9 * * *"
+    branch: main
     buildCommand: pip install -r requirements.txt
     startCommand: python manage.py generate_ai_opportunities
     envVars:
       - key: PYTHON_VERSION
         value: 3.12.0
+      - key: DJANGO_ENV
+        value: production
       - key: SECRET_KEY
         sync: false
       - key: DATABASE_URL
@@ -104,3 +117,102 @@ services:
           name: ltv-updater-redis
           type: redis
           property: connectionString
+
+  # ----------------------------------------------------------------------
+  # STAGING — deploys from `staging` branch
+  #
+  # Manual setup before first deploy (see docs/STAGING.md):
+  #   1. Create a `staging` branch in git and push it.
+  #   2. Create a separate Postgres DB in Render; paste DATABASE_URL here.
+  #   3. Create a test-mode Stripe webhook pointing at staging SITE_URL;
+  #      paste STRIPE_WEBHOOK_SECRET + test STRIPE_SECRET_KEY/PUBLISHABLE_KEY.
+  #   4. Set ALLOWED_HOSTS + SITE_URL to your staging domain.
+  #   5. (Optional) Create a separate S3 bucket for staging media uploads.
+  # ----------------------------------------------------------------------
+
+  - type: web
+    name: ltv-updater-staging
+    runtime: python
+    plan: starter
+    branch: staging
+    buildCommand: pip install -r requirements.txt && python manage.py collectstatic --noinput && python manage.py migrate --noinput && python manage.py create_initial_superuser
+    startCommand: gunicorn ltv_updater.asgi:application -k uvicorn.workers.UvicornWorker --workers 2 --timeout 120
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.0
+      - key: DJANGO_ENV
+        value: staging
+      - key: SECRET_KEY
+        generateValue: true
+      - key: DEBUG
+        value: "false"
+      - key: ALLOWED_HOSTS
+        sync: false
+      - key: AWS_ACCESS_KEY_ID
+        sync: false
+      - key: AWS_SECRET_ACCESS_KEY
+        sync: false
+      - key: AWS_STORAGE_BUCKET_NAME
+        sync: false
+      - key: AWS_S3_REGION_NAME
+        value: us-east-1
+      - key: AWS_S3_CUSTOM_DOMAIN
+        sync: false
+      - key: DATABASE_URL
+        sync: false
+      - key: CELERY_BROKER_URL
+        fromService:
+          name: ltv-updater-redis-staging
+          type: redis
+          property: connectionString
+      - key: SENDGRID_API_KEY
+        sync: false
+      - key: DEFAULT_FROM_EMAIL
+        sync: false
+      - key: SITE_URL
+        sync: false
+      - key: STRIPE_SECRET_KEY
+        sync: false
+      - key: STRIPE_PUBLISHABLE_KEY
+        sync: false
+      - key: STRIPE_WEBHOOK_SECRET
+        sync: false
+      - key: STRIPE_CURRENCY
+        value: usd
+    healthCheckPath: /health/
+
+  - type: redis
+    name: ltv-updater-redis-staging
+    plan: starter
+    maxmemoryPolicy: noeviction
+    ipAllowList:
+      - source: 0.0.0.0/0
+        description: Allow staging web and worker services to connect
+
+  - type: worker
+    name: ltv-updater-worker-staging
+    runtime: python
+    plan: starter
+    branch: staging
+    buildCommand: pip install -r requirements.txt
+    startCommand: celery -A ltv_updater worker --loglevel=info --concurrency=1
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.0
+      - key: DJANGO_ENV
+        value: staging
+      - key: SECRET_KEY
+        sync: false
+      - key: DATABASE_URL
+        sync: false
+      - key: CELERY_BROKER_URL
+        fromService:
+          name: ltv-updater-redis-staging
+          type: redis
+          property: connectionString
+      - key: SENDGRID_API_KEY
+        sync: false
+      - key: DEFAULT_FROM_EMAIL
+        sync: false
+      - key: SITE_URL
+        sync: false
