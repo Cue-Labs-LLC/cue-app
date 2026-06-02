@@ -8,7 +8,7 @@ Cue runs a parallel `-staging` stack on Render so we can validate changes agains
 
 | Component | Production | Staging |
 |---|---|---|
-| Web | `ltv-updater` (pro plan) | `ltv-updater-staging` (starter) |
+| Web | `ltv-updater` (pro plan) | `ltv-updater-staging` (standard) |
 | Worker | `ltv-updater-worker` (standard) | `ltv-updater-worker-staging` (starter) |
 | Redis | `ltv-updater-redis` (standard) | `ltv-updater-redis-staging` (starter) |
 | Cron | `ltv-updater-ai-opportunities` | — (skipped to avoid duplicate OpenAI cost) |
