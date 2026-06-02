@@ -4309,6 +4309,17 @@ def event_detail(request, event_id):
     margin_pct = stats['margin_pct']
     ticket_type_breakdown = stats['ticket_type_breakdown']
     ticket_type_allocation_charts = stats.get('ticket_type_allocation_charts', [])
+    allocation_sold_total = sum(
+        c['sold'] for c in ticket_type_allocation_charts if not c['is_unlimited']
+    )
+    allocation_alloc_total = sum(
+        c['allocated'] for c in ticket_type_allocation_charts if not c['is_unlimited']
+    )
+    allocation_remaining_total = max(allocation_alloc_total - allocation_sold_total, 0)
+    allocation_percent_total = (
+        round(min(allocation_sold_total / allocation_alloc_total * 100, 100))
+        if allocation_alloc_total else 0
+    )
     saleable_ticket_types_list = stats['saleable_ticket_types_list']
     survey_invitations_count = stats['survey_invitations_count']
     survey_responses_count = stats['survey_responses_count']
@@ -4464,6 +4475,10 @@ def event_detail(request, event_id):
         'ticket_type_breakdown_json': ticket_type_breakdown_json,
         'ticket_type_allocation_charts': ticket_type_allocation_charts,
         'ticket_type_allocation_charts_json': ticket_type_allocation_charts_json,
+        'allocation_sold_total': allocation_sold_total,
+        'allocation_alloc_total': allocation_alloc_total,
+        'allocation_remaining_total': allocation_remaining_total,
+        'allocation_percent_total': allocation_percent_total,
         'sales_over_time_json': sales_over_time_json,
         'page_views_over_time_json': page_views_over_time_json,
         'has_page_view_data': bool(stats['page_views_over_time']),
