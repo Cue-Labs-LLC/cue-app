@@ -103,9 +103,12 @@ class Command(BaseCommand):
             help="No-op (exit 0) when DB already has customers/events. Safe for setup scripts.",
         )
 
-    def handle(self, *args, **options):
+    def _guard(self):
         if not settings.DEBUG:
             raise CommandError("Refusing to seed: DEBUG is False.")
+
+    def handle(self, *args, **options):
+        self._guard()
 
         force = options["force"]
         already_populated = Customer.objects.exists() or Event.objects.exists()
