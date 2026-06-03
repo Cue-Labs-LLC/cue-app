@@ -66,6 +66,7 @@
                             {% endwith %}
                         </th>
                         <th class="d-none d-sm-table-cell">Phone</th>
+                        <th class="d-none d-sm-table-cell">SMS Subscriber</th>
                         <th>
                             {% with asc='rfm_segment' desc='-rfm_segment' %}
                             <a href="?sort={% if sort_by == asc %}{{ desc }}{% else %}{{ asc }}{% endif %}&search={{ search_query }}&segment={{ segment_filter }}&tag={{ tag_filter }}">Segment
@@ -118,10 +119,20 @@
                                 <span class="customer-card-segment-empty">No segment</span>
                                 {% endif %}
                                 <span class="customer-card-ltv">${{ customer.lifetime_value|currency }}</span>
+                                {% if customer.sms_opt_in %}
+                                <span class="customer-card-sms text-success"><i class="bi bi-check-circle-fill"></i> SMS</span>
+                                {% endif %}
                             </div>
                         </td>
                         <td>{{ customer.email }}</td>
                         <td class="d-none d-sm-table-cell">{{ customer.phone|default:"-" }}</td>
+                        <td class="d-none d-sm-table-cell">
+                            {% if customer.sms_opt_in %}
+                            <span class="text-success" title="Subscribed{% if customer.sms_opt_in_date %} {{ customer.sms_opt_in_date|date:'M d, Y' }}{% endif %}"><i class="bi bi-check-circle-fill"></i></span>
+                            {% else %}
+                            <span class="text-muted">&mdash;</span>
+                            {% endif %}
+                        </td>
                         <td>
                             {% if customer.rfm_segment %}
                             <span class="badge bg-{{ segment_badge_colors|get_item:customer.rfm_segment }}">{{ customer.rfm_segment }}</span>
