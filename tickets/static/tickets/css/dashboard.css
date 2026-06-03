@@ -1014,6 +1014,113 @@ a:hover {
     outline-offset: 1px;
 }
 
+/* -- Marketing section nav (primary page-level tabs) -- */
+.marketing-head { margin-bottom: 26px; }
+.marketing-head-top h1 { margin: 0; }
+.marketing-head-subtitle {
+    color: var(--text-secondary);
+    margin: 7px 0 0;
+    max-width: 64ch;
+    font-size: 14px;
+}
+.marketing-sectionnav {
+    display: flex;
+    gap: 2px;
+    margin-top: 18px;
+    border-bottom: 1px solid var(--border);
+}
+.marketing-sectionnav-link {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 16px 13px;
+    margin-bottom: -1px;
+    color: var(--text-secondary);
+    text-decoration: none;
+    font-weight: 500;
+    font-size: 14px;
+    letter-spacing: 0.01em;
+    border-bottom: 2px solid transparent;
+    transition: color 0.15s ease, border-color 0.15s ease;
+}
+.marketing-sectionnav-link i { font-size: 15px; opacity: 0.75; transition: opacity 0.15s ease, color 0.15s ease; }
+.marketing-sectionnav-link:hover { color: var(--text-primary); }
+.marketing-sectionnav-link:hover i { opacity: 1; }
+.marketing-sectionnav-link.is-active { color: var(--text-primary); border-bottom-color: var(--accent); }
+.marketing-sectionnav-link.is-active i { opacity: 1; color: var(--accent); }
+.marketing-sectionnav-link:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+    border-radius: 4px 4px 0 0;
+}
+@media (prefers-reduced-motion: no-preference) {
+    .marketing-sectionnav-link { animation: mkt-nav-in 0.4s ease both; }
+    .marketing-sectionnav-link:nth-child(2) { animation-delay: 0.07s; }
+    @keyframes mkt-nav-in {
+        from { opacity: 0; transform: translateY(5px); }
+        to   { opacity: 1; transform: none; }
+    }
+}
+
+/* -- Marketing channel + chart cards (shared: Overview + SMS pages) -- */
+.channel-card {
+    background: var(--bg-surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 1.25rem 1.5rem;
+    border-top-width: 3px;
+    border-top-style: solid;
+    margin-bottom: 1.25rem;
+}
+.channel-card--email { border-top-color: var(--accent); }
+.channel-card--sms   { border-top-color: var(--success); }
+.channel-card--ads   { border-top-color: var(--info); }
+.channel-card-title {
+    font-size: 11px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--text-tertiary);
+    margin-bottom: 0.4rem;
+}
+.channel-card-headline {
+    font-family: 'Outfit', system-ui, sans-serif;
+    font-size: 1.9rem;
+    font-weight: 600;
+    line-height: 1.1;
+}
+.channel-card-meta {
+    color: var(--text-secondary);
+    font-size: 0.88rem;
+    margin-top: 0.65rem;
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+    gap: 6px 16px;
+}
+.channel-card-meta span { display: block; }
+.channel-card-meta b { color: var(--text-primary); font-weight: 600; }
+
+.marketing-grid-two {
+    display: grid;
+    grid-template-columns: 2fr 1fr;
+    gap: 16px;
+    margin-bottom: 1.5rem;
+}
+@media (max-width: 900px) { .marketing-grid-two { grid-template-columns: 1fr; } }
+.chart-card {
+    background: var(--bg-surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 1.1rem 1.25rem;
+    margin-bottom: 1.25rem;
+}
+.chart-card h2 {
+    font-size: 1rem;
+    margin-bottom: 0.8rem;
+    color: var(--text-primary);
+}
+.chart-canvas-wrap { position: relative; height: 280px; }
+
 /* -- Search Bar -------------------------------- */
 .search-bar {
     display: flex;

@@ -1,14 +1,131 @@
 {% extends 'tickets/base.html' %}
+{% load tickets_extras %}
 
 {% block title %}SMS Campaigns{% endblock %}
 
+{% block extra_head %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js" defer></script>
+<style>
+.sms-actions .btn { white-space: nowrap; }
+.sms-section-head {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 12px; margin: 1.75rem 0 0.85rem;
+}
+.sms-section-head h2 { font-size: 1.05rem; margin: 0; }
+</style>
+{% endblock %}
+
 {% block content %}
-<div class="page-header d-flex align-items-center justify-content-between">
-    <h1>SMS Campaigns</h1>
-    <div class="d-flex gap-2">
+{% include 'tickets/marketing/_marketing_nav.html' with marketing_section='sms' subtitle='Compose, schedule, and track native SMS — and top up the tokens that pay for sends.' %}
+
+{# ── Actions + window ────────────────────────────────────────────────── #}
+<div class="d-flex flex-wrap gap-2 align-items-center justify-content-between mb-3">
+    <div class="window-selector">
+        <div class="dropdown">
+            <button class="window-selector-btn dropdown-toggle" type="button" data-bs-toggle="dropdown" aria-expanded="false">
+                <i class="bi bi-calendar3"></i> {{ window_label }}
+            </button>
+            <ul class="dropdown-menu">
+                {% for key, info in window_choices.items %}
+                <li><a class="dropdown-item{% if key == window_key %} active{% endif %}" href="?window={{ key }}">{{ info.label }}</a></li>
+                {% endfor %}
+            </ul>
+        </div>
+    </div>
+    <div class="d-flex gap-2 align-items-center sms-actions">
+        <a href="{% url 'tickets:sms_credits' %}" class="btn btn-outline-secondary btn-sm"><i class="bi bi-coin"></i> {{ balance_cents|tokens }} tokens</a>
         <a href="{% url 'tickets:sms_recipient_list_list' %}" class="btn btn-outline-secondary btn-sm"><i class="bi bi-people"></i> Recipient Lists</a>
         <a href="{% url 'tickets:sms_campaign_create' %}" class="btn btn-primary btn-sm"><i class="bi bi-plus-lg"></i> New Campaign</a>
     </div>
+</div>
+
+{# ── Performance band ────────────────────────────────────────────────── #}
+<div class="stats-grid">
+    <div class="stat-card stat-card--success">
+        <div class="stat-label">Campaigns sent</div>
+        <div class="stat-value">{{ native_sms.campaigns_sent }}</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-label">Messages sent</div>
+        <div class="stat-value">{{ native_sms.messages_sent }}</div>
+    </div>
+    <div class="stat-card stat-card--success">
+        <div class="stat-label">Delivered</div>
+        <div class="stat-value">{{ native_sms.messages_delivered }}</div>
+        <div class="stat-label mt-1" style="margin-bottom:0;">{{ native_sms.delivery_rate|floatformat:2 }} rate</div>
+    </div>
+    <div class="stat-card stat-card--info">
+        <div class="stat-label">Unique clicks</div>
+        <div class="stat-value">{{ native_sms.unique_clicks }}</div>
+        <div class="stat-label mt-1" style="margin-bottom:0;">{{ native_sms.total_clicks }} total</div>
+    </div>
+    <div class="stat-card stat-card--danger">
+        <div class="stat-label">Failed</div>
+        <div class="stat-value">{{ native_sms.messages_failed }}</div>
+    </div>
+    <div class="stat-card stat-card--warning">
+        <div class="stat-label">Unsubscribes</div>
+        <div class="stat-value">{{ native_sms.unsubscribes }}</div>
+    </div>
+</div>
+
+<div class="marketing-grid-two">
+    <div class="chart-card">
+        <h2>Native SMS clicks by month</h2>
+        <div class="chart-canvas-wrap"><canvas id="sms-engagement-chart"></canvas></div>
+    </div>
+    <div class="channel-card channel-card--sms" style="margin-bottom:0;">
+        <div class="channel-card-title">SMS &middot; SlickText (linked)</div>
+        <div class="channel-card-headline">${{ sms_channel.revenue|currency }}</div>
+        <div class="channel-card-meta">
+            <span>Audience <b>{{ sms_channel.audience }}</b></span>
+            <span>Broadcasts <b>{{ sms_channel.campaigns }}</b></span>
+            <span>Clicks <b>{{ sms_channel.clicks }}</b></span>
+            <span>Unsubs <b>{{ sms_channel.unsubscribes }}</b></span>
+            <span>Orders <b>{{ sms_channel.orders }}</b></span>
+        </div>
+    </div>
+</div>
+
+<div class="chart-card">
+    <h2>Top SlickText broadcasts</h2>
+    {% with sms_rows=top_sms_campaigns %}
+    {% if sms_rows %}
+    <div class="table-responsive">
+        <table class="table table-hover align-middle mb-0">
+            <thead>
+                <tr>
+                    <th>Broadcast</th>
+                    <th>Event</th>
+                    <th class="text-end">Audience</th>
+                    <th class="text-end">Clicks</th>
+                    <th class="text-end">Orders</th>
+                    <th class="text-end">Revenue</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for row in sms_rows %}
+                <tr>
+                    <td><span class="fw-semibold">{{ row.name }}</span></td>
+                    <td><a href="{% url 'tickets:event_detail' event_id=row.event_id %}?tab=marketing">{{ row.event_name }}</a></td>
+                    <td class="text-end">{{ row.sends }}</td>
+                    <td class="text-end">{{ row.clicks }}<span class="text-tertiary small d-block">{{ row.click_rate|floatformat:2 }}</span></td>
+                    <td class="text-end">{{ row.orders }}</td>
+                    <td class="text-end">${{ row.revenue|currency }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% else %}
+    <div class="empty-state"><p>No SlickText broadcasts matched in this window.</p></div>
+    {% endif %}
+    {% endwith %}
+</div>
+
+{# ── Campaigns ───────────────────────────────────────────────────────── #}
+<div class="sms-section-head">
+    <h2>Your campaigns</h2>
 </div>
 
 <div class="card">
@@ -44,7 +161,7 @@
                         <td class="text-end">{{ c.audience_size }}</td>
                         <td class="text-end">{{ c.sent_count }}</td>
                         <td class="text-end">{{ c.delivered_count }}</td>
-                        <td class="text-end">{% if c.link_url %}{{ c.unique_clicks }}{% else %}<span class="text-muted">—</span>{% endif %}</td>
+                        <td class="text-end">{% if c.link_url %}{{ c.unique_clicks }}{% else %}<span class="text-muted">&mdash;</span>{% endif %}</td>
                         <td class="text-end">{{ c.unsub_count }}</td>
                         <td class="text-end">{{ c.failed_count }}</td>
                         <td class="text-muted small">
@@ -69,9 +186,43 @@
 
 {% if page_obj.has_other_pages %}
 <nav class="mt-3"><ul class="pagination justify-content-center">
-    {% if page_obj.has_previous %}<li class="page-item"><a class="page-link" href="?page={{ page_obj.previous_page_number }}">Previous</a></li>{% endif %}
+    {% if page_obj.has_previous %}<li class="page-item"><a class="page-link" href="?page={{ page_obj.previous_page_number }}&window={{ window_key }}">Previous</a></li>{% endif %}
     <li class="page-item disabled"><span class="page-link">Page {{ page_obj.number }} of {{ page_obj.paginator.num_pages }}</span></li>
-    {% if page_obj.has_next %}<li class="page-item"><a class="page-link" href="?page={{ page_obj.next_page_number }}">Next</a></li>{% endif %}
+    {% if page_obj.has_next %}<li class="page-item"><a class="page-link" href="?page={{ page_obj.next_page_number }}&window={{ window_key }}">Next</a></li>{% endif %}
 </ul></nav>
 {% endif %}
+{% endblock %}
+
+{% block extra_js %}
+<script type="application/json" id="sms-engagement-data">{{ engagement_chart_json|safe }}</script>
+<script>
+(function () {
+    document.addEventListener('DOMContentLoaded', function () {
+        if (typeof Chart === 'undefined') { return; }
+        var el = document.getElementById('sms-engagement-chart');
+        if (!el) { return; }
+        var isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+        var grid = isDark ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.06)';
+        var tick = isDark ? 'rgba(255,255,255,0.7)' : 'rgba(0,0,0,0.65)';
+        var data = JSON.parse(document.getElementById('sms-engagement-data').textContent);
+        new Chart(el, {
+            type: 'line',
+            data: {
+                labels: data.labels,
+                datasets: [
+                    { label: 'Clicks', data: data.sms_clicks, borderColor: '#33c481', backgroundColor: 'rgba(51,196,129,0.12)', tension: 0.3, fill: true }
+                ]
+            },
+            options: {
+                responsive: true, maintainAspectRatio: false,
+                scales: {
+                    x: { grid: { color: grid }, ticks: { color: tick } },
+                    y: { beginAtZero: true, grid: { color: grid }, ticks: { color: tick } }
+                },
+                plugins: { legend: { labels: { color: tick } } }
+            }
+        });
+    });
+})();
+</script>
 {% endblock %}

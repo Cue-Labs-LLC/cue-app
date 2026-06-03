@@ -21,6 +21,7 @@ from .models import (
     OAuthAccessToken,
     FeatureFlagSettings,
     SMSCampaign, SMSRecipientList, SMSMessageRecipient, PhoneSuppression,
+    SMSCreditTransaction,
 )
 
 
@@ -784,6 +785,7 @@ class OrganizationAdmin(admin.ModelAdmin):
     fieldsets = (
         ('Basic', {'fields': ('name', 'slug', 'rfm_recalc_in_progress')}),
         ('Feature Flags', {'fields': ('waitlist_feature_enabled', 'sms_marketing_enabled')}),
+        ('SMS Credits', {'fields': ('sms_credit_balance_cents',), 'description': 'Prepaid wallet balance in cents. For audited changes prefer creating an SMS credit transaction.'}),
         ('Stripe Connect', {'fields': ('stripe_account_id', 'stripe_onboarding_complete')}),
         ('Meta Ads', {
             'fields': (
@@ -1232,3 +1234,12 @@ class PhoneSuppressionAdmin(admin.ModelAdmin):
     list_filter = ['reason', 'organization']
     search_fields = ['phone']
     readonly_fields = ['id', 'created_at', 'updated_at']
+
+
+@admin.register(SMSCreditTransaction)
+class SMSCreditTransactionAdmin(admin.ModelAdmin):
+    list_display = ['organization', 'kind', 'amount_cents', 'balance_after_cents', 'campaign', 'created_at']
+    list_filter = ['kind', 'organization']
+    search_fields = ['organization__name', 'stripe_checkout_session_id', 'description']
+    readonly_fields = ['id', 'balance_after_cents', 'created_at', 'updated_at']
+    autocomplete_fields = ['organization', 'campaign']

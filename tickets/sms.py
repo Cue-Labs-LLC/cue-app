@@ -50,6 +50,15 @@ def normalize_phone(raw: str) -> str:
     return phone
 
 
+def with_stop_footer(body: str) -> str:
+    """Append the required opt-out footer unless the body already mentions STOP.
+    Shared by the send tasks and the credit cost estimator so all three agree on
+    exactly what text (and therefore how many segments) goes out."""
+    if 'STOP' in (body or '').upper():
+        return body
+    return f"{body}\n\nReply STOP to opt out"
+
+
 def sms_segment_info(body: str):
     """Return (encoding, segment_count) for an SMS body.
 

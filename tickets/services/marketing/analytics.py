@@ -45,6 +45,29 @@ def resolve_window(value):
     return key, info['days'], info['label']
 
 
+def marketing_cache_key(org_id, window):
+    """Versioned cache key for an org's marketing metrics. Shared by the Marketing
+    overview and the SMS Campaigns page so a single version bump invalidates both."""
+    from django.core.cache import cache as django_cache
+    try:
+        version = django_cache.get(f'marketing_overview_ver:{org_id}', 0)
+    except Exception:
+        version = 0
+    return f'marketing_overview:{version}:{org_id}:{window}'
+
+
+def get_cached_marketing_metrics(org, window_days, window_key):
+    """Fetch (or compute + cache for 10 min) the org's marketing metrics dict.
+    Single source of truth reused by every view that needs the analytics slice."""
+    from tickets.cache_utils import safe_cache_get, safe_cache_set
+    key = marketing_cache_key(org.pk, window_key)
+    metrics = safe_cache_get(key)
+    if metrics is None:
+        metrics = MarketingAnalyticsService(org, window_days).calculate()
+        safe_cache_set(key, metrics, timeout=600)
+    return metrics
+
+
 def _safe_div(numer, denom):
     if not denom:
         return Decimal('0.0000')

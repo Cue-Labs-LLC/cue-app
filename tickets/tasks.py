@@ -673,11 +673,7 @@ def match_survey_response_to_event_task(self, response_id):
 #                                                 finalize_sms_campaign_task
 # ---------------------------------------------------------------------------
 
-def _with_stop_footer(body):
-    """Append the required opt-out footer unless the body already mentions STOP."""
-    if 'STOP' in (body or '').upper():
-        return body
-    return f"{body}\n\nReply STOP to opt out"
+from tickets.sms import with_stop_footer as _with_stop_footer  # noqa: E402  (shared helper)
 
 
 @shared_task(bind=True, max_retries=2, default_retry_delay=30)
@@ -753,12 +749,17 @@ def send_sms_chunk_task(self, campaign_id, recipient_ids):
     from django.conf import settings
     from django.urls import reverse, NoReverseMatch
     from django.utils import timezone as tz
-    from tickets.models import SMSCampaign, SMSMessageRecipient
+    from tickets.models import SMSCampaign, SMSMessageRecipient, PhoneSuppression
     from tickets.sms import send_sms
 
-    campaign = SMSCampaign.objects.filter(id=campaign_id).first()
+    campaign = SMSCampaign.objects.filter(id=campaign_id).select_related('organization').first()
     if not campaign or campaign.status == SMSCampaign.Status.CANCELED:
         return
+
+    # The audience is frozen at schedule time, so re-check opt-out HERE: anyone who
+    # replied STOP between scheduling and sending must be skipped (compliance). They
+    # were charged but won't be texted — charged >= sent, never the reverse.
+    suppressed = PhoneSuppression.suppressed_phones(campaign.organization)
 
     # Twilio must reach our URLs (status callback, tracked links) from the public
     # internet, so skip them for localhost/private hosts (dev). Status just won't
@@ -784,6 +785,13 @@ def send_sms_chunk_task(self, campaign_id, recipient_ids):
     for r in SMSMessageRecipient.objects.filter(
         id__in=recipient_ids, status=SMSMessageRecipient.Status.QUEUED
     ):
+        # Opted out since the audience was frozen → do not send.
+        if r.phone in suppressed:
+            r.status = SMSMessageRecipient.Status.FAILED
+            r.error_message = 'opted out before send'
+            r.save(update_fields=['status', 'error_message', 'updated_at'])
+            continue
+
         body = shared_body
         update_fields = ['status', 'twilio_sid', 'sent_at', 'error_code', 'error_message', 'updated_at']
         if track_links:
