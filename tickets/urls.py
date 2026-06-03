@@ -300,6 +300,8 @@ urlpatterns = [
     # Twilio marketing-SMS webhooks
     path('webhooks/twilio/sms-status/', sms_views.twilio_sms_status_webhook, name='twilio_sms_status_webhook'),
     path('webhooks/twilio/sms-inbound/', sms_views.twilio_sms_inbound_webhook, name='twilio_sms_inbound_webhook'),
+    # Short public redirect for tracked marketing-SMS links (kept short for SMS).
+    path('c/<str:token>/', sms_views.sms_click_redirect, name='sms_click_redirect'),
 
     # Stripe Webhooks
     path('webhooks/stripe/', views.stripe_webhook, name='stripe_webhook'),
