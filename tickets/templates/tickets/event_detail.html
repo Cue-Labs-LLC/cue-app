@@ -563,15 +563,42 @@ button.detail-meta-weather--severe:focus-visible {
 {% if show_page_views_chart %}
 <script type="application/json" id="page-views-data">{{ page_views_over_time_json|safe }}</script>
 {% endif %}
+<style>
+.chart-custom-range { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.chart-custom-range .ccr-label {
+    font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em;
+    color: var(--text-tertiary);
+}
+.chart-custom-range input[type="date"] {
+    background: var(--bg-inset); border: 1px solid var(--border);
+    border-radius: var(--radius-sm); color: var(--text-primary);
+    font-size: 12px; padding: 4px 8px; font-family: inherit;
+}
+.chart-custom-range input[type="date"]:focus { outline: none; border-color: var(--accent); }
+</style>
 <div class="card mb-4">
-    <div class="card-header d-flex align-items-center justify-content-between">
-        <h5 class="mb-0" id="salesChartTitle">Tickets</h5>
-        <div class="btn-group btn-group-sm" role="group" aria-label="Chart view">
-            <button type="button" class="btn btn-primary active" id="btnSalesCount">Tickets</button>
-            <button type="button" class="btn btn-outline-secondary" id="btnSalesRevenue">Revenue</button>
-            {% if show_page_views_chart %}
-            <button type="button" class="btn btn-outline-secondary" id="btnPageViews">Views</button>
-            {% endif %}
+    <div class="card-header d-flex align-items-center justify-content-between flex-wrap gap-2">
+        <h5 class="mb-0">Activity</h5>
+        <div class="d-flex flex-wrap align-items-center gap-2">
+            <div class="chart-control-group" role="group" aria-label="Metric">
+                <button type="button" class="chart-control-btn active" id="btnSalesCount">Tickets</button>
+                <button type="button" class="chart-control-btn" id="btnSalesRevenue">Revenue</button>
+                {% if show_page_views_chart %}
+                <button type="button" class="chart-control-btn" id="btnPageViews">Views</button>
+                {% endif %}
+            </div>
+            <div class="chart-control-group" role="group" aria-label="Time window">
+                <button type="button" class="chart-control-btn" data-window="7">7D</button>
+                <button type="button" class="chart-control-btn" data-window="30">30D</button>
+                <button type="button" class="chart-control-btn active" data-window="all">All</button>
+                <button type="button" class="chart-control-btn" data-window="custom">Custom</button>
+            </div>
+        </div>
+        <div class="chart-custom-range w-100 mt-2" id="customRange" style="display:none;">
+            <span class="ccr-label">From</span>
+            <input type="date" id="customStart">
+            <span class="ccr-label">To</span>
+            <input type="date" id="customEnd">
         </div>
     </div>
     <div class="card-body" style="position: relative; height: 260px;">
@@ -3503,52 +3530,24 @@ document.addEventListener('DOMContentLoaded', function() {
 document.addEventListener('DOMContentLoaded', function () {
     var el = document.getElementById('sales-over-time-data');
     if (!el) return;
-    var data = JSON.parse(el.textContent);
-    var isDark = document.documentElement.getAttribute('data-theme') === 'dark';
-    var gridColor = isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)';
-    var labelColor = isDark ? '#adb5bd' : '#6c757d';
-    var labels = data.map(function (d) { return d.date; });
-    var nPoints = data.length;
-    var pointRadius = nPoints > 60 ? 0 : 3;
+    var allSales = JSON.parse(el.textContent);
+    var pvEl = document.getElementById('page-views-data');
+    var allViews = pvEl ? JSON.parse(pvEl.textContent) : [];
 
-    function makeChart(id, values, color, yPrefix) {
-        return new Chart(document.getElementById(id), {
-            type: 'line',
-            data: {
-                labels: labels,
-                datasets: [{
-                    data: values,
-                    borderColor: color,
-                    backgroundColor: color.replace(')', ',0.10)').replace('rgb', 'rgba'),
-                    borderWidth: 2,
-                    pointRadius: pointRadius,
-                    fill: true,
-                    tension: 0.3,
-                }]
-            },
-            options: {
-                responsive: true,
-                maintainAspectRatio: false,
-                plugins: { legend: { display: false } },
-                scales: {
-                    x: { grid: { color: gridColor }, ticks: { color: labelColor, maxTicksLimit: 10 } },
-                    y: {
-                        beginAtZero: true,
-                        grid: { color: gridColor },
-                        ticks: {
-                            color: labelColor,
-                            precision: 0,
-                            callback: function (v) { return yPrefix + v; }
-                        }
-                    }
-                }
-            }
-        });
+    // Pull chart styling from the design-system tokens so it stays cohesive and
+    // correct in both themes (the app themes via [data-view], not data-theme).
+    var rootStyle = getComputedStyle(document.documentElement);
+    function token(name, fallback) {
+        var v = (rootStyle.getPropertyValue(name) || '').trim();
+        return v || fallback;
     }
-
-    var countChart = data.length ? makeChart('salesCountChart', data.map(function (d) { return d.count; }), 'rgb(13,110,253)', '') : null;
-    var revenueChart = null;
-    var viewsChart = null;
+    var gridColor = token('--border-light', 'rgba(255,255,255,0.05)');
+    var labelColor = token('--text-tertiary', '#7A7672');
+    var METRIC_COLORS = {
+        count: token('--accent', '#00FF87'),
+        revenue: token('--success', '#6A9E7F'),
+        views: token('--info', '#7B8FBF')
+    };
 
     var btnCount = document.getElementById('btnSalesCount');
     var btnRevenue = document.getElementById('btnSalesRevenue');
@@ -3557,88 +3556,189 @@ document.addEventListener('DOMContentLoaded', function () {
     var canvasRevenue = document.getElementById('salesRevenueChart');
     var canvasViews = document.getElementById('pageViewsChart');
     var viewsEmptyState = document.getElementById('pageViewsEmptyState');
-    var title = document.getElementById('salesChartTitle');
-    var pvEl = document.getElementById('page-views-data');
-    var viewsData = pvEl ? JSON.parse(pvEl.textContent) : [];
 
-    btnRevenue.addEventListener('click', function () {
-        canvasCount.style.display = 'none';
-        canvasRevenue.style.display = 'block';
-        if (canvasViews) canvasViews.style.display = 'none';
-        if (viewsEmptyState) viewsEmptyState.style.display = 'none';
-        btnRevenue.classList.replace('btn-outline-secondary', 'btn-success');
-        btnRevenue.classList.add('active');
-        btnCount.classList.replace('btn-primary', 'btn-outline-secondary');
-        btnCount.classList.remove('active');
-        if (btnViews) {
-            btnViews.classList.replace('btn-warning', 'btn-outline-secondary');
-            btnViews.classList.remove('active');
-        }
-        title.textContent = 'Revenue';
-        if (!revenueChart && data.length) {
-            revenueChart = makeChart('salesRevenueChart', data.map(function (d) { return d.revenue; }), 'rgb(25,135,84)', '$');
-        }
-    });
+    var customRange = document.getElementById('customRange');
+    var customStart = document.getElementById('customStart');
+    var customEnd = document.getElementById('customEnd');
 
-    btnCount.addEventListener('click', function () {
-        canvasRevenue.style.display = 'none';
-        canvasCount.style.display = 'block';
-        if (canvasViews) canvasViews.style.display = 'none';
-        if (viewsEmptyState) viewsEmptyState.style.display = 'none';
-        btnCount.classList.replace('btn-outline-secondary', 'btn-primary');
-        btnCount.classList.add('active');
-        btnRevenue.classList.replace('btn-success', 'btn-outline-secondary');
-        btnRevenue.classList.remove('active');
-        if (btnViews) {
-            btnViews.classList.replace('btn-warning', 'btn-outline-secondary');
-            btnViews.classList.remove('active');
-        }
-        title.textContent = 'Tickets';
-    });
+    var activeMetric = 'count';   // 'count' | 'revenue' | 'views'
+    var activeWindow = 'all';     // '7' | '30' | 'all' | 'custom'
+    var charts = { count: null, revenue: null, views: null };
 
-    if (btnViews) {
-        btnViews.addEventListener('click', function () {
-            canvasCount.style.display = 'none';
-            canvasRevenue.style.display = 'none';
-            canvasViews.style.display = viewsData.length ? 'block' : 'none';
-            if (viewsEmptyState) viewsEmptyState.style.display = viewsData.length ? 'none' : 'flex';
-            btnCount.classList.replace('btn-primary', 'btn-outline-secondary');
-            btnCount.classList.remove('active');
-            btnRevenue.classList.replace('btn-success', 'btn-outline-secondary');
-            btnRevenue.classList.remove('active');
-            btnViews.classList.replace('btn-outline-secondary', 'btn-warning');
-            btnViews.classList.add('active');
-            title.textContent = 'Views';
-            if (!viewsChart && viewsData.length) {
-                var viewLabels = viewsData.map(function (d) { return d.date; });
-                var viewCounts = viewsData.map(function (d) { return d.views; });
-                viewsChart = new Chart(document.getElementById('pageViewsChart'), {
-                    type: 'line',
-                    data: {
-                        labels: viewLabels,
-                        datasets: [{
-                            data: viewCounts,
-                            borderColor: 'rgb(253,126,20)',
-                            backgroundColor: 'rgba(253,126,20,0.10)',
-                            borderWidth: 2,
-                            pointRadius: viewLabels.length > 60 ? 0 : 3,
-                            fill: true,
-                            tension: 0.3,
-                        }]
-                    },
-                    options: {
-                        responsive: true,
-                        maintainAspectRatio: false,
-                        plugins: { legend: { display: false } },
-                        scales: {
-                            x: { grid: { color: gridColor }, ticks: { color: labelColor, maxTicksLimit: 10 } },
-                            y: { beginAtZero: true, grid: { color: gridColor }, ticks: { color: labelColor, precision: 0 } }
+    var CANVAS_IDS = { count: 'salesCountChart', revenue: 'salesRevenueChart', views: 'pageViewsChart' };
+
+    function filterByWindow(rows) {
+        if (activeWindow === 'all' || !rows.length) return rows;
+        if (activeWindow === 'custom') {
+            // Inclusive [start, end] range; an empty bound leaves that side open.
+            var start = customStart.value;
+            var end = customEnd.value;
+            return rows.filter(function (r) {
+                return (!start || r.date >= start) && (!end || r.date <= end);
+            });
+        }
+        // Anchor "last N days" to the most recent data point, not today: an
+        // event's sales/views period is often entirely in the past or future,
+        // so the window means the last N days of *this event's* activity.
+        var maxIso = rows.reduce(function (mx, r) { return r.date > mx ? r.date : mx; }, rows[0].date);
+        var anchor = new Date(maxIso + 'T00:00:00');
+        anchor.setDate(anchor.getDate() - (parseInt(activeWindow, 10) - 1));
+        var y = anchor.getFullYear();
+        var m = ('0' + (anchor.getMonth() + 1)).slice(-2);
+        var d = ('0' + anchor.getDate()).slice(-2);
+        var cutoffIso = y + '-' + m + '-' + d;
+        return rows.filter(function (r) { return r.date >= cutoffIso; });
+    }
+
+    function dataForMetric(metric) {
+        var rows = filterByWindow(metric === 'views' ? allViews : allSales);
+        var valueKey = metric === 'views' ? 'views' : metric;
+        return {
+            labels: rows.map(function (r) { return r.date; }),
+            values: rows.map(function (r) { return r[valueKey]; })
+        };
+    }
+
+    function styleForMetric(metric) {
+        return { color: METRIC_COLORS[metric] || METRIC_COLORS.count, yPrefix: metric === 'revenue' ? '$' : '' };
+    }
+
+    // Build a soft vertical fade from the line color so the area read is subtle.
+    function gradientFill(ctx, color) {
+        var g = ctx.createLinearGradient(0, 0, 0, 260);
+        g.addColorStop(0, color + '26');   // ~15% at the top
+        g.addColorStop(1, color + '00');   // transparent at the baseline
+        return g;
+    }
+
+    function makeChart(id, labels, values, color, yPrefix) {
+        var canvas = document.getElementById(id);
+        return new Chart(canvas, {
+            type: 'line',
+            data: {
+                labels: labels,
+                datasets: [{
+                    data: values,
+                    borderColor: color,
+                    backgroundColor: gradientFill(canvas.getContext('2d'), color),
+                    borderWidth: 2,
+                    pointRadius: 0,
+                    pointHoverRadius: 4,
+                    pointHoverBackgroundColor: color,
+                    pointHoverBorderColor: color,
+                    fill: true,
+                    tension: 0.35,
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {
+                    legend: { display: false },
+                    tooltip: {
+                        mode: 'index',
+                        intersect: false,
+                        displayColors: false,
+                        callbacks: {
+                            label: function (ctx) { return yPrefix + ctx.formattedValue; }
                         }
                     }
-                });
+                },
+                interaction: { mode: 'index', intersect: false },
+                scales: {
+                    x: { grid: { display: false }, ticks: { color: labelColor, maxTicksLimit: 8 } },
+                    y: {
+                        beginAtZero: true,
+                        grid: { color: gridColor, drawBorder: false },
+                        ticks: {
+                            color: labelColor,
+                            precision: 0,
+                            maxTicksLimit: 5,
+                            callback: function (v) { return yPrefix + v; }
+                        }
+                    }
+                }
             }
         });
     }
+
+    function renderActive() {
+        // Hide every canvas + the views empty state, then reveal the active one.
+        if (canvasCount) canvasCount.style.display = 'none';
+        if (canvasRevenue) canvasRevenue.style.display = 'none';
+        if (canvasViews) canvasViews.style.display = 'none';
+        if (viewsEmptyState) viewsEmptyState.style.display = 'none';
+
+        // Views with no data ever recorded: show the empty state instead of a chart.
+        if (activeMetric === 'views' && !allViews.length) {
+            if (viewsEmptyState) viewsEmptyState.style.display = 'flex';
+            return;
+        }
+
+        var canvasEl = document.getElementById(CANVAS_IDS[activeMetric]);
+        canvasEl.style.display = 'block';
+
+        // Rebuild the chart for the current window (cheap; data is already in memory).
+        if (charts[activeMetric]) charts[activeMetric].destroy();
+        var d = dataForMetric(activeMetric);
+        var s = styleForMetric(activeMetric);
+        charts[activeMetric] = makeChart(CANVAS_IDS[activeMetric], d.labels, d.values, s.color, s.yPrefix);
+    }
+
+    // Metric toggle — quiet segmented control: just move the .active class.
+    var metricBtns = [btnCount, btnRevenue, btnViews].filter(Boolean);
+    function selectMetric(metric, btn) {
+        activeMetric = metric;
+        metricBtns.forEach(function (b) { b.classList.remove('active'); });
+        btn.classList.add('active');
+        renderActive();
+    }
+    btnCount.addEventListener('click', function () { selectMetric('count', btnCount); });
+    btnRevenue.addEventListener('click', function () { selectMetric('revenue', btnRevenue); });
+    if (btnViews) {
+        btnViews.addEventListener('click', function () { selectMetric('views', btnViews); });
+    }
+
+    // Full date span across both datasets — used to seed/bound the custom inputs.
+    function fullDateBounds() {
+        var dates = allSales.concat(allViews).map(function (r) { return r.date; });
+        if (!dates.length) return null;
+        return { min: dates.reduce(function (a, b) { return a < b ? a : b; }),
+                 max: dates.reduce(function (a, b) { return a > b ? a : b; }) };
+    }
+
+    // Time-window toggle — quiet segmented control: just move the .active class.
+    var windowBtns = document.querySelectorAll('[data-window]');
+    windowBtns.forEach(function (btn) {
+        btn.addEventListener('click', function () {
+            activeWindow = btn.dataset.window;
+            windowBtns.forEach(function (b) { b.classList.remove('active'); });
+            btn.classList.add('active');
+
+            if (activeWindow === 'custom') {
+                var b = fullDateBounds();
+                if (b) {
+                    // Constrain the pickers to the data range and default to the full span.
+                    customStart.min = customEnd.min = b.min;
+                    customStart.max = customEnd.max = b.max;
+                    if (!customStart.value) customStart.value = b.min;
+                    if (!customEnd.value) customEnd.value = b.max;
+                }
+                customRange.style.display = 'flex';
+            } else {
+                customRange.style.display = 'none';
+            }
+            renderActive();
+        });
+    });
+
+    [customStart, customEnd].forEach(function (input) {
+        input.addEventListener('change', function () {
+            if (activeWindow === 'custom') renderActive();
+        });
+    });
+
+    renderActive();
 });
 </script>
 <script>
