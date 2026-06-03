@@ -660,3 +660,158 @@ def match_survey_response_to_event_task(self, response_id):
         return
 
     apply_top_candidate(response, result)
+
+
+# ---------------------------------------------------------------------------
+# Native marketing SMS
+#
+#   send_due_sms_campaigns (Render cron, */5)  ──► send_sms_campaign_task
+#                                                       │ atomic claim, snapshot
+#                                                       ▼ chord fan-out
+#                                                 send_sms_chunk_task × N
+#                                                       ▼ chord callback
+#                                                 finalize_sms_campaign_task
+# ---------------------------------------------------------------------------
+
+def _with_stop_footer(body):
+    """Append the required opt-out footer unless the body already mentions STOP."""
+    if 'STOP' in (body or '').upper():
+        return body
+    return f"{body}\n\nReply STOP to opt out"
+
+
+@shared_task(bind=True, max_retries=2, default_retry_delay=30)
+def send_sms_campaign_task(self, campaign_id):
+    """Orchestrate a marketing SMS send: atomically claim the campaign, snapshot
+    recipients (re-resolving the audience and re-checking suppression at send
+    time), then fan out chunked send tasks. Idempotent and recovery-safe — a
+    re-dispatch of a stuck 'sending' campaign reuses existing recipient rows and
+    only sends the ones still queued."""
+    from django.conf import settings
+    from django.utils import timezone as tz
+    from celery import chord
+    from tickets.models import SMSCampaign, SMSMessageRecipient
+
+    # Atomic claim: exactly one worker can move draft/scheduled -> sending.
+    claimed = SMSCampaign.objects.filter(
+        id=campaign_id,
+        status__in=[SMSCampaign.Status.DRAFT, SMSCampaign.Status.SCHEDULED],
+    ).update(status=SMSCampaign.Status.SENDING, started_at=tz.now())
+
+    campaign = SMSCampaign.objects.filter(id=campaign_id).select_related(
+        'organization', 'recipient_list'
+    ).first()
+    if not campaign:
+        return
+    if not claimed and campaign.status != SMSCampaign.Status.SENDING:
+        # Already sent/canceled, or another worker owns it.
+        logger.info("SMS campaign %s not claimable (status=%s); skipping", campaign_id, campaign.status)
+        return
+
+    org = campaign.organization
+
+    # Snapshot recipients once. Recovery re-dispatch finds rows already present.
+    if not SMSMessageRecipient.objects.filter(campaign=campaign).exists():
+        cap = getattr(settings, 'SMS_CAMPAIGN_MAX_RECIPIENTS', 5000)
+        recipients = campaign.recipient_list.materialize(org, cap=cap)
+        SMSMessageRecipient.objects.bulk_create(
+            [
+                SMSMessageRecipient(
+                    campaign=campaign, customer_id=r['customer_id'], phone=r['phone']
+                )
+                for r in recipients
+            ],
+            batch_size=500,
+        )
+        SMSCampaign.objects.filter(id=campaign.id).update(
+            audience_size=SMSMessageRecipient.objects.filter(campaign=campaign).count()
+        )
+
+    queued_ids = [
+        str(i) for i in SMSMessageRecipient.objects.filter(
+            campaign=campaign, status=SMSMessageRecipient.Status.QUEUED
+        ).values_list('id', flat=True)
+    ]
+    if not queued_ids:
+        _finalize_sms_campaign(campaign.id)
+        return
+
+    chunk_size = 100
+    header = [
+        send_sms_chunk_task.s(str(campaign.id), queued_ids[i:i + chunk_size])
+        for i in range(0, len(queued_ids), chunk_size)
+    ]
+    chord(header)(finalize_sms_campaign_task.s(str(campaign.id)))
+
+
+@shared_task(bind=True, max_retries=2, default_retry_delay=30, rate_limit='3/s')
+def send_sms_chunk_task(self, campaign_id, recipient_ids):
+    """Send one chunk of a campaign. Per-recipient failure is isolated — one bad
+    number never aborts the chunk. Global throughput is metered by the Twilio
+    Messaging Service queue plus this task's rate_limit."""
+    from django.conf import settings
+    from django.urls import reverse, NoReverseMatch
+    from django.utils import timezone as tz
+    from tickets.models import SMSCampaign, SMSMessageRecipient
+    from tickets.sms import send_sms
+
+    campaign = SMSCampaign.objects.filter(id=campaign_id).first()
+    if not campaign or campaign.status == SMSCampaign.Status.CANCELED:
+        return
+
+    # Twilio must reach the status-callback URL from the public internet, so skip
+    # it for localhost/private hosts (dev). Delivery status just won't auto-update
+    # locally; use a tunnel (ngrok) + public SITE_URL to exercise it.
+    site_url = getattr(settings, 'SITE_URL', '').rstrip('/')
+    status_cb = None
+    if site_url and '://' in site_url:
+        host = site_url.split('://', 1)[1].split('/', 1)[0].split(':')[0].lower()
+        is_public = host not in ('localhost', '127.0.0.1', '0.0.0.0') and not host.endswith('.local')
+        if is_public:
+            try:
+                status_cb = f"{site_url}{reverse('tickets:twilio_sms_status_webhook')}"
+            except NoReverseMatch:
+                status_cb = None
+
+    body = _with_stop_footer(campaign.body)
+
+    for r in SMSMessageRecipient.objects.filter(
+        id__in=recipient_ids, status=SMSMessageRecipient.Status.QUEUED
+    ):
+        ok, sid = send_sms(r.phone, body, status_callback=status_cb)
+        if ok:
+            r.status = SMSMessageRecipient.Status.SENT
+            r.twilio_sid = sid or ''
+            r.sent_at = tz.now()
+            r.error_code = ''
+            r.error_message = ''
+        else:
+            r.status = SMSMessageRecipient.Status.FAILED
+            r.error_message = 'send failed'
+        r.save(update_fields=[
+            'status', 'twilio_sid', 'sent_at', 'error_code', 'error_message', 'updated_at',
+        ])
+
+
+@shared_task
+def finalize_sms_campaign_task(results, campaign_id):
+    """Chord callback: mark the campaign sent once no recipients remain queued."""
+    _finalize_sms_campaign(campaign_id)
+
+
+def _finalize_sms_campaign(campaign_id):
+    from django.utils import timezone as tz
+    from tickets.models import SMSCampaign, SMSMessageRecipient
+
+    campaign = SMSCampaign.objects.filter(id=campaign_id).first()
+    if not campaign or campaign.status == SMSCampaign.Status.CANCELED:
+        return
+    if SMSMessageRecipient.objects.filter(
+        campaign=campaign, status=SMSMessageRecipient.Status.QUEUED
+    ).exists():
+        # Still work outstanding (e.g. a chunk errored); leave 'sending' for the
+        # cron recovery pass to re-dispatch.
+        return
+    SMSCampaign.objects.filter(id=campaign.id).update(
+        status=SMSCampaign.Status.SENT, sent_at=tz.now()
+    )

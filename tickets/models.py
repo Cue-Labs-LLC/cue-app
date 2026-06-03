@@ -84,6 +84,14 @@ class Organization(BaseModel):
     name = models.CharField(max_length=200)
     slug = models.SlugField(max_length=100, unique=True)
     rfm_recalc_in_progress = models.BooleanField(default=False)
+    sms_marketing_enabled = models.BooleanField(
+        default=False,
+        help_text=(
+            'Gates the native marketing SMS feature for this org. Off by default; '
+            'enable per-org for pilot rollout. FeatureFlagSettings is a global '
+            'singleton and cannot scope to individual orgs, so the SMS gate lives here.'
+        ),
+    )
     stripe_account_id = models.CharField(
         max_length=255,
         blank=True,
@@ -1352,6 +1360,272 @@ class EventSMSCampaign(AuditBaseModel):
             self.api_data_changed_at
             and (not self.confirmed_at or self.api_data_changed_at > self.confirmed_at)
         )
+
+
+# ---------------------------------------------------------------------------
+# Native marketing SMS (send texts via Twilio)
+#
+# Distinct from EventSMSCampaign above, which only *tracks* external SlickText
+# metrics post-hoc. These models *send* texts natively.
+#
+#   SMSRecipientList ──resolve()──► candidate Customers (criteria + manual)
+#         │                          ∩ {phone set, sms_opt_in} ─ dedupe(phone) ─ suppressed
+#         ▼
+#   SMSCampaign  draft ─► scheduled ─► sending ─► sent
+#         │                  └─► canceled        └─► failed
+#         ▼
+#   SMSMessageRecipient (per-recipient delivery; SOURCE OF TRUTH for counts)
+#
+# Opt-out is keyed by phone number (PhoneSuppression), NOT by Customer row,
+# because one phone can map to many Customer rows across orgs and Twilio
+# enforces opt-out per number.
+# ---------------------------------------------------------------------------
+
+
+class PhoneSuppression(BaseModel):
+    """A phone number that must not receive marketing SMS (opt-out / suppression).
+
+    Keyed by E.164 phone, not Customer, because the same number can appear on
+    many Customer rows. `organization=None` means a GLOBAL suppression (mirrored
+    from Twilio's STOP/OptOutType — the shared sender enforces it for everyone);
+    a set `organization` means a per-org unsubscribe (forward-compatible with
+    per-org sender numbers).
+    """
+    class Reason(models.TextChoices):
+        TWILIO_STOP = 'twilio_stop', 'Twilio STOP'
+        MANUAL = 'manual', 'Manual'
+        BOUNCE = 'bounce', 'Bounce'
+
+    phone = models.CharField(max_length=20, db_index=True)
+    organization = models.ForeignKey(
+        Organization,
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name='phone_suppressions',
+        help_text='Null = global suppression (all orgs). Set = per-org unsubscribe.',
+    )
+    reason = models.CharField(max_length=20, choices=Reason.choices, default=Reason.TWILIO_STOP)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=['phone', 'organization']),
+        ]
+        constraints = [
+            models.UniqueConstraint(
+                fields=['phone', 'organization'],
+                name='uniq_phone_suppression_phone_org',
+            ),
+        ]
+
+    def __str__(self):
+        scope = 'global' if self.organization_id is None else f'org={self.organization_id}'
+        return f"{self.phone} suppressed ({scope})"
+
+    @classmethod
+    def suppressed_phones(cls, organization):
+        """Return the set of phones suppressed for this org (org-specific OR global)."""
+        from django.db.models import Q
+        return set(
+            cls.objects.filter(Q(organization=organization) | Q(organization__isnull=True))
+            .values_list('phone', flat=True)
+        )
+
+    @classmethod
+    def is_suppressed(cls, phone, organization):
+        from django.db.models import Q
+        return cls.objects.filter(
+            Q(organization=organization) | Q(organization__isnull=True),
+            phone=phone,
+        ).exists()
+
+
+class SMSRecipientList(AuditBaseModel):
+    """A saved, reusable marketing-SMS audience.
+
+    `filter_criteria` is a JSON spec (segment / behavior / tags / min_ltv /
+    last_order_after) plus manual include/exclude customer UUIDs. resolve()
+    materializes it to opted-in, contactable, non-suppressed, deduped recipients
+    at send time (a "living segment").
+    """
+    organization = models.ForeignKey(
+        Organization,
+        on_delete=models.CASCADE,
+        related_name='sms_recipient_lists',
+    )
+    name = models.CharField(max_length=200)
+    filter_criteria = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text="e.g. {'rfm_segment': ['Champions'], 'tag_ids': [...], 'min_ltv': '100.00'}",
+    )
+    manual_include_ids = models.JSONField(default=list, blank=True)
+    manual_exclude_ids = models.JSONField(default=list, blank=True)
+
+    class Meta:
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['organization', '-created_at']),
+        ]
+
+    def __str__(self):
+        return self.name
+
+    def candidate_customers(self, organization=None):
+        """Org-scoped candidate Customer queryset: criteria ∪ manual includes − excludes,
+        restricted to opted-in customers with a phone. Dedupe + suppression happen in
+        materialize(). Fail-safe: empty criteria AND no manual includes → none."""
+        from tickets.services.customer_filters import filter_customers
+        org = organization or self.organization
+        criteria = self.filter_criteria or {}
+        include_ids = self.manual_include_ids or []
+        exclude_ids = self.manual_exclude_ids or []
+
+        if not criteria and not include_ids:
+            return Customer.objects.none()
+
+        if criteria:
+            qs = filter_customers(org, criteria)
+        else:
+            qs = Customer.objects.none()
+
+        if include_ids:
+            qs = qs | Customer.objects.filter(organization=org, id__in=include_ids)
+
+        qs = qs.filter(organization=org, sms_opt_in=True).exclude(phone='')
+        if exclude_ids:
+            qs = qs.exclude(id__in=exclude_ids)
+        return qs.distinct()
+
+    def materialize(self, organization=None, cap=None):
+        """Return deduped, non-suppressed recipients as a list of
+        {'customer_id', 'phone'} dicts (E.164). Dedupe + suppression are done in
+        Python so they work identically on SQLite (dev) and Postgres (prod)."""
+        from tickets.sms import normalize_phone
+        org = organization or self.organization
+        suppressed = PhoneSuppression.suppressed_phones(org)
+        seen = set()
+        out = []
+        for customer in self.candidate_customers(org).only('id', 'phone'):
+            phone = normalize_phone(customer.phone)
+            if not phone or phone in seen or phone in suppressed:
+                continue
+            seen.add(phone)
+            out.append({'customer_id': str(customer.id), 'phone': phone})
+            if cap and len(out) >= cap:
+                break
+        return out
+
+
+class SMSCampaign(AuditBaseModel):
+    """A native marketing-SMS broadcast.
+
+    State machine (see status field):
+        draft ──► scheduled ──► sending ──► sent
+                      │            └──────► failed
+                      └──► canceled
+    Per-recipient delivery lives in SMSMessageRecipient, which is the source of
+    truth for sent/delivered/failed counts (derived, never incremented here, so
+    retried Twilio callbacks can't cause drift).
+    """
+    class Status(models.TextChoices):
+        DRAFT = 'draft', 'Draft'
+        SCHEDULED = 'scheduled', 'Scheduled'
+        SENDING = 'sending', 'Sending'
+        SENT = 'sent', 'Sent'
+        FAILED = 'failed', 'Failed'
+        CANCELED = 'canceled', 'Canceled'
+
+    organization = models.ForeignKey(
+        Organization,
+        on_delete=models.CASCADE,
+        related_name='sms_campaigns',
+    )
+    event = models.ForeignKey(
+        Event,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='native_sms_campaigns',
+    )
+    recipient_list = models.ForeignKey(
+        SMSRecipientList,
+        on_delete=models.PROTECT,
+        related_name='campaigns',
+    )
+    name = models.CharField(max_length=200)
+    body = models.CharField(max_length=1600)
+    link_url = models.URLField(max_length=500, blank=True, default='')
+    status = models.CharField(
+        max_length=12,
+        choices=Status.choices,
+        default=Status.DRAFT,
+        db_index=True,
+    )
+    scheduled_at = models.DateTimeField(null=True, blank=True)
+    started_at = models.DateTimeField(null=True, blank=True)
+    sent_at = models.DateTimeField(null=True, blank=True)
+    audience_size = models.PositiveIntegerField(default=0)
+
+    class Meta:
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['organization', '-created_at']),
+            models.Index(fields=['organization', 'status']),
+            models.Index(fields=['status', 'scheduled_at']),
+        ]
+
+    def __str__(self):
+        return f"{self.name} ({self.status})"
+
+
+class SMSMessageRecipient(BaseModel):
+    """One outbound marketing text. Source of truth for delivery state.
+
+    Twilio posts multiple/retried status callbacks per message, so transitions
+    here must be idempotent and campaign counts are derived from these rows
+    (never incremented), preventing double-counting.
+    """
+    class Status(models.TextChoices):
+        QUEUED = 'queued', 'Queued'
+        SENT = 'sent', 'Sent'
+        DELIVERED = 'delivered', 'Delivered'
+        UNDELIVERED = 'undelivered', 'Undelivered'
+        FAILED = 'failed', 'Failed'
+
+    campaign = models.ForeignKey(
+        SMSCampaign,
+        on_delete=models.CASCADE,
+        related_name='recipients',
+    )
+    customer = models.ForeignKey(
+        Customer,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='sms_message_recipients',
+    )
+    phone = models.CharField(max_length=20)
+    status = models.CharField(
+        max_length=12,
+        choices=Status.choices,
+        default=Status.QUEUED,
+        db_index=True,
+    )
+    twilio_sid = models.CharField(max_length=64, blank=True, default='', db_index=True)
+    error_code = models.CharField(max_length=20, blank=True, default='')
+    error_message = models.CharField(max_length=255, blank=True, default='')
+    sent_at = models.DateTimeField(null=True, blank=True)
+    delivered_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=['campaign', 'status']),
+            models.Index(fields=['twilio_sid']),
+        ]
+
+    def __str__(self):
+        return f"{self.phone} [{self.status}]"
 
 
 class IncomeSource(BaseModel):

@@ -6,21 +6,18 @@ from django.contrib.auth.forms import AuthenticationForm
 from crispy_forms.helper import FormHelper
 from crispy_forms.layout import Layout, Row, Column, Submit, Field
 from django.forms import inlineformset_factory
-from .models import Organization, CSVFormat, Venue, Event, EventTalent, EventExpense, CustomField, CustomFieldOption, IncomeSource, EventIncome, SaleableTicketType, SaleableTicketTypeTier, UserProfile, PromoCode, OrganizerWaitlist
+from django.utils import timezone
+from .models import Organization, CSVFormat, Venue, Event, EventTalent, EventExpense, CustomField, CustomFieldOption, IncomeSource, EventIncome, SaleableTicketType, SaleableTicketTypeTier, UserProfile, PromoCode, OrganizerWaitlist, CustomerTag, SMSCampaign, SMSRecipientList
 
 
 def _normalize_phone(raw: str) -> str:
-    """Normalize a phone number string to E.164 format (+1XXXXXXXXXX for US numbers)."""
-    phone = raw.strip()
-    if not phone.startswith('+'):
-        digits = _re.sub(r'\D', '', phone)
-        if len(digits) == 10:
-            phone = '+1' + digits
-        elif len(digits) == 11 and digits[0] == '1':
-            phone = '+' + digits
-        else:
-            phone = '+' + digits  # let regex validation catch invalid formats
-    return phone
+    """Normalize a phone number string to E.164 format (+1XXXXXXXXXX for US numbers).
+
+    Delegates to the canonical implementation in ``tickets.sms`` so suppression /
+    dedupe keys for marketing SMS match what auth and checkout store.
+    """
+    from .sms import normalize_phone
+    return normalize_phone(raw)
 
 
 class OrganizationForm(forms.ModelForm):
@@ -1623,3 +1620,138 @@ CustomFieldOptionFormSet = inlineformset_factory(
         'order': forms.NumberInput(attrs={'class': 'form-control', 'min': 0, 'style': 'width:80px'}),
     },
 )
+
+
+# ---------------------------------------------------------------------------
+# Native marketing SMS
+# ---------------------------------------------------------------------------
+
+SMS_SEGMENT_CHOICES = [
+    (s, s) for s in
+    ['VIP', 'Loyal', 'Big Spender', 'New', 'Promising', 'At-Risk', 'Lapsed', 'Dormant']
+]
+
+
+class SMSRecipientListForm(forms.ModelForm):
+    """Build/edit a saved SMS audience. Discrete fields are assembled into the
+    model's ``filter_criteria`` JSON on save; manual include/exclude come from
+    hidden fields populated by the customer picker."""
+
+    rfm_segment = forms.MultipleChoiceField(
+        choices=SMS_SEGMENT_CHOICES, required=False,
+        widget=forms.CheckboxSelectMultiple,
+    )
+    tag_ids = forms.ModelMultipleChoiceField(
+        queryset=CustomerTag.objects.none(), required=False,
+        widget=forms.CheckboxSelectMultiple,
+    )
+    min_ltv = forms.DecimalField(
+        required=False, min_value=0, max_digits=10, decimal_places=2,
+    )
+    last_order_after = forms.DateField(
+        required=False, widget=forms.DateInput(attrs={'type': 'date'}),
+    )
+    manual_include_ids = forms.CharField(required=False, widget=forms.HiddenInput)
+    manual_exclude_ids = forms.CharField(required=False, widget=forms.HiddenInput)
+
+    class Meta:
+        model = SMSRecipientList
+        fields = ['name']
+
+    def __init__(self, *args, organization=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.organization = organization
+        if organization is not None:
+            self.fields['tag_ids'].queryset = CustomerTag.objects.filter(organization=organization)
+        if self.instance and self.instance.pk:
+            crit = self.instance.filter_criteria or {}
+            self.fields['rfm_segment'].initial = crit.get('rfm_segment', [])
+            self.fields['min_ltv'].initial = crit.get('min_ltv')
+            self.fields['last_order_after'].initial = crit.get('last_order_after')
+            self.fields['tag_ids'].initial = crit.get('tag_ids', [])
+            self.fields['manual_include_ids'].initial = ','.join(self.instance.manual_include_ids or [])
+            self.fields['manual_exclude_ids'].initial = ','.join(self.instance.manual_exclude_ids or [])
+        self.helper = FormHelper()
+        self.helper.form_tag = False
+
+    @staticmethod
+    def _parse_ids(raw):
+        return [s.strip() for s in (raw or '').split(',') if s.strip()]
+
+    def clean(self):
+        cleaned = super().clean()
+        criteria = {}
+        if cleaned.get('rfm_segment'):
+            criteria['rfm_segment'] = list(cleaned['rfm_segment'])
+        if cleaned.get('tag_ids'):
+            criteria['tag_ids'] = [str(t.id) for t in cleaned['tag_ids']]
+        if cleaned.get('min_ltv') is not None:
+            criteria['min_ltv'] = str(cleaned['min_ltv'])
+        if cleaned.get('last_order_after'):
+            criteria['last_order_after'] = cleaned['last_order_after'].isoformat()
+        includes = self._parse_ids(cleaned.get('manual_include_ids'))
+        excludes = self._parse_ids(cleaned.get('manual_exclude_ids'))
+        # Fail-safe mirror of the model: an audience needs at least one filter or
+        # one manually selected recipient, otherwise it would mean "everyone".
+        if not criteria and not includes:
+            raise forms.ValidationError(
+                'Add at least one filter or manually select recipients.'
+            )
+        self._criteria = criteria
+        self._includes = includes
+        self._excludes = excludes
+        return cleaned
+
+    def save(self, commit=True):
+        obj = super().save(commit=False)
+        if self.organization is not None:
+            obj.organization = self.organization
+        obj.filter_criteria = self._criteria
+        obj.manual_include_ids = self._includes
+        obj.manual_exclude_ids = self._excludes
+        if commit:
+            obj.save()
+        return obj
+
+
+class SMSCampaignForm(forms.ModelForm):
+    """Compose a campaign. The recipient list is scoped to the org; scheduling is
+    validated to be in the future."""
+
+    SEND_NOW = 'now'
+    SEND_SCHEDULE = 'schedule'
+
+    send_mode = forms.ChoiceField(
+        choices=[(SEND_NOW, 'Send now'), (SEND_SCHEDULE, 'Schedule for later')],
+        initial=SEND_NOW, widget=forms.RadioSelect,
+    )
+    scheduled_at = forms.DateTimeField(
+        required=False, widget=forms.DateTimeInput(attrs={'type': 'datetime-local'}),
+    )
+
+    class Meta:
+        model = SMSCampaign
+        fields = ['name', 'recipient_list', 'body', 'link_url']
+        widgets = {
+            'body': forms.Textarea(attrs={'rows': 4, 'maxlength': 1600}),
+        }
+
+    def __init__(self, *args, organization=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.organization = organization
+        if organization is not None:
+            self.fields['recipient_list'].queryset = SMSRecipientList.objects.filter(
+                organization=organization, deleted_at__isnull=True,
+            )
+        self.helper = FormHelper()
+        self.helper.form_tag = False
+
+    def clean(self):
+        cleaned = super().clean()
+        if cleaned.get('send_mode') == self.SEND_SCHEDULE:
+            scheduled = cleaned.get('scheduled_at')
+            if not scheduled:
+                self.add_error('scheduled_at', 'Pick a date and time to schedule.')
+            elif scheduled <= timezone.now():
+                self.add_error('scheduled_at', 'Scheduled time must be in the future.')
+        return cleaned

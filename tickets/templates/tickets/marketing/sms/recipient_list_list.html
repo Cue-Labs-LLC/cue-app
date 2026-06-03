@@ -1,0 +1,36 @@
+{% extends 'tickets/base.html' %}
+
+{% block title %}SMS Recipient Lists{% endblock %}
+
+{% block content %}
+<div class="page-header d-flex align-items-center justify-content-between">
+    <h1>Recipient Lists</h1>
+    <div class="d-flex gap-2">
+        <a href="{% url 'tickets:sms_campaign_list' %}" class="btn btn-outline-secondary btn-sm"><i class="bi bi-chat-dots"></i> Campaigns</a>
+        <a href="{% url 'tickets:sms_recipient_list_create' %}" class="btn btn-primary btn-sm"><i class="bi bi-plus-lg"></i> New List</a>
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-body p-0">
+        {% if lists %}
+        <div class="table-responsive">
+            <table class="table table-hover mb-0 align-middle">
+                <thead><tr><th>Name</th><th>Created</th></tr></thead>
+                <tbody>
+                    {% for l in lists %}
+                    <tr><td><a href="{% url 'tickets:sms_recipient_list_detail' pk=l.id %}">{{ l.name }}</a></td><td class="text-muted small">{{ l.created_at|date:"M d, Y" }}</td></tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% else %}
+        <div class="empty-state">
+            <i class="bi bi-people"></i>
+            <p>No recipient lists yet. Build one from segments, filters, or hand-picked customers.</p>
+            <a href="{% url 'tickets:sms_recipient_list_create' %}" class="btn btn-primary btn-sm">Create a recipient list</a>
+        </div>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}

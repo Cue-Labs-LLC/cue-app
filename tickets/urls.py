@@ -2,6 +2,7 @@ from django.urls import path, re_path
 from django.views.generic import RedirectView
 from . import views
 from . import oauth_views
+from . import sms_views
 
 app_name = 'tickets'
 
@@ -202,6 +203,17 @@ urlpatterns = [
     path('marketing/', views.marketing_overview, name='marketing_overview'),
     path('marketing/analyze/', views.marketing_ai_analyze, name='marketing_ai_analyze'),
 
+    # Marketing SMS — campaigns
+    path('marketing/sms/', sms_views.sms_campaign_list, name='sms_campaign_list'),
+    path('marketing/sms/new/', sms_views.sms_campaign_create, name='sms_campaign_create'),
+    path('marketing/sms/<uuid:pk>/', sms_views.sms_campaign_detail, name='sms_campaign_detail'),
+    path('marketing/sms/<uuid:pk>/cancel/', sms_views.sms_campaign_cancel, name='sms_campaign_cancel'),
+    # Marketing SMS — recipient lists
+    path('marketing/sms/lists/', sms_views.sms_recipient_list_list, name='sms_recipient_list_list'),
+    path('marketing/sms/lists/new/', sms_views.sms_recipient_list_create, name='sms_recipient_list_create'),
+    path('marketing/sms/lists/preview/', sms_views.sms_recipient_list_preview, name='sms_recipient_list_preview'),
+    path('marketing/sms/lists/<uuid:pk>/', sms_views.sms_recipient_list_detail, name='sms_recipient_list_detail'),
+
     # Forecast Tool
     path('forecast/', views.forecast_tool, name='forecast_tool'),
     path('forecast/api/', views.forecast_api, name='forecast_api'),
@@ -284,6 +296,10 @@ urlpatterns = [
     path('track/<str:token>/', views.track_link_redirect, name='track_link_redirect'),
     path('events/<uuid:event_id>/tracking-links/create/', views.tracking_link_create, name='tracking_link_create'),
     path('events/<uuid:event_id>/tracking-links/<uuid:link_id>/delete/', views.tracking_link_delete, name='tracking_link_delete'),
+
+    # Twilio marketing-SMS webhooks
+    path('webhooks/twilio/sms-status/', sms_views.twilio_sms_status_webhook, name='twilio_sms_status_webhook'),
+    path('webhooks/twilio/sms-inbound/', sms_views.twilio_sms_inbound_webhook, name='twilio_sms_inbound_webhook'),
 
     # Stripe Webhooks
     path('webhooks/stripe/', views.stripe_webhook, name='stripe_webhook'),

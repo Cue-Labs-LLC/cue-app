@@ -325,6 +325,24 @@
             </div>
         </div>
 
+        {% if org_sms_marketing_enabled %}
+        <div class="channel-card channel-card--sms">
+            <div class="d-flex justify-content-between align-items-start flex-wrap gap-2">
+                <div>
+                    <div class="channel-card-title">SMS &middot; Native sends</div>
+                    <div class="channel-card-meta mt-1">
+                        <span>Campaigns <b>{{ metrics.native_sms.campaigns_sent }}</b></span>
+                        <span>Sent <b>{{ metrics.native_sms.messages_sent }}</b></span>
+                        <span>Delivered <b>{{ metrics.native_sms.messages_delivered }}</b> <span class="text-tertiary small">({{ metrics.native_sms.delivery_rate|floatformat:2 }})</span></span>
+                        <span>Failed <b>{{ metrics.native_sms.messages_failed }}</b></span>
+                        <span>Opt-outs <b>{{ metrics.native_sms.opt_outs }}</b></span>
+                    </div>
+                </div>
+                <a href="{% url 'tickets:sms_campaign_list' %}" class="btn btn-sm btn-primary">Manage campaigns</a>
+            </div>
+        </div>
+        {% endif %}
+
         <div class="chart-card">
             <h2>SMS clicks by month</h2>
             <div class="chart-canvas-wrap"><canvas id="sms-engagement-chart"></canvas></div>

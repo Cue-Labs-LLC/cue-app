@@ -1,0 +1,86 @@
+{% extends 'tickets/base.html' %}
+{% load crispy_forms_tags %}
+
+{% block title %}New SMS Campaign{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <a href="{% url 'tickets:sms_campaign_list' %}" class="text-muted small"><i class="bi bi-arrow-left"></i> Back to campaigns</a>
+    <h1>New SMS Campaign</h1>
+</div>
+
+<form method="post" novalidate>
+    {% csrf_token %}
+    <div class="card mb-3">
+        <div class="card-body">
+            {{ form.non_field_errors }}
+            <div class="mb-3">
+                <label class="form-label" for="{{ form.name.id_for_label }}">Campaign name</label>
+                {{ form.name }}
+                {{ form.name.errors }}
+            </div>
+            <div class="mb-3">
+                <label class="form-label" for="{{ form.recipient_list.id_for_label }}">Recipient list</label>
+                {{ form.recipient_list }}
+                {{ form.recipient_list.errors }}
+                <div class="form-text">Don't have one? <a href="{% url 'tickets:sms_recipient_list_create' %}">Create a recipient list</a>.</div>
+            </div>
+            <div class="mb-2">
+                <label class="form-label" for="{{ form.body.id_for_label }}">Message</label>
+                {{ form.body }}
+                {{ form.body.errors }}
+                <div class="form-text">
+                    <span id="sms-counter">{{ preview_segments }} segment(s) &middot; {{ preview_encoding }}</span>
+                    &middot; "Reply STOP to opt out" is appended automatically.
+                </div>
+            </div>
+            <div class="mb-3">
+                <label class="form-label" for="{{ form.link_url.id_for_label }}">Link (optional)</label>
+                {{ form.link_url }}
+                {{ form.link_url.errors }}
+            </div>
+        </div>
+    </div>
+
+    <div class="card mb-3">
+        <div class="card-body">
+            <div class="mb-2"><strong>When to send</strong></div>
+            <div class="d-flex flex-column gap-2">
+                {% for radio in form.send_mode %}
+                <div class="form-check">{{ radio.tag }} <label class="form-check-label" for="{{ radio.id_for_label }}">{{ radio.choice_label }}</label></div>
+                {% endfor %}
+            </div>
+            <div class="mt-2" id="schedule-at-wrap">
+                <label class="form-label" for="{{ form.scheduled_at.id_for_label }}">Scheduled time</label>
+                {{ form.scheduled_at }}
+                {{ form.scheduled_at.errors }}
+            </div>
+        </div>
+    </div>
+
+    {% if confirm_count is not None and not exceeds_cap and confirm_count > 0 %}
+    <div class="alert alert-info d-flex align-items-center justify-content-between flex-wrap gap-2">
+        <span>This campaign will send to <strong>{{ confirm_count }}</strong> recipient{{ confirm_count|pluralize }}. Confirm to proceed.</span>
+        <button type="submit" name="confirm" value="1" class="btn btn-primary"><i class="bi bi-send"></i> Confirm &amp; send</button>
+    </div>
+    {% else %}
+    <button type="submit" class="btn btn-primary">Review recipients</button>
+    {% endif %}
+</form>
+
+{% block extra_js %}
+<script>
+    // Reveal the scheduled-time field only when "Schedule for later" is selected.
+    function syncScheduleVisibility() {
+        var checked = document.querySelector('input[name="send_mode"]:checked');
+        var wrap = document.getElementById('schedule-at-wrap');
+        if (!wrap) return;
+        wrap.style.display = (checked && checked.value === 'schedule') ? '' : 'none';
+    }
+    document.querySelectorAll('input[name="send_mode"]').forEach(function (el) {
+        el.addEventListener('change', syncScheduleVisibility);
+    });
+    syncScheduleVisibility();
+</script>
+{% endblock %}
+{% endblock %}
