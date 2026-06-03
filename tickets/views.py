@@ -1399,21 +1399,28 @@ def public_org_profile(request, slug):
     from .models import TICKETING_TYPE_DIRECT
     org = get_object_or_404(Organization, slug=slug)
     today = django_tz.now().date()
-    events = (
+    base_events = (
         Event.objects.filter(
             organization=org,
-            status=EVENT_STATUS_LIVE,
+            status__in=[EVENT_STATUS_LIVE, EVENT_STATUS_ENDED],
             ticketing_type=TICKETING_TYPE_DIRECT,
             deleted_at__isnull=True,
         )
-        .filter(
-            Q(end_date__isnull=False, end_date__gte=today) |
-            Q(end_date__isnull=True, start_date__gte=today)
-        )
         .select_related('venue')
-        .order_by('start_date', 'start_time', 'name')
     )
-    return render(request, 'tickets/public_org_profile.html', {'org': org, 'events': events})
+    upcoming_events = base_events.filter(
+        Q(end_date__isnull=False, end_date__gte=today) |
+        Q(end_date__isnull=True, start_date__gte=today)
+    ).order_by('start_date', 'start_time', 'name')
+    past_events = base_events.filter(
+        Q(end_date__isnull=False, end_date__lt=today) |
+        Q(end_date__isnull=True, start_date__lt=today)
+    ).order_by('-start_date', '-start_time', 'name')
+    return render(request, 'tickets/public_org_profile.html', {
+        'org': org,
+        'upcoming_events': upcoming_events,
+        'past_events': past_events,
+    })
 
 
 @login_required

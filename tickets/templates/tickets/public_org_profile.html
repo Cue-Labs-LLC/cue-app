@@ -90,6 +90,11 @@
         gap: 12px;
     }
 
+    .events-grid + .section-label { margin-top: 36px; }
+
+    .event-card--past { opacity: 0.72; transition: opacity 0.15s; }
+    .event-card--past:hover { opacity: 1; }
+
     @media (max-width: 540px) {
         .org-header { gap: 14px; padding: 24px 0 22px; }
         .org-avatar, .org-avatar--initial { width: 56px; height: 56px; font-size: 1.2rem; }
@@ -120,13 +125,13 @@
     </div>
 </div>
 
-{% if events %}
+{% if upcoming_events %}
 <div class="section-label">Upcoming Events</div>
 <div class="events-grid">
-    {% for event in events %}
+    {% for event in upcoming_events %}
     <div class="event-card" style="animation: fadeUp 0.35s {{ forloop.counter0 }}00ms ease both;">
         {% if event.flyer %}
-        <a href="{% if event.ticketing_type == 'direct' %}{% url 'tickets:public_event_buy' event.public_id %}{% elif event.ticket_link %}{{ event.ticket_link }}{% else %}#{% endif %}" class="event-card-flyer">
+        <a href="{% url 'tickets:public_event_buy' event.public_id %}" class="event-card-flyer">
             <img src="{{ event.flyer.url }}" alt="{{ event.name }}" loading="lazy">
         </a>
         {% else %}
@@ -140,20 +145,43 @@
                 <div><i class="bi bi-calendar3"></i> {{ event.start_date|date:"M j, Y" }}{% if event.start_time %} &middot; {{ event.start_time|time:"g:i A" }}{% endif %}</div>
                 <div><i class="bi bi-geo-alt"></i> {{ event.venue.name }}, {{ event.venue.city }}</div>
             </div>
-            {% if event.ticketing_type == 'direct' %}
             <a href="{% url 'tickets:public_event_buy' event.public_id %}" class="event-card-cta">Get tickets</a>
-            {% elif event.ticket_link %}
-            <a href="{{ event.ticket_link }}" class="event-card-cta" target="_blank" rel="noopener noreferrer">Get tickets</a>
-            {% endif %}
         </div>
     </div>
     {% endfor %}
 </div>
+{% endif %}
 
-{% else %}
+{% if past_events %}
+<div class="section-label">Past Events</div>
+<div class="events-grid">
+    {% for event in past_events %}
+    <a href="{% url 'tickets:public_event_buy' event.public_id %}" class="event-card event-card--past" style="animation: fadeUp 0.35s {{ forloop.counter0 }}00ms ease both;">
+        {% if event.flyer %}
+        <div class="event-card-flyer">
+            <img src="{{ event.flyer.url }}" alt="{{ event.name }}" loading="lazy">
+        </div>
+        {% else %}
+        <div class="event-card-flyer">
+            <i class="bi bi-music-note-beamed event-card-flyer-placeholder"></i>
+        </div>
+        {% endif %}
+        <div class="event-card-body">
+            <div class="event-card-name">{{ event.name }}</div>
+            <div class="event-card-meta">
+                <div><i class="bi bi-calendar3"></i> {{ event.start_date|date:"M j, Y" }}{% if event.start_time %} &middot; {{ event.start_time|time:"g:i A" }}{% endif %}</div>
+                <div><i class="bi bi-geo-alt"></i> {{ event.venue.name }}, {{ event.venue.city }}</div>
+            </div>
+        </div>
+    </a>
+    {% endfor %}
+</div>
+{% endif %}
+
+{% if not upcoming_events and not past_events %}
 <div class="empty-state">
     <i class="bi bi-calendar-x empty-state-icon"></i>
-    <div class="empty-state-text">No upcoming events</div>
+    <div class="empty-state-text">No events yet</div>
     <div class="empty-state-sub">Check back soon.</div>
 </div>
 {% endif %}
