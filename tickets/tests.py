@@ -8702,3 +8702,86 @@ class EventWeatherHourlyEndpointTest(TestCase):
         url = reverse('tickets:event_weather_hourly', args=[self.event.id])
         resp = self.client.get(url)
         self.assertIn(resp.status_code, (302, 401, 403))
+
+
+class PublicOrgProfileEventsTests(TestCase):
+    """The public org profile lists direct-ticketing events, splitting upcoming vs past."""
+
+    def setUp(self):
+        from .models import (
+            TICKETING_TYPE_DIRECT, TICKETING_TYPE_EXTERNAL,
+            EVENT_STATUS_LIVE, EVENT_STATUS_ENDED, EVENT_STATUS_DRAFT, EVENT_STATUS_CANCELLED,
+        )
+        self.TICKETING_TYPE_DIRECT = TICKETING_TYPE_DIRECT
+        self.TICKETING_TYPE_EXTERNAL = TICKETING_TYPE_EXTERNAL
+        self.EVENT_STATUS_LIVE = EVENT_STATUS_LIVE
+        self.EVENT_STATUS_ENDED = EVENT_STATUS_ENDED
+        self.EVENT_STATUS_DRAFT = EVENT_STATUS_DRAFT
+        self.EVENT_STATUS_CANCELLED = EVENT_STATUS_CANCELLED
+
+        self.client = Client()
+        self.org = Organization.objects.create(name='Profile Org', slug='profile-org')
+        self.venue = Venue.objects.create(
+            organization=self.org, name='The Echo', city='Los Angeles'
+        )
+        self.today = timezone.now().date()
+        self.url = reverse('tickets:public_org_profile', args=[self.org.slug])
+
+    def _event(self, name, days_offset, ticketing_type=None, status=None, end_offset=None):
+        return Event.objects.create(
+            organization=self.org,
+            name=name,
+            venue=self.venue,
+            start_date=self.today + timedelta(days=days_offset),
+            end_date=(self.today + timedelta(days=end_offset)) if end_offset is not None else None,
+            ticketing_type=ticketing_type or self.TICKETING_TYPE_DIRECT,
+            status=status or self.EVENT_STATUS_LIVE,
+        )
+
+    def test_upcoming_and_past_split(self):
+        upcoming = self._event('Upcoming Live', 10)
+        past_live = self._event('Past Live', -10)
+        past_ended = self._event('Past Ended', -20, status=self.EVENT_STATUS_ENDED)
+
+        resp = self.client.get(self.url)
+        self.assertEqual(resp.status_code, 200)
+        upcoming_ids = {e.id for e in resp.context['upcoming_events']}
+        past_ids = {e.id for e in resp.context['past_events']}
+
+        self.assertEqual(upcoming_ids, {upcoming.id})
+        self.assertEqual(past_ids, {past_live.id, past_ended.id})
+
+    def test_excludes_external_draft_and_cancelled(self):
+        direct_upcoming = self._event('Direct Upcoming', 5)
+        direct_past = self._event('Direct Past', -5)
+        external_past = self._event(
+            'External Past', -5, ticketing_type=self.TICKETING_TYPE_EXTERNAL
+        )
+        draft_upcoming = self._event('Draft Upcoming', 5, status=self.EVENT_STATUS_DRAFT)
+        cancelled_past = self._event('Cancelled Past', -5, status=self.EVENT_STATUS_CANCELLED)
+
+        resp = self.client.get(self.url)
+        all_ids = (
+            {e.id for e in resp.context['upcoming_events']}
+            | {e.id for e in resp.context['past_events']}
+        )
+        self.assertEqual(all_ids, {direct_upcoming.id, direct_past.id})
+        self.assertNotIn(external_past.id, all_ids)
+        self.assertNotIn(draft_upcoming.id, all_ids)
+        self.assertNotIn(cancelled_past.id, all_ids)
+
+    def test_multiday_event_past_uses_end_date(self):
+        # Started in the past but still running (ends in the future) -> upcoming.
+        ongoing = self._event('Ongoing Festival', -2, end_offset=3)
+        # Multi-day event fully in the past -> past.
+        finished = self._event('Finished Festival', -10, end_offset=-5)
+
+        resp = self.client.get(self.url)
+        self.assertIn(ongoing.id, {e.id for e in resp.context['upcoming_events']})
+        self.assertIn(finished.id, {e.id for e in resp.context['past_events']})
+
+    def test_empty_state_when_no_events(self):
+        resp = self.client.get(self.url)
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(list(resp.context['upcoming_events']), [])
+        self.assertEqual(list(resp.context['past_events']), [])
