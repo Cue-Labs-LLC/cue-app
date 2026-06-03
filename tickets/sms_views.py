@@ -11,7 +11,8 @@ from django.conf import settings
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
 from django.core.paginator import Paginator
-from django.db.models import Count, Q
+from django.db.models import Count, Q, F, Sum
+from django.db.models.functions import Coalesce, Now
 from django.http import JsonResponse, HttpResponse, Http404
 from django.shortcuts import render, redirect, get_object_or_404
 from django.utils import timezone
@@ -22,7 +23,9 @@ from .models import (
     SMSCampaign, SMSRecipientList, SMSMessageRecipient, PhoneSuppression,
 )
 from .forms import SMSCampaignForm, SMSRecipientListForm
-from .sms import normalize_phone, validate_twilio_request, sms_segment_info, send_sms
+from .sms import (
+    normalize_phone, validate_twilio_request, sms_segment_info, send_sms, extract_first_url,
+)
 from .tasks import send_sms_campaign_task
 from .utils import get_organization, require_org, require_host
 
@@ -48,10 +51,15 @@ _FAILED = ['failed', 'undelivered']
 
 
 def _annotate_counts(qs):
+    # All annotations are over the same `recipients` join, so combining Count
+    # filters with a Sum here does not cause join inflation.
     return qs.annotate(
         sent_count=Count('recipients', filter=Q(recipients__status__in=_HANDED_OFF)),
         delivered_count=Count('recipients', filter=Q(recipients__status='delivered')),
         failed_count=Count('recipients', filter=Q(recipients__status__in=_FAILED)),
+        unique_clicks=Count('recipients', filter=Q(recipients__first_clicked_at__isnull=False)),
+        total_clicks=Coalesce(Sum('recipients__click_count'), 0),
+        unsub_count=Count('recipients', filter=Q(recipients__opted_out_at__isnull=False)),
     )
 
 
@@ -206,6 +214,8 @@ def sms_campaign_create(request):
                 campaign = form.save(commit=False)
                 campaign.organization = org
                 campaign.created_by = request.user
+                # Auto-derive the click-tracking target from the first URL in the body.
+                campaign.link_url = extract_first_url(campaign.body)
                 if scheduled:
                     campaign.status = SMSCampaign.Status.SCHEDULED
                     campaign.scheduled_at = form.cleaned_data['scheduled_at']
@@ -330,8 +340,37 @@ def twilio_sms_inbound_webhook(request):
             phone=from_phone, organization=None,
             defaults={'reason': PhoneSuppression.Reason.TWILIO_STOP},
         )
+        # Attribute the opt-out to the campaign that most recently texted this phone.
+        recent = (
+            SMSMessageRecipient.objects
+            .filter(phone=from_phone, status__in=['sent', 'delivered', 'undelivered'],
+                    opted_out_at__isnull=True)
+            .order_by('-sent_at', '-created_at')
+            .first()
+        )
+        if recent:
+            recent.opted_out_at = timezone.now()
+            recent.save(update_fields=['opted_out_at', 'updated_at'])
     elif from_phone and opt_out_type == 'START':
         PhoneSuppression.objects.filter(phone=from_phone, organization__isnull=True).delete()
     # HELP / normal inbound → no-op (Twilio replies). Empty TwiML.
     return HttpResponse('<?xml version="1.0" encoding="UTF-8"?><Response></Response>',
                         content_type='text/xml')
+
+
+def sms_click_redirect(request, token):
+    """Public: record a click on a tracked SMS link, then 302 to the target.
+
+    Mirrors track_link_redirect — no auth (recipients click from their phones).
+    Counts are atomic (F()/Coalesce) so concurrent taps don't lose updates."""
+    recipient = get_object_or_404(
+        SMSMessageRecipient.objects.select_related('campaign'), click_token=token,
+    )
+    target = recipient.campaign.link_url
+    if not target:
+        raise Http404('No link target for this campaign.')
+    SMSMessageRecipient.objects.filter(pk=recipient.pk).update(
+        click_count=F('click_count') + 1,
+        first_clicked_at=Coalesce(F('first_clicked_at'), Now()),
+    )
+    return redirect(target)

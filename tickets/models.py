@@ -1617,6 +1617,17 @@ class SMSMessageRecipient(BaseModel):
     error_message = models.CharField(max_length=255, blank=True, default='')
     sent_at = models.DateTimeField(null=True, blank=True)
     delivered_at = models.DateTimeField(null=True, blank=True)
+    # Link-click tracking. click_token is set per recipient at send time only when
+    # the campaign has a tracked link (NULL otherwise). Counts are derived at the
+    # campaign level from these rows: total = Sum(click_count), unique = rows with
+    # first_clicked_at set.
+    click_token = models.CharField(
+        max_length=24, null=True, blank=True, unique=True, db_index=True,
+    )
+    click_count = models.PositiveIntegerField(default=0)
+    first_clicked_at = models.DateTimeField(null=True, blank=True)
+    # Set when an inbound STOP is attributed to this recipient's campaign.
+    opted_out_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         indexes = [

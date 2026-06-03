@@ -749,6 +749,7 @@ def send_sms_chunk_task(self, campaign_id, recipient_ids):
     """Send one chunk of a campaign. Per-recipient failure is isolated — one bad
     number never aborts the chunk. Global throughput is metered by the Twilio
     Messaging Service queue plus this task's rate_limit."""
+    import secrets
     from django.conf import settings
     from django.urls import reverse, NoReverseMatch
     from django.utils import timezone as tz
@@ -759,25 +760,39 @@ def send_sms_chunk_task(self, campaign_id, recipient_ids):
     if not campaign or campaign.status == SMSCampaign.Status.CANCELED:
         return
 
-    # Twilio must reach the status-callback URL from the public internet, so skip
-    # it for localhost/private hosts (dev). Delivery status just won't auto-update
-    # locally; use a tunnel (ngrok) + public SITE_URL to exercise it.
+    # Twilio must reach our URLs (status callback, tracked links) from the public
+    # internet, so skip them for localhost/private hosts (dev). Status just won't
+    # auto-update and links stay untracked locally; use a tunnel + public SITE_URL.
     site_url = getattr(settings, 'SITE_URL', '').rstrip('/')
-    status_cb = None
+    is_public = False
     if site_url and '://' in site_url:
         host = site_url.split('://', 1)[1].split('/', 1)[0].split(':')[0].lower()
         is_public = host not in ('localhost', '127.0.0.1', '0.0.0.0') and not host.endswith('.local')
-        if is_public:
-            try:
-                status_cb = f"{site_url}{reverse('tickets:twilio_sms_status_webhook')}"
-            except NoReverseMatch:
-                status_cb = None
 
-    body = _with_stop_footer(campaign.body)
+    status_cb = None
+    if is_public:
+        try:
+            status_cb = f"{site_url}{reverse('tickets:twilio_sms_status_webhook')}"
+        except NoReverseMatch:
+            status_cb = None
+
+    # Rewrite the campaign's link to a per-recipient tracked link when we have a
+    # public URL to point at. Untracked sends reuse one shared body.
+    track_links = bool(campaign.link_url) and is_public
+    shared_body = _with_stop_footer(campaign.body)
 
     for r in SMSMessageRecipient.objects.filter(
         id__in=recipient_ids, status=SMSMessageRecipient.Status.QUEUED
     ):
+        body = shared_body
+        update_fields = ['status', 'twilio_sid', 'sent_at', 'error_code', 'error_message', 'updated_at']
+        if track_links:
+            token = secrets.token_urlsafe(8)
+            tracked = f"{site_url}{reverse('tickets:sms_click_redirect', kwargs={'token': token})}"
+            body = _with_stop_footer(campaign.body.replace(campaign.link_url, tracked, 1))
+            r.click_token = token
+            update_fields.append('click_token')
+
         ok, sid = send_sms(r.phone, body, status_callback=status_cb)
         if ok:
             r.status = SMSMessageRecipient.Status.SENT
@@ -788,9 +803,7 @@ def send_sms_chunk_task(self, campaign_id, recipient_ids):
         else:
             r.status = SMSMessageRecipient.Status.FAILED
             r.error_message = 'send failed'
-        r.save(update_fields=[
-            'status', 'twilio_sid', 'sent_at', 'error_code', 'error_message', 'updated_at',
-        ])
+        r.save(update_fields=update_fields)
 
 
 @shared_task

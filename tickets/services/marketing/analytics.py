@@ -118,8 +118,13 @@ class MarketingAnalyticsService:
             sent=Count('id', filter=Q(status__in=['sent', 'delivered', 'undelivered'])),
             delivered=Count('id', filter=Q(status='delivered')),
             failed=Count('id', filter=Q(status__in=['failed', 'undelivered'])),
+            unique_clicks=Count('id', filter=Q(first_clicked_at__isnull=False)),
+            total_clicks=Coalesce(Sum('click_count'), 0),
+            unsubscribes=Count('id', filter=Q(opted_out_at__isnull=False)),
         )
 
+        # Global opt-outs (Twilio STOP) in the window — superset of campaign-attributed
+        # unsubscribes, since a STOP can arrive without matching a recent send.
         opt_outs = PhoneSuppression.objects.filter(
             Q(organization=self.organization) | Q(organization__isnull=True),
         )
@@ -128,12 +133,17 @@ class MarketingAnalyticsService:
 
         sent = recipient_stats['sent'] or 0
         delivered = recipient_stats['delivered'] or 0
+        unique_clicks = recipient_stats['unique_clicks'] or 0
         return {
             'campaigns_sent': campaigns.count(),
             'messages_sent': sent,
             'messages_delivered': delivered,
             'messages_failed': recipient_stats['failed'] or 0,
             'delivery_rate': _safe_div(delivered, sent),
+            'total_clicks': recipient_stats['total_clicks'] or 0,
+            'unique_clicks': unique_clicks,
+            'click_rate': _safe_div(unique_clicks, delivered),
+            'unsubscribes': recipient_stats['unsubscribes'] or 0,
             'opt_outs': opt_outs.count(),
         }
 

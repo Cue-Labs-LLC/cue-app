@@ -1731,7 +1731,9 @@ class SMSCampaignForm(forms.ModelForm):
 
     class Meta:
         model = SMSCampaign
-        fields = ['name', 'recipient_list', 'body', 'link_url']
+        # link_url is auto-derived from the first URL in the body at save time
+        # (inline link-click tracking), so it's not a user-editable field.
+        fields = ['name', 'recipient_list', 'body']
         widgets = {
             'body': forms.Textarea(attrs={'rows': 4, 'maxlength': 1600}),
         }

@@ -32,12 +32,8 @@
                 <div class="form-text">
                     <span id="sms-counter">{{ preview_segments }} segment(s) &middot; {{ preview_encoding }}</span>
                     &middot; "Reply STOP to opt out" is appended automatically.
+                    &middot; Any <code>https://</code> link in your message is tracked automatically (clicks are reported per campaign).
                 </div>
-            </div>
-            <div class="mb-3">
-                <label class="form-label" for="{{ form.link_url.id_for_label }}">Link (optional)</label>
-                {{ form.link_url }}
-                {{ form.link_url.errors }}
             </div>
         </div>
     </div>

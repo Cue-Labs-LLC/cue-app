@@ -392,3 +392,185 @@ class SMSAnalyticsTests(TestCase):
         self.assertEqual(summary['messages_delivered'], 1)
         self.assertEqual(summary['messages_failed'], 1)
         self.assertEqual(summary['opt_outs'], 1)
+
+
+@override_settings(E2E_TEST_MODE=True)
+class SMSLinkExtractionTests(TestCase):
+    def test_extract_first_url(self):
+        from .sms import extract_first_url
+        self.assertEqual(extract_first_url('Sale at https://shop.co/x today!'), 'https://shop.co/x')
+        self.assertEqual(extract_first_url('Two https://a.co/1 and http://b.co/2'), 'https://a.co/1')
+        self.assertEqual(extract_first_url('no link here, visit shop.co'), '')
+        self.assertEqual(extract_first_url('end https://a.co/p.'), 'https://a.co/p')
+
+
+@override_settings(E2E_TEST_MODE=True, SMS_CAMPAIGN_MAX_RECIPIENTS=5000)
+class SMSLinkRewriteTests(TestCase):
+    def setUp(self):
+        self.org = Organization.objects.create(name='Org', slug='org-lr', sms_marketing_enabled=True)
+        for i in range(2):
+            make_customer(self.org, f'c{i}@x.com', f'+1310555700{i}')
+        self.rl = SMSRecipientList.objects.create(
+            organization=self.org, name='All', filter_criteria={'min_ltv': '0'},
+        )
+
+    def _campaign(self, body, link_url):
+        return SMSCampaign.objects.create(
+            organization=self.org, recipient_list=self.rl, name='C', body=body,
+            link_url=link_url, status=SMSCampaign.Status.DRAFT,
+        )
+
+    @override_settings(SITE_URL='https://app.example.com')
+    def test_public_site_assigns_token_and_rewrites_body(self):
+        from .tasks import send_sms_campaign_task
+        c = self._campaign('Sale at https://shop.co/x now', 'https://shop.co/x')
+        sent_bodies = []
+
+        def capture(to, body, status_callback=None):
+            sent_bodies.append(body)
+            return True, 'SID' + to[-4:]
+
+        with patch('tickets.sms.send_sms', side_effect=capture):
+            send_sms_campaign_task.delay(str(c.id))
+
+        tokens = list(
+            SMSMessageRecipient.objects.filter(campaign=c).values_list('click_token', flat=True)
+        )
+        self.assertEqual(len([t for t in tokens if t]), 2)
+        self.assertEqual(len(set(tokens)), 2)  # unique per recipient
+        for body in sent_bodies:
+            self.assertNotIn('https://shop.co/x', body)
+            self.assertIn('/c/', body)
+
+    @override_settings(SITE_URL='http://localhost:8000')
+    def test_local_site_skips_tracking(self):
+        from .tasks import send_sms_campaign_task
+        c = self._campaign('Sale at https://shop.co/x now', 'https://shop.co/x')
+        sent_bodies = []
+        with patch('tickets.sms.send_sms', side_effect=lambda to, body, status_callback=None: (sent_bodies.append(body), (True, 'SID'))[1]):
+            send_sms_campaign_task.delay(str(c.id))
+        self.assertFalse(SMSMessageRecipient.objects.filter(campaign=c).exclude(click_token__isnull=True).exists())
+        self.assertTrue(all('https://shop.co/x' in b for b in sent_bodies))
+
+    @override_settings(SITE_URL='https://app.example.com')
+    def test_no_url_no_token(self):
+        from .tasks import send_sms_campaign_task
+        c = self._campaign('Just a plain message', '')
+        send_sms_campaign_task.delay(str(c.id))
+        self.assertFalse(SMSMessageRecipient.objects.filter(campaign=c, click_token__isnull=False).exists())
+
+
+@override_settings(E2E_TEST_MODE=True)
+class SMSClickRedirectTests(TestCase):
+    def setUp(self):
+        self.client = Client()
+        self.org = Organization.objects.create(name='Org', slug='org-cr', sms_marketing_enabled=True)
+        self.rl = SMSRecipientList.objects.create(organization=self.org, name='All', filter_criteria={'min_ltv': '0'})
+        self.campaign = SMSCampaign.objects.create(
+            organization=self.org, recipient_list=self.rl, name='C', body='Hi https://shop.co/x',
+            link_url='https://shop.co/x', status=SMSCampaign.Status.SENT,
+        )
+        self.recipient = SMSMessageRecipient.objects.create(
+            campaign=self.campaign, phone='+13105558001', status='delivered', click_token='tok123',
+        )
+
+    def test_click_records_and_redirects(self):
+        resp = self.client.get(reverse('tickets:sms_click_redirect', kwargs={'token': 'tok123'}))
+        self.assertEqual(resp.status_code, 302)
+        self.assertEqual(resp['Location'], 'https://shop.co/x')
+        self.recipient.refresh_from_db()
+        self.assertEqual(self.recipient.click_count, 1)
+        self.assertIsNotNone(self.recipient.first_clicked_at)
+
+    def test_repeat_clicks_total_up_unique_once(self):
+        url = reverse('tickets:sms_click_redirect', kwargs={'token': 'tok123'})
+        self.client.get(url)
+        self.recipient.refresh_from_db()
+        first = self.recipient.first_clicked_at
+        self.client.get(url)
+        self.recipient.refresh_from_db()
+        self.assertEqual(self.recipient.click_count, 2)
+        self.assertEqual(self.recipient.first_clicked_at, first)  # unchanged
+
+    def test_unknown_token_404(self):
+        resp = self.client.get(reverse('tickets:sms_click_redirect', kwargs={'token': 'nope'}))
+        self.assertEqual(resp.status_code, 404)
+
+
+@override_settings(E2E_TEST_MODE=True)
+class SMSUnsubAttributionTests(TestCase):
+    def setUp(self):
+        self.client = Client()
+        self.org = Organization.objects.create(name='Org', slug='org-un', sms_marketing_enabled=True)
+        self.rl = SMSRecipientList.objects.create(organization=self.org, name='All', filter_criteria={'min_ltv': '0'})
+
+    def _recipient(self, sent_offset_min, campaign=None):
+        c = campaign or SMSCampaign.objects.create(
+            organization=self.org, recipient_list=self.rl, name='C', body='Hi',
+            status=SMSCampaign.Status.SENT,
+        )
+        return SMSMessageRecipient.objects.create(
+            campaign=c, phone='+13105559001', status='delivered',
+            sent_at=timezone.now() - timedelta(minutes=sent_offset_min),
+        )
+
+    @override_settings(TWILIO_VALIDATE_WEBHOOKS=False, E2E_TEST_MODE=False)
+    def test_stop_attributes_to_most_recent_recipient(self):
+        old = self._recipient(60)
+        recent = self._recipient(2)
+        resp = self.client.post(reverse('tickets:twilio_sms_inbound_webhook'), {
+            'From': '+13105559001', 'OptOutType': 'STOP', 'Body': 'STOP',
+        })
+        self.assertEqual(resp.status_code, 200)
+        old.refresh_from_db(); recent.refresh_from_db()
+        self.assertIsNotNone(recent.opted_out_at)
+        self.assertIsNone(old.opted_out_at)
+        self.assertTrue(PhoneSuppression.objects.filter(phone='+13105559001', organization__isnull=True).exists())
+
+
+@override_settings(E2E_TEST_MODE=True)
+class SMSClickMetricsTests(TestCase):
+    def test_annotate_and_summary_counts(self):
+        from .sms_views import _annotate_counts
+        from .services.marketing.analytics import MarketingAnalyticsService
+        org = Organization.objects.create(name='Org', slug='org-cm', sms_marketing_enabled=True)
+        rl = SMSRecipientList.objects.create(organization=org, name='All', filter_criteria={'min_ltv': '0'})
+        c = SMSCampaign.objects.create(
+            organization=org, recipient_list=rl, name='C', body='Hi https://s.co/x',
+            link_url='https://s.co/x', status=SMSCampaign.Status.SENT, sent_at=timezone.now(),
+        )
+        SMSMessageRecipient.objects.create(campaign=c, phone='+13105550101', status='delivered',
+                                           click_count=3, first_clicked_at=timezone.now())
+        SMSMessageRecipient.objects.create(campaign=c, phone='+13105550102', status='delivered',
+                                           click_count=0, opted_out_at=timezone.now())
+
+        annotated = _annotate_counts(SMSCampaign.objects.filter(id=c.id)).get()
+        self.assertEqual(annotated.unique_clicks, 1)
+        self.assertEqual(annotated.total_clicks, 3)
+        self.assertEqual(annotated.unsub_count, 1)
+
+        summary = MarketingAnalyticsService(org, window_days=90).calculate()['native_sms']
+        self.assertEqual(summary['unique_clicks'], 1)
+        self.assertEqual(summary['total_clicks'], 3)
+        self.assertEqual(summary['unsubscribes'], 1)
+
+
+@override_settings(E2E_TEST_MODE=True, SMS_CAMPAIGN_MAX_RECIPIENTS=5000)
+class SMSCampaignLinkAutoDeriveTests(TestCase):
+    def setUp(self):
+        self.client = Client()
+        self.org = Organization.objects.create(name='Org', slug='org-ad', sms_marketing_enabled=True)
+        self.user = User.objects.create_user('u', 'u@test.com', 'pw')
+        UserProfile.objects.create(user=self.user, organization=self.org, org_role=UserProfile.OrgRole.OWNER)
+        self.client.login(username='u@test.com', password='pw')
+        self.client.get(reverse('tickets:home'))
+        make_customer(self.org, 'a@x.com', '+13105551101')
+        self.rl = SMSRecipientList.objects.create(organization=self.org, name='All', filter_criteria={'min_ltv': '0'})
+
+    def test_create_derives_link_url_from_body(self):
+        self.client.post(reverse('tickets:sms_campaign_create'), {
+            'name': 'Promo', 'recipient_list': str(self.rl.id),
+            'body': 'Grab tickets at https://shop.co/sale today', 'send_mode': 'now', 'confirm': '1',
+        })
+        c = SMSCampaign.objects.get()
+        self.assertEqual(c.link_url, 'https://shop.co/sale')
