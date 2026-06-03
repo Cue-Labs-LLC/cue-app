@@ -4431,8 +4431,21 @@ def event_detail(request, event_id):
     prev_event = _get_adjacent_event(org, event, 'prev')
     next_event = _get_adjacent_event(org, event, 'next')
 
+    # Native marketing SMS campaigns linked to this event (surfaced on the Marketing
+    # tab when the org has SMS marketing enabled). Local import avoids load-order cycles.
+    from tickets.sms_views import _annotate_counts
+    from tickets.models import SMSCampaign
+    native_sms_campaigns = list(
+        _annotate_counts(
+            SMSCampaign.objects.filter(
+                organization=org, event=event, deleted_at__isnull=True,
+            ).select_related('recipient_list')
+        ).order_by('-created_at')[:10]
+    )
+
     context = {
         'event': event,
+        'native_sms_campaigns': native_sms_campaigns,
         'weather_forecast': weather_forecast,
         'active_scanner_sessions': active_scanner_sessions,
         'total_orders': total_orders,

@@ -21,6 +21,14 @@
     .sms-compose .sms-head p {
         margin: 4px 0 0; color: var(--text-secondary); font-size: 13.5px; font-weight: 300;
     }
+    .sms-event-banner {
+        display: flex; align-items: center; gap: 8px;
+        background: var(--accent-muted); border: 1px solid var(--accent-muted-border);
+        border-left: 2px solid var(--accent); border-radius: var(--radius);
+        padding: 11px 14px; margin-bottom: 18px;
+        font-size: 13px; font-weight: 300; color: var(--text-primary);
+    }
+    .sms-event-banner i { color: var(--accent); }
 
     /* Two-column layout: form left, sticky phone right. */
     .sms-layout {
@@ -213,6 +221,12 @@
 
     <form method="post" novalidate>
         {% csrf_token %}
+        {% if event %}
+        <input type="hidden" name="event" value="{{ event.id }}">
+        <div class="sms-event-banner sms-reveal sms-reveal-1">
+            <i class="bi bi-ticket-perforated"></i> Texting attendees of <strong>{{ event.name }}</strong> — change the audience below if you like.
+        </div>
+        {% endif %}
         {% if form.non_field_errors %}<div class="errorlist mb-3">{{ form.non_field_errors }}</div>{% endif %}
 
         <div class="sms-layout">

@@ -43,7 +43,10 @@
 
 <div class="card mb-3">
     <div class="card-body">
-        <div class="text-muted small mb-1">Message &middot; to {{ campaign.recipient_list.name }}</div>
+        <div class="text-muted small mb-1">
+            Message &middot; to {{ campaign.recipient_list.name }}
+            {% if campaign.event %}&middot; <a href="{% url 'tickets:event_detail' campaign.event.id %}"><i class="bi bi-ticket-perforated"></i> {{ campaign.event.name }}</a>{% endif %}
+        </div>
         <div>{{ campaign.body|linebreaksbr }}</div>
         {% if campaign.link_url %}<div class="mt-2 small"><i class="bi bi-link-45deg"></i> {{ campaign.link_url }}</div>{% endif %}
     </div>

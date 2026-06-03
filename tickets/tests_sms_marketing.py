@@ -574,3 +574,100 @@ class SMSCampaignLinkAutoDeriveTests(TestCase):
         })
         c = SMSCampaign.objects.get()
         self.assertEqual(c.link_url, 'https://shop.co/sale')
+
+
+@override_settings(E2E_TEST_MODE=True, SMS_CAMPAIGN_MAX_RECIPIENTS=5000)
+class EventSMSTests(TestCase):
+    """Sending native marketing SMS from an event's Marketing tab."""
+    def setUp(self):
+        from datetime import date
+        from .models import Event, Venue, CSVFormat, UploadedFile, TicketOrder
+        self.TicketOrder = TicketOrder
+        self.client = Client()
+        self.org = Organization.objects.create(name='Org', slug='org-ev', sms_marketing_enabled=True)
+        self.user = User.objects.create_user('u', 'u@test.com', 'pw')
+        UserProfile.objects.create(user=self.user, organization=self.org, org_role=UserProfile.OrgRole.OWNER)
+        self.client.login(username='u@test.com', password='pw')
+        self.client.get(reverse('tickets:home'))
+        self.venue = Venue.objects.create(organization=self.org, name='V', city='LA')
+        self.event = Event.objects.create(
+            organization=self.org, name='Summer Fest', venue=self.venue, start_date=date(2026, 7, 1),
+        )
+        self.fmt = CSVFormat.objects.create(organization=self.org, name='F', column_mapping={'order_number': 'O'})
+        self.upload = UploadedFile.objects.create(
+            organization=self.org, csv_format=self.fmt, filename='f.csv', status='completed',
+        )
+        # Two opted-in attendees, one opted-out attendee, one opted-in non-attendee.
+        self.a1 = make_customer(self.org, 'a1@x.com', '+13105550001')
+        self.a2 = make_customer(self.org, 'a2@x.com', '+13105550002')
+        self.optout = make_customer(self.org, 'o@x.com', '+13105550003', opt_in=False)
+        self.nonatt = make_customer(self.org, 'n@x.com', '+13105550004')
+        for c in (self.a1, self.a2, self.optout):
+            TicketOrder.objects.create(
+                customer=c, event=self.event, uploaded_file=self.upload,
+                order_number=f'O-{c.email}', order_date=timezone.now(), total_amount=Decimal('50.00'),
+            )
+
+    def test_event_id_filter_returns_all_buyers(self):
+        from .services.customer_filters import filter_customers
+        emails = set(
+            filter_customers(self.org, {'event_id': str(self.event.id)}).distinct()
+            .values_list('email', flat=True)
+        )
+        self.assertEqual(emails, {'a1@x.com', 'a2@x.com', 'o@x.com'})  # excludes non-attendee
+
+    def test_attendee_list_resolves_opted_in_only(self):
+        from .sms_views import _event_attendee_list
+        lst = _event_attendee_list(self.org, self.event)
+        phones = {r['phone'] for r in lst.materialize(self.org)}
+        self.assertEqual(phones, {'+13105550001', '+13105550002'})  # opt-out + non-attendee excluded
+
+    def test_attendee_list_idempotent(self):
+        from .sms_views import _event_attendee_list
+        a = _event_attendee_list(self.org, self.event)
+        b = _event_attendee_list(self.org, self.event)
+        self.assertEqual(a.pk, b.pk)
+        self.assertEqual(
+            SMSRecipientList.objects.filter(
+                organization=self.org, filter_criteria={'event_id': str(self.event.id)},
+            ).count(), 1,
+        )
+
+    def test_create_event_mode_get_seeds_form(self):
+        resp = self.client.get(reverse('tickets:sms_campaign_create'), {'event': str(self.event.id)})
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.context['event'], self.event)
+        form = resp.context['form']
+        self.assertEqual(form.initial.get('name'), self.event.name)
+        self.assertIsNotNone(form.initial.get('recipient_list'))
+
+    def test_create_event_mode_sends_to_attendees_and_links_event(self):
+        from .sms_views import _event_attendee_list
+        lst = _event_attendee_list(self.org, self.event)
+        resp = self.client.post(reverse('tickets:sms_campaign_create'), {
+            'name': self.event.name, 'recipient_list': str(lst.id), 'body': 'See you there!',
+            'send_mode': 'now', 'event': str(self.event.id), 'confirm': '1',
+        })
+        self.assertEqual(resp.status_code, 302)
+        c = SMSCampaign.objects.get()
+        self.assertEqual(c.event_id, self.event.id)
+        phones = set(SMSMessageRecipient.objects.filter(campaign=c).values_list('phone', flat=True))
+        self.assertEqual(phones, {'+13105550001', '+13105550002'})
+
+    def test_cross_tenant_event_404(self):
+        from datetime import date
+        from .models import Event, Venue
+        other = Organization.objects.create(name='B', slug='org-evb', sms_marketing_enabled=True)
+        ov = Venue.objects.create(organization=other, name='V', city='SF')
+        oe = Event.objects.create(organization=other, name='Theirs', venue=ov, start_date=date(2026, 7, 1))
+        resp = self.client.get(reverse('tickets:sms_campaign_create'), {'event': str(oe.id)})
+        self.assertEqual(resp.status_code, 404)
+
+    def test_marketing_tab_button_gated_by_flag(self):
+        resp = self.client.get(reverse('tickets:event_detail', args=[self.event.id]))
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, 'Send SMS to attendees')
+        self.org.sms_marketing_enabled = False
+        self.org.save(update_fields=['sms_marketing_enabled'])
+        resp = self.client.get(reverse('tickets:event_detail', args=[self.event.id]))
+        self.assertNotContains(resp, 'Send SMS to attendees')
