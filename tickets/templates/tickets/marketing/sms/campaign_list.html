@@ -23,6 +23,8 @@
                         <th class="text-end">Audience</th>
                         <th class="text-end">Sent</th>
                         <th class="text-end">Delivered</th>
+                        <th class="text-end">Clicks</th>
+                        <th class="text-end">Unsubs</th>
                         <th class="text-end">Failed</th>
                         <th>When</th>
                     </tr>
@@ -42,6 +44,8 @@
                         <td class="text-end">{{ c.audience_size }}</td>
                         <td class="text-end">{{ c.sent_count }}</td>
                         <td class="text-end">{{ c.delivered_count }}</td>
+                        <td class="text-end">{% if c.link_url %}{{ c.unique_clicks }}{% else %}<span class="text-muted">—</span>{% endif %}</td>
+                        <td class="text-end">{{ c.unsub_count }}</td>
                         <td class="text-end">{{ c.failed_count }}</td>
                         <td class="text-muted small">
                             {% if c.status == 'scheduled' %}{{ c.scheduled_at|date:"M d, Y g:i A" }}

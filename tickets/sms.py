@@ -15,6 +15,20 @@ _GSM7_BASIC = (
 _GSM7_EXTENDED = "^{}\\[~]|€"
 _GSM7_CHARS = set(_GSM7_BASIC) | set(_GSM7_EXTENDED)
 
+# First http(s) URL in a string. v1 link-click tracking rewrites this one URL;
+# bare domains without a scheme are intentionally not matched.
+_URL_RE = re.compile(r'https?://\S+')
+
+
+def extract_first_url(text: str) -> str:
+    """Return the first http(s):// URL in text (trailing punctuation stripped), or ''."""
+    if not text:
+        return ''
+    match = _URL_RE.search(text)
+    if not match:
+        return ''
+    return match.group(0).rstrip('.,!?;:)\'"')
+
 
 def normalize_phone(raw: str) -> str:
     """Normalize a phone number string to E.164 (+1XXXXXXXXXX for US numbers).

@@ -334,8 +334,9 @@
                         <span>Campaigns <b>{{ metrics.native_sms.campaigns_sent }}</b></span>
                         <span>Sent <b>{{ metrics.native_sms.messages_sent }}</b></span>
                         <span>Delivered <b>{{ metrics.native_sms.messages_delivered }}</b> <span class="text-tertiary small">({{ metrics.native_sms.delivery_rate|floatformat:2 }})</span></span>
+                        <span>Clicks <b>{{ metrics.native_sms.unique_clicks }}</b> <span class="text-tertiary small">({{ metrics.native_sms.total_clicks }} total)</span></span>
                         <span>Failed <b>{{ metrics.native_sms.messages_failed }}</b></span>
-                        <span>Opt-outs <b>{{ metrics.native_sms.opt_outs }}</b></span>
+                        <span>Unsubs <b>{{ metrics.native_sms.unsubscribes }}</b></span>
                     </div>
                 </div>
                 <a href="{% url 'tickets:sms_campaign_list' %}" class="btn btn-sm btn-primary">Manage campaigns</a>
