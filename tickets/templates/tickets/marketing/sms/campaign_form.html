@@ -1,4 +1,5 @@
 {% extends 'tickets/base.html' %}
+{% load tickets_extras %}
 
 {% block title %}New SMS Campaign{% endblock %}
 
@@ -213,7 +214,7 @@
 
 {% block content %}
 <div class="sms-compose">
-    <a href="{% url 'tickets:sms_campaign_list' %}" class="sms-back sms-reveal sms-reveal-1"><i class="bi bi-arrow-left"></i> Campaigns</a>
+    <a href="{% url 'tickets:sms_campaign_list' %}" class="sms-back sms-reveal sms-reveal-1"><i class="bi bi-arrow-left"></i> SMS Campaigns</a>
     <div class="sms-head sms-reveal sms-reveal-1">
         <h1>New campaign</h1>
         <p>Compose a text, choose who gets it, then send now or schedule.</p>
@@ -221,6 +222,7 @@
 
     <form method="post" novalidate>
         {% csrf_token %}
+        <input type="hidden" name="idempotency_key" value="{{ idempotency_key }}">
         {% if event %}
         <input type="hidden" name="event" value="{{ event.id }}">
         <div class="sms-event-banner sms-reveal sms-reveal-1">
@@ -273,10 +275,22 @@
 
                 <div class="sms-actions sms-reveal sms-reveal-3">
                     {% if confirm_count is not None and not exceeds_cap and confirm_count > 0 %}
+                    {% if insufficient_credits %}
+                    <div class="sms-confirm" style="border-left-color: var(--danger); background: rgba(217,112,96,0.08); border-color: rgba(217,112,96,0.25);">
+                        <span class="sms-confirm-text">
+                            Sending to <b>{{ confirm_count }}</b> costs <b>{{ confirm_cost_tokens }} tokens</b>, but your balance is <b>{{ balance_cents|tokens }} tokens</b>.
+                        </span>
+                        <a href="{% url 'tickets:sms_credits' %}" class="btn btn-primary"><i class="bi bi-wallet2"></i> Add tokens</a>
+                    </div>
+                    {% else %}
                     <div class="sms-confirm">
-                        <span class="sms-confirm-text">Ready to send to <b>{{ confirm_count }}</b> recipient{{ confirm_count|pluralize }}.</span>
+                        <span class="sms-confirm-text">
+                            Send to <b>{{ confirm_count }}</b> recipient{{ confirm_count|pluralize }} for <b>{{ confirm_cost_tokens }} tokens</b>
+                            <span class="text-muted">&middot; balance {{ balance_cents|tokens }} tokens</span>
+                        </span>
                         <button type="submit" name="confirm" value="1" class="btn btn-primary"><i class="bi bi-send"></i> Confirm &amp; send</button>
                     </div>
+                    {% endif %}
                     {% else %}
                     <button type="submit" class="btn btn-primary">Review recipients</button>
                     {% endif %}

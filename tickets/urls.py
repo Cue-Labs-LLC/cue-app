@@ -208,6 +208,10 @@ urlpatterns = [
     path('marketing/sms/new/', sms_views.sms_campaign_create, name='sms_campaign_create'),
     path('marketing/sms/<uuid:pk>/', sms_views.sms_campaign_detail, name='sms_campaign_detail'),
     path('marketing/sms/<uuid:pk>/cancel/', sms_views.sms_campaign_cancel, name='sms_campaign_cancel'),
+    # Marketing SMS — prepaid credit wallet
+    path('marketing/sms/credits/', sms_views.sms_credits, name='sms_credits'),
+    path('marketing/sms/credits/checkout/', sms_views.sms_credits_checkout, name='sms_credits_checkout'),
+    path('marketing/sms/credits/success/', sms_views.sms_credits_success, name='sms_credits_success'),
     # Marketing SMS — recipient lists
     path('marketing/sms/lists/', sms_views.sms_recipient_list_list, name='sms_recipient_list_list'),
     path('marketing/sms/lists/new/', sms_views.sms_recipient_list_create, name='sms_recipient_list_create'),

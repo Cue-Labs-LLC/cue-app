@@ -111,17 +111,10 @@
                         </a>
                     </li>
                     <li>
-                        <a href="{% url 'tickets:marketing_overview' %}" class="sidebar-link{% if '/marketing/' in request.path and '/marketing/sms/' not in request.path %} active{% endif %}">
+                        <a href="{% url 'tickets:marketing_overview' %}" class="sidebar-link{% if '/marketing/' in request.path %} active{% endif %}">
                             <i class="bi bi-megaphone"></i> Marketing
                         </a>
                     </li>
-                    {% if org.sms_marketing_enabled and is_org_host %}
-                    <li>
-                        <a href="{% url 'tickets:sms_campaign_list' %}" class="sidebar-link sidebar-sublink{% if '/marketing/sms/' in request.path %} active{% endif %}">
-                            <i class="bi bi-chat-dots"></i> SMS Campaigns
-                        </a>
-                    </li>
-                    {% endif %}
                     <li>
                         <a href="{% url 'tickets:analytics_overview' %}" class="sidebar-link{% if '/analytics/' in request.path or '/forecast/' in request.path or '/customers/ltv-by-market/' in request.path %} active{% endif %}">
                             <i class="bi bi-bar-chart-line"></i> Analytics

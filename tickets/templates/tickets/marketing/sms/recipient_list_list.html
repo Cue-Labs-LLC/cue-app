@@ -3,12 +3,14 @@
 {% block title %}SMS Recipient Lists{% endblock %}
 
 {% block content %}
+{% include 'tickets/marketing/_marketing_nav.html' with marketing_section='sms' %}
+
 <div class="page-header d-flex align-items-center justify-content-between">
-    <h1>Recipient Lists</h1>
-    <div class="d-flex gap-2">
-        <a href="{% url 'tickets:sms_campaign_list' %}" class="btn btn-outline-secondary btn-sm"><i class="bi bi-chat-dots"></i> Campaigns</a>
-        <a href="{% url 'tickets:sms_recipient_list_create' %}" class="btn btn-primary btn-sm"><i class="bi bi-plus-lg"></i> New List</a>
+    <div>
+        <a href="{% url 'tickets:sms_campaign_list' %}" class="text-muted small"><i class="bi bi-arrow-left"></i> SMS Campaigns</a>
+        <h1 class="mb-0">Recipient Lists</h1>
     </div>
+    <a href="{% url 'tickets:sms_recipient_list_create' %}" class="btn btn-primary btn-sm"><i class="bi bi-plus-lg"></i> New List</a>
 </div>
 
 <div class="card">

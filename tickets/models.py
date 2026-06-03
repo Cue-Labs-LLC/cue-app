@@ -92,6 +92,10 @@ class Organization(BaseModel):
             'singleton and cannot scope to individual orgs, so the SMS gate lives here.'
         ),
     )
+    # Prepaid SMS credit wallet (cents). Topped up via Stripe Checkout, debited per
+    # segment when a marketing-SMS campaign sends. See SMSCreditTransaction for the
+    # audit ledger. Never mutate directly outside the wallet service (atomic F()).
+    sms_credit_balance_cents = models.PositiveIntegerField(default=0)
     stripe_account_id = models.CharField(
         max_length=255,
         blank=True,
@@ -1566,6 +1570,10 @@ class SMSCampaign(AuditBaseModel):
     started_at = models.DateTimeField(null=True, blank=True)
     sent_at = models.DateTimeField(null=True, blank=True)
     audience_size = models.PositiveIntegerField(default=0)
+    # Per-submit token from the confirm panel. A duplicate confirm (double-click /
+    # browser retry) reuses the same key, so the unique constraint stops a second
+    # campaign from being created, charged, and sent.
+    idempotency_key = models.CharField(max_length=64, null=True, blank=True)
 
     class Meta:
         ordering = ['-created_at']
@@ -1573,6 +1581,13 @@ class SMSCampaign(AuditBaseModel):
             models.Index(fields=['organization', '-created_at']),
             models.Index(fields=['organization', 'status']),
             models.Index(fields=['status', 'scheduled_at']),
+        ]
+        constraints = [
+            models.UniqueConstraint(
+                fields=['organization', 'idempotency_key'],
+                condition=models.Q(idempotency_key__isnull=False),
+                name='uniq_sms_campaign_idempotency_key',
+            ),
         ]
 
     def __str__(self):
@@ -1637,6 +1652,50 @@ class SMSMessageRecipient(BaseModel):
 
     def __str__(self):
         return f"{self.phone} [{self.status}]"
+
+
+class SMSCreditTransaction(BaseModel):
+    """Immutable ledger for the prepaid SMS credit wallet.
+
+    Every change to Organization.sms_credit_balance_cents writes one row here, so
+    the balance is always reconstructable and Stripe top-ups are idempotent
+    (stripe_checkout_session_id is unique). amount_cents is signed: positive for
+    top-ups/refunds (credits), negative for campaign charges (debits).
+    """
+    class Kind(models.TextChoices):
+        TOPUP = 'topup', 'Top-up'
+        CHARGE = 'charge', 'Campaign charge'
+        REFUND = 'refund', 'Refund'
+        ADJUSTMENT = 'adjustment', 'Manual adjustment'
+
+    organization = models.ForeignKey(
+        Organization, on_delete=models.CASCADE, related_name='sms_credit_transactions',
+    )
+    kind = models.CharField(max_length=12, choices=Kind.choices, db_index=True)
+    amount_cents = models.IntegerField(help_text='Signed: + credit, - debit.')
+    balance_after_cents = models.PositiveIntegerField()
+    campaign = models.ForeignKey(
+        SMSCampaign, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='credit_transactions',
+    )
+    stripe_checkout_session_id = models.CharField(
+        max_length=255, null=True, blank=True, unique=True,
+        help_text='Set on TOPUP rows; unique so webhook retries cannot double-credit.',
+    )
+    description = models.CharField(max_length=255, blank=True, default='')
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True,
+        on_delete=models.SET_NULL, related_name='+',
+    )
+
+    class Meta:
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['organization', '-created_at']),
+        ]
+
+    def __str__(self):
+        return f"{self.get_kind_display()} {self.amount_cents}¢ (org={self.organization_id})"
 
 
 class IncomeSource(BaseModel):

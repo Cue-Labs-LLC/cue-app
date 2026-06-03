@@ -26,63 +26,6 @@
 }
 .marketing-tabs .nav-link i { margin-right: 6px; opacity: 0.8; }
 
-.channel-card {
-    background: var(--bg-surface);
-    border: 1px solid var(--border);
-    border-radius: 10px;
-    padding: 1.25rem 1.5rem;
-    border-top-width: 3px;
-    border-top-style: solid;
-    margin-bottom: 1.25rem;
-}
-.channel-card--email { border-top-color: var(--accent); }
-.channel-card--sms   { border-top-color: var(--success); }
-.channel-card--ads   { border-top-color: var(--info); }
-.channel-card-title {
-    font-size: 11px;
-    letter-spacing: 0.12em;
-    text-transform: uppercase;
-    color: var(--text-tertiary);
-    margin-bottom: 0.4rem;
-}
-.channel-card-headline {
-    font-family: 'Outfit', system-ui, sans-serif;
-    font-size: 1.9rem;
-    font-weight: 600;
-    line-height: 1.1;
-}
-.channel-card-meta {
-    color: var(--text-secondary);
-    font-size: 0.88rem;
-    margin-top: 0.65rem;
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
-    gap: 6px 16px;
-}
-.channel-card-meta span { display: block; }
-.channel-card-meta b { color: var(--text-primary); font-weight: 600; }
-
-.marketing-grid-two {
-    display: grid;
-    grid-template-columns: 2fr 1fr;
-    gap: 16px;
-    margin-bottom: 1.5rem;
-}
-@media (max-width: 900px) { .marketing-grid-two { grid-template-columns: 1fr; } }
-.chart-card {
-    background: var(--bg-surface);
-    border: 1px solid var(--border);
-    border-radius: 10px;
-    padding: 1.1rem 1.25rem;
-    margin-bottom: 1.25rem;
-}
-.chart-card h2 {
-    font-size: 1rem;
-    margin-bottom: 0.8rem;
-    color: var(--text-primary);
-}
-.chart-canvas-wrap { position: relative; height: 280px; }
-
 .ai-panel {
     background: linear-gradient(135deg, var(--bg-surface) 0%, var(--bg-surface) 60%, color-mix(in srgb, var(--accent) 8%, var(--bg-surface)) 100%);
     border: 1px solid var(--border);
@@ -148,12 +91,7 @@
 {% endblock %}
 
 {% block content %}
-<div class="page-header">
-    <div>
-        <h1>Marketing</h1>
-        <p class="page-header-subtitle">Performance across Meta Ads, Mailchimp email, and SlickText SMS &mdash; with AI recommendations.</p>
-    </div>
-</div>
+{% include 'tickets/marketing/_marketing_nav.html' with marketing_section='overview' subtitle='Channel performance across Meta Ads and Mailchimp email — with AI recommendations.' %}
 
 <div class="window-selector mb-3">
     <div class="dropdown">
@@ -178,11 +116,6 @@
     <li class="nav-item" role="presentation">
         <button class="nav-link" id="email-tab-btn" data-bs-toggle="tab" data-bs-target="#tab-email" type="button" role="tab" aria-controls="tab-email" data-tab-key="email">
             <i class="bi bi-envelope"></i>Email
-        </button>
-    </li>
-    <li class="nav-item" role="presentation">
-        <button class="nav-link" id="sms-tab-btn" data-bs-toggle="tab" data-bs-target="#tab-sms" type="button" role="tab" aria-controls="tab-sms" data-tab-key="sms">
-            <i class="bi bi-chat-dots"></i>SMS
         </button>
     </li>
     <li class="nav-item" role="presentation">
@@ -311,81 +244,6 @@
         </div>
     </div>
 
-    {# ── SMS ──────────────────────────────────────────────────────────── #}
-    <div class="tab-pane fade" id="tab-sms" role="tabpanel" aria-labelledby="sms-tab-btn">
-        <div class="channel-card channel-card--sms">
-            <div class="channel-card-title">SMS &middot; SlickText</div>
-            <div class="channel-card-headline">${{ metrics.channels.sms.revenue|currency }}</div>
-            <div class="channel-card-meta">
-                <span>Audience <b>{{ metrics.channels.sms.audience }}</b></span>
-                <span>Broadcasts <b>{{ metrics.channels.sms.campaigns }}</b></span>
-                <span>Clicks <b>{{ metrics.channels.sms.clicks }}</b> <span class="text-tertiary small">({{ metrics.channels.sms.click_rate|floatformat:2 }})</span></span>
-                <span>Unsubs <b>{{ metrics.channels.sms.unsubscribes }}</b> <span class="text-tertiary small">({{ metrics.channels.sms.unsub_rate|floatformat:2 }})</span></span>
-                <span>Orders <b>{{ metrics.channels.sms.orders }}</b></span>
-            </div>
-        </div>
-
-        {% if org_sms_marketing_enabled %}
-        <div class="channel-card channel-card--sms">
-            <div class="d-flex justify-content-between align-items-start flex-wrap gap-2">
-                <div>
-                    <div class="channel-card-title">SMS &middot; Native sends</div>
-                    <div class="channel-card-meta mt-1">
-                        <span>Campaigns <b>{{ metrics.native_sms.campaigns_sent }}</b></span>
-                        <span>Sent <b>{{ metrics.native_sms.messages_sent }}</b></span>
-                        <span>Delivered <b>{{ metrics.native_sms.messages_delivered }}</b> <span class="text-tertiary small">({{ metrics.native_sms.delivery_rate|floatformat:2 }})</span></span>
-                        <span>Clicks <b>{{ metrics.native_sms.unique_clicks }}</b> <span class="text-tertiary small">({{ metrics.native_sms.total_clicks }} total)</span></span>
-                        <span>Failed <b>{{ metrics.native_sms.messages_failed }}</b></span>
-                        <span>Unsubs <b>{{ metrics.native_sms.unsubscribes }}</b></span>
-                    </div>
-                </div>
-                <a href="{% url 'tickets:sms_campaign_list' %}" class="btn btn-sm btn-primary">Manage campaigns</a>
-            </div>
-        </div>
-        {% endif %}
-
-        <div class="chart-card">
-            <h2>SMS clicks by month</h2>
-            <div class="chart-canvas-wrap"><canvas id="sms-engagement-chart"></canvas></div>
-        </div>
-
-        <div class="chart-card">
-            <h2>Top SMS broadcasts</h2>
-            {% with sms_rows=metrics.top_sms_campaigns %}
-            {% if sms_rows %}
-            <div class="table-responsive">
-                <table class="table table-hover align-middle mb-0">
-                    <thead>
-                        <tr>
-                            <th>Broadcast</th>
-                            <th>Event</th>
-                            <th class="text-end">Audience</th>
-                            <th class="text-end">Clicks</th>
-                            <th class="text-end">Orders</th>
-                            <th class="text-end">Revenue</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {% for row in sms_rows %}
-                        <tr>
-                            <td><span class="fw-semibold">{{ row.name }}</span></td>
-                            <td><a href="{% url 'tickets:event_detail' event_id=row.event_id %}?tab=marketing">{{ row.event_name }}</a></td>
-                            <td class="text-end">{{ row.sends }}</td>
-                            <td class="text-end">{{ row.clicks }}<span class="text-tertiary small d-block">{{ row.click_rate|floatformat:2 }}</span></td>
-                            <td class="text-end">{{ row.orders }}</td>
-                            <td class="text-end">${{ row.revenue|currency }}</td>
-                        </tr>
-                        {% endfor %}
-                    </tbody>
-                </table>
-            </div>
-            {% else %}
-            <div class="empty-state"><p>No SlickText broadcasts matched in this window.</p></div>
-            {% endif %}
-            {% endwith %}
-        </div>
-    </div>
-
     {# ── Paid Ads ─────────────────────────────────────────────────────── #}
     <div class="tab-pane fade" id="tab-ads" role="tabpanel" aria-labelledby="ads-tab-btn">
         <div class="channel-card channel-card--ads">
@@ -481,27 +339,6 @@
             });
         }
 
-        function initSmsChart() {
-            if (initialized.sms) return; initialized.sms = true;
-            new Chart(document.getElementById('sms-engagement-chart'), {
-                type: 'line',
-                data: {
-                    labels: engageData.labels,
-                    datasets: [
-                        { label: 'Clicks', data: engageData.sms_clicks, borderColor: '#33c481', backgroundColor: 'rgba(51,196,129,0.12)', tension: 0.3, fill: true }
-                    ]
-                },
-                options: {
-                    responsive: true, maintainAspectRatio: false,
-                    scales: {
-                        x: { grid: { color: grid }, ticks: { color: tick } },
-                        y: { beginAtZero: true, grid: { color: grid }, ticks: { color: tick } }
-                    },
-                    plugins: { legend: { labels: { color: tick } } }
-                }
-            });
-        }
-
         function initAdsChart() {
             if (initialized.ads) return; initialized.ads = true;
             new Chart(document.getElementById('ads-spend-chart'), {
@@ -525,16 +362,15 @@
         }
 
         // --- Tab state ----------------------------------------------------
-        var validTabs = ['overview', 'email', 'sms', 'ads'];
+        var validTabs = ['overview', 'email', 'ads'];
         var serverTab = (meta.tab || 'overview').toLowerCase();
         var qs = new URLSearchParams(window.location.search);
         var qsTab = (qs.get('tab') || '').toLowerCase();
         var activeTab = validTabs.indexOf(qsTab) >= 0 ? qsTab : (validTabs.indexOf(serverTab) >= 0 ? serverTab : 'overview');
 
-        var btnIdByKey = { overview: 'overview-tab-btn', email: 'email-tab-btn', sms: 'sms-tab-btn', ads: 'ads-tab-btn' };
+        var btnIdByKey = { overview: 'overview-tab-btn', email: 'email-tab-btn', ads: 'ads-tab-btn' };
         var initByKey  = { overview: function(){},
                            email:    initEmailChart,
-                           sms:      initSmsChart,
                            ads:      initAdsChart };
 
         try {
