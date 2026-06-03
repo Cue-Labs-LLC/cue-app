@@ -324,7 +324,11 @@ EMAIL_PORT = 587
 EMAIL_USE_TLS = True
 EMAIL_HOST_USER = 'apikey'
 EMAIL_HOST_PASSWORD = os.environ.get('SENDGRID_API_KEY', '')
-DEFAULT_FROM_EMAIL = os.environ.get('DEFAULT_FROM_EMAIL', 'noreply@cueup.co')
+# Wrap the sender address in a display name so recipients see "Cue" rather than
+# the raw email (e.g. "Cue <info@cueup.co>"). The env var supplies just the
+# address; if it already includes a display name (contains "<"), leave it as-is.
+_from_email = os.environ.get('DEFAULT_FROM_EMAIL', 'noreply@cueup.co')
+DEFAULT_FROM_EMAIL = _from_email if '<' in _from_email else f'Cue <{_from_email}>'
 
 # Custom error views
 CSRF_FAILURE_VIEW = 'tickets.views.csrf_failure'
