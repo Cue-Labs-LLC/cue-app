@@ -66,6 +66,35 @@ def currency(value):
 
 
 @register.filter
+def cents(value):
+    """Format integer cents as a dollar amount: 1050 → '10.50'. None/'' → '0.00'."""
+    if value is None or value == '':
+        return '0.00'
+    try:
+        return f"{Decimal(str(value)) / 100:,.2f}"
+    except (TypeError, ValueError, InvalidOperation):
+        return '0.00'
+
+
+@register.filter
+def tokens(value):
+    """Format a cents amount as a token count (1 token = 1 SMS segment).
+
+    floor(cents / SMS_PRICE_PER_SEGMENT_CENTS) — floor (not int(), which truncates
+    toward zero and would render a −1¢ debit row as '0'). Clean integer counts assume
+    a whole-cent per-segment price; the underlying money stays in cents."""
+    import math
+    from django.conf import settings as _settings
+    if value is None or value == '':
+        return 0
+    try:
+        price = Decimal(str(getattr(_settings, 'SMS_PRICE_PER_SEGMENT_CENTS', 3)))
+        return math.floor(Decimal(str(value)) / price)
+    except (TypeError, ValueError, InvalidOperation, ZeroDivisionError):
+        return 0
+
+
+@register.filter
 def survey_value(value):
     """Render a Typeform answer value as plain text. Lists become comma-joined
     strings (no quotes, no brackets); everything else stringifies normally.

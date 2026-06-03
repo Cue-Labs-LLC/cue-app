@@ -132,6 +132,7 @@ from .services.marketing import (
     MarketingAnalyticsService,
     WINDOW_CHOICES as MARKETING_WINDOW_CHOICES,
     generate_marketing_narrative,
+    get_cached_marketing_metrics,
 )
 from .services.marketing.analytics import DEFAULT_WINDOW, resolve_window
 from .services.customer_filters import filter_customers
@@ -2681,11 +2682,10 @@ def analytics_overview(request):
 
 
 def _marketing_cache_key(org_id, window):
-    try:
-        version = django_cache.get(f'marketing_overview_ver:{org_id}', 0)
-    except Exception:
-        version = 0
-    return f'marketing_overview:{version}:{org_id}:{window}'
+    # Delegates to the shared helper so the Marketing overview, AI analyze, and
+    # the SMS Campaigns page all key (and invalidate) against one definition.
+    from .services.marketing import marketing_cache_key
+    return marketing_cache_key(org_id, window)
 
 
 def _invalidate_marketing_cache(org):
@@ -2714,16 +2714,12 @@ def marketing_overview(request):
     """Org-wide marketing performance dashboard with AI recommendations."""
     org = get_organization(request)
     window_key, window_days, window_label = resolve_window(request.GET.get('window', DEFAULT_WINDOW))
-    allowed_tabs = {'overview', 'email', 'sms', 'ads'}
+    allowed_tabs = {'overview', 'email', 'ads'}
     active_tab = request.GET.get('tab', 'overview').lower()
     if active_tab not in allowed_tabs:
         active_tab = 'overview'
 
-    cache_key = _marketing_cache_key(org.pk, window_key)
-    metrics = safe_cache_get(cache_key)
-    if metrics is None:
-        metrics = MarketingAnalyticsService(org, window_days).calculate()
-        safe_cache_set(cache_key, metrics, timeout=600)
+    metrics = get_cached_marketing_metrics(org, window_days, window_key)
 
     recommendations = (
         AIRecommendation.objects
@@ -2768,6 +2764,7 @@ def marketing_overview(request):
         'trend_chart_json': json.dumps(trend_chart),
         'engagement_chart_json': json.dumps(engagement_chart),
         'org_sms_marketing_enabled': org.sms_marketing_enabled,
+        'marketing_section': 'overview',
     }
     return render(request, 'tickets/marketing_overview.html', context)
 
@@ -10116,8 +10113,49 @@ def stripe_webhook(request):
         _fulfill_payment_intent(event['data']['object'])
     elif event_type == 'payment_intent.payment_failed':
         _fail_payment_intent(event['data']['object'])
+    elif event_type == 'checkout.session.completed':
+        _fulfill_sms_credit_checkout(event['data']['object'])
 
     return HttpResponse(status=200)
+
+
+def _fulfill_sms_credit_checkout(session):
+    """Credit an org's prepaid SMS wallet after a paid credits Checkout Session.
+
+    Idempotent: the wallet service keys on the Checkout Session id, so webhook
+    retries (or a success-page double-fire) can't double-credit. Ignores any
+    Checkout Session that isn't one of ours (metadata.kind == 'sms_credits').
+
+    Does NOT swallow exceptions — the webhook relies on a non-200 to make Stripe
+    retry on transient failure (safe because crediting is idempotent). The
+    success-page caller wraps this in its own try/except so the user's page
+    still loads. Credits Stripe's settled amount_total as the source of truth so
+    taxes/discounts can never desync cash-received from credits-granted.
+    """
+    from tickets.services.sms_credits import credit
+
+    # Stripe's StripeObject is NOT a dict and has no .get() — attribute access
+    # on a missing key raises (its __getattr__ turns `.get` into a key lookup).
+    # Mirror _stripe_value() so this works for both live webhook StripeObjects
+    # and the plain dicts used in tests.
+    def _stripe_value(obj, key, default=None):
+        if isinstance(obj, dict):
+            return obj.get(key, default)
+        return getattr(obj, key, default)
+
+    metadata = _stripe_value(session, 'metadata', {}) or {}
+    if _stripe_value(metadata, 'kind') != 'sms_credits':
+        return
+    if _stripe_value(session, 'payment_status') != 'paid':
+        return
+    org_id = _stripe_value(metadata, 'organization_id')
+    credit_cents = int(_stripe_value(session, 'amount_total')
+                       or _stripe_value(metadata, 'credit_cents') or 0)
+    if not org_id or credit_cents <= 0:
+        return
+    credit(org_id, credit_cents,
+           stripe_checkout_session_id=_stripe_value(session, 'id'),
+           description='Stripe top-up')
 
 
 @csrf_exempt

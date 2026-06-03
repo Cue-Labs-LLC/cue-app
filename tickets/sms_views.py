@@ -5,16 +5,19 @@ org-scoped and gated behind the per-org ``sms_marketing_enabled`` flag.
 """
 
 import logging
+import uuid
 from functools import wraps
 
 from django.conf import settings
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
 from django.core.paginator import Paginator
+from django.db import transaction, IntegrityError
 from django.db.models import Count, Q, F, Sum
 from django.db.models.functions import Coalesce, Now
 from django.http import JsonResponse, HttpResponse, Http404
 from django.shortcuts import render, redirect, get_object_or_404
+from django.urls import reverse
 from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_POST, require_http_methods
@@ -97,7 +100,10 @@ def sms_recipient_list_list(request):
     lists = SMSRecipientList.objects.filter(
         organization=org, deleted_at__isnull=True,
     ).order_by('-created_at')
-    return render(request, 'tickets/marketing/sms/recipient_list_list.html', {'lists': lists})
+    return render(request, 'tickets/marketing/sms/recipient_list_list.html', {
+        'lists': lists,
+        'marketing_section': 'sms',
+    })
 
 
 @login_required
@@ -170,6 +176,10 @@ def sms_recipient_list_preview(request):
 @require_host
 @require_sms_feature
 def sms_campaign_list(request):
+    import json
+    from .services.marketing import (
+        get_cached_marketing_metrics, WINDOW_CHOICES, resolve_window, DEFAULT_WINDOW,
+    )
     org = get_organization(request)
     campaigns = _annotate_counts(
         SMSCampaign.objects.filter(organization=org, deleted_at__isnull=True)
@@ -177,7 +187,28 @@ def sms_campaign_list(request):
     ).order_by('-created_at')
     paginator = Paginator(campaigns, 25)
     page_obj = paginator.get_page(request.GET.get('page'))
-    return render(request, 'tickets/marketing/sms/campaign_list.html', {'page_obj': page_obj})
+
+    # Consolidated SMS performance band — reuses the Marketing analytics plumbing
+    # (same cache/window as the Overview page) so all SMS lives on one page.
+    window_key, window_days, window_label = resolve_window(request.GET.get('window', DEFAULT_WINDOW))
+    metrics = get_cached_marketing_metrics(org, window_days, window_key)
+    engagement_chart = {
+        'labels': [row['month'] for row in metrics['engagement_trends']],
+        'sms_clicks': [row['sms_clicks'] for row in metrics['engagement_trends']],
+    }
+
+    return render(request, 'tickets/marketing/sms/campaign_list.html', {
+        'page_obj': page_obj,
+        'balance_cents': org.sms_credit_balance_cents,
+        'marketing_section': 'sms',
+        'window_choices': WINDOW_CHOICES,
+        'window_key': window_key,
+        'window_label': window_label,
+        'native_sms': metrics['native_sms'],
+        'sms_channel': metrics['channels']['sms'],
+        'top_sms_campaigns': metrics['top_sms_campaigns'],
+        'engagement_chart_json': json.dumps(engagement_chart),
+    })
 
 
 def _event_attendee_list(org, event):
@@ -210,6 +241,9 @@ def sms_campaign_create(request):
     cap = getattr(settings, 'SMS_CAMPAIGN_MAX_RECIPIENTS', 5000)
     confirm_count = None
     exceeds_cap = False
+    confirm_cost_cents = None
+    confirm_cost_tokens = None
+    insufficient_credits = False
 
     event = None
     event_id = request.POST.get('event') or request.GET.get('event')
@@ -217,6 +251,11 @@ def sms_campaign_create(request):
         event = get_object_or_404(
             Event.objects.filter(organization=org, deleted_at__isnull=True), id=event_id,
         )
+
+    # Per-submit idempotency token: generated when the confirm panel renders and
+    # echoed back on confirm, so a double-click / browser retry can't create a
+    # second campaign or double-charge. Preserved across the review→confirm POSTs.
+    idem_key = request.POST.get('idempotency_key') or uuid.uuid4().hex
 
     if request.method == 'POST':
         form = SMSCampaignForm(request.POST, organization=org)
@@ -234,28 +273,94 @@ def sms_campaign_create(request):
                 )
             elif confirm_count == 0:
                 form.add_error('recipient_list', 'This audience has no contactable recipients.')
-            elif request.POST.get('confirm'):
-                scheduled = form.cleaned_data.get('send_mode') == SMSCampaignForm.SEND_SCHEDULE
-                campaign = form.save(commit=False)
-                campaign.organization = org
-                campaign.created_by = request.user
-                campaign.event = event  # None unless launched from an event
-                # Auto-derive the click-tracking target from the first URL in the body.
-                campaign.link_url = extract_first_url(campaign.body)
-                if scheduled:
-                    campaign.status = SMSCampaign.Status.SCHEDULED
-                    campaign.scheduled_at = form.cleaned_data['scheduled_at']
-                    campaign.save()
-                    messages.success(
-                        request,
-                        f'Campaign scheduled for {campaign.scheduled_at:%b %d, %Y %I:%M %p}.',
+            else:
+                from .services.sms_credits import (
+                    estimate_campaign_cost_cents, estimate_campaign_cost_tokens,
+                    charge, InsufficientCreditsError,
+                )
+                confirm_cost_cents = estimate_campaign_cost_cents(
+                    confirm_count, form.cleaned_data['body'],
+                )
+                # Displayed cost = exact segment count (1 token = 1 segment); the
+                # charged cents may round up at sub-cent prices, the token count doesn't.
+                confirm_cost_tokens = estimate_campaign_cost_tokens(
+                    confirm_count, form.cleaned_data['body'],
+                )
+                insufficient_credits = confirm_cost_cents > org.sms_credit_balance_cents
+
+                if request.POST.get('confirm') and insufficient_credits:
+                    form.add_error(
+                        'recipient_list',
+                        'Not enough SMS tokens to send this campaign. Top up to continue.',
                     )
-                else:
-                    campaign.status = SMSCampaign.Status.DRAFT
-                    campaign.save()
-                    send_sms_campaign_task.delay(str(campaign.id))
-                    messages.success(request, f'Sending "{campaign.name}" to {confirm_count} recipients.')
-                return redirect('tickets:sms_campaign_detail', pk=campaign.id)
+                elif request.POST.get('confirm'):
+                    # Idempotency: if this exact confirm already produced a campaign,
+                    # return it instead of charging/sending again.
+                    existing = SMSCampaign.objects.filter(
+                        organization=org, idempotency_key=idem_key,
+                    ).first()
+                    if existing:
+                        return redirect('tickets:sms_campaign_detail', pk=existing.id)
+
+                    scheduled = form.cleaned_data.get('send_mode') == SMSCampaignForm.SEND_SCHEDULE
+                    # Always persist as SCHEDULED (send-now → scheduled for now). The
+                    # */5 cron is then a safety net: if the immediate dispatch is
+                    # dropped, the campaign is still picked up and sent (no lost money).
+                    send_at = form.cleaned_data['scheduled_at'] if scheduled else timezone.now()
+                    try:
+                        with transaction.atomic():
+                            campaign = form.save(commit=False)
+                            campaign.organization = org
+                            campaign.created_by = request.user
+                            campaign.event = event
+                            campaign.link_url = extract_first_url(campaign.body)
+                            campaign.idempotency_key = idem_key
+                            campaign.status = SMSCampaign.Status.SCHEDULED
+                            campaign.scheduled_at = send_at
+                            campaign.audience_size = len(recipients)
+                            campaign.save()
+                            # Freeze the audience now so charged == what sends. The
+                            # orchestrator reuses these rows (it only re-resolves when
+                            # none exist) and re-checks opt-out per recipient at send.
+                            SMSMessageRecipient.objects.bulk_create([
+                                SMSMessageRecipient(
+                                    campaign=campaign, customer_id=r['customer_id'], phone=r['phone'],
+                                ) for r in recipients
+                            ], batch_size=500)
+                            # Charge inside the same transaction — campaign + snapshot +
+                            # debit are all-or-nothing (no uncharged campaign can exist).
+                            charge(org.id, confirm_cost_cents, campaign=campaign,
+                                   description=f'Campaign: {campaign.name}',
+                                   created_by=request.user)
+                    except InsufficientCreditsError:
+                        insufficient_credits = True
+                        form.add_error(
+                            'recipient_list',
+                            'Not enough SMS tokens to send this campaign. Top up to continue.',
+                        )
+                    except IntegrityError:
+                        # Concurrent duplicate confirm (same idempotency_key) — the other
+                        # request won; return that campaign.
+                        existing = SMSCampaign.objects.filter(
+                            organization=org, idempotency_key=idem_key,
+                        ).first()
+                        if existing:
+                            return redirect('tickets:sms_campaign_detail', pk=existing.id)
+                        raise
+                    else:
+                        if not scheduled:
+                            transaction.on_commit(
+                                lambda cid=str(campaign.id): send_sms_campaign_task.delay(cid)
+                            )
+                            messages.success(
+                                request, f'Sending "{campaign.name}" to {len(recipients)} recipients.',
+                            )
+                        else:
+                            messages.success(
+                                request,
+                                f'Campaign scheduled for {campaign.scheduled_at:%b %d, %Y %I:%M %p}.',
+                            )
+                        return redirect('tickets:sms_campaign_detail', pk=campaign.id)
     else:
         initial = {}
         if event:
@@ -271,6 +376,11 @@ def sms_campaign_create(request):
         'preview_encoding': encoding,
         'preview_segments': segments,
         'event': event,
+        'confirm_cost_cents': confirm_cost_cents,
+        'confirm_cost_tokens': confirm_cost_tokens,
+        'balance_cents': org.sms_credit_balance_cents,
+        'insufficient_credits': insufficient_credits,
+        'idempotency_key': idem_key,
     })
 
 
@@ -311,7 +421,17 @@ def sms_campaign_cancel(request, pk):
         id=pk, organization=org, status=SMSCampaign.Status.SCHEDULED,
     ).update(status=SMSCampaign.Status.CANCELED)
     if updated:
-        messages.success(request, 'Scheduled campaign canceled.')
+        # Refund the credits reserved at scheduling time (idempotent).
+        from .services.sms_credits import refund_campaign
+        campaign = SMSCampaign.objects.get(id=pk)
+        refunded = refund_campaign(campaign, description='Scheduled campaign canceled')
+        if refunded:
+            messages.success(
+                request,
+                f'Scheduled campaign canceled. ${refunded / 100:.2f} in credits refunded.',
+            )
+        else:
+            messages.success(request, 'Scheduled campaign canceled.')
     else:
         messages.error(request, 'That campaign can no longer be canceled.')
     return redirect('tickets:sms_campaign_detail', pk=pk)
@@ -404,3 +524,112 @@ def sms_click_redirect(request, token):
         first_clicked_at=Coalesce(F('first_clicked_at'), Now()),
     )
     return redirect(target)
+
+
+# ---------------------------------------------------------------------------
+# Prepaid SMS credit wallet (Stripe Checkout top-ups)
+# ---------------------------------------------------------------------------
+
+# Token packs (1 token = 1 SMS segment). The dollar price is derived from the
+# per-segment price, so a pack always lands the balance on a whole-token amount.
+SMS_CREDIT_PRESETS_TOKENS = [500, 1000, 2500, 5000]
+
+
+@login_required
+@require_org
+@require_host
+@require_sms_feature
+def sms_credits(request):
+    """Wallet page: token balance, token packs, and the ledger."""
+    from .models import SMSCreditTransaction
+    from .services.sms_credits import price_per_segment_cents
+    org = get_organization(request)
+    price = price_per_segment_cents()
+    presets = [{'tokens': t, 'cents': int(t * price)} for t in SMS_CREDIT_PRESETS_TOKENS]
+    transactions = (
+        SMSCreditTransaction.objects.filter(organization=org)
+        .select_related('campaign').order_by('-created_at')[:30]
+    )
+    return render(request, 'tickets/marketing/sms/credits.html', {
+        'balance_cents': org.sms_credit_balance_cents,
+        'presets': presets,
+        'transactions': transactions,
+        'stripe_ready': bool(getattr(settings, 'STRIPE_SECRET_KEY', '')),
+        'marketing_section': 'sms',
+    })
+
+
+@login_required
+@require_org
+@require_host
+@require_sms_feature
+@require_POST
+def sms_credits_checkout(request):
+    """Create a Stripe Checkout Session for a credit top-up (org pays the platform
+    directly) and redirect the buyer to Stripe's hosted page."""
+    org = get_organization(request)
+    from .services.sms_credits import price_per_segment_cents
+    try:
+        token_pack = int(request.POST.get('tokens', '0'))
+    except (TypeError, ValueError):
+        token_pack = 0
+    if token_pack not in SMS_CREDIT_PRESETS_TOKENS:
+        messages.error(request, 'Pick a valid token pack.')
+        return redirect('tickets:sms_credits')
+    amount_cents = int(token_pack * price_per_segment_cents())
+    if not getattr(settings, 'STRIPE_SECRET_KEY', ''):
+        messages.error(request, 'Payments are not configured for this environment.')
+        return redirect('tickets:sms_credits')
+
+    import stripe as stripe_lib
+    stripe_lib.api_key = settings.STRIPE_SECRET_KEY
+    success_url = request.build_absolute_uri(
+        reverse('tickets:sms_credits_success')
+    ) + '?session_id={CHECKOUT_SESSION_ID}'
+    cancel_url = request.build_absolute_uri(reverse('tickets:sms_credits'))
+    try:
+        session = stripe_lib.checkout.Session.create(
+            mode='payment',
+            line_items=[{
+                'price_data': {
+                    'currency': getattr(settings, 'STRIPE_CURRENCY', 'usd'),
+                    'product_data': {'name': f'{token_pack} marketing SMS tokens'},
+                    'unit_amount': amount_cents,
+                },
+                'quantity': 1,
+            }],
+            metadata={
+                'kind': 'sms_credits',
+                'organization_id': str(org.id),
+                'credit_cents': str(amount_cents),
+            },
+            success_url=success_url,
+            cancel_url=cancel_url,
+        )
+    except Exception:
+        logger.exception('Stripe checkout session create failed for org %s', org.id)
+        messages.error(request, 'Could not start checkout. Please try again.')
+        return redirect('tickets:sms_credits')
+    return redirect(session.url)
+
+
+@login_required
+@require_org
+@require_host
+@require_sms_feature
+def sms_credits_success(request):
+    """Stripe success landing. Fulfills the credit immediately (idempotent) so it
+    lands even when no webhook is configured (e.g. local dev)."""
+    org = get_organization(request)
+    session_id = request.GET.get('session_id', '')
+    if session_id and getattr(settings, 'STRIPE_SECRET_KEY', ''):
+        try:
+            import stripe as stripe_lib
+            from .views import _fulfill_sms_credit_checkout
+            stripe_lib.api_key = settings.STRIPE_SECRET_KEY
+            session = stripe_lib.checkout.Session.retrieve(session_id)
+            _fulfill_sms_credit_checkout(session)
+        except Exception:
+            logger.exception('Stripe success fulfillment failed for %s', session_id)
+    messages.success(request, 'Payment received — your SMS tokens have been added.')
+    return redirect('tickets:sms_credits')

@@ -217,6 +217,7 @@ Event.objects.all()
 | `TWILIO_SMS_FROM` | Marketing SMS | Fallback sender number (E.164) used when no Messaging Service is set |
 | `TWILIO_VALIDATE_WEBHOOKS` | Optional | Validate inbound Twilio webhook signatures (default `True`; disable in local dev without a tunnel) |
 | `SMS_CAMPAIGN_MAX_RECIPIENTS` | Optional | Hard cap on recipients per marketing-SMS campaign (default 5000) |
+| `SMS_PRICE_PER_SEGMENT_CENTS` | Optional | Price charged to an org per SMS segment, in cents (Decimal, default 3). Debited from the prepaid credit wallet at send time |
 
 ---
 

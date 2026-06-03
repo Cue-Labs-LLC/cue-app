@@ -1,0 +1,28 @@
+{% comment %}
+Shared Marketing page header + primary section nav.
+Usage:  {% include 'tickets/marketing/_marketing_nav.html' with marketing_section='sms' subtitle='…' %}
+  marketing_section : 'overview' | 'sms'  — marks the active tab
+  subtitle (optional): muted line under the "Marketing" title
+The SMS Campaigns tab is gated exactly like the old sidebar sub-link.
+{% endcomment %}
+<div class="marketing-head">
+    <div class="marketing-head-top">
+        <h1>Marketing</h1>
+        {% if subtitle %}<p class="marketing-head-subtitle">{{ subtitle }}</p>{% endif %}
+    </div>
+
+    <nav class="marketing-sectionnav" aria-label="Marketing sections">
+        <a href="{% url 'tickets:marketing_overview' %}"
+           class="marketing-sectionnav-link{% if marketing_section == 'overview' %} is-active{% endif %}"
+           {% if marketing_section == 'overview' %}aria-current="page"{% endif %}>
+            <i class="bi bi-grid-1x2"></i><span>Overview</span>
+        </a>
+        {% if org.sms_marketing_enabled and is_org_host %}
+        <a href="{% url 'tickets:sms_campaign_list' %}"
+           class="marketing-sectionnav-link{% if marketing_section == 'sms' %} is-active{% endif %}"
+           {% if marketing_section == 'sms' %}aria-current="page"{% endif %}>
+            <i class="bi bi-chat-dots"></i><span>SMS Campaigns</span>
+        </a>
+        {% endif %}
+    </nav>
+</div>

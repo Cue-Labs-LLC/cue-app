@@ -298,7 +298,7 @@ class SMSWebhookTests(TestCase):
 class SMSViewTests(TestCase):
     def setUp(self):
         self.client = Client()
-        self.org = Organization.objects.create(name='Org A', slug='org-va', sms_marketing_enabled=True)
+        self.org = Organization.objects.create(name='Org A', slug='org-va', sms_marketing_enabled=True, sms_credit_balance_cents=100000)
         self.user = User.objects.create_user('u', 'u@test.com', 'pw')
         UserProfile.objects.create(user=self.user, organization=self.org, org_role=UserProfile.OrgRole.OWNER)
         self.client.login(username='u@test.com', password='pw')
@@ -317,6 +317,19 @@ class SMSViewTests(TestCase):
     def test_campaign_list_ok_when_enabled(self):
         resp = self.client.get(reverse('tickets:sms_campaign_list'))
         self.assertEqual(resp.status_code, 200)
+        # Consolidated SMS home: shared Marketing nav + performance band + table.
+        self.assertContains(resp, 'marketing-sectionnav')
+        self.assertContains(resp, 'Campaigns sent')   # native performance stat card
+        self.assertContains(resp, 'Your campaigns')    # campaign table section
+
+    def test_marketing_overview_has_section_nav_and_no_sms_tab(self):
+        # SMS Campaigns now lives in the Marketing page's primary nav; the old
+        # in-page "SMS" analytics tab is gone (its metrics moved to the SMS page).
+        resp = self.client.get(reverse('tickets:marketing_overview'))
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, 'marketing-sectionnav')
+        self.assertContains(resp, reverse('tickets:sms_campaign_list'))
+        self.assertNotContains(resp, 'data-tab-key="sms"')
 
     def test_preview_returns_count(self):
         resp = self.client.post(reverse('tickets:sms_recipient_list_preview'), {'min_ltv': '0'})
@@ -333,10 +346,12 @@ class SMSViewTests(TestCase):
         self.assertEqual(SMSCampaign.objects.count(), 0)
 
     def test_create_with_confirm_sends(self):
-        resp = self.client.post(reverse('tickets:sms_campaign_create'), {
-            'name': 'Promo', 'recipient_list': str(self.rl.id), 'body': 'Hello',
-            'send_mode': 'now', 'confirm': '1',
-        })
+        # Send-now dispatches via transaction.on_commit — capture so it fires in TestCase.
+        with self.captureOnCommitCallbacks(execute=True):
+            resp = self.client.post(reverse('tickets:sms_campaign_create'), {
+                'name': 'Promo', 'recipient_list': str(self.rl.id), 'body': 'Hello',
+                'send_mode': 'now', 'confirm': '1',
+            })
         self.assertEqual(resp.status_code, 302)
         c = SMSCampaign.objects.get()
         self.assertEqual(c.status, SMSCampaign.Status.SENT)
@@ -559,7 +574,7 @@ class SMSClickMetricsTests(TestCase):
 class SMSCampaignLinkAutoDeriveTests(TestCase):
     def setUp(self):
         self.client = Client()
-        self.org = Organization.objects.create(name='Org', slug='org-ad', sms_marketing_enabled=True)
+        self.org = Organization.objects.create(name='Org', slug='org-ad', sms_marketing_enabled=True, sms_credit_balance_cents=100000)
         self.user = User.objects.create_user('u', 'u@test.com', 'pw')
         UserProfile.objects.create(user=self.user, organization=self.org, org_role=UserProfile.OrgRole.OWNER)
         self.client.login(username='u@test.com', password='pw')
@@ -584,7 +599,7 @@ class EventSMSTests(TestCase):
         from .models import Event, Venue, CSVFormat, UploadedFile, TicketOrder
         self.TicketOrder = TicketOrder
         self.client = Client()
-        self.org = Organization.objects.create(name='Org', slug='org-ev', sms_marketing_enabled=True)
+        self.org = Organization.objects.create(name='Org', slug='org-ev', sms_marketing_enabled=True, sms_credit_balance_cents=100000)
         self.user = User.objects.create_user('u', 'u@test.com', 'pw')
         UserProfile.objects.create(user=self.user, organization=self.org, org_role=UserProfile.OrgRole.OWNER)
         self.client.login(username='u@test.com', password='pw')
@@ -671,3 +686,331 @@ class EventSMSTests(TestCase):
         self.org.save(update_fields=['sms_marketing_enabled'])
         resp = self.client.get(reverse('tickets:event_detail', args=[self.event.id]))
         self.assertNotContains(resp, 'Send SMS to attendees')
+
+
+@override_settings(E2E_TEST_MODE=True, SMS_CAMPAIGN_MAX_RECIPIENTS=5000,
+                   SMS_PRICE_PER_SEGMENT_CENTS=Decimal('3'))
+class SMSCreditWalletTests(TestCase):
+    def setUp(self):
+        self.org = Organization.objects.create(name='Org', slug='org-cw', sms_marketing_enabled=True)
+
+    def test_cost_estimate_segments(self):
+        from .services.sms_credits import estimate_campaign_cost_cents
+        # 2 recipients, short body -> 1 segment, 3c each = 6c
+        self.assertEqual(estimate_campaign_cost_cents(2, 'hi'), 6)
+        self.assertEqual(estimate_campaign_cost_cents(0, 'hi'), 0)
+
+    def test_charge_debits_and_records_ledger(self):
+        from .services.sms_credits import charge
+        from .models import SMSCreditTransaction
+        self.org.sms_credit_balance_cents = 100
+        self.org.save(update_fields=['sms_credit_balance_cents'])
+        new_balance = charge(self.org.id, 30, description='test')
+        self.assertEqual(new_balance, 70)
+        self.org.refresh_from_db()
+        self.assertEqual(self.org.sms_credit_balance_cents, 70)
+        t = SMSCreditTransaction.objects.get(organization=self.org, kind='charge')
+        self.assertEqual(t.amount_cents, -30)
+        self.assertEqual(t.balance_after_cents, 70)
+
+    def test_charge_insufficient_raises_and_no_mutation(self):
+        from .services.sms_credits import charge, InsufficientCreditsError
+        from .models import SMSCreditTransaction
+        self.org.sms_credit_balance_cents = 10
+        self.org.save(update_fields=['sms_credit_balance_cents'])
+        with self.assertRaises(InsufficientCreditsError):
+            charge(self.org.id, 50)
+        self.org.refresh_from_db()
+        self.assertEqual(self.org.sms_credit_balance_cents, 10)
+        self.assertFalse(SMSCreditTransaction.objects.filter(organization=self.org).exists())
+
+    def test_credit_idempotent_by_session(self):
+        from .services.sms_credits import credit
+        from .models import SMSCreditTransaction
+        b1 = credit(self.org.id, 1000, stripe_checkout_session_id='cs_test_1', description='topup')
+        b2 = credit(self.org.id, 1000, stripe_checkout_session_id='cs_test_1', description='topup retry')
+        self.assertEqual(b1, 1000)
+        self.assertEqual(b2, 1000)  # retry no-ops
+        self.assertEqual(SMSCreditTransaction.objects.filter(organization=self.org, kind='topup').count(), 1)
+
+    def test_refund_campaign_is_idempotent(self):
+        from .services.sms_credits import charge, refund_campaign
+        rl = SMSRecipientList.objects.create(organization=self.org, name='L', filter_criteria={'min_ltv': '0'})
+        c = SMSCampaign.objects.create(organization=self.org, recipient_list=rl, name='C', body='Hi',
+                                       status=SMSCampaign.Status.SCHEDULED)
+        self.org.sms_credit_balance_cents = 100
+        self.org.save(update_fields=['sms_credit_balance_cents'])
+        charge(self.org.id, 30, campaign=c, description='charge')
+        refunded = refund_campaign(c)
+        self.assertEqual(refunded, 30)
+        self.org.refresh_from_db()
+        self.assertEqual(self.org.sms_credit_balance_cents, 100)  # back to full
+        # Second refund is a no-op.
+        self.assertEqual(refund_campaign(c), 0)
+        self.org.refresh_from_db()
+        self.assertEqual(self.org.sms_credit_balance_cents, 100)
+
+    def test_webhook_credits_idempotently(self):
+        from .views import _fulfill_sms_credit_checkout
+        from .models import SMSCreditTransaction
+        session = {
+            'id': 'cs_hook_1', 'payment_status': 'paid', 'amount_total': 2500,
+            'metadata': {'kind': 'sms_credits', 'organization_id': str(self.org.id), 'credit_cents': '2500'},
+        }
+        _fulfill_sms_credit_checkout(session)
+        _fulfill_sms_credit_checkout(session)  # retry
+        self.org.refresh_from_db()
+        self.assertEqual(self.org.sms_credit_balance_cents, 2500)
+        self.assertEqual(SMSCreditTransaction.objects.filter(stripe_checkout_session_id='cs_hook_1').count(), 1)
+
+    def test_webhook_credits_from_stripe_object(self):
+        # Regression: the live webhook passes a Stripe StripeObject, not a dict.
+        # StripeObject has no .get() (its __getattr__ raises on a missing key),
+        # so `session.get('metadata')` 500'd in prod while dict-based tests passed.
+        from stripe import StripeObject
+        from .views import _fulfill_sms_credit_checkout
+        from .models import SMSCreditTransaction
+        session = StripeObject.construct_from({
+            'id': 'cs_obj_1', 'payment_status': 'paid', 'amount_total': 1500,
+            'metadata': {'kind': 'sms_credits', 'organization_id': str(self.org.id), 'credit_cents': '1500'},
+        }, 'sk_test')
+        _fulfill_sms_credit_checkout(session)
+        self.org.refresh_from_db()
+        self.assertEqual(self.org.sms_credit_balance_cents, 1500)
+        self.assertEqual(SMSCreditTransaction.objects.filter(stripe_checkout_session_id='cs_obj_1').count(), 1)
+
+    def test_webhook_ignores_non_sms_sessions(self):
+        from .views import _fulfill_sms_credit_checkout
+        _fulfill_sms_credit_checkout({'id': 'cs_x', 'payment_status': 'paid', 'metadata': {'kind': 'something_else'}})
+        self.org.refresh_from_db()
+        self.assertEqual(self.org.sms_credit_balance_cents, 0)
+
+
+@override_settings(E2E_TEST_MODE=True, SMS_CAMPAIGN_MAX_RECIPIENTS=5000,
+                   SMS_PRICE_PER_SEGMENT_CENTS=Decimal('3'))
+class SMSCreditSendFlowTests(TestCase):
+    def setUp(self):
+        self.client = Client()
+        self.org = Organization.objects.create(name='Org', slug='org-cs', sms_marketing_enabled=True)
+        self.user = User.objects.create_user('u', 'u@test.com', 'pw')
+        UserProfile.objects.create(user=self.user, organization=self.org, org_role=UserProfile.OrgRole.OWNER)
+        self.client.login(username='u@test.com', password='pw')
+        self.client.get(reverse('tickets:home'))
+        for i in range(2):
+            make_customer(self.org, f'c{i}@x.com', f'+1310555900{i}')
+        self.rl = SMSRecipientList.objects.create(organization=self.org, name='All', filter_criteria={'min_ltv': '0'})
+
+    def _post_send(self, **extra):
+        data = {
+            'name': 'Promo', 'recipient_list': str(self.rl.id), 'body': 'Hello',
+            'send_mode': 'now', 'confirm': '1',
+        }
+        data.update(extra)
+        # Send-now dispatches via transaction.on_commit; capture so it fires in TestCase.
+        with self.captureOnCommitCallbacks(execute=True):
+            return self.client.post(reverse('tickets:sms_campaign_create'), data)
+
+    def test_insufficient_balance_blocks_send(self):
+        # Balance 0; cost = 2 recipients x 1 segment x 3c = 6c.
+        resp = self._post_send()
+        self.assertEqual(resp.status_code, 200)  # not redirected
+        self.assertTrue(resp.context['insufficient_credits'])
+        self.assertEqual(SMSCampaign.objects.count(), 0)  # nothing created
+
+    def test_sufficient_balance_charges_and_sends(self):
+        self.org.sms_credit_balance_cents = 100
+        self.org.save(update_fields=['sms_credit_balance_cents'])
+        resp = self._post_send()
+        self.assertEqual(resp.status_code, 302)
+        c = SMSCampaign.objects.get()
+        self.assertEqual(c.status, SMSCampaign.Status.SENT)
+        self.org.refresh_from_db()
+        self.assertEqual(self.org.sms_credit_balance_cents, 94)  # 100 - 6
+
+    def test_confirm_step_shows_cost(self):
+        self.org.sms_credit_balance_cents = 100
+        self.org.save(update_fields=['sms_credit_balance_cents'])
+        # POST without confirm -> shows cost, no send.
+        resp = self.client.post(reverse('tickets:sms_campaign_create'), {
+            'name': 'Promo', 'recipient_list': str(self.rl.id), 'body': 'Hello', 'send_mode': 'now',
+        })
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.context['confirm_cost_cents'], 6)
+        self.assertEqual(resp.context['confirm_cost_tokens'], 2)  # 2 recipients x 1 segment
+        self.assertFalse(resp.context['insufficient_credits'])
+        self.assertEqual(SMSCampaign.objects.count(), 0)
+
+    def test_cancel_scheduled_refunds(self):
+        self.org.sms_credit_balance_cents = 100
+        self.org.save(update_fields=['sms_credit_balance_cents'])
+        when = (timezone.now() + timedelta(days=1)).strftime('%Y-%m-%dT%H:%M')
+        self.client.post(reverse('tickets:sms_campaign_create'), {
+            'name': 'Later', 'recipient_list': str(self.rl.id), 'body': 'Hello',
+            'send_mode': 'schedule', 'scheduled_at': when, 'confirm': '1',
+        })
+        c = SMSCampaign.objects.get()
+        self.org.refresh_from_db()
+        self.assertEqual(self.org.sms_credit_balance_cents, 94)  # charged at schedule time
+        self.client.post(reverse('tickets:sms_campaign_cancel', kwargs={'pk': c.id}))
+        c.refresh_from_db()
+        self.assertEqual(c.status, SMSCampaign.Status.CANCELED)
+        self.org.refresh_from_db()
+        self.assertEqual(self.org.sms_credit_balance_cents, 100)  # refunded
+
+    def test_credits_page_renders_token_balance(self):
+        # 4200 cents at 3c/token = 1400 tokens.
+        self.org.sms_credit_balance_cents = 4200
+        self.org.save(update_fields=['sms_credit_balance_cents'])
+        resp = self.client.get(reverse('tickets:sms_credits'))
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, '1400')
+        self.assertContains(resp, 'Token balance')
+        self.assertNotContains(resp, '$42.00')
+
+
+@override_settings(E2E_TEST_MODE=True, SMS_CAMPAIGN_MAX_RECIPIENTS=5000,
+                   SMS_PRICE_PER_SEGMENT_CENTS=Decimal('3'))
+class SMSCreditHardeningTests(TestCase):
+    """Covers the eng-review + outside-voice fixes: idempotent confirm, frozen
+    audience + opt-out re-check, recoverable send, ceil rounding, settled-amount
+    crediting, webhook payment guards, and checkout validation."""
+    def setUp(self):
+        self.client = Client()
+        self.org = Organization.objects.create(name='Org', slug='org-hd',
+                                                sms_marketing_enabled=True, sms_credit_balance_cents=100000)
+        self.user = User.objects.create_user('u', 'u@test.com', 'pw')
+        UserProfile.objects.create(user=self.user, organization=self.org, org_role=UserProfile.OrgRole.OWNER)
+        self.client.login(username='u@test.com', password='pw')
+        self.client.get(reverse('tickets:home'))
+        for i in range(2):
+            make_customer(self.org, f'c{i}@x.com', f'+1310555800{i}')
+        self.rl = SMSRecipientList.objects.create(organization=self.org, name='All', filter_criteria={'min_ltv': '0'})
+
+    def _confirm(self, key, **extra):
+        data = {'name': 'Promo', 'recipient_list': str(self.rl.id), 'body': 'Hello',
+                'send_mode': 'now', 'confirm': '1', 'idempotency_key': key}
+        data.update(extra)
+        with self.captureOnCommitCallbacks(execute=True):
+            return self.client.post(reverse('tickets:sms_campaign_create'), data)
+
+    def test_h2_duplicate_confirm_is_idempotent(self):
+        # Two submits with the same idempotency key -> ONE campaign, charged once.
+        from .models import SMSCreditTransaction
+        self._confirm('dup-key-1')
+        self._confirm('dup-key-1')  # double-click
+        self.assertEqual(SMSCampaign.objects.filter(organization=self.org).count(), 1)
+        charges = SMSCreditTransaction.objects.filter(organization=self.org, kind='charge')
+        self.assertEqual(charges.count(), 1)
+
+    def test_h1_send_now_is_recoverable_via_cron(self):
+        # Without firing on_commit, the campaign is left scheduled-for-now so the
+        # cron safety net still sends it (no lost money / silent drop).
+        resp = self.client.post(reverse('tickets:sms_campaign_create'), {
+            'name': 'P', 'recipient_list': str(self.rl.id), 'body': 'Hi',
+            'send_mode': 'now', 'confirm': '1', 'idempotency_key': 'recov-1',
+        })
+        self.assertEqual(resp.status_code, 302)
+        c = SMSCampaign.objects.get()
+        self.assertEqual(c.status, SMSCampaign.Status.SCHEDULED)
+        self.assertLessEqual(c.scheduled_at, timezone.now())
+        # The */5 cron picks it up and sends it.
+        call_command('send_due_sms_campaigns')
+        c.refresh_from_db()
+        self.assertEqual(c.status, SMSCampaign.Status.SENT)
+
+    def test_frozen_audience_snapshot_at_confirm(self):
+        # Recipients are frozen at confirm time (charged == snapshot), even before send.
+        self.client.post(reverse('tickets:sms_campaign_create'), {
+            'name': 'P', 'recipient_list': str(self.rl.id), 'body': 'Hi',
+            'send_mode': 'now', 'confirm': '1', 'idempotency_key': 'frz-1',
+        })
+        c = SMSCampaign.objects.get()
+        self.assertEqual(c.audience_size, 2)
+        self.assertEqual(SMSMessageRecipient.objects.filter(campaign=c).count(), 2)
+
+    def test_opt_out_after_freeze_is_skipped_at_send(self):
+        # Freeze the audience, then a recipient opts out before the send fires.
+        self.client.post(reverse('tickets:sms_campaign_create'), {
+            'name': 'P', 'recipient_list': str(self.rl.id), 'body': 'Hi',
+            'send_mode': 'now', 'confirm': '1', 'idempotency_key': 'opt-1',
+        })
+        c = SMSCampaign.objects.get()
+        PhoneSuppression.objects.create(phone='+13105558000', organization=None)
+        from .tasks import send_sms_campaign_task
+        send_sms_campaign_task.delay(str(c.id))
+        sent = set(SMSMessageRecipient.objects.filter(campaign=c, status='sent').values_list('phone', flat=True))
+        skipped = SMSMessageRecipient.objects.filter(campaign=c, status='failed', phone='+13105558000').first()
+        self.assertNotIn('+13105558000', sent)        # opted-out not texted
+        self.assertIsNotNone(skipped)
+        self.assertEqual(skipped.error_message, 'opted out before send')
+
+    @override_settings(SMS_PRICE_PER_SEGMENT_CENTS=Decimal('0.4'))
+    def test_m4_sub_cent_rounds_up_not_free(self):
+        from .services.sms_credits import estimate_campaign_cost_cents
+        # 1 recipient x 1 segment x 0.4c = 0.4c -> ceil -> 1c (never free)
+        self.assertEqual(estimate_campaign_cost_cents(1, 'hi'), 1)
+
+    def test_m5_credits_settled_amount_not_metadata(self):
+        # If Stripe's settled amount differs from metadata, credit the settled amount.
+        from .views import _fulfill_sms_credit_checkout
+        start = self.org.sms_credit_balance_cents
+        _fulfill_sms_credit_checkout({
+            'id': 'cs_settled_1', 'payment_status': 'paid', 'amount_total': 1800,
+            'metadata': {'kind': 'sms_credits', 'organization_id': str(self.org.id), 'credit_cents': '2500'},
+        })
+        self.org.refresh_from_db()
+        self.assertEqual(self.org.sms_credit_balance_cents, start + 1800)  # settled, not 2500
+
+    def test_webhook_unpaid_does_not_credit(self):
+        from .views import _fulfill_sms_credit_checkout
+        start = self.org.sms_credit_balance_cents
+        _fulfill_sms_credit_checkout({
+            'id': 'cs_unpaid', 'payment_status': 'unpaid', 'amount_total': 1000,
+            'metadata': {'kind': 'sms_credits', 'organization_id': str(self.org.id)},
+        })
+        self.org.refresh_from_db()
+        self.assertEqual(self.org.sms_credit_balance_cents, start)
+
+    def test_webhook_propagates_on_credit_failure(self):
+        # Fix #3: the webhook must NOT swallow — a credit failure raises so Stripe retries.
+        from .views import _fulfill_sms_credit_checkout
+        with patch('tickets.services.sms_credits.credit', side_effect=RuntimeError('db down')):
+            with self.assertRaises(RuntimeError):
+                _fulfill_sms_credit_checkout({
+                    'id': 'cs_fail', 'payment_status': 'paid', 'amount_total': 1000,
+                    'metadata': {'kind': 'sms_credits', 'organization_id': str(self.org.id)},
+                })
+
+    def test_checkout_rejects_invalid_token_pack(self):
+        resp = self.client.post(reverse('tickets:sms_credits_checkout'), {'tokens': '777'})
+        self.assertEqual(resp.status_code, 302)  # redirect back, no Stripe call
+        self.assertEqual(resp['Location'], reverse('tickets:sms_credits'))
+
+    @override_settings(STRIPE_SECRET_KEY='sk_test_x')
+    def test_checkout_charges_token_pack_at_price(self):
+        # A 500-token pack at 3c = $15.00; Stripe unit_amount must be 1500 cents.
+        with patch('stripe.checkout.Session.create') as mock_create:
+            mock_create.return_value = type('S', (), {'url': 'https://stripe.test/cs'})()
+            resp = self.client.post(reverse('tickets:sms_credits_checkout'), {'tokens': '500'})
+        self.assertEqual(resp.status_code, 302)
+        kwargs = mock_create.call_args.kwargs
+        self.assertEqual(kwargs['line_items'][0]['price_data']['unit_amount'], 1500)
+        self.assertEqual(kwargs['metadata']['credit_cents'], '1500')
+
+
+@override_settings(E2E_TEST_MODE=True, SMS_PRICE_PER_SEGMENT_CENTS=Decimal('3'))
+class SMSTokenFilterTests(TestCase):
+    def test_tokens_filter_floor_and_signs(self):
+        from .templatetags.tickets_extras import tokens
+        self.assertEqual(tokens(4200), 1400)   # 4200 / 3
+        self.assertEqual(tokens(1000), 333)    # floor, odd cents (admin grant)
+        self.assertEqual(tokens(-6), -2)       # whole-token debit
+        self.assertEqual(tokens(-1), -1)       # floor, not int()-truncate toward 0
+        self.assertEqual(tokens(0), 0)
+        self.assertEqual(tokens(None), 0)
+
+    def test_cost_tokens_is_exact_segment_count(self):
+        from .services.sms_credits import estimate_campaign_cost_tokens
+        # 3 recipients, short body -> 1 segment each = 3 tokens (not cents/price).
+        self.assertEqual(estimate_campaign_cost_tokens(3, 'hi'), 3)
+        self.assertEqual(estimate_campaign_cost_tokens(0, 'hi'), 0)

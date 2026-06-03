@@ -1,0 +1,83 @@
+{% extends 'tickets/base.html' %}
+{% load tickets_extras %}
+
+{% block title %}SMS Tokens{% endblock %}
+
+{% block content %}
+{% include 'tickets/marketing/_marketing_nav.html' with marketing_section='sms' %}
+
+<div class="page-header d-flex align-items-center justify-content-between">
+    <div>
+        <a href="{% url 'tickets:sms_campaign_list' %}" class="text-muted small"><i class="bi bi-arrow-left"></i> SMS Campaigns</a>
+        <h1 class="mb-0">SMS Tokens</h1>
+    </div>
+</div>
+
+<div class="row g-3 mb-4">
+    <div class="col-12 col-md-4">
+        <div class="stat-card stat-card--accent">
+            <div class="stat-card-label">Token balance</div>
+            <div class="stat-card-value">{{ balance_cents|tokens }}</div>
+            <div class="stat-card-label">1 token = one ~160-char SMS segment</div>
+        </div>
+    </div>
+</div>
+
+<div class="card mb-4">
+    <div class="card-header"><strong>Add tokens</strong></div>
+    <div class="card-body">
+        {% if stripe_ready %}
+        <p class="text-body-secondary">Each text segment you send spends 1 token (a long or emoji text uses 2–3). Pick a token pack to top up via Stripe.</p>
+        <div class="d-flex flex-wrap gap-2">
+            {% for pack in presets %}
+            <form method="post" action="{% url 'tickets:sms_credits_checkout' %}" class="d-inline">
+                {% csrf_token %}
+                <input type="hidden" name="tokens" value="{{ pack.tokens }}">
+                <button type="submit" class="btn btn-outline-secondary">Buy {{ pack.tokens }} tokens (${{ pack.cents|cents }})</button>
+            </form>
+            {% endfor %}
+        </div>
+        {% else %}
+        <p class="text-body-secondary mb-0">Payments are not configured in this environment. Tokens can be granted from the Django admin (Organization ▸ SMS credit balance, or an SMS credit transaction).</p>
+        {% endif %}
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-header"><strong>History</strong></div>
+    <div class="card-body p-0">
+        {% if transactions %}
+        <div class="table-responsive">
+            <table class="table table-hover mb-0 align-middle">
+                <thead>
+                    <tr>
+                        <th>Date</th>
+                        <th>Type</th>
+                        <th>Detail</th>
+                        <th class="text-end">Amount</th>
+                        <th class="text-end">Balance</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for t in transactions %}
+                    <tr>
+                        <td class="text-body-secondary small">{{ t.created_at|date:"M d, Y g:i A" }}</td>
+                        <td>{{ t.get_kind_display }}</td>
+                        <td class="text-body-secondary">
+                            {% if t.campaign %}<a href="{% url 'tickets:sms_campaign_detail' pk=t.campaign.id %}">{{ t.campaign.name }}</a>{% else %}{{ t.description }}{% endif %}
+                        </td>
+                        <td class="text-end {% if t.amount_cents < 0 %}text-danger{% else %}text-success{% endif %}">
+                            {% if t.amount_cents < 0 %}{{ t.amount_cents|tokens }}{% else %}+{{ t.amount_cents|tokens }}{% endif %} tokens
+                        </td>
+                        <td class="text-end">{{ t.balance_after_cents|tokens }} tokens</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% else %}
+        <div class="empty-state"><i class="bi bi-wallet2"></i><p>No token activity yet.</p></div>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}

@@ -11,6 +11,7 @@ https://docs.djangoproject.com/en/5.2/ref/settings/
 """
 
 import os
+from decimal import Decimal
 from pathlib import Path
 import dj_database_url
 from dotenv import load_dotenv
@@ -263,6 +264,10 @@ TWILIO_SMS_FROM = os.environ.get('TWILIO_SMS_FROM', '')
 TWILIO_VALIDATE_WEBHOOKS = os.environ.get('TWILIO_VALIDATE_WEBHOOKS', 'True') == 'True'
 # Hard ceiling on recipients per marketing-SMS campaign (cost / blast-radius guard).
 SMS_CAMPAIGN_MAX_RECIPIENTS = int(os.environ.get('SMS_CAMPAIGN_MAX_RECIPIENTS', '5000'))
+# Price charged to an org per SMS segment (in cents, Decimal so sub-cent rates work,
+# e.g. "3" = 3¢/segment). Each recipient costs segments × this; debited from the
+# org's prepaid SMS credit wallet at send time.
+SMS_PRICE_PER_SEGMENT_CENTS = Decimal(os.environ.get('SMS_PRICE_PER_SEGMENT_CENTS', '3'))
 E2E_TEST_MODE = os.environ.get('E2E_TEST_MODE', 'False') == 'True'
 
 # Absolute URL for building links in emails (survey invitations, etc.)
