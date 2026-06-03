@@ -134,6 +134,7 @@ from .services.marketing import (
     generate_marketing_narrative,
 )
 from .services.marketing.analytics import DEFAULT_WINDOW, resolve_window
+from .services.customer_filters import filter_customers
 from .services.weather import get_event_weather_forecast, get_event_hourly_forecast
 from .utils import get_organization, require_org, require_organizer, require_host, require_admin, require_owner, clear_org_cache, next_order_number, generate_qr_b64, link_customer_to_buyer
 from .feature_flags import (
@@ -2438,30 +2439,28 @@ def upload_delete(request, file_id):
 def customer_list(request):
     """Display list of all customers with LTV and optional segment/tag filter."""
     org = get_organization(request)
-    customers = Customer.objects.filter(organization=org).exclude(email__endswith='@placeholder.local')
 
     # Segment filter
     segment_filter = request.GET.get('segment', '').strip()
-    if segment_filter:
-        customers = customers.filter(rfm_segment=segment_filter)
 
     # Tag filter — validate UUID to avoid ValueError on bad input
     tag_filter = request.GET.get('tag', '').strip()
     if tag_filter:
         try:
             _uuid.UUID(tag_filter)
-            customers = customers.filter(tags__id=tag_filter)
         except ValueError:
             tag_filter = ''
 
     # Search
     search_query = request.GET.get('search', '')
-    if search_query:
-        customers = customers.filter(
-            name__icontains=search_query
-        ) | customers.filter(
-            email__icontains=search_query
-        )
+
+    # Build the queryset via the shared filter helper (also used by SMS
+    # recipient lists) so filtering logic lives in one place.
+    customers = filter_customers(org, {
+        'rfm_segment': segment_filter or None,
+        'tag_id': tag_filter or None,
+        'search': search_query or None,
+    })
 
     customers = customers.annotate(order_count=Count('ticket_orders'))
 
@@ -2768,6 +2767,7 @@ def marketing_overview(request):
         'active_tab': active_tab,
         'trend_chart_json': json.dumps(trend_chart),
         'engagement_chart_json': json.dumps(engagement_chart),
+        'org_sms_marketing_enabled': org.sms_marketing_enabled,
     }
     return render(request, 'tickets/marketing_overview.html', context)
 

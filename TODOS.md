@@ -61,3 +61,35 @@
 **Context:** Pre-existing behavior, but multi-org makes the blast radius wider. For MVP this is acceptable (most users will be in 1 org). Post-launch, consider making `role` changes owner+superuser only, or removing global role changes from `member_role_update` entirely (org_role is the only per-org permission that matters day-to-day).
 
 **Depends on:** Multi-org PR merged.
+
+---
+
+## Marketing SMS: Per-Org Sender Numbers
+
+**What:** Provision and verify a dedicated Twilio number (toll-free or 10DLC) per organization so opt-out and sender identity are truly per-tenant, instead of the single shared `+18449544410`.
+
+**Why:** v1 marketing SMS sends from one shared verified toll-free number via a Messaging Service. With a shared sender, Twilio enforces STOP globally (a recipient who replies STOP is blocked from the number entirely, across all orgs), and one org's spam complaints can get the shared number carrier-filtered, degrading delivery for every tenant (noisy neighbor). Recipients also see an unfamiliar number with no org identity.
+
+**Pros:** True per-tenant opt-out, sender identity, and blast-radius isolation. Matches the per-organizer consent promise already on the checkout/consent pages.
+
+**Cons:** Each number needs its own toll-free or 10DLC verification (carrier approval lead time), plus provisioning cost and a per-org number management UI.
+
+**Context:** The native SMS feature was deliberately built shared-number-first. `PhoneSuppression.organization` is already nullable specifically to support per-org suppression once per-org numbers exist (null = global/shared, set = per-org). When numbers go per-org, route sends through the org's own Messaging Service and start writing org-scoped suppression rows.
+
+**Depends on:** Native marketing SMS shipped + per-org TF/10DLC verification process.
+
+---
+
+## Marketing SMS: Link Click + Revenue Attribution
+
+**What:** Instrument `SMSCampaign.link_url` with a tracked redirect and tie clicks/conversions back to orders, mirroring the click/revenue fields the SlickText `EventSMSCampaign` path already surfaces.
+
+**Why:** v1 stores `link_url` on a campaign but nothing reads it — there's no way to show ROI (clicks, attributed orders, revenue) for native sends, even though the marketing dashboard shows exactly those metrics for external SlickText campaigns.
+
+**Pros:** Proves marketing ROI for native SMS; brings native campaigns to parity with the external-campaign reporting users already see.
+
+**Cons:** Needs a redirect endpoint + click model + an attribution window joining clicks to subsequent orders. Some modeling decisions (attribution window, last-touch vs any-touch).
+
+**Context:** `SMSCampaign.link_url` exists but is uninstrumented. `EventSMSCampaign` already has `clicks`, `unique_clicks`, `click_rate`, `orders`, `revenue` fields to mirror. A tracked redirect (e.g. `/r/<token>/`) that records a click then 302s to `link_url` is the natural starting point.
+
+**Depends on:** Native marketing SMS shipped.

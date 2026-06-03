@@ -20,6 +20,7 @@ from .models import (
     OAuthClient,
     OAuthAccessToken,
     FeatureFlagSettings,
+    SMSCampaign, SMSRecipientList, SMSMessageRecipient, PhoneSuppression,
 )
 
 
@@ -762,7 +763,8 @@ class OrganizationMembershipAdmin(admin.ModelAdmin):
 
 @admin.register(Organization)
 class OrganizationAdmin(admin.ModelAdmin):
-    list_display = ['name', 'slug', 'stripe_onboarding_complete', 'meta_ads_account_name', 'created_at']
+    list_display = ['name', 'slug', 'sms_marketing_enabled', 'stripe_onboarding_complete', 'meta_ads_account_name', 'created_at']
+    list_editable = ['sms_marketing_enabled']
     search_fields = ['name', 'slug']
     readonly_fields = [
         'id',
@@ -781,7 +783,7 @@ class OrganizationAdmin(admin.ModelAdmin):
     inlines = [OrganizationMembershipInline]
     fieldsets = (
         ('Basic', {'fields': ('name', 'slug', 'rfm_recalc_in_progress')}),
-        ('Feature Flags', {'fields': ('waitlist_feature_enabled',)}),
+        ('Feature Flags', {'fields': ('waitlist_feature_enabled', 'sms_marketing_enabled')}),
         ('Stripe Connect', {'fields': ('stripe_account_id', 'stripe_onboarding_complete')}),
         ('Meta Ads', {
             'fields': (
@@ -1198,3 +1200,35 @@ class OrganizerWaitlistAdmin(admin.ModelAdmin):
             approved_by=request.user,
         )
         self.message_user(request, f'{updated} entr{"y" if updated == 1 else "ies"} approved.')
+
+
+@admin.register(SMSRecipientList)
+class SMSRecipientListAdmin(admin.ModelAdmin):
+    list_display = ['name', 'organization', 'created_at']
+    list_filter = ['organization', 'created_at']
+    search_fields = ['name']
+    readonly_fields = ['id', 'created_at', 'updated_at']
+
+
+@admin.register(SMSCampaign)
+class SMSCampaignAdmin(admin.ModelAdmin):
+    list_display = ['name', 'organization', 'status', 'audience_size', 'scheduled_at', 'sent_at', 'created_at']
+    list_filter = ['organization', 'status', 'created_at']
+    search_fields = ['name', 'body']
+    readonly_fields = ['id', 'started_at', 'sent_at', 'audience_size', 'created_at', 'updated_at']
+
+
+@admin.register(SMSMessageRecipient)
+class SMSMessageRecipientAdmin(admin.ModelAdmin):
+    list_display = ['phone', 'campaign', 'status', 'twilio_sid', 'sent_at', 'delivered_at']
+    list_filter = ['status']
+    search_fields = ['phone', 'twilio_sid']
+    readonly_fields = ['id', 'created_at', 'updated_at']
+
+
+@admin.register(PhoneSuppression)
+class PhoneSuppressionAdmin(admin.ModelAdmin):
+    list_display = ['phone', 'organization', 'reason', 'created_at']
+    list_filter = ['reason', 'organization']
+    search_fields = ['phone']
+    readonly_fields = ['id', 'created_at', 'updated_at']

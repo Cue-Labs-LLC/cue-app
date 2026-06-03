@@ -213,6 +213,10 @@ Event.objects.all()
 | `GOOGLE_DOC_ID` | Optional | Google Docs event sync |
 | `GOOGLE_SERVICE_ACCOUNT_JSON` | Optional | Google service account |
 | `TIME_ZONE` | Optional | Default: America/Los_Angeles |
+| `TWILIO_MESSAGING_SERVICE_SID` | Marketing SMS | Twilio Messaging Service (MG…) holding the verified sender number; provides Advanced Opt-Out + `OptOutType` webhooks (preferred) |
+| `TWILIO_SMS_FROM` | Marketing SMS | Fallback sender number (E.164) used when no Messaging Service is set |
+| `TWILIO_VALIDATE_WEBHOOKS` | Optional | Validate inbound Twilio webhook signatures (default `True`; disable in local dev without a tunnel) |
+| `SMS_CAMPAIGN_MAX_RECIPIENTS` | Optional | Hard cap on recipients per marketing-SMS campaign (default 5000) |
 
 ---
 
