@@ -1,82 +1,377 @@
 {% extends 'tickets/base.html' %}
-{% load crispy_forms_tags %}
 
 {% block title %}New SMS Campaign{% endblock %}
 
-{% block content %}
-<div class="page-header">
-    <a href="{% url 'tickets:sms_campaign_list' %}" class="text-muted small"><i class="bi bi-arrow-left"></i> Back to campaigns</a>
-    <h1>New SMS Campaign</h1>
-</div>
+{% block extra_css %}
+<style>
+    /* Page-scoped composer styles. Form colors reference dashboard.css tokens so
+       the page adapts to light/dark automatically; the iPhone uses fixed device
+       colors so it stays a crisp dark phone on either theme. Namespaced under
+       .sms-compose to avoid touching the global stylesheet. */
+    .sms-compose { max-width: 1040px; margin: 0 auto; }
+    .sms-compose .sms-back {
+        display: inline-flex; align-items: center; gap: 5px;
+        font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.06em;
+        text-transform: uppercase; color: var(--text-tertiary);
+        text-decoration: none; transition: color 0.12s;
+    }
+    .sms-compose .sms-back:hover { color: var(--text-secondary); }
+    .sms-compose .sms-head { margin: 10px 0 26px; }
+    .sms-compose .sms-head h1 { margin: 0; }
+    .sms-compose .sms-head p {
+        margin: 4px 0 0; color: var(--text-secondary); font-size: 13.5px; font-weight: 300;
+    }
 
-<form method="post" novalidate>
-    {% csrf_token %}
-    <div class="card mb-3">
-        <div class="card-body">
-            {{ form.non_field_errors }}
-            <div class="mb-3">
-                <label class="form-label" for="{{ form.name.id_for_label }}">Campaign name</label>
-                {{ form.name }}
-                {{ form.name.errors }}
+    /* Two-column layout: form left, sticky phone right. */
+    .sms-layout {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) 300px;
+        gap: 44px;
+        align-items: start;
+    }
+    .sms-phone-col { position: sticky; top: 24px; }
+
+    /* One quiet surface, sections divided by hairlines instead of separate cards. */
+    .sms-surface {
+        background: var(--bg-surface); border: 1px solid var(--border);
+        border-radius: var(--radius); overflow: hidden;
+    }
+    .sms-section { padding: 22px 24px; }
+    .sms-section + .sms-section { border-top: 1px solid var(--border-light); }
+
+    .sms-label {
+        display: block; font-family: var(--font-mono); font-size: 10px; font-weight: 500;
+        letter-spacing: 0.1em; text-transform: uppercase; color: var(--text-tertiary);
+        margin-bottom: 8px;
+    }
+    .sms-hint {
+        font-size: 11.5px; color: var(--text-tertiary); font-weight: 300;
+        margin-top: 7px; line-height: 1.5;
+    }
+    .sms-hint a { color: var(--text-secondary); }
+    .sms-hint code {
+        font-size: 10.5px; color: var(--text-secondary); background: var(--bg-inset);
+        padding: 1px 5px; border-radius: 3px;
+    }
+
+    /* Style the bare form inputs (the form renders without .form-control). */
+    .sms-compose input[type="text"],
+    .sms-compose input[type="datetime-local"],
+    .sms-compose select,
+    .sms-compose textarea {
+        width: 100%; font-family: var(--font-body); font-size: 13.5px; font-weight: 300;
+        color: var(--text-primary); background: var(--bg-inset);
+        border: 1px solid var(--border); border-radius: var(--radius-sm, 4px);
+        padding: 10px 13px; transition: border-color 0.12s;
+    }
+    .sms-compose textarea { resize: vertical; min-height: 120px; line-height: 1.55; }
+    .sms-compose input:focus, .sms-compose select:focus, .sms-compose textarea:focus {
+        outline: none; border-color: var(--accent-muted-border, rgba(255,255,255,0.2));
+    }
+    .sms-compose .errorlist {
+        list-style: none; margin: 7px 0 0; padding: 0; color: var(--danger); font-size: 11.5px;
+    }
+
+    /* Live counter */
+    .sms-meter {
+        display: flex; gap: 8px; align-items: center; margin-top: 8px;
+        font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.04em;
+        color: var(--text-tertiary);
+    }
+    .sms-meter b { color: var(--text-secondary); font-weight: 500; }
+    .sms-meter .dot { opacity: 0.4; }
+
+    /* Segmented send-mode toggle */
+    .sms-segmented {
+        display: inline-flex; background: var(--bg-inset); border: 1px solid var(--border);
+        border-radius: 999px; padding: 3px; gap: 2px;
+    }
+    .sms-segmented input { position: absolute; opacity: 0; pointer-events: none; }
+    .sms-pill {
+        cursor: pointer; font-family: var(--font-mono); font-size: 11px; font-weight: 500;
+        letter-spacing: 0.05em; text-transform: uppercase; color: var(--text-secondary);
+        padding: 7px 18px; border-radius: 999px;
+        transition: color 0.12s, background 0.12s; margin: 0;
+    }
+    .sms-segmented input:checked + .sms-pill { background: var(--accent); color: var(--text-inverse); }
+    .sms-segmented input:focus-visible + .sms-pill { outline: 2px solid var(--accent-muted-border); }
+
+    #schedule-at-wrap { margin-top: 16px; max-width: 280px; }
+
+    /* Actions + confirm */
+    .sms-actions { margin-top: 20px; }
+    .sms-confirm {
+        display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap;
+        gap: 14px; background: var(--accent-muted); border: 1px solid var(--accent-muted-border);
+        border-left: 2px solid var(--accent); border-radius: var(--radius); padding: 16px 18px;
+    }
+    .sms-confirm-text { font-size: 13.5px; color: var(--text-primary); font-weight: 300; }
+    .sms-confirm-text b { font-weight: 600; }
+
+    /* ---- iPhone mockup (fixed device colors, dark always) ---- */
+    .sms-phone-label {
+        font-family: var(--font-mono); font-size: 10px; font-weight: 500; letter-spacing: 0.1em;
+        text-transform: uppercase; color: var(--text-tertiary); text-align: center; margin-bottom: 14px;
+    }
+    .sms-iphone {
+        width: 300px; height: 612px; margin: 0 auto;
+        background: linear-gradient(145deg, #2a2a2c, #161617);
+        border-radius: 48px; padding: 12px;
+        box-shadow: 0 1px 0 1px rgba(255,255,255,0.06) inset,
+                    0 30px 60px -20px rgba(0,0,0,0.6), 0 12px 24px -12px rgba(0,0,0,0.5);
+        position: relative;
+    }
+    .sms-iphone-screen {
+        background: #000; border-radius: 38px; height: 100%; overflow: hidden;
+        display: flex; flex-direction: column; position: relative;
+    }
+    .sms-island {
+        position: absolute; top: 14px; left: 50%; transform: translateX(-50%);
+        width: 92px; height: 26px; background: #000; border-radius: 14px; z-index: 5;
+    }
+    .sms-statusbar {
+        display: flex; justify-content: space-between; align-items: center;
+        padding: 15px 26px 0; color: #fff;
+        font-family: -apple-system, 'DM Sans', sans-serif; font-size: 13px; font-weight: 600;
+    }
+    .sms-statusbar .si { display: inline-flex; gap: 5px; align-items: center; font-size: 12px; }
+    .sms-msg-header {
+        text-align: center; padding: 10px 12px 12px; border-bottom: 0.5px solid rgba(255,255,255,0.12);
+        position: relative; color: #fff;
+        background: linear-gradient(#0d0d0d, #000);
+    }
+    .sms-msg-header .chev {
+        position: absolute; left: 14px; top: 50%; transform: translateY(-30%);
+        color: #0A84FF; font-size: 20px; line-height: 1;
+    }
+    .sms-avatar {
+        width: 42px; height: 42px; border-radius: 50%; margin: 0 auto 4px;
+        background: linear-gradient(145deg, #3a3a3c, #5a5a5e); color: #fff;
+        display: flex; align-items: center; justify-content: center;
+        font-size: 17px; font-weight: 500; text-transform: uppercase;
+    }
+    .sms-msg-name {
+        font-family: -apple-system, 'DM Sans', sans-serif; font-size: 12.5px; font-weight: 500;
+        display: flex; align-items: center; justify-content: center; gap: 4px;
+    }
+    .sms-msg-name .chevd { color: rgba(255,255,255,0.4); font-size: 11px; }
+    .sms-msg-sub { font-size: 10px; color: rgba(255,255,255,0.45); margin-top: 1px; }
+    .sms-thread {
+        flex: 1; padding: 14px 14px 8px; display: flex; flex-direction: column;
+        gap: 3px; overflow: hidden;
+    }
+    .sms-stamp {
+        text-align: center; color: rgba(255,255,255,0.4); font-size: 10.5px;
+        font-family: -apple-system, 'DM Sans', sans-serif; margin-bottom: 8px;
+    }
+    .sms-stamp b { color: rgba(255,255,255,0.6); font-weight: 600; }
+    .sms-bubble {
+        align-self: flex-end; max-width: 78%;
+        background: linear-gradient(#0A84FF, #0066FF); color: #fff;
+        font-family: -apple-system, 'DM Sans', sans-serif; font-size: 14px; line-height: 1.35;
+        padding: 8px 13px; border-radius: 19px 19px 5px 19px;
+        word-break: break-word;
+        box-shadow: 0 1px 1px rgba(0,0,0,0.25);
+    }
+    /* pre-wrap only on the text node so it preserves the user's line breaks
+       without rendering the HTML source indentation as leading/trailing gaps. */
+    .sms-bubble #sms-bubble-text { white-space: pre-wrap; }
+    .sms-bubble .sms-stop { display: block; margin-top: 6px; font-size: 12.5px; color: rgba(255,255,255,0.7); }
+    .sms-delivered {
+        align-self: flex-end; color: rgba(255,255,255,0.45); font-size: 10px; font-weight: 500;
+        font-family: -apple-system, 'DM Sans', sans-serif; margin: 3px 3px 0;
+    }
+    .sms-home {
+        width: 130px; height: 5px; border-radius: 3px; background: rgba(255,255,255,0.5);
+        margin: 7px auto 9px;
+    }
+
+    /* One orchestrated page-load reveal */
+    @media (prefers-reduced-motion: no-preference) {
+        .sms-reveal { opacity: 0; transform: translateY(8px); animation: smsRise 0.5s cubic-bezier(0.22,1,0.36,1) forwards; }
+        .sms-reveal-1 { animation-delay: 0.04s; }
+        .sms-reveal-2 { animation-delay: 0.12s; }
+        .sms-reveal-3 { animation-delay: 0.20s; }
+        @keyframes smsRise { to { opacity: 1; transform: none; } }
+    }
+
+    /* Stack the phone below the form on narrow screens. */
+    @media (max-width: 860px) {
+        .sms-layout { grid-template-columns: 1fr; gap: 32px; }
+        .sms-phone-col { position: static; justify-self: center; }
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="sms-compose">
+    <a href="{% url 'tickets:sms_campaign_list' %}" class="sms-back sms-reveal sms-reveal-1"><i class="bi bi-arrow-left"></i> Campaigns</a>
+    <div class="sms-head sms-reveal sms-reveal-1">
+        <h1>New campaign</h1>
+        <p>Compose a text, choose who gets it, then send now or schedule.</p>
+    </div>
+
+    <form method="post" novalidate>
+        {% csrf_token %}
+        {% if form.non_field_errors %}<div class="errorlist mb-3">{{ form.non_field_errors }}</div>{% endif %}
+
+        <div class="sms-layout">
+            <!-- Left: the form -->
+            <div class="sms-col-form">
+                <div class="sms-surface sms-reveal sms-reveal-2">
+                    <div class="sms-section">
+                        <label class="sms-label" for="{{ form.name.id_for_label }}">Campaign name</label>
+                        {{ form.name }}
+                        {{ form.name.errors }}
+                    </div>
+
+                    <div class="sms-section">
+                        <label class="sms-label" for="{{ form.recipient_list.id_for_label }}">Recipients</label>
+                        {{ form.recipient_list }}
+                        {{ form.recipient_list.errors }}
+                        <div class="sms-hint">No list yet? <a href="{% url 'tickets:sms_recipient_list_create' %}">Build a recipient list</a> from segments or hand-picked customers.</div>
+                    </div>
+
+                    <div class="sms-section">
+                        <label class="sms-label" for="{{ form.body.id_for_label }}">Message</label>
+                        {{ form.body }}
+                        {{ form.body.errors }}
+                        <div class="sms-meter">
+                            <span><b id="sms-chars">0</b> chars</span><span class="dot">&middot;</span>
+                            <span><b id="sms-segs">1</b> <span id="sms-segs-word">segment</span></span><span class="dot">&middot;</span>
+                            <span id="sms-enc">GSM-7</span>
+                        </div>
+                        <div class="sms-hint">"Reply STOP to opt out" is appended automatically &middot; any <code>https://</code> link is tracked per campaign.</div>
+                    </div>
+
+                    <div class="sms-section">
+                        <span class="sms-label">When to send</span>
+                        <div class="sms-segmented">
+                            {% for radio in form.send_mode %}{{ radio.tag }}<label class="sms-pill" for="{{ radio.id_for_label }}">{{ radio.choice_label }}</label>{% endfor %}
+                        </div>
+                        <div id="schedule-at-wrap">
+                            <label class="sms-label" for="{{ form.scheduled_at.id_for_label }}" style="margin-top:14px;">Scheduled time</label>
+                            {{ form.scheduled_at }}
+                            {{ form.scheduled_at.errors }}
+                        </div>
+                    </div>
+                </div>
+
+                <div class="sms-actions sms-reveal sms-reveal-3">
+                    {% if confirm_count is not None and not exceeds_cap and confirm_count > 0 %}
+                    <div class="sms-confirm">
+                        <span class="sms-confirm-text">Ready to send to <b>{{ confirm_count }}</b> recipient{{ confirm_count|pluralize }}.</span>
+                        <button type="submit" name="confirm" value="1" class="btn btn-primary"><i class="bi bi-send"></i> Confirm &amp; send</button>
+                    </div>
+                    {% else %}
+                    <button type="submit" class="btn btn-primary">Review recipients</button>
+                    {% endif %}
+                </div>
             </div>
-            <div class="mb-3">
-                <label class="form-label" for="{{ form.recipient_list.id_for_label }}">Recipient list</label>
-                {{ form.recipient_list }}
-                {{ form.recipient_list.errors }}
-                <div class="form-text">Don't have one? <a href="{% url 'tickets:sms_recipient_list_create' %}">Create a recipient list</a>.</div>
-            </div>
-            <div class="mb-2">
-                <label class="form-label" for="{{ form.body.id_for_label }}">Message</label>
-                {{ form.body }}
-                {{ form.body.errors }}
-                <div class="form-text">
-                    <span id="sms-counter">{{ preview_segments }} segment(s) &middot; {{ preview_encoding }}</span>
-                    &middot; "Reply STOP to opt out" is appended automatically.
-                    &middot; Any <code>https://</code> link in your message is tracked automatically (clicks are reported per campaign).
+
+            <!-- Right: live iPhone preview -->
+            <div class="sms-phone-col sms-reveal sms-reveal-3">
+                <div class="sms-phone-label">Live preview</div>
+                <div class="sms-iphone" aria-hidden="true">
+                    <div class="sms-iphone-screen">
+                        <div class="sms-island"></div>
+                        <div class="sms-statusbar">
+                            <span>9:41</span>
+                            <span class="si"><i class="bi bi-reception-4"></i><i class="bi bi-wifi"></i><i class="bi bi-battery-full"></i></span>
+                        </div>
+                        <div class="sms-msg-header">
+                            <span class="chev"><i class="bi bi-chevron-left"></i></span>
+                            <div class="sms-avatar">{{ org_name|slice:":1"|default:"C" }}</div>
+                            <div class="sms-msg-name">{{ org_name|default:"Your business" }} <span class="chevd"><i class="bi bi-chevron-right"></i></span></div>
+                            <div class="sms-msg-sub">Text Message</div>
+                        </div>
+                        <div class="sms-thread">
+                            <div class="sms-stamp"><b>Today</b> 9:41 AM</div>
+                            <div class="sms-bubble" id="sms-bubble" hidden>
+                                <span id="sms-bubble-text"></span>
+                                <span class="sms-stop" id="sms-bubble-stop" hidden>Reply STOP to opt out</span>
+                            </div>
+                            <div class="sms-delivered" id="sms-delivered" hidden>Delivered</div>
+                        </div>
+                        <div class="sms-home"></div>
+                    </div>
                 </div>
             </div>
         </div>
-    </div>
-
-    <div class="card mb-3">
-        <div class="card-body">
-            <div class="mb-2"><strong>When to send</strong></div>
-            <div class="d-flex flex-column gap-2">
-                {% for radio in form.send_mode %}
-                <div class="form-check">{{ radio.tag }} <label class="form-check-label" for="{{ radio.id_for_label }}">{{ radio.choice_label }}</label></div>
-                {% endfor %}
-            </div>
-            <div class="mt-2" id="schedule-at-wrap">
-                <label class="form-label" for="{{ form.scheduled_at.id_for_label }}">Scheduled time</label>
-                {{ form.scheduled_at }}
-                {{ form.scheduled_at.errors }}
-            </div>
-        </div>
-    </div>
-
-    {% if confirm_count is not None and not exceeds_cap and confirm_count > 0 %}
-    <div class="alert alert-info d-flex align-items-center justify-content-between flex-wrap gap-2">
-        <span>This campaign will send to <strong>{{ confirm_count }}</strong> recipient{{ confirm_count|pluralize }}. Confirm to proceed.</span>
-        <button type="submit" name="confirm" value="1" class="btn btn-primary"><i class="bi bi-send"></i> Confirm &amp; send</button>
-    </div>
-    {% else %}
-    <button type="submit" class="btn btn-primary">Review recipients</button>
-    {% endif %}
-</form>
+    </form>
+</div>
+{% endblock %}
 
 {% block extra_js %}
 <script>
-    // Reveal the scheduled-time field only when "Schedule for later" is selected.
-    function syncScheduleVisibility() {
-        var checked = document.querySelector('input[name="send_mode"]:checked');
-        var wrap = document.getElementById('schedule-at-wrap');
-        if (!wrap) return;
-        wrap.style.display = (checked && checked.value === 'schedule') ? '' : 'none';
+(function () {
+    // GSM-7 alphabet — mirrors tickets/sms.py:sms_segment_info so the live counter
+    // matches the server's segment math exactly.
+    var GSM_BASIC = "@£$¥èéùìòÇ\nØø\rÅåΔ_ΦΓΛΩΠΨΣΘΞ ÆæßÉ !\"#¤%&'()*+,-./0123456789:;<=>?¡ABCDEFGHIJKLMNOPQRSTUVWXYZÄÖÑÜ§¿abcdefghijklmnopqrstuvwxyzäöñüà";
+    var GSM_EXT = "^{}\\[~]|€";
+    var GSM = new Set((GSM_BASIC + GSM_EXT).split(''));
+
+    function segmentInfo(body) {
+        body = body || '';
+        var isUnicode = false;
+        for (var i = 0; i < body.length; i++) { if (!GSM.has(body[i])) { isUnicode = true; break; } }
+        var length, single, multi, encoding;
+        if (isUnicode) {
+            length = body.length; single = 70; multi = 67; encoding = 'UCS-2';
+        } else {
+            length = 0;
+            for (var j = 0; j < body.length; j++) { length += GSM_EXT.indexOf(body[j]) !== -1 ? 2 : 1; }
+            single = 160; multi = 153; encoding = 'GSM-7';
+        }
+        var segments = length === 0 ? 1 : (length <= single ? 1 : Math.ceil(length / multi));
+        return { length: body.length, segments: segments, encoding: encoding };
     }
-    document.querySelectorAll('input[name="send_mode"]').forEach(function (el) {
-        el.addEventListener('change', syncScheduleVisibility);
+
+    document.addEventListener('DOMContentLoaded', function () {
+        var body = document.getElementById('{{ form.body.id_for_label }}');
+        var chars = document.getElementById('sms-chars');
+        var segs = document.getElementById('sms-segs');
+        var segsWord = document.getElementById('sms-segs-word');
+        var enc = document.getElementById('sms-enc');
+        var bubble = document.getElementById('sms-bubble');
+        var bubbleText = document.getElementById('sms-bubble-text');
+        var bubbleStop = document.getElementById('sms-bubble-stop');
+        var delivered = document.getElementById('sms-delivered');
+
+        function render() {
+            var text = body ? body.value : '';
+            var info = segmentInfo(text);
+            chars.textContent = info.length;
+            segs.textContent = info.segments;
+            segsWord.textContent = info.segments === 1 ? 'segment' : 'segments';
+            enc.textContent = info.encoding;
+            if (text.trim()) {
+                bubble.hidden = false;
+                bubbleText.textContent = text;
+                // Mirror _with_stop_footer: only show the STOP line if not already present.
+                bubbleStop.hidden = text.toUpperCase().indexOf('STOP') !== -1;
+                if (delivered) delivered.hidden = false;
+            } else {
+                // Empty message → no bubble at all, just the thread's date stamp.
+                bubble.hidden = true;
+                bubbleStop.hidden = true;
+                if (delivered) delivered.hidden = true;
+            }
+        }
+        if (body) { body.addEventListener('input', render); }
+        render();
+
+        // Reveal the scheduled-time field only when "Schedule for later" is selected.
+        var wrap = document.getElementById('schedule-at-wrap');
+        function syncSchedule() {
+            var checked = document.querySelector('input[name="send_mode"]:checked');
+            if (wrap) wrap.style.display = (checked && checked.value === 'schedule') ? '' : 'none';
+        }
+        document.querySelectorAll('input[name="send_mode"]').forEach(function (el) {
+            el.addEventListener('change', syncSchedule);
+        });
+        syncSchedule();
     });
-    syncScheduleVisibility();
+})();
 </script>
-{% endblock %}
 {% endblock %}
