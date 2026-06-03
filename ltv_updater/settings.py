@@ -252,6 +252,17 @@ SESSION_SAVE_EVERY_REQUEST = True         # refresh the 30-day window on each re
 TWILIO_ACCOUNT_SID       = os.environ.get('TWILIO_ACCOUNT_SID', '')
 TWILIO_AUTH_TOKEN        = os.environ.get('TWILIO_AUTH_TOKEN', '')
 TWILIO_VERIFY_SERVICE_SID = os.environ.get('TWILIO_VERIFY_SERVICE_SID', '')
+# Native marketing SMS sender. Prefer a Messaging Service (MG...) — it provides
+# Advanced Opt-Out (STOP/HELP) + the OptOutType webhook our compliance flow uses.
+# Falls back to sending directly from TWILIO_SMS_FROM (the verified number) when
+# no Messaging Service is configured (toll-free still has built-in STOP filtering,
+# but you lose the clean OptOutType mirror).
+TWILIO_MESSAGING_SERVICE_SID = os.environ.get('TWILIO_MESSAGING_SERVICE_SID', '')
+TWILIO_SMS_FROM = os.environ.get('TWILIO_SMS_FROM', '')
+# Validate inbound Twilio webhook signatures (disable in local dev without a tunnel).
+TWILIO_VALIDATE_WEBHOOKS = os.environ.get('TWILIO_VALIDATE_WEBHOOKS', 'True') == 'True'
+# Hard ceiling on recipients per marketing-SMS campaign (cost / blast-radius guard).
+SMS_CAMPAIGN_MAX_RECIPIENTS = int(os.environ.get('SMS_CAMPAIGN_MAX_RECIPIENTS', '5000'))
 E2E_TEST_MODE = os.environ.get('E2E_TEST_MODE', 'False') == 'True'
 
 # Absolute URL for building links in emails (survey invitations, etc.)

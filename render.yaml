@@ -94,6 +94,17 @@ services:
         sync: false
       - key: SITE_URL
         sync: false
+      # Marketing SMS sending happens on the worker, so it needs Twilio creds +
+      # the Messaging Service that holds the verified sender number.
+      - key: TWILIO_ACCOUNT_SID
+        sync: false
+      - key: TWILIO_AUTH_TOKEN
+        sync: false
+      # Set TWILIO_MESSAGING_SERVICE_SID (preferred) OR TWILIO_SMS_FROM.
+      - key: TWILIO_MESSAGING_SERVICE_SID
+        sync: false
+      - key: TWILIO_SMS_FROM
+        sync: false
 
   # Daily AI opportunity scan. Enqueues one Celery task per organization.
   - type: cron
@@ -103,6 +114,31 @@ services:
     branch: main
     buildCommand: pip install -r requirements.txt
     startCommand: python manage.py generate_ai_opportunities
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.0
+      - key: DJANGO_ENV
+        value: production
+      - key: SECRET_KEY
+        sync: false
+      - key: DATABASE_URL
+        sync: false
+      - key: CELERY_BROKER_URL
+        fromService:
+          name: ltv-updater-redis
+          type: redis
+          property: connectionString
+
+  # Marketing SMS scheduler. Every 5 min: dispatch due scheduled campaigns and
+  # recover any stuck mid-send. Only enqueues Celery tasks (sending runs on the
+  # worker), so it needs DB + broker but not Twilio creds.
+  - type: cron
+    name: ltv-updater-sms-scheduler
+    runtime: python
+    schedule: "*/5 * * * *"
+    branch: main
+    buildCommand: pip install -r requirements.txt
+    startCommand: python manage.py send_due_sms_campaigns
     envVars:
       - key: PYTHON_VERSION
         value: 3.12.0

@@ -88,10 +88,53 @@ class MarketingAnalyticsService:
             'top_sms_campaigns': top_sms,
             'top_campaigns': top_email + top_sms,
             'top_events_by_roi': top_events,
+            'native_sms': self._native_sms_summary(),
             'meta': {
                 'window_start': self.window_start.isoformat() if self.window_start else None,
                 'window_end': self.window_end.isoformat(),
             },
+        }
+
+    def _native_sms_summary(self):
+        """Send-side stats for native marketing SMS (this app's own sends).
+
+        Distinct from `_sms_totals`, which tracks *revenue* synced from external
+        SlickText campaigns. Native sends have no revenue attribution yet (see
+        TODOS.md), so we surface delivery + opt-out counts where users expect
+        them: the marketing SMS tab.
+        """
+        from tickets.models import SMSCampaign, SMSMessageRecipient, PhoneSuppression
+
+        campaigns = SMSCampaign.objects.filter(
+            organization=self.organization,
+            deleted_at__isnull=True,
+            status=SMSCampaign.Status.SENT,
+        )
+        if self.window_start is not None:
+            campaigns = campaigns.filter(sent_at__gte=self.window_start)
+
+        recipients = SMSMessageRecipient.objects.filter(campaign__in=campaigns)
+        recipient_stats = recipients.aggregate(
+            sent=Count('id', filter=Q(status__in=['sent', 'delivered', 'undelivered'])),
+            delivered=Count('id', filter=Q(status='delivered')),
+            failed=Count('id', filter=Q(status__in=['failed', 'undelivered'])),
+        )
+
+        opt_outs = PhoneSuppression.objects.filter(
+            Q(organization=self.organization) | Q(organization__isnull=True),
+        )
+        if self.window_start is not None:
+            opt_outs = opt_outs.filter(created_at__gte=self.window_start)
+
+        sent = recipient_stats['sent'] or 0
+        delivered = recipient_stats['delivered'] or 0
+        return {
+            'campaigns_sent': campaigns.count(),
+            'messages_sent': sent,
+            'messages_delivered': delivered,
+            'messages_failed': recipient_stats['failed'] or 0,
+            'delivery_rate': _safe_div(delivered, sent),
+            'opt_outs': opt_outs.count(),
         }
 
     def _email_qs(self):

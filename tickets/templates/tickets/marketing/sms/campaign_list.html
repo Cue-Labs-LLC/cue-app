@@ -1,0 +1,73 @@
+{% extends 'tickets/base.html' %}
+
+{% block title %}SMS Campaigns{% endblock %}
+
+{% block content %}
+<div class="page-header d-flex align-items-center justify-content-between">
+    <h1>SMS Campaigns</h1>
+    <div class="d-flex gap-2">
+        <a href="{% url 'tickets:sms_recipient_list_list' %}" class="btn btn-outline-secondary btn-sm"><i class="bi bi-people"></i> Recipient Lists</a>
+        <a href="{% url 'tickets:sms_campaign_create' %}" class="btn btn-primary btn-sm"><i class="bi bi-plus-lg"></i> New Campaign</a>
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-body p-0">
+        {% if page_obj.object_list %}
+        <div class="table-responsive">
+            <table class="table table-hover mb-0 align-middle">
+                <thead>
+                    <tr>
+                        <th>Campaign</th>
+                        <th>Status</th>
+                        <th class="text-end">Audience</th>
+                        <th class="text-end">Sent</th>
+                        <th class="text-end">Delivered</th>
+                        <th class="text-end">Failed</th>
+                        <th>When</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for c in page_obj.object_list %}
+                    <tr>
+                        <td><a href="{% url 'tickets:sms_campaign_detail' pk=c.id %}">{{ c.name }}</a></td>
+                        <td>
+                            {% if c.status == 'sent' %}<span class="badge bg-success">Sent</span>
+                            {% elif c.status == 'scheduled' %}<span class="badge bg-info">Scheduled</span>
+                            {% elif c.status == 'sending' %}<span class="badge bg-warning">Sending</span>
+                            {% elif c.status == 'canceled' %}<span class="badge bg-secondary">Canceled</span>
+                            {% elif c.status == 'failed' %}<span class="badge bg-danger">Failed</span>
+                            {% else %}<span class="badge bg-light text-dark">Draft</span>{% endif %}
+                        </td>
+                        <td class="text-end">{{ c.audience_size }}</td>
+                        <td class="text-end">{{ c.sent_count }}</td>
+                        <td class="text-end">{{ c.delivered_count }}</td>
+                        <td class="text-end">{{ c.failed_count }}</td>
+                        <td class="text-muted small">
+                            {% if c.status == 'scheduled' %}{{ c.scheduled_at|date:"M d, Y g:i A" }}
+                            {% elif c.sent_at %}{{ c.sent_at|date:"M d, Y g:i A" }}
+                            {% else %}{{ c.created_at|date:"M d, Y" }}{% endif %}
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% else %}
+        <div class="empty-state">
+            <i class="bi bi-chat-dots"></i>
+            <p>No SMS campaigns yet.</p>
+            <a href="{% url 'tickets:sms_campaign_create' %}" class="btn btn-primary btn-sm">Create your first campaign</a>
+        </div>
+        {% endif %}
+    </div>
+</div>
+
+{% if page_obj.has_other_pages %}
+<nav class="mt-3"><ul class="pagination justify-content-center">
+    {% if page_obj.has_previous %}<li class="page-item"><a class="page-link" href="?page={{ page_obj.previous_page_number }}">Previous</a></li>{% endif %}
+    <li class="page-item disabled"><span class="page-link">Page {{ page_obj.number }} of {{ page_obj.paginator.num_pages }}</span></li>
+    {% if page_obj.has_next %}<li class="page-item"><a class="page-link" href="?page={{ page_obj.next_page_number }}">Next</a></li>{% endif %}
+</ul></nav>
+{% endif %}
+{% endblock %}
