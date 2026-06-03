@@ -20,7 +20,7 @@ from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_POST, require_http_methods
 
 from .models import (
-    SMSCampaign, SMSRecipientList, SMSMessageRecipient, PhoneSuppression,
+    SMSCampaign, SMSRecipientList, SMSMessageRecipient, PhoneSuppression, Event,
 )
 from .forms import SMSCampaignForm, SMSRecipientListForm
 from .sms import (
@@ -180,6 +180,21 @@ def sms_campaign_list(request):
     return render(request, 'tickets/marketing/sms/campaign_list.html', {'page_obj': page_obj})
 
 
+def _event_attendee_list(org, event):
+    """Return (creating if needed) a reusable recipient list scoped to an event's
+    ticket-buyers. Keyed on filter_criteria so re-sends to the same event reuse it
+    instead of spawning a new list each time."""
+    criteria = {'event_id': str(event.id)}
+    existing = SMSRecipientList.objects.filter(
+        organization=org, filter_criteria=criteria, deleted_at__isnull=True,
+    ).first()
+    if existing:
+        return existing
+    return SMSRecipientList.objects.create(
+        organization=org, name=f'{event.name} – Attendees', filter_criteria=criteria,
+    )
+
+
 @login_required
 @require_org
 @require_host
@@ -187,11 +202,21 @@ def sms_campaign_list(request):
 @require_http_methods(['GET', 'POST'])
 def sms_campaign_create(request):
     """Compose + send/schedule. A valid POST first shows a confirmation panel with
-    the resolved recipient count; only a second POST with `confirm` dispatches."""
+    the resolved recipient count; only a second POST with `confirm` dispatches.
+
+    Event mode: with ?event=<id> (or a hidden `event` field on POST), the audience
+    is pre-set to that event's attendees and the campaign is linked to the event."""
     org = get_organization(request)
     cap = getattr(settings, 'SMS_CAMPAIGN_MAX_RECIPIENTS', 5000)
     confirm_count = None
     exceeds_cap = False
+
+    event = None
+    event_id = request.POST.get('event') or request.GET.get('event')
+    if event_id:
+        event = get_object_or_404(
+            Event.objects.filter(organization=org, deleted_at__isnull=True), id=event_id,
+        )
 
     if request.method == 'POST':
         form = SMSCampaignForm(request.POST, organization=org)
@@ -214,6 +239,7 @@ def sms_campaign_create(request):
                 campaign = form.save(commit=False)
                 campaign.organization = org
                 campaign.created_by = request.user
+                campaign.event = event  # None unless launched from an event
                 # Auto-derive the click-tracking target from the first URL in the body.
                 campaign.link_url = extract_first_url(campaign.body)
                 if scheduled:
@@ -231,7 +257,10 @@ def sms_campaign_create(request):
                     messages.success(request, f'Sending "{campaign.name}" to {confirm_count} recipients.')
                 return redirect('tickets:sms_campaign_detail', pk=campaign.id)
     else:
-        form = SMSCampaignForm(organization=org)
+        initial = {}
+        if event:
+            initial = {'recipient_list': _event_attendee_list(org, event), 'name': event.name}
+        form = SMSCampaignForm(organization=org, initial=initial)
 
     encoding, segments = sms_segment_info(request.POST.get('body', '') if request.method == 'POST' else '')
     return render(request, 'tickets/marketing/sms/campaign_form.html', {
@@ -241,6 +270,7 @@ def sms_campaign_create(request):
         'cap': cap,
         'preview_encoding': encoding,
         'preview_segments': segments,
+        'event': event,
     })
 
 
@@ -253,7 +283,7 @@ def sms_campaign_detail(request, pk):
     campaign = get_object_or_404(
         _annotate_counts(
             SMSCampaign.objects.filter(organization=org, deleted_at__isnull=True)
-            .select_related('recipient_list')
+            .select_related('recipient_list', 'event')
         ),
         id=pk,
     )

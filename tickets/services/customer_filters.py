@@ -73,6 +73,13 @@ def filter_customers(org, criteria):
     if tag_ids:
         qs = qs.filter(tags__id__in=tag_ids)
 
+    # Customers who bought a ticket to a specific event (used for event-scoped SMS
+    # audiences). May join multiple orders → callers dedupe (candidate_customers
+    # calls .distinct(); materialize() also dedupes by phone).
+    event_ids = _valid_uuids(_as_list(criteria.get('event_id')) + _as_list(criteria.get('event_ids')))
+    if event_ids:
+        qs = qs.filter(ticket_orders__event_id__in=event_ids)
+
     min_ltv = criteria.get('min_ltv')
     if min_ltv not in (None, ''):
         try:
