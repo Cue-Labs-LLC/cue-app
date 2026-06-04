@@ -109,3 +109,24 @@
 **Context:** SMS ticket links (PR #188) insert a `/track/<token>/` link into the body; at save each campaign mints its **own** `TrackingLink` (named `SMS · <campaign>`) via `_mint_campaign_tracking_link`, so attribution is per-campaign. Completed `StripeCheckoutSession` rows carry that `tracking_link`. The detail page resolves the token out of `campaign.link_url` and shows tickets + net revenue (`amount_total_cents - platform_fee_cents`, COMPLETED only, matches `views.py:4537`). Mirror the existing `EventSMSCampaign` orders/revenue fields the overview already renders.
 
 **Depends on:** PR #188 (shipped on main).
+
+---
+
+## SMS: Harden tracking-link attribution against session loss
+
+**What:** Stop relying on the session as the *only* carrier of the `tracking_ref_<event_id>` value during checkout. Thread the ref through the login/signup `next=` redirect and re-apply it, and/or stamp it onto a pending cart/order record at first touch so attribution survives even if the session is replaced.
+
+**Why:** Attribution is stored server-side in `request.session['tracking_ref_<event_id>']` (`views.py:9221`) and read at `create_payment_intent` (`views.py:9934`) — the `?ref` in the URL is just a courier. This works today: an anonymous buyer who logs in or creates an account keeps the ref because Django's `login()` uses `session.cycle_key()` (preserves data). Confirmed working in manual testing. But there are edge cases where the session is dropped and the sale goes unattributed.
+
+**Pros:** Closes the remaining attribution gaps. Makes per-campaign revenue numbers trustworthy even on the unhappy auth paths.
+
+**Cons:** More moving parts in the checkout/login redirect chain; needs care to not double-attribute. Low urgency — the common path already works.
+
+**Edge cases that currently lose the ref:**
+- Buyer already authenticated as user A then logs in as a *different* user B mid-checkout → Django `login()` calls `session.flush()`, data lost.
+- Login/signup that starts a brand-new session (different browser/tab, cleared cookies, incognito).
+- Buyer bounced to login *before* ever loading the buy page with `?ref` (so the session was never stamped).
+
+**Context:** Buy/checkout flow: `/track/<token>/` (`track_link_redirect`, sets session ref) → `/e/<id>/?ref=<token>` (`public_event_buy`, re-stamps session, guarded by `if ref:` so a reload without `?ref` doesn't clear it) → checkout → `create_payment_intent` binds `StripeCheckoutSession.tracking_link`. All checkout auth uses Django's standard `auth_login` (e.g. `attendee_signup_view` `views.py:10691`). A first step is to audit whether the checkout login redirect preserves `next=`/`?ref` through its hops.
+
+**Depends on:** none (incremental hardening of shipped behavior).
