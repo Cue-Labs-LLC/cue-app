@@ -216,8 +216,9 @@ urlpatterns = [
     path('marketing/sms/credits/success/', sms_views.sms_credits_success, name='sms_credits_success'),
     path('marketing/sms/credits/charge-saved/', sms_views.sms_credits_charge_saved, name='sms_credits_charge_saved'),
     path('marketing/sms/credits/remove-card/', sms_views.sms_credits_remove_card, name='sms_credits_remove_card'),
-    # Marketing SMS — recipient lists
+    # Marketing SMS — audience + ticket-link helpers
     path('marketing/sms/audience-preview/', sms_views.sms_audience_preview, name='sms_audience_preview'),
+    path('marketing/sms/ticket-link/', sms_views.sms_ticket_link, name='sms_ticket_link'),
 
     # Forecast Tool
     path('forecast/', views.forecast_tool, name='forecast_tool'),
