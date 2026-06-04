@@ -1019,6 +1019,134 @@ class SMSTokenFilterTests(TestCase):
         self.assertEqual(estimate_campaign_cost_tokens(0, 'hi'), 0)
 
 
+@override_settings(E2E_TEST_MODE=True, SITE_URL='https://test.cueup.co')
+class SMSTicketLinkRevenueTests(TestCase):
+    """Detail-page attribution: tickets bought + NET revenue for the tracked ticket
+    link (/track/<token>/) the composer inserts into a campaign body. Resolution is
+    by the token in the body, so no SMSCampaign model change is needed."""
+
+    def setUp(self):
+        from datetime import timedelta as _td
+        from .models import Event, Venue, TICKETING_TYPE_DIRECT, EVENT_STATUS_LIVE
+        self.client = Client()
+        self.org = Organization.objects.create(
+            name='Org', slug='org-tl', sms_marketing_enabled=True,
+            sms_credit_balance_cents=100000,
+        )
+        self.user = User.objects.create_user('u', 'u@test.com', 'pw')
+        UserProfile.objects.create(user=self.user, organization=self.org,
+                                   org_role=UserProfile.OrgRole.OWNER)
+        self.client.login(username='u@test.com', password='pw')
+        self.client.get(reverse('tickets:home'))
+        venue = Venue.objects.create(organization=self.org, name='V', city='LA')
+        self.event = Event.objects.create(
+            organization=self.org, name='Live Fest', venue=venue,
+            start_date=timezone.now().date() + _td(days=30),
+            ticketing_type=TICKETING_TYPE_DIRECT, status=EVENT_STATUS_LIVE,
+        )
+
+    def _link(self):
+        from .models import TrackingLink, _generate_tracking_token
+        return TrackingLink.objects.create(
+            organization=self.org, event=self.event, name='SMS',
+            token=_generate_tracking_token(),
+        )
+
+    def _campaign(self, link_url):
+        return SMSCampaign.objects.create(
+            organization=self.org, name='C', body='hi', link_url=link_url,
+            status=SMSCampaign.Status.SENT,
+        )
+
+    def _completed_session(self, tracking_link, n_tickets, gross_cents, fee_cents, status=None):
+        from .models import TicketOrder, Ticket, StripeCheckoutSession
+        n = StripeCheckoutSession.objects.count()
+        cust = Customer.objects.create(organization=self.org, email=f'b{n}@x.com', name='B')
+        order = TicketOrder.objects.create(
+            customer=cust, event=self.event, order_number=f'O-{n}',
+            order_date=timezone.now(), total_amount=Decimal(gross_cents) / 100,
+        )
+        for _ in range(n_tickets):
+            Ticket.objects.create(ticket_order=order, ticket_type='GA', price=Decimal('10.00'))
+        return StripeCheckoutSession.objects.create(
+            event=self.event, organization=self.org, stripe_session_id=f'cs_{n}',
+            buyer_email=cust.email, status=status or StripeCheckoutSession.Status.COMPLETED,
+            amount_total_cents=gross_cents, platform_fee_cents=fee_cents,
+            ticket_order=order, tracking_link=tracking_link,
+        )
+
+    def _stats(self, campaign):
+        resp = self.client.get(reverse('tickets:sms_campaign_detail', kwargs={'pk': campaign.id}))
+        self.assertEqual(resp.status_code, 200)
+        return resp.context['buy_stats']
+
+    def test_detail_shows_tickets_and_net_revenue(self):
+        tl = self._link()
+        c = self._campaign(f'https://test.cueup.co/track/{tl.token}/')
+        self._completed_session(tl, 2, 5000, 500)
+        self._completed_session(tl, 1, 3000, 300)
+        stats = self._stats(c)
+        self.assertEqual(stats['tickets'], 3)
+        self.assertEqual(stats['orders'], 2)
+        self.assertEqual(stats['revenue'], Decimal('72.00'))   # (5000-500)+(3000-300) = 7200c
+
+    def test_detail_excludes_non_completed_sessions(self):
+        from .models import StripeCheckoutSession
+        tl = self._link()
+        c = self._campaign(f'https://test.cueup.co/track/{tl.token}/')
+        self._completed_session(tl, 2, 5000, 500)
+        self._completed_session(tl, 5, 9999, 0, status=StripeCheckoutSession.Status.PENDING)
+        self._completed_session(tl, 5, 9999, 0, status=StripeCheckoutSession.Status.REFUNDED)
+        self._completed_session(tl, 5, 9999, 0, status=StripeCheckoutSession.Status.PARTIALLY_REFUNDED)
+        stats = self._stats(c)
+        self.assertEqual(stats['tickets'], 2)
+        self.assertEqual(stats['orders'], 1)
+        self.assertEqual(stats['revenue'], Decimal('45.00'))
+
+    def test_detail_no_tracked_link_has_no_buy_stats(self):
+        # Plain campaign (no /track/ link in the body) -> no attribution cards.
+        self.assertIsNone(self._stats(self._campaign('https://example.com/x')))
+        self.assertIsNone(self._stats(self._campaign('')))
+
+    def test_detail_unknown_token_has_no_buy_stats(self):
+        # Body links a token with no matching TrackingLink -> graceful None.
+        self.assertIsNone(self._stats(self._campaign('https://test.cueup.co/track/nope123/')))
+
+    def test_two_campaigns_to_same_event_get_distinct_links(self):
+        """Per-campaign attribution: each saved campaign mints its own TrackingLink
+        from the shared event link, so their tickets/revenue don't pool together."""
+        import re as _re
+        from .models import TrackingLink
+        make_customer(self.org, 'vip@x.com', '+13105550009', rfm_segment='VIP')
+        shared = self._link()  # the composer's shared per-event 'SMS' link
+        body = f'Tickets https://test.cueup.co/track/{shared.token}/'
+
+        def post(name):
+            with self.captureOnCommitCallbacks(execute=True):
+                return self.client.post(reverse('tickets:sms_campaign_create'), {
+                    'name': name, 'rfm_segment': 'VIP', 'body': body,
+                    'send_mode': 'now', 'confirm': '1',
+                })
+
+        self.assertEqual(post('Camp A').status_code, 302)
+        self.assertEqual(post('Camp B').status_code, 302)
+        a = SMSCampaign.objects.get(name='Camp A')
+        b = SMSCampaign.objects.get(name='Camp B')
+        ta = _re.search(r'/track/([A-Za-z0-9]+)/', a.link_url).group(1)
+        tb = _re.search(r'/track/([A-Za-z0-9]+)/', b.link_url).group(1)
+        # Each campaign got its own fresh token, distinct from each other + the shared one.
+        self.assertEqual(len({ta, tb, shared.token}), 3)
+        self.assertEqual(TrackingLink.objects.get(token=ta).name, 'SMS · Camp A')
+        self.assertEqual(TrackingLink.objects.get(token=tb).name, 'SMS · Camp B')
+        # Sales attribute independently per campaign.
+        self._completed_session(TrackingLink.objects.get(token=ta), 2, 5000, 500)
+        self._completed_session(TrackingLink.objects.get(token=tb), 1, 3000, 0)
+        self.assertEqual(self._stats(a)['tickets'], 2)
+        self.assertEqual(self._stats(a)['revenue'], Decimal('45.00'))
+        self.assertEqual(self._stats(b)['tickets'], 1)
+        self.assertEqual(self._stats(b)['revenue'], Decimal('30.00'))
+
+
 @override_settings(E2E_TEST_MODE=True, SMS_PRICE_PER_SEGMENT_CENTS=Decimal('3'),
                    STRIPE_SECRET_KEY='sk_test_x', STRIPE_WEBHOOK_SECRET='whsec_x')
 class SMSSavedCardTests(TestCase):

@@ -34,6 +34,10 @@
 <div class="row g-3 mb-3">
     <div class="col-6 col-md-3"><div class="stat-card"><div class="stat-card-label">Clicks (unique)</div><div class="stat-card-value">{{ campaign.unique_clicks }}</div><div class="stat-card-label">{{ campaign.total_clicks }} total</div></div></div>
     <div class="col-6 col-md-3"><div class="stat-card"><div class="stat-card-label">Unsubscribes</div><div class="stat-card-value">{{ campaign.unsub_count }}</div></div></div>
+    {% if buy_stats %}
+    <div class="col-6 col-md-3"><div class="stat-card stat-card--info"><div class="stat-card-label">Tickets bought</div><div class="stat-card-value">{{ buy_stats.tickets }}</div><div class="stat-card-label">{{ buy_stats.orders }} order{{ buy_stats.orders|pluralize }}</div></div></div>
+    <div class="col-6 col-md-3"><div class="stat-card stat-card--success"><div class="stat-card-label">Revenue</div><div class="stat-card-value">${{ buy_stats.revenue|floatformat:2 }}</div><div class="stat-card-label">net of fees</div></div></div>
+    {% endif %}
 </div>
 {% else %}
 <div class="row g-3 mb-3">
