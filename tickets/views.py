@@ -2937,14 +2937,13 @@ def churn_bulk_tag(request):
     if redirect_days not in THRESHOLD_OPTIONS:
         redirect_days = 90
 
-    tag = get_object_or_404(CustomerTag.objects.filter(organization=org), id=tag_id)
+    from tickets.services.tagging import tag_customers
     customers = Customer.objects.filter(organization=org, id__in=customer_ids)
-
-    tagged_count = customers.count()
-    for customer in customers:
-        customer.tags.add(tag)
-
-    messages.success(request, f'Tagged {tagged_count} customers as "{tag.name}".')
+    tag, tagged_count = tag_customers(org, customers, tag_id=tag_id)
+    if tag is None:
+        messages.error(request, 'Select a valid tag.')
+    else:
+        messages.success(request, f'Tagged {tagged_count} customers as "{tag.name}".')
     return redirect(f"{reverse('tickets:churn_overview')}?days={redirect_days}")
 
 
@@ -4443,13 +4442,36 @@ def event_detail(request, event_id):
         _annotate_counts(
             SMSCampaign.objects.filter(
                 organization=org, event=event, deleted_at__isnull=True,
-            ).select_related('recipient_list')
+            )
         ).order_by('-created_at')[:10]
     )
+
+    # Customers tab — distinct buyers of this event, for bulk-tagging. Only built
+    # for SMS-enabled orgs (the tab is hidden otherwise) to avoid extra queries.
+    event_customers_page = None
+    event_org_tags = []
+    if org.sms_marketing_enabled:
+        event_customers_qs = (
+            Customer.objects.filter(organization=org, ticket_orders__event=event)
+            .distinct()
+            .annotate(
+                event_orders=Count('ticket_orders', filter=Q(ticket_orders__event=event)),
+                event_spend=Coalesce(
+                    Sum('ticket_orders__total_amount', filter=Q(ticket_orders__event=event)),
+                    Decimal('0.00'),
+                ),
+            )
+            .order_by('name')
+        )
+        cust_paginator = Paginator(event_customers_qs, 100)
+        event_customers_page = cust_paginator.get_page(request.GET.get('cust_page'))
+        event_org_tags = CustomerTag.objects.filter(organization=org)
 
     context = {
         'event': event,
         'native_sms_campaigns': native_sms_campaigns,
+        'event_customers_page': event_customers_page,
+        'org_tags': event_org_tags,
         'weather_forecast': weather_forecast,
         'active_scanner_sessions': active_scanner_sessions,
         'total_orders': total_orders,

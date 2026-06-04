@@ -40,6 +40,33 @@
     </form>
 </div>
 
+{% if org.sms_marketing_enabled and is_org_host %}
+<!-- Selection action bar (revealed once at least one customer is checked) -->
+<form method="post" action="{% url 'tickets:customers_bulk_tag' %}" id="custActionBar" class="card mb-3 d-none">
+    {% csrf_token %}
+    <input type="hidden" name="select_all" id="custSelectAll" value="">
+    {# Pass the active filters through so 'select all matching' and the redirect keep state. #}
+    <input type="hidden" name="search" value="{{ search_query }}">
+    <input type="hidden" name="segment" value="{{ segment_filter }}">
+    <input type="hidden" name="tag" value="{{ tag_filter }}">
+    <input type="hidden" name="sort" value="{{ sort_by }}">
+    <div class="card-body d-flex flex-wrap align-items-center gap-2">
+        <strong id="custSelectedCount" class="me-2">0 selected</strong>
+        <div class="btn-group btn-group-sm" role="group" aria-label="Tag mode">
+            <input type="radio" class="btn-check" name="tag_mode" id="custModeExisting" value="existing" autocomplete="off" {% if org_tags %}checked{% else %}disabled{% endif %}>
+            <label class="btn btn-outline-primary" for="custModeExisting">Existing tag</label>
+            <input type="radio" class="btn-check" name="tag_mode" id="custModeNew" value="new" autocomplete="off" {% if not org_tags %}checked{% endif %}>
+            <label class="btn btn-outline-primary" for="custModeNew">New tag</label>
+        </div>
+        <select id="custTagSelect" name="tag_id" class="form-select form-select-sm{% if not org_tags %} d-none{% endif %}" style="max-width: 240px;">
+            {% for t in org_tags %}<option value="{{ t.id }}">{{ t.name }}</option>{% endfor %}
+        </select>
+        <input type="text" id="custNewTag" name="new_tag_name" class="form-control form-control-sm{% if org_tags %} d-none{% endif %}" style="max-width: 240px;" placeholder="New tag name" maxlength="50">
+        <button type="submit" class="btn btn-primary btn-sm">Tag selected</button>
+    </div>
+</form>
+{% endif %}
+
 <div class="card">
     <div class="card-body p-0">
         {% if page_obj %}
@@ -47,6 +74,9 @@
             <table class="table table-hover mb-0 mobile-card-table customer-list-table">
                 <thead>
                     <tr>
+                        {% if org.sms_marketing_enabled and is_org_host %}
+                        <th style="width: 44px;"><input type="checkbox" id="custSelectAllRows" aria-label="Select all customers on this page"></th>
+                        {% endif %}
                         <th>
                             {% with asc='name' desc='-name' %}
                             <a href="?sort={% if sort_by == asc %}{{ desc }}{% else %}{{ asc }}{% endif %}&search={{ search_query }}&segment={{ segment_filter }}&tag={{ tag_filter }}">Name
@@ -109,6 +139,9 @@
                 <tbody>
                     {% for customer in page_obj %}
                     <tr style="cursor: pointer;" onclick="window.location='{% url 'tickets:customer_detail' customer.id %}'">
+                        {% if org.sms_marketing_enabled and is_org_host %}
+                        <td onclick="event.stopPropagation()"><input type="checkbox" class="cust-checkbox" value="{{ customer.id }}" aria-label="Select {{ customer.name }}" onclick="event.stopPropagation()"></td>
+                        {% endif %}
                         <td class="customer-card-cell">
                             <div class="customer-card-name"><strong>{{ customer.name }}</strong></div>
                             <div class="customer-card-email">{{ customer.email }}</div>
@@ -154,6 +187,19 @@
             </table>
         </div>
 
+        {% if org.sms_marketing_enabled and is_org_host and page_obj.paginator.num_pages > 1 %}
+        <div id="custSelectAllBanner" class="text-center small text-muted border-top py-2 d-none">
+            <span id="custSelectAllPrompt">
+                All {{ page_obj|length }} customer(s) on this page are selected.
+                <a href="#" id="custSelectAllLink">Select all {{ page_obj.paginator.count }} matching customers</a>
+            </span>
+            <span id="custSelectAllNotice" class="d-none">
+                All {{ page_obj.paginator.count }} matching customers are selected.
+                <a href="#" id="custClearSelectAllLink">Clear selection</a>
+            </span>
+        </div>
+        {% endif %}
+
         {% if page_obj.has_other_pages %}
         <div class="d-flex justify-content-center py-3">
             <nav>
@@ -177,4 +223,124 @@
         {% endif %}
     </div>
 </div>
+{% endblock %}
+
+{% block extra_js %}
+{% if org.sms_marketing_enabled and is_org_host %}
+<script>
+// Customer list: bulk-select customers and tag them.
+(function() {
+    var form = document.getElementById('custActionBar');
+    if (!form) return;
+    var totalCustomers = {{ page_obj.paginator.count|default:0 }};
+    var checkboxes = Array.prototype.slice.call(document.querySelectorAll('.cust-checkbox'));
+    var selectAllRows = document.getElementById('custSelectAllRows');
+    var countEl = document.getElementById('custSelectedCount');
+    var selectAllField = document.getElementById('custSelectAll');
+    var tagSelect = document.getElementById('custTagSelect');
+    var newTagInput = document.getElementById('custNewTag');
+    var banner = document.getElementById('custSelectAllBanner');
+    var promptEl = document.getElementById('custSelectAllPrompt');
+    var noticeEl = document.getElementById('custSelectAllNotice');
+    var selectAllLink = document.getElementById('custSelectAllLink');
+    var clearAllLink = document.getElementById('custClearSelectAllLink');
+    var allMatchingSelected = false;
+
+    function pageSelected() {
+        return checkboxes.filter(function(cb) { return cb.checked; });
+    }
+
+    function updateBanner() {
+        if (!banner) return;
+        var allOnPage = checkboxes.length > 0 && pageSelected().length === checkboxes.length;
+        banner.classList.toggle('d-none', !allOnPage);
+        if (promptEl) promptEl.classList.toggle('d-none', allMatchingSelected);
+        if (noticeEl) noticeEl.classList.toggle('d-none', !allMatchingSelected);
+    }
+
+    function sync() {
+        var selected = pageSelected();
+        countEl.textContent = allMatchingSelected
+            ? totalCustomers + ' selected (all)'
+            : selected.length + ' selected';
+        form.classList.toggle('d-none', selected.length === 0);
+        if (selectAllRows) {
+            selectAllRows.checked = checkboxes.length > 0 && selected.length === checkboxes.length;
+            selectAllRows.indeterminate = selected.length > 0 && selected.length < checkboxes.length;
+        }
+        updateBanner();
+    }
+
+    function resetAllMatching() {
+        allMatchingSelected = false;
+        if (selectAllField) selectAllField.value = '';
+    }
+
+    checkboxes.forEach(function(cb) {
+        cb.addEventListener('change', function() { resetAllMatching(); sync(); });
+    });
+
+    if (selectAllRows) {
+        selectAllRows.addEventListener('change', function() {
+            resetAllMatching();
+            checkboxes.forEach(function(cb) { cb.checked = selectAllRows.checked; });
+            sync();
+        });
+    }
+
+    if (selectAllLink) {
+        selectAllLink.addEventListener('click', function(e) {
+            e.preventDefault();
+            allMatchingSelected = true;
+            if (selectAllField) selectAllField.value = '1';
+            checkboxes.forEach(function(cb) { cb.checked = true; });
+            sync();
+        });
+    }
+    if (clearAllLink) {
+        clearAllLink.addEventListener('click', function(e) {
+            e.preventDefault();
+            resetAllMatching();
+            checkboxes.forEach(function(cb) { cb.checked = false; });
+            sync();
+        });
+    }
+
+    // Tag mode toggle: existing-tag dropdown vs new-tag name.
+    Array.prototype.slice.call(document.querySelectorAll('input[name="tag_mode"]')).forEach(function(radio) {
+        radio.addEventListener('change', function() {
+            var existing = radio.value === 'existing' && radio.checked;
+            if (tagSelect) tagSelect.classList.toggle('d-none', !existing);
+            if (newTagInput) newTagInput.classList.toggle('d-none', existing);
+        });
+    });
+
+    form.addEventListener('submit', function(e) {
+        var mode = (document.querySelector('input[name="tag_mode"]:checked') || {}).value;
+        if (mode === 'existing') {
+            if (!tagSelect || !tagSelect.value) { e.preventDefault(); return; }
+            if (newTagInput) newTagInput.disabled = true;  // don't submit a stale name
+        } else {
+            if (!newTagInput || !newTagInput.value.trim()) { e.preventDefault(); return; }
+            if (tagSelect) tagSelect.disabled = true;  // don't submit a stale tag_id
+        }
+        // Inject the current page's checked ids (skipped when "all matching" is
+        // active — the server resolves the full set from the filters).
+        form.querySelectorAll('input[data-cust-id]').forEach(function(n) { n.remove(); });
+        if (!allMatchingSelected) {
+            pageSelected().forEach(function(cb) {
+                var input = document.createElement('input');
+                input.type = 'hidden';
+                input.name = 'customer_ids';
+                input.value = cb.value;
+                input.setAttribute('data-cust-id', '1');
+                form.appendChild(input);
+            });
+        }
+    });
+
+    sync();
+})();
+</script>
+{% endif %}
 {% endblock %}

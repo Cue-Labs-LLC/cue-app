@@ -220,7 +220,7 @@
         <p>Compose a text, choose who gets it, then send now or schedule.</p>
     </div>
 
-    <form method="post" novalidate>
+    <form method="post" novalidate id="sms-campaign-form">
         {% csrf_token %}
         <input type="hidden" name="idempotency_key" value="{{ idempotency_key }}">
         {% if event %}
@@ -241,11 +241,36 @@
                         {{ form.name.errors }}
                     </div>
 
-                    <div class="sms-section">
-                        <label class="sms-label" for="{{ form.recipient_list.id_for_label }}">Recipients</label>
-                        {{ form.recipient_list }}
-                        {{ form.recipient_list.errors }}
-                        <div class="sms-hint">No list yet? <a href="{% url 'tickets:sms_recipient_list_create' %}">Build a recipient list</a> from segments or hand-picked customers.</div>
+                    <div class="sms-section" id="audience-section">
+                        <span class="sms-label">Audience</span>
+                        {% if event %}
+                        <div class="sms-hint">Texting everyone who bought a ticket to <strong>{{ event.name }}</strong>.</div>
+                        {% else %}
+                        {% if form.tag_ids.field.queryset %}
+                        <div class="sms-aud-group">
+                            <div class="sms-aud-grouplabel">Tags</div>
+                            <div class="d-flex flex-wrap gap-3">
+                                {% for cb in form.tag_ids %}
+                                <div class="form-check">{{ cb.tag }} <label class="form-check-label" for="{{ cb.id_for_label }}">{{ cb.choice_label }}</label></div>
+                                {% endfor %}
+                            </div>
+                        </div>
+                        {% endif %}
+                        <div class="sms-aud-group">
+                            <div class="sms-aud-grouplabel">Segments</div>
+                            <div class="d-flex flex-wrap gap-3">
+                                {% for cb in form.rfm_segment %}
+                                <div class="form-check">{{ cb.tag }} <label class="form-check-label" for="{{ cb.id_for_label }}">{{ cb.choice_label }}</label></div>
+                                {% endfor %}
+                            </div>
+                        </div>
+                        <div class="sms-hint">Need a custom group? Tag customers on the Customers page, then pick the tag here.</div>
+                        {% endif %}
+                        <div class="sms-aud-preview">
+                            Estimated audience: <b id="aud-count">—</b>
+                            <span class="sms-hint" id="aud-note">(opted-in, contactable, non-opted-out)</span>
+                            <button type="button" class="btn btn-outline-secondary btn-sm" id="aud-refresh">Refresh</button>
+                        </div>
                     </div>
 
                     <div class="sms-section">
@@ -399,6 +424,37 @@
             el.addEventListener('change', syncSchedule);
         });
         syncSchedule();
+
+        // Live audience sizing: POST the current audience selection to the
+        // preview endpoint (transient — nothing is saved) and show the count.
+        var form = document.getElementById('sms-campaign-form');
+        var url = "{% url 'tickets:sms_audience_preview' %}";
+        var countEl = document.getElementById('aud-count');
+        var noteEl = document.getElementById('aud-note');
+        var refreshBtn = document.getElementById('aud-refresh');
+        function refreshAudience() {
+            if (!form || !countEl) return;
+            var data = new FormData(form);
+            countEl.textContent = '…';
+            fetch(url, {
+                method: 'POST',
+                headers: { 'X-CSRFToken': form.querySelector('[name=csrfmiddlewaretoken]').value },
+                body: data,
+            })
+                .then(function (r) { return r.json(); })
+                .then(function (j) {
+                    countEl.textContent = j.count;
+                    if (noteEl) noteEl.textContent = j.exceeds_cap
+                        ? '(exceeds the ' + j.cap + ' cap — narrow the audience)'
+                        : '(opted-in, contactable, non-opted-out)';
+                })
+                .catch(function () { countEl.textContent = '?'; });
+        }
+        if (refreshBtn) refreshBtn.addEventListener('click', refreshAudience);
+        document.querySelectorAll('#audience-section input[type=checkbox]').forEach(function (cb) {
+            cb.addEventListener('change', refreshAudience);
+        });
+        refreshAudience();
     });
 })();
 </script>
