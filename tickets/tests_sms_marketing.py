@@ -1031,6 +1031,7 @@ class SMSTicketLinkRevenueTests(TestCase):
         self.client = Client()
         self.org = Organization.objects.create(
             name='Org', slug='org-tl', sms_marketing_enabled=True,
+            sms_credit_balance_cents=100000,
         )
         self.user = User.objects.create_user('u', 'u@test.com', 'pw')
         UserProfile.objects.create(user=self.user, organization=self.org,
@@ -1110,6 +1111,40 @@ class SMSTicketLinkRevenueTests(TestCase):
     def test_detail_unknown_token_has_no_buy_stats(self):
         # Body links a token with no matching TrackingLink -> graceful None.
         self.assertIsNone(self._stats(self._campaign('https://test.cueup.co/track/nope123/')))
+
+    def test_two_campaigns_to_same_event_get_distinct_links(self):
+        """Per-campaign attribution: each saved campaign mints its own TrackingLink
+        from the shared event link, so their tickets/revenue don't pool together."""
+        import re as _re
+        from .models import TrackingLink
+        make_customer(self.org, 'vip@x.com', '+13105550009', rfm_segment='VIP')
+        shared = self._link()  # the composer's shared per-event 'SMS' link
+        body = f'Tickets https://test.cueup.co/track/{shared.token}/'
+
+        def post(name):
+            with self.captureOnCommitCallbacks(execute=True):
+                return self.client.post(reverse('tickets:sms_campaign_create'), {
+                    'name': name, 'rfm_segment': 'VIP', 'body': body,
+                    'send_mode': 'now', 'confirm': '1',
+                })
+
+        self.assertEqual(post('Camp A').status_code, 302)
+        self.assertEqual(post('Camp B').status_code, 302)
+        a = SMSCampaign.objects.get(name='Camp A')
+        b = SMSCampaign.objects.get(name='Camp B')
+        ta = _re.search(r'/track/([A-Za-z0-9]+)/', a.link_url).group(1)
+        tb = _re.search(r'/track/([A-Za-z0-9]+)/', b.link_url).group(1)
+        # Each campaign got its own fresh token, distinct from each other + the shared one.
+        self.assertEqual(len({ta, tb, shared.token}), 3)
+        self.assertEqual(TrackingLink.objects.get(token=ta).name, 'SMS · Camp A')
+        self.assertEqual(TrackingLink.objects.get(token=tb).name, 'SMS · Camp B')
+        # Sales attribute independently per campaign.
+        self._completed_session(TrackingLink.objects.get(token=ta), 2, 5000, 500)
+        self._completed_session(TrackingLink.objects.get(token=tb), 1, 3000, 0)
+        self.assertEqual(self._stats(a)['tickets'], 2)
+        self.assertEqual(self._stats(a)['revenue'], Decimal('45.00'))
+        self.assertEqual(self._stats(b)['tickets'], 1)
+        self.assertEqual(self._stats(b)['revenue'], Decimal('30.00'))
 
 
 @override_settings(E2E_TEST_MODE=True, SMS_PRICE_PER_SEGMENT_CENTS=Decimal('3'),

@@ -106,6 +106,6 @@
 
 **Cons:** Touches the cached analytics layer (30/90/365-day windows, 10-min cache) — needs window-scoped aggregation and cache-key care. Decide gross vs net consistently with the detail page (net).
 
-**Context:** SMS ticket links (PR #188) insert a `/track/<token>/` `TrackingLink` (named `SMS`, one per event) into the campaign body; completed `StripeCheckoutSession` rows carry that `tracking_link`. The campaign detail page resolves the token out of `campaign.link_url` and shows tickets + net revenue (`amount_total_cents - platform_fee_cents`, COMPLETED only, matches `views.py:4537`). Mirror the existing `EventSMSCampaign` orders/revenue fields the overview already renders. Note: the `SMS` link is shared per event, so rollup attribution is per-event-SMS, not per-campaign.
+**Context:** SMS ticket links (PR #188) insert a `/track/<token>/` link into the body; at save each campaign mints its **own** `TrackingLink` (named `SMS · <campaign>`) via `_mint_campaign_tracking_link`, so attribution is per-campaign. Completed `StripeCheckoutSession` rows carry that `tracking_link`. The detail page resolves the token out of `campaign.link_url` and shows tickets + net revenue (`amount_total_cents - platform_fee_cents`, COMPLETED only, matches `views.py:4537`). Mirror the existing `EventSMSCampaign` orders/revenue fields the overview already renders.
 
 **Depends on:** PR #188 (shipped on main).
