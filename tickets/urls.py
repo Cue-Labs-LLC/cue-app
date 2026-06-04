@@ -212,6 +212,8 @@ urlpatterns = [
     path('marketing/sms/credits/', sms_views.sms_credits, name='sms_credits'),
     path('marketing/sms/credits/checkout/', sms_views.sms_credits_checkout, name='sms_credits_checkout'),
     path('marketing/sms/credits/success/', sms_views.sms_credits_success, name='sms_credits_success'),
+    path('marketing/sms/credits/charge-saved/', sms_views.sms_credits_charge_saved, name='sms_credits_charge_saved'),
+    path('marketing/sms/credits/remove-card/', sms_views.sms_credits_remove_card, name='sms_credits_remove_card'),
     # Marketing SMS — recipient lists
     path('marketing/sms/lists/', sms_views.sms_recipient_list_list, name='sms_recipient_list_list'),
     path('marketing/sms/lists/new/', sms_views.sms_recipient_list_create, name='sms_recipient_list_create'),

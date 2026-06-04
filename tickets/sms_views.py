@@ -535,6 +535,30 @@ def sms_click_redirect(request, token):
 SMS_CREDIT_PRESETS_TOKENS = [500, 1000, 2500, 5000]
 
 
+def _org_stripe_customer_id(org):
+    """Return the org's platform billing Stripe Customer id, creating it lazily.
+
+    Non-fatal: on any Stripe error we log and return None so a plain (no-saved-card)
+    Checkout still works. Mirrors the per-user pattern in views.create_payment_intent,
+    org-scoped. Stores the id on the Organization so it's reused for the next card.
+    """
+    if org.stripe_customer_id:
+        return org.stripe_customer_id
+    import stripe as stripe_lib
+    from .models import Organization
+    stripe_lib.api_key = settings.STRIPE_SECRET_KEY
+    try:
+        customer = stripe_lib.Customer.create(
+            name=org.name, metadata={'organization_id': str(org.id)},
+        )
+    except Exception:
+        logger.exception('Stripe Customer create failed for org %s', org.id)
+        return None
+    Organization.objects.filter(pk=org.pk).update(stripe_customer_id=customer.id)
+    org.stripe_customer_id = customer.id
+    return customer.id
+
+
 @login_required
 @require_org
 @require_host
@@ -550,12 +574,20 @@ def sms_credits(request):
         SMSCreditTransaction.objects.filter(organization=org)
         .select_related('campaign').order_by('-created_at')[:30]
     )
+    has_saved_card = bool(org.stripe_pm_id and org.stripe_customer_id)
+    card_exp = ''
+    if org.stripe_pm_exp_month and org.stripe_pm_exp_year:
+        card_exp = f'{org.stripe_pm_exp_month:02d}/{org.stripe_pm_exp_year}'
     return render(request, 'tickets/marketing/sms/credits.html', {
         'balance_cents': org.sms_credit_balance_cents,
         'presets': presets,
         'transactions': transactions,
         'stripe_ready': bool(getattr(settings, 'STRIPE_SECRET_KEY', '')),
         'marketing_section': 'sms',
+        'has_saved_card': has_saved_card,
+        'card_brand': org.stripe_pm_brand,
+        'card_last4': org.stripe_pm_last4,
+        'card_exp': card_exp,
     })
 
 
@@ -587,25 +619,42 @@ def sms_credits_checkout(request):
         reverse('tickets:sms_credits_success')
     ) + '?session_id={CHECKOUT_SESSION_ID}'
     cancel_url = request.build_absolute_uri(reverse('tickets:sms_credits'))
-    try:
-        session = stripe_lib.checkout.Session.create(
-            mode='payment',
-            line_items=[{
-                'price_data': {
-                    'currency': getattr(settings, 'STRIPE_CURRENCY', 'usd'),
-                    'product_data': {'name': f'{token_pack} marketing SMS tokens'},
-                    'unit_amount': amount_cents,
-                },
-                'quantity': 1,
-            }],
-            metadata={
-                'kind': 'sms_credits',
-                'organization_id': str(org.id),
-                'credit_cents': str(amount_cents),
+    session_kwargs = dict(
+        mode='payment',
+        line_items=[{
+            'price_data': {
+                'currency': getattr(settings, 'STRIPE_CURRENCY', 'usd'),
+                'product_data': {'name': f'{token_pack} marketing SMS tokens'},
+                'unit_amount': amount_cents,
             },
-            success_url=success_url,
-            cancel_url=cancel_url,
-        )
+            'quantity': 1,
+        }],
+        metadata={
+            'kind': 'sms_credits',
+            'organization_id': str(org.id),
+            'credit_cents': str(amount_cents),
+        },
+        success_url=success_url,
+        cancel_url=cancel_url,
+    )
+    # "Save this card" → attach an org Customer and tell Stripe to keep the card for
+    # off-session reuse. Crediting still happens via checkout.session.completed; the
+    # card brand/last4 are saved by the payment_intent.succeeded handler (flow=checkout).
+    if request.POST.get('save_card') == '1':
+        customer_id = _org_stripe_customer_id(org)
+        if customer_id:
+            session_kwargs['customer'] = customer_id
+            session_kwargs['payment_intent_data'] = {
+                'setup_future_usage': 'off_session',
+                'metadata': {
+                    'kind': 'sms_credits',
+                    'organization_id': str(org.id),
+                    'credit_cents': str(amount_cents),
+                    'flow': 'checkout',
+                },
+            }
+    try:
+        session = stripe_lib.checkout.Session.create(**session_kwargs)
     except Exception:
         logger.exception('Stripe checkout session create failed for org %s', org.id)
         messages.error(request, 'Could not start checkout. Please try again.')
@@ -632,4 +681,116 @@ def sms_credits_success(request):
         except Exception:
             logger.exception('Stripe success fulfillment failed for %s', session_id)
     messages.success(request, 'Payment received — your SMS tokens have been added.')
+    return redirect('tickets:sms_credits')
+
+
+@login_required
+@require_org
+@require_host
+@require_sms_feature
+@require_POST
+def sms_credits_charge_saved(request):
+    """One-click top-up: charge the org's saved card off-session and credit the wallet.
+
+    Credits synchronously on success (idempotent via the PaymentIntent id); the
+    payment_intent.succeeded webhook is a no-op retry under the same id. On any card
+    problem we fall back to the hosted Checkout flow rather than failing hard.
+    """
+    org = get_organization(request)
+    from .services.sms_credits import price_per_segment_cents, credit
+    from .models import Organization
+    try:
+        token_pack = int(request.POST.get('tokens', '0'))
+    except (TypeError, ValueError):
+        token_pack = 0
+    if token_pack not in SMS_CREDIT_PRESETS_TOKENS:
+        messages.error(request, 'Pick a valid token pack.')
+        return redirect('tickets:sms_credits')
+    if not getattr(settings, 'STRIPE_SECRET_KEY', ''):
+        messages.error(request, 'Payments are not configured for this environment.')
+        return redirect('tickets:sms_credits')
+    if not (org.stripe_pm_id and org.stripe_customer_id):
+        messages.error(request, 'No saved card on file. Add one by topping up below.')
+        return redirect('tickets:sms_credits')
+
+    amount_cents = int(token_pack * price_per_segment_cents())
+    import stripe as stripe_lib
+    stripe_lib.api_key = settings.STRIPE_SECRET_KEY
+    try:
+        pi = stripe_lib.PaymentIntent.create(
+            amount=amount_cents,
+            currency=getattr(settings, 'STRIPE_CURRENCY', 'usd'),
+            customer=org.stripe_customer_id,
+            payment_method=org.stripe_pm_id,
+            off_session=True,
+            confirm=True,
+            metadata={
+                'kind': 'sms_credits',
+                'organization_id': str(org.id),
+                'credit_cents': str(amount_cents),
+                'flow': 'one_click',
+            },
+        )
+    except stripe_lib.error.CardError as e:
+        if getattr(e, 'code', '') == 'authentication_required':
+            messages.error(request, 'Your card needs verification. Please top up below to '
+                                    'confirm it once, then one-click will work again.')
+        else:
+            messages.error(request, 'Your saved card was declined. Try another card below.')
+        return redirect('tickets:sms_credits')
+    except stripe_lib.error.InvalidRequestError as e:
+        if getattr(e, 'code', '') == 'resource_missing':
+            # The saved PM (or customer) no longer exists at Stripe — clear and fall back.
+            fields = {'stripe_pm_id': None, 'stripe_pm_brand': '', 'stripe_pm_last4': '',
+                      'stripe_pm_exp_month': None, 'stripe_pm_exp_year': None}
+            if getattr(e, 'param', '') == 'customer':
+                fields['stripe_customer_id'] = None
+            Organization.objects.filter(pk=org.pk).update(**fields)
+            messages.error(request, 'Your saved card is no longer available. Please add a card '
+                                    'by topping up below.')
+            return redirect('tickets:sms_credits')
+        logger.exception('Stripe one-click PaymentIntent failed for org %s', org.id)
+        messages.error(request, 'Could not charge your saved card. Please try again.')
+        return redirect('tickets:sms_credits')
+    except Exception:
+        logger.exception('Stripe one-click PaymentIntent failed for org %s', org.id)
+        messages.error(request, 'Could not charge your saved card. Please try again.')
+        return redirect('tickets:sms_credits')
+
+    if getattr(pi, 'status', '') != 'succeeded':
+        # e.g. requires_action — hosted Checkout handles SCA.
+        messages.error(request, 'Your card needs verification. Please top up below to confirm it.')
+        return redirect('tickets:sms_credits')
+
+    credit(str(org.id), getattr(pi, 'amount_received', None) or amount_cents,
+           stripe_checkout_session_id=pi.id, description='Stripe one-click top-up')
+    messages.success(request, 'Payment received — your SMS tokens have been added.')
+    return redirect('tickets:sms_credits')
+
+
+@login_required
+@require_org
+@require_host
+@require_sms_feature
+@require_POST
+def sms_credits_remove_card(request):
+    """Detach the org's saved card at Stripe and clear the local card fields.
+
+    Keeps stripe_customer_id so the next saved card reuses the same Customer."""
+    org = get_organization(request)
+    from .models import Organization
+    if org.stripe_pm_id and getattr(settings, 'STRIPE_SECRET_KEY', ''):
+        import stripe as stripe_lib
+        stripe_lib.api_key = settings.STRIPE_SECRET_KEY
+        try:
+            stripe_lib.PaymentMethod.detach(org.stripe_pm_id)
+        except Exception:
+            # Already detached/missing — still clear locally below.
+            logger.warning('Detach failed for PM %s (org %s); clearing anyway',
+                           org.stripe_pm_id, org.id)
+    Organization.objects.filter(pk=org.pk).update(
+        stripe_pm_id=None, stripe_pm_brand='', stripe_pm_last4='',
+        stripe_pm_exp_month=None, stripe_pm_exp_year=None,
+    )
+    messages.success(request, 'Saved card removed.')
     return redirect('tickets:sms_credits')

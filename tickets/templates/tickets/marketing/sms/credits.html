@@ -26,19 +26,77 @@
 <div class="card mb-4">
     <div class="card-header"><strong>Add tokens</strong></div>
     <div class="card-body">
-        {% if stripe_ready %}
+        {% if not stripe_ready %}
+        <p class="text-body-secondary mb-0">Payments are not configured in this environment. Tokens can be granted from the Django admin (Organization ▸ SMS credit balance, or an SMS credit transaction).</p>
+
+        {% elif has_saved_card %}
+        <div class="d-flex align-items-center justify-content-between flex-wrap gap-2 mb-3">
+            <span class="text-body-secondary">
+                <i class="bi bi-credit-card"></i>
+                Saved card: <strong>{{ card_brand|title }} ····{{ card_last4 }}</strong>{% if card_exp %} <span class="text-muted small">exp {{ card_exp }}</span>{% endif %}
+            </span>
+            <form method="post" action="{% url 'tickets:sms_credits_remove_card' %}" class="d-inline"
+                  onsubmit="return confirm('Remove the saved card? You can add a new one on your next top-up.');">
+                {% csrf_token %}
+                <button type="submit" class="btn btn-link btn-sm text-danger p-0">Remove card</button>
+            </form>
+        </div>
+        <p class="text-body-secondary">One-click top-up — each text segment you send spends 1 token (a long or emoji text uses 2–3).</p>
+        <div class="d-flex flex-wrap gap-2">
+            {% for pack in presets %}
+            <form method="post" action="{% url 'tickets:sms_credits_charge_saved' %}" class="d-inline"
+                  onsubmit="return confirm('Charge {{ card_brand|title }} ····{{ card_last4 }} ${{ pack.cents|cents }} for {{ pack.tokens }} tokens?');">
+                {% csrf_token %}
+                <input type="hidden" name="tokens" value="{{ pack.tokens }}">
+                <button type="submit" class="btn btn-primary">{{ pack.tokens }} tokens (${{ pack.cents|cents }})</button>
+            </form>
+            {% endfor %}
+        </div>
+        <div class="mt-3">
+            <details>
+                <summary class="text-body-secondary small" style="cursor:pointer;">Use a different card</summary>
+                <div class="d-flex flex-wrap gap-2 mt-2">
+                    {% for pack in presets %}
+                    <form method="post" action="{% url 'tickets:sms_credits_checkout' %}" class="d-inline">
+                        {% csrf_token %}
+                        <input type="hidden" name="tokens" value="{{ pack.tokens }}">
+                        <input type="hidden" name="save_card" value="1">
+                        <button type="submit" class="btn btn-outline-secondary btn-sm">Buy {{ pack.tokens }} tokens</button>
+                    </form>
+                    {% endfor %}
+                </div>
+            </details>
+        </div>
+
+        {% else %}
         <p class="text-body-secondary">Each text segment you send spends 1 token (a long or emoji text uses 2–3). Pick a token pack to top up via Stripe.</p>
         <div class="d-flex flex-wrap gap-2">
             {% for pack in presets %}
             <form method="post" action="{% url 'tickets:sms_credits_checkout' %}" class="d-inline">
                 {% csrf_token %}
                 <input type="hidden" name="tokens" value="{{ pack.tokens }}">
+                <input type="hidden" name="save_card" class="save-card-field" value="1">
                 <button type="submit" class="btn btn-outline-secondary">Buy {{ pack.tokens }} tokens (${{ pack.cents|cents }})</button>
             </form>
             {% endfor %}
         </div>
-        {% else %}
-        <p class="text-body-secondary mb-0">Payments are not configured in this environment. Tokens can be granted from the Django admin (Organization ▸ SMS credit balance, or an SMS credit transaction).</p>
+        <label class="d-inline-flex align-items-center gap-2 mt-3 text-body-secondary small">
+            <input type="checkbox" id="save-card-toggle" checked>
+            Save this card securely with Stripe for faster one-click top-ups next time.
+        </label>
+        <script>
+        (function () {
+            var toggle = document.getElementById('save-card-toggle');
+            if (!toggle) { return; }
+            function sync() {
+                document.querySelectorAll('.save-card-field').forEach(function (f) {
+                    f.value = toggle.checked ? '1' : '0';
+                });
+            }
+            toggle.addEventListener('change', sync);
+            sync();
+        })();
+        </script>
         {% endif %}
     </div>
 </div>
