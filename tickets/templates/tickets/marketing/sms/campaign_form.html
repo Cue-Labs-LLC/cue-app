@@ -40,10 +40,17 @@
     }
     .sms-phone-col { position: sticky; top: 24px; }
 
-    /* One quiet surface, sections divided by hairlines instead of separate cards. */
+    /* One quiet surface, sections divided by hairlines instead of separate cards.
+       NB: no `overflow: hidden` here — it would clip the audience/ticket-link
+       dropdown panels (absolutely-positioned popovers) at the surface edge.
+       Nothing inside is full-bleed, so the rounded corners stay clean without it. */
     .sms-surface {
         background: var(--bg-surface); border: 1px solid var(--border);
-        border-radius: var(--radius); overflow: hidden;
+        border-radius: var(--radius);
+        /* The surface runs a transform-based reveal (its own stacking context), so
+           its dropdown panels are confined to it. Lift the whole surface above the
+           later .sms-actions block so open panels overlay the action buttons. */
+        position: relative; z-index: 1;
     }
     .sms-section { padding: 22px 24px; }
     .sms-section + .sms-section { border-top: 1px solid var(--border-light); }
@@ -90,11 +97,6 @@
     .sms-meter b { color: var(--text-secondary); font-weight: 500; }
     .sms-meter .dot { opacity: 0.4; }
 
-    /* Buy-page link picker */
-    .sms-buylink { display: flex; gap: 8px; align-items: center; }
-    .sms-buylink select { flex: 1 1 auto; min-width: 0; }
-    .sms-buylink .btn { flex: 0 0 auto; white-space: nowrap; }
-
     /* Segmented send-mode toggle */
     .sms-segmented {
         display: inline-flex; background: var(--bg-inset); border: 1px solid var(--border);
@@ -111,6 +113,190 @@
     .sms-segmented input:focus-visible + .sms-pill { outline: 2px solid var(--accent-muted-border); }
 
     #schedule-at-wrap { margin-top: 16px; max-width: 280px; }
+
+    /* ---- Audience picker (chips) — scales from a few tags to dozens ---- */
+    .sms-aud-head {
+        display: flex; align-items: baseline; justify-content: space-between; gap: 12px;
+    }
+    .sms-aud-count {
+        font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.04em;
+        text-transform: uppercase; color: var(--text-tertiary); white-space: nowrap;
+    }
+    .sms-aud-count b {
+        color: var(--accent); font-size: 14px; font-weight: 600;
+        font-variant-numeric: tabular-nums; margin-right: 3px;
+    }
+    .sms-aud-count.is-pulsing b { animation: smsCountPulse 0.32s ease; }
+    @keyframes smsCountPulse { 0% { transform: scale(1); } 45% { transform: scale(1.18); } 100% { transform: scale(1); } }
+
+    .sms-aud-group { margin-top: 16px; }
+    .sms-aud-grouprow {
+        display: flex; align-items: center; justify-content: space-between; gap: 12px;
+        min-height: 22px;
+    }
+    .sms-aud-grouplabel {
+        font-family: var(--font-mono); font-size: 10px; font-weight: 500;
+        letter-spacing: 0.1em; text-transform: uppercase; color: var(--text-tertiary);
+    }
+    .sms-aud-tools { display: inline-flex; align-items: center; gap: 12px; }
+    .sms-aud-selcount {
+        font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.04em;
+        color: var(--text-tertiary);
+    }
+    .sms-aud-clear {
+        background: none; border: none; padding: 0; cursor: pointer;
+        font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.04em;
+        text-transform: uppercase; color: var(--text-tertiary); transition: color 0.12s;
+    }
+    .sms-aud-clear:hover { color: var(--accent); }
+    .sms-aud-clear[hidden] { display: none; }
+    .sms-compose input.sms-aud-search {
+        width: 150px; font-size: 12px; padding: 5px 10px 5px 27px; border-radius: 999px;
+        background: var(--bg-inset) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 16 16' fill='none' stroke='%23999' stroke-width='1.6'%3E%3Ccircle cx='7' cy='7' r='5'/%3E%3Cpath d='M11 11l3.5 3.5'/%3E%3C/svg%3E") no-repeat 9px center;
+    }
+
+    .sms-aud-chips { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 10px; }
+    /* Tag cloud can be large — cap to ~4 rows and scroll. */
+    .sms-aud-chips--scroll {
+        max-height: 138px; overflow-y: auto; padding: 1px 4px 1px 1px;
+        scrollbar-width: thin; scrollbar-color: var(--border) transparent;
+    }
+    .sms-aud-chips--scroll::-webkit-scrollbar { width: 7px; }
+    .sms-aud-chips--scroll::-webkit-scrollbar-thumb {
+        background: var(--border); border-radius: 999px;
+    }
+
+    .sms-chip-wrap { display: inline-flex; }
+    .sms-chip-wrap input { position: absolute; opacity: 0; width: 0; height: 0; pointer-events: none; }
+    .sms-chip {
+        display: inline-flex; align-items: center; gap: 6px; cursor: pointer; margin: 0;
+        font-family: var(--font-body); font-size: 12.5px; font-weight: 300;
+        color: var(--text-secondary); background: var(--bg-inset);
+        border: 1px solid var(--border); border-radius: 999px; padding: 6px 13px;
+        transition: background 0.12s, border-color 0.12s, color 0.12s; user-select: none;
+        white-space: nowrap;
+    }
+    .sms-chip::before {
+        content: ""; width: 0; overflow: hidden; font-size: 11px; line-height: 1;
+        transition: width 0.12s; opacity: 0;
+    }
+    .sms-chip:hover { border-color: var(--text-tertiary); color: var(--text-primary); }
+    .sms-chip-wrap input:checked + .sms-chip {
+        background: var(--accent); border-color: var(--accent);
+        color: var(--text-inverse); font-weight: 400;
+    }
+    .sms-chip-wrap input:checked + .sms-chip::before {
+        content: "\2713"; width: 12px; opacity: 1;
+    }
+    .sms-chip-wrap input:focus-visible + .sms-chip {
+        outline: 2px solid var(--accent-muted-border); outline-offset: 2px;
+    }
+    /* Segment semantic dots (mirror SEGMENT_BADGE_COLORS). Hidden once selected. */
+    .sms-chip-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--text-tertiary); flex: none; }
+    .sms-chip-wrap input:checked + .sms-chip .sms-chip-dot { background: currentColor; opacity: 0.85; }
+    .sms-chip--seg[data-seg="VIP"] .sms-chip-dot { background: #e0564b; }
+    .sms-chip--seg[data-seg="Loyal"] .sms-chip-dot { background: #4caf7d; }
+    .sms-chip--seg[data-seg="Big Spender"] .sms-chip-dot { background: #4aa3c7; }
+    .sms-chip--seg[data-seg="New"] .sms-chip-dot { background: #5b8def; }
+    .sms-chip--seg[data-seg="Promising"] .sms-chip-dot { background: #5b8def; }
+    .sms-chip--seg[data-seg="At-Risk"] .sms-chip-dot { background: #e0a23c; }
+    .sms-chip--seg[data-seg="Lapsed"] .sms-chip-dot { background: #e0a23c; }
+    .sms-chip--seg[data-seg="Dormant"] .sms-chip-dot { background: #8a8a8a; }
+
+    .sms-aud-empty {
+        font-size: 12px; font-weight: 300; color: var(--text-tertiary);
+        font-style: italic; margin-top: 10px;
+    }
+    .sms-aud-empty[hidden] { display: none; }
+
+    .sms-aud-preview {
+        display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+        margin-top: 18px; padding-top: 15px; border-top: 1px solid var(--border-light);
+    }
+    .sms-aud-preview .sms-hint { margin-top: 0; }
+
+    /* ---- Searchable tags dropdown (multi-select combobox) ---- */
+    .sms-dropdown { position: relative; margin-top: 10px; max-width: 340px; }
+    .sms-dropdown-toggle {
+        display: flex; align-items: center; justify-content: space-between; gap: 10px;
+        width: 100%; cursor: pointer; text-align: left;
+        font-family: var(--font-body); font-size: 13px; font-weight: 300;
+        color: var(--text-secondary); background: var(--bg-inset);
+        border: 1px solid var(--border); border-radius: var(--radius-sm, 4px);
+        padding: 9px 12px; transition: border-color 0.12s;
+    }
+    .sms-dropdown-toggle:hover { border-color: var(--text-tertiary); }
+    .sms-dropdown.is-open .sms-dropdown-toggle { border-color: var(--accent-muted-border); }
+    .sms-dropdown-label.has-selection { color: var(--text-primary); }
+    .sms-dropdown-caret { font-size: 11px; color: var(--text-tertiary); transition: transform 0.16s; }
+    .sms-dropdown.is-open .sms-dropdown-caret { transform: rotate(180deg); }
+
+    .sms-dropdown-panel {
+        position: absolute; z-index: 30; top: calc(100% + 5px); left: 0; right: 0;
+        background: var(--bg-surface); border: 1px solid var(--border);
+        border-radius: var(--radius); overflow: hidden;
+        box-shadow: 0 16px 40px -16px rgba(0,0,0,0.45), 0 4px 12px -6px rgba(0,0,0,0.3);
+        animation: smsDropIn 0.13s ease;
+    }
+    @keyframes smsDropIn { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
+    .sms-dropdown-search {
+        position: relative; padding: 9px; border-bottom: 1px solid var(--border-light);
+    }
+    .sms-dropdown-search i {
+        position: absolute; left: 19px; top: 50%; transform: translateY(-50%);
+        font-size: 12px; color: var(--text-tertiary); pointer-events: none;
+    }
+    .sms-compose .sms-dropdown-search input {
+        width: 100%; padding: 7px 11px 7px 30px; font-size: 12.5px; border-radius: var(--radius-sm, 4px);
+    }
+    .sms-dropdown-list { max-height: 220px; overflow-y: auto; padding: 5px;
+        scrollbar-width: thin; scrollbar-color: var(--border) transparent; }
+    .sms-dropdown-list::-webkit-scrollbar { width: 8px; }
+    .sms-dropdown-list::-webkit-scrollbar-thumb { background: var(--border); border-radius: 999px; }
+
+    .sms-option {
+        display: flex; align-items: center; gap: 9px; cursor: pointer; margin: 0;
+        padding: 8px 10px; border-radius: var(--radius-sm, 4px);
+        font-family: var(--font-body); font-size: 13px; font-weight: 300;
+        color: var(--text-secondary); transition: background 0.1s, color 0.1s; user-select: none;
+    }
+    .sms-option:hover { background: var(--bg-inset); color: var(--text-primary); }
+    .sms-option input { position: absolute; opacity: 0; width: 0; height: 0; pointer-events: none; }
+    .sms-option-check {
+        display: inline-flex; align-items: center; justify-content: center; flex: none;
+        width: 17px; height: 17px; border: 1px solid var(--border);
+        border-radius: 4px; color: transparent; font-size: 11px; transition: all 0.1s;
+    }
+    .sms-option input:checked ~ .sms-option-check {
+        background: var(--accent); border-color: var(--accent); color: var(--text-inverse);
+    }
+    .sms-option input:checked ~ .sms-option-name { color: var(--text-primary); }
+    .sms-option input:focus-visible ~ .sms-option-check { outline: 2px solid var(--accent-muted-border); outline-offset: 1px; }
+    .sms-dropdown-empty { padding: 14px 10px; font-size: 12px; font-style: italic; color: var(--text-tertiary); }
+    .sms-dropdown-empty[hidden] { display: none; }
+
+    /* Single-select "action" options (ticket-link inserter) */
+    .sms-option--action { width: 100%; text-align: left; background: none; border: none; }
+    .sms-option-add { margin-left: auto; font-size: 12px; color: var(--text-tertiary); }
+    .sms-option--action:hover .sms-option-add { color: var(--accent); }
+    .sms-dot-live { background: #4caf7d; box-shadow: 0 0 0 3px rgba(76,175,125,0.18); }
+
+    /* Selected-tag chips below the dropdown */
+    .sms-aud-selected:empty { display: none; }
+    .sms-aud-selected { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 11px; }
+    .sms-tag-chip {
+        display: inline-flex; align-items: center; gap: 6px;
+        font-family: var(--font-body); font-size: 12px; font-weight: 400;
+        color: var(--text-inverse); background: var(--accent);
+        border-radius: 999px; padding: 4px 6px 4px 12px;
+    }
+    .sms-tag-chip button {
+        display: inline-flex; align-items: center; justify-content: center;
+        width: 16px; height: 16px; border: none; border-radius: 50%; cursor: pointer;
+        background: rgba(255,255,255,0.22); color: inherit; font-size: 9px; padding: 0;
+        transition: background 0.12s;
+    }
+    .sms-tag-chip button:hover { background: rgba(255,255,255,0.4); }
 
     /* Actions + confirm */
     .sms-actions { margin-top: 20px; }
@@ -225,7 +411,7 @@
         <p>Compose a text, choose who gets it, then send now or schedule.</p>
     </div>
 
-    <form method="post" novalidate>
+    <form method="post" novalidate id="sms-campaign-form">
         {% csrf_token %}
         <input type="hidden" name="idempotency_key" value="{{ idempotency_key }}">
         {% if event %}
@@ -246,11 +432,68 @@
                         {{ form.name.errors }}
                     </div>
 
-                    <div class="sms-section">
-                        <label class="sms-label" for="{{ form.recipient_list.id_for_label }}">Recipients</label>
-                        {{ form.recipient_list }}
-                        {{ form.recipient_list.errors }}
-                        <div class="sms-hint">No list yet? <a href="{% url 'tickets:sms_recipient_list_create' %}">Build a recipient list</a> from segments or hand-picked customers.</div>
+                    <div class="sms-section" id="audience-section">
+                        <div class="sms-aud-head">
+                            <span class="sms-label" style="margin-bottom:0;">Audience</span>
+                            <span class="sms-aud-count" id="aud-count-pill"><b id="aud-count">—</b> recipients</span>
+                        </div>
+                        {% if event %}
+                        <div class="sms-hint" style="margin-top:10px;">Texting everyone who bought a ticket to <strong>{{ event.name }}</strong>.</div>
+                        {% else %}
+                        {% if form.tag_ids.field.queryset %}
+                        <div class="sms-aud-group" data-aud-group="tags">
+                            <div class="sms-aud-grouprow">
+                                <span class="sms-aud-grouplabel">Tags</span>
+                                <div class="sms-aud-tools">
+                                    <span class="sms-aud-selcount" data-aud-selcount="tags">0 selected</span>
+                                    <button type="button" class="sms-aud-clear" data-aud-clear="tags" hidden>Clear</button>
+                                </div>
+                            </div>
+                            <div class="sms-dropdown" data-aud-dropdown="tags">
+                                <button type="button" class="sms-dropdown-toggle" data-aud-toggle aria-haspopup="listbox" aria-expanded="false">
+                                    <span class="sms-dropdown-label" data-aud-togglelabel>Select tags…</span>
+                                    <i class="bi bi-chevron-down sms-dropdown-caret"></i>
+                                </button>
+                                <div class="sms-dropdown-panel" data-aud-panel hidden>
+                                    <div class="sms-dropdown-search">
+                                        <i class="bi bi-search"></i>
+                                        <input type="search" data-aud-search="tags" placeholder="Search tags" aria-label="Search tags" autocomplete="off">
+                                    </div>
+                                    <div class="sms-dropdown-list" data-aud-list role="listbox" aria-multiselectable="true">
+                                        {% for cb in form.tag_ids %}
+                                        <label class="sms-option" data-aud-name="{{ cb.choice_label|lower }}">
+                                            {{ cb.tag }}
+                                            <span class="sms-option-check"><i class="bi bi-check-lg"></i></span>
+                                            <span class="sms-option-name">{{ cb.choice_label }}</span>
+                                        </label>
+                                        {% endfor %}
+                                        <div class="sms-dropdown-empty" data-aud-empty="tags" hidden>No tags match.</div>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="sms-aud-selected" data-aud-selected="tags"></div>
+                        </div>
+                        {% endif %}
+                        <div class="sms-aud-group" data-aud-group="segments">
+                            <div class="sms-aud-grouprow">
+                                <span class="sms-aud-grouplabel">Segments</span>
+                                <div class="sms-aud-tools">
+                                    <span class="sms-aud-selcount" data-aud-selcount="segments">0 selected</span>
+                                    <button type="button" class="sms-aud-clear" data-aud-clear="segments" hidden>Clear</button>
+                                </div>
+                            </div>
+                            <div class="sms-aud-chips" data-aud-chips="segments">
+                                {% for cb in form.rfm_segment %}
+                                <span class="sms-chip-wrap">{{ cb.tag }}<label class="sms-chip sms-chip--seg" data-seg="{{ cb.choice_label }}" for="{{ cb.id_for_label }}"><span class="sms-chip-dot"></span>{{ cb.choice_label }}</label></span>
+                                {% endfor %}
+                            </div>
+                        </div>
+                        <div class="sms-hint">Need a custom group? Tag customers on the Customers page, then pick the tag here.</div>
+                        {% endif %}
+                        <div class="sms-aud-preview">
+                            <span class="sms-hint" id="aud-note">Only opted-in, contactable, non-opted-out customers are counted.</span>
+                            <button type="button" class="btn btn-outline-secondary btn-sm" id="aud-refresh">Refresh</button>
+                        </div>
                     </div>
 
                     <div class="sms-section">
@@ -265,16 +508,34 @@
                         <div class="sms-hint">"Reply STOP to opt out" is appended automatically &middot; any <code>https://</code> link is tracked per campaign.</div>
                     </div>
 
-                    <div class="sms-section">
-                        <label class="sms-label" for="{{ form.buy_event.id_for_label }}">Buy page link <span class="text-muted">(optional)</span></label>
-                        <div class="sms-buylink">
-                            {{ form.buy_event }}
-                            <button type="button" id="sms-insert-link" class="btn btn-outline-secondary">Insert link</button>
+                    {% if ticket_link_events %}
+                    <div class="sms-section" id="ticketlink-section">
+                        <span class="sms-label">Add a ticket link</span>
+                        <div class="sms-dropdown" id="ticketlink-dropdown">
+                            <button type="button" class="sms-dropdown-toggle" data-tl-toggle aria-haspopup="listbox" aria-expanded="false">
+                                <span class="sms-dropdown-label" data-tl-togglelabel>Insert a ticket link…</span>
+                                <i class="bi bi-chevron-down sms-dropdown-caret"></i>
+                            </button>
+                            <div class="sms-dropdown-panel" data-tl-panel hidden>
+                                <div class="sms-dropdown-search">
+                                    <i class="bi bi-search"></i>
+                                    <input type="search" data-tl-search placeholder="Search events" aria-label="Search events" autocomplete="off">
+                                </div>
+                                <div class="sms-dropdown-list" data-tl-list role="listbox">
+                                    {% for ev in ticket_link_events %}
+                                    <button type="button" class="sms-option sms-option--action" data-tl-event="{{ ev.id }}" data-tl-name="{{ ev.name|lower }}">
+                                        <span class="sms-chip-dot sms-dot-live"></span>
+                                        <span class="sms-option-name">{{ ev.name }}</span>
+                                        <i class="bi bi-plus-lg sms-option-add"></i>
+                                    </button>
+                                    {% endfor %}
+                                    <div class="sms-dropdown-empty" data-tl-empty hidden>No events match.</div>
+                                </div>
+                            </div>
                         </div>
-                        {{ form.buy_event.errors }}
-                        <div class="sms-hint">Drops a tracked link to one of your event buy pages into the message. Tickets bought and revenue from this link are attributed to the campaign.</div>
-                        {{ event_buy_urls|json_script:"buy-urls" }}
+                        <div class="sms-hint" id="tl-hint">Inserts a tracked link to the event's buy page — clicks and purchases are attributed to this SMS.</div>
                     </div>
+                    {% endif %}
 
                     <div class="sms-section">
                         <span class="sms-label">When to send</span>
@@ -416,21 +677,227 @@
         });
         syncSchedule();
 
-        // Insert a tracked buy-page link into the message, then refresh counter + preview.
-        var insertBtn = document.getElementById('sms-insert-link');
-        var buyUrlsEl = document.getElementById('buy-urls');
-        var buyUrls = buyUrlsEl ? JSON.parse(buyUrlsEl.textContent) : {};
-        var buySelect = document.getElementById('{{ form.buy_event.id_for_label }}');
-        if (insertBtn && body && buySelect) {
-            insertBtn.addEventListener('click', function () {
-                var url = buyUrls[buySelect.value];
-                if (!url) { return; }
-                if (body.value.indexOf(url) !== -1) { return; }  // already inserted
-                body.value = (body.value.trimEnd() + '\n\n' + url).trimStart();
-                body.dispatchEvent(new Event('input'));
+        // Live audience sizing: POST the current audience selection to the
+        // preview endpoint (transient — nothing is saved) and show the count.
+        var form = document.getElementById('sms-campaign-form');
+        var url = "{% url 'tickets:sms_audience_preview' %}";
+        var countEl = document.getElementById('aud-count');
+        var countPill = document.getElementById('aud-count-pill');
+        var noteEl = document.getElementById('aud-note');
+        var refreshBtn = document.getElementById('aud-refresh');
+
+        function pulse() {
+            if (!countPill) return;
+            countPill.classList.remove('is-pulsing');
+            void countPill.offsetWidth;  // restart the animation
+            countPill.classList.add('is-pulsing');
+        }
+        function refreshAudience() {
+            if (!form || !countEl) return;
+            var data = new FormData(form);
+            countEl.textContent = '…';
+            fetch(url, {
+                method: 'POST',
+                headers: { 'X-CSRFToken': form.querySelector('[name=csrfmiddlewaretoken]').value },
+                body: data,
+            })
+                .then(function (r) { return r.json(); })
+                .then(function (j) {
+                    countEl.textContent = j.count;
+                    pulse();
+                    if (noteEl) noteEl.textContent = j.exceeds_cap
+                        ? 'Exceeds the ' + j.cap + ' cap — narrow the audience.'
+                        : 'Only opted-in, contactable, non-opted-out customers are counted.';
+                })
+                .catch(function () { countEl.textContent = '?'; });
+        }
+        if (refreshBtn) refreshBtn.addEventListener('click', refreshAudience);
+
+        // Per-group "N selected" + Clear, driven off the hidden checkboxes.
+        function syncGroup(group) {
+            var wrap = document.querySelector('[data-aud-group="' + group + '"]');
+            if (!wrap) return;
+            var boxes = wrap.querySelectorAll('input[type=checkbox]');
+            var n = 0;
+            boxes.forEach(function (b) { if (b.checked) n++; });
+            var sel = document.querySelector('[data-aud-selcount="' + group + '"]');
+            var clear = document.querySelector('[data-aud-clear="' + group + '"]');
+            if (sel) sel.textContent = n + ' selected';
+            if (clear) clear.hidden = n === 0;
+        }
+
+        // Tags live in a searchable dropdown; mirror the checked options into the
+        // toggle label + removable chips below it.
+        var tagsDropdown = document.querySelector('[data-aud-dropdown="tags"]');
+        function renderTagSelection() {
+            if (!tagsDropdown) return;
+            var checked = tagsDropdown.querySelectorAll('.sms-option input:checked');
+            var label = tagsDropdown.querySelector('[data-aud-togglelabel]');
+            var box = document.querySelector('[data-aud-selected="tags"]');
+            if (label) {
+                label.textContent = checked.length ? checked.length + (checked.length === 1 ? ' tag selected' : ' tags selected') : 'Select tags…';
+                label.classList.toggle('has-selection', checked.length > 0);
+            }
+            if (box) {
+                box.innerHTML = '';
+                checked.forEach(function (input) {
+                    var name = input.parentNode.querySelector('.sms-option-name').textContent;
+                    var chip = document.createElement('span');
+                    chip.className = 'sms-tag-chip';
+                    var text = document.createElement('span');
+                    text.textContent = name;
+                    var btn = document.createElement('button');
+                    btn.type = 'button';
+                    btn.setAttribute('aria-label', 'Remove ' + name);
+                    btn.innerHTML = '<i class="bi bi-x"></i>';
+                    btn.addEventListener('click', function () {
+                        input.checked = false;
+                        syncAll();
+                        refreshAudience();
+                    });
+                    chip.appendChild(text);
+                    chip.appendChild(btn);
+                    box.appendChild(chip);
+                });
+            }
+        }
+
+        function syncAll() { syncGroup('tags'); syncGroup('segments'); renderTagSelection(); }
+
+        document.querySelectorAll('[data-aud-clear]').forEach(function (btn) {
+            btn.addEventListener('click', function () {
+                var group = btn.getAttribute('data-aud-clear');
+                var wrap = document.querySelector('[data-aud-group="' + group + '"]');
+                if (!wrap) return;
+                wrap.querySelectorAll('input[type=checkbox]:checked').forEach(function (b) { b.checked = false; });
+                syncAll();
+                refreshAudience();
+            });
+        });
+
+        // Tags dropdown: open/close, outside-click, Escape, and option search.
+        if (tagsDropdown) {
+            var toggle = tagsDropdown.querySelector('[data-aud-toggle]');
+            var panel = tagsDropdown.querySelector('[data-aud-panel]');
+            var search = tagsDropdown.querySelector('[data-aud-search="tags"]');
+            function openDropdown() {
+                tagsDropdown.classList.add('is-open');
+                panel.hidden = false;
+                toggle.setAttribute('aria-expanded', 'true');
+                if (search) { search.value = ''; search.dispatchEvent(new Event('input')); search.focus(); }
+            }
+            function closeDropdown() {
+                tagsDropdown.classList.remove('is-open');
+                panel.hidden = true;
+                toggle.setAttribute('aria-expanded', 'false');
+            }
+            toggle.addEventListener('click', function () {
+                tagsDropdown.classList.contains('is-open') ? closeDropdown() : openDropdown();
+            });
+            document.addEventListener('click', function (e) {
+                if (!tagsDropdown.contains(e.target)) closeDropdown();
+            });
+            document.addEventListener('keydown', function (e) {
+                if (e.key === 'Escape' && tagsDropdown.classList.contains('is-open')) { closeDropdown(); toggle.focus(); }
+            });
+            if (search) {
+                var emptyEl = tagsDropdown.querySelector('[data-aud-empty="tags"]');
+                search.addEventListener('input', function () {
+                    var q = search.value.trim().toLowerCase();
+                    var shown = 0;
+                    tagsDropdown.querySelectorAll('.sms-option').forEach(function (opt) {
+                        var match = !q || (opt.getAttribute('data-aud-name') || '').indexOf(q) !== -1;
+                        opt.style.display = match ? '' : 'none';
+                        if (match) shown++;
+                    });
+                    if (emptyEl) emptyEl.hidden = shown !== 0;
+                });
+                // Keep the panel open while toggling options inside it.
+                panel.addEventListener('click', function (e) { e.stopPropagation(); });
+            }
+        }
+
+        // Ticket-link inserter: pick a live direct event → fetch a tracked link →
+        // insert it at the caret in the message body.
+        var tlDropdown = document.getElementById('ticketlink-dropdown');
+        if (tlDropdown && body) {
+            var tlToggle = tlDropdown.querySelector('[data-tl-toggle]');
+            var tlPanel = tlDropdown.querySelector('[data-tl-panel]');
+            var tlSearch = tlDropdown.querySelector('[data-tl-search]');
+            var tlEmpty = tlDropdown.querySelector('[data-tl-empty]');
+            var tlLabel = tlDropdown.querySelector('[data-tl-togglelabel]');
+            var tlHint = document.getElementById('tl-hint');
+            var tlUrl = "{% url 'tickets:sms_ticket_link' %}";
+
+            function tlOpen() {
+                tlDropdown.classList.add('is-open'); tlPanel.hidden = false;
+                tlToggle.setAttribute('aria-expanded', 'true');
+                if (tlSearch) { tlSearch.value = ''; tlSearch.dispatchEvent(new Event('input')); tlSearch.focus(); }
+            }
+            function tlClose() {
+                tlDropdown.classList.remove('is-open'); tlPanel.hidden = true;
+                tlToggle.setAttribute('aria-expanded', 'false');
+            }
+            tlToggle.addEventListener('click', function () {
+                tlDropdown.classList.contains('is-open') ? tlClose() : tlOpen();
+            });
+            document.addEventListener('click', function (e) { if (!tlDropdown.contains(e.target)) tlClose(); });
+            document.addEventListener('keydown', function (e) {
+                if (e.key === 'Escape' && tlDropdown.classList.contains('is-open')) { tlClose(); tlToggle.focus(); }
+            });
+            tlSearch.addEventListener('input', function () {
+                var q = tlSearch.value.trim().toLowerCase();
+                var shown = 0;
+                tlDropdown.querySelectorAll('.sms-option--action').forEach(function (opt) {
+                    var match = !q || (opt.getAttribute('data-tl-name') || '').indexOf(q) !== -1;
+                    opt.style.display = match ? '' : 'none';
+                    if (match) shown++;
+                });
+                if (tlEmpty) tlEmpty.hidden = shown !== 0;
+            });
+
+            function insertAtCaret(text) {
+                var start = body.selectionStart, end = body.selectionEnd, val = body.value;
+                var before = val.slice(0, start), after = val.slice(end);
+                if (before && !/\s$/.test(before)) before += ' ';
+                if (after && !/^\s/.test(after)) after = ' ' + after;
+                body.value = before + text + after;
+                var pos = (before + text).length;
+                body.setSelectionRange(pos, pos);
                 body.focus();
+                body.dispatchEvent(new Event('input'));  // refresh meter + phone preview
+            }
+
+            tlDropdown.querySelectorAll('.sms-option--action').forEach(function (opt) {
+                opt.addEventListener('click', function () {
+                    var data = new FormData();
+                    data.append('event', opt.getAttribute('data-tl-event'));
+                    if (tlLabel) tlLabel.textContent = 'Adding…';
+                    fetch(tlUrl, {
+                        method: 'POST',
+                        headers: { 'X-CSRFToken': form.querySelector('[name=csrfmiddlewaretoken]').value },
+                        body: data,
+                    })
+                        .then(function (r) { return r.ok ? r.json() : r.json().then(function (j) { throw new Error(j.error || 'Could not add link'); }); })
+                        .then(function (j) {
+                            insertAtCaret(j.url);
+                            tlClose();
+                            if (tlLabel) tlLabel.textContent = 'Link added ✓';
+                            setTimeout(function () { if (tlLabel) tlLabel.textContent = 'Insert a ticket link…'; }, 1600);
+                        })
+                        .catch(function (err) {
+                            if (tlLabel) tlLabel.textContent = 'Insert a ticket link…';
+                            if (tlHint) { tlHint.textContent = err.message; tlHint.style.color = 'var(--danger)'; }
+                        });
+                });
             });
         }
+
+        document.querySelectorAll('#audience-section input[type=checkbox]').forEach(function (cb) {
+            cb.addEventListener('change', function () { syncAll(); refreshAudience(); });
+        });
+        syncAll();
+        refreshAudience();
     });
 })();
 </script>

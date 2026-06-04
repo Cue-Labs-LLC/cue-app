@@ -7,7 +7,7 @@ from crispy_forms.helper import FormHelper
 from crispy_forms.layout import Layout, Row, Column, Submit, Field
 from django.forms import inlineformset_factory
 from django.utils import timezone
-from .models import Organization, CSVFormat, Venue, Event, EventTalent, EventExpense, CustomField, CustomFieldOption, IncomeSource, EventIncome, SaleableTicketType, SaleableTicketTypeTier, UserProfile, PromoCode, OrganizerWaitlist, CustomerTag, SMSCampaign, SMSRecipientList, TICKETING_TYPE_DIRECT, EVENT_STATUS_LIVE
+from .models import Organization, CSVFormat, Venue, Event, EventTalent, EventExpense, CustomField, CustomFieldOption, IncomeSource, EventIncome, SaleableTicketType, SaleableTicketTypeTier, UserProfile, PromoCode, OrganizerWaitlist, CustomerTag, SMSCampaign
 
 
 def _normalize_phone(raw: str) -> str:
@@ -1632,10 +1632,14 @@ SMS_SEGMENT_CHOICES = [
 ]
 
 
-class SMSRecipientListForm(forms.ModelForm):
-    """Build/edit a saved SMS audience. Discrete fields are assembled into the
-    model's ``filter_criteria`` JSON on save; manual include/exclude come from
-    hidden fields populated by the customer picker."""
+class SMSCampaignForm(forms.ModelForm):
+    """Compose a campaign with its audience inline. The audience is built from
+    tags + RFM segments (assembled into ``filter_criteria``); in event mode the
+    audience is the event's attendees, so tags/segments are optional. Scheduling
+    is validated to be in the future."""
+
+    SEND_NOW = 'now'
+    SEND_SCHEDULE = 'schedule'
 
     rfm_segment = forms.MultipleChoiceField(
         choices=SMS_SEGMENT_CHOICES, required=False,
@@ -1645,38 +1649,33 @@ class SMSRecipientListForm(forms.ModelForm):
         queryset=CustomerTag.objects.none(), required=False,
         widget=forms.CheckboxSelectMultiple,
     )
-    min_ltv = forms.DecimalField(
-        required=False, min_value=0, max_digits=10, decimal_places=2,
+    send_mode = forms.ChoiceField(
+        choices=[(SEND_NOW, 'Send now'), (SEND_SCHEDULE, 'Schedule for later')],
+        initial=SEND_NOW, widget=forms.RadioSelect,
     )
-    last_order_after = forms.DateField(
-        required=False, widget=forms.DateInput(attrs={'type': 'date'}),
+    scheduled_at = forms.DateTimeField(
+        required=False, widget=forms.DateTimeInput(attrs={'type': 'datetime-local'}),
     )
-    manual_include_ids = forms.CharField(required=False, widget=forms.HiddenInput)
-    manual_exclude_ids = forms.CharField(required=False, widget=forms.HiddenInput)
 
     class Meta:
-        model = SMSRecipientList
-        fields = ['name']
+        model = SMSCampaign
+        # link_url is auto-derived from the first URL in the body at save time
+        # (inline link-click tracking), so it's not a user-editable field.
+        fields = ['name', 'body']
+        widgets = {
+            'body': forms.Textarea(attrs={'rows': 4, 'maxlength': 1600}),
+        }
 
-    def __init__(self, *args, organization=None, **kwargs):
+    def __init__(self, *args, organization=None, event=None, **kwargs):
         super().__init__(*args, **kwargs)
         self.organization = organization
+        self.event = event
+        # Assembled in clean(); the view reads this and (in event mode) adds event_id.
+        self.filter_criteria = {}
         if organization is not None:
             self.fields['tag_ids'].queryset = CustomerTag.objects.filter(organization=organization)
-        if self.instance and self.instance.pk:
-            crit = self.instance.filter_criteria or {}
-            self.fields['rfm_segment'].initial = crit.get('rfm_segment', [])
-            self.fields['min_ltv'].initial = crit.get('min_ltv')
-            self.fields['last_order_after'].initial = crit.get('last_order_after')
-            self.fields['tag_ids'].initial = crit.get('tag_ids', [])
-            self.fields['manual_include_ids'].initial = ','.join(self.instance.manual_include_ids or [])
-            self.fields['manual_exclude_ids'].initial = ','.join(self.instance.manual_exclude_ids or [])
         self.helper = FormHelper()
         self.helper.form_tag = False
-
-    @staticmethod
-    def _parse_ids(raw):
-        return [s.strip() for s in (raw or '').split(',') if s.strip()]
 
     def clean(self):
         cleaned = super().clean()
@@ -1685,89 +1684,11 @@ class SMSRecipientListForm(forms.ModelForm):
             criteria['rfm_segment'] = list(cleaned['rfm_segment'])
         if cleaned.get('tag_ids'):
             criteria['tag_ids'] = [str(t.id) for t in cleaned['tag_ids']]
-        if cleaned.get('min_ltv') is not None:
-            criteria['min_ltv'] = str(cleaned['min_ltv'])
-        if cleaned.get('last_order_after'):
-            criteria['last_order_after'] = cleaned['last_order_after'].isoformat()
-        includes = self._parse_ids(cleaned.get('manual_include_ids'))
-        excludes = self._parse_ids(cleaned.get('manual_exclude_ids'))
-        # Fail-safe mirror of the model: an audience needs at least one filter or
-        # one manually selected recipient, otherwise it would mean "everyone".
-        if not criteria and not includes:
-            raise forms.ValidationError(
-                'Add at least one filter or manually select recipients.'
-            )
-        self._criteria = criteria
-        self._includes = includes
-        self._excludes = excludes
-        return cleaned
-
-    def save(self, commit=True):
-        obj = super().save(commit=False)
-        if self.organization is not None:
-            obj.organization = self.organization
-        obj.filter_criteria = self._criteria
-        obj.manual_include_ids = self._includes
-        obj.manual_exclude_ids = self._excludes
-        if commit:
-            obj.save()
-        return obj
-
-
-class SMSCampaignForm(forms.ModelForm):
-    """Compose a campaign. The recipient list is scoped to the org; scheduling is
-    validated to be in the future."""
-
-    SEND_NOW = 'now'
-    SEND_SCHEDULE = 'schedule'
-
-    send_mode = forms.ChoiceField(
-        choices=[(SEND_NOW, 'Send now'), (SEND_SCHEDULE, 'Schedule for later')],
-        initial=SEND_NOW, widget=forms.RadioSelect,
-    )
-    scheduled_at = forms.DateTimeField(
-        required=False, widget=forms.DateTimeInput(attrs={'type': 'datetime-local'}),
-    )
-    # Optional: insert one of the org's event buy pages as a tracked link. The view
-    # creates a TrackingLink for the chosen event so tickets + revenue are attributed.
-    buy_event = forms.ModelChoiceField(
-        queryset=Event.objects.none(), required=False, empty_label='No buy-page link',
-    )
-
-    class Meta:
-        model = SMSCampaign
-        # link_url is auto-derived from the first URL in the body at save time
-        # (inline link-click tracking), so it's not a user-editable field.
-        fields = ['name', 'recipient_list', 'body']
-        widgets = {
-            'body': forms.Textarea(attrs={'rows': 4, 'maxlength': 1600}),
-        }
-
-    def __init__(self, *args, organization=None, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.organization = organization
-        if organization is not None:
-            self.fields['recipient_list'].queryset = SMSRecipientList.objects.filter(
-                organization=organization, deleted_at__isnull=True,
-            )
-            # Only events whose buy page is actually live: status=live AND not date-expired
-            # (mirrors Event.effective_status, which the public buy page gates on).
-            from django.db.models import F
-            from django.db.models.functions import Coalesce
-            self.fields['buy_event'].queryset = (
-                Event.objects.filter(
-                    organization=organization, ticketing_type=TICKETING_TYPE_DIRECT,
-                    status=EVENT_STATUS_LIVE, deleted_at__isnull=True,
-                )
-                .annotate(effective_end_date=Coalesce(F('end_date'), F('start_date')))
-                .filter(effective_end_date__gte=timezone.now().date())
-                .order_by('name')
-            )
-        self.helper = FormHelper()
-        self.helper.form_tag = False
-
-    def clean(self):
-        cleaned = super().clean()
+        self.filter_criteria = criteria
+        # (D3) Audience must be non-empty: a tag OR a segment OR an event (event
+        # mode supplies event_id in the view). Otherwise it would mean "everyone".
+        if not criteria and self.event is None:
+            self.add_error(None, 'Choose at least one tag or segment.')
         if cleaned.get('send_mode') == self.SEND_SCHEDULE:
             scheduled = cleaned.get('scheduled_at')
             if not scheduled:
