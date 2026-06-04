@@ -7,7 +7,7 @@ from crispy_forms.helper import FormHelper
 from crispy_forms.layout import Layout, Row, Column, Submit, Field
 from django.forms import inlineformset_factory
 from django.utils import timezone
-from .models import Organization, CSVFormat, Venue, Event, EventTalent, EventExpense, CustomField, CustomFieldOption, IncomeSource, EventIncome, SaleableTicketType, SaleableTicketTypeTier, UserProfile, PromoCode, OrganizerWaitlist, CustomerTag, SMSCampaign, SMSRecipientList
+from .models import Organization, CSVFormat, Venue, Event, EventTalent, EventExpense, CustomField, CustomFieldOption, IncomeSource, EventIncome, SaleableTicketType, SaleableTicketTypeTier, UserProfile, PromoCode, OrganizerWaitlist, CustomerTag, SMSCampaign, SMSRecipientList, TICKETING_TYPE_DIRECT, EVENT_STATUS_LIVE
 
 
 def _normalize_phone(raw: str) -> str:
@@ -1728,6 +1728,11 @@ class SMSCampaignForm(forms.ModelForm):
     scheduled_at = forms.DateTimeField(
         required=False, widget=forms.DateTimeInput(attrs={'type': 'datetime-local'}),
     )
+    # Optional: insert one of the org's event buy pages as a tracked link. The view
+    # creates a TrackingLink for the chosen event so tickets + revenue are attributed.
+    buy_event = forms.ModelChoiceField(
+        queryset=Event.objects.none(), required=False, empty_label='No buy-page link',
+    )
 
     class Meta:
         model = SMSCampaign
@@ -1744,6 +1749,19 @@ class SMSCampaignForm(forms.ModelForm):
         if organization is not None:
             self.fields['recipient_list'].queryset = SMSRecipientList.objects.filter(
                 organization=organization, deleted_at__isnull=True,
+            )
+            # Only events whose buy page is actually live: status=live AND not date-expired
+            # (mirrors Event.effective_status, which the public buy page gates on).
+            from django.db.models import F
+            from django.db.models.functions import Coalesce
+            self.fields['buy_event'].queryset = (
+                Event.objects.filter(
+                    organization=organization, ticketing_type=TICKETING_TYPE_DIRECT,
+                    status=EVENT_STATUS_LIVE, deleted_at__isnull=True,
+                )
+                .annotate(effective_end_date=Coalesce(F('end_date'), F('start_date')))
+                .filter(effective_end_date__gte=timezone.now().date())
+                .order_by('name')
             )
         self.helper = FormHelper()
         self.helper.form_tag = False

@@ -6,6 +6,7 @@ org-scoped and gated behind the per-org ``sms_marketing_enabled`` flag.
 
 import logging
 import uuid
+from decimal import Decimal
 from functools import wraps
 
 from django.conf import settings
@@ -24,6 +25,8 @@ from django.views.decorators.http import require_POST, require_http_methods
 
 from .models import (
     SMSCampaign, SMSRecipientList, SMSMessageRecipient, PhoneSuppression, Event,
+    TrackingLink, StripeCheckoutSession, Ticket, _generate_tracking_token,
+    TICKETING_TYPE_DIRECT, EVENT_STATUS_LIVE,
 )
 from .forms import SMSCampaignForm, SMSRecipientListForm
 from .sms import (
@@ -313,7 +316,26 @@ def sms_campaign_create(request):
                             campaign.organization = org
                             campaign.created_by = request.user
                             campaign.event = event
+                            # link_url must be the EXACT URL in the body: the send task
+                            # rewrites it via body.replace(link_url, tracked, 1), so a
+                            # re-derived/normalized URL would silently break tracking.
                             campaign.link_url = extract_first_url(campaign.body)
+                            # Attribute to a buy page only if the tracked link in the body
+                            # actually points at the chosen event's buy page. Created in
+                            # this same atomic block, so a rolled-back campaign leaves no
+                            # orphan TrackingLink.
+                            buy_event = form.cleaned_data.get('buy_event')
+                            if buy_event:
+                                buy_path = reverse(
+                                    'tickets:public_event_buy',
+                                    kwargs={'public_id': buy_event.public_id},
+                                )
+                                if campaign.link_url and buy_path in campaign.link_url:
+                                    campaign.tracking_link = TrackingLink.objects.create(
+                                        organization=org, event=buy_event,
+                                        name=f'SMS · {campaign.name}'[:100],
+                                        token=_generate_tracking_token(),
+                                    )
                             campaign.idempotency_key = idem_key
                             campaign.status = SMSCampaign.Status.SCHEDULED
                             campaign.scheduled_at = send_at
@@ -368,8 +390,16 @@ def sms_campaign_create(request):
         form = SMSCampaignForm(organization=org, initial=initial)
 
     encoding, segments = sms_segment_info(request.POST.get('body', '') if request.method == 'POST' else '')
+    # Absolute buy-page URLs (built from SITE_URL — the canonical public host the send
+    # pipeline rewrites against) so the composer JS can insert them into the message.
+    site_url = getattr(settings, 'SITE_URL', '').rstrip('/')
+    event_buy_urls = {
+        str(e.id): f"{site_url}{reverse('tickets:public_event_buy', kwargs={'public_id': e.public_id})}"
+        for e in form.fields['buy_event'].queryset
+    }
     return render(request, 'tickets/marketing/sms/campaign_form.html', {
         'form': form,
+        'event_buy_urls': event_buy_urls,
         'confirm_count': confirm_count,
         'exceeds_cap': exceeds_cap,
         'cap': cap,
@@ -393,10 +423,32 @@ def sms_campaign_detail(request, pk):
     campaign = get_object_or_404(
         _annotate_counts(
             SMSCampaign.objects.filter(organization=org, deleted_at__isnull=True)
-            .select_related('recipient_list', 'event')
+            .select_related('recipient_list', 'event', 'tracking_link')
         ),
         id=pk,
     )
+    # Buy-link attribution: tickets bought + NET revenue (gross minus platform fee) from
+    # COMPLETED checkout sessions tied to this campaign's tracking link. COMPLETED-only
+    # matches the event tracking-link dashboard (views.py:4537); refunded/partially-
+    # refunded sessions are excluded.
+    buy_stats = None
+    if campaign.tracking_link_id:
+        completed = StripeCheckoutSession.objects.filter(
+            tracking_link_id=campaign.tracking_link_id,
+            status=StripeCheckoutSession.Status.COMPLETED,
+            ticket_order__isnull=False,
+        )
+        rev_cents = completed.aggregate(
+            v=Coalesce(Sum(F('amount_total_cents') - F('platform_fee_cents')), 0),
+        )['v']
+        tickets = Ticket.objects.filter(
+            ticket_order_id__in=completed.values_list('ticket_order_id', flat=True),
+        ).count()
+        buy_stats = {
+            'tickets': tickets,
+            'revenue': Decimal(rev_cents) / 100,
+            'orders': completed.count(),
+        }
     recipients = (
         SMSMessageRecipient.objects.filter(campaign=campaign)
         .select_related('customer').order_by('-created_at')
@@ -406,6 +458,7 @@ def sms_campaign_detail(request, pk):
     return render(request, 'tickets/marketing/sms/campaign_detail.html', {
         'campaign': campaign,
         'page_obj': page_obj,
+        'buy_stats': buy_stats,
     })
 
 
@@ -514,16 +567,22 @@ def sms_click_redirect(request, token):
     Mirrors track_link_redirect — no auth (recipients click from their phones).
     Counts are atomic (F()/Coalesce) so concurrent taps don't lose updates."""
     recipient = get_object_or_404(
-        SMSMessageRecipient.objects.select_related('campaign'), click_token=token,
+        SMSMessageRecipient.objects.select_related('campaign__tracking_link'),
+        click_token=token,
     )
-    target = recipient.campaign.link_url
-    if not target:
-        raise Http404('No link target for this campaign.')
+    campaign = recipient.campaign
+    # Record the SMS-side click (per-recipient metric) atomically.
     SMSMessageRecipient.objects.filter(pk=recipient.pk).update(
         click_count=F('click_count') + 1,
         first_clicked_at=Coalesce(F('first_clicked_at'), Now()),
     )
-    return redirect(target)
+    # Attributed campaigns hand off to the existing tracking-link redirect, which bumps
+    # TrackingLink.click_count, sets the buy-page session, and 302s to /e/<id>/?ref=.
+    if campaign.tracking_link_id:
+        return redirect('tickets:track_link_redirect', token=campaign.tracking_link.token)
+    if not campaign.link_url:
+        raise Http404('No link target for this campaign.')
+    return redirect(campaign.link_url)
 
 
 # ---------------------------------------------------------------------------

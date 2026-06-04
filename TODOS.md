@@ -93,3 +93,19 @@
 **Context:** `SMSCampaign.link_url` exists but is uninstrumented. `EventSMSCampaign` already has `clicks`, `unique_clicks`, `click_rate`, `orders`, `revenue` fields to mirror. A tracked redirect (e.g. `/r/<token>/`) that records a click then 302s to `link_url` is the natural starting point.
 
 **Depends on:** Native marketing SMS shipped.
+
+---
+
+## SMS: Roll buy-link revenue into Marketing Overview + campaign list
+
+**What:** Extend `_native_sms_summary` (`tickets/services/marketing/analytics.py`) so attributed tickets/revenue from SMS buy-links roll into the windowed Marketing Overview and the campaign-list performance band, alongside the existing clicks/delivery stats.
+
+**Why:** The buy-link tracking PR surfaces attribution only on each campaign's detail page (deliberate scope decision). The overview and list aggregates don't yet reflect SMS-driven ticket sales or revenue, so the channel looks like it earns nothing at the rollup level.
+
+**Pros:** Makes SMS revenue visible where organizers compare channels. The per-campaign query already exists — this is mostly an aggregate over `StripeCheckoutSession` joined via `SMSCampaign.tracking_link`.
+
+**Cons:** Touches the cached analytics layer (30/90/365-day windows, 10-min cache) — needs window-scoped aggregation and cache-key care. Decide gross vs net consistently with the detail page (net).
+
+**Context:** Shipped in the SMS buy-link tracking PR: `SMSCampaign.tracking_link` FK → `TrackingLink`; completed `StripeCheckoutSession` rows carry `tracking_link`. Net revenue = `amount_total_cents - platform_fee_cents`, COMPLETED only (matches `views.py:4537`). Mirror the existing `EventSMSCampaign` orders/revenue fields the overview already renders.
+
+**Depends on:** SMS buy-link tracking PR merged.

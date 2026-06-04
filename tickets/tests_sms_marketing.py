@@ -1014,3 +1014,198 @@ class SMSTokenFilterTests(TestCase):
         # 3 recipients, short body -> 1 segment each = 3 tokens (not cents/price).
         self.assertEqual(estimate_campaign_cost_tokens(3, 'hi'), 3)
         self.assertEqual(estimate_campaign_cost_tokens(0, 'hi'), 0)
+
+
+@override_settings(E2E_TEST_MODE=True, SMS_CAMPAIGN_MAX_RECIPIENTS=5000,
+                   SITE_URL='https://test.cueup.co')
+class SMSBuyLinkTrackingTests(TestCase):
+    """Buy-page link attribution: composer picker, tracking-link creation, the
+    /c/ -> /track/ click hand-off, and tickets/net-revenue on the detail page."""
+
+    def setUp(self):
+        from datetime import date, timedelta as _td
+        from .models import (
+            Event, Venue, TICKETING_TYPE_DIRECT, TICKETING_TYPE_EXTERNAL,
+            EVENT_STATUS_LIVE, EVENT_STATUS_DRAFT, EVENT_STATUS_ENDED,
+        )
+        self.Event = Event
+        self.Venue = Venue
+        self.D = TICKETING_TYPE_DIRECT
+        self.LIVE = EVENT_STATUS_LIVE
+        self.client = Client()
+        self.org = Organization.objects.create(
+            name='Org', slug='org-bl', sms_marketing_enabled=True,
+            sms_credit_balance_cents=100000,
+        )
+        self.user = User.objects.create_user('u', 'u@test.com', 'pw')
+        UserProfile.objects.create(user=self.user, organization=self.org,
+                                   org_role=UserProfile.OrgRole.OWNER)
+        self.client.login(username='u@test.com', password='pw')
+        self.client.get(reverse('tickets:home'))
+        self.venue = Venue.objects.create(organization=self.org, name='V', city='LA')
+        today = timezone.now().date()
+        self.event = self._event('Live Fest', self.D, self.LIVE, today + _td(days=30))
+        make_customer(self.org, 'a@x.com', '+13105555001')
+        self.rl = SMSRecipientList.objects.create(
+            organization=self.org, name='All', filter_criteria={'min_ltv': '0'},
+        )
+        self.buy_url = f'https://test.cueup.co/e/{self.event.public_id}/'
+
+    def _event(self, name, ttype, status, start, org=None):
+        return self.Event.objects.create(
+            organization=org or self.org, name=name, venue=self.venue,
+            start_date=start, ticketing_type=ttype, status=status,
+        )
+
+    # --- form scope -------------------------------------------------------
+    def test_buy_event_queryset_scoped_to_effectively_live_direct(self):
+        from datetime import date, timedelta as _td
+        from .models import (
+            TICKETING_TYPE_EXTERNAL, EVENT_STATUS_DRAFT, EVENT_STATUS_ENDED, Organization, Venue,
+        )
+        from .forms import SMSCampaignForm
+        today = timezone.now().date()
+        self._event('External', TICKETING_TYPE_EXTERNAL, self.LIVE, today + _td(days=10))
+        self._event('Draft', self.D, EVENT_STATUS_DRAFT, today + _td(days=10))
+        self._event('Ended', self.D, EVENT_STATUS_ENDED, today + _td(days=10))
+        self._event('PastLive', self.D, self.LIVE, today - _td(days=10))   # live but date passed
+        other = Organization.objects.create(name='B', slug='org-bl2', sms_marketing_enabled=True)
+        ov = Venue.objects.create(organization=other, name='V', city='SF')
+        self.Event.objects.create(organization=other, name='OtherOrg', venue=ov,
+                                  start_date=today + _td(days=10), ticketing_type=self.D, status=self.LIVE)
+        names = set(SMSCampaignForm(organization=self.org)
+                    .fields['buy_event'].queryset.values_list('name', flat=True))
+        self.assertEqual(names, {'Live Fest'})
+
+    # --- create + attribute ----------------------------------------------
+    def _create(self, body, buy_event_id=None):
+        data = {'name': 'Promo', 'recipient_list': str(self.rl.id), 'body': body,
+                'send_mode': 'now', 'confirm': '1'}
+        if buy_event_id:
+            data['buy_event'] = str(buy_event_id)
+        with self.captureOnCommitCallbacks(execute=True):
+            return self.client.post(reverse('tickets:sms_campaign_create'), data)
+
+    def test_create_attaches_tracking_link(self):
+        from .models import TrackingLink
+        resp = self._create(f'Tickets here {self.buy_url}', buy_event_id=self.event.id)
+        self.assertEqual(resp.status_code, 302)
+        c = SMSCampaign.objects.get()
+        self.assertIsNotNone(c.tracking_link_id)
+        self.assertEqual(c.tracking_link.event_id, self.event.id)
+        self.assertEqual(c.link_url, self.buy_url)
+        self.assertTrue(c.tracking_link.name.startswith('SMS · '))
+        self.assertEqual(TrackingLink.objects.count(), 1)
+
+    def test_create_buy_event_but_url_absent_no_attribution(self):
+        # Organizer picked an event but deleted the link from the body -> graceful no-op.
+        resp = self._create('No link in here', buy_event_id=self.event.id)
+        self.assertEqual(resp.status_code, 302)
+        c = SMSCampaign.objects.get()
+        self.assertIsNone(c.tracking_link_id)
+
+    def test_create_plain_url_no_tracking_link(self):
+        # REGRESSION: a plain pasted URL (no buy event) must behave exactly as before.
+        resp = self._create('See https://example.com/x now')
+        self.assertEqual(resp.status_code, 302)
+        c = SMSCampaign.objects.get()
+        self.assertIsNone(c.tracking_link_id)
+        self.assertEqual(c.link_url, 'https://example.com/x')
+
+    # --- click redirect ---------------------------------------------------
+    def test_click_redirect_attributed_hands_off_to_track(self):
+        from .models import SMSMessageRecipient
+        self._create(f'Tickets {self.buy_url}', buy_event_id=self.event.id)
+        c = SMSCampaign.objects.get()
+        r = SMSMessageRecipient.objects.filter(campaign=c).exclude(click_token__isnull=True).first()
+        self.assertIsNotNone(r, 'send should have set a click_token (public SITE_URL)')
+        track_url = reverse('tickets:track_link_redirect', kwargs={'token': c.tracking_link.token})
+        resp = self.client.get(reverse('tickets:sms_click_redirect', kwargs={'token': r.click_token}))
+        self.assertEqual(resp.status_code, 302)
+        self.assertEqual(resp['Location'], track_url)
+        r.refresh_from_db()
+        self.assertEqual(r.click_count, 1)
+        self.assertIsNotNone(r.first_clicked_at)
+        # Following through bumps the TrackingLink and lands on the buy page with ?ref.
+        chain = self.client.get(
+            reverse('tickets:sms_click_redirect', kwargs={'token': r.click_token}), follow=True,
+        ).redirect_chain
+        c.tracking_link.refresh_from_db()
+        self.assertGreaterEqual(c.tracking_link.click_count, 1)
+        self.assertTrue(any(f'ref={c.tracking_link.token}' in url for url, _ in chain))
+
+    def test_click_redirect_plain_campaign_has_no_ref(self):
+        # REGRESSION: campaigns without a tracking link redirect straight to link_url.
+        from .models import SMSMessageRecipient
+        c = SMSCampaign.objects.create(
+            organization=self.org, recipient_list=self.rl, name='Plain',
+            body='hi https://example.com/x', link_url='https://example.com/x',
+            status=SMSCampaign.Status.SENT,
+        )
+        r = SMSMessageRecipient.objects.create(
+            campaign=c, phone='+13105555001', status='sent', click_token='plaintok1',
+        )
+        resp = self.client.get(reverse('tickets:sms_click_redirect', kwargs={'token': r.click_token}))
+        self.assertEqual(resp.status_code, 302)
+        self.assertEqual(resp['Location'], 'https://example.com/x')
+
+    # --- detail metrics ---------------------------------------------------
+    def _completed_session(self, tracking_link, n_tickets, gross_cents, fee_cents, status=None):
+        from .models import TicketOrder, Ticket, StripeCheckoutSession
+        cust = Customer.objects.create(organization=self.org, email=f'b{StripeCheckoutSession.objects.count()}@x.com', name='B')
+        order = TicketOrder.objects.create(
+            customer=cust, event=self.event, order_number=f'O-{StripeCheckoutSession.objects.count()}',
+            order_date=timezone.now(), total_amount=Decimal(gross_cents) / 100,
+        )
+        for i in range(n_tickets):
+            Ticket.objects.create(ticket_order=order, ticket_type='GA', price=Decimal('10.00'))
+        return StripeCheckoutSession.objects.create(
+            event=self.event, organization=self.org,
+            stripe_session_id=f'cs_{StripeCheckoutSession.objects.count()}',
+            buyer_email=cust.email, status=status or StripeCheckoutSession.Status.COMPLETED,
+            amount_total_cents=gross_cents, platform_fee_cents=fee_cents,
+            ticket_order=order, tracking_link=tracking_link,
+        )
+
+    def _campaign_with_link(self):
+        from .models import TrackingLink, _generate_tracking_token
+        tl = TrackingLink.objects.create(
+            organization=self.org, event=self.event, name='SMS · X', token=_generate_tracking_token(),
+        )
+        return SMSCampaign.objects.create(
+            organization=self.org, recipient_list=self.rl, name='C', body='hi',
+            link_url=self.buy_url, status=SMSCampaign.Status.SENT, tracking_link=tl,
+        ), tl
+
+    def test_detail_shows_tickets_and_net_revenue(self):
+        c, tl = self._campaign_with_link()
+        self._completed_session(tl, n_tickets=2, gross_cents=5000, fee_cents=500)
+        self._completed_session(tl, n_tickets=1, gross_cents=3000, fee_cents=300)
+        resp = self.client.get(reverse('tickets:sms_campaign_detail', kwargs={'pk': c.id}))
+        self.assertEqual(resp.status_code, 200)
+        stats = resp.context['buy_stats']
+        self.assertEqual(stats['tickets'], 3)
+        self.assertEqual(stats['orders'], 2)
+        self.assertEqual(stats['revenue'], Decimal('72.00'))   # (5000-500)+(3000-300) = 7200c
+
+    def test_detail_excludes_non_completed_sessions(self):
+        from .models import StripeCheckoutSession
+        c, tl = self._campaign_with_link()
+        self._completed_session(tl, 2, 5000, 500)
+        self._completed_session(tl, 5, 9999, 0, status=StripeCheckoutSession.Status.PENDING)
+        self._completed_session(tl, 5, 9999, 0, status=StripeCheckoutSession.Status.REFUNDED)
+        self._completed_session(tl, 5, 9999, 0, status=StripeCheckoutSession.Status.PARTIALLY_REFUNDED)
+        resp = self.client.get(reverse('tickets:sms_campaign_detail', kwargs={'pk': c.id}))
+        stats = resp.context['buy_stats']
+        self.assertEqual(stats['tickets'], 2)
+        self.assertEqual(stats['orders'], 1)
+        self.assertEqual(stats['revenue'], Decimal('45.00'))
+
+    def test_detail_no_tracking_link_has_no_buy_stats(self):
+        c = SMSCampaign.objects.create(
+            organization=self.org, recipient_list=self.rl, name='NoLink', body='hi',
+            status=SMSCampaign.Status.SENT,
+        )
+        resp = self.client.get(reverse('tickets:sms_campaign_detail', kwargs={'pk': c.id}))
+        self.assertEqual(resp.status_code, 200)
+        self.assertIsNone(resp.context['buy_stats'])

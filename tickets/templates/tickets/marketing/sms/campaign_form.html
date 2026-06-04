@@ -90,6 +90,11 @@
     .sms-meter b { color: var(--text-secondary); font-weight: 500; }
     .sms-meter .dot { opacity: 0.4; }
 
+    /* Buy-page link picker */
+    .sms-buylink { display: flex; gap: 8px; align-items: center; }
+    .sms-buylink select { flex: 1 1 auto; min-width: 0; }
+    .sms-buylink .btn { flex: 0 0 auto; white-space: nowrap; }
+
     /* Segmented send-mode toggle */
     .sms-segmented {
         display: inline-flex; background: var(--bg-inset); border: 1px solid var(--border);
@@ -261,6 +266,17 @@
                     </div>
 
                     <div class="sms-section">
+                        <label class="sms-label" for="{{ form.buy_event.id_for_label }}">Buy page link <span class="text-muted">(optional)</span></label>
+                        <div class="sms-buylink">
+                            {{ form.buy_event }}
+                            <button type="button" id="sms-insert-link" class="btn btn-outline-secondary">Insert link</button>
+                        </div>
+                        {{ form.buy_event.errors }}
+                        <div class="sms-hint">Drops a tracked link to one of your event buy pages into the message. Tickets bought and revenue from this link are attributed to the campaign.</div>
+                        {{ event_buy_urls|json_script:"buy-urls" }}
+                    </div>
+
+                    <div class="sms-section">
                         <span class="sms-label">When to send</span>
                         <div class="sms-segmented">
                             {% for radio in form.send_mode %}{{ radio.tag }}<label class="sms-pill" for="{{ radio.id_for_label }}">{{ radio.choice_label }}</label>{% endfor %}
@@ -399,6 +415,22 @@
             el.addEventListener('change', syncSchedule);
         });
         syncSchedule();
+
+        // Insert a tracked buy-page link into the message, then refresh counter + preview.
+        var insertBtn = document.getElementById('sms-insert-link');
+        var buyUrlsEl = document.getElementById('buy-urls');
+        var buyUrls = buyUrlsEl ? JSON.parse(buyUrlsEl.textContent) : {};
+        var buySelect = document.getElementById('{{ form.buy_event.id_for_label }}');
+        if (insertBtn && body && buySelect) {
+            insertBtn.addEventListener('click', function () {
+                var url = buyUrls[buySelect.value];
+                if (!url) { return; }
+                if (body.value.indexOf(url) !== -1) { return; }  // already inserted
+                body.value = (body.value.trimEnd() + '\n\n' + url).trimStart();
+                body.dispatchEvent(new Event('input'));
+                body.focus();
+            });
+        }
     });
 })();
 </script>

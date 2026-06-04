@@ -1552,6 +1552,16 @@ class SMSCampaign(AuditBaseModel):
         blank=True,
         related_name='native_sms_campaigns',
     )
+    # Optional buy-page attribution link. When the composer inserts one of the org's
+    # event buy pages, we create a TrackingLink for that event and point here, so the
+    # campaign's clicks/tickets/revenue flow through the existing tracking-link path.
+    tracking_link = models.ForeignKey(
+        'TrackingLink',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='sms_campaigns',
+    )
     recipient_list = models.ForeignKey(
         SMSRecipientList,
         on_delete=models.PROTECT,
