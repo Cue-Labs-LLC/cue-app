@@ -25,7 +25,8 @@ from django.views.decorators.http import require_POST, require_http_methods
 
 from .models import (
     SMSCampaign, SMSMessageRecipient, PhoneSuppression, Event,
-    Customer,
+    Customer, TrackingLink, TICKETING_TYPE_DIRECT, EVENT_STATUS_LIVE,
+    _generate_tracking_token,
 )
 from .forms import SMSCampaignForm
 from .services.customer_filters import filter_customers
@@ -383,6 +384,18 @@ def sms_campaign_create(request):
         initial = {'name': event.name} if event else {}
         form = SMSCampaignForm(organization=org, event=event, initial=initial)
 
+    # Live direct-ticketing events whose buy page is on sale — offered in the
+    # composer's "Add a ticket link" dropdown. effective_status is a property, so
+    # filter the (small) set of live direct events in Python.
+    ticket_link_events = [
+        {'id': str(ev.id), 'name': ev.name}
+        for ev in Event.objects.filter(
+            organization=org, deleted_at__isnull=True,
+            ticketing_type=TICKETING_TYPE_DIRECT, status=EVENT_STATUS_LIVE,
+        ).order_by('-start_date')
+        if ev.effective_status == EVENT_STATUS_LIVE
+    ]
+
     encoding, segments = sms_segment_info(request.POST.get('body', '') if request.method == 'POST' else '')
     return render(request, 'tickets/marketing/sms/campaign_form.html', {
         'form': form,
@@ -392,12 +405,45 @@ def sms_campaign_create(request):
         'preview_encoding': encoding,
         'preview_segments': segments,
         'event': event,
+        'ticket_link_events': ticket_link_events,
         'confirm_cost_cents': confirm_cost_cents,
         'confirm_cost_tokens': confirm_cost_tokens,
         'balance_cents': org.sms_credit_balance_cents,
         'insufficient_credits': insufficient_credits,
         'idempotency_key': idem_key,
     })
+
+
+@login_required
+@require_org
+@require_host
+@require_sms_feature
+@require_POST
+def sms_ticket_link(request):
+    """JSON: get-or-create a shared 'SMS' tracking link for a direct, live event and
+    return its absolute /track/<token>/ URL for insertion into a campaign body."""
+    org = get_organization(request)
+    event = get_object_or_404(
+        Event.objects.filter(
+            organization=org, deleted_at__isnull=True,
+            ticketing_type=TICKETING_TYPE_DIRECT,
+        ),
+        id=request.POST.get('event'),
+    )
+    if event.effective_status != EVENT_STATUS_LIVE:
+        return JsonResponse({'error': 'This event is not on sale.'}, status=400)
+    link, _ = TrackingLink.objects.get_or_create(
+        organization=org, event=event, name='SMS',
+        defaults={'token': _generate_tracking_token()},
+    )
+    # Use SITE_URL (the public/tunnel host the send pipeline uses) so the link
+    # stored in the body resolves for recipients — request.build_absolute_uri
+    # would bake in the composer's host (e.g. localhost). Falls back to the
+    # request host only when SITE_URL is unset.
+    path = reverse('tickets:track_link_redirect', kwargs={'token': link.token})
+    site_url = getattr(settings, 'SITE_URL', '').rstrip('/')
+    url = f"{site_url}{path}" if site_url else request.build_absolute_uri(path)
+    return JsonResponse({'url': url, 'name': event.name})
 
 
 @login_required

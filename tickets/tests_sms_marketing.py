@@ -1175,3 +1175,100 @@ class SMSSavedCardTests(TestCase):
         mock_ticket.assert_not_called()  # routed to wallet handler, not ticketing
         self.org.refresh_from_db()
         self.assertEqual(self.org.sms_credit_balance_cents, 1500)
+
+
+@override_settings(E2E_TEST_MODE=True)
+class SMSTicketLinkTests(TestCase):
+    """Composer's 'Add a ticket link' dropdown + get-or-create tracked link endpoint."""
+
+    def setUp(self):
+        from datetime import date
+        from .models import Venue, Event
+        self.client = Client()
+        self.org = Organization.objects.create(
+            name='Org', slug='org-tl', sms_marketing_enabled=True,
+            sms_credit_balance_cents=100000,
+        )
+        self.user = User.objects.create_user('tl', 'tl@test.com', 'pw')
+        UserProfile.objects.create(user=self.user, organization=self.org, org_role=UserProfile.OrgRole.OWNER)
+        self.client.login(username='tl@test.com', password='pw')
+        self.client.get(reverse('tickets:home'))
+        self.venue = Venue.objects.create(organization=self.org, name='V', city='LA')
+        future = date.today() + timedelta(days=30)
+        self.live = Event.objects.create(
+            organization=self.org, name='Rooftop Live', venue=self.venue,
+            start_date=future, ticketing_type='direct', status='live',
+        )
+        self.draft = Event.objects.create(
+            organization=self.org, name='Draft Show', venue=self.venue,
+            start_date=future, ticketing_type='direct', status='draft',
+        )
+        self.external = Event.objects.create(
+            organization=self.org, name='Eventbrite Show', venue=self.venue,
+            start_date=future, ticketing_type='external', status='live',
+        )
+        self.url = reverse('tickets:sms_ticket_link')
+
+    def test_compose_lists_only_live_direct_events(self):
+        resp = self.client.get(reverse('tickets:sms_campaign_create'))
+        self.assertEqual(resp.status_code, 200)
+        ids = [e['id'] for e in resp.context['ticket_link_events']]
+        self.assertIn(str(self.live.id), ids)
+        self.assertNotIn(str(self.draft.id), ids)
+        self.assertNotIn(str(self.external.id), ids)
+        self.assertContains(resp, 'id="ticketlink-section"')
+
+    @override_settings(SITE_URL='https://example.ngrok.app')
+    def test_endpoint_creates_and_returns_track_url(self):
+        from .models import TrackingLink
+        resp = self.client.post(self.url, {'event': str(self.live.id)})
+        self.assertEqual(resp.status_code, 200)
+        link = TrackingLink.objects.get(organization=self.org, event=self.live, name='SMS')
+        # URL must use SITE_URL (the public/tunnel host), not the request host,
+        # so the link stored in the body resolves for recipients.
+        self.assertEqual(
+            resp.json()['url'], 'https://example.ngrok.app/track/' + link.token + '/',
+        )
+
+    def test_endpoint_idempotent(self):
+        from .models import TrackingLink
+        self.client.post(self.url, {'event': str(self.live.id)})
+        self.client.post(self.url, {'event': str(self.live.id)})
+        self.assertEqual(
+            TrackingLink.objects.filter(organization=self.org, event=self.live, name='SMS').count(), 1,
+        )
+
+    def test_non_live_direct_event_400(self):
+        resp = self.client.post(self.url, {'event': str(self.draft.id)})
+        self.assertEqual(resp.status_code, 400)
+
+    def test_non_direct_event_404(self):
+        resp = self.client.post(self.url, {'event': str(self.external.id)})
+        self.assertEqual(resp.status_code, 404)
+
+    def test_foreign_event_404(self):
+        from datetime import date
+        from .models import Venue, Event
+        other = Organization.objects.create(name='B', slug='org-tlb', sms_marketing_enabled=True)
+        ov = Venue.objects.create(organization=other, name='V', city='SF')
+        oe = Event.objects.create(
+            organization=other, name='Theirs', venue=ov,
+            start_date=date.today() + timedelta(days=10), ticketing_type='direct', status='live',
+        )
+        resp = self.client.post(self.url, {'event': str(oe.id)})
+        self.assertEqual(resp.status_code, 404)
+
+    def test_non_host_forbidden(self):
+        doorman = User.objects.create_user('tldoor', 'tldoor@test.com', 'pw')
+        UserProfile.objects.create(user=doorman, organization=self.org, org_role=UserProfile.OrgRole.DOORMAN)
+        from .models import OrganizationMembership
+        OrganizationMembership.objects.create(user=doorman, organization=self.org, org_role=UserProfile.OrgRole.DOORMAN)
+        c = Client(); c.login(username='tldoor@test.com', password='pw'); c.get(reverse('tickets:home'))
+        resp = c.post(self.url, {'event': str(self.live.id)})
+        self.assertEqual(resp.status_code, 403)
+
+    def test_sms_disabled_404(self):
+        self.org.sms_marketing_enabled = False
+        self.org.save(update_fields=['sms_marketing_enabled'])
+        resp = self.client.post(self.url, {'event': str(self.live.id)})
+        self.assertEqual(resp.status_code, 404)
