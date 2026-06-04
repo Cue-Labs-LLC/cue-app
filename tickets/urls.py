@@ -97,6 +97,7 @@ urlpatterns = [
 
     # Customers
     path('customers/', views.customer_list, name='customer_list'),
+    path('customers/bulk-tag/', sms_views.customers_bulk_tag, name='customers_bulk_tag'),
     path('customers/ltv-by-market/', views.customer_ltv_by_market, name='customer_ltv_by_market'),
     path('customers/tags/', views.customer_tag_list, name='customer_tag_list'),
     path('customers/tags/create/', views.customer_tag_create, name='customer_tag_create'),
@@ -146,6 +147,7 @@ urlpatterns = [
     path('events/<uuid:event_id>/surveys/match/',  views.event_survey_match,  name='event_survey_match'),
     path('events/<uuid:event_id>/surveys/apply/',  views.event_survey_apply,  name='event_survey_apply'),
     path('events/<uuid:event_id>/surveys/unlink/', views.event_survey_unlink, name='event_survey_unlink'),
+    path('events/<uuid:event_id>/bulk-tag/', sms_views.event_bulk_tag, name='event_bulk_tag'),
     path('events/<uuid:event_id>/uploads-summary/', views.event_uploads_summary, name='event_uploads_summary'),
     path('events/<uuid:event_id>/scanner-pin/generate/', views.generate_scanner_pin, name='generate_scanner_pin'),
     path('events/<uuid:event_id>/scanner-pin/revoke/', views.revoke_scanner_pin, name='revoke_scanner_pin'),
@@ -215,10 +217,7 @@ urlpatterns = [
     path('marketing/sms/credits/charge-saved/', sms_views.sms_credits_charge_saved, name='sms_credits_charge_saved'),
     path('marketing/sms/credits/remove-card/', sms_views.sms_credits_remove_card, name='sms_credits_remove_card'),
     # Marketing SMS — recipient lists
-    path('marketing/sms/lists/', sms_views.sms_recipient_list_list, name='sms_recipient_list_list'),
-    path('marketing/sms/lists/new/', sms_views.sms_recipient_list_create, name='sms_recipient_list_create'),
-    path('marketing/sms/lists/preview/', sms_views.sms_recipient_list_preview, name='sms_recipient_list_preview'),
-    path('marketing/sms/lists/<uuid:pk>/', sms_views.sms_recipient_list_detail, name='sms_recipient_list_detail'),
+    path('marketing/sms/audience-preview/', sms_views.sms_audience_preview, name='sms_audience_preview'),
 
     # Forecast Tool
     path('forecast/', views.forecast_tool, name='forecast_tool'),

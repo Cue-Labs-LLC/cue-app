@@ -8785,3 +8785,227 @@ class PublicOrgProfileEventsTests(TestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(list(resp.context['upcoming_events']), [])
         self.assertEqual(list(resp.context['past_events']), [])
+
+
+class EventBulkTagTests(TestCase):
+    """Tests for the event Customers tab + bulk-tag action."""
+
+    def setUp(self):
+        self.client = Client()
+        self.org = Organization.objects.create(
+            name='SMS Org', slug='sms-org', sms_marketing_enabled=True,
+        )
+        self.host = User.objects.create_user(
+            username='evchost', email='evchost@example.com', password='pw',
+        )
+        UserProfile.objects.create(
+            user=self.host, organization=self.org, org_role=UserProfile.OrgRole.HOST,
+        )
+        OrganizationMembership.objects.create(
+            user=self.host, organization=self.org, org_role=UserProfile.OrgRole.HOST,
+        )
+        self.tag = CustomerTag.objects.create(organization=self.org, name='Faithful')
+        self.venue = Venue.objects.create(
+            organization=self.org, name='The Hall', city='Townsville',
+        )
+        self.event = Event.objects.create(
+            organization=self.org, name='Launch Party', venue=self.venue,
+            start_date=date(2024, 6, 15), start_time=time(19, 0, 0),
+        )
+        # Two buyers of this event, plus a customer with no order for it.
+        self.c1 = self._customer('a@example.com', 'Alice')
+        self.c2 = self._customer('b@example.com', 'Bob')
+        self.non_attendee = self._customer('c@example.com', 'Carol')
+        self._order(self.c1, 'ORD-1')
+        self._order(self.c2, 'ORD-2')
+
+        self.client.login(username='evchost@example.com', password='pw')
+        self.client.get(reverse('tickets:home'))  # seed _org_id in session
+        self.url = reverse('tickets:event_bulk_tag', args=[self.event.id])
+
+    def _customer(self, email, name):
+        return Customer.objects.create(
+            organization=self.org, email=email, name=name, phone='+15555550000',
+            sms_opt_in=True,
+        )
+
+    def _order(self, customer, number):
+        return TicketOrder.objects.create(
+            customer=customer, event=self.event, order_number=number,
+            order_date='2024-06-01 10:00:00', total_amount=Decimal('50.00'),
+        )
+
+    def test_customers_tab_rendered(self):
+        resp = self.client.get(reverse('tickets:event_detail', args=[self.event.id]))
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, 'id="tab-customers-btn"')
+        self.assertEqual(resp.context['event_customers_page'].paginator.count, 2)
+
+    def test_tag_existing(self):
+        resp = self.client.post(self.url, {
+            'tag_id': str(self.tag.id),
+            'customer_ids': [str(self.c1.id), str(self.c2.id)],
+        })
+        self.assertEqual(resp.status_code, 302)
+        self.assertIn('?tab=customers', resp['Location'])
+        self.assertCountEqual(
+            list(self.tag.customers.values_list('id', flat=True)),
+            [self.c1.id, self.c2.id],
+        )
+
+    def test_tag_new_creates_tag(self):
+        resp = self.client.post(self.url, {
+            'new_tag_name': 'Brand New',
+            'customer_ids': [str(self.c1.id)],
+        })
+        self.assertEqual(resp.status_code, 302)
+        tag = CustomerTag.objects.get(organization=self.org, name='Brand New')
+        self.assertEqual(list(tag.customers.values_list('id', flat=True)), [self.c1.id])
+
+    def test_select_all_tags_all_attendees(self):
+        resp = self.client.post(self.url, {'tag_id': str(self.tag.id), 'select_all': '1'})
+        self.assertEqual(resp.status_code, 302)
+        self.assertCountEqual(
+            list(self.tag.customers.values_list('id', flat=True)),
+            [self.c1.id, self.c2.id],
+        )
+
+    def test_non_attendee_ids_ignored(self):
+        resp = self.client.post(self.url, {
+            'tag_id': str(self.tag.id),
+            'customer_ids': [str(self.c1.id), str(self.non_attendee.id)],
+        })
+        self.assertEqual(resp.status_code, 302)
+        self.assertEqual(
+            list(self.tag.customers.values_list('id', flat=True)), [self.c1.id],
+        )
+
+    def test_non_host_forbidden(self):
+        doorman = User.objects.create_user(
+            username='door', email='door@example.com', password='pw',
+        )
+        UserProfile.objects.create(
+            user=doorman, organization=self.org, org_role=UserProfile.OrgRole.DOORMAN,
+        )
+        OrganizationMembership.objects.create(
+            user=doorman, organization=self.org, org_role=UserProfile.OrgRole.DOORMAN,
+        )
+        c = Client()
+        c.login(username='door@example.com', password='pw')
+        c.get(reverse('tickets:home'))
+        resp = c.post(self.url, {'tag_id': str(self.tag.id), 'select_all': '1'})
+        self.assertEqual(resp.status_code, 403)
+
+
+class CustomersBulkTagTests(TestCase):
+    """Tests for selecting customers on /customers/ and bulk-tagging them."""
+
+    def setUp(self):
+        self.client = Client()
+        self.org = Organization.objects.create(
+            name='Cust Org', slug='cust-org', sms_marketing_enabled=True,
+        )
+        self.host = User.objects.create_user(
+            username='custhost', email='custhost@example.com', password='pw',
+        )
+        UserProfile.objects.create(
+            user=self.host, organization=self.org, org_role=UserProfile.OrgRole.HOST,
+        )
+        OrganizationMembership.objects.create(
+            user=self.host, organization=self.org, org_role=UserProfile.OrgRole.HOST,
+        )
+        self.tag = CustomerTag.objects.create(organization=self.org, name='Existing')
+        self.vip1 = self._customer('vip1@example.com', 'VIP One', segment='VIP')
+        self.vip2 = self._customer('vip2@example.com', 'VIP Two', segment='VIP')
+        self.loyal = self._customer('loyal@example.com', 'Loyal One', segment='Loyal')
+
+        self.client.login(username='custhost@example.com', password='pw')
+        self.client.get(reverse('tickets:home'))  # seed _org_id in session
+        self.url = reverse('tickets:customers_bulk_tag')
+
+    def _customer(self, email, name, segment=''):
+        return Customer.objects.create(
+            organization=self.org, email=email, name=name, phone='+15555550000',
+            sms_opt_in=True, rfm_segment=segment,
+        )
+
+    def test_list_page_renders_checkboxes(self):
+        resp = self.client.get(reverse('tickets:customer_list'))
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, 'id="custSelectAllRows"')
+        self.assertContains(resp, 'class="cust-checkbox"')
+
+    def test_tag_existing(self):
+        resp = self.client.post(self.url, {
+            'tag_id': str(self.tag.id),
+            'customer_ids': [str(self.vip1.id), str(self.loyal.id)],
+        })
+        self.assertEqual(resp.status_code, 302)
+        self.assertIn(reverse('tickets:customer_list'), resp['Location'])
+        self.assertCountEqual(
+            list(self.tag.customers.values_list('id', flat=True)),
+            [self.vip1.id, self.loyal.id],
+        )
+
+    def test_tag_new_creates_once(self):
+        self.client.post(self.url, {
+            'new_tag_name': 'Fresh', 'customer_ids': [str(self.vip1.id)],
+        })
+        self.client.post(self.url, {
+            'new_tag_name': 'Fresh', 'customer_ids': [str(self.vip2.id)],
+        })
+        # Same name → get_or_create reuses the single tag.
+        self.assertEqual(
+            CustomerTag.objects.filter(organization=self.org, name='Fresh').count(), 1,
+        )
+        tag = CustomerTag.objects.get(organization=self.org, name='Fresh')
+        self.assertCountEqual(
+            list(tag.customers.values_list('id', flat=True)),
+            [self.vip1.id, self.vip2.id],
+        )
+
+    def test_select_all_respects_filters(self):
+        resp = self.client.post(self.url, {
+            'tag_id': str(self.tag.id), 'select_all': '1', 'segment': 'VIP',
+        })
+        self.assertEqual(resp.status_code, 302)
+        self.assertIn('segment=VIP', resp['Location'])
+        self.assertCountEqual(
+            list(self.tag.customers.values_list('id', flat=True)),
+            [self.vip1.id, self.vip2.id],
+        )
+
+    def test_foreign_ids_dropped(self):
+        other_org = Organization.objects.create(name='Other', slug='other-cust-org')
+        intruder = Customer.objects.create(
+            organization=other_org, email='x@example.com', name='X', sms_opt_in=True,
+        )
+        resp = self.client.post(self.url, {
+            'tag_id': str(self.tag.id),
+            'customer_ids': [str(self.vip1.id), str(intruder.id)],
+        })
+        self.assertEqual(resp.status_code, 302)
+        self.assertEqual(
+            list(self.tag.customers.values_list('id', flat=True)), [self.vip1.id],
+        )
+
+    def test_no_tag_selected_errors(self):
+        resp = self.client.post(self.url, {'customer_ids': [str(self.vip1.id)]})
+        self.assertEqual(resp.status_code, 302)
+        self.assertEqual(self.vip1.tags.count(), 0)
+
+    def test_non_host_forbidden(self):
+        doorman = User.objects.create_user(
+            username='custdoor', email='custdoor@example.com', password='pw',
+        )
+        UserProfile.objects.create(
+            user=doorman, organization=self.org, org_role=UserProfile.OrgRole.DOORMAN,
+        )
+        OrganizationMembership.objects.create(
+            user=doorman, organization=self.org, org_role=UserProfile.OrgRole.DOORMAN,
+        )
+        c = Client()
+        c.login(username='custdoor@example.com', password='pw')
+        c.get(reverse('tickets:home'))
+        resp = c.post(self.url, {'tag_id': str(self.tag.id), 'select_all': '1'})
+        self.assertEqual(resp.status_code, 403)

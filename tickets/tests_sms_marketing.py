@@ -13,11 +13,14 @@ from django.utils import timezone
 
 from .models import (
     Organization, UserProfile, Customer, CustomerTag,
-    SMSCampaign, SMSRecipientList, SMSMessageRecipient, PhoneSuppression,
+    SMSCampaign, SMSMessageRecipient, PhoneSuppression,
 )
 
 
 def make_customer(org, email, phone='+13105550000', opt_in=True, **kwargs):
+    # Default to a VIP segment so compose-flow tests (which target rfm_segment)
+    # resolve a non-empty audience; explicit rfm_segment kwargs still override.
+    kwargs.setdefault('rfm_segment', 'VIP')
     return Customer.objects.create(
         organization=org, email=email, name=kwargs.pop('name', email.split('@')[0]),
         phone=phone, sms_opt_in=opt_in, **kwargs,
@@ -25,19 +28,21 @@ def make_customer(org, email, phone='+13105550000', opt_in=True, **kwargs):
 
 
 @override_settings(E2E_TEST_MODE=True, SMS_CAMPAIGN_MAX_RECIPIENTS=5000)
-class SMSRecipientListResolveTests(TestCase):
+class SMSCampaignAudienceTests(TestCase):
+    """Audience resolution now lives inline on SMSCampaign.materialize()."""
     def setUp(self):
         self.org = Organization.objects.create(name='Org A', slug='org-a', sms_marketing_enabled=True)
 
-    def _list(self, **kwargs):
-        return SMSRecipientList.objects.create(organization=self.org, name='L', **kwargs)
+    def _campaign(self, **kwargs):
+        # Unsaved is fine — materialize() only reads org + criteria fields.
+        return SMSCampaign(organization=self.org, name='C', body='hi', **kwargs)
 
     def test_only_opted_in_with_phone(self):
         make_customer(self.org, 'a@x.com', '+13105550001', opt_in=True)
         make_customer(self.org, 'b@x.com', '+13105550002', opt_in=False)   # not opted in
         make_customer(self.org, 'c@x.com', '', opt_in=True)                 # no phone
-        rl = self._list(filter_criteria={'min_ltv': '0'})
-        phones = {r['phone'] for r in rl.materialize(self.org)}
+        c = self._campaign(filter_criteria={'min_ltv': '0'})
+        phones = {r['phone'] for r in c.materialize(self.org)}
         self.assertEqual(phones, {'+13105550001'})
 
     def test_excludes_suppressed_global_and_org(self):
@@ -45,38 +50,56 @@ class SMSRecipientListResolveTests(TestCase):
         make_customer(self.org, 'b@x.com', '+13105550002')
         PhoneSuppression.objects.create(phone='+13105550001', organization=None)        # global
         PhoneSuppression.objects.create(phone='+13105550002', organization=self.org)    # org
-        rl = self._list(filter_criteria={'min_ltv': '0'})
-        self.assertEqual(rl.materialize(self.org), [])
+        c = self._campaign(filter_criteria={'min_ltv': '0'})
+        self.assertEqual(c.materialize(self.org), [])
 
     def test_dedupe_by_phone(self):
         # Same number, two customer rows (different email) -> one recipient.
         make_customer(self.org, 'a@x.com', '3105550009')
         make_customer(self.org, 'b@x.com', '+13105550009')
-        rl = self._list(filter_criteria={'min_ltv': '0'})
-        self.assertEqual(len(rl.materialize(self.org)), 1)
+        c = self._campaign(filter_criteria={'min_ltv': '0'})
+        self.assertEqual(len(c.materialize(self.org)), 1)
 
     def test_manual_include_only_works(self):
-        c = make_customer(self.org, 'a@x.com', '+13105550001')
-        rl = self._list(filter_criteria={}, manual_include_ids=[str(c.id)])
-        self.assertEqual(len(rl.materialize(self.org)), 1)
+        cust = make_customer(self.org, 'a@x.com', '+13105550001')
+        c = self._campaign(filter_criteria={}, manual_include_ids=[str(cust.id)])
+        self.assertEqual(len(c.materialize(self.org)), 1)
 
     def test_manual_exclude_wins(self):
         make_customer(self.org, 'a@x.com', '+13105550001', rfm_segment='VIP')
         c2 = make_customer(self.org, 'b@x.com', '+13105550002', rfm_segment='VIP')
-        rl = self._list(filter_criteria={'rfm_segment': ['VIP']}, manual_exclude_ids=[str(c2.id)])
-        phones = {r['phone'] for r in rl.materialize(self.org)}
+        c = self._campaign(filter_criteria={'rfm_segment': ['VIP']}, manual_exclude_ids=[str(c2.id)])
+        phones = {r['phone'] for r in c.materialize(self.org)}
         self.assertEqual(phones, {'+13105550001'})
 
     def test_empty_criteria_and_no_includes_is_empty(self):
         make_customer(self.org, 'a@x.com', '+13105550001')
-        rl = self._list(filter_criteria={}, manual_include_ids=[])
-        self.assertEqual(rl.materialize(self.org), [])
+        c = self._campaign(filter_criteria={}, manual_include_ids=[])
+        self.assertEqual(c.materialize(self.org), [])
+
+    def test_tags_audience(self):
+        tag = CustomerTag.objects.create(organization=self.org, name='VIP')
+        c1 = make_customer(self.org, 'a@x.com', '+13105550001')
+        c1.tags.add(tag)
+        make_customer(self.org, 'b@x.com', '+13105550002')  # untagged
+        c = self._campaign(filter_criteria={'tag_ids': [str(tag.id)]})
+        phones = {r['phone'] for r in c.materialize(self.org)}
+        self.assertEqual(phones, {'+13105550001'})
 
     def test_cap_is_enforced(self):
         for i in range(5):
             make_customer(self.org, f'c{i}@x.com', f'+1310555100{i}')
-        rl = self._list(filter_criteria={'min_ltv': '0'})
-        self.assertEqual(len(rl.materialize(self.org, cap=3)), 3)
+        c = self._campaign(filter_criteria={'min_ltv': '0'})
+        self.assertEqual(len(c.materialize(self.org, cap=3)), 3)
+
+    def test_audience_summary(self):
+        tag = CustomerTag.objects.create(organization=self.org, name='Press')
+        c = self._campaign(filter_criteria={'tag_ids': [str(tag.id)], 'rfm_segment': ['VIP']})
+        summary = c.audience_summary(self.org)
+        self.assertIn('Segments: VIP', summary)
+        self.assertIn('Tags: Press', summary)
+        empty = self._campaign(filter_criteria={}).audience_summary(self.org)
+        self.assertEqual(empty, 'No audience')
 
     def test_suppression_is_suppressed_helper(self):
         PhoneSuppression.objects.create(phone='+13105550001', organization=None)
@@ -125,13 +148,10 @@ class SMSCampaignSendTests(TestCase):
         self.org = Organization.objects.create(name='Org', slug='org-send', sms_marketing_enabled=True)
         for i in range(3):
             make_customer(self.org, f'c{i}@x.com', f'+1310555200{i}')
-        self.rl = SMSRecipientList.objects.create(
-            organization=self.org, name='All', filter_criteria={'min_ltv': '0'},
-        )
 
     def _campaign(self, **kwargs):
         return SMSCampaign.objects.create(
-            organization=self.org, recipient_list=self.rl, name='C', body='Hi there',
+            organization=self.org, filter_criteria={'min_ltv': '0'}, name='C', body='Hi there',
             status=SMSCampaign.Status.DRAFT, **kwargs,
         )
 
@@ -179,13 +199,10 @@ class SMSSchedulerCommandTests(TestCase):
     def setUp(self):
         self.org = Organization.objects.create(name='Org', slug='org-sch', sms_marketing_enabled=True)
         make_customer(self.org, 'a@x.com', '+13105553001')
-        self.rl = SMSRecipientList.objects.create(
-            organization=self.org, name='All', filter_criteria={'min_ltv': '0'},
-        )
 
     def _campaign(self, status, scheduled_at=None, started_at=None):
         return SMSCampaign.objects.create(
-            organization=self.org, recipient_list=self.rl, name='C', body='Hi',
+            organization=self.org, filter_criteria={'min_ltv': '0'}, name='C', body='Hi',
             status=status, scheduled_at=scheduled_at, started_at=started_at,
         )
 
@@ -223,11 +240,8 @@ class SMSWebhookTests(TestCase):
     def setUp(self):
         self.client = Client()
         self.org = Organization.objects.create(name='Org', slug='org-wh', sms_marketing_enabled=True)
-        self.rl = SMSRecipientList.objects.create(
-            organization=self.org, name='All', filter_criteria={'min_ltv': '0'},
-        )
         self.campaign = SMSCampaign.objects.create(
-            organization=self.org, recipient_list=self.rl, name='C', body='Hi',
+            organization=self.org, filter_criteria={'min_ltv': '0'}, name='C', body='Hi',
             status=SMSCampaign.Status.SENT,
         )
         self.recipient = SMSMessageRecipient.objects.create(
@@ -304,9 +318,6 @@ class SMSViewTests(TestCase):
         self.client.login(username='u@test.com', password='pw')
         self.client.get(reverse('tickets:home'))
         make_customer(self.org, 'a@x.com', '+13105555001')
-        self.rl = SMSRecipientList.objects.create(
-            organization=self.org, name='All', filter_criteria={'min_ltv': '0'},
-        )
 
     def test_feature_gate_blocks_when_disabled(self):
         self.org.sms_marketing_enabled = False
@@ -332,13 +343,27 @@ class SMSViewTests(TestCase):
         self.assertNotContains(resp, 'data-tab-key="sms"')
 
     def test_preview_returns_count(self):
-        resp = self.client.post(reverse('tickets:sms_recipient_list_preview'), {'min_ltv': '0'})
+        resp = self.client.post(reverse('tickets:sms_audience_preview'), {'rfm_segment': 'VIP'})
         self.assertEqual(resp.json()['count'], 1)
+
+    def test_compose_get_renders_audience_picker(self):
+        resp = self.client.get(reverse('tickets:sms_campaign_create'))
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, 'id="audience-section"')
+        self.assertContains(resp, 'name="rfm_segment"')
+
+    def test_empty_audience_rejected(self):
+        # No tag/segment and no event → form invalid, no campaign created.
+        resp = self.client.post(reverse('tickets:sms_campaign_create'), {
+            'name': 'Promo', 'body': 'Hello', 'send_mode': 'now',
+        })
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(SMSCampaign.objects.count(), 0)
 
     def test_create_requires_confirm_before_send(self):
         # First POST without confirm: shows count, does NOT create.
         resp = self.client.post(reverse('tickets:sms_campaign_create'), {
-            'name': 'Promo', 'recipient_list': str(self.rl.id), 'body': 'Hello',
+            'name': 'Promo', 'rfm_segment': 'VIP', 'body': 'Hello',
             'send_mode': 'now',
         })
         self.assertEqual(resp.status_code, 200)
@@ -349,7 +374,7 @@ class SMSViewTests(TestCase):
         # Send-now dispatches via transaction.on_commit — capture so it fires in TestCase.
         with self.captureOnCommitCallbacks(execute=True):
             resp = self.client.post(reverse('tickets:sms_campaign_create'), {
-                'name': 'Promo', 'recipient_list': str(self.rl.id), 'body': 'Hello',
+                'name': 'Promo', 'rfm_segment': 'VIP', 'body': 'Hello',
                 'send_mode': 'now', 'confirm': '1',
             })
         self.assertEqual(resp.status_code, 302)
@@ -359,7 +384,7 @@ class SMSViewTests(TestCase):
     def test_schedule_creates_scheduled_campaign(self):
         when = (timezone.now() + timedelta(days=1)).strftime('%Y-%m-%dT%H:%M')
         resp = self.client.post(reverse('tickets:sms_campaign_create'), {
-            'name': 'Later', 'recipient_list': str(self.rl.id), 'body': 'Hello',
+            'name': 'Later', 'rfm_segment': 'VIP', 'body': 'Hello',
             'send_mode': 'schedule', 'scheduled_at': when, 'confirm': '1',
         })
         self.assertEqual(resp.status_code, 302)
@@ -369,7 +394,7 @@ class SMSViewTests(TestCase):
 
     def test_cancel_scheduled(self):
         c = SMSCampaign.objects.create(
-            organization=self.org, recipient_list=self.rl, name='S', body='Hi',
+            organization=self.org, filter_criteria={'min_ltv': '0'}, name='S', body='Hi',
             status=SMSCampaign.Status.SCHEDULED, scheduled_at=timezone.now() + timedelta(days=1),
         )
         resp = self.client.post(reverse('tickets:sms_campaign_cancel', kwargs={'pk': c.id}))
@@ -379,9 +404,8 @@ class SMSViewTests(TestCase):
 
     def test_cross_tenant_detail_404(self):
         other = Organization.objects.create(name='Org B', slug='org-vb', sms_marketing_enabled=True)
-        orl = SMSRecipientList.objects.create(organization=other, name='X', filter_criteria={'min_ltv': '0'})
         oc = SMSCampaign.objects.create(
-            organization=other, recipient_list=orl, name='Theirs', body='Hi',
+            organization=other, filter_criteria={'min_ltv': '0'}, name='Theirs', body='Hi',
             status=SMSCampaign.Status.DRAFT,
         )
         resp = self.client.get(reverse('tickets:sms_campaign_detail', kwargs={'pk': oc.id}))
@@ -393,9 +417,8 @@ class SMSAnalyticsTests(TestCase):
     def test_native_summary_counts(self):
         from .services.marketing.analytics import MarketingAnalyticsService
         org = Organization.objects.create(name='Org', slug='org-an', sms_marketing_enabled=True)
-        rl = SMSRecipientList.objects.create(organization=org, name='All', filter_criteria={'min_ltv': '0'})
         c = SMSCampaign.objects.create(
-            organization=org, recipient_list=rl, name='C', body='Hi',
+            organization=org, filter_criteria={'min_ltv': '0'}, name='C', body='Hi',
             status=SMSCampaign.Status.SENT, sent_at=timezone.now(), audience_size=2,
         )
         SMSMessageRecipient.objects.create(campaign=c, phone='+13105556001', status='delivered')
@@ -425,13 +448,10 @@ class SMSLinkRewriteTests(TestCase):
         self.org = Organization.objects.create(name='Org', slug='org-lr', sms_marketing_enabled=True)
         for i in range(2):
             make_customer(self.org, f'c{i}@x.com', f'+1310555700{i}')
-        self.rl = SMSRecipientList.objects.create(
-            organization=self.org, name='All', filter_criteria={'min_ltv': '0'},
-        )
 
     def _campaign(self, body, link_url):
         return SMSCampaign.objects.create(
-            organization=self.org, recipient_list=self.rl, name='C', body=body,
+            organization=self.org, filter_criteria={'min_ltv': '0'}, name='C', body=body,
             link_url=link_url, status=SMSCampaign.Status.DRAFT,
         )
 
@@ -480,9 +500,8 @@ class SMSClickRedirectTests(TestCase):
     def setUp(self):
         self.client = Client()
         self.org = Organization.objects.create(name='Org', slug='org-cr', sms_marketing_enabled=True)
-        self.rl = SMSRecipientList.objects.create(organization=self.org, name='All', filter_criteria={'min_ltv': '0'})
         self.campaign = SMSCampaign.objects.create(
-            organization=self.org, recipient_list=self.rl, name='C', body='Hi https://shop.co/x',
+            organization=self.org, filter_criteria={'min_ltv': '0'}, name='C', body='Hi https://shop.co/x',
             link_url='https://shop.co/x', status=SMSCampaign.Status.SENT,
         )
         self.recipient = SMSMessageRecipient.objects.create(
@@ -517,11 +536,10 @@ class SMSUnsubAttributionTests(TestCase):
     def setUp(self):
         self.client = Client()
         self.org = Organization.objects.create(name='Org', slug='org-un', sms_marketing_enabled=True)
-        self.rl = SMSRecipientList.objects.create(organization=self.org, name='All', filter_criteria={'min_ltv': '0'})
 
     def _recipient(self, sent_offset_min, campaign=None):
         c = campaign or SMSCampaign.objects.create(
-            organization=self.org, recipient_list=self.rl, name='C', body='Hi',
+            organization=self.org, filter_criteria={'min_ltv': '0'}, name='C', body='Hi',
             status=SMSCampaign.Status.SENT,
         )
         return SMSMessageRecipient.objects.create(
@@ -549,9 +567,8 @@ class SMSClickMetricsTests(TestCase):
         from .sms_views import _annotate_counts
         from .services.marketing.analytics import MarketingAnalyticsService
         org = Organization.objects.create(name='Org', slug='org-cm', sms_marketing_enabled=True)
-        rl = SMSRecipientList.objects.create(organization=org, name='All', filter_criteria={'min_ltv': '0'})
         c = SMSCampaign.objects.create(
-            organization=org, recipient_list=rl, name='C', body='Hi https://s.co/x',
+            organization=org, filter_criteria={'min_ltv': '0'}, name='C', body='Hi https://s.co/x',
             link_url='https://s.co/x', status=SMSCampaign.Status.SENT, sent_at=timezone.now(),
         )
         SMSMessageRecipient.objects.create(campaign=c, phone='+13105550101', status='delivered',
@@ -580,11 +597,10 @@ class SMSCampaignLinkAutoDeriveTests(TestCase):
         self.client.login(username='u@test.com', password='pw')
         self.client.get(reverse('tickets:home'))
         make_customer(self.org, 'a@x.com', '+13105551101')
-        self.rl = SMSRecipientList.objects.create(organization=self.org, name='All', filter_criteria={'min_ltv': '0'})
 
     def test_create_derives_link_url_from_body(self):
         self.client.post(reverse('tickets:sms_campaign_create'), {
-            'name': 'Promo', 'recipient_list': str(self.rl.id),
+            'name': 'Promo', 'rfm_segment': 'VIP',
             'body': 'Grab tickets at https://shop.co/sale today', 'send_mode': 'now', 'confirm': '1',
         })
         c = SMSCampaign.objects.get()
@@ -631,22 +647,14 @@ class EventSMSTests(TestCase):
         )
         self.assertEqual(emails, {'a1@x.com', 'a2@x.com', 'o@x.com'})  # excludes non-attendee
 
-    def test_attendee_list_resolves_opted_in_only(self):
-        from .sms_views import _event_attendee_list
-        lst = _event_attendee_list(self.org, self.event)
-        phones = {r['phone'] for r in lst.materialize(self.org)}
-        self.assertEqual(phones, {'+13105550001', '+13105550002'})  # opt-out + non-attendee excluded
-
-    def test_attendee_list_idempotent(self):
-        from .sms_views import _event_attendee_list
-        a = _event_attendee_list(self.org, self.event)
-        b = _event_attendee_list(self.org, self.event)
-        self.assertEqual(a.pk, b.pk)
-        self.assertEqual(
-            SMSRecipientList.objects.filter(
-                organization=self.org, filter_criteria={'event_id': str(self.event.id)},
-            ).count(), 1,
+    def test_event_audience_resolves_opted_in_only(self):
+        # An event-mode campaign targets the event's attendees via event_id.
+        c = SMSCampaign(
+            organization=self.org, name='C', body='Hi',
+            filter_criteria={'event_id': str(self.event.id)},
         )
+        phones = {r['phone'] for r in c.materialize(self.org)}
+        self.assertEqual(phones, {'+13105550001', '+13105550002'})  # opt-out + non-attendee excluded
 
     def test_create_event_mode_get_seeds_form(self):
         resp = self.client.get(reverse('tickets:sms_campaign_create'), {'event': str(self.event.id)})
@@ -654,18 +662,16 @@ class EventSMSTests(TestCase):
         self.assertEqual(resp.context['event'], self.event)
         form = resp.context['form']
         self.assertEqual(form.initial.get('name'), self.event.name)
-        self.assertIsNotNone(form.initial.get('recipient_list'))
 
     def test_create_event_mode_sends_to_attendees_and_links_event(self):
-        from .sms_views import _event_attendee_list
-        lst = _event_attendee_list(self.org, self.event)
         resp = self.client.post(reverse('tickets:sms_campaign_create'), {
-            'name': self.event.name, 'recipient_list': str(lst.id), 'body': 'See you there!',
+            'name': self.event.name, 'body': 'See you there!',
             'send_mode': 'now', 'event': str(self.event.id), 'confirm': '1',
         })
         self.assertEqual(resp.status_code, 302)
         c = SMSCampaign.objects.get()
         self.assertEqual(c.event_id, self.event.id)
+        self.assertEqual(c.filter_criteria, {'event_id': str(self.event.id)})
         phones = set(SMSMessageRecipient.objects.filter(campaign=c).values_list('phone', flat=True))
         self.assertEqual(phones, {'+13105550001', '+13105550002'})
 
@@ -735,8 +741,7 @@ class SMSCreditWalletTests(TestCase):
 
     def test_refund_campaign_is_idempotent(self):
         from .services.sms_credits import charge, refund_campaign
-        rl = SMSRecipientList.objects.create(organization=self.org, name='L', filter_criteria={'min_ltv': '0'})
-        c = SMSCampaign.objects.create(organization=self.org, recipient_list=rl, name='C', body='Hi',
+        c = SMSCampaign.objects.create(organization=self.org, filter_criteria={'min_ltv': '0'}, name='C', body='Hi',
                                        status=SMSCampaign.Status.SCHEDULED)
         self.org.sms_credit_balance_cents = 100
         self.org.save(update_fields=['sms_credit_balance_cents'])
@@ -798,11 +803,10 @@ class SMSCreditSendFlowTests(TestCase):
         self.client.get(reverse('tickets:home'))
         for i in range(2):
             make_customer(self.org, f'c{i}@x.com', f'+1310555900{i}')
-        self.rl = SMSRecipientList.objects.create(organization=self.org, name='All', filter_criteria={'min_ltv': '0'})
 
     def _post_send(self, **extra):
         data = {
-            'name': 'Promo', 'recipient_list': str(self.rl.id), 'body': 'Hello',
+            'name': 'Promo', 'rfm_segment': 'VIP', 'body': 'Hello',
             'send_mode': 'now', 'confirm': '1',
         }
         data.update(extra)
@@ -832,7 +836,7 @@ class SMSCreditSendFlowTests(TestCase):
         self.org.save(update_fields=['sms_credit_balance_cents'])
         # POST without confirm -> shows cost, no send.
         resp = self.client.post(reverse('tickets:sms_campaign_create'), {
-            'name': 'Promo', 'recipient_list': str(self.rl.id), 'body': 'Hello', 'send_mode': 'now',
+            'name': 'Promo', 'rfm_segment': 'VIP', 'body': 'Hello', 'send_mode': 'now',
         })
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp.context['confirm_cost_cents'], 6)
@@ -845,7 +849,7 @@ class SMSCreditSendFlowTests(TestCase):
         self.org.save(update_fields=['sms_credit_balance_cents'])
         when = (timezone.now() + timedelta(days=1)).strftime('%Y-%m-%dT%H:%M')
         self.client.post(reverse('tickets:sms_campaign_create'), {
-            'name': 'Later', 'recipient_list': str(self.rl.id), 'body': 'Hello',
+            'name': 'Later', 'rfm_segment': 'VIP', 'body': 'Hello',
             'send_mode': 'schedule', 'scheduled_at': when, 'confirm': '1',
         })
         c = SMSCampaign.objects.get()
@@ -884,10 +888,9 @@ class SMSCreditHardeningTests(TestCase):
         self.client.get(reverse('tickets:home'))
         for i in range(2):
             make_customer(self.org, f'c{i}@x.com', f'+1310555800{i}')
-        self.rl = SMSRecipientList.objects.create(organization=self.org, name='All', filter_criteria={'min_ltv': '0'})
 
     def _confirm(self, key, **extra):
-        data = {'name': 'Promo', 'recipient_list': str(self.rl.id), 'body': 'Hello',
+        data = {'name': 'Promo', 'rfm_segment': 'VIP', 'body': 'Hello',
                 'send_mode': 'now', 'confirm': '1', 'idempotency_key': key}
         data.update(extra)
         with self.captureOnCommitCallbacks(execute=True):
@@ -906,7 +909,7 @@ class SMSCreditHardeningTests(TestCase):
         # Without firing on_commit, the campaign is left scheduled-for-now so the
         # cron safety net still sends it (no lost money / silent drop).
         resp = self.client.post(reverse('tickets:sms_campaign_create'), {
-            'name': 'P', 'recipient_list': str(self.rl.id), 'body': 'Hi',
+            'name': 'P', 'rfm_segment': 'VIP', 'body': 'Hi',
             'send_mode': 'now', 'confirm': '1', 'idempotency_key': 'recov-1',
         })
         self.assertEqual(resp.status_code, 302)
@@ -921,7 +924,7 @@ class SMSCreditHardeningTests(TestCase):
     def test_frozen_audience_snapshot_at_confirm(self):
         # Recipients are frozen at confirm time (charged == snapshot), even before send.
         self.client.post(reverse('tickets:sms_campaign_create'), {
-            'name': 'P', 'recipient_list': str(self.rl.id), 'body': 'Hi',
+            'name': 'P', 'rfm_segment': 'VIP', 'body': 'Hi',
             'send_mode': 'now', 'confirm': '1', 'idempotency_key': 'frz-1',
         })
         c = SMSCampaign.objects.get()
@@ -931,7 +934,7 @@ class SMSCreditHardeningTests(TestCase):
     def test_opt_out_after_freeze_is_skipped_at_send(self):
         # Freeze the audience, then a recipient opts out before the send fires.
         self.client.post(reverse('tickets:sms_campaign_create'), {
-            'name': 'P', 'recipient_list': str(self.rl.id), 'body': 'Hi',
+            'name': 'P', 'rfm_segment': 'VIP', 'body': 'Hi',
             'send_mode': 'now', 'confirm': '1', 'idempotency_key': 'opt-1',
         })
         c = SMSCampaign.objects.get()

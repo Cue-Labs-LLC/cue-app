@@ -506,6 +506,9 @@ button.detail-meta-weather--severe:focus-visible {
     <button class="nav-link" id="tab-orders-btn" data-bs-toggle="tab" data-bs-target="#tab-orders" type="button" role="tab">Orders{% if total_orders %} ({{ total_orders }}){% endif %}</button>
     <button class="nav-link" id="tab-finance-btn" data-bs-toggle="tab" data-bs-target="#tab-finance" type="button" role="tab">Finance</button>
     <button class="nav-link" id="tab-marketing-btn" data-bs-toggle="tab" data-bs-target="#tab-marketing" type="button" role="tab">Marketing</button>
+    {% if org.sms_marketing_enabled and is_org_host %}
+    <button class="nav-link" id="tab-customers-btn" data-bs-toggle="tab" data-bs-target="#tab-customers" type="button" role="tab">Customers{% if total_customers %} ({{ total_customers }}){% endif %}</button>
+    {% endif %}
     <button class="nav-link" id="tab-surveys-btn" data-bs-toggle="tab" data-bs-target="#tab-surveys" type="button" role="tab">
         Surveys{% if linked_survey_responses %} ({{ linked_survey_responses|length }}){% endif %}
         {% if suggested_survey_responses %}<span class="badge text-bg-warning ms-1">{{ suggested_survey_responses|length }}</span>{% endif %}
@@ -1392,6 +1395,104 @@ button.detail-meta-weather--severe:focus-visible {
 
 </div><!-- /tab-marketing -->
 
+{% if org.sms_marketing_enabled and is_org_host %}
+<!-- ===== TAB: Customers ===== -->
+<div class="tab-pane fade" id="tab-customers" role="tabpanel">
+{% if event_customers_page and event_customers_page.paginator.count %}
+<p class="text-body-secondary mb-3">Select customers below to tag them. Target tags in an SMS campaign from the Marketing tab.</p>
+
+<!-- Selection action bar (revealed once at least one customer is checked) -->
+<form method="post" action="{% url 'tickets:event_bulk_tag' event.id %}" id="custActionBar" class="card mb-3 d-none">
+    {% csrf_token %}
+    <input type="hidden" name="select_all" id="custSelectAll" value="">
+    <div class="card-body d-flex flex-wrap align-items-center gap-2">
+        <strong id="custSelectedCount" class="me-2">0 selected</strong>
+        <div class="btn-group btn-group-sm" role="group" aria-label="Tag mode">
+            <input type="radio" class="btn-check" name="tag_mode" id="custModeExisting" value="existing" autocomplete="off" {% if org_tags %}checked{% else %}disabled{% endif %}>
+            <label class="btn btn-outline-primary" for="custModeExisting">Existing tag</label>
+            <input type="radio" class="btn-check" name="tag_mode" id="custModeNew" value="new" autocomplete="off" {% if not org_tags %}checked{% endif %}>
+            <label class="btn btn-outline-primary" for="custModeNew">New tag</label>
+        </div>
+        <select id="custTagSelect" name="tag_id" class="form-select form-select-sm{% if not org_tags %} d-none{% endif %}" style="max-width: 240px;">
+            {% for t in org_tags %}<option value="{{ t.id }}">{{ t.name }}</option>{% endfor %}
+        </select>
+        <input type="text" id="custNewTag" name="new_tag_name" class="form-control form-control-sm{% if org_tags %} d-none{% endif %}" style="max-width: 240px;" placeholder="New tag name" maxlength="50">
+        <button type="submit" class="btn btn-primary btn-sm">Tag selected</button>
+    </div>
+</form>
+
+<div class="card mb-4">
+    <div class="card-body p-0">
+        <div class="table-responsive">
+            <table class="table table-hover mb-0 align-middle">
+                <thead>
+                    <tr>
+                        <th style="width: 44px;"><input type="checkbox" id="custSelectAllRows" aria-label="Select all customers on this page"></th>
+                        <th>Name</th>
+                        <th class="d-none d-md-table-cell">Email</th>
+                        <th class="d-none d-lg-table-cell">Phone</th>
+                        <th class="text-center">SMS</th>
+                        <th class="d-none d-md-table-cell">Segment</th>
+                        <th class="text-end">Tickets</th>
+                        <th class="text-end d-none d-sm-table-cell">Spend</th>
+                        <th class="text-end">LTV</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for c in event_customers_page %}
+                    <tr>
+                        <td><input type="checkbox" class="cust-checkbox" value="{{ c.id }}" aria-label="Select {{ c.name }}"></td>
+                        <td><a href="{% url 'tickets:customer_detail' c.id %}">{{ c.name|default:'—' }}</a></td>
+                        <td class="d-none d-md-table-cell">{{ c.email }}</td>
+                        <td class="d-none d-lg-table-cell">{{ c.phone|default:'—' }}</td>
+                        <td class="text-center">{% if c.sms_opt_in %}<span class="text-success" title="Subscribed"><i class="bi bi-check-circle-fill"></i></span>{% else %}<span class="text-body-secondary" title="Not subscribed">—</span>{% endif %}</td>
+                        <td class="d-none d-md-table-cell">{% if c.rfm_segment %}<span class="badge bg-secondary">{{ c.rfm_segment }}</span>{% else %}<span class="text-body-secondary">—</span>{% endif %}</td>
+                        <td class="text-end">{{ c.event_orders }}</td>
+                        <td class="text-end d-none d-sm-table-cell"><span class="revenue">${{ c.event_spend|currency }}</span></td>
+                        <td class="text-end"><span class="revenue">${{ c.lifetime_value|currency }}</span></td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+
+        {% if event_customers_page.paginator.num_pages > 1 %}
+        <div id="custSelectAllBanner" class="text-center small text-body-secondary border-top py-2 d-none">
+            <span id="custSelectAllPrompt">
+                All {{ event_customers_page|length }} customer(s) on this page are selected.
+                <a href="#" id="custSelectAllLink">Select all {{ event_customers_page.paginator.count }} customers</a>
+            </span>
+            <span id="custSelectAllNotice" class="d-none">
+                All {{ event_customers_page.paginator.count }} customers are selected.
+                <a href="#" id="custClearSelectAllLink">Clear selection</a>
+            </span>
+        </div>
+
+        <div class="d-flex justify-content-center py-3 border-top">
+            <nav>
+                <ul class="pagination mb-0">
+                    {% if event_customers_page.has_previous %}
+                    <li class="page-item"><a class="page-link" href="?tab=customers&cust_page={{ event_customers_page.previous_page_number }}">Previous</a></li>
+                    {% endif %}
+                    <li class="page-item active"><span class="page-link">{{ event_customers_page.number }} / {{ event_customers_page.paginator.num_pages }}</span></li>
+                    {% if event_customers_page.has_next %}
+                    <li class="page-item"><a class="page-link" href="?tab=customers&cust_page={{ event_customers_page.next_page_number }}">Next</a></li>
+                    {% endif %}
+                </ul>
+            </nav>
+        </div>
+        {% endif %}
+    </div>
+</div>
+{% else %}
+<div class="empty-state">
+    <i class="bi bi-people"></i>
+    <p class="mb-0">No customers have bought tickets to this event yet.</p>
+</div>
+{% endif %}
+</div><!-- /tab-customers -->
+{% endif %}
+
 <!-- ===== TAB 5: Surveys ===== -->
 <div class="tab-pane fade" id="tab-surveys" role="tabpanel">
 
@@ -2216,6 +2317,121 @@ button.detail-meta-weather--severe:focus-visible {
         else { url.searchParams.set('tab', tabName); }
         history.replaceState(null, '', url.toString());
     });
+})();
+</script>
+<script>
+// Customers tab: bulk-select buyers and tag them.
+(function() {
+    var form = document.getElementById('custActionBar');
+    if (!form) return;
+    var totalCustomers = {{ event_customers_page.paginator.count|default:0 }};
+    var checkboxes = Array.prototype.slice.call(document.querySelectorAll('.cust-checkbox'));
+    var selectAllRows = document.getElementById('custSelectAllRows');
+    var countEl = document.getElementById('custSelectedCount');
+    var selectAllField = document.getElementById('custSelectAll');
+    var tagSelect = document.getElementById('custTagSelect');
+    var newTagInput = document.getElementById('custNewTag');
+    var banner = document.getElementById('custSelectAllBanner');
+    var promptEl = document.getElementById('custSelectAllPrompt');
+    var noticeEl = document.getElementById('custSelectAllNotice');
+    var selectAllLink = document.getElementById('custSelectAllLink');
+    var clearAllLink = document.getElementById('custClearSelectAllLink');
+    var allPagesSelected = false;
+
+    function pageSelected() {
+        return checkboxes.filter(function(cb) { return cb.checked; });
+    }
+
+    function updateBanner() {
+        if (!banner) return;
+        var allOnPage = checkboxes.length > 0 && pageSelected().length === checkboxes.length;
+        banner.classList.toggle('d-none', !allOnPage);
+        if (promptEl) promptEl.classList.toggle('d-none', allPagesSelected);
+        if (noticeEl) noticeEl.classList.toggle('d-none', !allPagesSelected);
+    }
+
+    function sync() {
+        var selected = pageSelected();
+        countEl.textContent = allPagesSelected
+            ? totalCustomers + ' selected (all)'
+            : selected.length + ' selected';
+        form.classList.toggle('d-none', selected.length === 0);
+        if (selectAllRows) {
+            selectAllRows.checked = checkboxes.length > 0 && selected.length === checkboxes.length;
+            selectAllRows.indeterminate = selected.length > 0 && selected.length < checkboxes.length;
+        }
+        updateBanner();
+    }
+
+    function resetAllPages() {
+        allPagesSelected = false;
+        if (selectAllField) selectAllField.value = '';
+    }
+
+    checkboxes.forEach(function(cb) {
+        cb.addEventListener('change', function() { resetAllPages(); sync(); });
+    });
+
+    if (selectAllRows) {
+        selectAllRows.addEventListener('change', function() {
+            resetAllPages();
+            checkboxes.forEach(function(cb) { cb.checked = selectAllRows.checked; });
+            sync();
+        });
+    }
+
+    if (selectAllLink) {
+        selectAllLink.addEventListener('click', function(e) {
+            e.preventDefault();
+            allPagesSelected = true;
+            if (selectAllField) selectAllField.value = '1';
+            checkboxes.forEach(function(cb) { cb.checked = true; });
+            sync();
+        });
+    }
+    if (clearAllLink) {
+        clearAllLink.addEventListener('click', function(e) {
+            e.preventDefault();
+            resetAllPages();
+            checkboxes.forEach(function(cb) { cb.checked = false; });
+            sync();
+        });
+    }
+
+    // Tag mode toggle: existing-tag dropdown vs new-tag name.
+    Array.prototype.slice.call(document.querySelectorAll('input[name="tag_mode"]')).forEach(function(radio) {
+        radio.addEventListener('change', function() {
+            var existing = radio.value === 'existing' && radio.checked;
+            if (tagSelect) tagSelect.classList.toggle('d-none', !existing);
+            if (newTagInput) newTagInput.classList.toggle('d-none', existing);
+        });
+    });
+
+    form.addEventListener('submit', function(e) {
+        var mode = (document.querySelector('input[name="tag_mode"]:checked') || {}).value;
+        if (mode === 'existing') {
+            if (!tagSelect || !tagSelect.value) { e.preventDefault(); return; }
+            if (newTagInput) newTagInput.disabled = true;
+        } else {
+            if (!newTagInput || !newTagInput.value.trim()) { e.preventDefault(); return; }
+            if (tagSelect) tagSelect.disabled = true;
+        }
+        // Inject the current page's checked ids (skipped when "all customers" is
+        // active — the server resolves the full attendee set from select_all=1).
+        form.querySelectorAll('input[data-cust-id]').forEach(function(n) { n.remove(); });
+        if (!allPagesSelected) {
+            pageSelected().forEach(function(cb) {
+                var input = document.createElement('input');
+                input.type = 'hidden';
+                input.name = 'customer_ids';
+                input.value = cb.value;
+                input.setAttribute('data-cust-id', '1');
+                form.appendChild(input);
+            });
+        }
+    });
+
+    sync();
 })();
 </script>
 {% if is_org_admin and org.meta_ads_access_token and org.meta_ads_account_id %}
