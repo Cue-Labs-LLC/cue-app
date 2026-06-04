@@ -19,13 +19,17 @@ from django.http import JsonResponse, HttpResponse, Http404
 from django.shortcuts import render, redirect, get_object_or_404
 from django.urls import reverse
 from django.utils import timezone
+from django.utils.http import urlencode
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_POST, require_http_methods
 
 from .models import (
-    SMSCampaign, SMSRecipientList, SMSMessageRecipient, PhoneSuppression, Event,
+    SMSCampaign, SMSMessageRecipient, PhoneSuppression, Event,
+    Customer,
 )
-from .forms import SMSCampaignForm, SMSRecipientListForm
+from .forms import SMSCampaignForm
+from .services.customer_filters import filter_customers
+from .services.tagging import tag_customers
 from .sms import (
     normalize_phone, validate_twilio_request, sms_segment_info, send_sms, extract_first_url,
 )
@@ -67,8 +71,9 @@ def _annotate_counts(qs):
 
 
 def _criteria_from_post(post):
-    """Build a filter_criteria dict + manual id lists from raw POST data (used by
-    the live preview endpoint, which fires before the list is saved)."""
+    """Build an inline filter_criteria dict + manual id lists from raw POST data
+    (used by the live audience-preview endpoint, which fires before the campaign
+    is saved). The compose UI offers tags + segments; event mode passes `event`."""
     criteria = {}
     segments = [s for s in post.getlist('rfm_segment') if s]
     if segments:
@@ -76,71 +81,12 @@ def _criteria_from_post(post):
     tag_ids = [t for t in post.getlist('tag_ids') if t]
     if tag_ids:
         criteria['tag_ids'] = tag_ids
-    min_ltv = (post.get('min_ltv') or '').strip()
-    if min_ltv:
-        criteria['min_ltv'] = min_ltv
-    last_order_after = (post.get('last_order_after') or '').strip()
-    if last_order_after:
-        criteria['last_order_after'] = last_order_after
+    event_id = (post.get('event') or '').strip()
+    if event_id:
+        criteria['event_id'] = event_id
     includes = [s.strip() for s in (post.get('manual_include_ids') or '').split(',') if s.strip()]
     excludes = [s.strip() for s in (post.get('manual_exclude_ids') or '').split(',') if s.strip()]
     return criteria, includes, excludes
-
-
-# ---------------------------------------------------------------------------
-# Recipient lists
-# ---------------------------------------------------------------------------
-
-@login_required
-@require_org
-@require_host
-@require_sms_feature
-def sms_recipient_list_list(request):
-    org = get_organization(request)
-    lists = SMSRecipientList.objects.filter(
-        organization=org, deleted_at__isnull=True,
-    ).order_by('-created_at')
-    return render(request, 'tickets/marketing/sms/recipient_list_list.html', {
-        'lists': lists,
-        'marketing_section': 'sms',
-    })
-
-
-@login_required
-@require_org
-@require_host
-@require_sms_feature
-@require_http_methods(['GET', 'POST'])
-def sms_recipient_list_create(request):
-    org = get_organization(request)
-    if request.method == 'POST':
-        form = SMSRecipientListForm(request.POST, organization=org)
-        if form.is_valid():
-            recipient_list = form.save()
-            messages.success(request, f'Recipient list "{recipient_list.name}" created.')
-            return redirect('tickets:sms_recipient_list_detail', pk=recipient_list.id)
-    else:
-        form = SMSRecipientListForm(organization=org)
-    return render(request, 'tickets/marketing/sms/recipient_list_form.html', {'form': form})
-
-
-@login_required
-@require_org
-@require_host
-@require_sms_feature
-def sms_recipient_list_detail(request, pk):
-    org = get_organization(request)
-    recipient_list = get_object_or_404(
-        SMSRecipientList.objects.filter(organization=org, deleted_at__isnull=True), id=pk,
-    )
-    cap = getattr(settings, 'SMS_CAMPAIGN_MAX_RECIPIENTS', 5000)
-    recipients = recipient_list.materialize(org, cap=cap + 1)
-    return render(request, 'tickets/marketing/sms/recipient_list_detail.html', {
-        'recipient_list': recipient_list,
-        'recipient_count': min(len(recipients), cap),
-        'exceeds_cap': len(recipients) > cap,
-        'cap': cap,
-    })
 
 
 @login_required
@@ -148,14 +94,15 @@ def sms_recipient_list_detail(request, pk):
 @require_host
 @require_sms_feature
 @require_POST
-def sms_recipient_list_preview(request):
-    """JSON: resolved recipient count for the audience being built (live sizing)."""
+def sms_audience_preview(request):
+    """JSON: resolved recipient count for the audience being composed (live sizing).
+    Builds a transient SMSCampaign from the posted criteria — never saved."""
     org = get_organization(request)
     criteria, includes, excludes = _criteria_from_post(request.POST)
     cap = getattr(settings, 'SMS_CAMPAIGN_MAX_RECIPIENTS', 5000)
     if not criteria and not includes:
         return JsonResponse({'count': 0, 'exceeds_cap': False, 'cap': cap})
-    tmp = SMSRecipientList(
+    tmp = SMSCampaign(
         organization=org, filter_criteria=criteria,
         manual_include_ids=includes, manual_exclude_ids=excludes,
     )
@@ -165,6 +112,86 @@ def sms_recipient_list_preview(request):
         'exceeds_cap': len(recipients) > cap,
         'cap': cap,
     })
+
+
+# ---------------------------------------------------------------------------
+# Bulk tagging (customer list + event Customers tab)
+# ---------------------------------------------------------------------------
+
+@login_required
+@require_org
+@require_host
+@require_POST
+def event_bulk_tag(request, event_id):
+    """Apply a tag (existing or new) to selected, or all, buyers of an event."""
+    org = get_organization(request)
+    event = get_object_or_404(
+        Event.objects.filter(organization=org, deleted_at__isnull=True), id=event_id,
+    )
+    attendees = Customer.objects.filter(organization=org, ticket_orders__event=event)
+    if request.POST.get('select_all') == '1':
+        customers = attendees.distinct()
+    else:
+        posted = [s for s in request.POST.getlist('customer_ids') if s]
+        customers = attendees.filter(id__in=posted).distinct()
+
+    redirect_to = redirect(
+        reverse('tickets:event_detail', args=[event.id]) + '?tab=customers'
+    )
+    tag, count = tag_customers(
+        org, customers,
+        tag_id=request.POST.get('tag_id'),
+        new_tag_name=request.POST.get('new_tag_name'),
+    )
+    if tag is None:
+        messages.error(request, 'Choose an existing tag or enter a new tag name.')
+    elif count == 0:
+        messages.error(request, 'No customers selected.')
+    else:
+        messages.success(request, f'Tagged {count} customer(s) as "{tag.name}".')
+    return redirect_to
+
+
+@login_required
+@require_org
+@require_host
+@require_POST
+def customers_bulk_tag(request):
+    """Apply a tag (existing or new) to selected, or all-matching, customers from
+    the org-wide customer list. 'Select all' resolves the same filtered queryset
+    the list page shows (search / segment / tag)."""
+    org = get_organization(request)
+    if request.POST.get('select_all') == '1':
+        criteria = {
+            'search': request.POST.get('search') or None,
+            'rfm_segment': request.POST.get('segment') or None,
+            'tag_id': request.POST.get('tag') or None,
+        }
+        customers = filter_customers(org, criteria).distinct()
+    else:
+        posted = [s for s in request.POST.getlist('customer_ids') if s]
+        customers = Customer.objects.filter(organization=org, id__in=posted).distinct()
+
+    # Return to the list with the active filters preserved.
+    params = urlencode({k: v for k, v in (
+        ('search', request.POST.get('search', '')),
+        ('segment', request.POST.get('segment', '')),
+        ('tag', request.POST.get('tag', '')),
+        ('sort', request.POST.get('sort', '')),
+    ) if v})
+    back = reverse('tickets:customer_list') + (f'?{params}' if params else '')
+    tag, count = tag_customers(
+        org, customers,
+        tag_id=request.POST.get('tag_id'),
+        new_tag_name=request.POST.get('new_tag_name'),
+    )
+    if tag is None:
+        messages.error(request, 'Choose an existing tag or enter a new tag name.')
+    elif count == 0:
+        messages.error(request, 'No customers selected.')
+    else:
+        messages.success(request, f'Tagged {count} customer(s) as "{tag.name}".')
+    return redirect(back)
 
 
 # ---------------------------------------------------------------------------
@@ -183,7 +210,6 @@ def sms_campaign_list(request):
     org = get_organization(request)
     campaigns = _annotate_counts(
         SMSCampaign.objects.filter(organization=org, deleted_at__isnull=True)
-        .select_related('recipient_list')
     ).order_by('-created_at')
     paginator = Paginator(campaigns, 25)
     page_obj = paginator.get_page(request.GET.get('page'))
@@ -209,21 +235,6 @@ def sms_campaign_list(request):
         'top_sms_campaigns': metrics['top_sms_campaigns'],
         'engagement_chart_json': json.dumps(engagement_chart),
     })
-
-
-def _event_attendee_list(org, event):
-    """Return (creating if needed) a reusable recipient list scoped to an event's
-    ticket-buyers. Keyed on filter_criteria so re-sends to the same event reuse it
-    instead of spawning a new list each time."""
-    criteria = {'event_id': str(event.id)}
-    existing = SMSRecipientList.objects.filter(
-        organization=org, filter_criteria=criteria, deleted_at__isnull=True,
-    ).first()
-    if existing:
-        return existing
-    return SMSRecipientList.objects.create(
-        organization=org, name=f'{event.name} – Attendees', filter_criteria=criteria,
-    )
 
 
 @login_required
@@ -258,21 +269,27 @@ def sms_campaign_create(request):
     idem_key = request.POST.get('idempotency_key') or uuid.uuid4().hex
 
     if request.method == 'POST':
-        form = SMSCampaignForm(request.POST, organization=org)
+        form = SMSCampaignForm(request.POST, organization=org, event=event)
         if form.is_valid():
-            recipient_list = form.cleaned_data['recipient_list']
-            recipients = recipient_list.materialize(org, cap=cap + 1)
+            # Audience lives inline on the campaign. Event mode targets that
+            # event's attendees; otherwise the composed tags/segments.
+            criteria = dict(form.filter_criteria)
+            if event:
+                criteria['event_id'] = str(event.id)
+            recipients = SMSCampaign(
+                organization=org, filter_criteria=criteria,
+            ).materialize(org, cap=cap + 1)
             confirm_count = len(recipients)
             exceeds_cap = confirm_count > cap
 
             if exceeds_cap:
                 form.add_error(
-                    'recipient_list',
+                    None,
                     f'This audience resolves to more than {cap} recipients. '
-                    f'Narrow the list before sending.',
+                    f'Narrow the audience before sending.',
                 )
             elif confirm_count == 0:
-                form.add_error('recipient_list', 'This audience has no contactable recipients.')
+                form.add_error(None, 'This audience has no contactable recipients.')
             else:
                 from .services.sms_credits import (
                     estimate_campaign_cost_cents, estimate_campaign_cost_tokens,
@@ -290,7 +307,7 @@ def sms_campaign_create(request):
 
                 if request.POST.get('confirm') and insufficient_credits:
                     form.add_error(
-                        'recipient_list',
+                        None,
                         'Not enough SMS tokens to send this campaign. Top up to continue.',
                     )
                 elif request.POST.get('confirm'):
@@ -313,6 +330,7 @@ def sms_campaign_create(request):
                             campaign.organization = org
                             campaign.created_by = request.user
                             campaign.event = event
+                            campaign.filter_criteria = criteria
                             campaign.link_url = extract_first_url(campaign.body)
                             campaign.idempotency_key = idem_key
                             campaign.status = SMSCampaign.Status.SCHEDULED
@@ -335,7 +353,7 @@ def sms_campaign_create(request):
                     except InsufficientCreditsError:
                         insufficient_credits = True
                         form.add_error(
-                            'recipient_list',
+                            None,
                             'Not enough SMS tokens to send this campaign. Top up to continue.',
                         )
                     except IntegrityError:
@@ -362,10 +380,8 @@ def sms_campaign_create(request):
                             )
                         return redirect('tickets:sms_campaign_detail', pk=campaign.id)
     else:
-        initial = {}
-        if event:
-            initial = {'recipient_list': _event_attendee_list(org, event), 'name': event.name}
-        form = SMSCampaignForm(organization=org, initial=initial)
+        initial = {'name': event.name} if event else {}
+        form = SMSCampaignForm(organization=org, event=event, initial=initial)
 
     encoding, segments = sms_segment_info(request.POST.get('body', '') if request.method == 'POST' else '')
     return render(request, 'tickets/marketing/sms/campaign_form.html', {
@@ -393,7 +409,7 @@ def sms_campaign_detail(request, pk):
     campaign = get_object_or_404(
         _annotate_counts(
             SMSCampaign.objects.filter(organization=org, deleted_at__isnull=True)
-            .select_related('recipient_list', 'event')
+            .select_related('event')
         ),
         id=pk,
     )
@@ -405,6 +421,7 @@ def sms_campaign_detail(request, pk):
     page_obj = paginator.get_page(request.GET.get('page'))
     return render(request, 'tickets/marketing/sms/campaign_detail.html', {
         'campaign': campaign,
+        'audience_summary': campaign.audience_summary(org),
         'page_obj': page_obj,
     })
 

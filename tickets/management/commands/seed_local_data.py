@@ -68,6 +68,10 @@ OWNER_EMAIL = "info@cueup.co"
 OWNER_PHONE = "+15555550199"
 OWNER_PASSWORD = "password123"
 
+# A live, upcoming event seeded with no ticket orders yet (freshly announced,
+# nothing sold). Skipped by _create_orders_and_tickets so it stays empty.
+LIVE_EVENT_WITHOUT_ORDERS = "Familiar Faces — Just Announced"
+
 FIRST_NAMES = [
     "Maya", "Jordan", "Avery", "Quinn", "Reese", "Logan", "Skyler", "Rowan",
     "Hayden", "Marlowe", "Ezra", "Kai", "Sasha", "Indigo", "Wren", "Soren",
@@ -161,7 +165,17 @@ class Command(BaseCommand):
             description="Independent music + nightlife collective. Local seed data.",
             website="https://cueup.co",
             waitlist_feature_enabled=True,
+            sms_marketing_enabled=True,
         )
+        # Seed a prepaid SMS credit balance via the wallet service so the ledger
+        # invariant holds (every balance change writes an SMSCreditTransaction).
+        from tickets.services.sms_credits import credit
+        from tickets.models import SMSCreditTransaction
+        credit(
+            org.id, 2500, kind=SMSCreditTransaction.Kind.ADJUSTMENT,
+            description="Seed starter balance",
+        )
+        org.refresh_from_db(fields=["sms_credit_balance_cents"])
         self.stdout.write(self.style.SUCCESS(f"Org: {org.name}"))
         return org
 
@@ -352,6 +366,7 @@ class Command(BaseCommand):
             ("Bloom — Last Weekend", -2, EVENT_STATUS_ENDED, TICKETING_TYPE_DIRECT,    350, "Closed out the weekend at The Echo. Sold via Cue direct."),
             ("Bloom — Spring Edition",  14, EVENT_STATUS_LIVE, TICKETING_TYPE_DIRECT,   400, "Six-act bill at The Echo."),
             ("Daylight: Brooklyn Pop-Up", 60, EVENT_STATUS_LIVE, TICKETING_TYPE_DIRECT,  300, "Day-into-night warehouse party."),
+            (LIVE_EVENT_WITHOUT_ORDERS,   30, EVENT_STATUS_LIVE, TICKETING_TYPE_DIRECT,  250, "On sale now — no tickets sold yet."),
             ("Solstice Festival",         110, EVENT_STATUS_DRAFT, TICKETING_TYPE_DIRECT, 800, "TBA lineup. Save the date."),
             ("Postponed: Acoustic Sessions", -10, EVENT_STATUS_CANCELLED, TICKETING_TYPE_EXTERNAL, 150, "Cancelled due to artist illness."),
         ]
@@ -415,6 +430,8 @@ class Command(BaseCommand):
         for event in events:
             if event.status == EVENT_STATUS_DRAFT:
                 continue
+            if event.name == LIVE_EVENT_WITHOUT_ORDERS:
+                continue  # freshly announced — intentionally has no orders yet
             if event.status == EVENT_STATUS_CANCELLED:
                 num_orders = 5
             else:
@@ -482,18 +499,25 @@ class Command(BaseCommand):
             and e.status in (EVENT_STATUS_LIVE, EVENT_STATUS_ENDED)
         ]
         for i, event in enumerate(direct_events):
+            no_orders = event.name == LIVE_EVENT_WITHOUT_ORDERS
             ga = SaleableTicketType.objects.create(
                 event=event, name="General Admission", price=_decimal(30),
-                quantity_limit=200, max_per_customer=6, quantity_sold=rng.randint(40, 120),
+                quantity_limit=200, max_per_customer=6,
+                quantity_sold=0 if no_orders else rng.randint(40, 120),
                 order=1, sale_start=now - timedelta(days=14),
                 description="Standing room. First come, first served.",
             )
             vip = SaleableTicketType.objects.create(
                 event=event, name="VIP Lounge", price=_decimal(85),
-                quantity_limit=40, max_per_customer=4, quantity_sold=rng.randint(8, 30),
+                quantity_limit=40, max_per_customer=4,
+                quantity_sold=0 if no_orders else rng.randint(8, 30),
                 order=2, sale_start=now - timedelta(days=14),
                 description="Reserved table + welcome drink.",
             )
+            if no_orders:
+                # Just announced: ticket types are on sale, but no tier history
+                # or waitlist has built up yet.
+                continue
             if i == 0:
                 # Tiered pricing on first live direct event
                 SaleableTicketTypeTier.objects.create(

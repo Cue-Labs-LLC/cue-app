@@ -1388,8 +1388,9 @@ class EventSMSCampaign(AuditBaseModel):
 # Distinct from EventSMSCampaign above, which only *tracks* external SlickText
 # metrics post-hoc. These models *send* texts natively.
 #
-#   SMSRecipientList ──resolve()──► candidate Customers (criteria + manual)
-#         │                          ∩ {phone set, sms_opt_in} ─ dedupe(phone) ─ suppressed
+#   SMSCampaign.materialize() ──► candidate Customers (inline filter_criteria
+#         │                        + manual include/exclude) ∩ {phone set,
+#         │                        sms_opt_in} ─ dedupe(phone) ─ suppressed
 #         ▼
 #   SMSCampaign  draft ─► scheduled ─► sending ─► sent
 #         │                  └─► canceled        └─► failed
@@ -1460,36 +1461,84 @@ class PhoneSuppression(BaseModel):
         ).exists()
 
 
-class SMSRecipientList(AuditBaseModel):
-    """A saved, reusable marketing-SMS audience.
+class SMSCampaign(AuditBaseModel):
+    """A native marketing-SMS broadcast.
 
-    `filter_criteria` is a JSON spec (segment / behavior / tags / min_ltv /
-    last_order_after) plus manual include/exclude customer UUIDs. resolve()
-    materializes it to opted-in, contactable, non-suppressed, deduped recipients
-    at send time (a "living segment").
+    State machine (see status field):
+        draft ──► scheduled ──► sending ──► sent
+                      │            └──────► failed
+                      └──► canceled
+    Per-recipient delivery lives in SMSMessageRecipient, which is the source of
+    truth for sent/delivered/failed counts (derived, never incremented here, so
+    retried Twilio callbacks can't cause drift).
     """
+    class Status(models.TextChoices):
+        DRAFT = 'draft', 'Draft'
+        SCHEDULED = 'scheduled', 'Scheduled'
+        SENDING = 'sending', 'Sending'
+        SENT = 'sent', 'Sent'
+        FAILED = 'failed', 'Failed'
+        CANCELED = 'canceled', 'Canceled'
+
     organization = models.ForeignKey(
         Organization,
         on_delete=models.CASCADE,
-        related_name='sms_recipient_lists',
+        related_name='sms_campaigns',
     )
-    name = models.CharField(max_length=200)
+    event = models.ForeignKey(
+        Event,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='native_sms_campaigns',
+    )
+    # Audience lives inline on the campaign (no separate recipient-list model).
+    # filter_criteria is a JSON spec consumed by filter_customers: tag_ids /
+    # rfm_segment / event_id / min_ltv / last_order_after. manual include/exclude
+    # are customer UUID lists. materialize() resolves them to opted-in,
+    # contactable, non-suppressed, deduped recipients at send time.
     filter_criteria = models.JSONField(
         default=dict,
         blank=True,
-        help_text="e.g. {'rfm_segment': ['Champions'], 'tag_ids': [...], 'min_ltv': '100.00'}",
+        help_text="e.g. {'rfm_segment': ['VIP'], 'tag_ids': [...], 'event_id': '...'}",
     )
     manual_include_ids = models.JSONField(default=list, blank=True)
     manual_exclude_ids = models.JSONField(default=list, blank=True)
+    name = models.CharField(max_length=200)
+    body = models.CharField(max_length=1600)
+    link_url = models.URLField(max_length=500, blank=True, default='')
+    status = models.CharField(
+        max_length=12,
+        choices=Status.choices,
+        default=Status.DRAFT,
+        db_index=True,
+    )
+    scheduled_at = models.DateTimeField(null=True, blank=True)
+    started_at = models.DateTimeField(null=True, blank=True)
+    sent_at = models.DateTimeField(null=True, blank=True)
+    audience_size = models.PositiveIntegerField(default=0)
+    # Per-submit token from the confirm panel. A duplicate confirm (double-click /
+    # browser retry) reuses the same key, so the unique constraint stops a second
+    # campaign from being created, charged, and sent.
+    idempotency_key = models.CharField(max_length=64, null=True, blank=True)
 
     class Meta:
         ordering = ['-created_at']
         indexes = [
             models.Index(fields=['organization', '-created_at']),
+            models.Index(fields=['organization', 'status']),
+            models.Index(fields=['status', 'scheduled_at']),
+        ]
+        constraints = [
+            models.UniqueConstraint(
+                fields=['organization', 'idempotency_key'],
+                condition=models.Q(idempotency_key__isnull=False),
+                name='uniq_sms_campaign_idempotency_key',
+            ),
         ]
 
     def __str__(self):
-        return self.name
+        return f"{self.name} ({self.status})"
 
     def candidate_customers(self, organization=None):
         """Org-scoped candidate Customer queryset: criteria ∪ manual includes − excludes,
@@ -1536,78 +1585,34 @@ class SMSRecipientList(AuditBaseModel):
                 break
         return out
 
-
-class SMSCampaign(AuditBaseModel):
-    """A native marketing-SMS broadcast.
-
-    State machine (see status field):
-        draft ──► scheduled ──► sending ──► sent
-                      │            └──────► failed
-                      └──► canceled
-    Per-recipient delivery lives in SMSMessageRecipient, which is the source of
-    truth for sent/delivered/failed counts (derived, never incremented here, so
-    retried Twilio callbacks can't cause drift).
-    """
-    class Status(models.TextChoices):
-        DRAFT = 'draft', 'Draft'
-        SCHEDULED = 'scheduled', 'Scheduled'
-        SENDING = 'sending', 'Sending'
-        SENT = 'sent', 'Sent'
-        FAILED = 'failed', 'Failed'
-        CANCELED = 'canceled', 'Canceled'
-
-    organization = models.ForeignKey(
-        Organization,
-        on_delete=models.CASCADE,
-        related_name='sms_campaigns',
-    )
-    event = models.ForeignKey(
-        Event,
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name='native_sms_campaigns',
-    )
-    recipient_list = models.ForeignKey(
-        SMSRecipientList,
-        on_delete=models.PROTECT,
-        related_name='campaigns',
-    )
-    name = models.CharField(max_length=200)
-    body = models.CharField(max_length=1600)
-    link_url = models.URLField(max_length=500, blank=True, default='')
-    status = models.CharField(
-        max_length=12,
-        choices=Status.choices,
-        default=Status.DRAFT,
-        db_index=True,
-    )
-    scheduled_at = models.DateTimeField(null=True, blank=True)
-    started_at = models.DateTimeField(null=True, blank=True)
-    sent_at = models.DateTimeField(null=True, blank=True)
-    audience_size = models.PositiveIntegerField(default=0)
-    # Per-submit token from the confirm panel. A duplicate confirm (double-click /
-    # browser retry) reuses the same key, so the unique constraint stops a second
-    # campaign from being created, charged, and sent.
-    idempotency_key = models.CharField(max_length=64, null=True, blank=True)
-
-    class Meta:
-        ordering = ['-created_at']
-        indexes = [
-            models.Index(fields=['organization', '-created_at']),
-            models.Index(fields=['organization', 'status']),
-            models.Index(fields=['status', 'scheduled_at']),
-        ]
-        constraints = [
-            models.UniqueConstraint(
-                fields=['organization', 'idempotency_key'],
-                condition=models.Q(idempotency_key__isnull=False),
-                name='uniq_sms_campaign_idempotency_key',
-            ),
-        ]
-
-    def __str__(self):
-        return f"{self.name} ({self.status})"
+    def audience_summary(self, organization=None):
+        """Human label for the campaign's audience. Resolves tag UUIDs with a single
+        query. Call on the detail page only — NOT per-row in a list (N+1)."""
+        org = organization or self.organization
+        criteria = self.filter_criteria or {}
+        parts = []
+        event_id = criteria.get('event_id')
+        if event_id:
+            ev = Event.objects.filter(organization=org, id=event_id).first()
+            parts.append(f"Attendees of {ev.name}" if ev else "Event attendees")
+        segments = criteria.get('rfm_segment') or []
+        if isinstance(segments, str):
+            segments = [segments]
+        if segments:
+            parts.append("Segments: " + ", ".join(segments))
+        tag_ids = criteria.get('tag_ids') or []
+        if isinstance(tag_ids, str):
+            tag_ids = [tag_ids]
+        if tag_ids:
+            names = list(
+                CustomerTag.objects.filter(organization=org, id__in=tag_ids)
+                .values_list('name', flat=True)
+            )
+            if names:
+                parts.append("Tags: " + ", ".join(names))
+        if self.manual_include_ids:
+            parts.append("Custom selection")
+        return " · ".join(parts) if parts else "No audience"
 
 
 class SMSMessageRecipient(BaseModel):

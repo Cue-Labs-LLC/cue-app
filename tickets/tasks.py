@@ -695,7 +695,7 @@ def send_sms_campaign_task(self, campaign_id):
     ).update(status=SMSCampaign.Status.SENDING, started_at=tz.now())
 
     campaign = SMSCampaign.objects.filter(id=campaign_id).select_related(
-        'organization', 'recipient_list'
+        'organization'
     ).first()
     if not campaign:
         return
@@ -709,7 +709,7 @@ def send_sms_campaign_task(self, campaign_id):
     # Snapshot recipients once. Recovery re-dispatch finds rows already present.
     if not SMSMessageRecipient.objects.filter(campaign=campaign).exists():
         cap = getattr(settings, 'SMS_CAMPAIGN_MAX_RECIPIENTS', 5000)
-        recipients = campaign.recipient_list.materialize(org, cap=cap)
+        recipients = campaign.materialize(org, cap=cap)
         SMSMessageRecipient.objects.bulk_create(
             [
                 SMSMessageRecipient(

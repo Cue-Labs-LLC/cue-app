@@ -20,7 +20,7 @@ from .models import (
     OAuthClient,
     OAuthAccessToken,
     FeatureFlagSettings,
-    SMSCampaign, SMSRecipientList, SMSMessageRecipient, PhoneSuppression,
+    SMSCampaign, SMSMessageRecipient, PhoneSuppression,
     SMSCreditTransaction,
 )
 
@@ -1202,14 +1202,6 @@ class OrganizerWaitlistAdmin(admin.ModelAdmin):
             approved_by=request.user,
         )
         self.message_user(request, f'{updated} entr{"y" if updated == 1 else "ies"} approved.')
-
-
-@admin.register(SMSRecipientList)
-class SMSRecipientListAdmin(admin.ModelAdmin):
-    list_display = ['name', 'organization', 'created_at']
-    list_filter = ['organization', 'created_at']
-    search_fields = ['name']
-    readonly_fields = ['id', 'created_at', 'updated_at']
 
 
 @admin.register(SMSCampaign)
