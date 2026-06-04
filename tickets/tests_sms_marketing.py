@@ -1209,3 +1209,161 @@ class SMSBuyLinkTrackingTests(TestCase):
         resp = self.client.get(reverse('tickets:sms_campaign_detail', kwargs={'pk': c.id}))
         self.assertEqual(resp.status_code, 200)
         self.assertIsNone(resp.context['buy_stats'])
+
+
+@override_settings(E2E_TEST_MODE=True, SMS_PRICE_PER_SEGMENT_CENTS=Decimal('3'),
+                   STRIPE_SECRET_KEY='sk_test_x', STRIPE_WEBHOOK_SECRET='whsec_x')
+class SMSSavedCardTests(TestCase):
+    """Card-on-file: save during top-up, one-click off-session reuse, remove."""
+
+    def setUp(self):
+        self.client = Client()
+        self.org = Organization.objects.create(name='Org SC', slug='org-sc', sms_marketing_enabled=True)
+        self.user = User.objects.create_user('usc', 'usc@test.com', 'pw')
+        UserProfile.objects.create(user=self.user, organization=self.org, org_role=UserProfile.OrgRole.OWNER)
+        self.client.login(username='usc@test.com', password='pw')
+        self.client.get(reverse('tickets:home'))
+
+    def _set_saved_card(self):
+        Organization.objects.filter(pk=self.org.pk).update(
+            stripe_customer_id='cus_1', stripe_pm_id='pm_1',
+            stripe_pm_brand='visa', stripe_pm_last4='4242',
+        )
+
+    # --- save-card Checkout -------------------------------------------------
+    def test_checkout_save_card_attaches_customer(self):
+        with patch('stripe.Customer.create') as mock_cust, \
+             patch('stripe.checkout.Session.create') as mock_sess:
+            mock_cust.return_value = type('C', (), {'id': 'cus_new'})()
+            mock_sess.return_value = type('S', (), {'url': 'https://stripe.test/cs'})()
+            resp = self.client.post(reverse('tickets:sms_credits_checkout'),
+                                    {'tokens': '500', 'save_card': '1'})
+        self.assertEqual(resp.status_code, 302)
+        kwargs = mock_sess.call_args.kwargs
+        self.assertEqual(kwargs['customer'], 'cus_new')
+        self.assertEqual(kwargs['payment_intent_data']['setup_future_usage'], 'off_session')
+        self.assertEqual(kwargs['payment_intent_data']['metadata']['flow'], 'checkout')
+        self.org.refresh_from_db()
+        self.assertEqual(self.org.stripe_customer_id, 'cus_new')
+
+    def test_checkout_without_save_card_unchanged(self):
+        with patch('stripe.checkout.Session.create') as mock_sess:
+            mock_sess.return_value = type('S', (), {'url': 'https://stripe.test/cs'})()
+            self.client.post(reverse('tickets:sms_credits_checkout'), {'tokens': '500'})
+        kwargs = mock_sess.call_args.kwargs
+        self.assertNotIn('customer', kwargs)
+        self.assertNotIn('payment_intent_data', kwargs)
+
+    # --- one-click off-session charge --------------------------------------
+    def test_charge_saved_credits_once_and_idempotent(self):
+        from .models import SMSCreditTransaction
+        from .views import _fulfill_sms_credit_payment_intent
+        self._set_saved_card()
+        with patch('stripe.PaymentIntent.create') as mock_pi:
+            mock_pi.return_value = type('PI', (), {'status': 'succeeded', 'id': 'pi_oc1',
+                                                   'amount_received': 1500})()
+            resp = self.client.post(reverse('tickets:sms_credits_charge_saved'), {'tokens': '500'})
+        self.assertEqual(resp.status_code, 302)
+        kwargs = mock_pi.call_args.kwargs
+        self.assertTrue(kwargs['off_session'] and kwargs['confirm'])
+        self.assertEqual(kwargs['metadata']['flow'], 'one_click')
+        self.org.refresh_from_db()
+        self.assertEqual(self.org.sms_credit_balance_cents, 1500)
+        # The webhook firing for the same PI must not double-credit.
+        _fulfill_sms_credit_payment_intent({
+            'id': 'pi_oc1', 'amount_received': 1500, 'payment_method': None,
+            'metadata': {'kind': 'sms_credits', 'flow': 'one_click',
+                         'organization_id': str(self.org.id), 'credit_cents': '1500'},
+        })
+        self.org.refresh_from_db()
+        self.assertEqual(self.org.sms_credit_balance_cents, 1500)
+        self.assertEqual(SMSCreditTransaction.objects.filter(stripe_checkout_session_id='pi_oc1').count(), 1)
+
+    def test_charge_saved_requires_saved_card(self):
+        resp = self.client.post(reverse('tickets:sms_credits_charge_saved'), {'tokens': '500'})
+        self.assertEqual(resp.status_code, 302)
+        self.org.refresh_from_db()
+        self.assertEqual(self.org.sms_credit_balance_cents, 0)
+
+    def test_charge_saved_declined_falls_back(self):
+        import stripe as stripe_lib
+        self._set_saved_card()
+        err = stripe_lib.error.CardError('declined', None, 'card_declined')
+        with patch('stripe.PaymentIntent.create', side_effect=err):
+            resp = self.client.post(reverse('tickets:sms_credits_charge_saved'), {'tokens': '500'})
+        self.assertEqual(resp.status_code, 302)
+        self.org.refresh_from_db()
+        self.assertEqual(self.org.sms_credit_balance_cents, 0)
+
+    def test_charge_saved_authentication_required_falls_back(self):
+        import stripe as stripe_lib
+        self._set_saved_card()
+        err = stripe_lib.error.CardError('auth', None, 'authentication_required')
+        with patch('stripe.PaymentIntent.create', side_effect=err):
+            resp = self.client.post(reverse('tickets:sms_credits_charge_saved'), {'tokens': '500'})
+        self.assertEqual(resp.status_code, 302)
+        self.org.refresh_from_db()
+        self.assertEqual(self.org.sms_credit_balance_cents, 0)
+
+    def test_charge_saved_resource_missing_clears_card(self):
+        import stripe as stripe_lib
+        self._set_saved_card()
+        err = stripe_lib.error.InvalidRequestError('missing', 'payment_method', code='resource_missing')
+        with patch('stripe.PaymentIntent.create', side_effect=err):
+            self.client.post(reverse('tickets:sms_credits_charge_saved'), {'tokens': '500'})
+        self.org.refresh_from_db()
+        self.assertFalse(self.org.stripe_pm_id)
+        self.assertEqual(self.org.stripe_pm_brand, '')
+        self.assertEqual(self.org.stripe_customer_id, 'cus_1')  # customer kept
+
+    # --- remove card -------------------------------------------------------
+    def test_remove_card_detaches_and_clears(self):
+        self._set_saved_card()
+        with patch('stripe.PaymentMethod.detach') as mock_detach:
+            self.client.post(reverse('tickets:sms_credits_remove_card'))
+        mock_detach.assert_called_once_with('pm_1')
+        self.org.refresh_from_db()
+        self.assertFalse(self.org.stripe_pm_id)
+        self.assertEqual(self.org.stripe_pm_brand, '')
+        self.assertEqual(self.org.stripe_customer_id, 'cus_1')  # kept for next card
+
+    def test_remove_card_clears_even_when_detach_missing(self):
+        import stripe as stripe_lib
+        self._set_saved_card()
+        with patch('stripe.PaymentMethod.detach',
+                   side_effect=stripe_lib.error.InvalidRequestError('gone', 'payment_method', code='resource_missing')):
+            self.client.post(reverse('tickets:sms_credits_remove_card'))
+        self.org.refresh_from_db()
+        self.assertFalse(self.org.stripe_pm_id)
+
+    # --- webhook PI handler ------------------------------------------------
+    def test_pi_handler_checkout_flow_saves_card_no_double_credit(self):
+        from .views import _fulfill_sms_credit_payment_intent
+        card = type('Card', (), {'brand': 'visa', 'last4': '4242', 'exp_month': 12, 'exp_year': 2030})()
+        pm = type('PM', (), {'card': card})()
+        with patch('stripe.PaymentMethod.retrieve', return_value=pm):
+            _fulfill_sms_credit_payment_intent({
+                'id': 'pi_co', 'amount_received': 1500, 'payment_method': 'pm_2',
+                'metadata': {'kind': 'sms_credits', 'flow': 'checkout',
+                             'organization_id': str(self.org.id), 'credit_cents': '1500'},
+            })
+        self.org.refresh_from_db()
+        self.assertEqual(self.org.sms_credit_balance_cents, 0)  # checkout flow credits via session, not here
+        self.assertEqual(self.org.stripe_pm_id, 'pm_2')
+        self.assertEqual(self.org.stripe_pm_brand, 'visa')
+        self.assertEqual(self.org.stripe_pm_last4, '4242')
+
+    def test_webhook_routes_sms_credit_pi_to_credit(self):
+        event = {'type': 'payment_intent.succeeded', 'data': {'object': {
+            'id': 'pi_route', 'amount_received': 1500, 'payment_method': None,
+            'metadata': {'kind': 'sms_credits', 'flow': 'one_click',
+                         'organization_id': str(self.org.id), 'credit_cents': '1500'},
+        }}}
+        with patch('stripe.Webhook.construct_event', return_value=event), \
+             patch('tickets.views._fulfill_payment_intent') as mock_ticket:
+            resp = self.client.post(reverse('tickets:stripe_webhook'), data='{}',
+                                    content_type='application/json', HTTP_STRIPE_SIGNATURE='sig')
+        self.assertEqual(resp.status_code, 200)
+        mock_ticket.assert_not_called()  # routed to wallet handler, not ticketing
+        self.org.refresh_from_db()
+        self.assertEqual(self.org.sms_credit_balance_cents, 1500)

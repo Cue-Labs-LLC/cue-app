@@ -10117,13 +10117,54 @@ def stripe_webhook(request):
 
     event_type = event['type']
     if event_type == 'payment_intent.succeeded':
-        _fulfill_payment_intent(event['data']['object'])
+        pi = event['data']['object']
+        # SMS-wallet top-up PIs carry metadata.kind == 'sms_credits' and have no
+        # StripeCheckoutSession row; route them to the wallet handler, not ticketing.
+        pi_meta = _stripe_value(pi, 'metadata', {}) or {}
+        if _stripe_value(pi_meta, 'kind') == 'sms_credits':
+            _fulfill_sms_credit_payment_intent(pi)
+        else:
+            _fulfill_payment_intent(pi)
     elif event_type == 'payment_intent.payment_failed':
         _fail_payment_intent(event['data']['object'])
     elif event_type == 'checkout.session.completed':
         _fulfill_sms_credit_checkout(event['data']['object'])
 
     return HttpResponse(status=200)
+
+
+def _stripe_value(obj, key, default=None):
+    """Read a field from either a live Stripe StripeObject or a plain dict.
+
+    A StripeObject is NOT a dict and has no .get() — attribute access on a missing
+    key raises (its __getattr__ turns `.get` into a key lookup). Tests pass plain
+    dicts; the live webhook passes StripeObjects.
+    """
+    if isinstance(obj, dict):
+        return obj.get(key, default)
+    return getattr(obj, key, default)
+
+
+def _save_org_card_from_pm(org_id, pm_id):
+    """Persist a saved card's brand/last4/exp onto the Organization, best-effort.
+
+    Wrapped by the caller so a card-save failure never blocks crediting. Mirrors the
+    per-user save block in _fulfill_payment_intent, org-scoped."""
+    if not (org_id and pm_id):
+        return
+    import stripe as stripe_lib
+    from django.conf import settings as django_settings
+    stripe_lib.api_key = django_settings.STRIPE_SECRET_KEY
+    pm = stripe_lib.PaymentMethod.retrieve(pm_id)
+    card = getattr(pm, 'card', None) or {}
+    Organization.objects.filter(id=org_id).update(
+        stripe_pm_id=pm_id,
+        stripe_pm_brand=card.get('brand', '') if isinstance(card, dict) else getattr(card, 'brand', ''),
+        stripe_pm_last4=card.get('last4', '') if isinstance(card, dict) else getattr(card, 'last4', ''),
+        stripe_pm_exp_month=card.get('exp_month') if isinstance(card, dict) else getattr(card, 'exp_month', None),
+        stripe_pm_exp_year=card.get('exp_year') if isinstance(card, dict) else getattr(card, 'exp_year', None),
+    )
+    logger.info("Saved org card PaymentMethod %s for org %s", pm_id, org_id)
 
 
 def _fulfill_sms_credit_checkout(session):
@@ -10141,15 +10182,6 @@ def _fulfill_sms_credit_checkout(session):
     """
     from tickets.services.sms_credits import credit
 
-    # Stripe's StripeObject is NOT a dict and has no .get() — attribute access
-    # on a missing key raises (its __getattr__ turns `.get` into a key lookup).
-    # Mirror _stripe_value() so this works for both live webhook StripeObjects
-    # and the plain dicts used in tests.
-    def _stripe_value(obj, key, default=None):
-        if isinstance(obj, dict):
-            return obj.get(key, default)
-        return getattr(obj, key, default)
-
     metadata = _stripe_value(session, 'metadata', {}) or {}
     if _stripe_value(metadata, 'kind') != 'sms_credits':
         return
@@ -10162,6 +10194,42 @@ def _fulfill_sms_credit_checkout(session):
         return
     credit(org_id, credit_cents,
            stripe_checkout_session_id=_stripe_value(session, 'id'),
+           description='Stripe top-up')
+
+
+def _fulfill_sms_credit_payment_intent(payment_intent):
+    """Handle a paid SMS-wallet top-up PaymentIntent (one-click off-session, or the
+    PI behind a save-card Checkout).
+
+    - ALWAYS save the card brand/last4 onto the org (best-effort; failures here must
+      not block crediting).
+    - Credit ONLY for the one-click flow. The save-card Checkout fires BOTH this event
+      AND checkout.session.completed; those credit under different ids (pi.id vs
+      session.id), so to avoid double-crediting, the Checkout flow is credited solely
+      by _fulfill_sms_credit_checkout. The 'flow' metadata marker disambiguates.
+
+    Fail-loud on credit() (lets Stripe retry transient DB errors — safe, idempotent).
+    """
+    from tickets.services.sms_credits import credit
+
+    metadata = _stripe_value(payment_intent, 'metadata', {}) or {}
+    if _stripe_value(metadata, 'kind') != 'sms_credits':
+        return
+    org_id = _stripe_value(metadata, 'organization_id')
+    pm_id = _stripe_value(payment_intent, 'payment_method')
+    try:
+        _save_org_card_from_pm(org_id, pm_id)
+    except Exception as e:
+        logger.error("Failed to save org card for org %s: %s", org_id, e)
+
+    if _stripe_value(metadata, 'flow') == 'checkout':
+        return  # credited by _fulfill_sms_credit_checkout to avoid double-credit
+    credit_cents = int(_stripe_value(payment_intent, 'amount_received')
+                       or _stripe_value(metadata, 'credit_cents') or 0)
+    if not org_id or credit_cents <= 0:
+        return
+    credit(org_id, credit_cents,
+           stripe_checkout_session_id=_stripe_value(payment_intent, 'id'),
            description='Stripe top-up')
 
 

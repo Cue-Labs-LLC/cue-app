@@ -96,6 +96,22 @@ class Organization(BaseModel):
     # segment when a marketing-SMS campaign sends. See SMSCreditTransaction for the
     # audit ledger. Never mutate directly outside the wallet service (atomic F()).
     sms_credit_balance_cents = models.PositiveIntegerField(default=0)
+    # Saved card on file for one-click wallet top-ups. This is a PLATFORM billing
+    # Customer (the org pays Cue) — NOT the Connect account in stripe_account_id,
+    # which is for paying organizers out. Created lazily on first "save card".
+    stripe_customer_id = models.CharField(
+        max_length=255, blank=True, null=True, db_index=True,
+        help_text='Platform billing Stripe Customer (cus_xxx) for charging the org. '
+                  'Distinct from stripe_account_id (Connect payouts).',
+    )
+    stripe_pm_id = models.CharField(
+        max_length=255, blank=True, null=True,
+        help_text='Saved Stripe PaymentMethod (pm_xxx) for one-click SMS top-ups.',
+    )
+    stripe_pm_brand = models.CharField(max_length=50, blank=True, help_text="Card brand, e.g. 'visa'.")
+    stripe_pm_last4 = models.CharField(max_length=4, blank=True, help_text='Last 4 digits of the saved card.')
+    stripe_pm_exp_month = models.PositiveSmallIntegerField(null=True, blank=True)
+    stripe_pm_exp_year = models.PositiveSmallIntegerField(null=True, blank=True)
     stripe_account_id = models.CharField(
         max_length=255,
         blank=True,

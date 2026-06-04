@@ -7,7 +7,7 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('tickets', '0139_smscampaign_idempotency_key_and_more'),
+        ('tickets', '0140_organization_stripe_customer_id_and_more'),
     ]
 
     operations = [
