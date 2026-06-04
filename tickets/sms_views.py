@@ -5,7 +5,9 @@ org-scoped and gated behind the per-org ``sms_marketing_enabled`` flag.
 """
 
 import logging
+import re
 import uuid
+from decimal import Decimal
 from functools import wraps
 
 from django.conf import settings
@@ -25,7 +27,8 @@ from django.views.decorators.http import require_POST, require_http_methods
 
 from .models import (
     SMSCampaign, SMSMessageRecipient, PhoneSuppression, Event,
-    Customer, TrackingLink, TICKETING_TYPE_DIRECT, EVENT_STATUS_LIVE,
+    Customer, TrackingLink, StripeCheckoutSession, Ticket,
+    TICKETING_TYPE_DIRECT, EVENT_STATUS_LIVE,
     _generate_tracking_token,
 )
 from .forms import SMSCampaignForm
@@ -333,6 +336,9 @@ def sms_campaign_create(request):
                             campaign.event = event
                             campaign.filter_criteria = criteria
                             campaign.link_url = extract_first_url(campaign.body)
+                            # Per-campaign attribution: swap any shared event ticket
+                            # link for one unique to this campaign (mutates body/link_url).
+                            _mint_campaign_tracking_link(org, campaign)
                             campaign.idempotency_key = idem_key
                             campaign.status = SMSCampaign.Status.SCHEDULED
                             campaign.scheduled_at = send_at
@@ -446,6 +452,62 @@ def sms_ticket_link(request):
     return JsonResponse({'url': url, 'name': event.name})
 
 
+# A tracked ticket link inserted by the composer is a /track/<token>/ URL pointing
+# at one of the org's TrackingLinks (see sms_ticket_link). We pull the token back out
+# of the campaign body's link to attribute tickets + revenue on the detail page.
+_TRACK_TOKEN_RE = re.compile(r'/track/([A-Za-z0-9]+)/')
+
+
+def _mint_campaign_tracking_link(org, campaign):
+    """Give this campaign its OWN tracking link for per-campaign attribution.
+
+    The composer inserts a shared per-event 'SMS' link (/track/<token>/). At save we
+    mint a fresh TrackingLink on the same event, named after the campaign, and rewrite
+    the body to it — so each campaign's clicks/tickets/revenue attribute to it alone
+    rather than pooling on the shared event link. Same-length token, so the segment
+    count (and therefore the already-estimated charge) is unchanged. Mutates
+    campaign.body and campaign.link_url in place; no-op when no ticket link is present.
+    """
+    match = _TRACK_TOKEN_RE.search(campaign.link_url or '')
+    if not match:
+        return
+    src = TrackingLink.objects.filter(organization=org, token=match.group(1)).first()
+    if not src:
+        return
+    new_link = TrackingLink.objects.create(
+        organization=org, event=src.event,
+        name=f'SMS · {campaign.name}'[:100], token=_generate_tracking_token(),
+    )
+    old_path = reverse('tickets:track_link_redirect', kwargs={'token': src.token})
+    new_path = reverse('tickets:track_link_redirect', kwargs={'token': new_link.token})
+    campaign.body = campaign.body.replace(old_path, new_path)
+    campaign.link_url = campaign.link_url.replace(old_path, new_path)
+
+
+def _sms_buy_stats(org, campaign):
+    """Tickets bought + NET revenue (gross minus platform fee) attributed to the
+    tracked ticket link in this campaign, from COMPLETED checkout sessions. Returns
+    None when the campaign has no tracked ticket link. Mirrors the event tracking-
+    link dashboard (views.py:4537): COMPLETED only, so refunded orders drop out."""
+    match = _TRACK_TOKEN_RE.search(campaign.link_url or '')
+    if not match:
+        return None
+    link = TrackingLink.objects.filter(organization=org, token=match.group(1)).first()
+    if not link:
+        return None
+    completed = StripeCheckoutSession.objects.filter(
+        tracking_link=link, status=StripeCheckoutSession.Status.COMPLETED,
+        ticket_order__isnull=False,
+    )
+    rev_cents = completed.aggregate(
+        v=Coalesce(Sum(F('amount_total_cents') - F('platform_fee_cents')), 0),
+    )['v']
+    tickets = Ticket.objects.filter(
+        ticket_order_id__in=completed.values_list('ticket_order_id', flat=True),
+    ).count()
+    return {'tickets': tickets, 'revenue': Decimal(rev_cents) / 100, 'orders': completed.count()}
+
+
 @login_required
 @require_org
 @require_host
@@ -468,6 +530,7 @@ def sms_campaign_detail(request, pk):
     return render(request, 'tickets/marketing/sms/campaign_detail.html', {
         'campaign': campaign,
         'audience_summary': campaign.audience_summary(org),
+        'buy_stats': _sms_buy_stats(org, campaign),
         'page_obj': page_obj,
     })
 
