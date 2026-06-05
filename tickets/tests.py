@@ -9009,3 +9009,92 @@ class CustomersBulkTagTests(TestCase):
         c.get(reverse('tickets:home'))
         resp = c.post(self.url, {'tag_id': str(self.tag.id), 'select_all': '1'})
         self.assertEqual(resp.status_code, 403)
+
+
+class LowStockThresholdTests(TestCase):
+    """Coverage for the per-ticket-type configurable 'Only X left' warning."""
+
+    def setUp(self):
+        self.client = Client()
+        self.org = Organization.objects.create(name='Low Stock Org', slug='low-stock-org')
+        self.user = User.objects.create_user(
+            username='lsuser', email='ls@example.com', password='testpass123',
+            first_name='Low', last_name='Stock',
+        )
+        UserProfile.objects.create(
+            user=self.user, organization=self.org, org_role=UserProfile.OrgRole.OWNER,
+        )
+        self.client.login(username='ls@example.com', password='testpass123')
+        self.client.get(reverse('tickets:home'))
+        self.venue = Venue.objects.create(organization=self.org, name='LS Venue', city='LA')
+        self.event = Event.objects.create(
+            organization=self.org,
+            name='Low Stock Event',
+            venue=self.venue,
+            start_date=date.today() + timedelta(days=7),
+            start_time=time(20, 0, 0),
+            ticketing_type='direct',
+            status='live',
+        )
+
+    def _ticket_type(self, **kwargs):
+        defaults = dict(event=self.event, name='GA', price=Decimal('25.00'))
+        defaults.update(kwargs)
+        return SaleableTicketType.objects.create(**defaults)
+
+    def test_no_threshold_returns_none(self):
+        """Off by default: no warning when no threshold is set, even with low stock."""
+        tt = self._ticket_type(quantity_limit=100, quantity_sold=98)
+        self.assertIsNone(tt.low_stock_remaining())
+
+    def test_unlimited_returns_none(self):
+        tt = self._ticket_type(quantity_limit=None, low_stock_threshold=5)
+        self.assertIsNone(tt.low_stock_remaining())
+
+    def test_above_threshold_returns_none(self):
+        tt = self._ticket_type(quantity_limit=100, quantity_sold=50, low_stock_threshold=5)
+        self.assertIsNone(tt.low_stock_remaining())
+
+    def test_at_or_below_threshold_returns_remaining(self):
+        tt = self._ticket_type(quantity_limit=100, quantity_sold=97, low_stock_threshold=5)
+        self.assertEqual(tt.low_stock_remaining(), 3)
+
+    def test_sold_out_returns_none(self):
+        tt = self._ticket_type(quantity_limit=100, quantity_sold=100, low_stock_threshold=5)
+        self.assertIsNone(tt.low_stock_remaining())
+
+    def test_tier_aware_uses_active_tier_remaining(self):
+        """With tiers, the warning reflects the active tier's remaining capacity."""
+        tt = self._ticket_type(quantity_limit=None, low_stock_threshold=5)
+        SaleableTicketTypeTier.objects.create(
+            ticket_type=tt, name='Early Bird', price=Decimal('20.00'),
+            allotment=10, quantity_sold=8, order=0,
+        )
+        self.assertEqual(tt.low_stock_remaining(), 2)
+
+    def test_edit_view_saves_threshold(self):
+        """The edit modal (posting to saleable_ticket_type_edit) persists the field."""
+        tt = self._ticket_type(quantity_limit=100)
+        url = reverse('tickets:saleable_ticket_type_edit',
+                      kwargs={'event_id': self.event.id, 'ticket_type_id': tt.id})
+        resp = self.client.post(url, {
+            'name': 'GA', 'price': '25.00', 'quantity_limit': '100',
+            'low_stock_threshold': '7', 'is_active': 'on',
+            'tiers-TOTAL_FORMS': '0', 'tiers-INITIAL_FORMS': '0',
+            'tiers-MIN_NUM_FORMS': '0', 'tiers-MAX_NUM_FORMS': '1000',
+        })
+        self.assertin_redirect_or_ok(resp)
+        tt.refresh_from_db()
+        self.assertEqual(tt.low_stock_threshold, 7)
+
+    def test_data_endpoint_returns_threshold(self):
+        """The edit-modal data endpoint includes low_stock_threshold."""
+        tt = self._ticket_type(quantity_limit=100, low_stock_threshold=4)
+        url = reverse('tickets:saleable_ticket_type_data',
+                      kwargs={'event_id': self.event.id, 'ticket_type_id': tt.id})
+        resp = self.client.get(url)
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json()['low_stock_threshold'], 4)
+
+    def assertin_redirect_or_ok(self, resp):
+        self.assertIn(resp.status_code, (200, 302))

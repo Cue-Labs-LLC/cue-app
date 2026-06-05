@@ -97,6 +97,15 @@ html {
     overflow-x: hidden;
 }
 
+/* `overflow-x: hidden` above turns <html> into the scroll container, so the
+   page scrolls behind open modals — Bootstrap's scroll-lock only sets
+   `overflow: hidden` on <body>. Lock the <html> scroller too while any modal
+   is shown. (Bootstrap's body padding-right compensation offsets the
+   disappearing scrollbar, so there's no layout shift.) */
+html:has(.modal.show) {
+    overflow: hidden;
+}
+
 body {
     font-family: var(--font-body);
     font-size: 14px;

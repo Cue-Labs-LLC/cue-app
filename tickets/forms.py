@@ -1104,13 +1104,14 @@ class SaleableTicketTypeForm(forms.ModelForm):
 
     class Meta:
         model = SaleableTicketType
-        fields = ['name', 'description', 'price', 'quantity_limit', 'max_per_customer', 'is_active', 'sale_start', 'sale_end', 'is_password_protected', 'password', 'unlocks_after', 'waitlist_enabled']
+        fields = ['name', 'description', 'price', 'quantity_limit', 'max_per_customer', 'low_stock_threshold', 'is_active', 'sale_start', 'sale_end', 'is_password_protected', 'password', 'unlocks_after', 'waitlist_enabled']
         widgets = {
             'name': forms.TextInput(attrs={'class': 'form-control', 'placeholder': 'e.g. General Admission'}),
             'description': forms.Textarea(attrs={'rows': 2, 'class': 'form-control', 'placeholder': 'Short buyer-facing copy (optional)'}),
             'price': forms.NumberInput(attrs={'class': 'form-control', 'step': '0.01', 'min': '0', 'placeholder': '0.00'}),
             'quantity_limit': forms.NumberInput(attrs={'class': 'form-control', 'min': '1', 'placeholder': 'Leave blank for unlimited'}),
             'max_per_customer': forms.NumberInput(attrs={'class': 'form-control', 'min': '1', 'placeholder': 'Leave blank for unlimited'}),
+            'low_stock_threshold': forms.NumberInput(attrs={'class': 'form-control', 'min': '1', 'placeholder': 'Leave blank to disable'}),
             'is_active': forms.CheckboxInput(attrs={'class': 'form-check-input'}),
             'sale_start': forms.DateTimeInput(attrs={'type': 'datetime-local', 'class': 'form-control'}),
             'sale_end': forms.DateTimeInput(attrs={'type': 'datetime-local', 'class': 'form-control'}),
@@ -1128,6 +1129,7 @@ class SaleableTicketTypeForm(forms.ModelForm):
         super().__init__(*args, **kwargs)
         self.fields['quantity_limit'].required = False
         self.fields['max_per_customer'].required = False
+        self.fields['low_stock_threshold'].required = False
         self.fields['description'].required = False
         self.fields['sale_start'].required = False
         self.fields['sale_end'].required = False
@@ -1135,6 +1137,7 @@ class SaleableTicketTypeForm(forms.ModelForm):
         self.fields['price'].help_text = 'Display price shown to buyers (fee-inclusive). Fallback when no tiers are configured. Your gross = Display Price minus the 8% + $0.99 service fee.'
         self.fields['quantity_limit'].help_text = 'Total tickets available for this ticket type.'
         self.fields['max_per_customer'].help_text = 'Optional cumulative cap per customer for this ticket type.'
+        self.fields['low_stock_threshold'].help_text = "Optional. Show an 'Only X left' warning once remaining tickets drop to this number or fewer."
         submit_label = 'Update Ticket Type' if (self.instance and self.instance.pk) else 'Create Ticket Type'
         self.helper = FormHelper()
         self.helper.layout = Layout(
@@ -1144,6 +1147,9 @@ class SaleableTicketTypeForm(forms.ModelForm):
                 Column('price', css_class='form-group col-md-4 mb-0'),
                 Column('quantity_limit', css_class='form-group col-md-4 mb-0'),
                 Column('max_per_customer', css_class='form-group col-md-4 mb-0'),
+            ),
+            Row(
+                Column('low_stock_threshold', css_class='form-group col-md-6 mb-0'),
             ),
             Row(
                 Column('sale_start', css_class='form-group col-md-6 mb-0'),
@@ -1323,13 +1329,14 @@ class DirectEventForm(forms.ModelForm):
 class SaleableTicketTypeInlineForm(forms.ModelForm):
     class Meta:
         model = SaleableTicketType
-        fields = ['name', 'description', 'price', 'quantity_limit', 'max_per_customer', 'order', 'unlocks_after']
+        fields = ['name', 'description', 'price', 'quantity_limit', 'max_per_customer', 'low_stock_threshold', 'order', 'unlocks_after']
         widgets = {
             'name':           forms.TextInput(attrs={'class': 'form-control', 'placeholder': 'e.g. General Admission'}),
             'description':    forms.TextInput(attrs={'class': 'form-control', 'placeholder': 'Short description (optional)'}),
             'price':          forms.NumberInput(attrs={'class': 'form-control', 'step': '0.01', 'min': '0', 'placeholder': '0.00'}),
             'quantity_limit': forms.NumberInput(attrs={'class': 'form-control', 'min': '1', 'placeholder': 'Unlimited'}),
             'max_per_customer': forms.NumberInput(attrs={'class': 'form-control', 'min': '1', 'placeholder': 'Unlimited'}),
+            'low_stock_threshold': forms.NumberInput(attrs={'class': 'form-control', 'min': '1', 'placeholder': 'Off'}),
             'order':          forms.NumberInput(attrs={'class': 'form-control', 'min': '0', 'style': 'width:65px;'}),
             'unlocks_after':  forms.Select(attrs={'class': 'form-select form-select-sm'}),
         }

@@ -28,6 +28,22 @@
 #editTicketTypeModal .modal-body .form-text {
     font-size: 0.75rem;
 }
+/* The <form> sits between .modal-content and .modal-body, breaking the flex
+   chain modal-dialog-scrollable relies on. Re-establish it so the body scrolls
+   and the header/footer stay pinned. */
+#addTicketTypeModal .modal-content > form,
+#editTicketTypeModal .modal-content > form {
+    display: flex;
+    flex-direction: column;
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow: hidden;
+}
+#addTicketTypeModal .modal-body,
+#editTicketTypeModal .modal-body {
+    min-height: 0;
+    overflow-y: auto;
+}
 .tt-adv-caret { transition: transform 0.15s ease; }
 [aria-expanded="true"] > .tt-adv-caret { transform: rotate(90deg); }
 .pricing-reco-card {
@@ -956,6 +972,7 @@ document.addEventListener('DOMContentLoaded', function () {
           }
           document.getElementById('edit_quantity_limit').value = d.quantity_limit;
           document.getElementById('edit_max_per_customer').value = d.max_per_customer;
+          document.getElementById('edit_low_stock_threshold').value = d.low_stock_threshold;
           document.getElementById('edit_sale_start').value = d.sale_start;
           document.getElementById('edit_sale_end').value = d.sale_end;
           document.getElementById('edit_is_active').checked = d.is_active;
@@ -1081,7 +1098,7 @@ document.addEventListener('DOMContentLoaded', function () {
 {% if ticketing_type == 'direct' %}
 {# Add Ticket Type Modal #}
 <div class="modal fade" id="addTicketTypeModal" tabindex="-1" aria-labelledby="addTicketTypeModalLabel" aria-hidden="true">
-  <div class="modal-dialog modal-lg">
+  <div class="modal-dialog modal-lg modal-dialog-scrollable">
     <div class="modal-content">
       <div class="modal-header">
         <h5 class="modal-title" id="addTicketTypeModalLabel">Add Ticket Type</h5>
@@ -1148,6 +1165,12 @@ document.addEventListener('DOMContentLoaded', function () {
                   <div class="invalid-feedback" id="err-max_per_customer"></div>
                 </div>
                 <div class="col-md-6">
+                  <label class="form-label">Low Stock Warning</label>
+                  <input type="number" name="low_stock_threshold" class="form-control" min="1" placeholder="Off">
+                  <div class="form-text text-muted">Show "Only X left" once remaining tickets drop to this number. Blank = off.</div>
+                  <div class="invalid-feedback" id="err-low_stock_threshold"></div>
+                </div>
+                <div class="col-md-6">
                   <label class="form-label">Unlocks After</label>
                   <select name="unlocks_after" class="form-select" id="add_unlocks_after">
                     <option value="">- None -</option>
@@ -1201,7 +1224,7 @@ document.addEventListener('DOMContentLoaded', function () {
 
 {# Edit Ticket Type Modal #}
 <div class="modal fade" id="editTicketTypeModal" tabindex="-1" aria-labelledby="editTicketTypeModalLabel" aria-hidden="true">
-  <div class="modal-dialog modal-lg">
+  <div class="modal-dialog modal-lg modal-dialog-scrollable">
     <div class="modal-content">
       <div class="modal-header">
         <h5 class="modal-title" id="editTicketTypeModalLabel">Edit Ticket Type</h5>
@@ -1269,6 +1292,12 @@ document.addEventListener('DOMContentLoaded', function () {
                   <label class="form-label">Max Per Customer</label>
                   <input type="number" name="max_per_customer" id="edit_max_per_customer" class="form-control" min="1" placeholder="Unlimited">
                   <div class="invalid-feedback" id="edit-err-max_per_customer"></div>
+                </div>
+                <div class="col-md-6">
+                  <label class="form-label">Low Stock Warning</label>
+                  <input type="number" name="low_stock_threshold" id="edit_low_stock_threshold" class="form-control" min="1" placeholder="Off">
+                  <div class="form-text text-muted">Show "Only X left" once remaining tickets drop to this number. Blank = off.</div>
+                  <div class="invalid-feedback" id="edit-err-low_stock_threshold"></div>
                 </div>
                 <div class="col-md-6">
                   <label class="form-label">Unlocks After</label>
