@@ -6,26 +6,6 @@
 {% block extra_head %}
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js" defer></script>
 <style>
-.marketing-tabs { margin-bottom: 1.25rem; border-bottom: 1px solid var(--border); }
-.marketing-tabs .nav-link {
-    color: var(--text-secondary);
-    border: 1px solid transparent;
-    border-bottom: none;
-    padding: 0.55rem 1rem;
-    font-weight: 500;
-}
-.marketing-tabs .nav-link:hover {
-    color: var(--text-primary);
-    background: transparent;
-}
-.marketing-tabs .nav-link.active {
-    color: var(--text-primary);
-    background: var(--bg-surface);
-    border-color: var(--border);
-    border-bottom-color: var(--bg-surface);
-}
-.marketing-tabs .nav-link i { margin-right: 6px; opacity: 0.8; }
-
 .ai-panel {
     background: linear-gradient(135deg, var(--bg-surface) 0%, var(--bg-surface) 60%, color-mix(in srgb, var(--accent) 8%, var(--bg-surface)) 100%);
     border: 1px solid var(--border);
@@ -107,28 +87,10 @@
     </div>
 </div>
 
-<ul class="nav nav-tabs marketing-tabs" id="marketing-tab-nav" role="tablist">
-    <li class="nav-item" role="presentation">
-        <button class="nav-link" id="overview-tab-btn" data-bs-toggle="tab" data-bs-target="#tab-overview" type="button" role="tab" aria-controls="tab-overview" data-tab-key="overview">
-            <i class="bi bi-grid-1x2"></i>Overview
-        </button>
-    </li>
-    <li class="nav-item" role="presentation">
-        <button class="nav-link" id="email-tab-btn" data-bs-toggle="tab" data-bs-target="#tab-email" type="button" role="tab" aria-controls="tab-email" data-tab-key="email">
-            <i class="bi bi-envelope"></i>Email
-        </button>
-    </li>
-    <li class="nav-item" role="presentation">
-        <button class="nav-link" id="ads-tab-btn" data-bs-toggle="tab" data-bs-target="#tab-ads" type="button" role="tab" aria-controls="tab-ads" data-tab-key="ads">
-            <i class="bi bi-bullseye"></i>Paid Ads
-        </button>
-    </li>
-</ul>
-
-<div class="tab-content" id="marketing-tab-content">
+<div class="marketing-tab-content">
 
     {# ── Overview ─────────────────────────────────────────────────────── #}
-    <div class="tab-pane fade" id="tab-overview" role="tabpanel" aria-labelledby="overview-tab-btn">
+    {% if active_tab == 'overview' %}
         <div class="ai-panel">
             <div class="ai-panel-header">
                 <h2>AI insights</h2>
@@ -183,10 +145,8 @@
             {% endif %}
         </div>
 
-    </div>
-
     {# ── Email ────────────────────────────────────────────────────────── #}
-    <div class="tab-pane fade" id="tab-email" role="tabpanel" aria-labelledby="email-tab-btn">
+    {% elif active_tab == 'email' %}
         <div class="channel-card channel-card--email">
             <div class="channel-card-title">Email &middot; Mailchimp</div>
             <div class="channel-card-headline">${{ metrics.channels.email.revenue|currency }}</div>
@@ -242,10 +202,9 @@
             {% endif %}
             {% endwith %}
         </div>
-    </div>
 
     {# ── Paid Ads ─────────────────────────────────────────────────────── #}
-    <div class="tab-pane fade" id="tab-ads" role="tabpanel" aria-labelledby="ads-tab-btn">
+    {% elif active_tab == 'ads' %}
         <div class="channel-card channel-card--ads">
             <div class="channel-card-title">Ads &middot; Meta</div>
             <div class="channel-card-headline">${{ metrics.channels.ads.spend|currency }}</div>
@@ -292,7 +251,7 @@
             <div class="empty-state"><p>No event-level ROI to compare yet. Link spend and campaign data on at least one event.</p></div>
             {% endif %}
         </div>
-    </div>
+    {% endif %}
 
 </div>
 
@@ -305,105 +264,62 @@
 <script>
 (function () {
     document.addEventListener('DOMContentLoaded', function () {
-        if (typeof Chart === 'undefined') { return; }
-        var isDark = document.documentElement.getAttribute('data-theme') === 'dark';
-        var grid = isDark ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.06)';
-        var tick = isDark ? 'rgba(255,255,255,0.7)' : 'rgba(0,0,0,0.65)';
-
-        var trendData = JSON.parse(document.getElementById('trend-chart-data').textContent);
-        var engageData = JSON.parse(document.getElementById('engagement-chart-data').textContent);
         var meta = JSON.parse(document.getElementById('marketing-window-data').textContent);
+        var activeTab = (meta.tab || 'overview').toLowerCase();
 
-        var initialized = {};
+        // --- Charts: only the active section's canvas exists in the DOM ----
+        if (typeof Chart !== 'undefined') {
+            var isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+            var grid = isDark ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.06)';
+            var tick = isDark ? 'rgba(255,255,255,0.7)' : 'rgba(0,0,0,0.65)';
+            var trendData = JSON.parse(document.getElementById('trend-chart-data').textContent);
+            var engageData = JSON.parse(document.getElementById('engagement-chart-data').textContent);
 
-        function initEmailChart() {
-            if (initialized.email) return; initialized.email = true;
-            new Chart(document.getElementById('email-engagement-chart'), {
-                type: 'line',
-                data: {
-                    labels: engageData.labels,
-                    datasets: [
-                        { label: 'Opens',  data: engageData.email_opens,  borderColor: '#5b8def', backgroundColor: 'rgba(91,141,239,0.12)', tension: 0.3, fill: true },
-                        { label: 'Clicks', data: engageData.email_clicks, borderColor: '#9b6dff', backgroundColor: 'rgba(155,109,255,0.10)', tension: 0.3, fill: true }
-                    ]
-                },
-                options: {
-                    responsive: true, maintainAspectRatio: false,
-                    interaction: { mode: 'index', intersect: false },
-                    scales: {
-                        x: { grid: { color: grid }, ticks: { color: tick } },
-                        y: { beginAtZero: true, grid: { color: grid }, ticks: { color: tick } }
+            if (activeTab === 'email') {
+                new Chart(document.getElementById('email-engagement-chart'), {
+                    type: 'line',
+                    data: {
+                        labels: engageData.labels,
+                        datasets: [
+                            { label: 'Opens',  data: engageData.email_opens,  borderColor: '#5b8def', backgroundColor: 'rgba(91,141,239,0.12)', tension: 0.3, fill: true },
+                            { label: 'Clicks', data: engageData.email_clicks, borderColor: '#9b6dff', backgroundColor: 'rgba(155,109,255,0.10)', tension: 0.3, fill: true }
+                        ]
                     },
-                    plugins: { legend: { labels: { color: tick } } }
-                }
-            });
-        }
-
-        function initAdsChart() {
-            if (initialized.ads) return; initialized.ads = true;
-            new Chart(document.getElementById('ads-spend-chart'), {
-                type: 'bar',
-                data: {
-                    labels: trendData.labels,
-                    datasets: [
-                        { label: 'Spend', data: trendData.ads_spend, backgroundColor: '#e6796d' }
-                    ]
-                },
-                options: {
-                    responsive: true, maintainAspectRatio: false,
-                    scales: {
-                        x: { grid: { color: grid }, ticks: { color: tick } },
-                        y: { beginAtZero: true, grid: { color: grid }, ticks: { color: tick,
-                            callback: function(v) { return '$' + v.toLocaleString(); } } }
+                    options: {
+                        responsive: true, maintainAspectRatio: false,
+                        interaction: { mode: 'index', intersect: false },
+                        scales: {
+                            x: { grid: { color: grid }, ticks: { color: tick } },
+                            y: { beginAtZero: true, grid: { color: grid }, ticks: { color: tick } }
+                        },
+                        plugins: { legend: { labels: { color: tick } } }
+                    }
+                });
+            } else if (activeTab === 'ads') {
+                new Chart(document.getElementById('ads-spend-chart'), {
+                    type: 'bar',
+                    data: {
+                        labels: trendData.labels,
+                        datasets: [
+                            { label: 'Spend', data: trendData.ads_spend, backgroundColor: '#e6796d' }
+                        ]
                     },
-                    plugins: { legend: { labels: { color: tick } } }
-                }
-            });
+                    options: {
+                        responsive: true, maintainAspectRatio: false,
+                        scales: {
+                            x: { grid: { color: grid }, ticks: { color: tick } },
+                            y: { beginAtZero: true, grid: { color: grid }, ticks: { color: tick,
+                                callback: function(v) { return '$' + v.toLocaleString(); } } }
+                        },
+                        plugins: { legend: { labels: { color: tick } } }
+                    }
+                });
+            }
         }
 
-        // --- Tab state ----------------------------------------------------
-        var validTabs = ['overview', 'email', 'ads'];
-        var serverTab = (meta.tab || 'overview').toLowerCase();
-        var qs = new URLSearchParams(window.location.search);
-        var qsTab = (qs.get('tab') || '').toLowerCase();
-        var activeTab = validTabs.indexOf(qsTab) >= 0 ? qsTab : (validTabs.indexOf(serverTab) >= 0 ? serverTab : 'overview');
-
-        var btnIdByKey = { overview: 'overview-tab-btn', email: 'email-tab-btn', ads: 'ads-tab-btn' };
-        var initByKey  = { overview: function(){},
-                           email:    initEmailChart,
-                           ads:      initAdsChart };
-
-        try {
-            var bsTab = new bootstrap.Tab(document.getElementById(btnIdByKey[activeTab]));
-            bsTab.show();
-        } catch (err) {
-            // If Bootstrap is unavailable, just show the active pane manually so the page is usable.
-            document.querySelectorAll('.tab-pane').forEach(function (el) {
-                el.classList.remove('show', 'active');
-            });
-            var pane = document.getElementById('tab-' + activeTab);
-            if (pane) pane.classList.add('show', 'active');
-            var btn = document.getElementById(btnIdByKey[activeTab]);
-            if (btn) btn.classList.add('active');
-        }
-        initByKey[activeTab]();
-
-        document.querySelectorAll('#marketing-tab-nav button[data-bs-toggle="tab"]').forEach(function (btn) {
-            btn.addEventListener('shown.bs.tab', function (ev) {
-                var key = ev.target.getAttribute('data-tab-key');
-                if (initByKey[key]) initByKey[key]();
-                // Sync into the window-selector form so window changes preserve the tab.
-                var hidden = document.getElementById('tab-form-input');
-                if (hidden) hidden.value = key;
-                // Update URL without reload so refresh keeps the tab.
-                var url = new URL(window.location.href);
-                url.searchParams.set('tab', key);
-                window.history.replaceState({}, '', url.toString());
-            });
-        });
-
-        // --- AI analyze ---------------------------------------------------
+        // --- AI analyze (overview section only) ---------------------------
         var btn = document.getElementById('ai-analyze-btn');
+        if (!btn) { return; }
         var status = document.getElementById('ai-analyze-status');
         var resultBox = document.getElementById('ai-analyze-result');
         var windowKey = meta.window;
