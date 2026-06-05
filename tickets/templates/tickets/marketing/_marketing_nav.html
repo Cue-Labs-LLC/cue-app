@@ -12,16 +12,29 @@ The SMS Campaigns tab is gated exactly like the old sidebar sub-link.
     </div>
 
     <nav class="marketing-sectionnav" aria-label="Marketing sections">
-        <a href="{% url 'tickets:marketing_overview' %}"
-           class="marketing-sectionnav-link{% if marketing_section == 'overview' %} is-active{% endif %}"
-           {% if marketing_section == 'overview' %}aria-current="page"{% endif %}>
+        {% comment %}Overview / Email / Paid Ads are sections of marketing_overview,
+        selected via ?tab=; highlight by active_tab there. SMS is its own page,
+        highlighted by marketing_section.{% endcomment %}
+        <a href="{% url 'tickets:marketing_overview' %}?tab=overview"
+           class="marketing-sectionnav-link{% if marketing_section == 'overview' and active_tab == 'overview' %} is-active{% endif %}"
+           {% if marketing_section == 'overview' and active_tab == 'overview' %}aria-current="page"{% endif %}>
             <i class="bi bi-grid-1x2"></i><span>Overview</span>
         </a>
-        {% if org.sms_marketing_enabled and is_org_host %}
+        <a href="{% url 'tickets:marketing_overview' %}?tab=email"
+           class="marketing-sectionnav-link{% if marketing_section == 'overview' and active_tab == 'email' %} is-active{% endif %}"
+           {% if marketing_section == 'overview' and active_tab == 'email' %}aria-current="page"{% endif %}>
+            <i class="bi bi-envelope"></i><span>Email</span>
+        </a>
+        <a href="{% url 'tickets:marketing_overview' %}?tab=ads"
+           class="marketing-sectionnav-link{% if marketing_section == 'overview' and active_tab == 'ads' %} is-active{% endif %}"
+           {% if marketing_section == 'overview' and active_tab == 'ads' %}aria-current="page"{% endif %}>
+            <i class="bi bi-bullseye"></i><span>Paid Ads</span>
+        </a>
+        {% if sms_section_visible %}
         <a href="{% url 'tickets:sms_campaign_list' %}"
            class="marketing-sectionnav-link{% if marketing_section == 'sms' %} is-active{% endif %}"
            {% if marketing_section == 'sms' %}aria-current="page"{% endif %}>
-            <i class="bi bi-chat-dots"></i><span>SMS Campaigns</span>
+            <i class="bi bi-chat-dots"></i><span>SMS</span>
         </a>
         {% endif %}
     </nav>

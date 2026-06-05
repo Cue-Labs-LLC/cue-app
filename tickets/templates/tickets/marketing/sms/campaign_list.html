@@ -16,7 +16,11 @@
 {% endblock %}
 
 {% block content %}
+{% if sms_native_enabled %}
 {% include 'tickets/marketing/_marketing_nav.html' with marketing_section='sms' subtitle='Compose, schedule, and track native SMS — and top up the tokens that pay for sends.' %}
+{% else %}
+{% include 'tickets/marketing/_marketing_nav.html' with marketing_section='sms' subtitle='Track results from SlickText broadcasts linked to your events.' %}
+{% endif %}
 
 {# ── Actions + window ────────────────────────────────────────────────── #}
 <div class="d-flex flex-wrap gap-2 align-items-center justify-content-between mb-3">
@@ -32,13 +36,16 @@
             </ul>
         </div>
     </div>
+    {% if sms_native_enabled %}
     <div class="d-flex gap-2 align-items-center sms-actions">
         <a href="{% url 'tickets:sms_credits' %}" class="btn btn-outline-secondary btn-sm"><i class="bi bi-coin"></i> {{ balance_cents|tokens }} tokens</a>
         <a href="{% url 'tickets:sms_campaign_create' %}" class="btn btn-primary btn-sm"><i class="bi bi-plus-lg"></i> New Campaign</a>
     </div>
+    {% endif %}
 </div>
 
-{# ── Performance band ────────────────────────────────────────────────── #}
+{# ── Performance band (native only) ──────────────────────────────────── #}
+{% if sms_native_enabled %}
 <div class="stats-grid">
     <div class="stat-card stat-card--success">
         <div class="stat-label">Campaigns sent</div>
@@ -67,7 +74,10 @@
         <div class="stat-value">{{ native_sms.unsubscribes }}</div>
     </div>
 </div>
+{% endif %}
 
+{# ── SlickText linked card (+ native clicks chart when native is on) ──── #}
+{% if sms_native_enabled %}
 <div class="marketing-grid-two">
     <div class="chart-card">
         <h2>Native SMS clicks by month</h2>
@@ -85,6 +95,19 @@
         </div>
     </div>
 </div>
+{% else %}
+<div class="channel-card channel-card--sms">
+    <div class="channel-card-title">SMS &middot; SlickText (linked)</div>
+    <div class="channel-card-headline">${{ sms_channel.revenue|currency }}</div>
+    <div class="channel-card-meta">
+        <span>Audience <b>{{ sms_channel.audience }}</b></span>
+        <span>Broadcasts <b>{{ sms_channel.campaigns }}</b></span>
+        <span>Clicks <b>{{ sms_channel.clicks }}</b></span>
+        <span>Unsubs <b>{{ sms_channel.unsubscribes }}</b></span>
+        <span>Orders <b>{{ sms_channel.orders }}</b></span>
+    </div>
+</div>
+{% endif %}
 
 <div class="chart-card">
     <h2>Top SlickText broadcasts</h2>
@@ -122,7 +145,8 @@
     {% endwith %}
 </div>
 
-{# ── Campaigns ───────────────────────────────────────────────────────── #}
+{# ── Campaigns (native only) ─────────────────────────────────────────── #}
+{% if sms_native_enabled %}
 <div class="sms-section-head">
     <h2>Your campaigns</h2>
 </div>
@@ -189,6 +213,7 @@
     <li class="page-item disabled"><span class="page-link">Page {{ page_obj.number }} of {{ page_obj.paginator.num_pages }}</span></li>
     {% if page_obj.has_next %}<li class="page-item"><a class="page-link" href="?page={{ page_obj.next_page_number }}&window={{ window_key }}">Next</a></li>{% endif %}
 </ul></nav>
+{% endif %}
 {% endif %}
 {% endblock %}
 

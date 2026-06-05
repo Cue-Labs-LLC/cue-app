@@ -66,6 +66,12 @@ def organization_context(request):
         except Exception:
             pass
 
+    # SMS section visibility: the Marketing SMS tab carries native sends (gated
+    # by sms_marketing_enabled) plus read-only SlickText linked results. It's
+    # always shown to org hosts so linked results stay reachable even when
+    # native SMS is off; the page itself hides native-only UI in that case.
+    ctx['sms_section_visible'] = ctx['is_org_host']
+
     ctx['outstanding_actions_count'] = 0
     if org and ctx['is_organizer']:
         try:

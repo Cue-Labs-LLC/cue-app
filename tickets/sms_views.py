@@ -205,7 +205,6 @@ def customers_bulk_tag(request):
 @login_required
 @require_org
 @require_host
-@require_sms_feature
 def sms_campaign_list(request):
     import json
     from .services.marketing import (
@@ -230,6 +229,7 @@ def sms_campaign_list(request):
     return render(request, 'tickets/marketing/sms/campaign_list.html', {
         'page_obj': page_obj,
         'balance_cents': org.sms_credit_balance_cents,
+        'sms_native_enabled': org.sms_marketing_enabled,
         'marketing_section': 'sms',
         'window_choices': WINDOW_CHOICES,
         'window_key': window_key,

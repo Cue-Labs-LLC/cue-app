@@ -319,10 +319,12 @@ class SMSViewTests(TestCase):
         self.client.get(reverse('tickets:home'))
         make_customer(self.org, 'a@x.com', '+13105555001')
 
-    def test_feature_gate_blocks_when_disabled(self):
+    def test_native_compose_gated_when_disabled(self):
+        # Native send/compose views stay gated behind sms_marketing_enabled,
+        # even though the SMS list page itself is always reachable for hosts.
         self.org.sms_marketing_enabled = False
         self.org.save(update_fields=['sms_marketing_enabled'])
-        resp = self.client.get(reverse('tickets:sms_campaign_list'))
+        resp = self.client.get(reverse('tickets:sms_campaign_create'))
         self.assertEqual(resp.status_code, 404)
 
     def test_campaign_list_ok_when_enabled(self):
@@ -333,14 +335,73 @@ class SMSViewTests(TestCase):
         self.assertContains(resp, 'Campaigns sent')   # native performance stat card
         self.assertContains(resp, 'Your campaigns')    # campaign table section
 
-    def test_marketing_overview_has_section_nav_and_no_sms_tab(self):
-        # SMS Campaigns now lives in the Marketing page's primary nav; the old
-        # in-page "SMS" analytics tab is gone (its metrics moved to the SMS page).
+    def test_linked_sms_visible_when_native_disabled_but_slicktext_linked(self):
+        # Native SMS off, but SlickText connected → the SMS tab/page stays
+        # reachable in linked-only mode (SlickText results, no native UI).
+        from datetime import date, time
+        from .models import Venue, Event, EventSMSCampaign
+        self.org.sms_marketing_enabled = False
+        self.org.slicktext_api_key = 'st-key'
+        self.org.slicktext_brand_id = 'brand-1'
+        self.org.save(update_fields=[
+            'sms_marketing_enabled', 'slicktext_api_key', 'slicktext_brand_id',
+        ])
+        venue = Venue.objects.create(organization=self.org, name='Hall', city='LA')
+        event = Event.objects.create(
+            organization=self.org, name='Show', venue=venue,
+            start_date=date(2026, 6, 1), start_time=time(20, 0, 0),
+        )
+        EventSMSCampaign.objects.create(
+            event=event, source='slicktext', external_id='st-9', name='Blast',
+            send_time=timezone.now() - timedelta(days=2),
+            audience_size=500, unique_clicks=40, orders=3, revenue=Decimal('150.00'),
+            confirmed_at=timezone.now(),
+        )
+
+        resp = self.client.get(reverse('tickets:sms_campaign_list'))
+        self.assertEqual(resp.status_code, 200)
+        # Linked sections present...
+        self.assertContains(resp, 'SlickText (linked)')
+        self.assertContains(resp, 'Top SlickText broadcasts')
+        # ...native compose/send UI absent.
+        self.assertNotContains(resp, 'New Campaign')
+        self.assertNotContains(resp, 'Campaigns sent')
+        self.assertNotContains(resp, 'Your campaigns')
+
+    def test_sms_page_reachable_when_native_disabled_and_no_slicktext(self):
+        # SMS tab is always available to hosts: the list page loads (200) even
+        # with native off and no SlickText, just without any native UI.
+        self.org.sms_marketing_enabled = False
+        self.org.save(update_fields=['sms_marketing_enabled'])
+        resp = self.client.get(reverse('tickets:sms_campaign_list'))
+        self.assertEqual(resp.status_code, 200)
+        self.assertNotContains(resp, 'New Campaign')
+        self.assertNotContains(resp, 'Your campaigns')
+
+    def test_marketing_overview_has_unified_section_nav(self):
+        # All channels live in the Marketing page's primary section nav; the old
+        # in-page Bootstrap tab row (Overview/Email/Paid Ads) is gone.
         resp = self.client.get(reverse('tickets:marketing_overview'))
         self.assertEqual(resp.status_code, 200)
         self.assertContains(resp, 'marketing-sectionnav')
         self.assertContains(resp, reverse('tickets:sms_campaign_list'))
-        self.assertNotContains(resp, 'data-tab-key="sms"')
+        # Email + Paid Ads are now top-level section links, not in-page tabs.
+        self.assertContains(resp, reverse('tickets:marketing_overview') + '?tab=email')
+        self.assertContains(resp, reverse('tickets:marketing_overview') + '?tab=ads')
+        self.assertNotContains(resp, 'marketing-tabs')
+        self.assertNotContains(resp, 'data-tab-key')
+
+    def test_marketing_overview_renders_each_section(self):
+        # Each section is now server-rendered via ?tab= (no in-page tab JS);
+        # only the active section's body markup is present.
+        email = self.client.get(reverse('tickets:marketing_overview'), {'tab': 'email'})
+        self.assertEqual(email.status_code, 200)
+        self.assertContains(email, 'Top email campaigns')
+        self.assertNotContains(email, 'Top events by ROI')   # ads-only section
+        ads = self.client.get(reverse('tickets:marketing_overview'), {'tab': 'ads'})
+        self.assertEqual(ads.status_code, 200)
+        self.assertContains(ads, 'Top events by ROI')
+        self.assertNotContains(ads, 'Top email campaigns')   # email-only section
 
     def test_preview_returns_count(self):
         resp = self.client.post(reverse('tickets:sms_audience_preview'), {'rfm_segment': 'VIP'})
