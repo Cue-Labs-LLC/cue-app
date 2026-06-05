@@ -427,7 +427,7 @@ def sms_campaign_create(request):
 @require_POST
 def sms_ticket_link(request):
     """JSON: get-or-create a shared 'SMS' tracking link for a direct, live event and
-    return its absolute /track/<token>/ URL for insertion into a campaign body."""
+    return its absolute /t/<token>/ URL for insertion into a campaign body."""
     org = get_organization(request)
     event = get_object_or_404(
         Event.objects.filter(
@@ -452,16 +452,17 @@ def sms_ticket_link(request):
     return JsonResponse({'url': url, 'name': event.name})
 
 
-# A tracked ticket link inserted by the composer is a /track/<token>/ URL pointing
+# A tracked ticket link inserted by the composer is a /t/<token>/ URL pointing
 # at one of the org's TrackingLinks (see sms_ticket_link). We pull the token back out
 # of the campaign body's link to attribute tickets + revenue on the detail page.
-_TRACK_TOKEN_RE = re.compile(r'/track/([A-Za-z0-9]+)/')
+# Matches the legacy /track/ prefix too, so links sent before the rename still attribute.
+_TRACK_TOKEN_RE = re.compile(r'/t(?:rack)?/([A-Za-z0-9]+)/')
 
 
 def _mint_campaign_tracking_link(org, campaign):
     """Give this campaign its OWN tracking link for per-campaign attribution.
 
-    The composer inserts a shared per-event 'SMS' link (/track/<token>/). At save we
+    The composer inserts a shared per-event 'SMS' link (/t/<token>/). At save we
     mint a fresh TrackingLink on the same event, named after the campaign, and rewrite
     the body to it — so each campaign's clicks/tickets/revenue attribute to it alone
     rather than pooling on the shared event link. Same-length token, so the segment
@@ -478,7 +479,9 @@ def _mint_campaign_tracking_link(org, campaign):
         organization=org, event=src.event,
         name=f'SMS · {campaign.name}'[:100], token=_generate_tracking_token(),
     )
-    old_path = reverse('tickets:track_link_redirect', kwargs={'token': src.token})
+    # Replace the exact path as it appears in the body (handles both the
+    # canonical /t/ and the legacy /track/ prefix).
+    old_path = match.group(0)
     new_path = reverse('tickets:track_link_redirect', kwargs={'token': new_link.token})
     campaign.body = campaign.body.replace(old_path, new_path)
     campaign.link_url = campaign.link_url.replace(old_path, new_path)
