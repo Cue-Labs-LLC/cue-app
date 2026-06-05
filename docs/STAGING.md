@@ -1,5 +1,11 @@
 # Staging Environment
 
+> **⚠️ Currently disabled (2026-06-05) to save cost.** The staging stack is
+> commented out in `render.yaml` and the live Render services are suspended/deleted
+> to stop billing. To bring it back, un-comment the staging block in `render.yaml`,
+> re-sync the Blueprint, and follow the **One-time setup** steps below to re-create
+> the staging Postgres and per-env vars.
+
 Cue runs a parallel `-staging` stack on Render so we can validate changes against a real Postgres + Redis + Stripe Connect before promoting to production. Production lives on `main`; staging lives on a long-lived `staging` branch you fast-forward from `main` on demand.
 
 ---
