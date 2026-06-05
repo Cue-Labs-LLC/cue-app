@@ -298,8 +298,10 @@ urlpatterns = [
     path('events/<uuid:event_id>/promo-codes/create/', views.promo_code_create, name='promo_code_create'),
     path('events/<uuid:event_id>/promo-codes/<uuid:promo_code_id>/delete/', views.promo_code_delete, name='promo_code_delete'),
 
-    # Tracking Links
-    path('track/<str:token>/', views.track_link_redirect, name='track_link_redirect'),
+    # Tracking Links — short '/t/' is canonical; '/track/' kept as a legacy
+    # alias so links already sent in past SMS still resolve and attribute.
+    path('t/<str:token>/', views.track_link_redirect, name='track_link_redirect'),
+    path('track/<str:token>/', views.track_link_redirect, name='track_link_redirect_legacy'),
     path('events/<uuid:event_id>/tracking-links/create/', views.tracking_link_create, name='tracking_link_create'),
     path('events/<uuid:event_id>/tracking-links/<uuid:link_id>/delete/', views.tracking_link_delete, name='tracking_link_delete'),
 

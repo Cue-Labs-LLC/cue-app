@@ -1827,22 +1827,22 @@ button.detail-meta-weather--severe:focus-visible {
 </div><!-- /tab-surveys -->
 
 <!-- ===== TAB 6: Manage ===== -->
-<div class="tab-pane fade" id="tab-manage" role="tabpanel">
+<div class="tab-pane fade manage-tab" id="tab-manage" role="tabpanel">
 
 {% if event.ticketing_type == 'direct' %}
 {% if public_buy_url and event.effective_status == 'live' %}
-<div class="card mb-4">
+<div class="card">
     <div class="card-header">
         <h5>Public Ticket Page</h5>
     </div>
     <div class="card-body">
-        <p class="mb-1">Share this link with buyers:</p>
-        <div class="input-group" style="max-width: 600px;">
-            <input type="text" class="form-control font-monospace" id="public-url" value="{{ public_buy_url }}" readonly>
-            <button class="btn btn-outline-secondary" type="button" onclick="copyPublicUrl()">
+        <p class="manage-lead">Share this link with buyers.</p>
+        <div class="manage-copy">
+            <input type="text" class="manage-copy__text" id="public-url" value="{{ public_buy_url }}" readonly>
+            <button class="manage-ghost manage-ghost--label" type="button" onclick="copyPublicUrl()">
                 <i class="bi bi-clipboard"></i> Copy
             </button>
-            <a href="{{ public_buy_url }}" target="_blank" rel="noopener noreferrer" class="btn btn-outline-primary">
+            <a href="{{ public_buy_url }}" target="_blank" rel="noopener noreferrer" class="manage-ghost manage-ghost--label">
                 <i class="bi bi-box-arrow-up-right"></i> Open
             </a>
         </div>
@@ -1852,15 +1852,15 @@ button.detail-meta-weather--severe:focus-visible {
 {% endif %}
 
 {% if event.ticketing_type == 'direct' %}
-<div class="card mb-4">
-    <div class="card-header d-flex justify-content-between align-items-center">
-        <h5 class="mb-0"><i class="bi bi-link-45deg me-2"></i>Tracking Links</h5>
+<div class="card">
+    <div class="card-header">
+        <h5>Tracking Links</h5>
     </div>
     <div class="card-body">
-        <p class="text-muted small mb-3">Create named links to track which channels (Instagram, email, etc.) drive clicks and sales.</p>
+        <p class="manage-lead">Create named links to track which channels (Instagram, email, etc.) drive clicks and sales.</p>
         {% if tracking_links %}
-        <div class="table-responsive mb-3">
-            <table class="table table-sm table-hover mb-0">
+        <div class="table-responsive">
+            <table class="table table-sm table-hover manage-links mb-0">
                 <thead>
                     <tr>
                         <th>Name</th>
@@ -1874,22 +1874,22 @@ button.detail-meta-weather--severe:focus-visible {
                 <tbody>
                     {% for link in tracking_links %}
                     <tr>
-                        <td class="align-middle">{{ link.name }}</td>
-                        <td class="align-middle">
-                            <div class="input-group input-group-sm" style="min-width: 260px; max-width: 380px;">
-                                <input type="text" class="form-control form-control-sm font-monospace" value="{{ link.full_url }}" readonly id="tl-url-{{ link.id }}">
-                                <button class="btn btn-outline-secondary btn-sm" type="button" onclick="copyTrackingLink('tl-url-{{ link.id }}', this)" title="Copy">
+                        <td>{{ link.name }}</td>
+                        <td>
+                            <span class="manage-link-cell">
+                                <code id="tl-url-{{ link.id }}" title="{{ link.full_url }}">{{ link.full_url }}</code>
+                                <button class="manage-ghost" type="button" onclick="copyTrackingLink('tl-url-{{ link.id }}', this)" title="Copy link">
                                     <i class="bi bi-clipboard"></i>
                                 </button>
-                            </div>
+                            </span>
                         </td>
-                        <td class="align-middle text-end">{{ link.click_count }}</td>
-                        <td class="align-middle text-end">{{ link.purchase_count }}</td>
-                        <td class="align-middle text-end">${{ link.purchase_revenue|floatformat:2 }}</td>
-                        <td class="align-middle text-end">
+                        <td class="manage-num{% if not link.click_count %} manage-num--zero{% endif %}">{{ link.click_count }}</td>
+                        <td class="manage-num{% if not link.purchase_count %} manage-num--zero{% endif %}">{{ link.purchase_count }}</td>
+                        <td class="manage-num{% if not link.purchase_count %} manage-num--zero{% endif %}">${{ link.purchase_revenue|floatformat:2 }}</td>
+                        <td class="text-end">
                             <form method="post" action="{% url 'tickets:tracking_link_delete' event.id link.id %}" class="d-inline" onsubmit="return confirm('Delete tracking link \'{{ link.name }}\'?')">
                                 {% csrf_token %}
-                                <button type="submit" class="btn btn-sm btn-outline-danger">
+                                <button type="submit" class="manage-ghost manage-row-action" title="Delete link">
                                     <i class="bi bi-trash"></i>
                                 </button>
                             </form>
@@ -1900,16 +1900,16 @@ button.detail-meta-weather--severe:focus-visible {
             </table>
         </div>
         {% else %}
-        <div class="empty-state py-3 mb-3">
-            <i class="bi bi-link-45deg fs-2 text-muted"></i>
-            <p class="text-muted mb-0 mt-2">No tracking links yet.</p>
+        <div class="empty-state py-3">
+            <i class="bi bi-link-45deg"></i>
+            <p class="mb-0">No tracking links yet.</p>
         </div>
         {% endif %}
-        <form method="post" action="{% url 'tickets:tracking_link_create' event.id %}" class="d-flex gap-2 align-items-center">
+        <form method="post" action="{% url 'tickets:tracking_link_create' event.id %}" class="manage-create">
             {% csrf_token %}
-            <input type="text" name="name" class="form-control form-control-sm" placeholder="Link name (e.g. Instagram Bio)" maxlength="100" required style="max-width: 280px;">
+            <input type="text" name="name" class="form-control form-control-sm" placeholder="Link name (e.g. Instagram Bio)" maxlength="100" required>
             <button type="submit" class="btn btn-sm btn-primary">
-                <i class="bi bi-plus-lg"></i> Create Link
+                <i class="bi bi-plus-lg"></i> Create link
             </button>
         </form>
     </div>
@@ -1917,9 +1917,9 @@ button.detail-meta-weather--severe:focus-visible {
 {% endif %}
 
 {% if event.ticketing_type != 'external' %}
-<div class="card mb-4">
-    <div class="card-header d-flex justify-content-between align-items-center">
-        <h5 class="mb-0"><i class="bi bi-qr-code-scan me-2"></i>Scanner Access</h5>
+<div class="card">
+    <div class="card-header">
+        <h5>Scanner Access</h5>
         {% if not event.scanner_pin %}
         <form method="post" action="{% url 'tickets:generate_scanner_pin' event.id %}">
             {% csrf_token %}
@@ -1931,10 +1931,10 @@ button.detail-meta-weather--severe:focus-visible {
     </div>
     <div class="card-body">
         {% if event.scanner_pin %}
-        <p class="mb-2 text-muted small">Share this PIN with door staff to let them scan tickets without a Cue account.</p>
+        <p class="manage-lead">Share this PIN with door staff to let them scan tickets without a Cue account.</p>
         <div class="d-flex align-items-center gap-3 mb-3">
             <span class="font-monospace fs-3 fw-bold letter-spacing-2" id="scanner-pin-display">{{ event.scanner_pin }}</span>
-            <button class="btn btn-sm btn-outline-secondary" type="button" onclick="copyScannnerPin()">
+            <button class="manage-ghost manage-ghost--label" type="button" onclick="copyScannnerPin()">
                 <i class="bi bi-clipboard"></i> Copy
             </button>
             {% if active_scanner_sessions > 0 %}
@@ -1970,8 +1970,8 @@ button.detail-meta-weather--severe:focus-visible {
 
 {% if event.ticketing_type != 'direct' %}
 <div id="event-uploads-card" data-url="{% url 'tickets:event_uploads_summary' event.id %}">
-    <div class="card mb-4">
-        <div class="card-header d-flex justify-content-between align-items-center">
+    <div class="card">
+        <div class="card-header">
             <h5>Uploads</h5>
             <button type="button" class="btn btn-sm btn-primary" data-bs-toggle="modal" data-bs-target="#uploadCsvModal"><i class="bi bi-upload"></i> Upload CSV</button>
         </div>
@@ -1986,9 +1986,9 @@ button.detail-meta-weather--severe:focus-visible {
 {% endif %}
 
 {% if org_has_custom_fields %}
-<div class="card mb-4">
-    <div class="card-header d-flex justify-content-between align-items-center">
-        <h5 class="mb-0"><i class="bi bi-sliders me-2"></i>Custom Fields</h5>
+<div class="card">
+    <div class="card-header">
+        <h5>Custom Fields</h5>
         <button type="button" class="btn btn-sm btn-outline-primary" data-bs-toggle="modal" data-bs-target="#customFieldsModal">
             <i class="bi bi-pencil"></i> Edit
         </button>
@@ -2014,9 +2014,9 @@ button.detail-meta-weather--severe:focus-visible {
 {% endif %}
 
 {% if event.ticketing_type == 'direct' and event.effective_status == 'live' %}
-<div class="card mb-4" style="border-color: var(--danger, #dc3545);">
+<div class="card" style="border-color: var(--danger, #dc3545);">
     <div class="card-header" style="border-bottom-color: var(--danger, #dc3545);">
-        <h5 class="mb-0 text-danger"><i class="bi bi-exclamation-triangle me-2"></i>Danger Zone</h5>
+        <h5 class="text-danger">Danger Zone</h5>
     </div>
     <div class="card-body">
         <div class="d-flex align-items-start justify-content-between gap-3 flex-wrap">
@@ -4211,7 +4211,8 @@ function copyPublicUrl() {
 function copyTrackingLink(inputId, btn) {
     const input = document.getElementById(inputId);
     if (input) {
-        navigator.clipboard.writeText(input.value).then(function() {
+        const value = 'value' in input && input.value ? input.value : input.textContent.trim();
+        navigator.clipboard.writeText(value).then(function() {
             const orig = btn.innerHTML;
             btn.innerHTML = '<i class="bi bi-check"></i>';
             setTimeout(function() { btn.innerHTML = orig; }, 2000);
