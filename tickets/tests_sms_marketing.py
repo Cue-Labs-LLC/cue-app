@@ -1132,8 +1132,8 @@ class SMSTicketLinkRevenueTests(TestCase):
         self.assertEqual(post('Camp B').status_code, 302)
         a = SMSCampaign.objects.get(name='Camp A')
         b = SMSCampaign.objects.get(name='Camp B')
-        ta = _re.search(r'/track/([A-Za-z0-9]+)/', a.link_url).group(1)
-        tb = _re.search(r'/track/([A-Za-z0-9]+)/', b.link_url).group(1)
+        ta = _re.search(r'/t/([A-Za-z0-9]+)/', a.link_url).group(1)
+        tb = _re.search(r'/t/([A-Za-z0-9]+)/', b.link_url).group(1)
         # Each campaign got its own fresh token, distinct from each other + the shared one.
         self.assertEqual(len({ta, tb, shared.token}), 3)
         self.assertEqual(TrackingLink.objects.get(token=ta).name, 'SMS · Camp A')
@@ -1355,7 +1355,7 @@ class SMSTicketLinkTests(TestCase):
         # URL must use SITE_URL (the public/tunnel host), not the request host,
         # so the link stored in the body resolves for recipients.
         self.assertEqual(
-            resp.json()['url'], 'https://example.ngrok.app/track/' + link.token + '/',
+            resp.json()['url'], 'https://example.ngrok.app/t/' + link.token + '/',
         )
 
     def test_endpoint_idempotent(self):
