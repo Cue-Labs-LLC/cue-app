@@ -2248,6 +2248,12 @@ class SaleableTicketType(BaseModel):
         default=0,
         help_text='Spots temporarily held for waitlist notifications. Counted as sold for availability purposes.',
     )
+    low_stock_threshold = models.PositiveIntegerField(
+        null=True,
+        blank=True,
+        help_text="Show an 'Only X left' warning once remaining tickets drop to this "
+                  "number or fewer. Leave blank to disable the warning.",
+    )
 
     class Meta:
         ordering = ['order', 'name']
@@ -2311,6 +2317,22 @@ class SaleableTicketType(BaseModel):
         if self.unlocks_after_id is None:
             return True
         return self.unlocks_after.is_sold_out()
+
+    def low_stock_remaining(self):
+        """Remaining count to show in a low-stock warning, or None when the warning
+        should not appear (no threshold, unlimited, sold out, or above threshold)."""
+        if self.low_stock_threshold is None or self.is_sold_out():
+            return None
+        active = self.get_active_tier()
+        if active is not None:
+            remaining = active.remaining_capacity()
+        elif self.quantity_limit is not None:
+            remaining = self.remaining_quantity()
+        else:
+            return None  # unlimited, no tier -> nothing to warn about
+        if remaining is not None and remaining <= self.low_stock_threshold:
+            return remaining
+        return None
 
 
 class SaleableTicketTypeTier(BaseModel):

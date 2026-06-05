@@ -8,6 +8,20 @@
 #event-flyer-card { max-width: 380px; }
 .flyer-drop-zone { border: 2px dashed var(--bs-border-color); border-radius: var(--bs-border-radius); overflow: hidden; }
 .flyer-drop-zone.flyer-dragover { border-color: var(--bs-primary); background: rgba(var(--bs-primary-rgb), 0.05); }
+/* The <form> sits between .modal-content and .modal-body, breaking the flex
+   chain modal-dialog-scrollable relies on. Re-establish it so the body scrolls
+   and the header/footer stay pinned. */
+#addTicketTypeModal .modal-content > form {
+    display: flex;
+    flex-direction: column;
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow: hidden;
+}
+#addTicketTypeModal .modal-body {
+    min-height: 0;
+    overflow-y: auto;
+}
 </style>
 <link rel="preload" href="https://cdn.jsdelivr.net/npm/quill@2.0.3/dist/quill.snow.css" as="style" onload="this.rel='stylesheet'">
 <noscript><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/quill@2.0.3/dist/quill.snow.css"></noscript>
@@ -92,7 +106,7 @@
                              data-order="{{ tt_form.order.value|default:'0' }}"
                              data-unlocks-after="{{ tt_form.unlocks_after.value|default:'' }}">
                             {{ tt_form.name }}{{ tt_form.description }}{{ tt_form.price }}
-                            {{ tt_form.quantity_limit }}{{ tt_form.max_per_customer }}{{ tt_form.order }}
+                            {{ tt_form.quantity_limit }}{{ tt_form.max_per_customer }}{{ tt_form.low_stock_threshold }}{{ tt_form.order }}
                             <input type="hidden"
                                    name="{{ tt_form.prefix }}-unlocks_after"
                                    value="{{ tt_form.unlocks_after.value|default:'' }}">
@@ -103,7 +117,7 @@
                     <template id="tt-hidden-row-template">
                         <div class="tt-hidden-row" data-idx="__prefix__">
                             {{ ticket_formset.empty_form.name }}{{ ticket_formset.empty_form.description }}{{ ticket_formset.empty_form.price }}
-                            {{ ticket_formset.empty_form.quantity_limit }}{{ ticket_formset.empty_form.max_per_customer }}{{ ticket_formset.empty_form.order }}
+                            {{ ticket_formset.empty_form.quantity_limit }}{{ ticket_formset.empty_form.max_per_customer }}{{ ticket_formset.empty_form.low_stock_threshold }}{{ ticket_formset.empty_form.order }}
                             <input type="hidden"
                                    name="ticket_type-__prefix__-unlocks_after"
                                    value="">
@@ -429,6 +443,7 @@ document.addEventListener('DOMContentLoaded', function () {
             if (addGross) addGross.value = c > 0 ? (grossFromDisplayCents(c) / 100).toFixed(2) : '';
             document.getElementById('add_quantity_limit').value = row.querySelector('[name$="-quantity_limit"]').value;
             document.getElementById('add_max_per_customer').value = row.querySelector('[name$="-max_per_customer"]').value;
+            document.getElementById('add_low_stock_threshold').value = row.querySelector('[name$="-low_stock_threshold"]').value;
             document.getElementById('add_order').value = row.querySelector('[name$="-order"]').value;
             syncUnlockSelect(editingIdx, row.querySelector('[name$="-unlocks_after"]').value);
             document.getElementById('add-tt-modal-title').textContent = 'Edit Ticket Type';
@@ -490,6 +505,7 @@ document.addEventListener('DOMContentLoaded', function () {
             var description = document.getElementById('add_description').value;
             var quantityLimit = document.getElementById('add_quantity_limit').value;
             var maxPerCustomer = document.getElementById('add_max_per_customer').value;
+            var lowStockThreshold = document.getElementById('add_low_stock_threshold').value;
             var order = document.getElementById('add_order').value || '0';
             var unlocksAfter = document.getElementById('add_unlocks_after').value || '';
 
@@ -502,6 +518,7 @@ document.addEventListener('DOMContentLoaded', function () {
                     setHiddenField(row, 'price', price);
                     setHiddenField(row, 'quantity_limit', quantityLimit);
                     setHiddenField(row, 'max_per_customer', maxPerCustomer);
+                    setHiddenField(row, 'low_stock_threshold', lowStockThreshold);
                     setHiddenField(row, 'order', order);
                     setHiddenField(row, 'unlocks_after', unlocksAfter);
                     row.dataset.unlocksAfter = unlocksAfter;
@@ -525,6 +542,7 @@ document.addEventListener('DOMContentLoaded', function () {
                     setHiddenField(newRow, 'price', price);
                     setHiddenField(newRow, 'quantity_limit', quantityLimit);
                     setHiddenField(newRow, 'max_per_customer', maxPerCustomer);
+                    setHiddenField(newRow, 'low_stock_threshold', lowStockThreshold);
                     setHiddenField(newRow, 'order', order);
                     setHiddenField(newRow, 'unlocks_after', unlocksAfter);
                     newRow.dataset.unlocksAfter = unlocksAfter;
@@ -611,7 +629,7 @@ document.addEventListener('DOMContentLoaded', function () {
 {% block modals %}
 {% if ticketing_type == 'direct' %}
 <div class="modal fade" id="addTicketTypeModal" tabindex="-1" aria-labelledby="add-tt-modal-title" aria-hidden="true">
-  <div class="modal-dialog modal-lg">
+  <div class="modal-dialog modal-lg modal-dialog-scrollable">
     <div class="modal-content">
       <div class="modal-header">
         <h5 class="modal-title" id="add-tt-modal-title">Add Ticket Type</h5>
@@ -656,6 +674,11 @@ document.addEventListener('DOMContentLoaded', function () {
             <div class="col-md-4">
               <label class="form-label fw-semibold">Order</label>
               <input type="number" id="add_order" class="form-control" min="0" value="0">
+            </div>
+            <div class="col-md-6">
+              <label class="form-label fw-semibold">Low Stock Warning</label>
+              <input type="number" id="add_low_stock_threshold" class="form-control" min="1" placeholder="Off">
+              <div class="form-text text-muted">Show "Only X left" once remaining tickets drop to this number. Blank = off.</div>
             </div>
             <div class="col-12">
               <label class="form-label fw-semibold">Unlocks After</label>

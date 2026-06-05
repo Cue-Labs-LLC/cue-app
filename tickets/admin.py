@@ -1136,7 +1136,7 @@ class SaleableTicketTypeTierInline(admin.TabularInline):
 
 @admin.register(SaleableTicketType)
 class SaleableTicketTypeAdmin(admin.ModelAdmin):
-    list_display = ['name', 'event', 'price', 'quantity_sold', 'quantity_limit', 'is_active', 'order']
+    list_display = ['name', 'event', 'price', 'quantity_sold', 'quantity_limit', 'low_stock_threshold', 'is_active', 'order']
     list_filter = ['event__organization', 'is_active']
     search_fields = ['name', 'event__name']
     readonly_fields = ['id', 'created_at', 'updated_at', 'quantity_sold']

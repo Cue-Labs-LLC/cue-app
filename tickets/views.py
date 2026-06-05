@@ -8658,6 +8658,7 @@ def saleable_ticket_type_data(request, event_id, ticket_type_id):
         'price': str(tt.price),
         'quantity_limit': tt.quantity_limit if tt.quantity_limit is not None else '',
         'max_per_customer': tt.max_per_customer if tt.max_per_customer is not None else '',
+        'low_stock_threshold': tt.low_stock_threshold if tt.low_stock_threshold is not None else '',
         'order': tt.order,
         'sale_start': fmt_dt(tt.sale_start),
         'sale_end': fmt_dt(tt.sale_end),
