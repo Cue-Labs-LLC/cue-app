@@ -8818,8 +8818,9 @@ class ChargeRefundedWebhookTests(TestCase):
         self.assertEqual(self.session.status, StripeCheckoutSession.Status.PARTIALLY_REFUNDED)
         self.assertEqual(self.ticket_type.quantity_sold, 2)
 
+    @patch('stripe.checkout.Session.list', return_value={'data': []})
     @patch('stripe.Webhook.construct_event')
-    def test_unknown_payment_intent_ignored(self, mock_construct):
+    def test_unknown_payment_intent_ignored(self, mock_construct, mock_cs_list):
         res = self._post_refund_event(
             mock_construct, amount_refunded=1000, refunded=False,
             payment_intent='pi_not_ours',
@@ -8830,6 +8831,29 @@ class ChargeRefundedWebhookTests(TestCase):
         self.session.refresh_from_db()
         self.assertEqual(self.order.refunded_amount, Decimal('0.00'))
         self.assertEqual(self.session.status, StripeCheckoutSession.Status.COMPLETED)
+
+    @patch('stripe.checkout.Session.list')
+    @patch('stripe.Webhook.construct_event')
+    def test_legacy_checkout_session_matched_via_fallback(self, mock_construct, mock_cs_list):
+        # Legacy pre-PI-flow row: cs_… id, blank stripe_payment_intent_id.
+        self.session.stripe_session_id = 'cs_legacy_123'
+        self.session.stripe_payment_intent_id = ''
+        self.session.save(update_fields=['stripe_session_id', 'stripe_payment_intent_id'])
+        mock_cs_list.return_value = {'data': [{'id': 'cs_legacy_123'}]}
+
+        res = self._post_refund_event(
+            mock_construct, amount_refunded=1000, refunded=False,
+            payment_intent='pi_legacy_refund',
+        )
+        self.assertEqual(res.status_code, 200)
+
+        mock_cs_list.assert_called_once_with(payment_intent='pi_legacy_refund', limit=1)
+        self.order.refresh_from_db()
+        self.session.refresh_from_db()
+        self.assertEqual(self.order.refunded_amount, Decimal('10.00'))
+        self.assertEqual(self.session.status, StripeCheckoutSession.Status.PARTIALLY_REFUNDED)
+        # The pi id is persisted so future lookups match directly.
+        self.assertEqual(self.session.stripe_payment_intent_id, 'pi_legacy_refund')
 
 
 class BackfillRefundStateCommandTests(TestCase):
@@ -8875,14 +8899,16 @@ class BackfillRefundStateCommandTests(TestCase):
             ticket_order=self.order,
         )
 
-    def _run(self, *args, refunds, charge):
+    def _run(self, *args, refunds, charge, checkout_sessions=None):
         """Run the command with mocked Stripe refund feed + charge retrieval."""
         from io import StringIO
         out = StringIO()
         refund_list = MagicMock()
         refund_list.auto_paging_iter.return_value = iter(refunds)
         with patch('stripe.Refund.list', return_value=refund_list), \
-             patch('stripe.Charge.retrieve', return_value=charge):
+             patch('stripe.Charge.retrieve', return_value=charge), \
+             patch('stripe.checkout.Session.list',
+                   return_value={'data': checkout_sessions or []}):
             call_command('backfill_refund_state', *args, stdout=out)
         return out.getvalue()
 
@@ -8975,8 +9001,37 @@ class BackfillRefundStateCommandTests(TestCase):
         )
 
         self.assertIn('Not ours: 1', output)
+        # Unmatched charges are itemized so prod runs are diagnosable.
+        self.assertIn('IGNORE ch_foreign', output)
+        self.assertIn('pi=pi_someone_elses', output)
         self.session.refresh_from_db()
         self.assertEqual(self.session.status, StripeCheckoutSession.Status.COMPLETED)
+
+    def test_legacy_checkout_session_backfilled_via_fallback(self):
+        # Legacy pre-PI-flow row: cs_… id, blank stripe_payment_intent_id —
+        # the exact shape that produced "Not ours" on the first prod run.
+        self.session.stripe_session_id = 'cs_legacy_456'
+        self.session.stripe_payment_intent_id = ''
+        self.session.save(update_fields=['stripe_session_id', 'stripe_payment_intent_id'])
+
+        output = self._run(
+            '--apply',
+            refunds=[{'id': 're_1', 'charge': 'ch_legacy'}],
+            charge={
+                'id': 'ch_legacy',
+                'payment_intent': 'pi_legacy_456',
+                'amount_refunded': 1000,
+                'refunded': False,
+            },
+            checkout_sessions=[{'id': 'cs_legacy_456'}],
+        )
+
+        self.assertIn('UPDATE', output)
+        self.order.refresh_from_db()
+        self.session.refresh_from_db()
+        self.assertEqual(self.order.refunded_amount, Decimal('10.00'))
+        self.assertEqual(self.session.status, StripeCheckoutSession.Status.PARTIALLY_REFUNDED)
+        self.assertEqual(self.session.stripe_payment_intent_id, 'pi_legacy_456')
 
     def test_org_filter_skips_other_orgs(self):
         other_org = Organization.objects.create(name='Other Org', slug='other-backfill-org')
