@@ -10690,6 +10690,41 @@ def _fail_payment_intent(payment_intent):
         logger.info("PaymentIntent %s marked canceled (payment failed)", pi_id)
 
 
+def _find_session_for_payment_intent(pi_id):
+    """Locate the StripeCheckoutSession for a charge's PaymentIntent id.
+
+    Direct lookup first: PI-flow rows store the pi_… id in both id fields.
+    Legacy rows from the pre-April-2026 Stripe Checkout flow store only the
+    cs_… Checkout Session id and have a blank stripe_payment_intent_id, so
+    fall back to resolving the Checkout Session id from Stripe and matching
+    on that. Read-only; returns None when the charge isn't ours (e.g. SMS
+    top-ups, which have no session row).
+    """
+    session = StripeCheckoutSession.objects.filter(
+        Q(stripe_session_id=pi_id) | Q(stripe_payment_intent_id=pi_id)
+    ).select_related('ticket_order', 'organization').first()
+    if session is not None:
+        return session
+
+    import stripe as stripe_lib
+    from django.conf import settings as django_settings
+    stripe_lib.api_key = django_settings.STRIPE_SECRET_KEY
+    try:
+        listing = stripe_lib.checkout.Session.list(payment_intent=pi_id, limit=1)
+    except stripe_lib.error.StripeError:
+        logger.exception("Could not resolve Checkout Session for PaymentIntent %s", pi_id)
+        return None
+    data = listing.get('data', []) if isinstance(listing, dict) else getattr(listing, 'data', [])
+    if not data:
+        return None
+    cs_id = _stripe_value(data[0], 'id')
+    if not cs_id:
+        return None
+    return StripeCheckoutSession.objects.filter(
+        stripe_session_id=cs_id,
+    ).select_related('ticket_order', 'organization').first()
+
+
 def _sync_charge_refund(charge):
     """Sync a Stripe refund (any origin, incl. dashboard) into the DB.
 
@@ -10705,12 +10740,15 @@ def _sync_charge_refund(charge):
     pi_id = _stripe_value(charge, 'payment_intent')
     if not pi_id:
         return
-    session = StripeCheckoutSession.objects.filter(
-        Q(stripe_session_id=pi_id) | Q(stripe_payment_intent_id=pi_id)
-    ).select_related('ticket_order', 'organization').first()
+    session = _find_session_for_payment_intent(pi_id)
     if session is None:
         # SMS top-up or charge that isn't ours — nothing to sync.
         return
+    if not session.stripe_payment_intent_id:
+        # Legacy Checkout-flow row matched via the cs_… fallback: persist the
+        # pi id so future lookups (webhook, refund_order guards) are direct.
+        session.stripe_payment_intent_id = pi_id
+        session.save(update_fields=['stripe_payment_intent_id'])
     if session.status not in (
         StripeCheckoutSession.Status.COMPLETED,
         StripeCheckoutSession.Status.PARTIALLY_REFUNDED,
