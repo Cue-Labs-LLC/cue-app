@@ -9098,3 +9098,129 @@ class LowStockThresholdTests(TestCase):
 
     def assertin_redirect_or_ok(self, resp):
         self.assertIn(resp.status_code, (200, 302))
+
+
+class SurveyResponseDetailViewTests(TestCase):
+    """The event_survey_response_detail JSON endpoint powering the row-click modal."""
+
+    def setUp(self):
+        self.client = Client()
+        self.org = Organization.objects.create(name='Resp Detail Org', slug='resp-detail-org')
+        self.other_org = Organization.objects.create(name='Other Org', slug='resp-detail-other-org')
+        self.user = User.objects.create_user(
+            username='respdetail', email='resp@test.com', password='testpass123',
+        )
+        UserProfile.objects.create(user=self.user, organization=self.org,
+                                   org_role=UserProfile.OrgRole.OWNER)
+        self.client.login(username='resp@test.com', password='testpass123')
+        self.client.get(reverse('tickets:home'))  # seed _org_id in session
+
+        self.venue = Venue.objects.create(organization=self.org, name='Venue', city='City')
+        self.event = Event.objects.create(
+            organization=self.org, name='Survey Event', venue=self.venue,
+            start_date=date(2025, 8, 1),
+        )
+        self.customer = Customer.objects.create(
+            organization=self.org, email='guest@example.com', name='Guest',
+        )
+
+    def _detail(self, kind, response_id, event=None):
+        return self.client.get(reverse(
+            'tickets:event_survey_response_detail',
+            args=[(event or self.event).id, kind, response_id],
+        ))
+
+    def test_internal_response_returns_questions_and_answers(self):
+        invitation = SurveyInvitation.objects.create(
+            organization=self.org, event=self.event,
+            customer=self.customer, email=self.customer.email,
+        )
+        response = SurveyResponse.objects.create(
+            organization=self.org, event=self.event,
+            customer=self.customer, invitation=invitation,
+        )
+        q_star = SurveyQuestion.objects.create(
+            organization=self.org, question_text='Rate the night', question_type='star_rating', position=1,
+        )
+        q_nps = SurveyQuestion.objects.create(
+            organization=self.org, question_text='Recommend us?', question_type='nps', position=2,
+        )
+        q_text = SurveyQuestion.objects.create(
+            organization=self.org, question_text='Anything else?', question_type='text', position=3,
+        )
+        SurveyAnswer.objects.create(response=response, question=q_star, star_rating=4)
+        SurveyAnswer.objects.create(response=response, question=q_nps, nps_score=9)
+        SurveyAnswer.objects.create(response=response, question=q_text, text_answer='Great show')
+
+        resp = self._detail('internal', response.id)
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertEqual(data['meta']['source'], 'Cue survey')
+        self.assertEqual(data['meta']['respondent'], 'guest@example.com')
+        pairs = {it['question']: it['answer'] for it in data['items']}
+        self.assertEqual(pairs['Rate the night'], '4 / 5 stars')
+        self.assertEqual(pairs['Recommend us?'], '9 / 10')
+        self.assertEqual(pairs['Anything else?'], 'Great show')
+
+    def test_external_response_uses_raw_answers(self):
+        upload = ExternalSurveyUpload.objects.create(
+            organization=self.org, filename='typeform.csv',
+            status=ExternalSurveyUpload.Status.COMPLETED,
+        )
+        response = ExternalSurveyResponse.objects.create(
+            organization=self.org, upload=upload, event=self.event,
+            responded_at=timezone.now(), email='fan@example.com',
+            typeform_response_id='tf123',
+            raw_answers=[
+                {'title': 'How was it?', 'type': 'opinion_scale', 'value': 8},
+                {'title': 'What did you enjoy?', 'type': 'multiple_choice', 'value': ['Music', 'Vibe']},
+            ],
+        )
+        resp = self._detail('external', response.id)
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertEqual(data['meta']['source'], 'Typeform')
+        pairs = {it['question']: it['answer'] for it in data['items']}
+        self.assertEqual(pairs['How was it?'], '8')
+        self.assertEqual(pairs['What did you enjoy?'], 'Music, Vibe')
+
+    def test_external_response_falls_back_to_structured_fields(self):
+        upload = ExternalSurveyUpload.objects.create(
+            organization=self.org, filename='legacy.csv',
+            status=ExternalSurveyUpload.Status.COMPLETED,
+        )
+        response = ExternalSurveyResponse.objects.create(
+            organization=self.org, upload=upload, event=self.event,
+            responded_at=timezone.now(), email='legacy@example.com',
+            overall_rating='Loved it', nps_score=10, city='Dallas',
+            text_feedback='More seating please', raw_answers=[],
+        )
+        resp = self._detail('external', response.id)
+        self.assertEqual(resp.status_code, 200)
+        pairs = {it['question']: it['answer'] for it in resp.json()['items']}
+        self.assertEqual(pairs['Overall rating'], 'Loved it')
+        self.assertEqual(pairs['NPS score'], '10')
+        self.assertEqual(pairs['City'], 'Dallas')
+        self.assertEqual(pairs['Feedback'], 'More seating please')
+
+    def test_invalid_kind_returns_400(self):
+        resp = self._detail('bogus', uuid.uuid4())
+        self.assertEqual(resp.status_code, 400)
+
+    def test_response_from_other_org_is_404(self):
+        other_venue = Venue.objects.create(organization=self.other_org, name='Other Venue', city='City')
+        other_event = Event.objects.create(
+            organization=self.other_org, name='Other Event', venue=other_venue,
+            start_date=date(2025, 8, 1),
+        )
+        upload = ExternalSurveyUpload.objects.create(
+            organization=self.other_org, filename='x.csv',
+            status=ExternalSurveyUpload.Status.COMPLETED,
+        )
+        foreign = ExternalSurveyResponse.objects.create(
+            organization=self.other_org, upload=upload, event=other_event,
+            responded_at=timezone.now(),
+        )
+        # Probing under our own event id must not leak another org's response.
+        resp = self._detail('external', foreign.id)
+        self.assertEqual(resp.status_code, 404)

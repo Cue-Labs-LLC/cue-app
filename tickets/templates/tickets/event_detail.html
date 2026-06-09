@@ -1708,7 +1708,8 @@ button.detail-meta-weather--severe:focus-visible {
                 </thead>
                 <tbody>
                     {% for row in survey_responses_page %}
-                    <tr>
+                    <tr class="survey-response-row" style="cursor:pointer;"
+                        data-detail-url="{% url 'tickets:event_survey_response_detail' event.id row.detail_kind row.detail_id %}">
                         <td class="text-nowrap">{{ row.date|date:"M j, Y" }}</td>
                         <td>
                             <span class="badge bg-secondary-subtle text-secondary">{{ row.source }}</span>
@@ -1729,7 +1730,7 @@ button.detail-meta-weather--severe:focus-visible {
                             title="{{ row.feedback }}">
                             {{ row.feedback|default:"-" }}
                         </td>
-                        <td class="text-end">
+                        <td class="text-end" onclick="event.stopPropagation();">
                             {% if row.response_id %}
                             <form method="post" action="{% url 'tickets:event_survey_unlink' event.id %}" class="d-inline"
                                   onsubmit="return confirm('Unlink this response from the event?');">
@@ -2060,6 +2061,29 @@ button.detail-meta-weather--severe:focus-visible {
 
 <a href="{% url 'tickets:event_list' %}" class="btn btn-outline-secondary"><i class="bi bi-arrow-left"></i> Back to Events</a>
 
+<!-- Individual Survey Response Detail Modal — must live outside the tab panes:
+     ancestors there create a stacking context that traps the modal under the
+     body-level backdrop. -->
+<div class="modal fade" id="surveyResponseModal" tabindex="-1" aria-labelledby="surveyResponseModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-lg modal-dialog-scrollable">
+        <div class="modal-content">
+            <div class="modal-header">
+                <div>
+                    <h5 class="modal-title" id="surveyResponseModalLabel">Survey Response</h5>
+                    <small class="text-muted" id="surveyResponseMeta"></small>
+                </div>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body" id="surveyResponseBody">
+                <div class="text-center text-muted py-4">
+                    <div class="spinner-border spinner-border-sm" role="status"></div>
+                    <span class="ms-2">Loading…</span>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
 <!-- Upload CSV Modal -->
 {% if event.ticketing_type != 'direct' %}
 <div class="modal fade" id="uploadCsvModal" tabindex="-1" aria-labelledby="uploadCsvModalLabel" aria-hidden="true">
@@ -2300,6 +2324,75 @@ button.detail-meta-weather--severe:focus-visible {
 {% endblock %}
 
 {% block extra_js %}
+<script>
+// Individual survey response → detail modal. Clicking a row fetches the full
+// question/answer breakdown for that submission and renders it in a modal.
+// Deferred to DOMContentLoaded so the (defer-loaded) Bootstrap bundle has run
+// and `bootstrap.Modal` is defined by the time we wire things up.
+function initSurveyResponseModal() {
+    var rows = document.querySelectorAll('.survey-response-row');
+    if (!rows.length) return;
+    var modalEl = document.getElementById('surveyResponseModal');
+    if (!modalEl || typeof bootstrap === 'undefined') return;
+    var modal = bootstrap.Modal.getOrCreateInstance(modalEl);
+    var bodyEl = document.getElementById('surveyResponseBody');
+    var metaEl = document.getElementById('surveyResponseMeta');
+
+    function esc(s) {
+        var d = document.createElement('div');
+        d.textContent = (s === null || s === undefined) ? '' : String(s);
+        return d.innerHTML;
+    }
+
+    function render(data) {
+        var m = data.meta || {};
+        var bits = [];
+        if (m.source) bits.push(esc(m.source));
+        if (m.date) bits.push(esc(m.date));
+        if (m.respondent) bits.push(esc(m.respondent));
+        metaEl.innerHTML = bits.join(' &middot; ');
+
+        var items = data.items || [];
+        if (!items.length) {
+            bodyEl.innerHTML = '<p class="text-muted text-center py-3 mb-0">No answers recorded for this response.</p>';
+            return;
+        }
+        var html = '<dl class="mb-0">';
+        items.forEach(function(it) {
+            html += '<dt class="text-muted fw-normal small">' + esc(it.question) + '</dt>';
+            html += '<dd class="mb-3 fw-medium">' + (it.answer ? esc(it.answer) : '<span class="text-muted">&mdash;</span>') + '</dd>';
+        });
+        html += '</dl>';
+        bodyEl.innerHTML = html;
+    }
+
+    rows.forEach(function(row) {
+        row.addEventListener('click', function() {
+            var url = row.getAttribute('data-detail-url');
+            if (!url) return;
+            metaEl.innerHTML = '';
+            bodyEl.innerHTML = '<div class="text-center text-muted py-4">' +
+                '<div class="spinner-border spinner-border-sm" role="status"></div>' +
+                '<span class="ms-2">Loading&hellip;</span></div>';
+            modal.show();
+            fetch(url, { headers: { 'X-Requested-With': 'XMLHttpRequest' } })
+                .then(function(r) {
+                    if (!r.ok) throw new Error('Request failed');
+                    return r.json();
+                })
+                .then(render)
+                .catch(function() {
+                    bodyEl.innerHTML = '<p class="text-danger text-center py-3 mb-0">Could not load this response. Please try again.</p>';
+                });
+        });
+    });
+}
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', initSurveyResponseModal);
+} else {
+    initSurveyResponseModal();
+}
+</script>
 <script>
 // Marketing tab sub-view toggle: SMS vs Linked campaigns. Hidden sections stay in
 // the DOM so the SlickText/Meta refresh + confirm handlers keep working.
