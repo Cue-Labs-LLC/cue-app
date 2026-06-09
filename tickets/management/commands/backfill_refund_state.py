@@ -13,7 +13,6 @@ from datetime import timedelta
 from decimal import Decimal
 
 from django.core.management.base import BaseCommand, CommandError
-from django.db.models import Q
 from django.utils import timezone
 
 from tickets.models import Organization, StripeCheckoutSession
@@ -52,7 +51,9 @@ class Command(BaseCommand):
         import stripe as stripe_lib
         from django.conf import settings as django_settings
 
-        from tickets.views import _stripe_value, _sync_charge_refund
+        from tickets.views import (
+            _find_session_for_payment_intent, _stripe_value, _sync_charge_refund,
+        )
 
         stripe_lib.api_key = django_settings.STRIPE_SECRET_KEY
 
@@ -110,14 +111,21 @@ class Command(BaseCommand):
 
             pi_id = _stripe_value(charge, 'payment_intent')
             if not pi_id:
+                self.stdout.write(f'  IGNORE {charge_id} — charge has no payment_intent')
                 not_ours += 1
                 continue
 
-            session = StripeCheckoutSession.objects.filter(
-                Q(stripe_session_id=pi_id) | Q(stripe_payment_intent_id=pi_id)
-            ).select_related('ticket_order', 'organization').first()
+            # Matches PI-flow rows directly and legacy Checkout-flow rows
+            # (cs_… id, blank stripe_payment_intent_id) via a Stripe lookup.
+            session = _find_session_for_payment_intent(pi_id)
             if session is None:
                 # SMS top-up or charge that isn't ours.
+                amount = Decimal(int(_stripe_value(charge, 'amount_refunded') or 0)) / 100
+                self.stdout.write(
+                    f'  IGNORE {charge_id} — no matching session '
+                    f'(pi={pi_id}, refunded ${amount}, '
+                    f'desc={_stripe_value(charge, "description")!r})'
+                )
                 not_ours += 1
                 continue
 
