@@ -10210,6 +10210,8 @@ def stripe_webhook(request):
         _fail_payment_intent(event['data']['object'])
     elif event_type == 'checkout.session.completed':
         _fulfill_sms_credit_checkout(event['data']['object'])
+    elif event_type == 'charge.refunded':
+        _sync_charge_refund(event['data']['object'])
 
     return HttpResponse(status=200)
 
@@ -10682,6 +10684,100 @@ def _fail_payment_intent(payment_intent):
             status=StripeCheckoutSession.Status.PENDING,
         ).update(status=StripeCheckoutSession.Status.CANCELED)
         logger.info("PaymentIntent %s marked canceled (payment failed)", pi_id)
+
+
+def _sync_charge_refund(charge):
+    """Sync a Stripe refund (any origin, incl. dashboard) into the DB.
+
+    Without this, refunds issued from the Stripe dashboard reduce the platform
+    balance while the DB keeps counting the session as COMPLETED — the Finance
+    page figures drift apart.
+
+    Idempotent: charge.amount_refunded is CUMULATIVE, so retries and the echo
+    webhook after an app-initiated refund (refund_order writes the same state
+    first) become no-ops. Inventory restore and waitlist notifications fire
+    only on the transition into REFUNDED.
+    """
+    pi_id = _stripe_value(charge, 'payment_intent')
+    if not pi_id:
+        return
+    session = StripeCheckoutSession.objects.filter(
+        Q(stripe_session_id=pi_id) | Q(stripe_payment_intent_id=pi_id)
+    ).select_related('ticket_order', 'organization').first()
+    if session is None:
+        # SMS top-up or charge that isn't ours — nothing to sync.
+        return
+    if session.status not in (
+        StripeCheckoutSession.Status.COMPLETED,
+        StripeCheckoutSession.Status.PARTIALLY_REFUNDED,
+        StripeCheckoutSession.Status.REFUNDED,
+    ):
+        return
+
+    order = session.ticket_order
+    refunded_total = Decimal(int(_stripe_value(charge, 'amount_refunded') or 0)) / 100
+    fully_refunded = bool(_stripe_value(charge, 'refunded'))
+    target_status = (
+        StripeCheckoutSession.Status.REFUNDED if fully_refunded
+        else StripeCheckoutSession.Status.PARTIALLY_REFUNDED
+    )
+
+    # No-op guard: covers webhook retries and app-initiated refunds whose
+    # state refund_order already wrote before this event arrived.
+    if session.status == target_status and (
+        order is None or order.refunded_amount >= refunded_total
+    ):
+        return
+
+    became_full = fully_refunded and session.status != StripeCheckoutSession.Status.REFUNDED
+    with transaction.atomic():
+        if order is not None:
+            order.refunded_amount = max(order.refunded_amount, refunded_total)
+            update_fields = ['refunded_amount']
+            if fully_refunded and order.refunded_at is None:
+                order.refunded_at = django_tz.now()
+                update_fields.append('refunded_at')
+            order.save(update_fields=update_fields)
+
+        session.status = target_status
+        session.save(update_fields=['status'])
+
+        if became_full:
+            for item in session.line_items_snapshot:
+                tt_id = item.get('saleable_ticket_type_id')
+                qty = item.get('quantity', 0)
+                if tt_id and qty:
+                    SaleableTicketType.objects.filter(id=tt_id).update(
+                        quantity_sold=Greatest(F('quantity_sold') - qty, Value(0))
+                    )
+
+        if order is not None and order.customer_id:
+            try:
+                order.customer.update_lifetime_value()
+            except Customer.DoesNotExist:
+                pass
+
+        _invalidate_event_list_cache(session.organization)
+        _invalidate_marketing_cache(session.organization)
+
+    # Bust the cached platform balance so the Finance page reflects the refund
+    # immediately instead of after the 60s TTL.
+    django_cache.delete(_STRIPE_PLATFORM_AVAILABLE_CACHE_KEY)
+    logger.info(
+        "Synced charge.refunded for session %s (refunded=%s, full=%s)",
+        session.stripe_session_id, refunded_total, fully_refunded,
+    )
+
+    if became_full:
+        from tickets.tasks import notify_next_waitlist_entry
+        for item in session.line_items_snapshot:
+            tt_id = item.get('saleable_ticket_type_id')
+            qty = item.get('quantity', 0)
+            if tt_id and qty:
+                tt = SaleableTicketType.objects.filter(id=tt_id, waitlist_enabled=True).first()
+                if tt:
+                    notify_next_waitlist_entry.delay(tt_id)
+
 
 # ---------------------------------------------------------------------------
 # Attendee Auth Views (public - no login required)

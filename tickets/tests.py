@@ -8695,6 +8695,143 @@ class FinanceOverviewBalanceTests(TestCase):
         self.assertGreaterEqual(ready, Decimal('0.00'))
         self.assertGreaterEqual(settling, Decimal('0.00'))
 
+
+class ChargeRefundedWebhookTests(TestCase):
+    """charge.refunded webhook: syncs dashboard-initiated refunds into the DB."""
+
+    def setUp(self):
+        self.org = Organization.objects.create(name='Webhook Refund Org', slug='webhook-refund-org')
+        self.venue = Venue.objects.create(organization=self.org, name='Venue', city='City')
+        self.event = Event.objects.create(
+            organization=self.org, name='Direct Event', venue=self.venue,
+            start_date=date.today() + timedelta(days=14),
+            ticketing_type='direct',
+        )
+        self.ticket_type = SaleableTicketType.objects.create(
+            event=self.event, name='General', price=Decimal('50.00'),
+            quantity_limit=100, quantity_sold=2,
+        )
+        self.customer = Customer.objects.create(
+            organization=self.org, email='buyer@example.com', name='Buyer',
+        )
+        self.order = TicketOrder.objects.create(
+            event=self.event,
+            customer=self.customer,
+            order_number='WHR-001',
+            order_date=timezone.now(),
+            total_amount=Decimal('100.00'),
+        )
+        self.session = StripeCheckoutSession.objects.create(
+            event=self.event,
+            organization=self.org,
+            stripe_session_id='pi_webhook_refund',
+            stripe_payment_intent_id='pi_webhook_refund',
+            buyer_email='buyer@example.com',
+            buyer_name='Buyer',
+            status=StripeCheckoutSession.Status.COMPLETED,
+            amount_total_cents=10000,
+            platform_fee_cents=0,
+            line_items_snapshot=[{
+                'saleable_ticket_type_id': str(self.ticket_type.id),
+                'name': 'General', 'price': '50.00', 'quantity': 2,
+                'tier_id': None, 'tier_name': None,
+            }],
+            ticket_order=self.order,
+        )
+        self.webhook_url = reverse('tickets:stripe_webhook')
+
+    def _post_refund_event(self, mock_construct, *, amount_refunded, refunded,
+                           payment_intent='pi_webhook_refund'):
+        mock_construct.return_value = {
+            'type': 'charge.refunded',
+            'data': {'object': {
+                'id': 'ch_test_refund',
+                'payment_intent': payment_intent,
+                'amount_refunded': amount_refunded,
+                'refunded': refunded,
+            }},
+        }
+        return self.client.post(
+            self.webhook_url,
+            data=json.dumps({'type': 'charge.refunded'}),
+            content_type='application/json',
+            HTTP_STRIPE_SIGNATURE='sig_test',
+        )
+
+    @patch('stripe.Webhook.construct_event')
+    def test_partial_dashboard_refund_synced(self, mock_construct):
+        res = self._post_refund_event(mock_construct, amount_refunded=1000, refunded=False)
+        self.assertEqual(res.status_code, 200)
+
+        self.order.refresh_from_db()
+        self.session.refresh_from_db()
+        self.ticket_type.refresh_from_db()
+        self.assertEqual(self.order.refunded_amount, Decimal('10.00'))
+        self.assertIsNone(self.order.refunded_at)
+        self.assertEqual(self.session.status, StripeCheckoutSession.Status.PARTIALLY_REFUNDED)
+        # No inventory restore on partial refunds.
+        self.assertEqual(self.ticket_type.quantity_sold, 2)
+
+    @patch('stripe.Webhook.construct_event')
+    def test_full_dashboard_refund_synced(self, mock_construct):
+        res = self._post_refund_event(mock_construct, amount_refunded=10000, refunded=True)
+        self.assertEqual(res.status_code, 200)
+
+        self.order.refresh_from_db()
+        self.session.refresh_from_db()
+        self.ticket_type.refresh_from_db()
+        self.assertEqual(self.order.refunded_amount, Decimal('100.00'))
+        self.assertIsNotNone(self.order.refunded_at)
+        self.assertEqual(self.session.status, StripeCheckoutSession.Status.REFUNDED)
+        self.assertEqual(self.ticket_type.quantity_sold, 0)
+
+    @patch('stripe.Webhook.construct_event')
+    def test_full_refund_webhook_idempotent(self, mock_construct):
+        # Start with extra inventory so a double restore would be visible.
+        self.ticket_type.quantity_sold = 5
+        self.ticket_type.save(update_fields=['quantity_sold'])
+
+        self._post_refund_event(mock_construct, amount_refunded=10000, refunded=True)
+        self._post_refund_event(mock_construct, amount_refunded=10000, refunded=True)
+
+        self.order.refresh_from_db()
+        self.ticket_type.refresh_from_db()
+        self.assertEqual(self.order.refunded_amount, Decimal('100.00'))
+        # Restored once (5 - 2 = 3), not twice.
+        self.assertEqual(self.ticket_type.quantity_sold, 3)
+
+    @patch('stripe.Webhook.construct_event')
+    def test_echo_after_app_refund_is_noop(self, mock_construct):
+        # refund_order already wrote this state; the webhook echo must not change it.
+        self.order.refunded_amount = Decimal('10.00')
+        self.order.save(update_fields=['refunded_amount'])
+        self.session.status = StripeCheckoutSession.Status.PARTIALLY_REFUNDED
+        self.session.save(update_fields=['status'])
+
+        res = self._post_refund_event(mock_construct, amount_refunded=1000, refunded=False)
+        self.assertEqual(res.status_code, 200)
+
+        self.order.refresh_from_db()
+        self.session.refresh_from_db()
+        self.ticket_type.refresh_from_db()
+        self.assertEqual(self.order.refunded_amount, Decimal('10.00'))
+        self.assertEqual(self.session.status, StripeCheckoutSession.Status.PARTIALLY_REFUNDED)
+        self.assertEqual(self.ticket_type.quantity_sold, 2)
+
+    @patch('stripe.Webhook.construct_event')
+    def test_unknown_payment_intent_ignored(self, mock_construct):
+        res = self._post_refund_event(
+            mock_construct, amount_refunded=1000, refunded=False,
+            payment_intent='pi_not_ours',
+        )
+        self.assertEqual(res.status_code, 200)
+
+        self.order.refresh_from_db()
+        self.session.refresh_from_db()
+        self.assertEqual(self.order.refunded_amount, Decimal('0.00'))
+        self.assertEqual(self.session.status, StripeCheckoutSession.Status.COMPLETED)
+
+
 class UnconfirmedMatchesEndpointTests(TestCase):
     """JSON endpoint that powers the Action Center 'Review and confirm' modal."""
 
