@@ -3809,6 +3809,57 @@ def _compute_event_stats(event):
     return result
 
 
+def _compute_marketing_events(event):
+    """Return a flat, date-sorted list of marketing sends for this event.
+
+    Each item is {'date': 'YYYY-MM-DD', 'type': 'sms'|'email', 'label': name}.
+    Used to overlay send markers on the Activity chart. Computed fresh per request
+    (NOT cached in _compute_event_stats) because the campaign models have no
+    cache-invalidation signals — a send after caching would otherwise stay hidden.
+
+    Timestamps are localized to match the chart's TruncDate-based axis labels.
+    """
+    from tickets.models import SMSCampaign
+
+    def _local_date(ts):
+        return django_tz.localtime(ts).date().isoformat()
+
+    events = []
+
+    # Mailchimp email campaigns.
+    for row in event.email_campaigns.filter(
+        send_time__isnull=False, deleted_at__isnull=True,
+    ).values('send_time', 'campaign_title'):
+        events.append({
+            'date': _local_date(row['send_time']),
+            'type': 'email',
+            'label': row['campaign_title'],
+        })
+
+    # External SlickText SMS campaigns.
+    for row in event.sms_campaigns.filter(
+        send_time__isnull=False, deleted_at__isnull=True,
+    ).values('send_time', 'name'):
+        events.append({
+            'date': _local_date(row['send_time']),
+            'type': 'sms',
+            'label': row['name'],
+        })
+
+    # Native Twilio SMS campaigns — only actually-sent ones.
+    for row in event.native_sms_campaigns.filter(
+        status=SMSCampaign.Status.SENT, sent_at__isnull=False, deleted_at__isnull=True,
+    ).values('sent_at', 'name'):
+        events.append({
+            'date': _local_date(row['sent_at']),
+            'type': 'sms',
+            'label': row['name'],
+        })
+
+    events.sort(key=lambda e: e['date'])
+    return events
+
+
 def _compute_event_checkin_stats(event):
     """Return (should_show, total_tickets, checked_in_tickets, by_type).
 
@@ -4426,6 +4477,9 @@ def event_detail(request, event_id):
         for row in stats['page_views_over_time']
     ])
 
+    marketing_events = _compute_marketing_events(event)
+    marketing_events_json = json.dumps(marketing_events)
+
     active_scanner_sessions = ScannerSession.objects.filter(event=event, is_active=True).count()
 
     show_checkin_chart, checkin_total_tickets, checkin_count, checkin_by_type = _compute_event_checkin_stats(event)
@@ -4520,6 +4574,8 @@ def event_detail(request, event_id):
         'allocation_percent_total': allocation_percent_total,
         'sales_over_time_json': sales_over_time_json,
         'page_views_over_time_json': page_views_over_time_json,
+        'marketing_events_json': marketing_events_json,
+        'has_marketing_events': bool(marketing_events),
         'has_page_view_data': bool(stats['page_views_over_time']),
         'show_page_views_chart': event.ticketing_type == 'direct',
         'show_checkin_chart': show_checkin_chart,
