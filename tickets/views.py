@@ -10210,6 +10210,8 @@ def stripe_webhook(request):
         _fail_payment_intent(event['data']['object'])
     elif event_type == 'checkout.session.completed':
         _fulfill_sms_credit_checkout(event['data']['object'])
+    elif event_type == 'charge.refunded':
+        _sync_charge_refund(event['data']['object'])
 
     return HttpResponse(status=200)
 
@@ -10683,6 +10685,100 @@ def _fail_payment_intent(payment_intent):
         ).update(status=StripeCheckoutSession.Status.CANCELED)
         logger.info("PaymentIntent %s marked canceled (payment failed)", pi_id)
 
+
+def _sync_charge_refund(charge):
+    """Sync a Stripe refund (any origin, incl. dashboard) into the DB.
+
+    Without this, refunds issued from the Stripe dashboard reduce the platform
+    balance while the DB keeps counting the session as COMPLETED — the Finance
+    page figures drift apart.
+
+    Idempotent: charge.amount_refunded is CUMULATIVE, so retries and the echo
+    webhook after an app-initiated refund (refund_order writes the same state
+    first) become no-ops. Inventory restore and waitlist notifications fire
+    only on the transition into REFUNDED.
+    """
+    pi_id = _stripe_value(charge, 'payment_intent')
+    if not pi_id:
+        return
+    session = StripeCheckoutSession.objects.filter(
+        Q(stripe_session_id=pi_id) | Q(stripe_payment_intent_id=pi_id)
+    ).select_related('ticket_order', 'organization').first()
+    if session is None:
+        # SMS top-up or charge that isn't ours — nothing to sync.
+        return
+    if session.status not in (
+        StripeCheckoutSession.Status.COMPLETED,
+        StripeCheckoutSession.Status.PARTIALLY_REFUNDED,
+        StripeCheckoutSession.Status.REFUNDED,
+    ):
+        return
+
+    order = session.ticket_order
+    refunded_total = Decimal(int(_stripe_value(charge, 'amount_refunded') or 0)) / 100
+    fully_refunded = bool(_stripe_value(charge, 'refunded'))
+    target_status = (
+        StripeCheckoutSession.Status.REFUNDED if fully_refunded
+        else StripeCheckoutSession.Status.PARTIALLY_REFUNDED
+    )
+
+    # No-op guard: covers webhook retries and app-initiated refunds whose
+    # state refund_order already wrote before this event arrived.
+    if session.status == target_status and (
+        order is None or order.refunded_amount >= refunded_total
+    ):
+        return
+
+    became_full = fully_refunded and session.status != StripeCheckoutSession.Status.REFUNDED
+    with transaction.atomic():
+        if order is not None:
+            order.refunded_amount = max(order.refunded_amount, refunded_total)
+            update_fields = ['refunded_amount']
+            if fully_refunded and order.refunded_at is None:
+                order.refunded_at = django_tz.now()
+                update_fields.append('refunded_at')
+            order.save(update_fields=update_fields)
+
+        session.status = target_status
+        session.save(update_fields=['status'])
+
+        if became_full:
+            for item in session.line_items_snapshot:
+                tt_id = item.get('saleable_ticket_type_id')
+                qty = item.get('quantity', 0)
+                if tt_id and qty:
+                    SaleableTicketType.objects.filter(id=tt_id).update(
+                        quantity_sold=Greatest(F('quantity_sold') - qty, Value(0))
+                    )
+
+        if order is not None and order.customer_id:
+            try:
+                order.customer.update_lifetime_value()
+            except Customer.DoesNotExist:
+                pass
+
+        _invalidate_event_list_cache(session.organization)
+        _invalidate_marketing_cache(session.organization)
+
+    # Bust the cached platform balance so the Finance page reflects the refund
+    # immediately instead of after the 60s TTL.
+    django_cache.delete(_STRIPE_PLATFORM_AVAILABLE_CACHE_KEY)
+    logger.info(
+        "Synced charge.refunded for session %s (refunded=%s, full=%s)",
+        session.stripe_session_id, refunded_total, fully_refunded,
+    )
+
+    if became_full:
+        from tickets.tasks import notify_next_waitlist_entry
+        for item in session.line_items_snapshot:
+            tt_id = item.get('saleable_ticket_type_id')
+            qty = item.get('quantity', 0)
+            if tt_id and qty:
+                tt = SaleableTicketType.objects.filter(id=tt_id, waitlist_enabled=True).first()
+                if tt:
+                    notify_next_waitlist_entry.delay(tt_id)
+
+
 # ---------------------------------------------------------------------------
 # Attendee Auth Views (public - no login required)
 # ---------------------------------------------------------------------------
@@ -11019,18 +11115,58 @@ def org_switch(request):
 
 _MIN_PAYOUT = Decimal('1.00')
 
+# Sessions that still hold organizer revenue. Fully REFUNDED sessions are
+# excluded: under the per-session clamp in _aggregate_session_cents they would
+# contribute exactly 0 (refunded == amount), so exclusion is pure query
+# efficiency and preserves the existing fee-waiver semantic on full refunds.
+_BALANCE_SESSION_STATUSES = (
+    StripeCheckoutSession.Status.COMPLETED,
+    StripeCheckoutSession.Status.PARTIALLY_REFUNDED,
+)
 
-def _compute_available_balance(org):
-    """Return (stripe_revenue, platform_fees, paid_out, available_balance) for the given org."""
-    completed_sessions = StripeCheckoutSession.objects.filter(
-        organization=org, status=StripeCheckoutSession.Status.COMPLETED,
-    )
-    agg = completed_sessions.aggregate(
+
+def _aggregate_session_cents(sessions):
+    """Return (total_charged_cents, total_fees_cents, refund_adjustment_cents)
+    over a StripeCheckoutSession queryset (caller pre-filters org/status/settlement).
+
+    refund_adjustment is per-session min(refunded, max(0, amount - fee)), so
+    (charged - fees - adjustment) == sum of max(0, amount - fee - refunded):
+    a partial refund reduces the organizer net by exactly the refunded amount,
+    and a session fully refunded through successive partials nets to 0 (the
+    platform fee is waived, matching the full-refund semantic).
+
+    The clamp runs in Python with exact Decimal math — refunded_amount is a
+    Decimal in dollars on the related order while session amounts are integer
+    cents, and a Cast(... * 100) in SQL float-truncates on SQLite.
+    """
+    agg = sessions.aggregate(
         total_charged=Coalesce(Sum('amount_total_cents'), 0),
         total_fees=Coalesce(Sum('platform_fee_cents'), 0),
     )
-    stripe_revenue = Decimal(str(agg['total_charged'])) / 100
-    platform_fees = Decimal(str(agg['total_fees'])) / 100
+    adjustment = 0
+    partial_rows = sessions.filter(
+        status=StripeCheckoutSession.Status.PARTIALLY_REFUNDED,
+    ).values_list(
+        'amount_total_cents', 'platform_fee_cents', 'ticket_order__refunded_amount',
+    )
+    for amount_cents, fee_cents, refunded in partial_rows:
+        refunded_cents = int(((refunded or Decimal('0')) * 100).to_integral_value())
+        adjustment += min(refunded_cents, max(0, amount_cents - fee_cents))
+    return agg['total_charged'], agg['total_fees'], adjustment
+
+
+def _compute_available_balance(org):
+    """Return (stripe_revenue, platform_fees, paid_out, available_balance) for the given org.
+
+    stripe_revenue is NET OF REFUNDS: partially refunded sessions count their
+    remaining (unrefunded) amount, fully refunded sessions count nothing.
+    """
+    sessions = StripeCheckoutSession.objects.filter(
+        organization=org, status__in=_BALANCE_SESSION_STATUSES,
+    )
+    charged_cents, fee_cents, refund_adj_cents = _aggregate_session_cents(sessions)
+    stripe_revenue = Decimal(charged_cents - refund_adj_cents) / 100
+    platform_fees = Decimal(fee_cents) / 100
 
     # Deduct all non-failed payouts — PENDING and IN_TRANSIT are already committed
     # to the connected account, so they must not be available for re-request.
@@ -11087,23 +11223,21 @@ def _compute_settled_payout_balance(org):
 
     Counts sessions whose funds have an explicit available_on <= now, plus
     sessions with available_on=NULL (payments that pre-date that field, treated
-    as already settled per the model's documented intent).
+    as already settled per the model's documented intent). Partially refunded
+    sessions count net of their refunded amount.
     Subtracts completed payouts.
     """
     from django.utils import timezone as django_tz
     now = django_tz.now()
     settled_sessions = StripeCheckoutSession.objects.filter(
         organization=org,
-        status=StripeCheckoutSession.Status.COMPLETED,
+        status__in=_BALANCE_SESSION_STATUSES,
     ).filter(
         Q(available_on__lte=now) | Q(available_on__isnull=True)
     )
 
-    agg = settled_sessions.aggregate(
-        total_charged=Coalesce(Sum('amount_total_cents'), 0),
-        total_fees=Coalesce(Sum('platform_fee_cents'), 0),
-    )
-    settled_organizer_cents = agg['total_charged'] - agg['total_fees']
+    charged_cents, fee_cents, refund_adj_cents = _aggregate_session_cents(settled_sessions)
+    settled_organizer_cents = charged_cents - fee_cents - refund_adj_cents
 
     paid_out = Payout.objects.filter(
         organization=org,
@@ -11290,7 +11424,10 @@ def finance_overview(request):
                     "Stripe-available below DB-settled for org %s: db=%s stripe=%s gap=%s",
                     org.id, db_settled, stripe_actual, db_settled - stripe_actual,
                 )
-            stripe_available = min(db_settled, stripe_actual)
+            # Clamp at zero: the shared platform balance can go negative
+            # (e.g. after refunds), which must never surface as a negative
+            # "Ready to Withdraw" or inflate the settling figure below.
+            stripe_available = max(Decimal('0.00'), min(db_settled, stripe_actual))
         else:
             stripe_available = db_settled
         settling_balance = max(Decimal('0.00'), available_balance - stripe_available)

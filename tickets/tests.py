@@ -8428,6 +8428,574 @@ class PartialRefundTests(TestCase):
         self.assertEqual(ltv, Decimal('0.00'))
 
 
+class FinanceBalanceComputationTests(TestCase):
+    """Real-data tests for _compute_available_balance / _compute_settled_payout_balance.
+
+    These guard the refund accounting: partial refunds must reduce the
+    balances by exactly the refunded amount, never the whole session.
+    """
+
+    def setUp(self):
+        self.org = Organization.objects.create(name='Balance Org', slug='balance-org')
+        self.venue = Venue.objects.create(organization=self.org, name='Venue', city='City')
+        self.event = Event.objects.create(
+            organization=self.org, name='Direct Event', venue=self.venue,
+            start_date=date.today() + timedelta(days=14),
+            ticketing_type='direct',
+        )
+        self.customer = Customer.objects.create(
+            organization=self.org, email='buyer@example.com', name='Buyer',
+        )
+        self._seq = 0
+
+    def _create_session(self, amount_cents, fee_cents, status,
+                        refunded_amount=None, available_on=None, with_order=True):
+        self._seq += 1
+        order = None
+        if with_order:
+            order = TicketOrder.objects.create(
+                event=self.event,
+                customer=self.customer,
+                order_number=f'BAL-{self._seq:03d}',
+                order_date=timezone.now(),
+                total_amount=Decimal(amount_cents) / 100,
+                refunded_amount=refunded_amount or Decimal('0.00'),
+            )
+        return StripeCheckoutSession.objects.create(
+            event=self.event,
+            organization=self.org,
+            stripe_session_id=f'pi_balance_{self._seq}',
+            stripe_payment_intent_id=f'pi_balance_{self._seq}',
+            buyer_email='buyer@example.com',
+            buyer_name='Buyer',
+            status=status,
+            amount_total_cents=amount_cents,
+            platform_fee_cents=fee_cents,
+            available_on=available_on,
+            ticket_order=order,
+        )
+
+    def test_available_balance_counts_partial_refund_net(self):
+        from tickets.views import _compute_available_balance
+        self._create_session(5000, 250, StripeCheckoutSession.Status.COMPLETED)
+        self._create_session(
+            5000, 250, StripeCheckoutSession.Status.PARTIALLY_REFUNDED,
+            refunded_amount=Decimal('1.00'),
+        )
+
+        revenue, fees, paid_out, available = _compute_available_balance(self.org)
+
+        # Sales drop by exactly the $1 refunded, not the whole $50 session.
+        self.assertEqual(revenue, Decimal('99.00'))
+        self.assertEqual(fees, Decimal('5.00'))
+        self.assertEqual(paid_out, Decimal('0.00'))
+        self.assertEqual(available, Decimal('94.00'))
+
+    def test_fully_refunded_via_partials_nets_to_zero(self):
+        from tickets.views import _compute_available_balance
+        # refunded == total via successive partials: status stays
+        # PARTIALLY_REFUNDED but the session must contribute 0, not -fee.
+        self._create_session(
+            5000, 250, StripeCheckoutSession.Status.PARTIALLY_REFUNDED,
+            refunded_amount=Decimal('50.00'),
+        )
+
+        revenue, fees, paid_out, available = _compute_available_balance(self.org)
+
+        self.assertEqual(revenue - fees, Decimal('0.00'))
+        self.assertEqual(available, Decimal('0.00'))
+
+    def test_refunded_session_excluded(self):
+        from tickets.views import _compute_available_balance
+        self._create_session(
+            5000, 250, StripeCheckoutSession.Status.REFUNDED,
+            refunded_amount=Decimal('50.00'),
+        )
+
+        revenue, fees, paid_out, available = _compute_available_balance(self.org)
+
+        self.assertEqual(revenue, Decimal('0.00'))
+        self.assertEqual(fees, Decimal('0.00'))
+        self.assertEqual(available, Decimal('0.00'))
+
+    def test_partial_session_with_null_ticket_order(self):
+        from tickets.views import _compute_available_balance
+        self._create_session(
+            5000, 250, StripeCheckoutSession.Status.PARTIALLY_REFUNDED,
+            with_order=False,
+        )
+
+        revenue, fees, paid_out, available = _compute_available_balance(self.org)
+
+        # No order to read refunds from: treated as 0 refunded, no crash.
+        self.assertEqual(available, Decimal('47.50'))
+
+    def test_settled_balance_applies_refund_and_settlement_window(self):
+        from tickets.views import _compute_settled_payout_balance
+        # Unsettled: available_on in the future — excluded entirely.
+        self._create_session(
+            10000, 500, StripeCheckoutSession.Status.COMPLETED,
+            available_on=timezone.now() + timedelta(days=3),
+        )
+        # Settled (legacy NULL available_on), partially refunded $10.
+        self._create_session(
+            5000, 250, StripeCheckoutSession.Status.PARTIALLY_REFUNDED,
+            refunded_amount=Decimal('10.00'),
+        )
+        Payout.objects.create(
+            organization=self.org,
+            amount=Decimal('20.00'),
+            status=Payout.Status.COMPLETED,
+        )
+
+        settled = _compute_settled_payout_balance(self.org)
+
+        # (50.00 - 2.50 - 10.00) - 20.00 payout = 17.50
+        self.assertEqual(settled, Decimal('17.50'))
+
+    def test_settled_balance_floors_at_zero(self):
+        from tickets.views import _compute_settled_payout_balance
+        self._create_session(5000, 250, StripeCheckoutSession.Status.COMPLETED)
+        Payout.objects.create(
+            organization=self.org,
+            amount=Decimal('100.00'),
+            status=Payout.Status.COMPLETED,
+        )
+
+        self.assertEqual(_compute_settled_payout_balance(self.org), Decimal('0.00'))
+
+
+class FinanceOverviewBalanceTests(TestCase):
+    """finance_overview context: clamping and the Sales = paid_out + settling + ready identity."""
+
+    def setUp(self):
+        self.client = Client()
+        self.org = Organization.objects.create(
+            name='Overview Balance Org',
+            slug='overview-balance-org',
+            stripe_account_id='acct_overview_bal',
+            stripe_onboarding_complete=True,
+        )
+        self.user = User.objects.create_user(
+            username='overview-owner',
+            email='overview-owner@example.com',
+            password='testpass123',
+        )
+        UserProfile.objects.create(
+            user=self.user,
+            organization=self.org,
+            org_role=UserProfile.OrgRole.OWNER,
+        )
+        self.client.login(username='overview-owner@example.com', password='testpass123')
+        self.client.get(reverse('tickets:home'))
+        self.finance_url = reverse('tickets:finance_overview')
+
+        self.venue = Venue.objects.create(organization=self.org, name='Venue', city='City')
+        self.event = Event.objects.create(
+            organization=self.org, name='Direct Event', venue=self.venue,
+            start_date=date.today() + timedelta(days=14),
+            ticketing_type='direct',
+        )
+        self.customer = Customer.objects.create(
+            organization=self.org, email='buyer@example.com', name='Buyer',
+        )
+        self._seq = 0
+
+    def _create_session(self, amount_cents, fee_cents, status=StripeCheckoutSession.Status.COMPLETED,
+                        refunded_amount=None, available_on=None):
+        self._seq += 1
+        order = TicketOrder.objects.create(
+            event=self.event,
+            customer=self.customer,
+            order_number=f'OVB-{self._seq:03d}',
+            order_date=timezone.now(),
+            total_amount=Decimal(amount_cents) / 100,
+            refunded_amount=refunded_amount or Decimal('0.00'),
+        )
+        return StripeCheckoutSession.objects.create(
+            event=self.event,
+            organization=self.org,
+            stripe_session_id=f'pi_overview_bal_{self._seq}',
+            stripe_payment_intent_id=f'pi_overview_bal_{self._seq}',
+            buyer_email='buyer@example.com',
+            buyer_name='Buyer',
+            status=status,
+            amount_total_cents=amount_cents,
+            platform_fee_cents=fee_cents,
+            available_on=available_on,
+            ticket_order=order,
+        )
+
+    def _mock_account(self):
+        account = MagicMock()
+        account.country = 'US'
+        account.details_submitted = True
+        account.charges_enabled = True
+        account.payouts_enabled = True
+        account.capabilities = {'card_payments': 'active'}
+        account.get.side_effect = lambda key, default=None: {
+            'external_accounts': {'data': []},
+        }.get(key, default)
+        return account
+
+    @patch('tickets.views._get_stripe_platform_available_cents')
+    @patch('stripe.Account.retrieve')
+    def test_negative_platform_balance_clamped(self, mock_retrieve, mock_platform):
+        mock_retrieve.return_value = self._mock_account()
+        mock_platform.return_value = -699  # platform balance went negative after refunds
+
+        self._create_session(10000, 340)  # settled (NULL available_on): net 96.60
+        Payout.objects.create(
+            organization=self.org, amount=Decimal('3.00'), status=Payout.Status.COMPLETED,
+        )
+
+        res = self.client.get(self.finance_url)
+        self.assertEqual(res.status_code, 200)
+
+        # Never a negative Ready to Withdraw, never Settling > Sales.
+        self.assertEqual(res.context['stripe_available'], Decimal('0.00'))
+        self.assertEqual(res.context['net_sales'], Decimal('96.60'))
+        self.assertEqual(res.context['settling_balance'], Decimal('93.60'))
+        self.assertLessEqual(res.context['settling_balance'], res.context['net_sales'])
+
+    @patch('tickets.views._get_stripe_platform_available_cents')
+    @patch('stripe.Account.retrieve')
+    def test_sales_identity_holds(self, mock_retrieve, mock_platform):
+        mock_retrieve.return_value = self._mock_account()
+        mock_platform.return_value = 100_000_000  # platform balance doesn't bind
+
+        # Settled completed session: net 47.50
+        self._create_session(5000, 250)
+        # Unsettled session: net 28.50, still settling
+        self._create_session(
+            3000, 150, available_on=timezone.now() + timedelta(days=3),
+        )
+        # Settled partial refund: net 20.00 - 1.00 - 5.00 = 14.00
+        self._create_session(
+            2000, 100, status=StripeCheckoutSession.Status.PARTIALLY_REFUNDED,
+            refunded_amount=Decimal('5.00'),
+        )
+        Payout.objects.create(
+            organization=self.org, amount=Decimal('10.00'), status=Payout.Status.COMPLETED,
+        )
+
+        res = self.client.get(self.finance_url)
+        self.assertEqual(res.status_code, 200)
+
+        net_sales = res.context['net_sales']
+        paid_out = res.context['paid_out']
+        settling = res.context['settling_balance']
+        ready = res.context['stripe_available']
+
+        self.assertEqual(net_sales, Decimal('90.00'))
+        self.assertEqual(paid_out, Decimal('10.00'))
+        self.assertEqual(ready, Decimal('51.50'))      # settled net 61.50 - 10.00 paid out
+        self.assertEqual(settling, Decimal('28.50'))   # the unsettled session
+        self.assertEqual(net_sales, paid_out + settling + ready)
+        self.assertGreaterEqual(ready, Decimal('0.00'))
+        self.assertGreaterEqual(settling, Decimal('0.00'))
+
+
+class ChargeRefundedWebhookTests(TestCase):
+    """charge.refunded webhook: syncs dashboard-initiated refunds into the DB."""
+
+    def setUp(self):
+        self.org = Organization.objects.create(name='Webhook Refund Org', slug='webhook-refund-org')
+        self.venue = Venue.objects.create(organization=self.org, name='Venue', city='City')
+        self.event = Event.objects.create(
+            organization=self.org, name='Direct Event', venue=self.venue,
+            start_date=date.today() + timedelta(days=14),
+            ticketing_type='direct',
+        )
+        self.ticket_type = SaleableTicketType.objects.create(
+            event=self.event, name='General', price=Decimal('50.00'),
+            quantity_limit=100, quantity_sold=2,
+        )
+        self.customer = Customer.objects.create(
+            organization=self.org, email='buyer@example.com', name='Buyer',
+        )
+        self.order = TicketOrder.objects.create(
+            event=self.event,
+            customer=self.customer,
+            order_number='WHR-001',
+            order_date=timezone.now(),
+            total_amount=Decimal('100.00'),
+        )
+        self.session = StripeCheckoutSession.objects.create(
+            event=self.event,
+            organization=self.org,
+            stripe_session_id='pi_webhook_refund',
+            stripe_payment_intent_id='pi_webhook_refund',
+            buyer_email='buyer@example.com',
+            buyer_name='Buyer',
+            status=StripeCheckoutSession.Status.COMPLETED,
+            amount_total_cents=10000,
+            platform_fee_cents=0,
+            line_items_snapshot=[{
+                'saleable_ticket_type_id': str(self.ticket_type.id),
+                'name': 'General', 'price': '50.00', 'quantity': 2,
+                'tier_id': None, 'tier_name': None,
+            }],
+            ticket_order=self.order,
+        )
+        self.webhook_url = reverse('tickets:stripe_webhook')
+
+    def _post_refund_event(self, mock_construct, *, amount_refunded, refunded,
+                           payment_intent='pi_webhook_refund'):
+        mock_construct.return_value = {
+            'type': 'charge.refunded',
+            'data': {'object': {
+                'id': 'ch_test_refund',
+                'payment_intent': payment_intent,
+                'amount_refunded': amount_refunded,
+                'refunded': refunded,
+            }},
+        }
+        return self.client.post(
+            self.webhook_url,
+            data=json.dumps({'type': 'charge.refunded'}),
+            content_type='application/json',
+            HTTP_STRIPE_SIGNATURE='sig_test',
+        )
+
+    @patch('stripe.Webhook.construct_event')
+    def test_partial_dashboard_refund_synced(self, mock_construct):
+        res = self._post_refund_event(mock_construct, amount_refunded=1000, refunded=False)
+        self.assertEqual(res.status_code, 200)
+
+        self.order.refresh_from_db()
+        self.session.refresh_from_db()
+        self.ticket_type.refresh_from_db()
+        self.assertEqual(self.order.refunded_amount, Decimal('10.00'))
+        self.assertIsNone(self.order.refunded_at)
+        self.assertEqual(self.session.status, StripeCheckoutSession.Status.PARTIALLY_REFUNDED)
+        # No inventory restore on partial refunds.
+        self.assertEqual(self.ticket_type.quantity_sold, 2)
+
+    @patch('stripe.Webhook.construct_event')
+    def test_full_dashboard_refund_synced(self, mock_construct):
+        res = self._post_refund_event(mock_construct, amount_refunded=10000, refunded=True)
+        self.assertEqual(res.status_code, 200)
+
+        self.order.refresh_from_db()
+        self.session.refresh_from_db()
+        self.ticket_type.refresh_from_db()
+        self.assertEqual(self.order.refunded_amount, Decimal('100.00'))
+        self.assertIsNotNone(self.order.refunded_at)
+        self.assertEqual(self.session.status, StripeCheckoutSession.Status.REFUNDED)
+        self.assertEqual(self.ticket_type.quantity_sold, 0)
+
+    @patch('stripe.Webhook.construct_event')
+    def test_full_refund_webhook_idempotent(self, mock_construct):
+        # Start with extra inventory so a double restore would be visible.
+        self.ticket_type.quantity_sold = 5
+        self.ticket_type.save(update_fields=['quantity_sold'])
+
+        self._post_refund_event(mock_construct, amount_refunded=10000, refunded=True)
+        self._post_refund_event(mock_construct, amount_refunded=10000, refunded=True)
+
+        self.order.refresh_from_db()
+        self.ticket_type.refresh_from_db()
+        self.assertEqual(self.order.refunded_amount, Decimal('100.00'))
+        # Restored once (5 - 2 = 3), not twice.
+        self.assertEqual(self.ticket_type.quantity_sold, 3)
+
+    @patch('stripe.Webhook.construct_event')
+    def test_echo_after_app_refund_is_noop(self, mock_construct):
+        # refund_order already wrote this state; the webhook echo must not change it.
+        self.order.refunded_amount = Decimal('10.00')
+        self.order.save(update_fields=['refunded_amount'])
+        self.session.status = StripeCheckoutSession.Status.PARTIALLY_REFUNDED
+        self.session.save(update_fields=['status'])
+
+        res = self._post_refund_event(mock_construct, amount_refunded=1000, refunded=False)
+        self.assertEqual(res.status_code, 200)
+
+        self.order.refresh_from_db()
+        self.session.refresh_from_db()
+        self.ticket_type.refresh_from_db()
+        self.assertEqual(self.order.refunded_amount, Decimal('10.00'))
+        self.assertEqual(self.session.status, StripeCheckoutSession.Status.PARTIALLY_REFUNDED)
+        self.assertEqual(self.ticket_type.quantity_sold, 2)
+
+    @patch('stripe.Webhook.construct_event')
+    def test_unknown_payment_intent_ignored(self, mock_construct):
+        res = self._post_refund_event(
+            mock_construct, amount_refunded=1000, refunded=False,
+            payment_intent='pi_not_ours',
+        )
+        self.assertEqual(res.status_code, 200)
+
+        self.order.refresh_from_db()
+        self.session.refresh_from_db()
+        self.assertEqual(self.order.refunded_amount, Decimal('0.00'))
+        self.assertEqual(self.session.status, StripeCheckoutSession.Status.COMPLETED)
+
+
+class BackfillRefundStateCommandTests(TestCase):
+    """Tests for the backfill_refund_state management command."""
+
+    def setUp(self):
+        self.org = Organization.objects.create(name='Backfill Org', slug='backfill-org')
+        self.venue = Venue.objects.create(organization=self.org, name='Venue', city='City')
+        self.event = Event.objects.create(
+            organization=self.org, name='Direct Event', venue=self.venue,
+            start_date=date.today() + timedelta(days=14),
+            ticketing_type='direct',
+        )
+        self.ticket_type = SaleableTicketType.objects.create(
+            event=self.event, name='General', price=Decimal('50.00'),
+            quantity_limit=100, quantity_sold=2,
+        )
+        self.customer = Customer.objects.create(
+            organization=self.org, email='buyer@example.com', name='Buyer',
+        )
+        self.order = TicketOrder.objects.create(
+            event=self.event,
+            customer=self.customer,
+            order_number='BFR-001',
+            order_date=timezone.now(),
+            total_amount=Decimal('100.00'),
+        )
+        self.session = StripeCheckoutSession.objects.create(
+            event=self.event,
+            organization=self.org,
+            stripe_session_id='pi_backfill_refund',
+            stripe_payment_intent_id='pi_backfill_refund',
+            buyer_email='buyer@example.com',
+            buyer_name='Buyer',
+            status=StripeCheckoutSession.Status.COMPLETED,
+            amount_total_cents=10000,
+            platform_fee_cents=0,
+            line_items_snapshot=[{
+                'saleable_ticket_type_id': str(self.ticket_type.id),
+                'name': 'General', 'price': '50.00', 'quantity': 2,
+                'tier_id': None, 'tier_name': None,
+            }],
+            ticket_order=self.order,
+        )
+
+    def _run(self, *args, refunds, charge):
+        """Run the command with mocked Stripe refund feed + charge retrieval."""
+        from io import StringIO
+        out = StringIO()
+        refund_list = MagicMock()
+        refund_list.auto_paging_iter.return_value = iter(refunds)
+        with patch('stripe.Refund.list', return_value=refund_list), \
+             patch('stripe.Charge.retrieve', return_value=charge):
+            call_command('backfill_refund_state', *args, stdout=out)
+        return out.getvalue()
+
+    def test_dry_run_reports_without_writing(self):
+        output = self._run(
+            refunds=[{'id': 're_1', 'charge': 'ch_backfill'}],
+            charge={
+                'id': 'ch_backfill',
+                'payment_intent': 'pi_backfill_refund',
+                'amount_refunded': 1000,
+                'refunded': False,
+            },
+        )
+
+        self.assertIn('WOULD UPDATE', output)
+        self.order.refresh_from_db()
+        self.session.refresh_from_db()
+        self.assertEqual(self.order.refunded_amount, Decimal('0.00'))
+        self.assertEqual(self.session.status, StripeCheckoutSession.Status.COMPLETED)
+
+    def test_apply_syncs_missed_partial_refund(self):
+        output = self._run(
+            '--apply',
+            refunds=[{'id': 're_1', 'charge': 'ch_backfill'}],
+            charge={
+                'id': 'ch_backfill',
+                'payment_intent': 'pi_backfill_refund',
+                'amount_refunded': 1000,
+                'refunded': False,
+            },
+        )
+
+        self.assertIn('UPDATE', output)
+        self.order.refresh_from_db()
+        self.session.refresh_from_db()
+        self.assertEqual(self.order.refunded_amount, Decimal('10.00'))
+        self.assertEqual(self.session.status, StripeCheckoutSession.Status.PARTIALLY_REFUNDED)
+
+    def test_apply_syncs_missed_full_refund(self):
+        self._run(
+            '--apply',
+            refunds=[{'id': 're_1', 'charge': 'ch_backfill'}],
+            charge={
+                'id': 'ch_backfill',
+                'payment_intent': 'pi_backfill_refund',
+                'amount_refunded': 10000,
+                'refunded': True,
+            },
+        )
+
+        self.order.refresh_from_db()
+        self.session.refresh_from_db()
+        self.ticket_type.refresh_from_db()
+        self.assertEqual(self.order.refunded_amount, Decimal('100.00'))
+        self.assertIsNotNone(self.order.refunded_at)
+        self.assertEqual(self.session.status, StripeCheckoutSession.Status.REFUNDED)
+        self.assertEqual(self.ticket_type.quantity_sold, 0)
+
+    def test_already_synced_refund_is_noop(self):
+        self.order.refunded_amount = Decimal('10.00')
+        self.order.save(update_fields=['refunded_amount'])
+        self.session.status = StripeCheckoutSession.Status.PARTIALLY_REFUNDED
+        self.session.save(update_fields=['status'])
+
+        output = self._run(
+            '--apply',
+            refunds=[{'id': 're_1', 'charge': 'ch_backfill'}],
+            charge={
+                'id': 'ch_backfill',
+                'payment_intent': 'pi_backfill_refund',
+                'amount_refunded': 1000,
+                'refunded': False,
+            },
+        )
+
+        self.assertIn('already current', output)
+        self.order.refresh_from_db()
+        self.assertEqual(self.order.refunded_amount, Decimal('10.00'))
+
+    def test_foreign_charge_ignored(self):
+        output = self._run(
+            '--apply',
+            refunds=[{'id': 're_1', 'charge': 'ch_foreign'}],
+            charge={
+                'id': 'ch_foreign',
+                'payment_intent': 'pi_someone_elses',
+                'amount_refunded': 1000,
+                'refunded': False,
+            },
+        )
+
+        self.assertIn('Not ours: 1', output)
+        self.session.refresh_from_db()
+        self.assertEqual(self.session.status, StripeCheckoutSession.Status.COMPLETED)
+
+    def test_org_filter_skips_other_orgs(self):
+        other_org = Organization.objects.create(name='Other Org', slug='other-backfill-org')
+        output = self._run(
+            '--apply', '--org', other_org.slug,
+            refunds=[{'id': 're_1', 'charge': 'ch_backfill'}],
+            charge={
+                'id': 'ch_backfill',
+                'payment_intent': 'pi_backfill_refund',
+                'amount_refunded': 1000,
+                'refunded': False,
+            },
+        )
+
+        self.assertIn('Skipped: 1', output)
+        self.session.refresh_from_db()
+        self.assertEqual(self.session.status, StripeCheckoutSession.Status.COMPLETED)
+
+
 class UnconfirmedMatchesEndpointTests(TestCase):
     """JSON endpoint that powers the Action Center 'Review and confirm' modal."""
 
