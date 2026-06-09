@@ -22,7 +22,7 @@
         {% if not org.meta_ads_access_token %}
         <h2 class="h5 mb-2">Connect Facebook</h2>
         <p class="text-body-secondary mb-3">
-            Cue will request read-only ads access, list your ad accounts, and pull lifetime campaign spend for selected events.
+            Cue will request read-only ads access, list your ad accounts, and pull lifetime campaign spend and purchase conversions for selected events.
         </p>
         <form method="post" action="{% url 'tickets:meta_ads_connect' %}">
             {% csrf_token %}
