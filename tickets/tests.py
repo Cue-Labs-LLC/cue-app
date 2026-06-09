@@ -5879,6 +5879,35 @@ class MarketingAnalyticsServiceTests(TestCase):
         self.assertEqual(result['channels']['ads']['spend'], Decimal('100.00'))
         self.assertEqual(result['channels']['ads']['revenue'], Decimal('300.00'))
 
+    def test_ads_api_attribution_counts_when_no_manual_override(self):
+        """Confirmed ads with only Meta-pulled attribution flow into totals; manual wins when set."""
+        from .services.marketing import MarketingAnalyticsService
+
+        EventExpense.objects.filter(event__organization=self.org).delete()
+        now = timezone.now()
+        EventExpense.objects.create(
+            event=self.event, category='marketing', description='API-attributed ad',
+            amount=Decimal('100.00'), expense_date=date.today(), source='meta_ads',
+            external_id='ad-api',
+            api_attributed_orders=6, api_attributed_revenue=Decimal('480.00'),
+            confirmed_at=now,
+        )
+        EventExpense.objects.create(
+            event=self.event, category='marketing', description='Overridden ad',
+            amount=Decimal('50.00'), expense_date=date.today(), source='meta_ads',
+            external_id='ad-override',
+            api_attributed_orders=99, api_attributed_revenue=Decimal('9999.00'),
+            manual_attributed_orders=2, manual_attributed_revenue=Decimal('120.00'),
+            confirmed_at=now,
+        )
+
+        result = MarketingAnalyticsService(self.org, window_days=90).calculate()
+        self.assertEqual(result['channels']['ads']['orders'], 8)
+        self.assertEqual(result['channels']['ads']['revenue'], Decimal('600.00'))
+        row = result['top_events_by_roi'][0]
+        # email (600) + sms (400) + ads (480 api + 120 manual) = 1600
+        self.assertEqual(row['attributed_revenue'], Decimal('1600.00'))
+
     def test_manual_revenue_overrides_api_zero(self):
         """A confirmed email campaign with manual_revenue but zero ecommerce_revenue still counts."""
         from .models import EventEmailCampaign
@@ -6183,6 +6212,36 @@ class CampaignConfirmViewTests(TestCase):
         self.ad.refresh_from_db()
         self.assertEqual(self.ad.manual_attributed_orders, 8)
         self.assertEqual(self.ad.manual_attributed_revenue, Decimal('950.00'))
+
+    def test_meta_ads_metrics_clear_falls_back_to_api_values(self):
+        self.ad.manual_attributed_orders = 8
+        self.ad.manual_attributed_revenue = Decimal('950.00')
+        self.ad.api_attributed_orders = 5
+        self.ad.api_attributed_revenue = Decimal('420.00')
+        self.ad.save()
+        url = reverse('tickets:event_meta_ads_metrics_edit', args=[self.event.id, self.ad.id])
+        resp = self.client.post(url, {'manual_attributed_orders': '', 'manual_attributed_revenue': ''})
+        self.assertEqual(resp.status_code, 302)
+        self.ad.refresh_from_db()
+        self.assertIsNone(self.ad.manual_attributed_orders)
+        self.assertIsNone(self.ad.manual_attributed_revenue)
+        self.assertEqual(self.ad.effective_attributed_orders, 5)
+        self.assertEqual(self.ad.effective_attributed_revenue, Decimal('420.00'))
+
+    def test_meta_ads_effective_attribution_fallback_chain(self):
+        # Both None → zeros
+        self.assertEqual(self.ad.effective_attributed_orders, 0)
+        self.assertEqual(self.ad.effective_attributed_revenue, Decimal('0.00'))
+        # API only → API values
+        self.ad.api_attributed_orders = 7
+        self.ad.api_attributed_revenue = Decimal('310.00')
+        self.assertEqual(self.ad.effective_attributed_orders, 7)
+        self.assertEqual(self.ad.effective_attributed_revenue, Decimal('310.00'))
+        # Manual wins — including an explicit manual zero
+        self.ad.manual_attributed_orders = 0
+        self.ad.manual_attributed_revenue = Decimal('0.00')
+        self.assertEqual(self.ad.effective_attributed_orders, 0)
+        self.assertEqual(self.ad.effective_attributed_revenue, Decimal('0.00'))
 
     def test_mailchimp_confirm_all_confirms_only_emails(self):
         url = reverse('tickets:event_mailchimp_confirm_all', args=[self.event.id])

@@ -3961,15 +3961,14 @@ def _refresh_meta_ads_expenses_for_event(org, event, user=None):
     had_error = False
     changed = False
     synced = False
-    sync_time = django_tz.now()
 
     for expense in meta_expenses:
         try:
-            spend = client.get_campaign_spend(expense.external_id)
+            insights = client.get_campaign_insights(expense.external_id)
         except MetaAdsAPIError as exc:
             had_error = True
             logger.warning(
-                "Meta Ads spend refresh failed for org=%s event=%s campaign=%s: %s",
+                "Meta Ads insights refresh failed for org=%s event=%s campaign=%s: %s",
                 org.id,
                 event.id,
                 expense.external_id,
@@ -3977,23 +3976,9 @@ def _refresh_meta_ads_expenses_for_event(org, event, user=None):
             )
             continue
 
-        metadata = dict(expense.external_metadata or {})
-        metadata['last_synced_at'] = sync_time.isoformat()
-        update_fields = ['external_metadata', 'updated_at', 'version']
-        expense.external_metadata = metadata
-        expense.version += 1
         synced = True
-
-        if expense.amount != spend:
-            expense.amount = spend
-            update_fields.append('amount')
+        if _update_meta_ads_expense_from_insights(expense, insights, user):
             changed = True
-
-        if user and user.is_authenticated:
-            expense.updated_by = user
-            update_fields.append('updated_by')
-
-        expense.save(update_fields=update_fields)
 
     if synced:
         django_cache.delete(_event_stats_cache_key(event.pk))
@@ -4022,15 +4007,29 @@ def _get_active_meta_ads_expense_or_404(org, event_id, expense_id):
     return event, expense
 
 
-def _update_meta_ads_expense_spend(expense, spend, user=None):
+def _update_meta_ads_expense_from_insights(expense, insights, user=None):
+    """Write Meta insights (spend + attribution) onto a linked expense. Returns api_changed."""
     metadata = dict(expense.external_metadata or {})
     metadata['last_synced_at'] = django_tz.now().isoformat()
 
-    api_changed = expense.amount != spend
-    expense.amount = spend
+    api_changed = (
+        expense.amount != insights.spend
+        or expense.api_attributed_orders != insights.purchases
+        or expense.api_attributed_revenue != insights.purchase_value
+    )
+    expense.amount = insights.spend
+    expense.api_attributed_orders = insights.purchases
+    expense.api_attributed_revenue = insights.purchase_value
     expense.external_metadata = metadata
     expense.version += 1
-    update_fields = ['amount', 'external_metadata', 'version', 'updated_at']
+    update_fields = [
+        'amount',
+        'api_attributed_orders',
+        'api_attributed_revenue',
+        'external_metadata',
+        'version',
+        'updated_at',
+    ]
 
     if user and user.is_authenticated:
         expense.updated_by = user
@@ -4041,6 +4040,7 @@ def _update_meta_ads_expense_spend(expense, spend, user=None):
         update_fields.append('api_data_changed_at')
 
     expense.save(update_fields=update_fields)
+    return api_changed
 
 
 def _get_active_mailchimp_campaign_or_404(org, event_id, email_campaign_id):
@@ -6473,13 +6473,14 @@ def event_meta_ads_apply(request, event_id):
                 return _json_error('The selected Meta campaign was not found in this ad account.', 404)
             messages.error(request, 'The selected Meta campaign was not found in this ad account.')
             return redirect('tickets:event_meta_ads_match', event_id=event.id)
-        spend = client.get_campaign_spend(campaign_id)
+        insights = client.get_campaign_insights(campaign_id)
     except MetaAdsAPIError as exc:
         if wants_json:
             return _json_error(f'Could not pull campaign spend from Meta: {exc}', 502)
         messages.error(request, f'Could not pull campaign spend from Meta: {exc}')
         return redirect('tickets:event_meta_ads_match', event_id=event.id)
 
+    spend = insights.spend
     campaign_name = campaign.get('name') or campaign_id
     expense, created = EventExpense.objects.get_or_create(
         event=event,
@@ -6490,22 +6491,30 @@ def event_meta_ads_apply(request, event_id):
             'category': 'marketing',
             'description': f'Meta Ads: {campaign_name}'[:300],
             'amount': spend,
+            'api_attributed_orders': insights.purchases,
+            'api_attributed_revenue': insights.purchase_value,
             'expense_date': event.start_date,
             'external_metadata': {},
             'created_by': request.user,
         },
     )
     if not created:
-        old_amount = expense.amount
+        api_changed = (
+            expense.amount != spend
+            or expense.api_attributed_orders != insights.purchases
+            or expense.api_attributed_revenue != insights.purchase_value
+        )
         was_confirmed = bool(expense.confirmed_at)
         expense.category = 'marketing'
         expense.description = f'Meta Ads: {campaign_name}'[:300]
         expense.amount = spend
+        expense.api_attributed_orders = insights.purchases
+        expense.api_attributed_revenue = insights.purchase_value
         expense.expense_date = expense.expense_date or event.start_date
         expense.external_id = campaign_id
         expense.updated_by = request.user
         expense.version += 1
-        if was_confirmed and old_amount != spend:
+        if was_confirmed and api_changed:
             expense.api_data_changed_at = django_tz.now()
 
     expense.external_metadata = {
@@ -6557,7 +6566,7 @@ def event_meta_ads_refresh(request, event_id, expense_id):
         return redirect('tickets:meta_ads_settings')
 
     try:
-        spend = MetaAdsClient(org.meta_ads_access_token).get_campaign_spend(expense.external_id)
+        insights = MetaAdsClient(org.meta_ads_access_token).get_campaign_insights(expense.external_id)
     except MetaAdsAPIError as exc:
         logger.warning(
             "Meta Ads row refresh failed for org=%s event=%s expense=%s campaign=%s: %s",
@@ -6573,17 +6582,16 @@ def event_meta_ads_refresh(request, event_id, expense_id):
         messages.warning(request, msg)
         return _marketing_tab_redirect(event)
 
-    old_amount = expense.amount
-    _update_meta_ads_expense_spend(expense, spend, request.user)
+    api_changed = _update_meta_ads_expense_from_insights(expense, insights, request.user)
     django_cache.delete(_event_stats_cache_key(event.pk))
-    if old_amount != spend:
+    if api_changed:
         _invalidate_event_list_cache(org)
         _invalidate_marketing_cache(org)
 
     if ajax:
         expense.refresh_from_db()
         return JsonResponse({'ok': True, 'row': _serialize_ads_row(expense)})
-    messages.success(request, f'Meta Ads campaign spend refreshed to ${spend:,.2f}.')
+    messages.success(request, f'Meta Ads campaign spend refreshed to ${insights.spend:,.2f}.')
     return _marketing_tab_redirect(event)
 
 
@@ -7034,6 +7042,8 @@ def _serialize_ads_row(e):
         'effective_attributed_revenue': f'{(e.effective_attributed_revenue or Decimal("0.00")):.2f}',
         'manual_attributed_orders': e.manual_attributed_orders,
         'manual_attributed_revenue': f'{e.manual_attributed_revenue:.2f}' if e.manual_attributed_revenue is not None else '',
+        'api_attributed_orders': e.api_attributed_orders,
+        'api_attributed_revenue': f'{e.api_attributed_revenue:.2f}' if e.api_attributed_revenue is not None else '',
         'is_confirmed': e.is_confirmed,
         'needs_review': e.needs_review,
         'status_label': _status_label(e),
