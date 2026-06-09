@@ -11019,18 +11019,58 @@ def org_switch(request):
 
 _MIN_PAYOUT = Decimal('1.00')
 
+# Sessions that still hold organizer revenue. Fully REFUNDED sessions are
+# excluded: under the per-session clamp in _aggregate_session_cents they would
+# contribute exactly 0 (refunded == amount), so exclusion is pure query
+# efficiency and preserves the existing fee-waiver semantic on full refunds.
+_BALANCE_SESSION_STATUSES = (
+    StripeCheckoutSession.Status.COMPLETED,
+    StripeCheckoutSession.Status.PARTIALLY_REFUNDED,
+)
 
-def _compute_available_balance(org):
-    """Return (stripe_revenue, platform_fees, paid_out, available_balance) for the given org."""
-    completed_sessions = StripeCheckoutSession.objects.filter(
-        organization=org, status=StripeCheckoutSession.Status.COMPLETED,
-    )
-    agg = completed_sessions.aggregate(
+
+def _aggregate_session_cents(sessions):
+    """Return (total_charged_cents, total_fees_cents, refund_adjustment_cents)
+    over a StripeCheckoutSession queryset (caller pre-filters org/status/settlement).
+
+    refund_adjustment is per-session min(refunded, max(0, amount - fee)), so
+    (charged - fees - adjustment) == sum of max(0, amount - fee - refunded):
+    a partial refund reduces the organizer net by exactly the refunded amount,
+    and a session fully refunded through successive partials nets to 0 (the
+    platform fee is waived, matching the full-refund semantic).
+
+    The clamp runs in Python with exact Decimal math — refunded_amount is a
+    Decimal in dollars on the related order while session amounts are integer
+    cents, and a Cast(... * 100) in SQL float-truncates on SQLite.
+    """
+    agg = sessions.aggregate(
         total_charged=Coalesce(Sum('amount_total_cents'), 0),
         total_fees=Coalesce(Sum('platform_fee_cents'), 0),
     )
-    stripe_revenue = Decimal(str(agg['total_charged'])) / 100
-    platform_fees = Decimal(str(agg['total_fees'])) / 100
+    adjustment = 0
+    partial_rows = sessions.filter(
+        status=StripeCheckoutSession.Status.PARTIALLY_REFUNDED,
+    ).values_list(
+        'amount_total_cents', 'platform_fee_cents', 'ticket_order__refunded_amount',
+    )
+    for amount_cents, fee_cents, refunded in partial_rows:
+        refunded_cents = int(((refunded or Decimal('0')) * 100).to_integral_value())
+        adjustment += min(refunded_cents, max(0, amount_cents - fee_cents))
+    return agg['total_charged'], agg['total_fees'], adjustment
+
+
+def _compute_available_balance(org):
+    """Return (stripe_revenue, platform_fees, paid_out, available_balance) for the given org.
+
+    stripe_revenue is NET OF REFUNDS: partially refunded sessions count their
+    remaining (unrefunded) amount, fully refunded sessions count nothing.
+    """
+    sessions = StripeCheckoutSession.objects.filter(
+        organization=org, status__in=_BALANCE_SESSION_STATUSES,
+    )
+    charged_cents, fee_cents, refund_adj_cents = _aggregate_session_cents(sessions)
+    stripe_revenue = Decimal(charged_cents - refund_adj_cents) / 100
+    platform_fees = Decimal(fee_cents) / 100
 
     # Deduct all non-failed payouts — PENDING and IN_TRANSIT are already committed
     # to the connected account, so they must not be available for re-request.
@@ -11087,23 +11127,21 @@ def _compute_settled_payout_balance(org):
 
     Counts sessions whose funds have an explicit available_on <= now, plus
     sessions with available_on=NULL (payments that pre-date that field, treated
-    as already settled per the model's documented intent).
+    as already settled per the model's documented intent). Partially refunded
+    sessions count net of their refunded amount.
     Subtracts completed payouts.
     """
     from django.utils import timezone as django_tz
     now = django_tz.now()
     settled_sessions = StripeCheckoutSession.objects.filter(
         organization=org,
-        status=StripeCheckoutSession.Status.COMPLETED,
+        status__in=_BALANCE_SESSION_STATUSES,
     ).filter(
         Q(available_on__lte=now) | Q(available_on__isnull=True)
     )
 
-    agg = settled_sessions.aggregate(
-        total_charged=Coalesce(Sum('amount_total_cents'), 0),
-        total_fees=Coalesce(Sum('platform_fee_cents'), 0),
-    )
-    settled_organizer_cents = agg['total_charged'] - agg['total_fees']
+    charged_cents, fee_cents, refund_adj_cents = _aggregate_session_cents(settled_sessions)
+    settled_organizer_cents = charged_cents - fee_cents - refund_adj_cents
 
     paid_out = Payout.objects.filter(
         organization=org,
@@ -11290,7 +11328,10 @@ def finance_overview(request):
                     "Stripe-available below DB-settled for org %s: db=%s stripe=%s gap=%s",
                     org.id, db_settled, stripe_actual, db_settled - stripe_actual,
                 )
-            stripe_available = min(db_settled, stripe_actual)
+            # Clamp at zero: the shared platform balance can go negative
+            # (e.g. after refunds), which must never surface as a negative
+            # "Ready to Withdraw" or inflate the settling figure below.
+            stripe_available = max(Decimal('0.00'), min(db_settled, stripe_actual))
         else:
             stripe_available = db_settled
         settling_balance = max(Decimal('0.00'), available_balance - stripe_available)

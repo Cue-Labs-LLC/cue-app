@@ -8428,6 +8428,273 @@ class PartialRefundTests(TestCase):
         self.assertEqual(ltv, Decimal('0.00'))
 
 
+class FinanceBalanceComputationTests(TestCase):
+    """Real-data tests for _compute_available_balance / _compute_settled_payout_balance.
+
+    These guard the refund accounting: partial refunds must reduce the
+    balances by exactly the refunded amount, never the whole session.
+    """
+
+    def setUp(self):
+        self.org = Organization.objects.create(name='Balance Org', slug='balance-org')
+        self.venue = Venue.objects.create(organization=self.org, name='Venue', city='City')
+        self.event = Event.objects.create(
+            organization=self.org, name='Direct Event', venue=self.venue,
+            start_date=date.today() + timedelta(days=14),
+            ticketing_type='direct',
+        )
+        self.customer = Customer.objects.create(
+            organization=self.org, email='buyer@example.com', name='Buyer',
+        )
+        self._seq = 0
+
+    def _create_session(self, amount_cents, fee_cents, status,
+                        refunded_amount=None, available_on=None, with_order=True):
+        self._seq += 1
+        order = None
+        if with_order:
+            order = TicketOrder.objects.create(
+                event=self.event,
+                customer=self.customer,
+                order_number=f'BAL-{self._seq:03d}',
+                order_date=timezone.now(),
+                total_amount=Decimal(amount_cents) / 100,
+                refunded_amount=refunded_amount or Decimal('0.00'),
+            )
+        return StripeCheckoutSession.objects.create(
+            event=self.event,
+            organization=self.org,
+            stripe_session_id=f'pi_balance_{self._seq}',
+            stripe_payment_intent_id=f'pi_balance_{self._seq}',
+            buyer_email='buyer@example.com',
+            buyer_name='Buyer',
+            status=status,
+            amount_total_cents=amount_cents,
+            platform_fee_cents=fee_cents,
+            available_on=available_on,
+            ticket_order=order,
+        )
+
+    def test_available_balance_counts_partial_refund_net(self):
+        from tickets.views import _compute_available_balance
+        self._create_session(5000, 250, StripeCheckoutSession.Status.COMPLETED)
+        self._create_session(
+            5000, 250, StripeCheckoutSession.Status.PARTIALLY_REFUNDED,
+            refunded_amount=Decimal('1.00'),
+        )
+
+        revenue, fees, paid_out, available = _compute_available_balance(self.org)
+
+        # Sales drop by exactly the $1 refunded, not the whole $50 session.
+        self.assertEqual(revenue, Decimal('99.00'))
+        self.assertEqual(fees, Decimal('5.00'))
+        self.assertEqual(paid_out, Decimal('0.00'))
+        self.assertEqual(available, Decimal('94.00'))
+
+    def test_fully_refunded_via_partials_nets_to_zero(self):
+        from tickets.views import _compute_available_balance
+        # refunded == total via successive partials: status stays
+        # PARTIALLY_REFUNDED but the session must contribute 0, not -fee.
+        self._create_session(
+            5000, 250, StripeCheckoutSession.Status.PARTIALLY_REFUNDED,
+            refunded_amount=Decimal('50.00'),
+        )
+
+        revenue, fees, paid_out, available = _compute_available_balance(self.org)
+
+        self.assertEqual(revenue - fees, Decimal('0.00'))
+        self.assertEqual(available, Decimal('0.00'))
+
+    def test_refunded_session_excluded(self):
+        from tickets.views import _compute_available_balance
+        self._create_session(
+            5000, 250, StripeCheckoutSession.Status.REFUNDED,
+            refunded_amount=Decimal('50.00'),
+        )
+
+        revenue, fees, paid_out, available = _compute_available_balance(self.org)
+
+        self.assertEqual(revenue, Decimal('0.00'))
+        self.assertEqual(fees, Decimal('0.00'))
+        self.assertEqual(available, Decimal('0.00'))
+
+    def test_partial_session_with_null_ticket_order(self):
+        from tickets.views import _compute_available_balance
+        self._create_session(
+            5000, 250, StripeCheckoutSession.Status.PARTIALLY_REFUNDED,
+            with_order=False,
+        )
+
+        revenue, fees, paid_out, available = _compute_available_balance(self.org)
+
+        # No order to read refunds from: treated as 0 refunded, no crash.
+        self.assertEqual(available, Decimal('47.50'))
+
+    def test_settled_balance_applies_refund_and_settlement_window(self):
+        from tickets.views import _compute_settled_payout_balance
+        # Unsettled: available_on in the future — excluded entirely.
+        self._create_session(
+            10000, 500, StripeCheckoutSession.Status.COMPLETED,
+            available_on=timezone.now() + timedelta(days=3),
+        )
+        # Settled (legacy NULL available_on), partially refunded $10.
+        self._create_session(
+            5000, 250, StripeCheckoutSession.Status.PARTIALLY_REFUNDED,
+            refunded_amount=Decimal('10.00'),
+        )
+        Payout.objects.create(
+            organization=self.org,
+            amount=Decimal('20.00'),
+            status=Payout.Status.COMPLETED,
+        )
+
+        settled = _compute_settled_payout_balance(self.org)
+
+        # (50.00 - 2.50 - 10.00) - 20.00 payout = 17.50
+        self.assertEqual(settled, Decimal('17.50'))
+
+    def test_settled_balance_floors_at_zero(self):
+        from tickets.views import _compute_settled_payout_balance
+        self._create_session(5000, 250, StripeCheckoutSession.Status.COMPLETED)
+        Payout.objects.create(
+            organization=self.org,
+            amount=Decimal('100.00'),
+            status=Payout.Status.COMPLETED,
+        )
+
+        self.assertEqual(_compute_settled_payout_balance(self.org), Decimal('0.00'))
+
+
+class FinanceOverviewBalanceTests(TestCase):
+    """finance_overview context: clamping and the Sales = paid_out + settling + ready identity."""
+
+    def setUp(self):
+        self.client = Client()
+        self.org = Organization.objects.create(
+            name='Overview Balance Org',
+            slug='overview-balance-org',
+            stripe_account_id='acct_overview_bal',
+            stripe_onboarding_complete=True,
+        )
+        self.user = User.objects.create_user(
+            username='overview-owner',
+            email='overview-owner@example.com',
+            password='testpass123',
+        )
+        UserProfile.objects.create(
+            user=self.user,
+            organization=self.org,
+            org_role=UserProfile.OrgRole.OWNER,
+        )
+        self.client.login(username='overview-owner@example.com', password='testpass123')
+        self.client.get(reverse('tickets:home'))
+        self.finance_url = reverse('tickets:finance_overview')
+
+        self.venue = Venue.objects.create(organization=self.org, name='Venue', city='City')
+        self.event = Event.objects.create(
+            organization=self.org, name='Direct Event', venue=self.venue,
+            start_date=date.today() + timedelta(days=14),
+            ticketing_type='direct',
+        )
+        self.customer = Customer.objects.create(
+            organization=self.org, email='buyer@example.com', name='Buyer',
+        )
+        self._seq = 0
+
+    def _create_session(self, amount_cents, fee_cents, status=StripeCheckoutSession.Status.COMPLETED,
+                        refunded_amount=None, available_on=None):
+        self._seq += 1
+        order = TicketOrder.objects.create(
+            event=self.event,
+            customer=self.customer,
+            order_number=f'OVB-{self._seq:03d}',
+            order_date=timezone.now(),
+            total_amount=Decimal(amount_cents) / 100,
+            refunded_amount=refunded_amount or Decimal('0.00'),
+        )
+        return StripeCheckoutSession.objects.create(
+            event=self.event,
+            organization=self.org,
+            stripe_session_id=f'pi_overview_bal_{self._seq}',
+            stripe_payment_intent_id=f'pi_overview_bal_{self._seq}',
+            buyer_email='buyer@example.com',
+            buyer_name='Buyer',
+            status=status,
+            amount_total_cents=amount_cents,
+            platform_fee_cents=fee_cents,
+            available_on=available_on,
+            ticket_order=order,
+        )
+
+    def _mock_account(self):
+        account = MagicMock()
+        account.country = 'US'
+        account.details_submitted = True
+        account.charges_enabled = True
+        account.payouts_enabled = True
+        account.capabilities = {'card_payments': 'active'}
+        account.get.side_effect = lambda key, default=None: {
+            'external_accounts': {'data': []},
+        }.get(key, default)
+        return account
+
+    @patch('tickets.views._get_stripe_platform_available_cents')
+    @patch('stripe.Account.retrieve')
+    def test_negative_platform_balance_clamped(self, mock_retrieve, mock_platform):
+        mock_retrieve.return_value = self._mock_account()
+        mock_platform.return_value = -699  # platform balance went negative after refunds
+
+        self._create_session(10000, 340)  # settled (NULL available_on): net 96.60
+        Payout.objects.create(
+            organization=self.org, amount=Decimal('3.00'), status=Payout.Status.COMPLETED,
+        )
+
+        res = self.client.get(self.finance_url)
+        self.assertEqual(res.status_code, 200)
+
+        # Never a negative Ready to Withdraw, never Settling > Sales.
+        self.assertEqual(res.context['stripe_available'], Decimal('0.00'))
+        self.assertEqual(res.context['net_sales'], Decimal('96.60'))
+        self.assertEqual(res.context['settling_balance'], Decimal('93.60'))
+        self.assertLessEqual(res.context['settling_balance'], res.context['net_sales'])
+
+    @patch('tickets.views._get_stripe_platform_available_cents')
+    @patch('stripe.Account.retrieve')
+    def test_sales_identity_holds(self, mock_retrieve, mock_platform):
+        mock_retrieve.return_value = self._mock_account()
+        mock_platform.return_value = 100_000_000  # platform balance doesn't bind
+
+        # Settled completed session: net 47.50
+        self._create_session(5000, 250)
+        # Unsettled session: net 28.50, still settling
+        self._create_session(
+            3000, 150, available_on=timezone.now() + timedelta(days=3),
+        )
+        # Settled partial refund: net 20.00 - 1.00 - 5.00 = 14.00
+        self._create_session(
+            2000, 100, status=StripeCheckoutSession.Status.PARTIALLY_REFUNDED,
+            refunded_amount=Decimal('5.00'),
+        )
+        Payout.objects.create(
+            organization=self.org, amount=Decimal('10.00'), status=Payout.Status.COMPLETED,
+        )
+
+        res = self.client.get(self.finance_url)
+        self.assertEqual(res.status_code, 200)
+
+        net_sales = res.context['net_sales']
+        paid_out = res.context['paid_out']
+        settling = res.context['settling_balance']
+        ready = res.context['stripe_available']
+
+        self.assertEqual(net_sales, Decimal('90.00'))
+        self.assertEqual(paid_out, Decimal('10.00'))
+        self.assertEqual(ready, Decimal('51.50'))      # settled net 61.50 - 10.00 paid out
+        self.assertEqual(settling, Decimal('28.50'))   # the unsettled session
+        self.assertEqual(net_sales, paid_out + settling + ready)
+        self.assertGreaterEqual(ready, Decimal('0.00'))
+        self.assertGreaterEqual(settling, Decimal('0.00'))
+
 class UnconfirmedMatchesEndpointTests(TestCase):
     """JSON endpoint that powers the Action Center 'Review and confirm' modal."""
 
