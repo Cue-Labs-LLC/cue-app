@@ -4696,6 +4696,8 @@ def event_detail(request, event_id):
                 'feedback': ' • '.join(feedback_parts),
                 'source': 'Cue survey',
                 'response_id': None,
+                'detail_kind': 'internal',
+                'detail_id': resp.id,
             })
     if external_survey_responses_count > 0:
         for resp in (
@@ -4710,6 +4712,8 @@ def event_detail(request, event_id):
                 'feedback': resp.text_feedback or '',
                 'source': 'Typeform' if resp.typeform_response_id else 'External upload',
                 'response_id': resp.id,
+                'detail_kind': 'external',
+                'detail_id': resp.id,
             })
     survey_response_rows.sort(key=lambda r: r['date'] or datetime.min, reverse=True)
     responses_paginator = Paginator(survey_response_rows, 25)
@@ -12858,6 +12862,109 @@ def event_survey_unlink(request, event_id):
             _invalidate_event_upload_stats_cache(str(event.id))
             messages.success(request, 'Survey response unlinked.')
     return redirect(reverse('tickets:event_detail', args=[event.id]) + '#tab-surveys')
+
+
+@login_required
+@require_org
+def event_survey_response_detail(request, event_id, kind, response_id):
+    """JSON: full question/answer breakdown for a single survey response.
+
+    Powers the "Individual Responses" row-click modal on the event Surveys
+    tab. ``kind`` is 'internal' (a Cue SurveyResponse) or 'external' (a
+    Typeform/CSV ExternalSurveyResponse).
+    """
+    org = get_organization(request)
+    event = get_object_or_404(Event.objects.filter(organization=org), id=event_id)
+
+    meta = {'source': '', 'date': '', 'respondent': ''}
+    items = []
+
+    if kind == 'internal':
+        resp = get_object_or_404(
+            SurveyResponse.objects
+            .filter(event=event, organization=org)
+            .select_related('customer')
+            .prefetch_related('answers__question'),
+            id=response_id,
+        )
+        meta['source'] = 'Cue survey'
+        if resp.submitted_at:
+            meta['date'] = resp.submitted_at.strftime('%b %-d, %Y · %-I:%M %p')
+        if resp.customer:
+            meta['respondent'] = resp.customer.email or resp.customer.name or ''
+        for ans in resp.answers.all():
+            q = ans.question
+            if ans.star_rating is not None:
+                value, atype = f"{ans.star_rating} / 5 stars", 'star_rating'
+            elif ans.nps_score is not None:
+                value, atype = f"{ans.nps_score} / 10", 'nps'
+            else:
+                value, atype = (ans.text_answer or ''), 'text'
+            items.append({
+                'question': q.question_text if q else '',
+                'answer': value,
+                'type': atype,
+            })
+    elif kind == 'external':
+        resp = get_object_or_404(
+            ExternalSurveyResponse.objects.filter(event=event, organization=org),
+            id=response_id,
+        )
+        meta['source'] = 'Typeform' if resp.typeform_response_id else 'External upload'
+        if resp.responded_at:
+            meta['date'] = resp.responded_at.strftime('%b %-d, %Y · %-I:%M %p')
+        meta['respondent'] = resp.email or ''
+        # Repopulate answer titles from the form's cached question snapshot —
+        # raw_answers often carries empty titles (see TypeformFormSubscription).
+        questions_snapshot = []
+        if resp.upload_id:
+            sub = (
+                TypeformFormSubscription.objects
+                .filter(organization=org, upload_id=resp.upload_id)
+                .first()
+            )
+            if sub:
+                questions_snapshot = sub.questions
+        from .services.typeform.helpers import enrich_answers_with_titles
+        for ans in enrich_answers_with_titles(resp.raw_answers, questions_snapshot):
+            if not isinstance(ans, dict):
+                continue
+            value = ans.get('value')
+            if isinstance(value, (list, tuple)):
+                value = ', '.join(str(v) for v in value)
+            elif value is None:
+                value = ''
+            else:
+                value = str(value)
+            items.append({
+                'question': (ans.get('title') or '').strip() or '(untitled)',
+                'answer': value,
+                'type': ans.get('type') or '',
+            })
+        if not items:
+            # Fallback for CSV-uploaded rows without raw_answers: rebuild the
+            # Q&A list from the parsed structured columns.
+            structured = [
+                ('Overall rating', resp.overall_rating),
+                ('NPS score', resp.nps_score),
+                ('City', resp.city),
+                ('What they enjoyed', ', '.join(resp.enjoyed) if resp.enjoyed else ''),
+                ('Genres', ', '.join(resp.genres) if resp.genres else ''),
+                ('Suggested improvements', ', '.join(resp.improvements) if resp.improvements else ''),
+                ('Crowd vibe', resp.crowd_vibe),
+                ('Venue feel', resp.venue_feel),
+                ('Pre-event info', resp.pre_event_info),
+                ('How they found out', resp.found_out_how),
+                ('Feedback', resp.text_feedback),
+            ]
+            for label, val in structured:
+                if val in (None, '', []):
+                    continue
+                items.append({'question': label, 'answer': str(val), 'type': ''})
+    else:
+        return JsonResponse({'error': 'Invalid response kind.'}, status=400)
+
+    return JsonResponse({'meta': meta, 'items': items})
 
 
 # ── Error handlers ──────────────────────────────────────────────────────────
