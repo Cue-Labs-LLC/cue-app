@@ -8832,6 +8832,170 @@ class ChargeRefundedWebhookTests(TestCase):
         self.assertEqual(self.session.status, StripeCheckoutSession.Status.COMPLETED)
 
 
+class BackfillRefundStateCommandTests(TestCase):
+    """Tests for the backfill_refund_state management command."""
+
+    def setUp(self):
+        self.org = Organization.objects.create(name='Backfill Org', slug='backfill-org')
+        self.venue = Venue.objects.create(organization=self.org, name='Venue', city='City')
+        self.event = Event.objects.create(
+            organization=self.org, name='Direct Event', venue=self.venue,
+            start_date=date.today() + timedelta(days=14),
+            ticketing_type='direct',
+        )
+        self.ticket_type = SaleableTicketType.objects.create(
+            event=self.event, name='General', price=Decimal('50.00'),
+            quantity_limit=100, quantity_sold=2,
+        )
+        self.customer = Customer.objects.create(
+            organization=self.org, email='buyer@example.com', name='Buyer',
+        )
+        self.order = TicketOrder.objects.create(
+            event=self.event,
+            customer=self.customer,
+            order_number='BFR-001',
+            order_date=timezone.now(),
+            total_amount=Decimal('100.00'),
+        )
+        self.session = StripeCheckoutSession.objects.create(
+            event=self.event,
+            organization=self.org,
+            stripe_session_id='pi_backfill_refund',
+            stripe_payment_intent_id='pi_backfill_refund',
+            buyer_email='buyer@example.com',
+            buyer_name='Buyer',
+            status=StripeCheckoutSession.Status.COMPLETED,
+            amount_total_cents=10000,
+            platform_fee_cents=0,
+            line_items_snapshot=[{
+                'saleable_ticket_type_id': str(self.ticket_type.id),
+                'name': 'General', 'price': '50.00', 'quantity': 2,
+                'tier_id': None, 'tier_name': None,
+            }],
+            ticket_order=self.order,
+        )
+
+    def _run(self, *args, refunds, charge):
+        """Run the command with mocked Stripe refund feed + charge retrieval."""
+        from io import StringIO
+        out = StringIO()
+        refund_list = MagicMock()
+        refund_list.auto_paging_iter.return_value = iter(refunds)
+        with patch('stripe.Refund.list', return_value=refund_list), \
+             patch('stripe.Charge.retrieve', return_value=charge):
+            call_command('backfill_refund_state', *args, stdout=out)
+        return out.getvalue()
+
+    def test_dry_run_reports_without_writing(self):
+        output = self._run(
+            refunds=[{'id': 're_1', 'charge': 'ch_backfill'}],
+            charge={
+                'id': 'ch_backfill',
+                'payment_intent': 'pi_backfill_refund',
+                'amount_refunded': 1000,
+                'refunded': False,
+            },
+        )
+
+        self.assertIn('WOULD UPDATE', output)
+        self.order.refresh_from_db()
+        self.session.refresh_from_db()
+        self.assertEqual(self.order.refunded_amount, Decimal('0.00'))
+        self.assertEqual(self.session.status, StripeCheckoutSession.Status.COMPLETED)
+
+    def test_apply_syncs_missed_partial_refund(self):
+        output = self._run(
+            '--apply',
+            refunds=[{'id': 're_1', 'charge': 'ch_backfill'}],
+            charge={
+                'id': 'ch_backfill',
+                'payment_intent': 'pi_backfill_refund',
+                'amount_refunded': 1000,
+                'refunded': False,
+            },
+        )
+
+        self.assertIn('UPDATE', output)
+        self.order.refresh_from_db()
+        self.session.refresh_from_db()
+        self.assertEqual(self.order.refunded_amount, Decimal('10.00'))
+        self.assertEqual(self.session.status, StripeCheckoutSession.Status.PARTIALLY_REFUNDED)
+
+    def test_apply_syncs_missed_full_refund(self):
+        self._run(
+            '--apply',
+            refunds=[{'id': 're_1', 'charge': 'ch_backfill'}],
+            charge={
+                'id': 'ch_backfill',
+                'payment_intent': 'pi_backfill_refund',
+                'amount_refunded': 10000,
+                'refunded': True,
+            },
+        )
+
+        self.order.refresh_from_db()
+        self.session.refresh_from_db()
+        self.ticket_type.refresh_from_db()
+        self.assertEqual(self.order.refunded_amount, Decimal('100.00'))
+        self.assertIsNotNone(self.order.refunded_at)
+        self.assertEqual(self.session.status, StripeCheckoutSession.Status.REFUNDED)
+        self.assertEqual(self.ticket_type.quantity_sold, 0)
+
+    def test_already_synced_refund_is_noop(self):
+        self.order.refunded_amount = Decimal('10.00')
+        self.order.save(update_fields=['refunded_amount'])
+        self.session.status = StripeCheckoutSession.Status.PARTIALLY_REFUNDED
+        self.session.save(update_fields=['status'])
+
+        output = self._run(
+            '--apply',
+            refunds=[{'id': 're_1', 'charge': 'ch_backfill'}],
+            charge={
+                'id': 'ch_backfill',
+                'payment_intent': 'pi_backfill_refund',
+                'amount_refunded': 1000,
+                'refunded': False,
+            },
+        )
+
+        self.assertIn('already current', output)
+        self.order.refresh_from_db()
+        self.assertEqual(self.order.refunded_amount, Decimal('10.00'))
+
+    def test_foreign_charge_ignored(self):
+        output = self._run(
+            '--apply',
+            refunds=[{'id': 're_1', 'charge': 'ch_foreign'}],
+            charge={
+                'id': 'ch_foreign',
+                'payment_intent': 'pi_someone_elses',
+                'amount_refunded': 1000,
+                'refunded': False,
+            },
+        )
+
+        self.assertIn('Not ours: 1', output)
+        self.session.refresh_from_db()
+        self.assertEqual(self.session.status, StripeCheckoutSession.Status.COMPLETED)
+
+    def test_org_filter_skips_other_orgs(self):
+        other_org = Organization.objects.create(name='Other Org', slug='other-backfill-org')
+        output = self._run(
+            '--apply', '--org', other_org.slug,
+            refunds=[{'id': 're_1', 'charge': 'ch_backfill'}],
+            charge={
+                'id': 'ch_backfill',
+                'payment_intent': 'pi_backfill_refund',
+                'amount_refunded': 1000,
+                'refunded': False,
+            },
+        )
+
+        self.assertIn('Skipped: 1', output)
+        self.session.refresh_from_db()
+        self.assertEqual(self.session.status, StripeCheckoutSession.Status.COMPLETED)
+
+
 class UnconfirmedMatchesEndpointTests(TestCase):
     """JSON endpoint that powers the Action Center 'Review and confirm' modal."""
 
