@@ -115,6 +115,14 @@ urlpatterns = [
     path('analytics/cohort-retention/', views.cohort_retention, name='cohort_retention'),
     path('analytics/profitability/', views.profitability_overview, name='profitability_overview'),
     path('analytics/expenses/', views.expense_analytics, name='expense_analytics'),
+    # Loyalty programs
+    path('loyalty/', views.loyalty_program_list, name='loyalty_program_list'),
+    path('loyalty/create/', views.loyalty_program_create, name='loyalty_program_create'),
+    path('loyalty/<uuid:program_id>/', views.loyalty_program_detail, name='loyalty_program_detail'),
+    path('loyalty/<uuid:program_id>/edit/', views.loyalty_program_edit, name='loyalty_program_edit'),
+    path('loyalty/<uuid:program_id>/recalculate/', views.loyalty_recalculate, name='loyalty_recalculate'),
+    path('loyalty/<uuid:program_id>/delete/', views.loyalty_program_delete, name='loyalty_program_delete'),
+    path('loyalty/<uuid:program_id>/tiers/<uuid:tier_id>/members/', views.loyalty_tier_members, name='loyalty_tier_members'),
     # External Survey
     path('analytics/surveys/', views.survey_upload_list, name='survey_upload_list'),
     path('analytics/surveys/upload/', views.survey_upload_create, name='survey_upload_create'),

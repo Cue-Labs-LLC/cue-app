@@ -765,6 +765,16 @@ class Customer(BaseModel):
     tags = models.ManyToManyField('CustomerTag', blank=True, related_name='customers')
     sms_opt_in = models.BooleanField(default=False)
     sms_opt_in_date = models.DateTimeField(null=True, blank=True)
+    # Loyalty program tier (denormalized; assigned by LoyaltyTierAssigner, mirrors RFM fields)
+    loyalty_tier = models.ForeignKey(
+        'LoyaltyTier',
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name='members',
+        db_index=True,
+    )
+    loyalty_tier_updated_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         ordering = ['-lifetime_value', 'name']
@@ -2995,3 +3005,141 @@ class ReceiptSend(BaseModel):
 
     def __str__(self):
         return f"{self.channel} to {self.contact} ({self.status})"
+
+
+# Badge color choices shared with CustomerTag; maps to Bootstrap classes in templates.
+LOYALTY_TIER_COLOR_CHOICES = [
+    ('blue', 'Blue'),
+    ('green', 'Green'),
+    ('red', 'Red'),
+    ('yellow', 'Yellow'),
+    ('purple', 'Purple'),
+    ('orange', 'Orange'),
+]
+
+
+class LoyaltyProgram(AuditBaseModel):
+    """Organizer-defined, brand loyalty program.
+
+    A program owns a ladder of ``LoyaltyTier`` rows. A background job
+    (``LoyaltyTierAssigner``) evaluates every customer against the tiers' rules
+    and assigns each to the best tier they qualify for — mirroring how RFM
+    segments are computed. Only one program per org is active at a time, so the
+    denormalized ``Customer.loyalty_tier`` FK fully represents membership.
+    """
+    organization = models.ForeignKey(
+        Organization,
+        on_delete=models.CASCADE,
+        related_name='loyalty_programs',
+    )
+    name = models.CharField(max_length=120)
+    description = models.TextField(
+        blank=True,
+        help_text="Branding / intro copy describing the program to your team.",
+    )
+    is_active = models.BooleanField(
+        default=True,
+        db_index=True,
+        help_text="Only one program per organization can be active at a time.",
+    )
+    recalc_in_progress = models.BooleanField(default=False)
+    last_recalculated_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['organization', 'is_active']),
+        ]
+        constraints = [
+            # At most one live, non-deleted active program per organization.
+            # Enforced at the DB so concurrent saves can't leave two actives.
+            models.UniqueConstraint(
+                fields=['organization'],
+                condition=models.Q(is_active=True, deleted_at__isnull=True),
+                name='one_active_loyalty_program_per_org',
+            ),
+        ]
+
+    def __str__(self):
+        return self.name
+
+
+class LoyaltyTier(BaseModel):
+    """One tier within a ``LoyaltyProgram`` with qualifying rules and perks.
+
+    All rule fields are optional and AND-combined: a customer qualifies when
+    they meet *every* threshold that is set. A tier with no rules acts as a
+    base/"member" tier that everyone qualifies for. When a customer satisfies
+    multiple tiers, the highest ``rank`` wins.
+    """
+    program = models.ForeignKey(
+        LoyaltyProgram,
+        on_delete=models.CASCADE,
+        related_name='tiers',
+    )
+    name = models.CharField(max_length=60)
+    rank = models.PositiveIntegerField(
+        default=0,
+        help_text="Higher rank = better tier. Used to break ties when a customer qualifies for several tiers.",
+    )
+    color = models.CharField(max_length=20, default='blue', choices=LOYALTY_TIER_COLOR_CHOICES)
+    perks = models.TextField(
+        blank=True,
+        help_text="Describe the rewards and perks members of this tier earn.",
+    )
+    # Qualifying rules (all optional; AND-combined).
+    min_lifetime_value = models.DecimalField(
+        max_digits=10, decimal_places=2, null=True, blank=True,
+        help_text="Minimum total spend (lifetime value) to qualify.",
+    )
+    min_order_count = models.PositiveIntegerField(
+        null=True, blank=True,
+        help_text="Minimum number of orders placed to qualify.",
+    )
+    min_events_purchased = models.PositiveIntegerField(
+        null=True, blank=True,
+        help_text="Minimum number of distinct events purchased to qualify.",
+    )
+    min_tickets_purchased = models.PositiveIntegerField(
+        null=True, blank=True,
+        help_text="Minimum number of tickets purchased to qualify.",
+    )
+    max_days_since_last_order = models.PositiveIntegerField(
+        null=True, blank=True,
+        help_text="Must have ordered within this many days to qualify (recency).",
+    )
+
+    class Meta:
+        ordering = ['-rank', 'name']
+        constraints = [
+            models.UniqueConstraint(fields=['program', 'name'], name='loyaltytier_program_name_unique'),
+            models.UniqueConstraint(fields=['program', 'rank'], name='loyaltytier_program_rank_unique'),
+        ]
+
+    def __str__(self):
+        return f"{self.name} ({self.program.name})"
+
+    def qualifies(self, *, lifetime_value, order_count, events_purchased, tickets_purchased, days_since_last_order):
+        """Return True if the given per-customer metrics meet every set rule."""
+        if self.min_lifetime_value is not None and (lifetime_value or Decimal('0')) < self.min_lifetime_value:
+            return False
+        if self.min_order_count is not None and (order_count or 0) < self.min_order_count:
+            return False
+        if self.min_events_purchased is not None and (events_purchased or 0) < self.min_events_purchased:
+            return False
+        if self.min_tickets_purchased is not None and (tickets_purchased or 0) < self.min_tickets_purchased:
+            return False
+        if self.max_days_since_last_order is not None:
+            if days_since_last_order is None or days_since_last_order > self.max_days_since_last_order:
+                return False
+        return True
+
+    def has_no_rules(self):
+        """True when this tier has no qualifying rules set (a catch-all/base tier)."""
+        return all(
+            getattr(self, f) is None
+            for f in (
+                'min_lifetime_value', 'min_order_count', 'min_events_purchased',
+                'min_tickets_purchased', 'max_days_since_last_order',
+            )
+        )

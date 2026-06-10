@@ -22,6 +22,7 @@ from .models import (
     FeatureFlagSettings,
     SMSCampaign, SMSMessageRecipient, PhoneSuppression,
     SMSCreditTransaction,
+    LoyaltyProgram, LoyaltyTier,
 )
 
 
@@ -1235,3 +1236,25 @@ class SMSCreditTransactionAdmin(admin.ModelAdmin):
     search_fields = ['organization__name', 'stripe_checkout_session_id', 'description']
     readonly_fields = ['id', 'balance_after_cents', 'created_at', 'updated_at']
     autocomplete_fields = ['organization', 'campaign']
+
+
+class LoyaltyTierInline(admin.TabularInline):
+    model = LoyaltyTier
+    extra = 1
+
+
+@admin.register(LoyaltyProgram)
+class LoyaltyProgramAdmin(admin.ModelAdmin):
+    list_display = ['name', 'organization', 'is_active', 'recalc_in_progress', 'last_recalculated_at']
+    list_filter = ['is_active', 'organization']
+    search_fields = ['name', 'organization__name']
+    readonly_fields = ['id', 'recalc_in_progress', 'last_recalculated_at', 'created_at', 'updated_at']
+    inlines = [LoyaltyTierInline]
+
+
+@admin.register(LoyaltyTier)
+class LoyaltyTierAdmin(admin.ModelAdmin):
+    list_display = ['name', 'program', 'rank', 'min_lifetime_value', 'min_order_count', 'min_events_purchased']
+    list_filter = ['program']
+    search_fields = ['name', 'program__name']
+    readonly_fields = ['id', 'created_at', 'updated_at']

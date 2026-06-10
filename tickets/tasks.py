@@ -331,6 +331,62 @@ def recalculate_rfm_task(self, organization_id):
 
 
 @shared_task(bind=True, max_retries=2, default_retry_delay=30)
+def recalculate_loyalty_tiers_task(self, program_id):
+    """Reassign every customer to the best tier of an ACTIVE loyalty program.
+
+    Hardened against the failure modes found in review:
+      - gated: only runs for a live (active, non-deleted) program, so recalc of
+        an inactive/second program can never clobber the active one's members;
+      - serialized: claims the program row under select_for_update and a
+        recalc_in_progress flag, so overlapping clicks/workers/retries don't
+        interleave partial writes;
+      - atomic: the whole reassignment commits in one transaction — a mid-run
+        failure rolls back instead of leaving half the org reassigned;
+      - honest: last_recalculated_at is stamped only on success.
+    """
+    from django.db import transaction
+    from django.utils import timezone
+    from tickets.models import LoyaltyProgram
+    from tickets.services.loyalty import assign_loyalty_tiers
+
+    # Claim the job: lock the row, verify it's live and not already running.
+    try:
+        with transaction.atomic():
+            program = (
+                LoyaltyProgram.objects.select_for_update()
+                .get(id=program_id, deleted_at__isnull=True)
+            )
+            if not program.is_active:
+                logger.info("LoyaltyProgram %s is inactive, skipping tier recalc", program_id)
+                return 0
+            if program.recalc_in_progress:
+                logger.info("LoyaltyProgram %s recalc already in progress, skipping", program_id)
+                return 0
+            program.recalc_in_progress = True
+            program.save(update_fields=["recalc_in_progress"])
+    except LoyaltyProgram.DoesNotExist:
+        logger.warning("LoyaltyProgram %s not found, skipping tier recalc", program_id)
+        return 0
+
+    success = False
+    try:
+        with transaction.atomic():
+            assigned = assign_loyalty_tiers(program)
+        success = True
+        return assigned
+    except Exception as exc:
+        logger.exception("Loyalty tier recalc failed for program %s", program_id)
+        raise self.retry(exc=exc)
+    finally:
+        update_fields = ["recalc_in_progress"]
+        program.recalc_in_progress = False
+        if success:
+            program.last_recalculated_at = timezone.now()
+            update_fields.append("last_recalculated_at")
+        program.save(update_fields=update_fields)
+
+
+@shared_task(bind=True, max_retries=2, default_retry_delay=30)
 def generate_org_ai_opportunities_task(self, organization_id):
     """Generate reviewed AI recommendations for one organization."""
     from tickets.models import Organization

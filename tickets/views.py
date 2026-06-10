@@ -46,6 +46,7 @@ from .models import (
     ExternalSurveyUpload, ExternalSurveyResponse, TypeformFormSubscription, EventDailyPageView,
     WaitlistEntry, OrganizerWaitlist,
     ScannerSession, generate_unique_scanner_pin, TrackingLink, _generate_tracking_token,
+    LoyaltyProgram, LoyaltyTier,
     EVENT_STATUS_DRAFT, EVENT_STATUS_LIVE, EVENT_STATUS_ENDED, EVENT_STATUS_CANCELLED,
     TICKETING_TYPE_DIRECT,
 )
@@ -60,6 +61,7 @@ from .forms import (
     DirectEventForm, DirectTicketTypeFormSet,
     PromoCodeForm, SurveyUploadForm, UserProfileForm, OrgProfileForm,
     WaitlistJoinForm, OrganizerWaitlistForm,
+    LoyaltyProgramForm, LoyaltyTierFormSet,
 )
 from .csv_processor import CSVProcessor
 from .services.forecasting.preview import generate_forecast_preview
@@ -104,6 +106,7 @@ BEHAVIOR_METRIC_LABELS = {
 
 from .services.cohort_analysis.repeat_customer_calculator import RepeatCustomerCalculator
 from .services.cohort_analysis.cohort_retention_calculator import CohortRetentionCalculator
+from .services.loyalty import LoyaltyProgramStats
 from .services.meta_ads import (
     MetaAdsAPIError,
     MetaAdsClient,
@@ -2964,6 +2967,195 @@ def recalculate_segments(request):
     return redirect('tickets:customer_segments')
 
 
+# ---------------------------------------------------------------------------
+# Loyalty programs
+# ---------------------------------------------------------------------------
+
+def _active_loyalty_programs(org):
+    """Org-scoped, non-deleted programs (AuditBaseModel hides soft-deleted rows manually)."""
+    return LoyaltyProgram.objects.filter(organization=org, deleted_at__isnull=True)
+
+
+@login_required
+@require_org
+@require_host
+def loyalty_program_list(request):
+    """List the org's loyalty programs with member counts."""
+    org = get_organization(request)
+    programs = list(
+        _active_loyalty_programs(org)
+        .annotate(tier_count=Count('tiers', distinct=True))
+        .order_by('-is_active', '-created_at')
+    )
+    # Member count per program = customers whose tier belongs to that program.
+    member_counts = dict(
+        Customer.objects.filter(
+            organization=org, loyalty_tier__program__in=programs,
+        )
+        .values_list('loyalty_tier__program')
+        .annotate(c=Count('id'))
+    )
+    for program in programs:
+        program.member_count = member_counts.get(program.id, 0)
+    return render(request, 'tickets/loyalty/program_list.html', {'programs': programs})
+
+
+def _clear_loyalty_members(program):
+    """Null out the tier of every customer assigned to this program's tiers."""
+    Customer.objects.filter(loyalty_tier__program=program).update(
+        loyalty_tier=None, loyalty_tier_updated_at=django_tz.now(),
+    )
+
+
+def _save_loyalty_program(request, program):
+    """Shared create/edit handler. Returns (form, formset, saved_program_or_None)."""
+    if request.method == 'POST':
+        form = LoyaltyProgramForm(request.POST, instance=program)
+        formset = LoyaltyTierFormSet(request.POST, instance=program)
+        if form.is_valid() and formset.is_valid():
+            with transaction.atomic():
+                saved = form.save(commit=False)
+                saved.organization = program.organization
+                if saved.created_by_id is None:
+                    saved.created_by = request.user
+                saved.updated_by = request.user
+                if saved.is_active:
+                    # Deactivate other programs BEFORE saving this one active,
+                    # so the one-active-per-org DB constraint never trips, and
+                    # clear their now-orphaned member assignments.
+                    others = LoyaltyProgram.objects.filter(
+                        organization=saved.organization, is_active=True,
+                    ).exclude(pk=saved.pk)
+                    for other in others:
+                        _clear_loyalty_members(other)
+                    others.update(is_active=False)
+                else:
+                    # Program saved inactive: it should hold no members.
+                    if saved.pk:
+                        _clear_loyalty_members(saved)
+                saved.save()
+                formset.instance = saved
+                formset.save()
+            # Only an active program drives assignment; inactive ones are gated
+            # out by the task anyway, so don't bother enqueuing.
+            if saved.is_active:
+                from .tasks import recalculate_loyalty_tiers_task
+                recalculate_loyalty_tiers_task.delay(str(saved.id))
+            return form, formset, saved
+    else:
+        form = LoyaltyProgramForm(instance=program)
+        formset = LoyaltyTierFormSet(instance=program)
+    return form, formset, None
+
+
+@login_required
+@require_org
+@require_host
+@require_http_methods(["GET", "POST"])
+def loyalty_program_create(request):
+    """Builder: create a program and its tiers on one page."""
+    org = get_organization(request)
+    program = LoyaltyProgram(organization=org)
+    form, formset, saved = _save_loyalty_program(request, program)
+    if saved is not None:
+        messages.success(request, f'Loyalty program "{saved.name}" created. Members are being assigned.')
+        return redirect('tickets:loyalty_program_detail', program_id=saved.id)
+    return render(request, 'tickets/loyalty/program_form.html', {
+        'form': form, 'formset': formset, 'editing': False,
+    })
+
+
+@login_required
+@require_org
+@require_host
+@require_http_methods(["GET", "POST"])
+def loyalty_program_edit(request, program_id):
+    """Builder: edit an existing program and its tiers."""
+    org = get_organization(request)
+    program = get_object_or_404(_active_loyalty_programs(org), id=program_id)
+    form, formset, saved = _save_loyalty_program(request, program)
+    if saved is not None:
+        messages.success(request, 'Loyalty program updated. Members are being reassigned.')
+        return redirect('tickets:loyalty_program_detail', program_id=saved.id)
+    return render(request, 'tickets/loyalty/program_form.html', {
+        'form': form, 'formset': formset, 'editing': True, 'program': program,
+    })
+
+
+@login_required
+@require_org
+@require_host
+def loyalty_program_detail(request, program_id):
+    """Dashboard: tier distribution, member counts, perks, recalc controls."""
+    org = get_organization(request)
+    program = get_object_or_404(_active_loyalty_programs(org), id=program_id)
+    stats = LoyaltyProgramStats(program).calculate()
+    return render(request, 'tickets/loyalty/program_detail.html', {
+        'program': program,
+        'stats': stats,
+    })
+
+
+@login_required
+@require_org
+@require_host
+def loyalty_tier_members(request, program_id, tier_id):
+    """Paginated member list for a single tier."""
+    org = get_organization(request)
+    program = get_object_or_404(_active_loyalty_programs(org), id=program_id)
+    tier = get_object_or_404(LoyaltyTier.objects.filter(program=program), id=tier_id)
+    members = (
+        Customer.objects.filter(organization=org, loyalty_tier=tier)
+        .order_by('-lifetime_value', 'name')
+    )
+    paginator = Paginator(members, 50)
+    page_obj = paginator.get_page(request.GET.get('page'))
+    return render(request, 'tickets/loyalty/tier_members.html', {
+        'program': program,
+        'tier': tier,
+        'page_obj': page_obj,
+    })
+
+
+@login_required
+@require_org
+@require_host
+@require_http_methods(["POST"])
+def loyalty_recalculate(request, program_id):
+    """Enqueue tier reassignment for a program; redirect with message."""
+    org = get_organization(request)
+    program = get_object_or_404(_active_loyalty_programs(org), id=program_id)
+    if not program.is_active:
+        messages.warning(request, 'Activate this program before recalculating its members.')
+    elif program.recalc_in_progress:
+        messages.info(request, 'Recalculation already in progress.')
+    else:
+        from .tasks import recalculate_loyalty_tiers_task
+        recalculate_loyalty_tiers_task.delay(str(program.id))
+        messages.success(request, 'Member recalculation started. Results will appear shortly.')
+    return redirect('tickets:loyalty_program_detail', program_id=program.id)
+
+
+@login_required
+@require_org
+@require_host
+@require_http_methods(["POST"])
+def loyalty_program_delete(request, program_id):
+    """Soft-delete a program and clear its members' tier assignment."""
+    org = get_organization(request)
+    program = get_object_or_404(_active_loyalty_programs(org), id=program_id)
+    with transaction.atomic():
+        _clear_loyalty_members(program)
+        # Drop the active flag so a future program can be the org's sole active
+        # one without tripping the one-active-per-org constraint.
+        if program.is_active:
+            program.is_active = False
+            program.save(update_fields=['is_active'])
+        program.delete()  # soft delete (AuditBaseModel)
+    messages.success(request, f'Loyalty program "{program.name}" deleted.')
+    return redirect('tickets:loyalty_program_list')
+
+
 @login_required
 @require_org
 @require_host
@@ -3103,8 +3295,11 @@ def cohort_retention(request):
 def customer_detail(request, customer_id):
     """Display detailed customer information with LTV and order history."""
     org = get_organization(request)
-    customer = get_object_or_404(Customer.objects.filter(organization=org), id=customer_id)
-    
+    customer = get_object_or_404(
+        Customer.objects.filter(organization=org).select_related('loyalty_tier', 'loyalty_tier__program'),
+        id=customer_id,
+    )
+
     # Subquery for platform fee — zero for non-direct (CSV) orders
     _fee_subq = Subquery(
         StripeCheckoutSession.objects.filter(ticket_order=OuterRef('pk'))
@@ -3160,8 +3355,16 @@ def customer_detail(request, customer_id):
     org_tags = CustomerTag.objects.filter(organization=org)
     available_tags = [t for t in org_tags if t.id not in assigned_tag_ids]
 
+    # Defensive multi-tenancy guard: only surface a loyalty tier that belongs to
+    # this org's own program. A foreign tier (from a bad admin edit/script) must
+    # never leak another org's program name/perks onto this page.
+    loyalty_tier = customer.loyalty_tier
+    if loyalty_tier and loyalty_tier.program.organization_id != org.id:
+        loyalty_tier = None
+
     context = {
         'customer': customer,
+        'loyalty_tier': loyalty_tier,
         'total_orders': total_orders,
         'total_tickets': total_tickets,
         'avg_order_value': avg_order_value,

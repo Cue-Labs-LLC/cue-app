@@ -1,0 +1,70 @@
+{% extends 'tickets/base.html' %}
+{% load humanize %}
+
+{% block title %}{{ tier.name }} members{% endblock %}
+
+{% block content %}
+<nav aria-label="breadcrumb" class="mb-3">
+    <ol class="breadcrumb" style="font-size: 13px;">
+        <li class="breadcrumb-item"><a href="{% url 'tickets:loyalty_program_list' %}">Loyalty</a></li>
+        <li class="breadcrumb-item"><a href="{% url 'tickets:loyalty_program_detail' program.id %}">{{ program.name }}</a></li>
+        <li class="breadcrumb-item active">{{ tier.name }}</li>
+    </ol>
+</nav>
+
+<div class="page-header">
+    <h1>{{ tier.name }} members</h1>
+    <div class="page-header-actions">
+        <a href="{% url 'tickets:loyalty_program_detail' program.id %}" class="btn btn-outline-secondary"><i class="bi bi-arrow-left"></i> Back to program</a>
+    </div>
+</div>
+
+{% if page_obj.object_list %}
+<div class="card">
+    <div class="card-body p-0">
+        <div class="table-responsive">
+            <table class="table table-hover mb-0 align-middle">
+                <thead>
+                    <tr>
+                        <th>Customer</th>
+                        <th>Email</th>
+                        <th class="text-end">Lifetime value</th>
+                        <th class="text-end">Last order</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for customer in page_obj.object_list %}
+                    <tr>
+                        <td><a href="{% url 'tickets:customer_detail' customer.id %}" class="text-decoration-none">{{ customer.name }}</a></td>
+                        <td class="text-muted">{{ customer.email }}</td>
+                        <td class="text-end">${{ customer.lifetime_value|floatformat:2|intcomma }}</td>
+                        <td class="text-end text-muted small">{% if customer.last_order_date %}{{ customer.last_order_date|date:"M d, Y" }}{% else %}&mdash;{% endif %}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+{% if page_obj.has_other_pages %}
+<nav class="mt-3">
+    <ul class="pagination justify-content-center">
+        {% if page_obj.has_previous %}
+        <li class="page-item"><a class="page-link" href="?page={{ page_obj.previous_page_number }}">Previous</a></li>
+        {% endif %}
+        <li class="page-item disabled"><span class="page-link">Page {{ page_obj.number }} of {{ page_obj.paginator.num_pages }}</span></li>
+        {% if page_obj.has_next %}
+        <li class="page-item"><a class="page-link" href="?page={{ page_obj.next_page_number }}">Next</a></li>
+        {% endif %}
+    </ul>
+</nav>
+{% endif %}
+{% else %}
+<div class="empty-state">
+    <i class="bi bi-people"></i>
+    <h3>No members in this tier yet</h3>
+    <p>No customers currently meet this tier's rules. Try recalculating, or adjust the thresholds.</p>
+</div>
+{% endif %}
+{% endblock %}

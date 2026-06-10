@@ -50,7 +50,7 @@
             {% for tag in assigned_tags %}
             <form method="post" action="{% url 'tickets:customer_tag_remove' customer.id tag.id %}" class="d-inline m-0">
                 {% csrf_token %}
-                <button type="submit" class="badge {% if tag.color == 'blue' %}bg-primary{% elif tag.color == 'green' %}bg-success{% elif tag.color == 'red' %}bg-danger{% elif tag.color == 'yellow' %}bg-warning text-dark{% elif tag.color == 'orange' %}bg-warning text-dark{% elif tag.color == 'purple' %}badge-purple{% else %}bg-secondary{% endif %} border-0 text-decoration-none" style="cursor:pointer; font-size:0.85em;">
+                <button type="submit" class="badge {{ tag.color|badge_class }} border-0 text-decoration-none" style="cursor:pointer; font-size:0.85em;">
                     {{ tag.name }} <i class="bi bi-x"></i>
                 </button>
             </form>
@@ -95,6 +95,21 @@
             {% endif %}
             {% if customer.rfm_updated_at %}
             <span class="text-muted small" style="margin-left: auto;">Updated {{ customer.rfm_updated_at|date:"M d, Y" }}</span>
+            {% endif %}
+        </div>
+    </div>
+</div>
+{% endif %}
+
+{% if loyalty_tier %}
+<div class="card mb-4">
+    <div class="card-header"><h5 class="mb-0">Loyalty Tier</h5></div>
+    <div class="card-body">
+        <div class="d-flex flex-wrap align-items-center gap-3">
+            <span class="badge {{ loyalty_tier.color|badge_class }} fs-6">{{ loyalty_tier.name }}</span>
+            <span class="text-muted small">{{ loyalty_tier.program.name }}</span>
+            {% if loyalty_tier.perks %}
+            <span class="text-muted small">{{ loyalty_tier.perks }}</span>
             {% endif %}
         </div>
     </div>

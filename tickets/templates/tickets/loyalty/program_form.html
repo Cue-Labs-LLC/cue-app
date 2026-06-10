@@ -1,0 +1,157 @@
+{% extends 'tickets/base.html' %}
+{% load crispy_forms_tags %}
+
+{% block title %}{% if editing %}Edit{% else %}New{% endif %} Loyalty Program{% endblock %}
+
+{% block content %}
+<nav aria-label="breadcrumb" class="mb-3">
+    <ol class="breadcrumb" style="font-size: 13px;">
+        <li class="breadcrumb-item"><a href="{% url 'tickets:loyalty_program_list' %}">Loyalty</a></li>
+        <li class="breadcrumb-item active">{% if editing %}{{ program.name }}{% else %}New Program{% endif %}</li>
+    </ol>
+</nav>
+
+<div class="page-header">
+    <h1>{% if editing %}Edit Loyalty Program{% else %}New Loyalty Program{% endif %}</h1>
+</div>
+
+<form method="post">
+    {% csrf_token %}
+    <div class="row">
+        <div class="col-lg-8">
+            <div class="card mb-4">
+                <div class="card-header"><h5 class="mb-0">Program Details</h5></div>
+                <div class="card-body">
+                    {% crispy form %}
+                </div>
+            </div>
+
+            <div class="card mb-4">
+                <div class="card-header d-flex justify-content-between align-items-center">
+                    <div>
+                        <h5 class="mb-0">Tiers</h5>
+                        <span class="text-muted small">Higher-ranked tiers are checked first; customers land in the best tier they qualify for. Leave a rule blank to ignore it. A tier with no rules includes everyone.</span>
+                    </div>
+                    <button type="button" class="btn btn-sm btn-outline-secondary" id="addTierBtn"><i class="bi bi-plus-lg"></i> Add tier</button>
+                </div>
+                <div class="card-body">
+                    {{ formset.management_form }}
+                    {% if formset.non_form_errors %}
+                    <div class="alert alert-danger">{{ formset.non_form_errors }}</div>
+                    {% endif %}
+                    <div id="tiers-container">
+                        {% for tier_form in formset %}
+                        <div class="tier-row card mb-3">
+                            <div class="card-body">
+                                {{ tier_form.id }}
+                                {% for error in tier_form.non_field_errors %}
+                                <div class="text-danger small mb-2">{{ error }}</div>
+                                {% endfor %}
+                                <div class="row g-3">
+                                    <div class="col-md-5">
+                                        <label class="form-label small fw-medium">Tier name</label>
+                                        {{ tier_form.name }}
+                                        {{ tier_form.name.errors }}
+                                    </div>
+                                    <div class="col-md-3">
+                                        <label class="form-label small fw-medium">Rank</label>
+                                        {{ tier_form.rank }}
+                                        {{ tier_form.rank.errors }}
+                                    </div>
+                                    <div class="col-md-4">
+                                        <label class="form-label small fw-medium">Badge color</label>
+                                        {{ tier_form.color }}
+                                    </div>
+                                    <div class="col-12">
+                                        <label class="form-label small fw-medium">Perks (member-facing rewards)</label>
+                                        {{ tier_form.perks }}
+                                    </div>
+                                </div>
+                                <hr class="my-3">
+                                <div class="small text-muted mb-2">Qualifying rules — a customer joins this tier when they meet every rule you set.</div>
+                                <div class="row g-3">
+                                    <div class="col-md-4">
+                                        <label class="form-label small fw-medium">Min lifetime spend ($)</label>
+                                        {{ tier_form.min_lifetime_value }}
+                                    </div>
+                                    <div class="col-md-4">
+                                        <label class="form-label small fw-medium">Min orders</label>
+                                        {{ tier_form.min_order_count }}
+                                    </div>
+                                    <div class="col-md-4">
+                                        <label class="form-label small fw-medium">Min events purchased</label>
+                                        {{ tier_form.min_events_purchased }}
+                                    </div>
+                                    <div class="col-md-4">
+                                        <label class="form-label small fw-medium">Min tickets purchased</label>
+                                        {{ tier_form.min_tickets_purchased }}
+                                    </div>
+                                    <div class="col-md-4">
+                                        <label class="form-label small fw-medium">Ordered within (days)</label>
+                                        {{ tier_form.max_days_since_last_order }}
+                                    </div>
+                                </div>
+                                {% if tier_form.instance.pk %}
+                                <div class="form-check mt-3">
+                                    {{ tier_form.DELETE }}
+                                    <label class="form-check-label text-danger" for="{{ tier_form.DELETE.id_for_label }}">Delete this tier</label>
+                                </div>
+                                {% else %}
+                                <div class="form-check mt-3 d-none">{{ tier_form.DELETE }}</div>
+                                {% endif %}
+                            </div>
+                        </div>
+                        {% endfor %}
+                    </div>
+                </div>
+            </div>
+
+            <div class="d-flex gap-2 mb-4">
+                <button type="submit" class="btn btn-primary">{% if editing %}Save Program{% else %}Create Program{% endif %}</button>
+                <a href="{% url 'tickets:loyalty_program_list' %}" class="btn btn-outline-secondary">Cancel</a>
+            </div>
+        </div>
+    </div>
+</form>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+(function () {
+    var container = document.getElementById('tiers-container');
+    var addBtn = document.getElementById('addTierBtn');
+    var totalForms = document.getElementById('id_{{ formset.prefix }}-TOTAL_FORMS');
+
+    addBtn.addEventListener('click', function () {
+        var rows = container.querySelectorAll('.tier-row');
+        var newIndex = parseInt(totalForms.value);
+        var lastRow = rows[rows.length - 1];
+        var newRow = lastRow.cloneNode(true);
+
+        newRow.querySelectorAll('input, select, textarea').forEach(function (el) {
+            if (el.name) {
+                el.name = el.name.replace(/-\d+-/, '-' + newIndex + '-');
+            }
+            if (el.id) {
+                el.id = el.id.replace(/-\d+-/, '-' + newIndex + '-');
+            }
+            if (el.type === 'checkbox') {
+                el.checked = false;
+            } else if (el.tagName === 'SELECT') {
+                el.selectedIndex = 0;
+            } else {
+                el.value = '';
+            }
+        });
+        newRow.querySelectorAll('label').forEach(function (el) {
+            if (el.htmlFor) {
+                el.htmlFor = el.htmlFor.replace(/-\d+-/, '-' + newIndex + '-');
+            }
+        });
+
+        container.appendChild(newRow);
+        totalForms.value = newIndex + 1;
+    });
+})();
+</script>
+{% endblock %}

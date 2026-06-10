@@ -21,6 +21,7 @@ from .models import (
     SaleableTicketType, SaleableTicketTypeTier, StripeCheckoutSession, FeatureFlagSettings,
     SurveyInvitation, SurveyResponse, SurveyAnswer, SurveyQuestion, Payout,
     ExternalSurveyUpload, ExternalSurveyResponse, EventDailyPageView,
+    LoyaltyProgram, LoyaltyTier,
 )
 
 
@@ -9098,3 +9099,398 @@ class LowStockThresholdTests(TestCase):
 
     def assertin_redirect_or_ok(self, resp):
         self.assertIn(resp.status_code, (200, 302))
+
+
+class LoyaltyTierAssignmentTests(TestCase):
+    """Tier assignment logic over existing attendance/purchase data."""
+
+    def setUp(self):
+        self.org = Organization.objects.create(name='Loyal Org', slug='loyal-org')
+        self.other_org = Organization.objects.create(name='Other Loyal Org', slug='other-loyal-org')
+        self.venue = Venue.objects.create(organization=self.org, name='Hall', city='Town')
+        self.program = LoyaltyProgram.objects.create(organization=self.org, name='Backstage Club')
+        # Gold (rank 3): big spend + multiple events. Silver (rank 2): repeat buyer.
+        # Member (rank 1): no rules -> everyone qualifies as a base tier.
+        self.gold = LoyaltyTier.objects.create(
+            program=self.program, name='Gold', rank=3, color='red',
+            min_lifetime_value=Decimal('500.00'), min_events_purchased=2,
+        )
+        self.silver = LoyaltyTier.objects.create(
+            program=self.program, name='Silver', rank=2, color='blue', min_order_count=2,
+        )
+        self.member = LoyaltyTier.objects.create(
+            program=self.program, name='Member', rank=1, color='green',
+        )
+
+    def _make_customer(self, email, ltv, orders_spec):
+        """orders_spec: list of (event, total_amount, num_tickets)."""
+        customer = Customer.objects.create(
+            organization=self.org, email=email, name=email.split('@')[0],
+            lifetime_value=Decimal(str(ltv)),
+            last_order_date=date(2026, 6, 1),
+        )
+        for i, (event, amount, n_tickets) in enumerate(orders_spec):
+            order = TicketOrder.objects.create(
+                customer=customer, event=event, order_number=f'{email}-{i}',
+                order_date='2026-06-01 10:00:00', total_amount=Decimal(str(amount)),
+            )
+            for _ in range(n_tickets):
+                Ticket.objects.create(ticket_order=order, price=Decimal('10.00'))
+        return customer
+
+    def _event(self, name):
+        return Event.objects.create(
+            organization=self.org, name=name, venue=self.venue,
+            start_date=date(2026, 6, 15), start_time=time(19, 0, 0),
+        )
+
+    def _assign(self):
+        from tickets.services.loyalty import assign_loyalty_tiers
+        return assign_loyalty_tiers(self.program)
+
+    def test_best_tier_assigned_highest_rank_wins(self):
+        e1, e2 = self._event('E1'), self._event('E2')
+        # Qualifies for Gold (ltv 600, 2 events) AND Silver (2 orders) -> Gold (higher rank).
+        whale = self._make_customer('whale@x.com', 600, [(e1, 300, 1), (e2, 300, 1)])
+        # Two orders but low spend / one event -> Silver.
+        regular = self._make_customer('regular@x.com', 100, [(e1, 50, 1), (e1, 50, 1)])
+        # One order, low spend -> Member (base tier).
+        casual = self._make_customer('casual@x.com', 40, [(e1, 40, 1)])
+
+        assigned = self._assign()
+        whale.refresh_from_db(); regular.refresh_from_db(); casual.refresh_from_db()
+        self.assertEqual(whale.loyalty_tier, self.gold)
+        self.assertEqual(regular.loyalty_tier, self.silver)
+        self.assertEqual(casual.loyalty_tier, self.member)
+        self.assertEqual(assigned, 3)
+
+    def test_no_match_when_no_base_tier(self):
+        # Drop the catch-all Member tier; a low customer should match nothing.
+        self.member.delete()
+        e1 = self._event('E1')
+        low = self._make_customer('low@x.com', 10, [(e1, 10, 1)])
+        self._assign()
+        low.refresh_from_db()
+        self.assertIsNone(low.loyalty_tier)
+
+    def test_placeholder_customers_excluded(self):
+        e1 = self._event('E1')
+        ghost = self._make_customer('ghost@placeholder.local', 999, [(e1, 999, 5)])
+        self._assign()
+        ghost.refresh_from_db()
+        self.assertIsNone(ghost.loyalty_tier)
+
+    def test_recency_rule(self):
+        self.member.delete()
+        self.silver.delete()
+        self.gold.min_lifetime_value = None
+        self.gold.min_events_purchased = None
+        self.gold.max_days_since_last_order = 30
+        self.gold.save()
+        e1 = self._event('E1')
+        recent = self._make_customer('recent@x.com', 100, [(e1, 100, 1)])
+        recent.last_order_date = timezone.now().date()
+        recent.save()
+        stale = self._make_customer('stale@x.com', 100, [(e1, 100, 1)])
+        stale.last_order_date = timezone.now().date() - timedelta(days=400)
+        stale.save()
+        self._assign()
+        recent.refresh_from_db(); stale.refresh_from_db()
+        self.assertEqual(recent.loyalty_tier, self.gold)
+        self.assertIsNone(stale.loyalty_tier)
+
+    def test_two_active_programs_rejected_by_db(self):
+        # self.program is already active; a second active program in the same org
+        # must be rejected by the partial-unique DB constraint.
+        with self.assertRaises(IntegrityError):
+            with transaction.atomic():
+                LoyaltyProgram.objects.create(
+                    organization=self.org, name='VIP Pass', is_active=True,
+                )
+
+    def test_min_tickets_purchased_rule(self):
+        self.gold.delete()
+        self.member.delete()
+        self.silver.min_order_count = None
+        self.silver.min_tickets_purchased = 3
+        self.silver.save()
+        e1 = self._event('E1')
+        big = self._make_customer('big@x.com', 100, [(e1, 100, 4)])   # 4 tickets
+        small = self._make_customer('small@x.com', 100, [(e1, 100, 1)])  # 1 ticket
+        self._assign()
+        big.refresh_from_db(); small.refresh_from_db()
+        self.assertEqual(big.loyalty_tier, self.silver)
+        self.assertIsNone(small.loyalty_tier)
+
+    def test_refunded_and_deleted_orders_excluded_from_counts(self):
+        self.gold.delete()
+        self.member.delete()
+        self.silver.min_order_count = 2
+        self.silver.save()
+        e1 = self._event('E1')
+        # Customer with 2 orders, but one refunded and never mind -> only 1 live order.
+        cust = Customer.objects.create(
+            organization=self.org, email='ref@x.com', name='ref',
+            lifetime_value=Decimal('50'), last_order_date=date(2026, 6, 1),
+        )
+        TicketOrder.objects.create(customer=cust, event=e1, order_number='ref-live',
+                                   order_date='2026-06-01 10:00:00', total_amount=Decimal('50'))
+        TicketOrder.objects.create(customer=cust, event=e1, order_number='ref-refunded',
+                                   order_date='2026-06-01 10:00:00', total_amount=Decimal('50'),
+                                   refunded_at=timezone.now())
+        deleted = TicketOrder.objects.create(customer=cust, event=e1, order_number='ref-deleted',
+                                              order_date='2026-06-01 10:00:00', total_amount=Decimal('50'))
+        deleted.delete()  # soft delete
+        self._assign()
+        cust.refresh_from_db()
+        # Only 1 live order -> below min_order_count=2 -> no tier.
+        self.assertIsNone(cust.loyalty_tier)
+
+
+class LoyaltyViewTests(TestCase):
+    """Access control, org-scoping, and the builder flow."""
+
+    def setUp(self):
+        self.client = Client()
+        self.org = Organization.objects.create(name='View Org', slug='view-org')
+        self.other_org = Organization.objects.create(name='Other View Org', slug='other-view-org')
+        self.host = User.objects.create_user(username='vhost', email='vhost@x.com', password='pw12345')
+        UserProfile.objects.create(user=self.host, organization=self.org, org_role=UserProfile.OrgRole.OWNER)
+        OrganizationMembership.objects.create(user=self.host, organization=self.org, org_role=UserProfile.OrgRole.OWNER)
+        self.program = LoyaltyProgram.objects.create(organization=self.org, name='Club')
+        self.other_program = LoyaltyProgram.objects.create(organization=self.other_org, name='Foreign Club')
+
+    def _login(self):
+        self.client.login(username='vhost@x.com', password='pw12345')
+        self.client.get(reverse('tickets:home'))
+
+    def test_list_requires_login(self):
+        resp = self.client.get(reverse('tickets:loyalty_program_list'))
+        self.assertEqual(resp.status_code, 302)
+
+    def test_list_and_detail_ok(self):
+        self._login()
+        self.assertEqual(self.client.get(reverse('tickets:loyalty_program_list')).status_code, 200)
+        self.assertEqual(
+            self.client.get(reverse('tickets:loyalty_program_detail', args=[self.program.id])).status_code, 200
+        )
+
+    def test_cannot_access_other_org_program(self):
+        self._login()
+        resp = self.client.get(reverse('tickets:loyalty_program_detail', args=[self.other_program.id]))
+        self.assertEqual(resp.status_code, 404)
+
+    @patch('tickets.tasks.recalculate_loyalty_tiers_task.delay')
+    def test_builder_creates_program_with_tiers(self, mock_delay):
+        self._login()
+        resp = self.client.post(reverse('tickets:loyalty_program_create'), {
+            'name': 'New Club',
+            'description': '',
+            'is_active': 'on',
+            'tiers-TOTAL_FORMS': '1',
+            'tiers-INITIAL_FORMS': '0',
+            'tiers-MIN_NUM_FORMS': '0',
+            'tiers-MAX_NUM_FORMS': '1000',
+            'tiers-0-name': 'Gold',
+            'tiers-0-rank': '1',
+            'tiers-0-color': 'red',
+            'tiers-0-perks': 'Free drink',
+            'tiers-0-min_lifetime_value': '500',
+            'tiers-0-min_order_count': '',
+            'tiers-0-min_events_purchased': '',
+            'tiers-0-min_tickets_purchased': '',
+            'tiers-0-max_days_since_last_order': '',
+        })
+        self.assertEqual(resp.status_code, 302)
+        program = LoyaltyProgram.objects.get(organization=self.org, name='New Club')
+        self.assertEqual(program.tiers.count(), 1)
+        self.assertEqual(program.tiers.first().name, 'Gold')
+        mock_delay.assert_called_once()
+
+    def test_delete_unassigns_members(self):
+        self._login()
+        tier = LoyaltyTier.objects.create(program=self.program, name='Gold', rank=1)
+        cust = Customer.objects.create(
+            organization=self.org, email='m@x.com', name='M', loyalty_tier=tier,
+        )
+        resp = self.client.post(reverse('tickets:loyalty_program_delete', args=[self.program.id]))
+        self.assertEqual(resp.status_code, 302)
+        cust.refresh_from_db()
+        self.assertIsNone(cust.loyalty_tier)
+        self.program.refresh_from_db()
+        self.assertIsNotNone(self.program.deleted_at)
+
+
+class LoyaltyHardeningTests(TestCase):
+    """Covers the review-hardening: recalc gating/lifecycle, formset validation,
+    stats, edit, tier-member scoping, and the same-org display guard."""
+
+    def setUp(self):
+        self.client = Client()
+        self.org = Organization.objects.create(name='Hard Org', slug='hard-org')
+        self.other_org = Organization.objects.create(name='Hard Other', slug='hard-other')
+        self.host = User.objects.create_user(username='hhost', email='hhost@x.com', password='pw12345')
+        UserProfile.objects.create(user=self.host, organization=self.org, org_role=UserProfile.OrgRole.OWNER)
+        OrganizationMembership.objects.create(user=self.host, organization=self.org, org_role=UserProfile.OrgRole.OWNER)
+        self.program = LoyaltyProgram.objects.create(organization=self.org, name='Active Club', is_active=True)
+        self.base_tier = LoyaltyTier.objects.create(program=self.program, name='Member', rank=1)
+        self.cust = Customer.objects.create(organization=self.org, email='c@x.com', name='C',
+                                            lifetime_value=Decimal('10'))
+
+    def _login(self):
+        self.client.login(username='hhost@x.com', password='pw12345')
+        self.client.get(reverse('tickets:home'))
+
+    # --- recalc task lifecycle / gating ---
+    def test_recalc_task_assigns_and_stamps(self):
+        from tickets.tasks import recalculate_loyalty_tiers_task
+        result = recalculate_loyalty_tiers_task.apply(args=[str(self.program.id)])
+        self.assertTrue(result.successful())
+        self.program.refresh_from_db()
+        self.assertFalse(self.program.recalc_in_progress)
+        self.assertIsNotNone(self.program.last_recalculated_at)
+        self.cust.refresh_from_db()
+        self.assertEqual(self.cust.loyalty_tier, self.base_tier)  # base tier matches everyone
+
+    def test_recalc_task_skips_inactive_and_preserves_active(self):
+        from tickets.tasks import recalculate_loyalty_tiers_task
+        # Assign the active program first.
+        recalculate_loyalty_tiers_task.apply(args=[str(self.program.id)])
+        self.cust.refresh_from_db()
+        self.assertEqual(self.cust.loyalty_tier, self.base_tier)
+        # An inactive second program with its own catch-all tier.
+        inactive = LoyaltyProgram.objects.create(organization=self.org, name='Draft', is_active=False)
+        LoyaltyTier.objects.create(program=inactive, name='DraftBase', rank=1)
+        result = recalculate_loyalty_tiers_task.apply(args=[str(inactive.id)])
+        self.assertEqual(result.result, 0)  # gated: no-op
+        self.cust.refresh_from_db()
+        self.assertEqual(self.cust.loyalty_tier, self.base_tier)  # active program's member intact
+
+    def test_recalc_task_missing_program_noop(self):
+        from tickets.tasks import recalculate_loyalty_tiers_task
+        result = recalculate_loyalty_tiers_task.apply(args=[str(uuid.uuid4())])
+        self.assertEqual(result.result, 0)
+
+    @patch('tickets.tasks.recalculate_loyalty_tiers_task.retry', side_effect=RuntimeError('boom'))
+    @patch('tickets.services.loyalty.assign_loyalty_tiers', side_effect=ValueError('fail'))
+    def test_recalc_task_failure_does_not_stamp(self, mock_assign, mock_retry):
+        from tickets.tasks import recalculate_loyalty_tiers_task
+        with self.assertRaises(RuntimeError):
+            recalculate_loyalty_tiers_task.apply(args=[str(self.program.id)], throw=True)
+        self.program.refresh_from_db()
+        self.assertFalse(self.program.recalc_in_progress)
+        self.assertIsNone(self.program.last_recalculated_at)
+
+    # --- recalc view gating ---
+    @patch('tickets.tasks.recalculate_loyalty_tiers_task.delay')
+    def test_recalc_view_enqueues_for_active(self, mock_delay):
+        self._login()
+        resp = self.client.post(reverse('tickets:loyalty_recalculate', args=[self.program.id]))
+        self.assertEqual(resp.status_code, 302)
+        mock_delay.assert_called_once()
+
+    @patch('tickets.tasks.recalculate_loyalty_tiers_task.delay')
+    def test_recalc_view_blocks_inactive(self, mock_delay):
+        self._login()
+        self.program.is_active = False
+        self.program.save(update_fields=['is_active'])
+        resp = self.client.post(reverse('tickets:loyalty_recalculate', args=[self.program.id]))
+        self.assertEqual(resp.status_code, 302)
+        mock_delay.assert_not_called()
+
+    # --- formset validation (ruleless tier) ---
+    def _formset_data(self, rows):
+        data = {
+            'tiers-TOTAL_FORMS': str(len(rows)), 'tiers-INITIAL_FORMS': '0',
+            'tiers-MIN_NUM_FORMS': '0', 'tiers-MAX_NUM_FORMS': '1000',
+        }
+        for i, (name, rank, rules) in enumerate(rows):
+            data[f'tiers-{i}-name'] = name
+            data[f'tiers-{i}-rank'] = str(rank)
+            data[f'tiers-{i}-color'] = 'blue'
+            data[f'tiers-{i}-perks'] = ''
+            for f in ('min_lifetime_value', 'min_order_count', 'min_events_purchased',
+                      'min_tickets_purchased', 'max_days_since_last_order'):
+                data[f'tiers-{i}-{f}'] = str(rules.get(f, '')) if rules.get(f) is not None else ''
+        return data
+
+    def test_formset_rejects_two_ruleless_tiers(self):
+        from tickets.forms import LoyaltyTierFormSet
+        prog = LoyaltyProgram.objects.create(organization=self.org, name='F1', is_active=False)
+        data = self._formset_data([('A', 1, {}), ('B', 2, {})])
+        fs = LoyaltyTierFormSet(data, instance=prog)
+        self.assertFalse(fs.is_valid())
+        self.assertIn('Only one tier', str(fs.non_form_errors()))
+
+    def test_formset_rejects_ruleless_not_lowest(self):
+        from tickets.forms import LoyaltyTierFormSet
+        prog = LoyaltyProgram.objects.create(organization=self.org, name='F2', is_active=False)
+        # Ruleless tier at the HIGHEST rank -> makes the lower ruled tier unreachable.
+        data = self._formset_data([('Base', 5, {}), ('Gold', 1, {'min_lifetime_value': '500'})])
+        fs = LoyaltyTierFormSet(data, instance=prog)
+        self.assertFalse(fs.is_valid())
+        self.assertIn('lowest rank', str(fs.non_form_errors()))
+
+    def test_formset_accepts_one_ruleless_lowest(self):
+        from tickets.forms import LoyaltyTierFormSet
+        prog = LoyaltyProgram.objects.create(organization=self.org, name='F3', is_active=False)
+        data = self._formset_data([('Base', 1, {}), ('Gold', 5, {'min_lifetime_value': '500'})])
+        fs = LoyaltyTierFormSet(data, instance=prog)
+        self.assertTrue(fs.is_valid(), fs.non_form_errors())
+
+    # --- stats ---
+    def test_stats_distribution(self):
+        from tickets.services.loyalty import LoyaltyProgramStats
+        from tickets.tasks import recalculate_loyalty_tiers_task
+        Customer.objects.create(organization=self.org, email='c2@x.com', name='C2', lifetime_value=Decimal('5'))
+        recalculate_loyalty_tiers_task.apply(args=[str(self.program.id)])
+        stats = LoyaltyProgramStats(self.program).calculate()
+        self.assertEqual(stats['total_customers'], 2)
+        self.assertEqual(stats['assigned'], 2)
+        self.assertEqual(stats['tiers'][0]['count'], 2)
+
+    # --- edit persists tier changes ---
+    def test_edit_persists_tier_changes(self):
+        self._login()
+        data = {
+            'name': 'Active Club', 'description': '', 'is_active': 'on',
+            'tiers-TOTAL_FORMS': '1', 'tiers-INITIAL_FORMS': '1',
+            'tiers-MIN_NUM_FORMS': '0', 'tiers-MAX_NUM_FORMS': '1000',
+            'tiers-0-id': str(self.base_tier.id),
+            'tiers-0-name': 'Renamed', 'tiers-0-rank': '1', 'tiers-0-color': 'green', 'tiers-0-perks': 'New perk',
+            'tiers-0-min_lifetime_value': '', 'tiers-0-min_order_count': '',
+            'tiers-0-min_events_purchased': '', 'tiers-0-min_tickets_purchased': '',
+            'tiers-0-max_days_since_last_order': '',
+        }
+        with patch('tickets.tasks.recalculate_loyalty_tiers_task.delay'):
+            resp = self.client.post(reverse('tickets:loyalty_program_edit', args=[self.program.id]), data)
+        self.assertEqual(resp.status_code, 302)
+        self.base_tier.refresh_from_db()
+        self.assertEqual(self.base_tier.name, 'Renamed')
+        self.assertEqual(self.base_tier.perks, 'New perk')
+
+    # --- tier members scoping ---
+    def test_tier_members_lists_only_that_tier(self):
+        gold = LoyaltyTier.objects.create(program=self.program, name='Gold', rank=2,
+                                          min_lifetime_value=Decimal('100'))
+        in_gold = Customer.objects.create(organization=self.org, email='g@x.com', name='Gilda',
+                                          loyalty_tier=gold)
+        in_base = Customer.objects.create(organization=self.org, email='b@x.com', name='Basil',
+                                          loyalty_tier=self.base_tier)
+        self._login()
+        resp = self.client.get(reverse('tickets:loyalty_tier_members', args=[self.program.id, gold.id]))
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, 'Gilda')
+        self.assertNotContains(resp, 'Basil')
+
+    # --- same-org display guard (T2) ---
+    def test_customer_detail_hides_foreign_tier(self):
+        foreign_prog = LoyaltyProgram.objects.create(organization=self.other_org, name='Foreign Secret')
+        foreign_tier = LoyaltyTier.objects.create(program=foreign_prog, name='ForeignGold', rank=1)
+        # Force a cross-tenant assignment (bypassing normal scoped assignment).
+        Customer.objects.filter(id=self.cust.id).update(loyalty_tier=foreign_tier)
+        self._login()
+        resp = self.client.get(reverse('tickets:customer_detail', args=[self.cust.id]))
+        self.assertEqual(resp.status_code, 200)
+        self.assertNotContains(resp, 'Foreign Secret')
+        self.assertNotContains(resp, 'ForeignGold')
