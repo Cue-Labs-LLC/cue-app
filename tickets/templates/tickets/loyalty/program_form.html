@@ -90,6 +90,10 @@
                                         <label class="form-label small fw-medium">Ordered within (days)</label>
                                         {{ tier_form.max_days_since_last_order }}
                                     </div>
+                                    <div class="col-md-4">
+                                        <label class="form-label small fw-medium">Min lifetime points</label>
+                                        {{ tier_form.min_lifetime_points }}
+                                    </div>
                                 </div>
                                 {% if tier_form.instance.pk %}
                                 <div class="form-check mt-3">

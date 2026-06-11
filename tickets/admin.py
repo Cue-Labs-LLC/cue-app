@@ -22,7 +22,7 @@ from .models import (
     FeatureFlagSettings,
     SMSCampaign, SMSMessageRecipient, PhoneSuppression,
     SMSCreditTransaction,
-    LoyaltyProgram, LoyaltyTier,
+    LoyaltyProgram, LoyaltyTier, LoyaltyPointsTransaction,
 )
 
 
@@ -1254,7 +1254,29 @@ class LoyaltyProgramAdmin(admin.ModelAdmin):
 
 @admin.register(LoyaltyTier)
 class LoyaltyTierAdmin(admin.ModelAdmin):
-    list_display = ['name', 'program', 'rank', 'min_lifetime_value', 'min_order_count', 'min_events_purchased']
+    list_display = ['name', 'program', 'rank', 'min_lifetime_value', 'min_order_count', 'min_events_purchased', 'min_lifetime_points']
     list_filter = ['program']
     search_fields = ['name', 'program__name']
     readonly_fields = ['id', 'created_at', 'updated_at']
+
+
+@admin.register(LoyaltyPointsTransaction)
+class LoyaltyPointsTransactionAdmin(admin.ModelAdmin):
+    """Read-only ledger view — balances are mutated only by the points service."""
+    list_display = ['customer', 'kind', 'amount', 'balance_after', 'lifetime_after', 'ticket_order', 'created_at']
+    list_filter = ['kind', 'organization']
+    search_fields = ['customer__email', 'customer__name', 'description']
+    readonly_fields = [
+        'id', 'organization', 'customer', 'ticket_order', 'kind', 'amount',
+        'balance_after', 'lifetime_after', 'description', 'created_by',
+        'created_at', 'updated_at',
+    ]
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False

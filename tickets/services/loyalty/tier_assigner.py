@@ -68,7 +68,7 @@ class LoyaltyTierAssigner:
                 tickets_purchased=tickets_purchased,
             )
             .values(
-                'id', 'lifetime_value', 'last_order_date',
+                'id', 'lifetime_value', 'last_order_date', 'lifetime_points',
                 'order_count', 'events_purchased', 'tickets_purchased',
             )
         )
@@ -98,6 +98,7 @@ class LoyaltyTierAssigner:
                     events_purchased=row['events_purchased'],
                     tickets_purchased=row['tickets_purchased'],
                     days_since_last_order=days_since,
+                    lifetime_points=row['lifetime_points'],
                 ):
                     tier_id = tier.id
                     break

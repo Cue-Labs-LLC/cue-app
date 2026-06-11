@@ -106,7 +106,12 @@ BEHAVIOR_METRIC_LABELS = {
 
 from .services.cohort_analysis.repeat_customer_calculator import RepeatCustomerCalculator
 from .services.cohort_analysis.cohort_retention_calculator import CohortRetentionCalculator
-from .services.loyalty import LoyaltyProgramStats
+from .services.loyalty import (
+    LoyaltyProgramStats,
+    award_points_for_order,
+    revoke_points_for_order,
+    revoke_points_for_orders,
+)
 from .services.meta_ads import (
     MetaAdsAPIError,
     MetaAdsClient,
@@ -2337,7 +2342,16 @@ def reprocess_csv_file(request, file_id):
             .values_list('event_id', flat=True)
             .distinct()
         )
-        TicketOrder.objects.filter(uploaded_file=uploaded_file).delete()
+        with transaction.atomic():
+            # Revoke loyalty points BEFORE the hard delete — reprocessing
+            # re-creates orders with new UUIDs and would double-award.
+            # Failures PROPAGATE so a failed revoke aborts the delete instead
+            # of stranding points (eng review D4).
+            revoke_points_for_orders(
+                list(TicketOrder.objects.filter(uploaded_file=uploaded_file).values_list('id', flat=True)),
+                description='CSV reprocess',
+            )
+            TicketOrder.objects.filter(uploaded_file=uploaded_file).delete()
         uploaded_file.status = 'pending'
         uploaded_file.metadata.pop('processing_results', None)
         uploaded_file.save(update_fields=['status', 'metadata'])
@@ -2411,6 +2425,13 @@ def upload_delete(request, file_id):
             # Collect affected customers before deletion
             affected_customer_ids = list(
                 orders.values_list('customer_id', flat=True).distinct()
+            )
+
+            # Revoke loyalty points BEFORE the hard delete; failures PROPAGATE
+            # (abort the whole delete) so points can never strand (D4).
+            revoke_points_for_orders(
+                list(orders.values_list('id', flat=True)),
+                description='Upload deleted',
             )
 
             # Delete orders first (Tickets will cascade delete)
@@ -3013,6 +3034,20 @@ def _save_loyalty_program(request, program):
         form = LoyaltyProgramForm(request.POST, instance=program)
         formset = LoyaltyTierFormSet(request.POST, instance=program)
         if form.is_valid() and formset.is_valid():
+            # Cross-validation: a points-based tier rule under a program with
+            # points disabled would be permanently unreachable.
+            if not form.cleaned_data.get('points_enabled'):
+                uses_points_rule = any(
+                    f.cleaned_data and not f.cleaned_data.get('DELETE')
+                    and f.cleaned_data.get('min_lifetime_points') is not None
+                    for f in formset.forms if hasattr(f, 'cleaned_data')
+                )
+                if uses_points_rule:
+                    formset._non_form_errors.append(
+                        'A tier uses a minimum-points rule, but points are not '
+                        'enabled on this program. Enable points or remove the rule.'
+                    )
+                    return form, formset, None
             with transaction.atomic():
                 saved = form.save(commit=False)
                 saved.organization = program.organization
@@ -3039,8 +3074,17 @@ def _save_loyalty_program(request, program):
             # Only an active program drives assignment; inactive ones are gated
             # out by the task anyway, so don't bother enqueuing.
             if saved.is_active:
-                from .tasks import recalculate_loyalty_tiers_task
-                recalculate_loyalty_tiers_task.delay(str(saved.id))
+                wants_backfill = (
+                    saved.points_enabled and form.cleaned_data.get('backfill_past_orders')
+                )
+                if wants_backfill:
+                    # Backfill chains the recalc itself — skipping the immediate
+                    # recalc avoids assigning tiers against pre-backfill zeros.
+                    from .tasks import backfill_loyalty_points_task
+                    backfill_loyalty_points_task.delay(str(saved.id))
+                else:
+                    from .tasks import recalculate_loyalty_tiers_task
+                    recalculate_loyalty_tiers_task.delay(str(saved.id))
             return form, formset, saved
     else:
         form = LoyaltyProgramForm(instance=program)
@@ -3090,9 +3134,21 @@ def loyalty_program_detail(request, program_id):
     org = get_organization(request)
     program = get_object_or_404(_active_loyalty_programs(org), id=program_id)
     stats = LoyaltyProgramStats(program).calculate()
+    points_stats = None
+    if program.points_enabled:
+        # One aggregate pass over org customers (CLAUDE.md: combine aggregations).
+        points_stats = Customer.objects.filter(organization=org).exclude(
+            email__endswith='@placeholder.local'
+        ).aggregate(
+            outstanding=Coalesce(Sum('points_balance'), 0),
+            issued=Coalesce(Sum('lifetime_points'), 0),
+            members_with_points=Count('id', filter=Q(points_balance__gt=0)),
+        )
     return render(request, 'tickets/loyalty/program_detail.html', {
         'program': program,
         'stats': stats,
+        'points_stats': points_stats,
+        'points_backfilled_at': org.loyalty_points_backfilled_at,
     })
 
 
@@ -5000,6 +5056,13 @@ def event_delete(request, event_id):
                     event.ticket_orders.values_list('customer_id', flat=True).distinct()
                 )
                 event_name = event.name
+                # Revoke loyalty points BEFORE the cascade hard-deletes the
+                # event's orders; failures PROPAGATE so the delete aborts
+                # rather than stranding points (eng review D6).
+                revoke_points_for_orders(
+                    list(event.ticket_orders.values_list('id', flat=True)),
+                    description='Event deleted',
+                )
                 event.hard_delete()
 
                 customers_deleted = _reconcile_customers_after_order_deletion(
@@ -5170,6 +5233,13 @@ def refund_order(request, order_id):
                     )
 
         order.customer.update_lifetime_value()
+        if refund_type == 'full':
+            # Loyalty points clawback: full refunds only (matches LTV's
+            # coarse handling). Swallow — a refund must never fail on points.
+            try:
+                revoke_points_for_order(order, description='Order refunded')
+            except Exception:
+                logger.exception("Points revoke failed for refunded order %s", order.id)
         _invalidate_event_list_cache(org)
         _invalidate_marketing_cache(org)
 
@@ -9058,6 +9128,12 @@ def event_cancel(request, event_id):
                     )
             affected_customer_ids.add(order.customer_id)
             refunded_count += 1
+            # Loyalty points clawback — only orders that actually get
+            # refunded_at (Stripe-session orders), matching LTV behavior.
+            try:
+                revoke_points_for_order(order, description='Event cancelled')
+            except Exception:
+                logger.exception("Points revoke failed for cancelled order %s", order.id)
 
     for customer_id in affected_customer_ids:
         try:
@@ -9876,6 +9952,10 @@ def checkout_payment(request, public_id):
                     for _ in range(qty)
                 ])
             customer.update_lifetime_value()
+            try:
+                award_points_for_order(order)
+            except Exception:
+                logger.exception("Points award failed for order %s", order.id)
             _invalidate_event_list_cache(org)
             _invalidate_marketing_cache(org)
 
@@ -10718,6 +10798,13 @@ def _fulfill_payment_intent(payment_intent):
             ])
 
         customer.update_lifetime_value()
+        # Loyalty points: swallow failures — an order must never fail because
+        # points hiccuped. The service's internal atomic() is a savepoint, and
+        # misses are self-healing via the idempotent backfill sweep.
+        try:
+            award_points_for_order(order)
+        except Exception:
+            logger.exception("Points award failed for order %s", order.id)
 
         session_obj.status = StripeCheckoutSession.Status.COMPLETED
         session_obj.ticket_order = order

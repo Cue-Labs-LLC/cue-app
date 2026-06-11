@@ -38,6 +38,36 @@
 </div>
 {% endif %}
 
+{% if points_stats %}
+<div class="row g-3 mb-4">
+    <div class="col-md-4">
+        <div class="stat-card stat-card--accent">
+            <div class="stat-label">Outstanding points</div>
+            <div class="stat-value">{{ points_stats.outstanding|intcomma }}</div>
+            <div class="text-muted small mt-1">Unspent balance across all members</div>
+        </div>
+    </div>
+    <div class="col-md-4">
+        <div class="stat-card stat-card--info">
+            <div class="stat-label">Lifetime points issued</div>
+            <div class="stat-value">{{ points_stats.issued|intcomma }}</div>
+            <div class="text-muted small mt-1">
+                Earning: {{ program.points_rate|floatformat:"-2" }} pts {{ program.get_points_basis_display|lower }}
+            </div>
+        </div>
+    </div>
+    <div class="col-md-4">
+        <div class="stat-card stat-card--success">
+            <div class="stat-label">Members with points</div>
+            <div class="stat-value">{{ points_stats.members_with_points|intcomma }}</div>
+            {% if points_backfilled_at %}
+            <div class="text-muted small mt-1">History backfilled {{ points_backfilled_at|naturaltime }}</div>
+            {% endif %}
+        </div>
+    </div>
+</div>
+{% endif %}
+
 <div class="row g-3 mb-4">
     <div class="col-md-4">
         <div class="stat-card stat-card--accent">

@@ -130,3 +130,35 @@
 **Context:** Buy/checkout flow: `/track/<token>/` (`track_link_redirect`, sets session ref) → `/e/<id>/?ref=<token>` (`public_event_buy`, re-stamps session, guarded by `if ref:` so a reload without `?ref` doesn't clear it) → checkout → `create_payment_intent` binds `StripeCheckoutSession.tracking_link`. All checkout auth uses Django's standard `auth_login` (e.g. `attendee_signup_view` `views.py:10691`). A first step is to audit whether the checkout login redirect preserves `next=`/`?ref` through its hops.
 
 **Depends on:** none (incremental hardening of shipped behavior).
+
+---
+
+## Loyalty: Attendee "My Points" Page
+
+**What:** Read-only attendee-facing page at `/my-points/` showing, per organization, the customer's points balance, lifetime points, status tier badge, and recent ledger history, plus nav links.
+
+**Why:** It's the customer-facing half of the loyalty points loop — "watch your points grow" is what makes points motivating. Phase 1 shipped earn + status (organizer-facing only); customers currently earn silently.
+
+**Pros:** Completes the "Get Familiar" points vision; cheap — read-only views over data Phase 1 already creates; design fully settled during eng review.
+
+**Cons:** None structural. Email-based customer resolution means phone-only or mismatched-email accounts won't see their history (same limitation as My Tickets).
+
+**Context:** Mirror `my_tickets` (views.py): `@login_required` only (no `@require_org`), resolve `Customer` rows by `email=request.user.email.lower()` filtered to orgs with an active, points-enabled, non-deleted `LoyaltyProgram`; show last ~20 `points_transactions` per org. Template extends `attendee_base.html` (`.a-*` classes); nav links in `partials/_attendee_nav.html` and base.html's My Account block. Deferred from Phase 1 by eng review decision D1.
+
+**Depends on:** Loyalty points Phase 1 shipped.
+
+---
+
+## Loyalty: Nightly Cron — Points Sweep + Tier Recalc
+
+**What:** A Render `type: cron` service running a management command that, per org with an active points-enabled program, runs the idempotent points backfill sweep then the tier recalc task.
+
+**Why:** Two Phase-1 limitations close at once: (a) award failures swallowed at order hooks self-heal within 24h (the sweep finds orders with no EARN row); (b) customers who cross a `min_lifetime_points` threshold get promoted without the organizer pressing Recalculate.
+
+**Pros:** Self-healing ledger; fresher tiers; follows the established cron pattern (`ltv-updater-ai-opportunities` in render.yaml) instead of adding Celery Beat.
+
+**Cons:** One more Render service; sweep cost scales with org order history (mitigated: batched queries, idempotent re-runs only insert missing rows).
+
+**Context:** `backfill_loyalty_points_task(program_id)` already does the sweep + chains `recalculate_loyalty_tiers_task`, claims `recalc_in_progress` while running, and stamps `Organization.loyalty_points_backfilled_at`. The management command just needs to iterate orgs with an active points program and enqueue it (mirror `generate_ai_opportunities.py` with --sync and --organization-id flags). Eng review decision D10.
+
+**Depends on:** Loyalty points Phase 1 shipped.

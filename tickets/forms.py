@@ -1201,27 +1201,45 @@ SaleableTicketTypeTierFormSet = inlineformset_factory(
 
 
 class LoyaltyProgramForm(forms.ModelForm):
-    """Form for organizers to create/edit a loyalty program's branding."""
+    """Form for organizers to create/edit a loyalty program's branding + points config."""
+
+    backfill_past_orders = forms.BooleanField(
+        required=False,
+        label='Award points for past orders',
+        help_text='One-time backfill over your order history (skips refunded orders). Safe to re-run.',
+        widget=forms.CheckboxInput(attrs={'class': 'form-check-input'}),
+    )
 
     class Meta:
         model = LoyaltyProgram
-        fields = ['name', 'description', 'is_active']
+        fields = ['name', 'description', 'is_active', 'points_enabled', 'points_basis', 'points_rate']
         widgets = {
             'name': forms.TextInput(attrs={'class': 'form-control', 'placeholder': 'e.g. Backstage Club'}),
             'description': forms.Textarea(attrs={'rows': 3, 'class': 'form-control', 'placeholder': 'What is this program about? (internal copy)'}),
             'is_active': forms.CheckboxInput(attrs={'class': 'form-check-input'}),
+            'points_enabled': forms.CheckboxInput(attrs={'class': 'form-check-input'}),
+            'points_basis': forms.Select(attrs={'class': 'form-select'}),
+            'points_rate': forms.NumberInput(attrs={'class': 'form-control', 'step': '0.01', 'min': '0.01'}),
         }
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.fields['description'].required = False
         self.fields['is_active'].help_text = 'Only one program can be active at a time. Activating this one deactivates the others.'
+        self.fields['points_enabled'].help_text = 'Customers earn points for every ticket purchase.'
+        self.fields['points_rate'].help_text = "Points per ticket (or per dollar). With 'per dollar', free orders earn 0 points."
         self.helper = FormHelper()
         self.helper.form_tag = False  # rendered inside a page-level <form> alongside the tier formset
         self.helper.layout = Layout(
             Field('name'),
             Field('description'),
             Field('is_active'),
+            Field('points_enabled'),
+            Row(
+                Column('points_basis', css_class='form-group col-md-6 mb-0'),
+                Column('points_rate', css_class='form-group col-md-6 mb-0'),
+            ),
+            Field('backfill_past_orders'),
         )
 
 
@@ -1233,7 +1251,7 @@ class LoyaltyTierForm(forms.ModelForm):
         fields = [
             'name', 'rank', 'color', 'perks',
             'min_lifetime_value', 'min_order_count', 'min_events_purchased',
-            'min_tickets_purchased', 'max_days_since_last_order',
+            'min_tickets_purchased', 'max_days_since_last_order', 'min_lifetime_points',
         ]
         widgets = {
             'name': forms.TextInput(attrs={'class': 'form-control', 'placeholder': 'e.g. Gold'}),
@@ -1245,11 +1263,12 @@ class LoyaltyTierForm(forms.ModelForm):
             'min_events_purchased': forms.NumberInput(attrs={'class': 'form-control', 'min': '0', 'placeholder': 'Any'}),
             'min_tickets_purchased': forms.NumberInput(attrs={'class': 'form-control', 'min': '0', 'placeholder': 'Any'}),
             'max_days_since_last_order': forms.NumberInput(attrs={'class': 'form-control', 'min': '0', 'placeholder': 'Any'}),
+            'min_lifetime_points': forms.NumberInput(attrs={'class': 'form-control', 'min': '0', 'placeholder': 'Any'}),
         }
 
     RULE_FIELDS = (
         'min_lifetime_value', 'min_order_count', 'min_events_purchased',
-        'min_tickets_purchased', 'max_days_since_last_order',
+        'min_tickets_purchased', 'max_days_since_last_order', 'min_lifetime_points',
     )
 
     def __init__(self, *args, **kwargs):

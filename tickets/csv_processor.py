@@ -260,6 +260,10 @@ class CSVProcessor:
         )
         processed_rows = 0
 
+        # Resolve the loyalty points program ONCE per import (not per order).
+        from .services.loyalty import award_points_for_orders, get_points_program
+        points_program = get_points_program(self.uploaded_file.organization)
+
         # Process one pandas chunk at a time — peak memory ≈ CHUNK_SIZE rows
         for chunk in chunk_iter:
             chunk_data = chunk.to_dict('records')
@@ -280,6 +284,21 @@ class CSVProcessor:
 
                     # Update customer LTV after each chunk
                     self._update_customer_ltv(chunk_results['customer_ids'])
+
+                    # Award loyalty points for the chunk's new orders (inside
+                    # the chunk atomic so a rollback takes the points with it).
+                    # Idempotent per order; placeholder customers are guarded
+                    # in the service. Swallow failures: an import must never
+                    # fail because points hiccuped (self-heals via backfill).
+                    if points_program is not None:
+                        try:
+                            award_points_for_orders(
+                                chunk_results.get('created_orders', []),
+                                points_program,
+                                description='CSV import',
+                            )
+                        except Exception:
+                            logger.exception("Points award failed for CSV chunk at row %s", chunk_start)
 
             except Exception as e:
                 logger.error(f"Error processing chunk starting at row {chunk_start}: {str(e)}")
@@ -878,7 +897,11 @@ class CSVProcessor:
             TicketOrder.objects.bulk_create(ticket_orders_to_create)
         if tickets_to_create:
             Ticket.objects.bulk_create(tickets_to_create)
-        
+
+        # Expose created orders so process() can award loyalty points for the
+        # chunk (client-generated UUID PKs are already set pre-bulk_create).
+        results['created_orders'] = ticket_orders_to_create
+
         return results
     
     def _update_customer_ltv(self, customer_ids: set):

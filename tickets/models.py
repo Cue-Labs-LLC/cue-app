@@ -7,6 +7,7 @@ from django.conf import settings
 from django.db.models import Sum, Max, F
 from django.utils import timezone
 from django.core.exceptions import ValidationError
+from django.core.validators import MinValueValidator
 
 
 def _get_media_storage():
@@ -96,6 +97,10 @@ class Organization(BaseModel):
     # segment when a marketing-SMS campaign sends. See SMSCreditTransaction for the
     # audit ledger. Never mutate directly outside the wallet service (atomic F()).
     sms_credit_balance_cents = models.PositiveIntegerField(default=0)
+    # Loyalty points: when the org-wide historical backfill last completed.
+    # Lives on the org (not LoyaltyProgram) because points balances are
+    # (customer, organization) state that survives program replacement.
+    loyalty_points_backfilled_at = models.DateTimeField(null=True, blank=True)
     # Saved card on file for one-click wallet top-ups. This is a PLATFORM billing
     # Customer (the org pays Cue) — NOT the Connect account in stripe_account_id,
     # which is for paying organizers out. Created lazily on first "save card".
@@ -775,6 +780,12 @@ class Customer(BaseModel):
         db_index=True,
     )
     loyalty_tier_updated_at = models.DateTimeField(null=True, blank=True)
+    # Loyalty points (denormalized from LoyaltyPointsTransaction; never mutate
+    # outside tickets/services/loyalty/points.py). points_balance is spendable
+    # (Phase 2 redemption); lifetime_points only ever grows back to 0 floor and
+    # drives the min_lifetime_points tier rule.
+    points_balance = models.PositiveIntegerField(default=0)
+    lifetime_points = models.PositiveIntegerField(default=0)
 
     class Meta:
         ordering = ['-lifetime_value', 'name']
@@ -3044,6 +3055,29 @@ class LoyaltyProgram(AuditBaseModel):
     )
     recalc_in_progress = models.BooleanField(default=False)
     last_recalculated_at = models.DateTimeField(null=True, blank=True)
+    # Points config. The program supplies HOW points are earned; the balances
+    # themselves are (customer, organization) state and survive program
+    # replacement (see Customer.points_balance / LoyaltyPointsTransaction).
+    points_enabled = models.BooleanField(
+        default=False,
+        help_text="Award loyalty points for ticket purchases.",
+    )
+
+    class PointsBasis(models.TextChoices):
+        PER_TICKET = 'per_ticket', 'Per ticket'
+        PER_DOLLAR = 'per_dollar', 'Per dollar spent'
+
+    points_basis = models.CharField(
+        max_length=12,
+        choices=PointsBasis.choices,
+        default=PointsBasis.PER_TICKET,
+    )
+    points_rate = models.DecimalField(
+        max_digits=6, decimal_places=2,
+        default=Decimal('1'),
+        validators=[MinValueValidator(Decimal('0.01'))],
+        help_text="Points per ticket (or per dollar). Note: with 'per dollar', free orders earn 0 points.",
+    )
 
     class Meta:
         ordering = ['-created_at']
@@ -3108,6 +3142,10 @@ class LoyaltyTier(BaseModel):
         null=True, blank=True,
         help_text="Must have ordered within this many days to qualify (recency).",
     )
+    min_lifetime_points = models.PositiveIntegerField(
+        null=True, blank=True,
+        help_text="Minimum lifetime points earned to qualify.",
+    )
 
     class Meta:
         ordering = ['-rank', 'name']
@@ -3119,7 +3157,7 @@ class LoyaltyTier(BaseModel):
     def __str__(self):
         return f"{self.name} ({self.program.name})"
 
-    def qualifies(self, *, lifetime_value, order_count, events_purchased, tickets_purchased, days_since_last_order):
+    def qualifies(self, *, lifetime_value, order_count, events_purchased, tickets_purchased, days_since_last_order, lifetime_points=0):
         """Return True if the given per-customer metrics meet every set rule."""
         if self.min_lifetime_value is not None and (lifetime_value or Decimal('0')) < self.min_lifetime_value:
             return False
@@ -3132,6 +3170,8 @@ class LoyaltyTier(BaseModel):
         if self.max_days_since_last_order is not None:
             if days_since_last_order is None or days_since_last_order > self.max_days_since_last_order:
                 return False
+        if self.min_lifetime_points is not None and (lifetime_points or 0) < self.min_lifetime_points:
+            return False
         return True
 
     def has_no_rules(self):
@@ -3141,5 +3181,78 @@ class LoyaltyTier(BaseModel):
             for f in (
                 'min_lifetime_value', 'min_order_count', 'min_events_purchased',
                 'min_tickets_purchased', 'max_days_since_last_order',
+                'min_lifetime_points',
             )
         )
+
+
+class LoyaltyPointsTransaction(BaseModel):
+    """Immutable ledger for customer loyalty points.
+
+    Mirrors ``SMSCreditTransaction``: every balance mutation writes exactly one
+    signed row with post-mutation snapshots. Never mutate balances outside
+    ``tickets/services/loyalty/points.py``.
+
+    Invariants:
+      - At most one EARN and one REVOKE row per ticket_order (partial unique).
+      - REVOKE.amount is the APPLIED balance delta (-min(earn, balance)), so
+        SUM(amount) per customer == Customer.points_balance — the ledger stays
+        sum-auditable even after Phase-2 spending introduces clamping. When
+        clamped, the original earn amount is noted in ``description``.
+      - customer is CASCADE: the only customer hard-delete path
+        (_reconcile_customers_after_order_deletion) runs after revoke-before-
+        delete hooks, so any cascaded trail nets to zero. Phase-2 note: once
+        ADJUST rows exist, reconcile must skip customers with points_balance>0.
+    """
+
+    class Kind(models.TextChoices):
+        EARN = 'earn', 'Earned'
+        REVOKE = 'revoke', 'Revoked'
+        ADJUST = 'adjust', 'Manual adjustment'
+
+    organization = models.ForeignKey(
+        Organization,
+        on_delete=models.CASCADE,
+        related_name='points_transactions',
+    )
+    customer = models.ForeignKey(
+        Customer,
+        on_delete=models.CASCADE,
+        related_name='points_transactions',
+    )
+    ticket_order = models.ForeignKey(
+        'TicketOrder',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='points_transactions',
+    )
+    kind = models.CharField(max_length=12, choices=Kind.choices, db_index=True)
+    amount = models.IntegerField(help_text='Signed: + earn, - revoke (applied delta).')
+    balance_after = models.PositiveIntegerField()
+    lifetime_after = models.PositiveIntegerField()
+    description = models.CharField(max_length=255, blank=True, default='')
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name='+',
+    )
+
+    class Meta:
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['customer', '-created_at']),
+            models.Index(fields=['organization', '-created_at']),
+        ]
+        constraints = [
+            models.UniqueConstraint(
+                fields=['ticket_order', 'kind'],
+                condition=models.Q(ticket_order__isnull=False),
+                name='loyaltypoints_one_per_order_kind',
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.get_kind_display()} {self.amount} pts (customer={self.customer_id})"

@@ -21,7 +21,7 @@ from .models import (
     SaleableTicketType, SaleableTicketTypeTier, StripeCheckoutSession, FeatureFlagSettings,
     SurveyInvitation, SurveyResponse, SurveyAnswer, SurveyQuestion, Payout,
     ExternalSurveyUpload, ExternalSurveyResponse, EventDailyPageView,
-    LoyaltyProgram, LoyaltyTier,
+    LoyaltyProgram, LoyaltyTier, LoyaltyPointsTransaction,
 )
 
 
@@ -9287,6 +9287,8 @@ class LoyaltyViewTests(TestCase):
             'name': 'New Club',
             'description': '',
             'is_active': 'on',
+            'points_basis': 'per_ticket',
+            'points_rate': '1',
             'tiers-TOTAL_FORMS': '1',
             'tiers-INITIAL_FORMS': '0',
             'tiers-MIN_NUM_FORMS': '0',
@@ -9454,6 +9456,7 @@ class LoyaltyHardeningTests(TestCase):
         self._login()
         data = {
             'name': 'Active Club', 'description': '', 'is_active': 'on',
+            'points_basis': 'per_ticket', 'points_rate': '1',
             'tiers-TOTAL_FORMS': '1', 'tiers-INITIAL_FORMS': '1',
             'tiers-MIN_NUM_FORMS': '0', 'tiers-MAX_NUM_FORMS': '1000',
             'tiers-0-id': str(self.base_tier.id),
@@ -9494,3 +9497,493 @@ class LoyaltyHardeningTests(TestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertNotContains(resp, 'Foreign Secret')
         self.assertNotContains(resp, 'ForeignGold')
+
+
+class LoyaltyPointsServiceTests(TestCase):
+    """Points wallet service: earn math, idempotency, applied-delta revokes."""
+
+    def setUp(self):
+        self.org = Organization.objects.create(name='Pts Org', slug='pts-org')
+        self.venue = Venue.objects.create(organization=self.org, name='Hall', city='Town')
+        self.event = Event.objects.create(
+            organization=self.org, name='Show', venue=self.venue,
+            start_date=date(2026, 7, 1), start_time=time(20, 0, 0),
+        )
+        self.program = LoyaltyProgram.objects.create(
+            organization=self.org, name='Pts Club', is_active=True,
+            points_enabled=True, points_basis=LoyaltyProgram.PointsBasis.PER_TICKET,
+            points_rate=Decimal('10'),
+        )
+        self.customer = Customer.objects.create(
+            organization=self.org, email='pts@x.com', name='Pat',
+        )
+
+    def _order(self, number='PTS-1', amount='25.50', tickets=2, customer=None):
+        order = TicketOrder.objects.create(
+            customer=customer or self.customer, event=self.event,
+            order_number=number, order_date=timezone.now(),
+            total_amount=Decimal(amount),
+        )
+        for _ in range(tickets):
+            Ticket.objects.create(ticket_order=order, price=Decimal('10.00'))
+        return order
+
+    def test_per_ticket_math(self):
+        from tickets.services.loyalty import award_points_for_order
+        order = self._order(tickets=3)
+        self.assertEqual(award_points_for_order(order), 30)
+        self.customer.refresh_from_db()
+        self.assertEqual(self.customer.points_balance, 30)
+        self.assertEqual(self.customer.lifetime_points, 30)
+
+    def test_per_dollar_floor_math(self):
+        from tickets.services.loyalty import award_points_for_order
+        self.program.points_basis = LoyaltyProgram.PointsBasis.PER_DOLLAR
+        self.program.points_rate = Decimal('1.50')
+        self.program.save()
+        order = self._order(amount='25.50', tickets=1)
+        # 1.50 * 25.50 = 38.25 -> floor 38
+        self.assertEqual(award_points_for_order(order), 38)
+
+    def test_zero_ticket_order_per_ticket_earns_nothing(self):
+        from tickets.services.loyalty import award_points_for_order
+        order = self._order(tickets=0)
+        self.assertEqual(award_points_for_order(order), 0)
+        self.assertEqual(LoyaltyPointsTransaction.objects.count(), 0)
+
+    def test_per_dollar_free_order_earns_nothing(self):
+        from tickets.services.loyalty import award_points_for_order
+        self.program.points_basis = LoyaltyProgram.PointsBasis.PER_DOLLAR
+        self.program.save()
+        order = self._order(amount='0.00', tickets=2)
+        self.assertEqual(award_points_for_order(order), 0)
+
+    def test_no_program_disabled_or_inactive_noop(self):
+        from tickets.services.loyalty import award_points_for_order
+        order = self._order()
+        self.program.points_enabled = False
+        self.program.save()
+        self.assertEqual(award_points_for_order(order), 0)
+        self.program.points_enabled = True
+        self.program.is_active = False
+        self.program.save()
+        self.assertEqual(award_points_for_order(order), 0)
+        self.program.delete()  # soft delete
+        self.assertEqual(award_points_for_order(order), 0)
+        self.assertEqual(LoyaltyPointsTransaction.objects.count(), 0)
+
+    def test_placeholder_customer_never_earns(self):
+        from tickets.services.loyalty import award_points_for_order, award_points_for_orders
+        ghost = Customer.objects.create(
+            organization=self.org, email=f'in-person-{self.org.id}@placeholder.local', name='Walk-ups',
+        )
+        order = self._order(number='PTS-GHOST', customer=ghost)
+        self.assertEqual(award_points_for_order(order), 0)
+        self.assertEqual(award_points_for_orders([order], self.program), 0)
+        ghost.refresh_from_db()
+        self.assertEqual(ghost.points_balance, 0)
+
+    def test_double_award_single_earn_row(self):
+        from tickets.services.loyalty import award_points_for_order
+        order = self._order()
+        self.assertEqual(award_points_for_order(order), 20)
+        self.assertEqual(award_points_for_order(order), 0)
+        self.assertEqual(
+            LoyaltyPointsTransaction.objects.filter(ticket_order=order).count(), 1
+        )
+        # DB constraint backstop: a direct duplicate insert must fail.
+        with self.assertRaises(IntegrityError):
+            with transaction.atomic():
+                LoyaltyPointsTransaction.objects.create(
+                    organization=self.org, customer=self.customer, ticket_order=order,
+                    kind=LoyaltyPointsTransaction.Kind.EARN, amount=20,
+                    balance_after=40, lifetime_after=40,
+                )
+
+    def test_revoke_uses_stored_amount_after_rate_change(self):
+        from tickets.services.loyalty import award_points_for_order, revoke_points_for_order
+        order = self._order(tickets=2)
+        award_points_for_order(order)  # 20 pts at rate 10
+        self.program.points_rate = Decimal('50')
+        self.program.save()
+        self.assertEqual(revoke_points_for_order(order), 20)  # stored, not 100
+        self.customer.refresh_from_db()
+        self.assertEqual(self.customer.points_balance, 0)
+        self.assertEqual(self.customer.lifetime_points, 0)
+
+    def test_revoke_idempotent_and_absent_earn_noop(self):
+        from tickets.services.loyalty import award_points_for_order, revoke_points_for_order
+        order = self._order()
+        self.assertEqual(revoke_points_for_order(order), 0)  # no earn yet
+        award_points_for_order(order)
+        self.assertEqual(revoke_points_for_order(order), 20)
+        self.assertEqual(revoke_points_for_order(order), 0)  # already revoked
+        self.assertEqual(
+            LoyaltyPointsTransaction.objects.filter(
+                ticket_order=order, kind=LoyaltyPointsTransaction.Kind.REVOKE
+            ).count(), 1
+        )
+
+    def test_clamped_revoke_records_applied_delta(self):
+        """Sum-auditability (D2): when the balance is below the earn (Phase-2
+        spend simulation), the REVOKE row records the APPLIED delta and
+        SUM(amounts) == points_balance still holds."""
+        from tickets.services.loyalty import award_points_for_order, revoke_points_for_order
+        order = self._order(tickets=2)
+        award_points_for_order(order)  # +20
+        # Simulate a Phase-2 spend: drop balance below the earn.
+        Customer.objects.filter(id=self.customer.id).update(points_balance=5)
+        self.assertEqual(revoke_points_for_order(order), 5)  # applied, not 20
+        self.customer.refresh_from_db()
+        self.assertEqual(self.customer.points_balance, 0)
+        revoke = LoyaltyPointsTransaction.objects.get(
+            ticket_order=order, kind=LoyaltyPointsTransaction.Kind.REVOKE
+        )
+        self.assertEqual(revoke.amount, -5)
+        self.assertIn('clamped', revoke.description)
+        ledger_sum = sum(
+            t.amount for t in self.customer.points_transactions.all()
+        )
+        # EARN +20, REVOKE -5: sum 15 vs balance 0 — but the manual .update()
+        # bypassed the ledger (the simulated spend has no row). Adjusting for
+        # the simulated -15 spend, sums reconcile: 20 - 5 - 15 == 0.
+        self.assertEqual(ledger_sum - 15, self.customer.points_balance)
+
+    def test_snapshot_sequence(self):
+        from tickets.services.loyalty import award_points_for_order, revoke_points_for_order
+        o1 = self._order(number='PTS-A', tickets=1)
+        o2 = self._order(number='PTS-B', tickets=3)
+        award_points_for_order(o1)   # +10 -> 10
+        award_points_for_order(o2)   # +30 -> 40
+        revoke_points_for_order(o1)  # -10 -> 30
+        rows = list(
+            LoyaltyPointsTransaction.objects.filter(customer=self.customer).order_by('created_at')
+        )
+        self.assertEqual([r.balance_after for r in rows], [10, 40, 30])
+        self.assertEqual([r.lifetime_after for r in rows], [10, 40, 30])
+
+    def test_bulk_award_and_bulk_revoke_twins(self):
+        from tickets.services.loyalty import award_points_for_orders, revoke_points_for_orders
+        other = Customer.objects.create(organization=self.org, email='o@x.com', name='O')
+        orders = [
+            self._order(number='B-1', tickets=1),
+            self._order(number='B-2', tickets=2),
+            self._order(number='B-3', tickets=1, customer=other),
+        ]
+        total = award_points_for_orders(orders, self.program)
+        self.assertEqual(total, 40)
+        self.customer.refresh_from_db(); other.refresh_from_db()
+        self.assertEqual(self.customer.points_balance, 30)
+        self.assertEqual(other.points_balance, 10)
+        # Re-run: idempotent no-op.
+        self.assertEqual(award_points_for_orders(orders, self.program), 0)
+        # Bulk revoke nets everything back to zero.
+        self.assertEqual(revoke_points_for_orders(orders), 40)
+        self.customer.refresh_from_db(); other.refresh_from_db()
+        self.assertEqual(self.customer.points_balance, 0)
+        self.assertEqual(other.points_balance, 0)
+        # Idempotent.
+        self.assertEqual(revoke_points_for_orders(orders), 0)
+
+
+class LoyaltyPointsHookTests(TestCase):
+    """Hook sites: refund clawback, hard-delete revokes, CSV import awards."""
+
+    def setUp(self):
+        self.client = Client()
+        self.org = Organization.objects.create(name='Hook Org', slug='hook-org')
+        self.user = User.objects.create_user(username='hooks', email='hooks@x.com', password='pw12345')
+        UserProfile.objects.create(user=self.user, organization=self.org, org_role=UserProfile.OrgRole.OWNER)
+        OrganizationMembership.objects.create(user=self.user, organization=self.org, org_role=UserProfile.OrgRole.OWNER)
+        self.venue = Venue.objects.create(organization=self.org, name='Spot', city='City')
+        self.event = Event.objects.create(
+            organization=self.org, name='Gig', venue=self.venue,
+            start_date=date(2026, 8, 1), start_time=time(20, 0, 0),
+        )
+        self.program = LoyaltyProgram.objects.create(
+            organization=self.org, name='Hook Club', is_active=True,
+            points_enabled=True, points_rate=Decimal('10'),
+        )
+        self.customer = Customer.objects.create(organization=self.org, email='h@x.com', name='H')
+
+    def _login(self):
+        self.client.login(username='hooks@x.com', password='pw12345')
+        self.client.get(reverse('tickets:home'))
+
+    def _earned_order(self, number='H-1', upload=None, tickets=2):
+        from tickets.services.loyalty import award_points_for_order
+        order = TicketOrder.objects.create(
+            customer=self.customer, event=self.event, uploaded_file=upload,
+            order_number=number, order_date=timezone.now(), total_amount=Decimal('50.00'),
+        )
+        for _ in range(tickets):
+            Ticket.objects.create(ticket_order=order, price=Decimal('25.00'))
+        award_points_for_order(order)
+        return order
+
+    def _upload(self):
+        csv_format = CSVFormat.objects.create(
+            organization=self.org, name='F', column_mapping={'order_number': 'order_number'},
+        )
+        return UploadedFile.objects.create(
+            organization=self.org, csv_format=csv_format, filename='u.csv', status='completed',
+        )
+
+    def test_full_refund_revokes_partial_does_not(self):
+        # Refunds are only allowed for direct-ticketing events.
+        self.event.ticketing_type = 'direct'
+        self.event.save(update_fields=['ticketing_type'])
+        order = self._earned_order()
+        session = StripeCheckoutSession.objects.create(
+            event=self.event, organization=self.org, stripe_session_id='pi_test_1',
+            buyer_email='h@x.com', status=StripeCheckoutSession.Status.COMPLETED,
+            amount_total_cents=5000, ticket_order=order,
+        )
+        self._login()
+        with patch('stripe.Refund.create'):
+            resp = self.client.post(
+                reverse('tickets:refund_order', args=[order.id]),
+                {'refund_type': 'partial', 'refund_amount': '10.00'},
+            )
+        self.assertEqual(resp.status_code, 302)
+        self.customer.refresh_from_db()
+        self.assertEqual(self.customer.points_balance, 20)  # partial: no clawback
+        with patch('stripe.Refund.create'):
+            resp = self.client.post(
+                reverse('tickets:refund_order', args=[order.id]),
+                {'refund_type': 'full'},
+            )
+        self.assertEqual(resp.status_code, 302)
+        self.customer.refresh_from_db()
+        self.assertEqual(self.customer.points_balance, 0)
+        self.assertTrue(
+            LoyaltyPointsTransaction.objects.filter(
+                ticket_order=order, kind=LoyaltyPointsTransaction.Kind.REVOKE
+            ).exists()
+        )
+
+    def test_upload_delete_revokes_before_hard_delete(self):
+        upload = self._upload()
+        order = self._earned_order(number='H-UP', upload=upload)
+        self.customer.refresh_from_db()
+        self.assertEqual(self.customer.points_balance, 20)
+        self._login()
+        resp = self.client.post(reverse('tickets:upload_delete', args=[upload.id]))
+        self.assertEqual(resp.status_code, 302)
+        # Customer had no other orders -> reconcile hard-deleted them, and the
+        # CASCADE took the (net-zero) ledger with it. The org must hold zero
+        # outstanding points either way.
+        remaining = Customer.objects.filter(id=self.customer.id).first()
+        if remaining is not None:
+            self.assertEqual(remaining.points_balance, 0)
+        self.assertFalse(TicketOrder.objects.filter(id=order.id).exists())
+
+    def test_upload_delete_aborts_when_revoke_fails(self):
+        upload = self._upload()
+        order = self._earned_order(number='H-ABORT', upload=upload)
+        self._login()
+        with patch('tickets.views.revoke_points_for_orders', side_effect=RuntimeError('boom')):
+            resp = self.client.post(reverse('tickets:upload_delete', args=[upload.id]))
+        # The view catches and reports, but the transaction rolled back:
+        # orders AND points must survive untouched.
+        self.assertTrue(TicketOrder.objects.filter(id=order.id).exists())
+        self.customer.refresh_from_db()
+        self.assertEqual(self.customer.points_balance, 20)
+
+    def test_event_delete_revokes_points(self):
+        # Separate keeper-order on another event so the customer survives reconcile.
+        other_event = Event.objects.create(
+            organization=self.org, name='Keeper', venue=self.venue,
+            start_date=date(2026, 9, 1), start_time=time(20, 0, 0),
+        )
+        keeper = TicketOrder.objects.create(
+            customer=self.customer, event=other_event, order_number='H-KEEP',
+            order_date=timezone.now(), total_amount=Decimal('10.00'),
+        )
+        order = self._earned_order(number='H-EVDEL')
+        self.customer.refresh_from_db()
+        self.assertEqual(self.customer.points_balance, 20)
+        self._login()
+        resp = self.client.post(reverse('tickets:event_delete', args=[self.event.id]))
+        self.assertEqual(resp.status_code, 302)
+        self.customer.refresh_from_db()
+        self.assertEqual(self.customer.points_balance, 0)
+        # REVOKE row survives with ticket_order nulled by the cascade.
+        self.assertTrue(
+            LoyaltyPointsTransaction.objects.filter(
+                customer=self.customer, kind=LoyaltyPointsTransaction.Kind.REVOKE,
+                ticket_order__isnull=True,
+            ).exists()
+        )
+
+    def test_csv_import_awards_and_is_idempotent(self):
+        import io
+        csv_format = CSVFormat.objects.create(
+            organization=self.org, name='Std',
+            column_mapping={
+                'order_date': ['order_date'],
+                'customer_email': ['customer_email'],
+                'customer_name': ['customer_name'],
+                'ticket_type': ['ticket_type'],
+            },
+        )
+        csv_body = (
+            "order_date,customer_email,customer_name,ticket_type\n"
+            "2026-08-01,csvbuyer@x.com,Buyer,GA\n"
+        )
+        upload = UploadedFile.objects.create(
+            organization=self.org, csv_format=csv_format, filename='in.csv', status='pending',
+            metadata={'event_id': str(self.event.id), 'event_name': self.event.name,
+                      'event_start_date': '2026-08-01'},
+        )
+        from tickets.csv_processor import CSVProcessor
+        processor = CSVProcessor(upload, csv_format)
+        results = processor.process_and_save(io.BytesIO(csv_body.encode('utf-8')))
+        self.assertEqual(results['success_count'], 1)
+        buyer = Customer.objects.get(organization=self.org, email='csvbuyer@x.com')
+        self.assertEqual(buyer.points_balance, 10)  # 1 ticket x rate 10
+        self.assertEqual(buyer.lifetime_points, 10)
+        # Awarding is idempotent against the same orders.
+        from tickets.services.loyalty import award_points_for_orders
+        orders = list(TicketOrder.objects.filter(uploaded_file=upload))
+        self.assertEqual(award_points_for_orders(orders, self.program), 0)
+
+    def test_backfill_task_awards_history_and_chains_recalc(self):
+        from tickets.tasks import backfill_loyalty_points_task
+        o1 = TicketOrder.objects.create(
+            customer=self.customer, event=self.event, order_number='BF-1',
+            order_date=timezone.now(), total_amount=Decimal('30.00'),
+        )
+        Ticket.objects.create(ticket_order=o1, price=Decimal('30.00'))
+        refunded = TicketOrder.objects.create(
+            customer=self.customer, event=self.event, order_number='BF-2',
+            order_date=timezone.now(), total_amount=Decimal('30.00'),
+            refunded_at=timezone.now(),
+        )
+        Ticket.objects.create(ticket_order=refunded, price=Decimal('30.00'))
+        with patch('tickets.tasks.recalculate_loyalty_tiers_task.delay') as mock_recalc:
+            result = backfill_loyalty_points_task.apply(args=[str(self.program.id)])
+        self.assertEqual(result.result, 10)  # only the live order, 1 ticket
+        mock_recalc.assert_called_once_with(str(self.program.id))
+        self.customer.refresh_from_db()
+        self.assertEqual(self.customer.points_balance, 10)
+        self.org.refresh_from_db()
+        self.assertIsNotNone(self.org.loyalty_points_backfilled_at)
+        self.program.refresh_from_db()
+        self.assertFalse(self.program.recalc_in_progress)
+        # Re-run: idempotent no-op (repair-path semantics).
+        with patch('tickets.tasks.recalculate_loyalty_tiers_task.delay'):
+            result2 = backfill_loyalty_points_task.apply(args=[str(self.program.id)])
+        self.assertEqual(result2.result, 0)
+
+    def test_backfill_gated_on_inactive_or_disabled(self):
+        from tickets.tasks import backfill_loyalty_points_task
+        self.program.points_enabled = False
+        self.program.save()
+        result = backfill_loyalty_points_task.apply(args=[str(self.program.id)])
+        self.assertEqual(result.result, 0)
+
+    def test_backfill_skipped_while_recalc_in_progress(self):
+        from tickets.tasks import backfill_loyalty_points_task
+        self.program.recalc_in_progress = True
+        self.program.save()
+        result = backfill_loyalty_points_task.apply(args=[str(self.program.id)])
+        self.assertEqual(result.result, 0)
+
+
+class LoyaltyPointsTierAndFormTests(TestCase):
+    """min_lifetime_points rule + builder validation."""
+
+    def setUp(self):
+        self.client = Client()
+        self.org = Organization.objects.create(name='PtsTier Org', slug='ptstier-org')
+        self.user = User.objects.create_user(username='ptier', email='ptier@x.com', password='pw12345')
+        UserProfile.objects.create(user=self.user, organization=self.org, org_role=UserProfile.OrgRole.OWNER)
+        OrganizationMembership.objects.create(user=self.user, organization=self.org, org_role=UserProfile.OrgRole.OWNER)
+        self.program = LoyaltyProgram.objects.create(
+            organization=self.org, name='Ladder', is_active=True,
+            points_enabled=True, points_rate=Decimal('1'),
+        )
+
+    def test_min_lifetime_points_rule_through_assigner(self):
+        from tickets.services.loyalty import assign_loyalty_tiers
+        gold = LoyaltyTier.objects.create(
+            program=self.program, name='Gold', rank=2, min_lifetime_points=100,
+        )
+        rich = Customer.objects.create(
+            organization=self.org, email='rich@x.com', name='R', lifetime_points=150,
+        )
+        poor = Customer.objects.create(
+            organization=self.org, email='poor@x.com', name='P', lifetime_points=50,
+        )
+        assign_loyalty_tiers(self.program)
+        rich.refresh_from_db(); poor.refresh_from_db()
+        self.assertEqual(rich.loyalty_tier, gold)
+        self.assertIsNone(poor.loyalty_tier)
+
+    def test_points_only_tier_counts_as_ruled(self):
+        tier = LoyaltyTier(program=self.program, name='Pointy', rank=1, min_lifetime_points=10)
+        self.assertFalse(tier.has_no_rules())
+
+    def _program_post(self, points_enabled, tier_points_rule):
+        data = {
+            'name': 'Ladder2', 'description': '', 'is_active': 'on',
+            'points_basis': 'per_ticket', 'points_rate': '1',
+            'tiers-TOTAL_FORMS': '1', 'tiers-INITIAL_FORMS': '0',
+            'tiers-MIN_NUM_FORMS': '0', 'tiers-MAX_NUM_FORMS': '1000',
+            'tiers-0-name': 'Gold', 'tiers-0-rank': '1', 'tiers-0-color': 'red', 'tiers-0-perks': '',
+            'tiers-0-min_lifetime_value': '', 'tiers-0-min_order_count': '',
+            'tiers-0-min_events_purchased': '', 'tiers-0-min_tickets_purchased': '',
+            'tiers-0-max_days_since_last_order': '',
+            'tiers-0-min_lifetime_points': tier_points_rule,
+        }
+        if points_enabled:
+            data['points_enabled'] = 'on'
+        return data
+
+    def test_points_rule_requires_points_enabled(self):
+        self.client.login(username='ptier@x.com', password='pw12345')
+        self.client.get(reverse('tickets:home'))
+        self.program.delete()  # make room for a new active program
+        resp = self.client.post(
+            reverse('tickets:loyalty_program_create'),
+            self._program_post(points_enabled=False, tier_points_rule='100'),
+        )
+        self.assertEqual(resp.status_code, 200)  # re-rendered with error
+        self.assertContains(resp, 'points are not')
+        self.assertFalse(LoyaltyProgram.objects.filter(organization=self.org, name='Ladder2').exists())
+
+    @patch('tickets.tasks.backfill_loyalty_points_task.delay')
+    def test_backfill_checkbox_enqueues_backfill_not_recalc(self, mock_backfill):
+        self.client.login(username='ptier@x.com', password='pw12345')
+        self.client.get(reverse('tickets:home'))
+        self.program.delete()
+        data = self._program_post(points_enabled=True, tier_points_rule='100')
+        data['backfill_past_orders'] = 'on'
+        with patch('tickets.tasks.recalculate_loyalty_tiers_task.delay') as mock_recalc:
+            resp = self.client.post(reverse('tickets:loyalty_program_create'), data)
+        self.assertEqual(resp.status_code, 302)
+        mock_backfill.assert_called_once()
+        mock_recalc.assert_not_called()
+
+    def test_points_rate_validator_rejects_zero(self):
+        from tickets.forms import LoyaltyProgramForm
+        form = LoyaltyProgramForm(data={
+            'name': 'X', 'description': '', 'is_active': 'on',
+            'points_enabled': 'on', 'points_basis': 'per_ticket', 'points_rate': '0',
+        })
+        self.assertFalse(form.is_valid())
+        self.assertIn('points_rate', form.errors)
+
+    def test_program_detail_renders_points_stats(self):
+        self.client.login(username='ptier@x.com', password='pw12345')
+        self.client.get(reverse('tickets:home'))
+        Customer.objects.create(
+            organization=self.org, email='bal@x.com', name='B',
+            points_balance=40, lifetime_points=90,
+        )
+        resp = self.client.get(reverse('tickets:loyalty_program_detail', args=[self.program.id]))
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, 'Outstanding points')
+        self.assertContains(resp, '40')
+        self.assertContains(resp, '90')
