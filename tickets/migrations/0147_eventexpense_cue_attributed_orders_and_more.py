@@ -6,7 +6,7 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('tickets', '0143_eventexpense_api_attributed_orders_and_more'),
+        ('tickets', '0146_merge_20260610_2128'),
     ]
 
     operations = [
