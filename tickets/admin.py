@@ -1,5 +1,5 @@
 import json
-from django.contrib import admin
+from django.contrib import admin, messages
 from django.utils.html import format_html
 from django.db import models
 from django.db.models import Sum, Count
@@ -1250,6 +1250,66 @@ class LoyaltyProgramAdmin(admin.ModelAdmin):
     search_fields = ['name', 'organization__name']
     readonly_fields = ['id', 'recalc_in_progress', 'last_recalculated_at', 'created_at', 'updated_at']
     inlines = [LoyaltyTierInline]
+    actions = ['reset_loyalty_points']
+
+    @admin.action(description='Reset loyalty points to scratch (delete ledger, zero balances)')
+    def reset_loyalty_points(self, request, queryset):
+        """Hard-reset every selected program's org back to zero points.
+
+        Irreversible — deletes the org's points ledger and zeroes balances — so
+        it runs through an intermediate confirmation page. De-dupes by org (one
+        active program per org, but selections can overlap) and refuses any org
+        with a backfill/recalc in flight.
+        """
+        from django.contrib.admin import helpers
+        from django.template.response import TemplateResponse
+        from tickets.services.loyalty.points import reset_points_for_organization
+
+        # De-dupe selected programs down to their organizations.
+        orgs = {}
+        for program in queryset.select_related('organization'):
+            orgs.setdefault(program.organization_id, program.organization)
+        orgs = list(orgs.values())
+
+        if request.POST.get('confirm'):
+            done, blocked = 0, []
+            for org in orgs:
+                # Refuse if a backfill/recalc is mid-flight for this org.
+                if LoyaltyProgram.objects.filter(
+                    organization=org, recalc_in_progress=True,
+                ).exists():
+                    blocked.append(org)
+                    continue
+                summary = reset_points_for_organization(org)
+                done += 1
+                self.message_user(
+                    request,
+                    f'Reset points for "{org.name}": deleted '
+                    f'{summary["transactions_deleted"]} ledger rows, zeroed '
+                    f'{summary["customers_reset"]} customers.',
+                    level=messages.SUCCESS,
+                )
+            for org in blocked:
+                self.message_user(
+                    request,
+                    f'Skipped "{org.name}": a backfill/recalc is in progress. '
+                    f'Wait for it to finish, then retry.',
+                    level=messages.WARNING,
+                )
+            return None
+
+        context = {
+            **self.admin_site.each_context(request),
+            'title': 'Reset loyalty points',
+            'organizations': orgs,
+            'queryset': queryset,
+            'action_checkbox_name': helpers.ACTION_CHECKBOX_NAME,
+            'opts': self.model._meta,
+            'media': self.media,
+        }
+        return TemplateResponse(
+            request, 'admin/reset_loyalty_points_confirm.html', context,
+        )
 
 
 @admin.register(LoyaltyTier)

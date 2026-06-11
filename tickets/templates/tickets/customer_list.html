@@ -1,5 +1,5 @@
 {% extends 'tickets/base.html' %}
-{% load tickets_extras %}
+{% load tickets_extras humanize %}
 
 {% block title %}Customers{% endblock %}
 
@@ -115,6 +115,17 @@
                             </a>
                             {% endwith %}
                         </th>
+                        {% if loyalty_feature_enabled %}
+                        <th class="d-none d-sm-table-cell">
+                            {% with asc='points_balance' desc='-points_balance' %}
+                            <a href="?sort={% if sort_by == desc %}{{ asc }}{% else %}{{ desc }}{% endif %}&search={{ search_query }}&segment={{ segment_filter }}&tag={{ tag_filter }}">Points Balance
+                                {% if sort_by == asc %}<i class="bi bi-arrow-up"></i>
+                                {% elif sort_by == desc %}<i class="bi bi-arrow-down"></i>
+                                {% else %}<i class="bi bi-arrow-down-up"></i>{% endif %}
+                            </a>
+                            {% endwith %}
+                        </th>
+                        {% endif %}
                         <th class="d-none d-sm-table-cell">
                             {% with asc='last_order_date' desc='-last_order_date' %}
                             <a href="?sort={% if sort_by == desc %}{{ asc }}{% else %}{{ desc }}{% endif %}&search={{ search_query }}&segment={{ segment_filter }}&tag={{ tag_filter }}">Last Order
@@ -174,6 +185,9 @@
                             {% endif %}
                         </td>
                         <td><span class="revenue">${{ customer.lifetime_value|currency }}</span></td>
+                        {% if loyalty_feature_enabled %}
+                        <td class="d-none d-sm-table-cell">{{ customer.points_balance|intcomma }}</td>
+                        {% endif %}
                         <td class="d-none d-sm-table-cell">{{ customer.last_order_date|date:"M d, Y"|default:"-" }}</td>
                         <td class="d-none d-sm-table-cell">{{ customer.order_count }}</td>
                         <td class="d-none d-md-table-cell">

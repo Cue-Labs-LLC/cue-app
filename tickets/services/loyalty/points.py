@@ -184,6 +184,41 @@ def award_points_for_orders(orders, program, *, description=''):
     return total
 
 
+def reset_points_for_organization(organization):
+    """Hard-reset an org's loyalty points back to scratch. Returns a summary dict.
+
+    The sanctioned escape hatch for "undo the backfill / start the points over":
+    deletes the org's entire points ledger, zeroes every customer's
+    points_balance and lifetime_points, and clears loyalty_points_backfilled_at
+    so a fresh backfill can run cleanly afterward. Irreversible.
+
+    Unlike revoke (which appends signed ledger rows), this DELETES history — the
+    one place balances are mutated by truncation rather than a row — because
+    "from scratch" must also clear the per-order EARN rows that would otherwise
+    block a future re-backfill via the loyaltypoints_one_per_order_kind
+    constraint. Run only when no backfill/recalc is in flight.
+
+    Returns ``{'transactions_deleted': int, 'customers_reset': int}``.
+    """
+    with transaction.atomic():
+        deleted, _ = LoyaltyPointsTransaction.objects.filter(
+            organization=organization,
+        ).delete()
+        customers_reset = (
+            Customer.objects.filter(organization=organization)
+            .exclude(points_balance=0, lifetime_points=0)
+            .update(points_balance=0, lifetime_points=0)
+        )
+        if organization.loyalty_points_backfilled_at is not None:
+            organization.loyalty_points_backfilled_at = None
+            organization.save(update_fields=['loyalty_points_backfilled_at'])
+    logger.info(
+        "Reset loyalty points for org %s: deleted %s ledger rows, zeroed %s customers",
+        organization.id, deleted, customers_reset,
+    )
+    return {'transactions_deleted': deleted, 'customers_reset': customers_reset}
+
+
 def _apply_revoke(locked_customer, earn, description, created_by=None):
     """Write the REVOKE row for one EARN against a locked customer row.
 
