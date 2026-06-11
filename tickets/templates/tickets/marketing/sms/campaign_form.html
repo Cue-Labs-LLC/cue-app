@@ -438,7 +438,13 @@
                             <span class="sms-aud-count" id="aud-count-pill"><b id="aud-count">—</b> recipients</span>
                         </div>
                         {% if event %}
-                        <div class="sms-hint" style="margin-top:10px;">Texting everyone who bought a ticket to <strong>{{ event.name }}</strong>.</div>
+                        <div class="sms-aud-group" data-aud-group="scope">
+                            <div class="sms-aud-chips" data-aud-chips="scope">
+                                <span class="sms-chip-wrap"><input type="radio" name="audience_scope" id="scope-event" value="event" checked autocomplete="off"><label class="sms-chip" for="scope-event"><span class="sms-chip-dot"></span>Ticket buyers for this event</label></span>
+                                <span class="sms-chip-wrap"><input type="radio" name="audience_scope" id="scope-all" value="all" autocomplete="off"><label class="sms-chip" for="scope-all"><span class="sms-chip-dot"></span>All SMS subscribers</label></span>
+                            </div>
+                            <div class="sms-hint" style="margin-top:10px;">Texting ticket buyers for <strong>{{ event.name }}</strong>. Switch to <em>All SMS subscribers</em> to reach everyone in your org who's opted in.</div>
+                        </div>
                         {% else %}
                         {% if form.tag_ids.field.queryset %}
                         <div class="sms-aud-group" data-aud-group="tags">
@@ -895,6 +901,10 @@
 
         document.querySelectorAll('#audience-section input[type=checkbox]').forEach(function (cb) {
             cb.addEventListener('change', function () { syncAll(); refreshAudience(); });
+        });
+        // Event mode: switching between ticket buyers and all subscribers re-sizes the audience.
+        document.querySelectorAll('#audience-section input[name="audience_scope"]').forEach(function (r) {
+            r.addEventListener('change', refreshAudience);
         });
         syncAll();
         refreshAudience();

@@ -78,7 +78,8 @@ def _annotate_counts(qs):
 def _criteria_from_post(post):
     """Build an inline filter_criteria dict + manual id lists from raw POST data
     (used by the live audience-preview endpoint, which fires before the campaign
-    is saved). The compose UI offers tags + segments; event mode passes `event`."""
+    is saved). The compose UI offers tags + segments; event mode passes `event`
+    plus an `audience_scope` of 'event' (ticket buyers) or 'all' (all subscribers)."""
     criteria = {}
     segments = [s for s in post.getlist('rfm_segment') if s]
     if segments:
@@ -88,7 +89,10 @@ def _criteria_from_post(post):
         criteria['tag_ids'] = tag_ids
     event_id = (post.get('event') or '').strip()
     if event_id:
-        criteria['event_id'] = event_id
+        if (post.get('audience_scope') or 'event') == 'all':
+            criteria['all_subscribers'] = True
+        else:
+            criteria['event_id'] = event_id
     includes = [s.strip() for s in (post.get('manual_include_ids') or '').split(',') if s.strip()]
     excludes = [s.strip() for s in (post.get('manual_exclude_ids') or '').split(',') if s.strip()]
     return criteria, includes, excludes
@@ -318,10 +322,14 @@ def sms_campaign_create(request):
         form = SMSCampaignForm(request.POST, organization=org, event=event)
         if form.is_valid():
             # Audience lives inline on the campaign. Event mode targets that
-            # event's attendees; otherwise the composed tags/segments.
+            # event's attendees, unless the user widened the audience to all
+            # subscribers; otherwise the composed tags/segments.
             criteria = dict(form.filter_criteria)
             if event:
-                criteria['event_id'] = str(event.id)
+                if (request.POST.get('audience_scope') or 'event') == 'all':
+                    criteria['all_subscribers'] = True
+                else:
+                    criteria['event_id'] = str(event.id)
             recipients = SMSCampaign(
                 organization=org, filter_criteria=criteria,
             ).materialize(org, cap=cap + 1)
