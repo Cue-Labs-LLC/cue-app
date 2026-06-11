@@ -205,12 +205,12 @@ class MarketingAnalyticsService:
         return qs
 
     @staticmethod
-    def _coalesce_int(manual_field, api_field):
-        return Coalesce(F(manual_field), F(api_field), output_field=IntegerField())
+    def _coalesce_int(*fields):
+        return Coalesce(*[F(f) for f in fields], output_field=IntegerField())
 
     @staticmethod
-    def _coalesce_decimal(manual_field, api_field):
-        return Coalesce(F(manual_field), F(api_field), output_field=DecimalField(max_digits=12, decimal_places=2))
+    def _coalesce_decimal(*fields):
+        return Coalesce(*[F(f) for f in fields], output_field=DecimalField(max_digits=12, decimal_places=2))
 
     def _email_totals(self):
         return self._email_qs().annotate(
@@ -248,8 +248,8 @@ class MarketingAnalyticsService:
 
     def _ads_totals(self):
         return self._ads_qs().annotate(
-            eff_orders=self._coalesce_int('manual_attributed_orders', 'api_attributed_orders'),
-            eff_revenue=self._coalesce_decimal('manual_attributed_revenue', 'api_attributed_revenue'),
+            eff_orders=self._coalesce_int('manual_attributed_orders', 'cue_attributed_orders', 'api_attributed_orders'),
+            eff_revenue=self._coalesce_decimal('manual_attributed_revenue', 'cue_attributed_revenue', 'api_attributed_revenue'),
         ).aggregate(
             line_items=Count('id'),
             spend=Coalesce(Sum('amount'), ZERO, output_field=DecimalField(max_digits=12, decimal_places=2)),
@@ -556,7 +556,7 @@ class MarketingAnalyticsService:
         )
         ads_revenue_sq = Subquery(
             ads_subq.values('event').annotate(
-                s=Sum(Coalesce(F('manual_attributed_revenue'), F('api_attributed_revenue'),
+                s=Sum(Coalesce(F('manual_attributed_revenue'), F('cue_attributed_revenue'), F('api_attributed_revenue'),
                                output_field=DecimalField(max_digits=12, decimal_places=2)))
             ).values('s')[:1],
             output_field=DecimalField(max_digits=12, decimal_places=2),
