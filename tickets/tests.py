@@ -4391,6 +4391,22 @@ class CustomerBulkSMSStatusTests(TestCase):
         self.assertIsNotNone(self.alice.sms_opt_in_date)
         self.assertFalse(self.bob.sms_opt_in)
 
+    def test_opt_in_skips_customers_without_a_phone(self):
+        phoneless = Customer.objects.create(
+            organization=self.org, email='nophone@example.com', name='No Phone',
+            phone='', sms_opt_in=False,
+        )
+        response = self.client.post(self.url, {
+            'sms_status': 'opt_in',
+            'customer_ids': [str(self.alice.id), str(phoneless.id)],
+        })
+        self.assertRedirects(response, reverse('tickets:customer_list'))
+        self.alice.refresh_from_db()
+        phoneless.refresh_from_db()
+        self.assertTrue(self.alice.sms_opt_in)
+        self.assertFalse(phoneless.sms_opt_in)
+        self.assertIsNone(phoneless.sms_opt_in_date)
+
     def test_opt_in_preserves_existing_opt_in_date(self):
         original = timezone.now() - timedelta(days=30)
         self.alice.sms_opt_in = True

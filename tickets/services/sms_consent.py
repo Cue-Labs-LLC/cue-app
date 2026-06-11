@@ -15,9 +15,14 @@ def set_sms_opt_in(customers_qs, *, opt_in):
     value means already-opted-in customers keep their original `sms_opt_in_date`,
     and the count reflects real changes rather than the size of the selection.
     Opting out leaves `sms_opt_in_date` in place as a historical record.
+
+    Opting in skips customers with no phone number — they can never receive SMS,
+    so marking them as subscribers would only inflate the count. This mirrors
+    `SMSCampaign.candidate_customers`, which builds its audience with
+    `.exclude(phone='')`.
     """
     if opt_in:
-        return customers_qs.filter(sms_opt_in=False).update(
+        return customers_qs.filter(sms_opt_in=False).exclude(phone='').update(
             sms_opt_in=True, sms_opt_in_date=timezone.now(),
         )
     return customers_qs.filter(sms_opt_in=True).update(sms_opt_in=False)
