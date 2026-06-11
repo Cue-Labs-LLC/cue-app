@@ -79,7 +79,8 @@ def _criteria_from_post(post):
     """Build an inline filter_criteria dict + manual id lists from raw POST data
     (used by the live audience-preview endpoint, which fires before the campaign
     is saved). The compose UI offers tags + segments; event mode passes `event`
-    plus an `audience_scope` of 'event' (ticket buyers) or 'all' (all subscribers)."""
+    plus an `audience_scope` of 'event' (ticket buyers), 'all' (all subscribers),
+    or 'tag' (customers with the chosen tag)."""
     criteria = {}
     segments = [s for s in post.getlist('rfm_segment') if s]
     if segments:
@@ -89,10 +90,15 @@ def _criteria_from_post(post):
         criteria['tag_ids'] = tag_ids
     event_id = (post.get('event') or '').strip()
     if event_id:
-        if (post.get('audience_scope') or 'event') == 'all':
-            criteria['all_subscribers'] = True
+        # Event mode is a single-choice audience; the scope picks exactly one
+        # narrowing, so ignore any stray tag/segment values from hidden controls.
+        scope = post.get('audience_scope') or 'event'
+        if scope == 'all':
+            criteria = {'all_subscribers': True}
+        elif scope == 'tag':
+            criteria = {'tag_ids': tag_ids} if tag_ids else {}
         else:
-            criteria['event_id'] = event_id
+            criteria = {'event_id': event_id}
     includes = [s.strip() for s in (post.get('manual_include_ids') or '').split(',') if s.strip()]
     excludes = [s.strip() for s in (post.get('manual_exclude_ids') or '').split(',') if s.strip()]
     return criteria, includes, excludes
@@ -321,15 +327,19 @@ def sms_campaign_create(request):
     if request.method == 'POST':
         form = SMSCampaignForm(request.POST, organization=org, event=event)
         if form.is_valid():
-            # Audience lives inline on the campaign. Event mode targets that
-            # event's attendees, unless the user widened the audience to all
-            # subscribers; otherwise the composed tags/segments.
+            # Audience lives inline on the campaign. In event mode the scope picks
+            # exactly one audience — the event's ticket buyers, all subscribers, or
+            # customers with the chosen tag; otherwise the composed tags/segments.
             criteria = dict(form.filter_criteria)
+            audience_scope = request.POST.get('audience_scope') or 'event'
             if event:
-                if (request.POST.get('audience_scope') or 'event') == 'all':
-                    criteria['all_subscribers'] = True
+                if audience_scope == 'all':
+                    criteria = {'all_subscribers': True}
+                elif audience_scope == 'tag':
+                    tag_ids = [str(t.id) for t in form.cleaned_data.get('tag_ids') or []]
+                    criteria = {'tag_ids': tag_ids} if tag_ids else {}
                 else:
-                    criteria['event_id'] = str(event.id)
+                    criteria = {'event_id': str(event.id)}
             recipients = SMSCampaign(
                 organization=org, filter_criteria=criteria,
             ).materialize(org, cap=cap + 1)
@@ -342,6 +352,8 @@ def sms_campaign_create(request):
                     f'This audience resolves to more than {cap} recipients. '
                     f'Narrow the audience before sending.',
                 )
+            elif event and audience_scope == 'tag' and not criteria.get('tag_ids'):
+                form.add_error(None, 'Pick at least one tag to send to.')
             elif confirm_count == 0:
                 form.add_error(None, 'This audience has no contactable recipients.')
             else:

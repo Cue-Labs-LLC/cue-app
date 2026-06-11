@@ -768,6 +768,46 @@ class EventSMSTests(TestCase):
         # a1 + a2 (buyers) + non-attendee; opt-out excluded.
         self.assertEqual(phones, {'+13105550001', '+13105550002', '+13105550004'})
 
+    def test_create_event_mode_renders_tag_scope_when_org_has_tags(self):
+        CustomerTag.objects.create(organization=self.org, name='Press')
+        resp = self.client.get(reverse('tickets:sms_campaign_create'), {'event': str(self.event.id)})
+        self.assertContains(resp, 'Customers with a tag')
+
+    def test_audience_preview_tag_scope_targets_tagged_opted_in_org_wide(self):
+        tag = CustomerTag.objects.create(organization=self.org, name='Press')
+        self.a1.tags.add(tag)       # a buyer
+        self.nonatt.tags.add(tag)   # a non-buyer — proves it's not event-scoped
+        self.optout.tags.add(tag)   # opted-out — must be excluded
+        resp = self.client.post(reverse('tickets:sms_audience_preview'), {
+            'event': str(self.event.id), 'audience_scope': 'tag', 'tag_ids': [str(tag.id)],
+        })
+        self.assertEqual(resp.json()['count'], 2)  # a1 + nonatt
+
+    def test_create_event_mode_tag_scope_sends_to_tagged_and_links_event(self):
+        tag = CustomerTag.objects.create(organization=self.org, name='Press')
+        self.a1.tags.add(tag)
+        self.nonatt.tags.add(tag)
+        resp = self.client.post(reverse('tickets:sms_campaign_create'), {
+            'name': self.event.name, 'body': 'Press release!',
+            'send_mode': 'now', 'event': str(self.event.id),
+            'audience_scope': 'tag', 'tag_ids': [str(tag.id)], 'confirm': '1',
+        })
+        self.assertEqual(resp.status_code, 302)
+        c = SMSCampaign.objects.get()
+        self.assertEqual(c.event_id, self.event.id)  # still linked to the event
+        self.assertEqual(c.filter_criteria, {'tag_ids': [str(tag.id)]})  # no event_id narrowing
+        phones = set(SMSMessageRecipient.objects.filter(campaign=c).values_list('phone', flat=True))
+        self.assertEqual(phones, {'+13105550001', '+13105550004'})  # a1 (buyer) + nonatt
+
+    def test_create_event_mode_tag_scope_without_tag_is_rejected(self):
+        resp = self.client.post(reverse('tickets:sms_campaign_create'), {
+            'name': self.event.name, 'body': 'Oops no tag',
+            'send_mode': 'now', 'event': str(self.event.id), 'audience_scope': 'tag',
+        })
+        self.assertEqual(resp.status_code, 200)  # re-renders with an error, no send
+        self.assertContains(resp, 'Pick at least one tag to send to.')
+        self.assertEqual(SMSCampaign.objects.count(), 0)
+
     def test_cross_tenant_event_404(self):
         from datetime import date
         from .models import Event, Venue
