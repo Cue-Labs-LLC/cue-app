@@ -7,8 +7,16 @@ from django.test import TestCase
 from django.urls import reverse
 
 from .models import Event, EventExpense, Organization, OrganizationMembership, UserProfile, Venue
-from .services.meta_ads import MetaAdsAPIError, MetaAdsClient
+from .services.meta_ads import CampaignInsights, MetaAdsAPIError, MetaAdsClient
 from .services.meta_campaign_matcher import CampaignCandidate, MatchResult, MetaCampaignMatcher
+
+
+def _insights(spend, purchases=None, purchase_value=None):
+    return CampaignInsights(
+        spend=Decimal(spend),
+        purchases=purchases,
+        purchase_value=Decimal(purchase_value) if purchase_value is not None else None,
+    )
 
 
 class MetaAdsClientTests(TestCase):
@@ -29,14 +37,95 @@ class MetaAdsClientTests(TestCase):
         self.assertIn('/act_123/campaigns', mock_get.call_args_list[0].args[0])
 
     @patch('tickets.services.meta_ads.requests.get')
-    def test_get_campaign_spend_returns_decimal(self, mock_get):
+    def test_get_campaign_insights_requests_actions_fields(self, mock_get):
         response = MagicMock(status_code=200)
-        response.json.return_value = {'data': [{'spend': '123.456'}]}
+        response.json.return_value = {'data': []}
         mock_get.return_value = response
 
-        spend = MetaAdsClient('token').get_campaign_spend('campaign-1')
+        MetaAdsClient('token').get_campaign_insights('campaign-1')
 
-        self.assertEqual(spend, Decimal('123.46'))
+        params = mock_get.call_args.kwargs['params']
+        self.assertEqual(params['fields'], 'spend,actions,action_values')
+        self.assertEqual(params['date_preset'], 'maximum')
+
+    @patch('tickets.services.meta_ads.requests.get')
+    def test_get_campaign_insights_uses_priority_purchase_type_without_summing(self, mock_get):
+        response = MagicMock(status_code=200)
+        response.json.return_value = {'data': [{
+            'spend': '123.456',
+            'actions': [
+                {'action_type': 'offsite_conversion.fb_pixel_purchase', 'value': '7'},
+                {'action_type': 'omni_purchase', 'value': '9.0'},
+                {'action_type': 'purchase', 'value': '8'},
+                {'action_type': 'link_click', 'value': '500'},
+            ],
+            'action_values': [
+                {'action_type': 'offsite_conversion.fb_pixel_purchase', 'value': '700.10'},
+                {'action_type': 'omni_purchase', 'value': '901.239'},
+                {'action_type': 'purchase', 'value': '800.00'},
+            ],
+        }]}
+        mock_get.return_value = response
+
+        insights = MetaAdsClient('token').get_campaign_insights('campaign-1')
+
+        self.assertEqual(insights.spend, Decimal('123.46'))
+        self.assertEqual(insights.purchases, 9)
+        self.assertEqual(insights.purchase_value, Decimal('901.24'))
+
+    @patch('tickets.services.meta_ads.requests.get')
+    def test_get_campaign_insights_falls_back_to_lower_priority_purchase_type(self, mock_get):
+        response = MagicMock(status_code=200)
+        response.json.return_value = {'data': [{
+            'spend': '10',
+            'actions': [{'action_type': 'purchase', 'value': '3'}],
+            'action_values': [{'action_type': 'purchase', 'value': '150.00'}],
+        }]}
+        mock_get.return_value = response
+
+        insights = MetaAdsClient('token').get_campaign_insights('campaign-1')
+
+        self.assertEqual(insights.purchases, 3)
+        self.assertEqual(insights.purchase_value, Decimal('150.00'))
+
+    @patch('tickets.services.meta_ads.requests.get')
+    def test_get_campaign_insights_actions_without_purchases_returns_zero(self, mock_get):
+        response = MagicMock(status_code=200)
+        response.json.return_value = {'data': [{
+            'spend': '10.00',
+            'actions': [{'action_type': 'link_click', 'value': '42'}],
+            'action_values': [{'action_type': 'link_click', 'value': '0'}],
+        }]}
+        mock_get.return_value = response
+
+        insights = MetaAdsClient('token').get_campaign_insights('campaign-1')
+
+        self.assertEqual(insights.purchases, 0)
+        self.assertEqual(insights.purchase_value, Decimal('0.00'))
+
+    @patch('tickets.services.meta_ads.requests.get')
+    def test_get_campaign_insights_missing_actions_returns_none(self, mock_get):
+        response = MagicMock(status_code=200)
+        response.json.return_value = {'data': [{'spend': '10.00'}]}
+        mock_get.return_value = response
+
+        insights = MetaAdsClient('token').get_campaign_insights('campaign-1')
+
+        self.assertEqual(insights.spend, Decimal('10.00'))
+        self.assertIsNone(insights.purchases)
+        self.assertIsNone(insights.purchase_value)
+
+    @patch('tickets.services.meta_ads.requests.get')
+    def test_get_campaign_insights_empty_data_returns_zero_spend_none_attribution(self, mock_get):
+        response = MagicMock(status_code=200)
+        response.json.return_value = {'data': []}
+        mock_get.return_value = response
+
+        insights = MetaAdsClient('token').get_campaign_insights('campaign-1')
+
+        self.assertEqual(insights.spend, Decimal('0.00'))
+        self.assertIsNone(insights.purchases)
+        self.assertIsNone(insights.purchase_value)
 
     @patch('tickets.services.meta_ads.requests.get')
     def test_api_error_raises_message(self, mock_get):
@@ -113,7 +202,10 @@ class MetaAdsApplyViewTests(TestCase):
     def test_apply_upserts_single_meta_campaign_expense(self, mock_client_cls):
         client = mock_client_cls.return_value
         client.list_campaigns.return_value = [{'id': 'cmp_1', 'name': 'Event Campaign'}]
-        client.get_campaign_spend.side_effect = [Decimal('42.00'), Decimal('55.50')]
+        client.get_campaign_insights.side_effect = [
+            _insights('42.00', 5, '250.00'),
+            _insights('55.50', 6, '310.75'),
+        ]
         url = reverse('tickets:event_meta_ads_apply', kwargs={'event_id': self.event.id})
 
         first = self.client.post(url, {'campaign_id': 'cmp_1'})
@@ -125,6 +217,8 @@ class MetaAdsApplyViewTests(TestCase):
         self.assertEqual(expenses.count(), 1)
         expense = expenses.get()
         self.assertEqual(expense.amount, Decimal('55.50'))
+        self.assertEqual(expense.api_attributed_orders, 6)
+        self.assertEqual(expense.api_attributed_revenue, Decimal('310.75'))
         self.assertEqual(expense.category, 'marketing')
         self.assertEqual(expense.external_id, 'cmp_1')
         self.assertEqual(expense.external_metadata['campaign_name'], 'Event Campaign')
@@ -137,7 +231,7 @@ class MetaAdsApplyViewTests(TestCase):
             {'id': 'cmp_1', 'name': 'Event Campaign'},
             {'id': 'cmp_2', 'name': 'Retargeting Campaign'},
         ]
-        client.get_campaign_spend.side_effect = [Decimal('42.00'), Decimal('18.25')]
+        client.get_campaign_insights.side_effect = [_insights('42.00'), _insights('18.25')]
         url = reverse('tickets:event_meta_ads_apply', kwargs={'event_id': self.event.id})
 
         first = self.client.post(url, {'campaign_id': 'cmp_1'})
@@ -192,7 +286,7 @@ class MetaAdsApplyViewTests(TestCase):
     def test_event_detail_lists_linked_meta_campaigns(self, mock_client_cls, mock_now):
         mock_now.return_value = datetime(2026, 5, 8, 15, 0, tzinfo=timezone.utc)
         client = mock_client_cls.return_value
-        client.get_campaign_spend.side_effect = [Decimal('44.00'), Decimal('12.75')]
+        client.get_campaign_insights.side_effect = [_insights('44.00'), _insights('12.75')]
         EventExpense.objects.create(
             event=self.event,
             category='marketing',
@@ -235,7 +329,7 @@ class MetaAdsApplyViewTests(TestCase):
     @patch('tickets.views.MetaAdsClient')
     def test_refresh_action_updates_only_selected_linked_campaign(self, mock_client_cls):
         client = mock_client_cls.return_value
-        client.get_campaign_spend.return_value = Decimal('99.00')
+        client.get_campaign_insights.return_value = _insights('99.00', 4, '200.00')
         selected = EventExpense.objects.create(
             event=self.event,
             category='marketing',
@@ -265,11 +359,44 @@ class MetaAdsApplyViewTests(TestCase):
         selected.refresh_from_db()
         other.refresh_from_db()
         self.assertEqual(selected.amount, Decimal('99.00'))
+        self.assertEqual(selected.api_attributed_orders, 4)
+        self.assertEqual(selected.api_attributed_revenue, Decimal('200.00'))
         self.assertEqual(selected.version, 2)
         self.assertIn('last_synced_at', selected.external_metadata)
         self.assertEqual(other.amount, Decimal('12.75'))
         self.assertEqual(other.version, 1)
-        client.get_campaign_spend.assert_called_once_with('cmp_1')
+        client.get_campaign_insights.assert_called_once_with('cmp_1')
+
+    @patch('tickets.views.MetaAdsClient')
+    def test_refresh_flags_confirmed_expense_when_attribution_changes(self, mock_client_cls):
+        client = mock_client_cls.return_value
+        # Spend unchanged; only API attribution moved.
+        client.get_campaign_insights.return_value = _insights('44.00', 9, '450.00')
+        expense = EventExpense.objects.create(
+            event=self.event,
+            category='marketing',
+            source='meta_ads',
+            description='Meta Ads: Event Campaign',
+            amount=Decimal('44.00'),
+            api_attributed_orders=4,
+            api_attributed_revenue=Decimal('200.00'),
+            external_id='cmp_1',
+            external_metadata={'campaign_name': 'Event Campaign'},
+            confirmed_at=datetime.now(timezone.utc),
+        )
+
+        response = self.client.post(reverse('tickets:event_meta_ads_refresh', kwargs={
+            'event_id': self.event.id,
+            'expense_id': expense.id,
+        }))
+
+        self.assertEqual(response.status_code, 302)
+        expense.refresh_from_db()
+        self.assertEqual(expense.amount, Decimal('44.00'))
+        self.assertEqual(expense.api_attributed_orders, 9)
+        self.assertEqual(expense.api_attributed_revenue, Decimal('450.00'))
+        self.assertIsNotNone(expense.api_data_changed_at)
+        self.assertTrue(expense.needs_review)
 
     @patch('tickets.views.MetaAdsClient')
     def test_remove_action_soft_deletes_only_selected_linked_campaign(self, mock_client_cls):
@@ -355,7 +482,7 @@ class MetaAdsApplyViewTests(TestCase):
     @patch('tickets.views.MetaAdsClient')
     def test_refresh_action_failure_keeps_existing_amount(self, mock_client_cls):
         client = mock_client_cls.return_value
-        client.get_campaign_spend.side_effect = MetaAdsAPIError('Meta unavailable')
+        client.get_campaign_insights.side_effect = MetaAdsAPIError('Meta unavailable')
         expense = EventExpense.objects.create(
             event=self.event,
             category='marketing',
@@ -380,7 +507,7 @@ class MetaAdsApplyViewTests(TestCase):
     @patch('tickets.views.MetaAdsClient')
     def test_event_detail_refreshes_linked_campaign_spend_before_render(self, mock_client_cls):
         client = mock_client_cls.return_value
-        client.get_campaign_spend.return_value = Decimal('88.25')
+        client.get_campaign_insights.return_value = _insights('88.25', 3, '120.00')
         expense = EventExpense.objects.create(
             event=self.event,
             category='marketing',
@@ -396,17 +523,19 @@ class MetaAdsApplyViewTests(TestCase):
         self.assertEqual(response.status_code, 200)
         expense.refresh_from_db()
         self.assertEqual(expense.amount, Decimal('88.25'))
+        self.assertEqual(expense.api_attributed_orders, 3)
+        self.assertEqual(expense.api_attributed_revenue, Decimal('120.00'))
         self.assertEqual(expense.version, 2)
         self.assertIn('last_synced_at', expense.external_metadata)
         self.assertContains(response, '$88.25')
         self.assertContains(response, 'Expenses')
         self.assertContains(response, '$88.25')
-        client.get_campaign_spend.assert_called_once_with('cmp_1')
+        client.get_campaign_insights.assert_called_once_with('cmp_1')
 
     @patch('tickets.views.MetaAdsClient')
     def test_event_detail_refreshes_multiple_campaigns_and_finance_total(self, mock_client_cls):
         client = mock_client_cls.return_value
-        client.get_campaign_spend.side_effect = [Decimal('50.00'), Decimal('25.50')]
+        client.get_campaign_insights.side_effect = [_insights('50.00'), _insights('25.50')]
         # Confirmed expenses participate in the finance total. Unconfirmed
         # campaign-matched expenses are intentionally excluded from event
         # expense totals.
@@ -441,12 +570,12 @@ class MetaAdsApplyViewTests(TestCase):
         self.assertEqual(amounts['cmp_1'], Decimal('50.00'))
         self.assertEqual(amounts['cmp_2'], Decimal('25.50'))
         self.assertContains(response, '$75.50')
-        self.assertEqual(client.get_campaign_spend.call_count, 2)
+        self.assertEqual(client.get_campaign_insights.call_count, 2)
 
     @patch('tickets.views.MetaAdsClient')
     def test_event_detail_refresh_failure_keeps_page_rendering_and_stored_amount(self, mock_client_cls):
         client = mock_client_cls.return_value
-        client.get_campaign_spend.side_effect = MetaAdsAPIError('Meta unavailable')
+        client.get_campaign_insights.side_effect = MetaAdsAPIError('Meta unavailable')
         expense = EventExpense.objects.create(
             event=self.event,
             category='marketing',

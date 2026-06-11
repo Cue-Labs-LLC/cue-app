@@ -155,6 +155,7 @@ urlpatterns = [
     path('events/<uuid:event_id>/surveys/match/',  views.event_survey_match,  name='event_survey_match'),
     path('events/<uuid:event_id>/surveys/apply/',  views.event_survey_apply,  name='event_survey_apply'),
     path('events/<uuid:event_id>/surveys/unlink/', views.event_survey_unlink, name='event_survey_unlink'),
+    path('events/<uuid:event_id>/surveys/response/<str:kind>/<uuid:response_id>/', views.event_survey_response_detail, name='event_survey_response_detail'),
     path('events/<uuid:event_id>/bulk-tag/', sms_views.event_bulk_tag, name='event_bulk_tag'),
     path('events/<uuid:event_id>/uploads-summary/', views.event_uploads_summary, name='event_uploads_summary'),
     path('events/<uuid:event_id>/scanner-pin/generate/', views.generate_scanner_pin, name='generate_scanner_pin'),

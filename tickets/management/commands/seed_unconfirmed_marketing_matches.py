@@ -134,8 +134,8 @@ class Command(BaseCommand):
                     'campaign_name': f'Seed Promo {i+1} — {event.name[:40]}',
                     'objective': 'OUTCOME_TRAFFIC',
                 },
-                manual_attributed_orders=10 + i,
-                manual_attributed_revenue=Decimal('480.00') + Decimal(i * 25),
+                api_attributed_orders=10 + i,
+                api_attributed_revenue=Decimal('480.00') + Decimal(i * 25),
                 expense_date=event.start_date,
             )
             created += 1

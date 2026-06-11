@@ -1,11 +1,62 @@
+from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 
 import requests
 from django.conf import settings
 
+# Meta reports overlapping purchase action types; use the first present
+# (never sum across types — that double counts the same conversions).
+PURCHASE_ACTION_TYPES = (
+    'omni_purchase',
+    'purchase',
+    'offsite_conversion.fb_pixel_purchase',
+    'onsite_web_purchase',
+)
+
 
 class MetaAdsAPIError(Exception):
     """Raised when the Meta Graph API returns an error response."""
+
+
+@dataclass(frozen=True)
+class CampaignInsights:
+    """Lifetime campaign metrics pulled from the Meta Insights API.
+
+    purchases/purchase_value are None when Meta returned no conversion data
+    (no actions reported), and 0 when actions exist but none are purchases.
+    """
+    spend: Decimal
+    purchases: int | None
+    purchase_value: Decimal | None
+
+
+def _extract_purchase_count(entries) -> int | None:
+    value = _first_purchase_value(entries)
+    if value is None:
+        return 0 if entries else None
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        raise MetaAdsAPIError("Meta returned an invalid purchase count.")
+
+
+def _extract_purchase_amount(entries) -> Decimal | None:
+    value = _first_purchase_value(entries)
+    if value is None:
+        return Decimal('0.00') if entries else None
+    try:
+        return Decimal(str(value)).quantize(Decimal('0.01'))
+    except (InvalidOperation, TypeError):
+        raise MetaAdsAPIError("Meta returned an invalid purchase value.")
+
+
+def _first_purchase_value(entries):
+    """Return the raw value for the highest-priority purchase action type, or None."""
+    by_type = {row.get('action_type'): row.get('value') for row in (entries or [])}
+    for action_type in PURCHASE_ACTION_TYPES:
+        if action_type in by_type:
+            return by_type[action_type]
+    return None
 
 
 class MetaAdsClient:
@@ -33,18 +84,25 @@ class MetaAdsClient:
             limit=200,
         )
 
-    def get_campaign_spend(self, campaign_id: str) -> Decimal:
+    def get_campaign_insights(self, campaign_id: str) -> CampaignInsights:
+        """Fetch lifetime spend plus attributed purchases/purchase value in one call."""
         payload = self._get(
             f"/{campaign_id}/insights",
-            {"fields": "spend", "date_preset": "maximum"},
+            {"fields": "spend,actions,action_values", "date_preset": "maximum"},
         )
         rows = payload.get("data") or []
         if not rows:
-            return Decimal("0.00")
+            return CampaignInsights(spend=Decimal("0.00"), purchases=None, purchase_value=None)
+        row = rows[0]
         try:
-            return Decimal(str(rows[0].get("spend") or "0")).quantize(Decimal("0.01"))
+            spend = Decimal(str(row.get("spend") or "0")).quantize(Decimal("0.01"))
         except (InvalidOperation, TypeError):
             raise MetaAdsAPIError("Meta returned an invalid spend value.")
+        return CampaignInsights(
+            spend=spend,
+            purchases=_extract_purchase_count(row.get("actions")),
+            purchase_value=_extract_purchase_amount(row.get("action_values")),
+        )
 
     def _get_paginated(self, path: str, params: dict, limit: int) -> list[dict]:
         url = f"{self.base_url}{path}"

@@ -55,6 +55,7 @@ class ExternalSurveyAnalytics:
             )
             .order_by('month')
         )
+        dated_rows = [row for row in monthly_rows if row['month'] is not None]
         nps_over_time = [
             {
                 'month': row['month'].strftime('%Y-%m'),
@@ -62,8 +63,22 @@ class ExternalSurveyAnalytics:
                 'n': row['n'],
                 'nps_score': round((row['promoters'] - row['detractors']) / row['n'] * 100) if row['n'] else None,
             }
-            for row in monthly_rows if row['month'] is not None
+            for row in dated_rows
         ]
+
+        # Cumulative NPS over time — running all-time NPS through each month
+        cum_n = cum_promoters = cum_detractors = 0
+        nps_cumulative = []
+        for row in dated_rows:
+            cum_n += row['n']
+            cum_promoters += row['promoters']
+            cum_detractors += row['detractors']
+            nps_cumulative.append({
+                'month': row['month'].strftime('%Y-%m'),
+                'label': row['month'].strftime('%b %Y'),
+                'n': cum_n,
+                'nps_score': round((cum_promoters - cum_detractors) / cum_n * 100) if cum_n else None,
+            })
 
         # Rating breakdown
         rating_breakdown = list(
@@ -118,4 +133,5 @@ class ExternalSurveyAnalytics:
             'rating_breakdown': rating_breakdown,
             'city_breakdown': city_breakdown,
             'nps_over_time': nps_over_time,
+            'nps_cumulative': nps_cumulative,
         }

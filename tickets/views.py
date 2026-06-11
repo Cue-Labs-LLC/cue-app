@@ -4092,6 +4092,57 @@ def _compute_event_stats(event):
     return result
 
 
+def _compute_marketing_events(event):
+    """Return a flat, date-sorted list of marketing sends for this event.
+
+    Each item is {'date': 'YYYY-MM-DD', 'type': 'sms'|'email', 'label': name}.
+    Used to overlay send markers on the Activity chart. Computed fresh per request
+    (NOT cached in _compute_event_stats) because the campaign models have no
+    cache-invalidation signals — a send after caching would otherwise stay hidden.
+
+    Timestamps are localized to match the chart's TruncDate-based axis labels.
+    """
+    from tickets.models import SMSCampaign
+
+    def _local_date(ts):
+        return django_tz.localtime(ts).date().isoformat()
+
+    events = []
+
+    # Mailchimp email campaigns.
+    for row in event.email_campaigns.filter(
+        send_time__isnull=False, deleted_at__isnull=True,
+    ).values('send_time', 'campaign_title'):
+        events.append({
+            'date': _local_date(row['send_time']),
+            'type': 'email',
+            'label': row['campaign_title'],
+        })
+
+    # External SlickText SMS campaigns.
+    for row in event.sms_campaigns.filter(
+        send_time__isnull=False, deleted_at__isnull=True,
+    ).values('send_time', 'name'):
+        events.append({
+            'date': _local_date(row['send_time']),
+            'type': 'sms',
+            'label': row['name'],
+        })
+
+    # Native Twilio SMS campaigns — only actually-sent ones.
+    for row in event.native_sms_campaigns.filter(
+        status=SMSCampaign.Status.SENT, sent_at__isnull=False, deleted_at__isnull=True,
+    ).values('sent_at', 'name'):
+        events.append({
+            'date': _local_date(row['sent_at']),
+            'type': 'sms',
+            'label': row['name'],
+        })
+
+    events.sort(key=lambda e: e['date'])
+    return events
+
+
 def _compute_event_checkin_stats(event):
     """Return (should_show, total_tickets, checked_in_tickets, by_type).
 
@@ -4193,15 +4244,14 @@ def _refresh_meta_ads_expenses_for_event(org, event, user=None):
     had_error = False
     changed = False
     synced = False
-    sync_time = django_tz.now()
 
     for expense in meta_expenses:
         try:
-            spend = client.get_campaign_spend(expense.external_id)
+            insights = client.get_campaign_insights(expense.external_id)
         except MetaAdsAPIError as exc:
             had_error = True
             logger.warning(
-                "Meta Ads spend refresh failed for org=%s event=%s campaign=%s: %s",
+                "Meta Ads insights refresh failed for org=%s event=%s campaign=%s: %s",
                 org.id,
                 event.id,
                 expense.external_id,
@@ -4209,23 +4259,9 @@ def _refresh_meta_ads_expenses_for_event(org, event, user=None):
             )
             continue
 
-        metadata = dict(expense.external_metadata or {})
-        metadata['last_synced_at'] = sync_time.isoformat()
-        update_fields = ['external_metadata', 'updated_at', 'version']
-        expense.external_metadata = metadata
-        expense.version += 1
         synced = True
-
-        if expense.amount != spend:
-            expense.amount = spend
-            update_fields.append('amount')
+        if _update_meta_ads_expense_from_insights(expense, insights, user):
             changed = True
-
-        if user and user.is_authenticated:
-            expense.updated_by = user
-            update_fields.append('updated_by')
-
-        expense.save(update_fields=update_fields)
 
     if synced:
         django_cache.delete(_event_stats_cache_key(event.pk))
@@ -4254,15 +4290,29 @@ def _get_active_meta_ads_expense_or_404(org, event_id, expense_id):
     return event, expense
 
 
-def _update_meta_ads_expense_spend(expense, spend, user=None):
+def _update_meta_ads_expense_from_insights(expense, insights, user=None):
+    """Write Meta insights (spend + attribution) onto a linked expense. Returns api_changed."""
     metadata = dict(expense.external_metadata or {})
     metadata['last_synced_at'] = django_tz.now().isoformat()
 
-    api_changed = expense.amount != spend
-    expense.amount = spend
+    api_changed = (
+        expense.amount != insights.spend
+        or expense.api_attributed_orders != insights.purchases
+        or expense.api_attributed_revenue != insights.purchase_value
+    )
+    expense.amount = insights.spend
+    expense.api_attributed_orders = insights.purchases
+    expense.api_attributed_revenue = insights.purchase_value
     expense.external_metadata = metadata
     expense.version += 1
-    update_fields = ['amount', 'external_metadata', 'version', 'updated_at']
+    update_fields = [
+        'amount',
+        'api_attributed_orders',
+        'api_attributed_revenue',
+        'external_metadata',
+        'version',
+        'updated_at',
+    ]
 
     if user and user.is_authenticated:
         expense.updated_by = user
@@ -4273,6 +4323,7 @@ def _update_meta_ads_expense_spend(expense, spend, user=None):
         update_fields.append('api_data_changed_at')
 
     expense.save(update_fields=update_fields)
+    return api_changed
 
 
 def _get_active_mailchimp_campaign_or_404(org, event_id, email_campaign_id):
@@ -4709,6 +4760,9 @@ def event_detail(request, event_id):
         for row in stats['page_views_over_time']
     ])
 
+    marketing_events = _compute_marketing_events(event)
+    marketing_events_json = json.dumps(marketing_events)
+
     active_scanner_sessions = ScannerSession.objects.filter(event=event, is_active=True).count()
 
     show_checkin_chart, checkin_total_tickets, checkin_count, checkin_by_type = _compute_event_checkin_stats(event)
@@ -4803,6 +4857,8 @@ def event_detail(request, event_id):
         'allocation_percent_total': allocation_percent_total,
         'sales_over_time_json': sales_over_time_json,
         'page_views_over_time_json': page_views_over_time_json,
+        'marketing_events_json': marketing_events_json,
+        'has_marketing_events': bool(marketing_events),
         'has_page_view_data': bool(stats['page_views_over_time']),
         'show_page_views_chart': event.ticketing_type == 'direct',
         'show_checkin_chart': show_checkin_chart,
@@ -4923,6 +4979,8 @@ def event_detail(request, event_id):
                 'feedback': ' • '.join(feedback_parts),
                 'source': 'Cue survey',
                 'response_id': None,
+                'detail_kind': 'internal',
+                'detail_id': resp.id,
             })
     if external_survey_responses_count > 0:
         for resp in (
@@ -4937,6 +4995,8 @@ def event_detail(request, event_id):
                 'feedback': resp.text_feedback or '',
                 'source': 'Typeform' if resp.typeform_response_id else 'External upload',
                 'response_id': resp.id,
+                'detail_kind': 'external',
+                'detail_id': resp.id,
             })
     survey_response_rows.sort(key=lambda r: r['date'] or datetime.min, reverse=True)
     responses_paginator = Paginator(survey_response_rows, 25)
@@ -6710,13 +6770,14 @@ def event_meta_ads_apply(request, event_id):
                 return _json_error('The selected Meta campaign was not found in this ad account.', 404)
             messages.error(request, 'The selected Meta campaign was not found in this ad account.')
             return redirect('tickets:event_meta_ads_match', event_id=event.id)
-        spend = client.get_campaign_spend(campaign_id)
+        insights = client.get_campaign_insights(campaign_id)
     except MetaAdsAPIError as exc:
         if wants_json:
             return _json_error(f'Could not pull campaign spend from Meta: {exc}', 502)
         messages.error(request, f'Could not pull campaign spend from Meta: {exc}')
         return redirect('tickets:event_meta_ads_match', event_id=event.id)
 
+    spend = insights.spend
     campaign_name = campaign.get('name') or campaign_id
     expense, created = EventExpense.objects.get_or_create(
         event=event,
@@ -6727,22 +6788,30 @@ def event_meta_ads_apply(request, event_id):
             'category': 'marketing',
             'description': f'Meta Ads: {campaign_name}'[:300],
             'amount': spend,
+            'api_attributed_orders': insights.purchases,
+            'api_attributed_revenue': insights.purchase_value,
             'expense_date': event.start_date,
             'external_metadata': {},
             'created_by': request.user,
         },
     )
     if not created:
-        old_amount = expense.amount
+        api_changed = (
+            expense.amount != spend
+            or expense.api_attributed_orders != insights.purchases
+            or expense.api_attributed_revenue != insights.purchase_value
+        )
         was_confirmed = bool(expense.confirmed_at)
         expense.category = 'marketing'
         expense.description = f'Meta Ads: {campaign_name}'[:300]
         expense.amount = spend
+        expense.api_attributed_orders = insights.purchases
+        expense.api_attributed_revenue = insights.purchase_value
         expense.expense_date = expense.expense_date or event.start_date
         expense.external_id = campaign_id
         expense.updated_by = request.user
         expense.version += 1
-        if was_confirmed and old_amount != spend:
+        if was_confirmed and api_changed:
             expense.api_data_changed_at = django_tz.now()
 
     expense.external_metadata = {
@@ -6794,7 +6863,7 @@ def event_meta_ads_refresh(request, event_id, expense_id):
         return redirect('tickets:meta_ads_settings')
 
     try:
-        spend = MetaAdsClient(org.meta_ads_access_token).get_campaign_spend(expense.external_id)
+        insights = MetaAdsClient(org.meta_ads_access_token).get_campaign_insights(expense.external_id)
     except MetaAdsAPIError as exc:
         logger.warning(
             "Meta Ads row refresh failed for org=%s event=%s expense=%s campaign=%s: %s",
@@ -6810,17 +6879,16 @@ def event_meta_ads_refresh(request, event_id, expense_id):
         messages.warning(request, msg)
         return _marketing_tab_redirect(event)
 
-    old_amount = expense.amount
-    _update_meta_ads_expense_spend(expense, spend, request.user)
+    api_changed = _update_meta_ads_expense_from_insights(expense, insights, request.user)
     django_cache.delete(_event_stats_cache_key(event.pk))
-    if old_amount != spend:
+    if api_changed:
         _invalidate_event_list_cache(org)
         _invalidate_marketing_cache(org)
 
     if ajax:
         expense.refresh_from_db()
         return JsonResponse({'ok': True, 'row': _serialize_ads_row(expense)})
-    messages.success(request, f'Meta Ads campaign spend refreshed to ${spend:,.2f}.')
+    messages.success(request, f'Meta Ads campaign spend refreshed to ${insights.spend:,.2f}.')
     return _marketing_tab_redirect(event)
 
 
@@ -7271,6 +7339,8 @@ def _serialize_ads_row(e):
         'effective_attributed_revenue': f'{(e.effective_attributed_revenue or Decimal("0.00")):.2f}',
         'manual_attributed_orders': e.manual_attributed_orders,
         'manual_attributed_revenue': f'{e.manual_attributed_revenue:.2f}' if e.manual_attributed_revenue is not None else '',
+        'api_attributed_orders': e.api_attributed_orders,
+        'api_attributed_revenue': f'{e.api_attributed_revenue:.2f}' if e.api_attributed_revenue is not None else '',
         'is_confirmed': e.is_confirmed,
         'needs_review': e.needs_review,
         'status_label': _status_label(e),
@@ -10461,6 +10531,8 @@ def stripe_webhook(request):
         _fail_payment_intent(event['data']['object'])
     elif event_type == 'checkout.session.completed':
         _fulfill_sms_credit_checkout(event['data']['object'])
+    elif event_type == 'charge.refunded':
+        _sync_charge_refund(event['data']['object'])
 
     return HttpResponse(status=200)
 
@@ -10941,6 +11013,138 @@ def _fail_payment_intent(payment_intent):
         ).update(status=StripeCheckoutSession.Status.CANCELED)
         logger.info("PaymentIntent %s marked canceled (payment failed)", pi_id)
 
+
+def _find_session_for_payment_intent(pi_id):
+    """Locate the StripeCheckoutSession for a charge's PaymentIntent id.
+
+    Direct lookup first: PI-flow rows store the pi_… id in both id fields.
+    Legacy rows from the pre-April-2026 Stripe Checkout flow store only the
+    cs_… Checkout Session id and have a blank stripe_payment_intent_id, so
+    fall back to resolving the Checkout Session id from Stripe and matching
+    on that. Read-only; returns None when the charge isn't ours (e.g. SMS
+    top-ups, which have no session row).
+    """
+    session = StripeCheckoutSession.objects.filter(
+        Q(stripe_session_id=pi_id) | Q(stripe_payment_intent_id=pi_id)
+    ).select_related('ticket_order', 'organization').first()
+    if session is not None:
+        return session
+
+    import stripe as stripe_lib
+    from django.conf import settings as django_settings
+    stripe_lib.api_key = django_settings.STRIPE_SECRET_KEY
+    try:
+        listing = stripe_lib.checkout.Session.list(payment_intent=pi_id, limit=1)
+    except stripe_lib.error.StripeError:
+        logger.exception("Could not resolve Checkout Session for PaymentIntent %s", pi_id)
+        return None
+    data = listing.get('data', []) if isinstance(listing, dict) else getattr(listing, 'data', [])
+    if not data:
+        return None
+    cs_id = _stripe_value(data[0], 'id')
+    if not cs_id:
+        return None
+    return StripeCheckoutSession.objects.filter(
+        stripe_session_id=cs_id,
+    ).select_related('ticket_order', 'organization').first()
+
+
+def _sync_charge_refund(charge):
+    """Sync a Stripe refund (any origin, incl. dashboard) into the DB.
+
+    Without this, refunds issued from the Stripe dashboard reduce the platform
+    balance while the DB keeps counting the session as COMPLETED — the Finance
+    page figures drift apart.
+
+    Idempotent: charge.amount_refunded is CUMULATIVE, so retries and the echo
+    webhook after an app-initiated refund (refund_order writes the same state
+    first) become no-ops. Inventory restore and waitlist notifications fire
+    only on the transition into REFUNDED.
+    """
+    pi_id = _stripe_value(charge, 'payment_intent')
+    if not pi_id:
+        return
+    session = _find_session_for_payment_intent(pi_id)
+    if session is None:
+        # SMS top-up or charge that isn't ours — nothing to sync.
+        return
+    if not session.stripe_payment_intent_id:
+        # Legacy Checkout-flow row matched via the cs_… fallback: persist the
+        # pi id so future lookups (webhook, refund_order guards) are direct.
+        session.stripe_payment_intent_id = pi_id
+        session.save(update_fields=['stripe_payment_intent_id'])
+    if session.status not in (
+        StripeCheckoutSession.Status.COMPLETED,
+        StripeCheckoutSession.Status.PARTIALLY_REFUNDED,
+        StripeCheckoutSession.Status.REFUNDED,
+    ):
+        return
+
+    order = session.ticket_order
+    refunded_total = Decimal(int(_stripe_value(charge, 'amount_refunded') or 0)) / 100
+    fully_refunded = bool(_stripe_value(charge, 'refunded'))
+    target_status = (
+        StripeCheckoutSession.Status.REFUNDED if fully_refunded
+        else StripeCheckoutSession.Status.PARTIALLY_REFUNDED
+    )
+
+    # No-op guard: covers webhook retries and app-initiated refunds whose
+    # state refund_order already wrote before this event arrived.
+    if session.status == target_status and (
+        order is None or order.refunded_amount >= refunded_total
+    ):
+        return
+
+    became_full = fully_refunded and session.status != StripeCheckoutSession.Status.REFUNDED
+    with transaction.atomic():
+        if order is not None:
+            order.refunded_amount = max(order.refunded_amount, refunded_total)
+            update_fields = ['refunded_amount']
+            if fully_refunded and order.refunded_at is None:
+                order.refunded_at = django_tz.now()
+                update_fields.append('refunded_at')
+            order.save(update_fields=update_fields)
+
+        session.status = target_status
+        session.save(update_fields=['status'])
+
+        if became_full:
+            for item in session.line_items_snapshot:
+                tt_id = item.get('saleable_ticket_type_id')
+                qty = item.get('quantity', 0)
+                if tt_id and qty:
+                    SaleableTicketType.objects.filter(id=tt_id).update(
+                        quantity_sold=Greatest(F('quantity_sold') - qty, Value(0))
+                    )
+
+        if order is not None and order.customer_id:
+            try:
+                order.customer.update_lifetime_value()
+            except Customer.DoesNotExist:
+                pass
+
+        _invalidate_event_list_cache(session.organization)
+        _invalidate_marketing_cache(session.organization)
+
+    # Bust the cached platform balance so the Finance page reflects the refund
+    # immediately instead of after the 60s TTL.
+    django_cache.delete(_STRIPE_PLATFORM_AVAILABLE_CACHE_KEY)
+    logger.info(
+        "Synced charge.refunded for session %s (refunded=%s, full=%s)",
+        session.stripe_session_id, refunded_total, fully_refunded,
+    )
+
+    if became_full:
+        from tickets.tasks import notify_next_waitlist_entry
+        for item in session.line_items_snapshot:
+            tt_id = item.get('saleable_ticket_type_id')
+            qty = item.get('quantity', 0)
+            if tt_id and qty:
+                tt = SaleableTicketType.objects.filter(id=tt_id, waitlist_enabled=True).first()
+                if tt:
+                    notify_next_waitlist_entry.delay(tt_id)
+
+
 # ---------------------------------------------------------------------------
 # Attendee Auth Views (public - no login required)
 # ---------------------------------------------------------------------------
@@ -11277,18 +11481,58 @@ def org_switch(request):
 
 _MIN_PAYOUT = Decimal('1.00')
 
+# Sessions that still hold organizer revenue. Fully REFUNDED sessions are
+# excluded: under the per-session clamp in _aggregate_session_cents they would
+# contribute exactly 0 (refunded == amount), so exclusion is pure query
+# efficiency and preserves the existing fee-waiver semantic on full refunds.
+_BALANCE_SESSION_STATUSES = (
+    StripeCheckoutSession.Status.COMPLETED,
+    StripeCheckoutSession.Status.PARTIALLY_REFUNDED,
+)
 
-def _compute_available_balance(org):
-    """Return (stripe_revenue, platform_fees, paid_out, available_balance) for the given org."""
-    completed_sessions = StripeCheckoutSession.objects.filter(
-        organization=org, status=StripeCheckoutSession.Status.COMPLETED,
-    )
-    agg = completed_sessions.aggregate(
+
+def _aggregate_session_cents(sessions):
+    """Return (total_charged_cents, total_fees_cents, refund_adjustment_cents)
+    over a StripeCheckoutSession queryset (caller pre-filters org/status/settlement).
+
+    refund_adjustment is per-session min(refunded, max(0, amount - fee)), so
+    (charged - fees - adjustment) == sum of max(0, amount - fee - refunded):
+    a partial refund reduces the organizer net by exactly the refunded amount,
+    and a session fully refunded through successive partials nets to 0 (the
+    platform fee is waived, matching the full-refund semantic).
+
+    The clamp runs in Python with exact Decimal math — refunded_amount is a
+    Decimal in dollars on the related order while session amounts are integer
+    cents, and a Cast(... * 100) in SQL float-truncates on SQLite.
+    """
+    agg = sessions.aggregate(
         total_charged=Coalesce(Sum('amount_total_cents'), 0),
         total_fees=Coalesce(Sum('platform_fee_cents'), 0),
     )
-    stripe_revenue = Decimal(str(agg['total_charged'])) / 100
-    platform_fees = Decimal(str(agg['total_fees'])) / 100
+    adjustment = 0
+    partial_rows = sessions.filter(
+        status=StripeCheckoutSession.Status.PARTIALLY_REFUNDED,
+    ).values_list(
+        'amount_total_cents', 'platform_fee_cents', 'ticket_order__refunded_amount',
+    )
+    for amount_cents, fee_cents, refunded in partial_rows:
+        refunded_cents = int(((refunded or Decimal('0')) * 100).to_integral_value())
+        adjustment += min(refunded_cents, max(0, amount_cents - fee_cents))
+    return agg['total_charged'], agg['total_fees'], adjustment
+
+
+def _compute_available_balance(org):
+    """Return (stripe_revenue, platform_fees, paid_out, available_balance) for the given org.
+
+    stripe_revenue is NET OF REFUNDS: partially refunded sessions count their
+    remaining (unrefunded) amount, fully refunded sessions count nothing.
+    """
+    sessions = StripeCheckoutSession.objects.filter(
+        organization=org, status__in=_BALANCE_SESSION_STATUSES,
+    )
+    charged_cents, fee_cents, refund_adj_cents = _aggregate_session_cents(sessions)
+    stripe_revenue = Decimal(charged_cents - refund_adj_cents) / 100
+    platform_fees = Decimal(fee_cents) / 100
 
     # Deduct all non-failed payouts — PENDING and IN_TRANSIT are already committed
     # to the connected account, so they must not be available for re-request.
@@ -11345,23 +11589,21 @@ def _compute_settled_payout_balance(org):
 
     Counts sessions whose funds have an explicit available_on <= now, plus
     sessions with available_on=NULL (payments that pre-date that field, treated
-    as already settled per the model's documented intent).
+    as already settled per the model's documented intent). Partially refunded
+    sessions count net of their refunded amount.
     Subtracts completed payouts.
     """
     from django.utils import timezone as django_tz
     now = django_tz.now()
     settled_sessions = StripeCheckoutSession.objects.filter(
         organization=org,
-        status=StripeCheckoutSession.Status.COMPLETED,
+        status__in=_BALANCE_SESSION_STATUSES,
     ).filter(
         Q(available_on__lte=now) | Q(available_on__isnull=True)
     )
 
-    agg = settled_sessions.aggregate(
-        total_charged=Coalesce(Sum('amount_total_cents'), 0),
-        total_fees=Coalesce(Sum('platform_fee_cents'), 0),
-    )
-    settled_organizer_cents = agg['total_charged'] - agg['total_fees']
+    charged_cents, fee_cents, refund_adj_cents = _aggregate_session_cents(settled_sessions)
+    settled_organizer_cents = charged_cents - fee_cents - refund_adj_cents
 
     paid_out = Payout.objects.filter(
         organization=org,
@@ -11548,7 +11790,10 @@ def finance_overview(request):
                     "Stripe-available below DB-settled for org %s: db=%s stripe=%s gap=%s",
                     org.id, db_settled, stripe_actual, db_settled - stripe_actual,
                 )
-            stripe_available = min(db_settled, stripe_actual)
+            # Clamp at zero: the shared platform balance can go negative
+            # (e.g. after refunds), which must never surface as a negative
+            # "Ready to Withdraw" or inflate the settling figure below.
+            stripe_available = max(Decimal('0.00'), min(db_settled, stripe_actual))
         else:
             stripe_available = db_settled
         settling_balance = max(Decimal('0.00'), available_balance - stripe_available)
@@ -12979,6 +13224,109 @@ def event_survey_unlink(request, event_id):
             _invalidate_event_upload_stats_cache(str(event.id))
             messages.success(request, 'Survey response unlinked.')
     return redirect(reverse('tickets:event_detail', args=[event.id]) + '#tab-surveys')
+
+
+@login_required
+@require_org
+def event_survey_response_detail(request, event_id, kind, response_id):
+    """JSON: full question/answer breakdown for a single survey response.
+
+    Powers the "Individual Responses" row-click modal on the event Surveys
+    tab. ``kind`` is 'internal' (a Cue SurveyResponse) or 'external' (a
+    Typeform/CSV ExternalSurveyResponse).
+    """
+    org = get_organization(request)
+    event = get_object_or_404(Event.objects.filter(organization=org), id=event_id)
+
+    meta = {'source': '', 'date': '', 'respondent': ''}
+    items = []
+
+    if kind == 'internal':
+        resp = get_object_or_404(
+            SurveyResponse.objects
+            .filter(event=event, organization=org)
+            .select_related('customer')
+            .prefetch_related('answers__question'),
+            id=response_id,
+        )
+        meta['source'] = 'Cue survey'
+        if resp.submitted_at:
+            meta['date'] = resp.submitted_at.strftime('%b %-d, %Y · %-I:%M %p')
+        if resp.customer:
+            meta['respondent'] = resp.customer.email or resp.customer.name or ''
+        for ans in resp.answers.all():
+            q = ans.question
+            if ans.star_rating is not None:
+                value, atype = f"{ans.star_rating} / 5 stars", 'star_rating'
+            elif ans.nps_score is not None:
+                value, atype = f"{ans.nps_score} / 10", 'nps'
+            else:
+                value, atype = (ans.text_answer or ''), 'text'
+            items.append({
+                'question': q.question_text if q else '',
+                'answer': value,
+                'type': atype,
+            })
+    elif kind == 'external':
+        resp = get_object_or_404(
+            ExternalSurveyResponse.objects.filter(event=event, organization=org),
+            id=response_id,
+        )
+        meta['source'] = 'Typeform' if resp.typeform_response_id else 'External upload'
+        if resp.responded_at:
+            meta['date'] = resp.responded_at.strftime('%b %-d, %Y · %-I:%M %p')
+        meta['respondent'] = resp.email or ''
+        # Repopulate answer titles from the form's cached question snapshot —
+        # raw_answers often carries empty titles (see TypeformFormSubscription).
+        questions_snapshot = []
+        if resp.upload_id:
+            sub = (
+                TypeformFormSubscription.objects
+                .filter(organization=org, upload_id=resp.upload_id)
+                .first()
+            )
+            if sub:
+                questions_snapshot = sub.questions
+        from .services.typeform.helpers import enrich_answers_with_titles
+        for ans in enrich_answers_with_titles(resp.raw_answers, questions_snapshot):
+            if not isinstance(ans, dict):
+                continue
+            value = ans.get('value')
+            if isinstance(value, (list, tuple)):
+                value = ', '.join(str(v) for v in value)
+            elif value is None:
+                value = ''
+            else:
+                value = str(value)
+            items.append({
+                'question': (ans.get('title') or '').strip() or '(untitled)',
+                'answer': value,
+                'type': ans.get('type') or '',
+            })
+        if not items:
+            # Fallback for CSV-uploaded rows without raw_answers: rebuild the
+            # Q&A list from the parsed structured columns.
+            structured = [
+                ('Overall rating', resp.overall_rating),
+                ('NPS score', resp.nps_score),
+                ('City', resp.city),
+                ('What they enjoyed', ', '.join(resp.enjoyed) if resp.enjoyed else ''),
+                ('Genres', ', '.join(resp.genres) if resp.genres else ''),
+                ('Suggested improvements', ', '.join(resp.improvements) if resp.improvements else ''),
+                ('Crowd vibe', resp.crowd_vibe),
+                ('Venue feel', resp.venue_feel),
+                ('Pre-event info', resp.pre_event_info),
+                ('How they found out', resp.found_out_how),
+                ('Feedback', resp.text_feedback),
+            ]
+            for label, val in structured:
+                if val in (None, '', []):
+                    continue
+                items.append({'question': label, 'answer': str(val), 'type': ''})
+    else:
+        return JsonResponse({'error': 'Invalid response kind.'}, status=400)
+
+    return JsonResponse({'meta': meta, 'items': items})
 
 
 # ── Error handlers ──────────────────────────────────────────────────────────

@@ -247,11 +247,14 @@ class MarketingAnalyticsService:
         )
 
     def _ads_totals(self):
-        return self._ads_qs().aggregate(
+        return self._ads_qs().annotate(
+            eff_orders=self._coalesce_int('manual_attributed_orders', 'api_attributed_orders'),
+            eff_revenue=self._coalesce_decimal('manual_attributed_revenue', 'api_attributed_revenue'),
+        ).aggregate(
             line_items=Count('id'),
             spend=Coalesce(Sum('amount'), ZERO, output_field=DecimalField(max_digits=12, decimal_places=2)),
-            attributed_orders=Coalesce(Sum('manual_attributed_orders'), 0),
-            attributed_revenue=Coalesce(Sum('manual_attributed_revenue'), ZERO, output_field=DecimalField(max_digits=12, decimal_places=2)),
+            attributed_orders=Coalesce(Sum('eff_orders'), 0),
+            attributed_revenue=Coalesce(Sum('eff_revenue'), ZERO, output_field=DecimalField(max_digits=12, decimal_places=2)),
         )
 
     def _format_email(self, totals):
@@ -552,7 +555,10 @@ class MarketingAnalyticsService:
             output_field=DecimalField(max_digits=12, decimal_places=2),
         )
         ads_revenue_sq = Subquery(
-            ads_subq.values('event').annotate(s=Sum('manual_attributed_revenue')).values('s')[:1],
+            ads_subq.values('event').annotate(
+                s=Sum(Coalesce(F('manual_attributed_revenue'), F('api_attributed_revenue'),
+                               output_field=DecimalField(max_digits=12, decimal_places=2)))
+            ).values('s')[:1],
             output_field=DecimalField(max_digits=12, decimal_places=2),
         )
 

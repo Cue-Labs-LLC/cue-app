@@ -586,8 +586,25 @@ button.detail-meta-weather--severe:focus-visible {
 {% if show_page_views_chart %}
 <script type="application/json" id="page-views-data">{{ page_views_over_time_json|safe }}</script>
 {% endif %}
+{% if has_marketing_events %}
+<script type="application/json" id="marketing-events-data">{{ marketing_events_json|safe }}</script>
+{% endif %}
 <style>
 .chart-custom-range { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+/* Marketing-send marker colors (theme-aware; read by the chart JS via token()). */
+:root { --marker-email: #C9A227; --marker-sms: #4FA3D1; }
+.marker-tooltip {
+    position: absolute; z-index: 5; pointer-events: none;
+    background: var(--bg-surface); border: 1px solid var(--border);
+    border-radius: var(--radius-sm); padding: 6px 9px;
+    font-size: 11px; line-height: 1.4; color: var(--text-primary);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.18); max-width: 220px;
+    transform: translate(-50%, -100%); white-space: nowrap;
+}
+.marker-tooltip .mt-date { color: var(--text-tertiary); font-size: 10px;
+    text-transform: uppercase; letter-spacing: 0.06em; }
+.marker-tooltip .mt-dot { display: inline-block; width: 7px; height: 7px;
+    border-radius: 50%; margin-right: 5px; vertical-align: middle; }
 .chart-custom-range .ccr-label {
     font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em;
     color: var(--text-tertiary);
@@ -616,6 +633,11 @@ button.detail-meta-weather--severe:focus-visible {
                 <button type="button" class="chart-control-btn active" data-window="all">All</button>
                 <button type="button" class="chart-control-btn" data-window="custom">Custom</button>
             </div>
+            {% if has_marketing_events %}
+            <div class="chart-control-group" role="group" aria-label="Marketing sends">
+                <button type="button" class="chart-control-btn" id="btnMarketingMarkers" aria-pressed="false" title="Show when marketing was sent">Sends</button>
+            </div>
+            {% endif %}
         </div>
         <div class="chart-custom-range w-100 mt-2" id="customRange" style="display:none;">
             <span class="ccr-label">From</span>
@@ -1117,7 +1139,7 @@ button.detail-meta-weather--severe:focus-visible {
         </div>
         {% endif %}
         <p id="metaAdsHelpText" class="mb-0 text-body-secondary{% if not meta_ads_expenses and is_org_admin %} d-none{% endif %}">
-            Use campaign matching to find Meta campaigns for this event, pull lifetime campaign spend, and save it as a marketing expense.
+            Use campaign matching to find Meta campaigns for this event, pull lifetime campaign spend and attributed purchases from Meta, and save it as a marketing expense. Click an attribution cell to override Meta's value.
         </p>
         {% else %}
         <div class="empty-state" style="padding: 24px;">
@@ -1686,7 +1708,8 @@ button.detail-meta-weather--severe:focus-visible {
                 </thead>
                 <tbody>
                     {% for row in survey_responses_page %}
-                    <tr>
+                    <tr class="survey-response-row" style="cursor:pointer;"
+                        data-detail-url="{% url 'tickets:event_survey_response_detail' event.id row.detail_kind row.detail_id %}">
                         <td class="text-nowrap">{{ row.date|date:"M j, Y" }}</td>
                         <td>
                             <span class="badge bg-secondary-subtle text-secondary">{{ row.source }}</span>
@@ -1707,7 +1730,7 @@ button.detail-meta-weather--severe:focus-visible {
                             title="{{ row.feedback }}">
                             {{ row.feedback|default:"-" }}
                         </td>
-                        <td class="text-end">
+                        <td class="text-end" onclick="event.stopPropagation();">
                             {% if row.response_id %}
                             <form method="post" action="{% url 'tickets:event_survey_unlink' event.id %}" class="d-inline"
                                   onsubmit="return confirm('Unlink this response from the event?');">
@@ -2038,6 +2061,29 @@ button.detail-meta-weather--severe:focus-visible {
 
 <a href="{% url 'tickets:event_list' %}" class="btn btn-outline-secondary"><i class="bi bi-arrow-left"></i> Back to Events</a>
 
+<!-- Individual Survey Response Detail Modal — must live outside the tab panes:
+     ancestors there create a stacking context that traps the modal under the
+     body-level backdrop. -->
+<div class="modal fade" id="surveyResponseModal" tabindex="-1" aria-labelledby="surveyResponseModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-lg modal-dialog-scrollable">
+        <div class="modal-content">
+            <div class="modal-header">
+                <div>
+                    <h5 class="modal-title" id="surveyResponseModalLabel">Survey Response</h5>
+                    <small class="text-muted" id="surveyResponseMeta"></small>
+                </div>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body" id="surveyResponseBody">
+                <div class="text-center text-muted py-4">
+                    <div class="spinner-border spinner-border-sm" role="status"></div>
+                    <span class="ms-2">Loading…</span>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
 <!-- Upload CSV Modal -->
 {% if event.ticketing_type != 'direct' %}
 <div class="modal fade" id="uploadCsvModal" tabindex="-1" aria-labelledby="uploadCsvModalLabel" aria-hidden="true">
@@ -2278,6 +2324,75 @@ button.detail-meta-weather--severe:focus-visible {
 {% endblock %}
 
 {% block extra_js %}
+<script>
+// Individual survey response → detail modal. Clicking a row fetches the full
+// question/answer breakdown for that submission and renders it in a modal.
+// Deferred to DOMContentLoaded so the (defer-loaded) Bootstrap bundle has run
+// and `bootstrap.Modal` is defined by the time we wire things up.
+function initSurveyResponseModal() {
+    var rows = document.querySelectorAll('.survey-response-row');
+    if (!rows.length) return;
+    var modalEl = document.getElementById('surveyResponseModal');
+    if (!modalEl || typeof bootstrap === 'undefined') return;
+    var modal = bootstrap.Modal.getOrCreateInstance(modalEl);
+    var bodyEl = document.getElementById('surveyResponseBody');
+    var metaEl = document.getElementById('surveyResponseMeta');
+
+    function esc(s) {
+        var d = document.createElement('div');
+        d.textContent = (s === null || s === undefined) ? '' : String(s);
+        return d.innerHTML;
+    }
+
+    function render(data) {
+        var m = data.meta || {};
+        var bits = [];
+        if (m.source) bits.push(esc(m.source));
+        if (m.date) bits.push(esc(m.date));
+        if (m.respondent) bits.push(esc(m.respondent));
+        metaEl.innerHTML = bits.join(' &middot; ');
+
+        var items = data.items || [];
+        if (!items.length) {
+            bodyEl.innerHTML = '<p class="text-muted text-center py-3 mb-0">No answers recorded for this response.</p>';
+            return;
+        }
+        var html = '<dl class="mb-0">';
+        items.forEach(function(it) {
+            html += '<dt class="text-muted fw-normal small">' + esc(it.question) + '</dt>';
+            html += '<dd class="mb-3 fw-medium">' + (it.answer ? esc(it.answer) : '<span class="text-muted">&mdash;</span>') + '</dd>';
+        });
+        html += '</dl>';
+        bodyEl.innerHTML = html;
+    }
+
+    rows.forEach(function(row) {
+        row.addEventListener('click', function() {
+            var url = row.getAttribute('data-detail-url');
+            if (!url) return;
+            metaEl.innerHTML = '';
+            bodyEl.innerHTML = '<div class="text-center text-muted py-4">' +
+                '<div class="spinner-border spinner-border-sm" role="status"></div>' +
+                '<span class="ms-2">Loading&hellip;</span></div>';
+            modal.show();
+            fetch(url, { headers: { 'X-Requested-With': 'XMLHttpRequest' } })
+                .then(function(r) {
+                    if (!r.ok) throw new Error('Request failed');
+                    return r.json();
+                })
+                .then(render)
+                .catch(function() {
+                    bodyEl.innerHTML = '<p class="text-danger text-center py-3 mb-0">Could not load this response. Please try again.</p>';
+                });
+        });
+    });
+}
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', initSurveyResponseModal);
+} else {
+    initSurveyResponseModal();
+}
+</script>
 <script>
 // Marketing tab sub-view toggle: SMS vs Linked campaigns. Hidden sections stay in
 // the DOM so the SlickText/Meta refresh + confirm handlers keep working.
@@ -3844,6 +3959,9 @@ document.addEventListener('DOMContentLoaded', function () {
     var allSales = JSON.parse(el.textContent);
     var pvEl = document.getElementById('page-views-data');
     var allViews = pvEl ? JSON.parse(pvEl.textContent) : [];
+    var mEl = document.getElementById('marketing-events-data');
+    var allMarketing = mEl ? JSON.parse(mEl.textContent) : [];
+    var showMarkers = false;   // off by default; user opts in via the Sends toggle
 
     // Pull chart styling from the design-system tokens so it stays cohesive and
     // correct in both themes (the app themes via [data-view], not data-theme).
@@ -3859,6 +3977,11 @@ document.addEventListener('DOMContentLoaded', function () {
         revenue: token('--success', '#6A9E7F'),
         views: token('--info', '#7B8FBF')
     };
+    var MARKER_COLORS = {
+        email: token('--marker-email', '#C9A227'),
+        sms: token('--marker-sms', '#4FA3D1')
+    };
+    var MARKER_LABELS = { email: 'Email', sms: 'SMS' };
 
     var btnCount = document.getElementById('btnSalesCount');
     var btnRevenue = document.getElementById('btnSalesRevenue');
@@ -3922,10 +4045,122 @@ document.addEventListener('DOMContentLoaded', function () {
         return g;
     }
 
+    // ----- Marketing-send markers -----------------------------------------
+    function escapeHtml(s) {
+        return String(s).replace(/[&<>"']/g, function (c) {
+            return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+        });
+    }
+
+    // Collapse sends sharing a date AND channel into one marker (tooltip lists all).
+    // Window-independent, so compute it once.
+    var groupedMarketing = (function () {
+        var map = {}, order = [];
+        allMarketing.forEach(function (m) {
+            var key = m.date + '|' + m.type;
+            if (!map[key]) { map[key] = { date: m.date, type: m.type, labels: [] }; order.push(key); }
+            map[key].labels.push(m.label);
+        });
+        return order.map(function (k) { return map[k]; });
+    })();
+
+    // Map each marketing group to an x pixel on the current (windowed) category
+    // axis. Dates outside the visible labels are clipped; dates between two labels
+    // are linearly interpolated by calendar-day fraction.
+    function computeMarkerPixels(labels, xScale) {
+        if (!labels || !labels.length || !groupedMarketing.length) return [];
+        var first = labels[0], last = labels[labels.length - 1];
+        var out = [];
+        groupedMarketing.forEach(function (g) {
+            var D = g.date;
+            if (D < first || D > last) return;   // outside the window — clip
+            var x, exact = labels.indexOf(D);
+            if (exact !== -1) {
+                x = xScale.getPixelForValue(labels[exact]);
+            } else {
+                var i = 0;
+                while (i < labels.length - 1 && labels[i + 1] <= D) i++;
+                var L = labels[i], R = labels[i + 1];
+                var tL = Date.parse(L + 'T00:00:00'), tR = Date.parse(R + 'T00:00:00'), tD = Date.parse(D + 'T00:00:00');
+                var xL = xScale.getPixelForValue(L), xR = xScale.getPixelForValue(R);
+                var frac = (tR === tL) ? 0 : (tD - tL) / (tR - tL);
+                x = xL + frac * (xR - xL);
+            }
+            out.push({ x: x, type: g.type, labels: g.labels, date: g.date });
+        });
+        return out;
+    }
+
+    // Inline plugin (no extra dependency): draws dashed verticals + a top triangle
+    // for each send, and stashes hit targets for the hover tooltip.
+    var marketingMarkerPlugin = {
+        id: 'marketingMarkers',
+        afterDatasetsDraw: function (chart) {
+            chart._markerHitboxes = [];
+            if (!showMarkers || !groupedMarketing.length || !chart.scales.x) return;
+            var positioned = computeMarkerPixels(chart.data.labels, chart.scales.x);
+            chart._markerHitboxes = positioned;
+            var area = chart.chartArea, ctx = chart.ctx;
+            ctx.save();
+            positioned.forEach(function (m) {
+                var color = MARKER_COLORS[m.type] || MARKER_COLORS.sms;
+                ctx.beginPath();
+                ctx.setLineDash([4, 3]);
+                ctx.lineWidth = 1.5;
+                ctx.strokeStyle = color;
+                ctx.moveTo(m.x, area.top);
+                ctx.lineTo(m.x, area.bottom);
+                ctx.stroke();
+                ctx.setLineDash([]);
+                ctx.fillStyle = color;
+                ctx.beginPath();
+                ctx.moveTo(m.x - 4, area.top);
+                ctx.lineTo(m.x + 4, area.top);
+                ctx.lineTo(m.x, area.top + 6);
+                ctx.closePath();
+                ctx.fill();
+            });
+            ctx.restore();
+        }
+    };
+
+    // One shared tooltip element, lazily appended to the chart's relative parent.
+    var markerTip = null;
+    function attachMarkerHover(canvas, chart) {
+        if (!markerTip) {
+            markerTip = document.createElement('div');
+            markerTip.className = 'marker-tooltip';
+            markerTip.style.display = 'none';
+            canvas.parentNode.appendChild(markerTip);
+        }
+        canvas.addEventListener('mousemove', function (evt) {
+            if (!showMarkers) { markerTip.style.display = 'none'; return; }
+            var boxes = chart._markerHitboxes || [];
+            var rect = canvas.getBoundingClientRect();
+            var mx = evt.clientX - rect.left;
+            var hit = null, best = 6;
+            boxes.forEach(function (b) {
+                var dx = Math.abs(b.x - mx);
+                if (dx < best) { best = dx; hit = b; }
+            });
+            if (!hit) { markerTip.style.display = 'none'; return; }
+            var color = MARKER_COLORS[hit.type] || MARKER_COLORS.sms;
+            var rows = hit.labels.map(function (l) {
+                return '<div><span class="mt-dot" style="background:' + color + '"></span>' + escapeHtml(l) + '</div>';
+            }).join('');
+            markerTip.innerHTML = '<div class="mt-date">' + MARKER_LABELS[hit.type] + ' · ' + hit.date + '</div>' + rows;
+            markerTip.style.left = hit.x + 'px';
+            markerTip.style.top = (chart.chartArea.top + 4) + 'px';
+            markerTip.style.display = 'block';
+        });
+        canvas.addEventListener('mouseleave', function () { markerTip.style.display = 'none'; });
+    }
+
     function makeChart(id, labels, values, color, yPrefix) {
         var canvas = document.getElementById(id);
-        return new Chart(canvas, {
+        var chart = new Chart(canvas, {
             type: 'line',
+            plugins: [marketingMarkerPlugin],
             data: {
                 labels: labels,
                 datasets: [{
@@ -3971,6 +4206,8 @@ document.addEventListener('DOMContentLoaded', function () {
                 }
             }
         });
+        attachMarkerHover(canvas, chart);
+        return chart;
     }
 
     function renderActive() {
@@ -4048,6 +4285,20 @@ document.addEventListener('DOMContentLoaded', function () {
             if (activeWindow === 'custom') renderActive();
         });
     });
+
+    // Marketing-send markers toggle — flips a module-level flag the plugin reads,
+    // then redraws the active chart (no rebuild needed).
+    var btnMarkers = document.getElementById('btnMarketingMarkers');
+    if (btnMarkers) {
+        btnMarkers.addEventListener('click', function () {
+            showMarkers = !showMarkers;
+            btnMarkers.classList.toggle('active', showMarkers);
+            btnMarkers.setAttribute('aria-pressed', String(showMarkers));
+            if (!showMarkers && markerTip) markerTip.style.display = 'none';
+            var c = charts[activeMetric];
+            if (c) c.update();
+        });
+    }
 
     renderActive();
 });

@@ -1177,6 +1177,8 @@ class EventExpense(AuditBaseModel):
     external_metadata = models.JSONField(default=dict, blank=True)
     manual_attributed_orders = models.PositiveIntegerField(null=True, blank=True)
     manual_attributed_revenue = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    api_attributed_orders = models.PositiveIntegerField(null=True, blank=True)
+    api_attributed_revenue = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
     confirmed_at = models.DateTimeField(null=True, blank=True, db_index=True)
     confirmed_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
@@ -1208,11 +1210,15 @@ class EventExpense(AuditBaseModel):
 
     @property
     def effective_attributed_orders(self):
-        return self.manual_attributed_orders if self.manual_attributed_orders is not None else 0
+        if self.manual_attributed_orders is not None:
+            return self.manual_attributed_orders
+        return self.api_attributed_orders if self.api_attributed_orders is not None else 0
 
     @property
     def effective_attributed_revenue(self):
-        return self.manual_attributed_revenue if self.manual_attributed_revenue is not None else Decimal('0.00')
+        if self.manual_attributed_revenue is not None:
+            return self.manual_attributed_revenue
+        return self.api_attributed_revenue if self.api_attributed_revenue is not None else Decimal('0.00')
 
     @property
     def is_confirmed(self):
