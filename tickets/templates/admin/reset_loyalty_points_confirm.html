@@ -1,0 +1,33 @@
+{% extends "admin/base_site.html" %}
+{% load i18n admin_urls %}
+
+{% block content %}
+<p>You are about to <strong>permanently reset loyalty points</strong> for the
+following organization{{ organizations|length|pluralize }}. This deletes the
+entire points ledger and zeroes every customer's balance and lifetime points,
+clearing the backfill timestamp so points start from scratch.</p>
+
+<p style="color: var(--error-fg, #ba2121);"><strong>This cannot be undone.</strong></p>
+
+<ul>
+  {% for org in organizations %}
+    <li>{{ org.name }}</li>
+  {% endfor %}
+</ul>
+
+<p>Organizations with a backfill or tier recalculation in progress will be
+skipped. Run the backfill again afterward if you want to re-award points.</p>
+
+<form method="post">
+  {% csrf_token %}
+  {% for obj in queryset %}
+    <input type="hidden" name="{{ action_checkbox_name }}" value="{{ obj.pk }}">
+  {% endfor %}
+  <input type="hidden" name="action" value="reset_loyalty_points">
+  <input type="hidden" name="confirm" value="yes">
+  <div class="submit-row">
+    <input type="submit" value="{% trans 'Yes, reset points' %}" class="default">
+    <a href="#" class="button cancel-link" onclick="history.back(); return false;">{% trans 'No, take me back' %}</a>
+  </div>
+</form>
+{% endblock %}

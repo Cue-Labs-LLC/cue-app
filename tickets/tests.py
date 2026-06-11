@@ -10367,6 +10367,137 @@ class LoyaltyPointsServiceTests(TestCase):
         # Idempotent.
         self.assertEqual(revoke_points_for_orders(orders), 0)
 
+    def test_reset_points_for_organization_wipes_to_scratch(self):
+        from tickets.services.loyalty import (
+            award_points_for_orders, reset_points_for_organization,
+        )
+        other = Customer.objects.create(organization=self.org, email='o@x.com', name='O')
+        orders = [
+            self._order(number='R-1', tickets=2),
+            self._order(number='R-2', tickets=1, customer=other),
+        ]
+        award_points_for_orders(orders, self.program)
+        self.org.loyalty_points_backfilled_at = timezone.now()
+        self.org.save(update_fields=['loyalty_points_backfilled_at'])
+
+        summary = reset_points_for_organization(self.org)
+
+        self.assertEqual(summary['transactions_deleted'], 2)
+        self.assertEqual(summary['customers_reset'], 2)
+        # Ledger gone, balances and lifetime zeroed, backfill flag cleared.
+        self.assertEqual(LoyaltyPointsTransaction.objects.filter(organization=self.org).count(), 0)
+        self.customer.refresh_from_db(); other.refresh_from_db()
+        self.assertEqual((self.customer.points_balance, self.customer.lifetime_points), (0, 0))
+        self.assertEqual((other.points_balance, other.lifetime_points), (0, 0))
+        self.org.refresh_from_db()
+        self.assertIsNone(self.org.loyalty_points_backfilled_at)
+        # A fresh backfill re-awards cleanly (EARN rows no longer block it).
+        self.assertEqual(award_points_for_orders(orders, self.program), 30)
+
+    def test_reset_points_is_org_scoped(self):
+        from tickets.services.loyalty import (
+            award_points_for_order, reset_points_for_organization,
+        )
+        other_org = Organization.objects.create(
+            name='Other', slug='other-org', loyalty_feature_enabled=True,
+        )
+        other_program = LoyaltyProgram.objects.create(
+            organization=other_org, name='Other Club', is_active=True,
+            points_enabled=True, points_basis=LoyaltyProgram.PointsBasis.PER_TICKET,
+            points_rate=Decimal('10'),
+        )
+        other_event = Event.objects.create(
+            organization=other_org, name='Other Show', venue=self.venue,
+            start_date=date(2026, 7, 1), start_time=time(20, 0, 0),
+        )
+        other_customer = Customer.objects.create(
+            organization=other_org, email='other@x.com', name='Other',
+        )
+        other_order = TicketOrder.objects.create(
+            customer=other_customer, event=other_event, order_number='OTH-1',
+            order_date=timezone.now(), total_amount=Decimal('10.00'),
+        )
+        Ticket.objects.create(ticket_order=other_order, price=Decimal('10.00'))
+        award_points_for_order(self._order(tickets=2))
+        award_points_for_order(other_order, other_program)
+
+        reset_points_for_organization(self.org)
+
+        # Other org untouched.
+        other_customer.refresh_from_db()
+        self.assertEqual(other_customer.points_balance, 10)
+        self.assertEqual(
+            LoyaltyPointsTransaction.objects.filter(organization=other_org).count(), 1
+        )
+
+
+class LoyaltyPointsResetAdminActionTests(TestCase):
+    """Admin reset action: confirmation gate, in-progress guard, org de-dupe."""
+
+    def setUp(self):
+        self.org = Organization.objects.create(
+            name='Admin Pts', slug='admin-pts', loyalty_feature_enabled=True,
+        )
+        self.venue = Venue.objects.create(organization=self.org, name='Hall', city='Town')
+        self.event = Event.objects.create(
+            organization=self.org, name='Show', venue=self.venue,
+            start_date=date(2026, 7, 1), start_time=time(20, 0, 0),
+        )
+        self.program = LoyaltyProgram.objects.create(
+            organization=self.org, name='Club', is_active=True,
+            points_enabled=True, points_basis=LoyaltyProgram.PointsBasis.PER_TICKET,
+            points_rate=Decimal('10'),
+        )
+        self.customer = Customer.objects.create(
+            organization=self.org, email='pts@x.com', name='Pat',
+        )
+        order = TicketOrder.objects.create(
+            customer=self.customer, event=self.event, order_number='A-1',
+            order_date=timezone.now(), total_amount=Decimal('20.00'),
+        )
+        Ticket.objects.create(ticket_order=order, price=Decimal('10.00'))
+        Ticket.objects.create(ticket_order=order, price=Decimal('10.00'))
+        from tickets.services.loyalty import award_points_for_order
+        award_points_for_order(order)
+        self.superuser = User.objects.create_superuser(
+            username='boss', email='boss@x.com', password='pw',
+        )
+        self.client.force_login(self.superuser)
+        self.url = reverse('admin:tickets_loyaltyprogram_changelist')
+
+    def _post(self, extra=None):
+        data = {
+            'action': 'reset_loyalty_points',
+            '_selected_action': [str(self.program.id)],
+        }
+        if extra:
+            data.update(extra)
+        return self.client.post(self.url, data)
+
+    def test_first_post_shows_confirmation_without_mutating(self):
+        resp = self._post()
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, 'cannot be undone')
+        self.customer.refresh_from_db()
+        self.assertEqual(self.customer.points_balance, 20)  # untouched
+
+    def test_confirmed_post_resets_points(self):
+        resp = self._post({'confirm': 'yes'})
+        self.assertEqual(resp.status_code, 302)
+        self.customer.refresh_from_db()
+        self.assertEqual(self.customer.points_balance, 0)
+        self.assertEqual(self.customer.lifetime_points, 0)
+        self.assertEqual(
+            LoyaltyPointsTransaction.objects.filter(organization=self.org).count(), 0
+        )
+
+    def test_in_progress_org_is_skipped(self):
+        LoyaltyProgram.objects.filter(id=self.program.id).update(recalc_in_progress=True)
+        resp = self._post({'confirm': 'yes'})
+        self.assertEqual(resp.status_code, 302)
+        self.customer.refresh_from_db()
+        self.assertEqual(self.customer.points_balance, 20)  # not reset
+
 
 class LoyaltyPointsHookTests(TestCase):
     """Hook sites: refund clawback, hard-delete revokes, CSV import awards."""
@@ -10911,3 +11042,50 @@ class SurveyResponseDetailViewTests(TestCase):
         # Probing under our own event id must not leak another org's response.
         resp = self._detail('external', foreign.id)
         self.assertEqual(resp.status_code, 404)
+
+
+class CustomerListPointsColumnTests(TestCase):
+    """The /customers/ list shows a Points column only when loyalty is enabled."""
+
+    def setUp(self):
+        self.client = Client()
+        self.org = Organization.objects.create(name='ColOrg', slug='col-org')
+        self.user = User.objects.create_user(username='coluser', email='col@x.com', password='pw12345')
+        UserProfile.objects.create(user=self.user, organization=self.org, org_role=UserProfile.OrgRole.OWNER)
+        OrganizationMembership.objects.create(user=self.user, organization=self.org, org_role=UserProfile.OrgRole.OWNER)
+        Customer.objects.create(organization=self.org, email='hi@x.com', name='Hiro',
+                                points_balance=1234, lifetime_points=1234)
+        Customer.objects.create(organization=self.org, email='lo@x.com', name='Lola',
+                                points_balance=5, lifetime_points=5)
+
+    def _login(self):
+        self.client.login(username='col@x.com', password='pw12345')
+        self.client.get(reverse('tickets:home'))
+
+    def test_points_column_hidden_when_flag_off(self):
+        self._login()
+        resp = self.client.get(reverse('tickets:customer_list'))
+        self.assertEqual(resp.status_code, 200)
+        self.assertNotContains(resp, '>Points Balance')
+        self.assertNotContains(resp, '1,234')
+
+    def test_points_column_shown_with_balance_when_flag_on(self):
+        self.org.loyalty_feature_enabled = True
+        self.org.save(update_fields=['loyalty_feature_enabled'])
+        self._login()
+        resp = self.client.get(reverse('tickets:customer_list'))
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, '>Points Balance')
+        self.assertContains(resp, '1,234')  # intcomma-formatted balance
+
+    def test_points_sort_orders_customers(self):
+        self.org.loyalty_feature_enabled = True
+        self.org.save(update_fields=['loyalty_feature_enabled'])
+        self._login()
+        resp = self.client.get(reverse('tickets:customer_list') + '?sort=-points_balance')
+        self.assertEqual(resp.status_code, 200)
+        names = [c.name for c in resp.context['page_obj']]
+        self.assertEqual(names, ['Hiro', 'Lola'])  # 1234 before 5
+        resp = self.client.get(reverse('tickets:customer_list') + '?sort=points_balance')
+        names = [c.name for c in resp.context['page_obj']]
+        self.assertEqual(names, ['Lola', 'Hiro'])

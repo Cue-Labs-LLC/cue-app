@@ -4,6 +4,7 @@ from .points import (
     award_points_for_orders,
     get_points_program,
     points_for_order,
+    reset_points_for_organization,
     revoke_points_for_order,
     revoke_points_for_orders,
 )
@@ -24,6 +25,7 @@ __all__ = [
     "award_points_for_orders",
     "get_points_program",
     "points_for_order",
+    "reset_points_for_organization",
     "revoke_points_for_order",
     "revoke_points_for_orders",
 ]

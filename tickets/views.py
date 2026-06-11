@@ -2504,6 +2504,7 @@ def customer_list(request):
         'last_order_date', '-last_order_date',
         'rfm_segment', '-rfm_segment',
         'first_tag_name', '-first_tag_name',
+        'points_balance', '-points_balance',
     }
     sort_by = request.GET.get('sort', '-lifetime_value')
     if sort_by not in allowed_sorts:
