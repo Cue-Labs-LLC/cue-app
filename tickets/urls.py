@@ -98,6 +98,7 @@ urlpatterns = [
     # Customers
     path('customers/', views.customer_list, name='customer_list'),
     path('customers/bulk-tag/', sms_views.customers_bulk_tag, name='customers_bulk_tag'),
+    path('customers/bulk-sms-status/', sms_views.customers_bulk_sms_status, name='customers_bulk_sms_status'),
     path('customers/ltv-by-market/', views.customer_ltv_by_market, name='customer_ltv_by_market'),
     path('customers/tags/', views.customer_tag_list, name='customer_tag_list'),
     path('customers/tags/create/', views.customer_tag_create, name='customer_tag_create'),

@@ -33,6 +33,7 @@ from .models import (
 )
 from .forms import SMSCampaignForm
 from .services.customer_filters import filter_customers
+from .services.sms_consent import set_sms_opt_in
 from .services.tagging import tag_customers
 from .sms import (
     normalize_phone, validate_twilio_request, sms_segment_info, send_sms, extract_first_url,
@@ -195,6 +196,47 @@ def customers_bulk_tag(request):
         messages.error(request, 'No customers selected.')
     else:
         messages.success(request, f'Tagged {count} customer(s) as "{tag.name}".')
+    return redirect(back)
+
+
+@login_required
+@require_org
+@require_host
+@require_POST
+def customers_bulk_sms_status(request):
+    """Bulk opt selected, or all-matching, customers in or out of marketing SMS.
+    'Select all' resolves the same filtered queryset the list page shows
+    (search / segment / tag), mirroring ``customers_bulk_tag``."""
+    org = get_organization(request)
+    if request.POST.get('select_all') == '1':
+        criteria = {
+            'search': request.POST.get('search') or None,
+            'rfm_segment': request.POST.get('segment') or None,
+            'tag_id': request.POST.get('tag') or None,
+        }
+        customers = filter_customers(org, criteria).distinct()
+    else:
+        posted = [s for s in request.POST.getlist('customer_ids') if s]
+        customers = Customer.objects.filter(organization=org, id__in=posted).distinct()
+
+    # Return to the list with the active filters preserved.
+    params = urlencode({k: v for k, v in (
+        ('search', request.POST.get('search', '')),
+        ('segment', request.POST.get('segment', '')),
+        ('tag', request.POST.get('tag', '')),
+        ('sort', request.POST.get('sort', '')),
+    ) if v})
+    back = reverse('tickets:customer_list') + (f'?{params}' if params else '')
+
+    opt_in = request.POST.get('sms_status') == 'opt_in'
+    count = set_sms_opt_in(customers, opt_in=opt_in)
+    verb = 'Opted in' if opt_in else 'Opted out'
+    if count == 0:
+        # Either nothing was selected or every selected customer was already in
+        # the target state — nothing actually changed either way.
+        messages.info(request, 'No customers needed updating.')
+    else:
+        messages.success(request, f'{verb} {count} customer(s).')
     return redirect(back)
 
 

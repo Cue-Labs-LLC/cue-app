@@ -4356,6 +4356,99 @@ class ChurnDetectionTests(TestCase):
         self.assertIn(tag, local_customer.tags.all())
 
 
+class CustomerBulkSMSStatusTests(TestCase):
+    def setUp(self):
+        self.client = Client()
+        self.org = Organization.objects.create(name='SMS Org', slug='sms-org')
+        self.user = User.objects.create_user(
+            username='smshost', email='smshost@test.com', password='testpass123',
+        )
+        UserProfile.objects.create(
+            user=self.user, organization=self.org, org_role=UserProfile.OrgRole.OWNER,
+        )
+        self.client.login(username='smshost@test.com', password='testpass123')
+        self.client.get(reverse('tickets:home'))  # primes _org_id in session
+
+        self.alice = Customer.objects.create(
+            organization=self.org, email='alice@example.com', name='Alice',
+            phone='+13105550001', sms_opt_in=False,
+        )
+        self.bob = Customer.objects.create(
+            organization=self.org, email='bob@example.com', name='Bob',
+            phone='+13105550002', sms_opt_in=False,
+        )
+        self.url = reverse('tickets:customers_bulk_sms_status')
+
+    def test_opt_in_sets_flag_and_date_on_selected_only(self):
+        response = self.client.post(self.url, {
+            'sms_status': 'opt_in',
+            'customer_ids': [str(self.alice.id)],
+        })
+        self.assertRedirects(response, reverse('tickets:customer_list'))
+        self.alice.refresh_from_db()
+        self.bob.refresh_from_db()
+        self.assertTrue(self.alice.sms_opt_in)
+        self.assertIsNotNone(self.alice.sms_opt_in_date)
+        self.assertFalse(self.bob.sms_opt_in)
+
+    def test_opt_in_preserves_existing_opt_in_date(self):
+        original = timezone.now() - timedelta(days=30)
+        self.alice.sms_opt_in = True
+        self.alice.sms_opt_in_date = original
+        self.alice.save(update_fields=['sms_opt_in', 'sms_opt_in_date'])
+
+        self.client.post(self.url, {
+            'sms_status': 'opt_in',
+            'customer_ids': [str(self.alice.id)],
+        })
+        self.alice.refresh_from_db()
+        self.assertTrue(self.alice.sms_opt_in)
+        self.assertEqual(self.alice.sms_opt_in_date, original)
+
+    def test_opt_out_clears_flag_on_selected_only(self):
+        for c in (self.alice, self.bob):
+            c.sms_opt_in = True
+            c.sms_opt_in_date = timezone.now()
+            c.save(update_fields=['sms_opt_in', 'sms_opt_in_date'])
+
+        self.client.post(self.url, {
+            'sms_status': 'opt_out',
+            'customer_ids': [str(self.bob.id)],
+        })
+        self.alice.refresh_from_db()
+        self.bob.refresh_from_db()
+        self.assertTrue(self.alice.sms_opt_in)
+        self.assertFalse(self.bob.sms_opt_in)
+
+    def test_is_org_scoped(self):
+        other_org = Organization.objects.create(name='Other SMS Org', slug='other-sms-org')
+        outsider = Customer.objects.create(
+            organization=other_org, email='out@example.com', name='Outsider',
+            phone='+13105559999', sms_opt_in=False,
+        )
+        self.client.post(self.url, {
+            'sms_status': 'opt_in',
+            'customer_ids': [str(self.alice.id), str(outsider.id)],
+        })
+        self.alice.refresh_from_db()
+        outsider.refresh_from_db()
+        self.assertTrue(self.alice.sms_opt_in)
+        self.assertFalse(outsider.sms_opt_in)
+
+    def test_select_all_honors_active_search_filter(self):
+        response = self.client.post(self.url, {
+            'sms_status': 'opt_in',
+            'select_all': '1',
+            'search': 'alice',
+        })
+        expected = f"{reverse('tickets:customer_list')}?search=alice"
+        self.assertRedirects(response, expected)
+        self.alice.refresh_from_db()
+        self.bob.refresh_from_db()
+        self.assertTrue(self.alice.sms_opt_in)
+        self.assertFalse(self.bob.sms_opt_in)
+
+
 class AIRecommendationTests(TestCase):
     def setUp(self):
         self.client = Client()
