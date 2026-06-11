@@ -7,7 +7,7 @@ from crispy_forms.helper import FormHelper
 from crispy_forms.layout import Layout, Row, Column, Submit, Field
 from django.forms import inlineformset_factory
 from django.utils import timezone
-from .models import Organization, CSVFormat, Venue, Event, EventTalent, EventExpense, CustomField, CustomFieldOption, IncomeSource, EventIncome, SaleableTicketType, SaleableTicketTypeTier, UserProfile, PromoCode, OrganizerWaitlist, CustomerTag, SMSCampaign
+from .models import Organization, CSVFormat, Venue, Event, EventTalent, EventExpense, CustomField, CustomFieldOption, IncomeSource, EventIncome, SaleableTicketType, SaleableTicketTypeTier, UserProfile, PromoCode, OrganizerWaitlist, CustomerTag, SMSCampaign, LoyaltyProgram, LoyaltyTier
 
 
 def _normalize_phone(raw: str) -> str:
@@ -1195,6 +1195,133 @@ SaleableTicketTypeTierFormSet = inlineformset_factory(
     SaleableTicketTypeTier,
     form=SaleableTicketTypeTierForm,
     fields=['name', 'price', 'allotment', 'order'],
+    extra=1,
+    can_delete=True,
+)
+
+
+class LoyaltyProgramForm(forms.ModelForm):
+    """Form for organizers to create/edit a loyalty program's branding + points config."""
+
+    backfill_past_orders = forms.BooleanField(
+        required=False,
+        label='Award points for past orders',
+        help_text='One-time backfill over your order history (skips refunded orders). Safe to re-run.',
+        widget=forms.CheckboxInput(attrs={'class': 'form-check-input'}),
+    )
+
+    class Meta:
+        model = LoyaltyProgram
+        fields = ['name', 'description', 'is_active', 'points_enabled', 'points_basis', 'points_rate']
+        widgets = {
+            'name': forms.TextInput(attrs={'class': 'form-control', 'placeholder': 'e.g. Backstage Club'}),
+            'description': forms.Textarea(attrs={'rows': 3, 'class': 'form-control', 'placeholder': 'What is this program about? (internal copy)'}),
+            'is_active': forms.CheckboxInput(attrs={'class': 'form-check-input'}),
+            'points_enabled': forms.CheckboxInput(attrs={'class': 'form-check-input'}),
+            'points_basis': forms.Select(attrs={'class': 'form-select'}),
+            'points_rate': forms.NumberInput(attrs={'class': 'form-control', 'step': '0.01', 'min': '0.01'}),
+        }
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields['description'].required = False
+        self.fields['is_active'].help_text = 'Only one program can be active at a time. Activating this one deactivates the others.'
+        self.fields['points_enabled'].help_text = 'Customers earn points for every ticket purchase.'
+        self.fields['points_rate'].help_text = "Points per ticket (or per dollar). With 'per dollar', free orders earn 0 points."
+        self.helper = FormHelper()
+        self.helper.form_tag = False  # rendered inside a page-level <form> alongside the tier formset
+        self.helper.layout = Layout(
+            Field('name'),
+            Field('description'),
+            Field('is_active'),
+            Field('points_enabled'),
+            Row(
+                Column('points_basis', css_class='form-group col-md-6 mb-0'),
+                Column('points_rate', css_class='form-group col-md-6 mb-0'),
+            ),
+            Field('backfill_past_orders'),
+        )
+
+
+class LoyaltyTierForm(forms.ModelForm):
+    """One tier row: name, rank, badge color, perks, and qualifying rules."""
+
+    class Meta:
+        model = LoyaltyTier
+        fields = [
+            'name', 'rank', 'color', 'perks',
+            'min_lifetime_value', 'min_order_count', 'min_events_purchased',
+            'min_tickets_purchased', 'max_days_since_last_order', 'min_lifetime_points',
+        ]
+        widgets = {
+            'name': forms.TextInput(attrs={'class': 'form-control', 'placeholder': 'e.g. Gold'}),
+            'rank': forms.NumberInput(attrs={'class': 'form-control', 'min': '0', 'placeholder': 'Higher = better'}),
+            'color': forms.Select(attrs={'class': 'form-select'}),
+            'perks': forms.Textarea(attrs={'rows': 2, 'class': 'form-control', 'placeholder': 'Rewards and perks for this tier'}),
+            'min_lifetime_value': forms.NumberInput(attrs={'class': 'form-control', 'step': '0.01', 'min': '0', 'placeholder': 'Any'}),
+            'min_order_count': forms.NumberInput(attrs={'class': 'form-control', 'min': '0', 'placeholder': 'Any'}),
+            'min_events_purchased': forms.NumberInput(attrs={'class': 'form-control', 'min': '0', 'placeholder': 'Any'}),
+            'min_tickets_purchased': forms.NumberInput(attrs={'class': 'form-control', 'min': '0', 'placeholder': 'Any'}),
+            'max_days_since_last_order': forms.NumberInput(attrs={'class': 'form-control', 'min': '0', 'placeholder': 'Any'}),
+            'min_lifetime_points': forms.NumberInput(attrs={'class': 'form-control', 'min': '0', 'placeholder': 'Any'}),
+        }
+
+    RULE_FIELDS = (
+        'min_lifetime_value', 'min_order_count', 'min_events_purchased',
+        'min_tickets_purchased', 'max_days_since_last_order', 'min_lifetime_points',
+    )
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        for name in ('perks',) + self.RULE_FIELDS:
+            self.fields[name].required = False
+
+
+class BaseLoyaltyTierFormSet(forms.BaseInlineFormSet):
+    """Validates the tier ladder as a whole.
+
+    A tier with no rules matches every customer. Because assignment is
+    highest-rank-wins, a ruleless tier placed above others would silently make
+    them unreachable. So we allow at most one ruleless ("base") tier, and it
+    must sit at the lowest rank.
+    """
+
+    def clean(self):
+        super().clean()
+        if any(self.errors):
+            return
+
+        live = []  # (rank, is_ruleless) for non-deleted tier rows
+        for form in self.forms:
+            if not hasattr(form, 'cleaned_data') or not form.cleaned_data:
+                continue
+            if form.cleaned_data.get('DELETE'):
+                continue
+            rank = form.cleaned_data.get('rank') or 0
+            ruleless = all(
+                form.cleaned_data.get(f) is None for f in LoyaltyTierForm.RULE_FIELDS
+            )
+            live.append((rank, ruleless))
+
+        ruleless_ranks = [rank for rank, ruleless in live if ruleless]
+        if len(ruleless_ranks) > 1:
+            raise forms.ValidationError(
+                "Only one tier can have no qualifying rules (the base tier)."
+            )
+        if ruleless_ranks and live:
+            lowest_rank = min(rank for rank, _ in live)
+            if ruleless_ranks[0] != lowest_rank:
+                raise forms.ValidationError(
+                    "The tier with no rules must be the lowest rank, or every "
+                    "higher tier becomes unreachable."
+                )
+
+
+LoyaltyTierFormSet = inlineformset_factory(
+    LoyaltyProgram,
+    LoyaltyTier,
+    form=LoyaltyTierForm,
+    formset=BaseLoyaltyTierFormSet,
     extra=1,
     can_delete=True,
 )

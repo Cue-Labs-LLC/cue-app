@@ -3,6 +3,7 @@ from .feature_flags import (
     smart_pricing_recommendations_enabled as smart_pricing_recommendations_enabled_flag,
     waitlist_enabled as wl_enabled,
     browse_events_enabled as browse_events_enabled_flag,
+    loyalty_enabled as loyalty_enabled_flag,
 )
 
 
@@ -92,4 +93,5 @@ def feature_flags_context(request):
         'smart_pricing_recommendations_enabled': smart_pricing_recommendations_enabled_flag(request.user),
         'waitlist_feature_enabled': wl_enabled(org),
         'browse_events_enabled': browse_events_enabled_flag(),
+        'loyalty_feature_enabled': loyalty_enabled_flag(org),
     }

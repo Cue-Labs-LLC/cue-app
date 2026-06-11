@@ -1598,6 +1598,12 @@ def _finalize_in_person_sale(event, payment_intent_id, buyer_name, buyer_email, 
             ticket_count += item['qty']
 
     customer.update_lifetime_value()
+    # Loyalty points: swallow failures — the sale must never fail on points.
+    try:
+        from .services.loyalty import award_points_for_order
+        award_points_for_order(order)
+    except Exception:
+        logger.exception("Points award failed for in-person order %s", order.id)
     _invalidate_event_list_cache(org)
 
     return {

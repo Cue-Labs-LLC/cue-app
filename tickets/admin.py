@@ -22,6 +22,7 @@ from .models import (
     FeatureFlagSettings,
     SMSCampaign, SMSMessageRecipient, PhoneSuppression,
     SMSCreditTransaction,
+    LoyaltyProgram, LoyaltyTier, LoyaltyPointsTransaction,
 )
 
 
@@ -784,7 +785,7 @@ class OrganizationAdmin(admin.ModelAdmin):
     inlines = [OrganizationMembershipInline]
     fieldsets = (
         ('Basic', {'fields': ('name', 'slug', 'rfm_recalc_in_progress')}),
-        ('Feature Flags', {'fields': ('waitlist_feature_enabled', 'sms_marketing_enabled')}),
+        ('Feature Flags', {'fields': ('waitlist_feature_enabled', 'sms_marketing_enabled', 'loyalty_feature_enabled')}),
         ('SMS Credits', {'fields': ('sms_credit_balance_cents',), 'description': 'Prepaid wallet balance in cents. For audited changes prefer creating an SMS credit transaction.'}),
         ('Stripe Connect', {'fields': ('stripe_account_id', 'stripe_onboarding_complete')}),
         ('Meta Ads', {
@@ -1235,3 +1236,47 @@ class SMSCreditTransactionAdmin(admin.ModelAdmin):
     search_fields = ['organization__name', 'stripe_checkout_session_id', 'description']
     readonly_fields = ['id', 'balance_after_cents', 'created_at', 'updated_at']
     autocomplete_fields = ['organization', 'campaign']
+
+
+class LoyaltyTierInline(admin.TabularInline):
+    model = LoyaltyTier
+    extra = 1
+
+
+@admin.register(LoyaltyProgram)
+class LoyaltyProgramAdmin(admin.ModelAdmin):
+    list_display = ['name', 'organization', 'is_active', 'recalc_in_progress', 'last_recalculated_at']
+    list_filter = ['is_active', 'organization']
+    search_fields = ['name', 'organization__name']
+    readonly_fields = ['id', 'recalc_in_progress', 'last_recalculated_at', 'created_at', 'updated_at']
+    inlines = [LoyaltyTierInline]
+
+
+@admin.register(LoyaltyTier)
+class LoyaltyTierAdmin(admin.ModelAdmin):
+    list_display = ['name', 'program', 'rank', 'min_lifetime_value', 'min_order_count', 'min_events_purchased', 'min_lifetime_points']
+    list_filter = ['program']
+    search_fields = ['name', 'program__name']
+    readonly_fields = ['id', 'created_at', 'updated_at']
+
+
+@admin.register(LoyaltyPointsTransaction)
+class LoyaltyPointsTransactionAdmin(admin.ModelAdmin):
+    """Read-only ledger view — balances are mutated only by the points service."""
+    list_display = ['customer', 'kind', 'amount', 'balance_after', 'lifetime_after', 'ticket_order', 'created_at']
+    list_filter = ['kind', 'organization']
+    search_fields = ['customer__email', 'customer__name', 'description']
+    readonly_fields = [
+        'id', 'organization', 'customer', 'ticket_order', 'kind', 'amount',
+        'balance_after', 'lifetime_after', 'description', 'created_by',
+        'created_at', 'updated_at',
+    ]
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False

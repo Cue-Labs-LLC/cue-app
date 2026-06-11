@@ -331,6 +331,142 @@ def recalculate_rfm_task(self, organization_id):
 
 
 @shared_task(bind=True, max_retries=2, default_retry_delay=30)
+def recalculate_loyalty_tiers_task(self, program_id):
+    """Reassign every customer to the best tier of an ACTIVE loyalty program.
+
+    Hardened against the failure modes found in review:
+      - gated: only runs for a live (active, non-deleted) program, so recalc of
+        an inactive/second program can never clobber the active one's members;
+      - serialized: claims the program row under select_for_update and a
+        recalc_in_progress flag, so overlapping clicks/workers/retries don't
+        interleave partial writes;
+      - atomic: the whole reassignment commits in one transaction — a mid-run
+        failure rolls back instead of leaving half the org reassigned;
+      - honest: last_recalculated_at is stamped only on success.
+    """
+    from django.db import transaction
+    from django.utils import timezone
+    from tickets.models import LoyaltyProgram
+    from tickets.services.loyalty import assign_loyalty_tiers
+
+    # Claim the job: lock the row, verify it's live and not already running.
+    try:
+        with transaction.atomic():
+            program = (
+                LoyaltyProgram.objects.select_for_update(of=('self',))
+                .select_related('organization')
+                .get(id=program_id, deleted_at__isnull=True)
+            )
+            if not program.organization.loyalty_feature_enabled:
+                logger.info("Loyalty feature disabled for org of program %s, skipping tier recalc", program_id)
+                return 0
+            if not program.is_active:
+                logger.info("LoyaltyProgram %s is inactive, skipping tier recalc", program_id)
+                return 0
+            if program.recalc_in_progress:
+                logger.info("LoyaltyProgram %s recalc already in progress, skipping", program_id)
+                return 0
+            program.recalc_in_progress = True
+            program.save(update_fields=["recalc_in_progress"])
+    except LoyaltyProgram.DoesNotExist:
+        logger.warning("LoyaltyProgram %s not found, skipping tier recalc", program_id)
+        return 0
+
+    success = False
+    try:
+        with transaction.atomic():
+            assigned = assign_loyalty_tiers(program)
+        success = True
+        return assigned
+    except Exception as exc:
+        logger.exception("Loyalty tier recalc failed for program %s", program_id)
+        raise self.retry(exc=exc)
+    finally:
+        update_fields = ["recalc_in_progress"]
+        program.recalc_in_progress = False
+        if success:
+            program.last_recalculated_at = timezone.now()
+            update_fields.append("last_recalculated_at")
+        program.save(update_fields=update_fields)
+
+
+@shared_task(bind=True, max_retries=2, default_retry_delay=30)
+def backfill_loyalty_points_task(self, program_id):
+    """Award loyalty points for an org's historical orders, then recalc tiers.
+
+    Idempotent end-to-end (one EARN per order, DB-enforced), which makes this
+    task double as the REPAIR path: re-running it heals any award that a hook
+    swallowed. Claims the program's recalc_in_progress flag for its duration so
+    manual recalcs can't assign tiers from a partial ledger — and clears the
+    flag BEFORE enqueueing the chained recalc (which checks the same flag and
+    would otherwise skip itself).
+    """
+    from django.db import transaction
+    from django.utils import timezone
+    from tickets.models import LoyaltyProgram, TicketOrder
+    from tickets.services.loyalty import award_points_for_orders
+
+    CHUNK = 500
+
+    try:
+        with transaction.atomic():
+            program = (
+                LoyaltyProgram.objects.select_for_update(of=('self',))
+                .select_related('organization')
+                .get(id=program_id, deleted_at__isnull=True)
+            )
+            if not program.organization.loyalty_feature_enabled:
+                logger.info("Loyalty feature disabled for org of program %s, skipping backfill", program_id)
+                return 0
+            if not program.is_active or not program.points_enabled:
+                logger.info("LoyaltyProgram %s inactive or points disabled, skipping backfill", program_id)
+                return 0
+            if program.recalc_in_progress:
+                logger.info("LoyaltyProgram %s busy (recalc/backfill in progress), skipping backfill", program_id)
+                return 0
+            program.recalc_in_progress = True
+            program.save(update_fields=["recalc_in_progress"])
+    except LoyaltyProgram.DoesNotExist:
+        logger.warning("LoyaltyProgram %s not found, skipping points backfill", program_id)
+        return 0
+
+    org = program.organization
+    total = 0
+    try:
+        orders_qs = (
+            TicketOrder.objects.filter(
+                customer__organization=org,
+                refunded_at__isnull=True,
+                deleted_at__isnull=True,
+            )
+            .exclude(customer__email__endswith='@placeholder.local')
+            .select_related('customer')
+        )
+        chunk = []
+        for order in orders_qs.iterator(chunk_size=CHUNK):
+            chunk.append(order)
+            if len(chunk) >= CHUNK:
+                total += award_points_for_orders(chunk, program, description='Historical backfill')
+                chunk = []
+        if chunk:
+            total += award_points_for_orders(chunk, program, description='Historical backfill')
+
+        org.loyalty_points_backfilled_at = timezone.now()
+        org.save(update_fields=['loyalty_points_backfilled_at'])
+    except Exception as exc:
+        logger.exception("Loyalty points backfill failed for program %s", program_id)
+        program.recalc_in_progress = False
+        program.save(update_fields=["recalc_in_progress"])
+        raise self.retry(exc=exc)
+
+    # Clear the claim BEFORE chaining the recalc — it checks the same flag.
+    program.recalc_in_progress = False
+    program.save(update_fields=["recalc_in_progress"])
+    recalculate_loyalty_tiers_task.delay(str(program.id))
+    return total
+
+
+@shared_task(bind=True, max_retries=2, default_retry_delay=30)
 def generate_org_ai_opportunities_task(self, organization_id):
     """Generate reviewed AI recommendations for one organization."""
     from tickets.models import Organization

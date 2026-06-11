@@ -13,6 +13,24 @@ def get_item(d, key):
     return d.get(key, "secondary")
 
 
+# Single source of truth for the CustomerTag / LoyaltyTier color -> Bootstrap
+# badge class mapping (the two share the same 6-color choice set).
+_BADGE_CLASSES = {
+    'blue': 'bg-primary',
+    'green': 'bg-success',
+    'red': 'bg-danger',
+    'yellow': 'bg-warning text-dark',
+    'orange': 'bg-warning text-dark',
+    'purple': 'badge-purple',
+}
+
+
+@register.filter
+def badge_class(color):
+    """Map a tag/tier color name to its Bootstrap badge class."""
+    return _BADGE_CLASSES.get(color, 'bg-secondary')
+
+
 @register.filter
 def subtract(value, arg):
     """Subtract arg from value (Decimal-safe)."""
