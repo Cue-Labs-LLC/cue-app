@@ -46,7 +46,15 @@ POINTS_UPDATE_FIELDS = ['points_balance', 'lifetime_points']
 
 
 def get_points_program(organization):
-    """Return the org's active, non-deleted, points-enabled program or None."""
+    """Return the org's active, non-deleted, points-enabled program or None.
+
+    Returns None when the org's loyalty feature flag is off — the single
+    choke point that stops all earning for unflagged orgs. Revokes stay
+    ledger-driven and unaffected: clawbacks of past earns must still apply
+    even after a flag is turned off.
+    """
+    if not organization.loyalty_feature_enabled:
+        return None
     return LoyaltyProgram.objects.filter(
         organization=organization,
         is_active=True,

@@ -93,6 +93,16 @@ class Organization(BaseModel):
             'singleton and cannot scope to individual orgs, so the SMS gate lives here.'
         ),
     )
+    loyalty_feature_enabled = models.BooleanField(
+        default=False,
+        help_text=(
+            'Gates the loyalty program feature (tier builder + points engine) for '
+            'this org. Off by default; enable per-org for pilot rollout. When off: '
+            'loyalty pages 404, the sidebar link and customer-detail tier badge are '
+            'hidden, orders earn no points, and recalc/backfill tasks no-op. '
+            'Existing data is preserved; revokes of past earns still apply.'
+        ),
+    )
     # Prepaid SMS credit wallet (cents). Topped up via Stripe Checkout, debited per
     # segment when a marketing-SMS campaign sends. See SMSCreditTransaction for the
     # audit ledger. Never mutate directly outside the wallet service (atomic F()).

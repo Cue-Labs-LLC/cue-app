@@ -23,6 +23,13 @@ def waitlist_enabled(organization):
     return bool(organization.waitlist_feature_enabled)
 
 
+def loyalty_enabled(organization):
+    """Return True if the organization has the loyalty program feature enabled."""
+    if organization is None:
+        return False
+    return bool(organization.loyalty_feature_enabled)
+
+
 def browse_events_enabled():
     """Return True to make the public Browse Events page accessible."""
     return _global_feature_flags().browse_events_enabled

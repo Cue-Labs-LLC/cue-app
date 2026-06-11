@@ -353,9 +353,13 @@ def recalculate_loyalty_tiers_task(self, program_id):
     try:
         with transaction.atomic():
             program = (
-                LoyaltyProgram.objects.select_for_update()
+                LoyaltyProgram.objects.select_for_update(of=('self',))
+                .select_related('organization')
                 .get(id=program_id, deleted_at__isnull=True)
             )
+            if not program.organization.loyalty_feature_enabled:
+                logger.info("Loyalty feature disabled for org of program %s, skipping tier recalc", program_id)
+                return 0
             if not program.is_active:
                 logger.info("LoyaltyProgram %s is inactive, skipping tier recalc", program_id)
                 return 0
@@ -407,9 +411,13 @@ def backfill_loyalty_points_task(self, program_id):
     try:
         with transaction.atomic():
             program = (
-                LoyaltyProgram.objects.select_for_update()
+                LoyaltyProgram.objects.select_for_update(of=('self',))
+                .select_related('organization')
                 .get(id=program_id, deleted_at__isnull=True)
             )
+            if not program.organization.loyalty_feature_enabled:
+                logger.info("Loyalty feature disabled for org of program %s, skipping backfill", program_id)
+                return 0
             if not program.is_active or not program.points_enabled:
                 logger.info("LoyaltyProgram %s inactive or points disabled, skipping backfill", program_id)
                 return 0

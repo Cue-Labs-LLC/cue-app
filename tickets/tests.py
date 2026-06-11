@@ -9105,7 +9105,7 @@ class LoyaltyTierAssignmentTests(TestCase):
     """Tier assignment logic over existing attendance/purchase data."""
 
     def setUp(self):
-        self.org = Organization.objects.create(name='Loyal Org', slug='loyal-org')
+        self.org = Organization.objects.create(name='Loyal Org', slug='loyal-org', loyalty_feature_enabled=True)
         self.other_org = Organization.objects.create(name='Other Loyal Org', slug='other-loyal-org')
         self.venue = Venue.objects.create(organization=self.org, name='Hall', city='Town')
         self.program = LoyaltyProgram.objects.create(organization=self.org, name='Backstage Club')
@@ -9252,8 +9252,8 @@ class LoyaltyViewTests(TestCase):
 
     def setUp(self):
         self.client = Client()
-        self.org = Organization.objects.create(name='View Org', slug='view-org')
-        self.other_org = Organization.objects.create(name='Other View Org', slug='other-view-org')
+        self.org = Organization.objects.create(name='View Org', slug='view-org', loyalty_feature_enabled=True)
+        self.other_org = Organization.objects.create(name='Other View Org', slug='other-view-org', loyalty_feature_enabled=True)
         self.host = User.objects.create_user(username='vhost', email='vhost@x.com', password='pw12345')
         UserProfile.objects.create(user=self.host, organization=self.org, org_role=UserProfile.OrgRole.OWNER)
         OrganizationMembership.objects.create(user=self.host, organization=self.org, org_role=UserProfile.OrgRole.OWNER)
@@ -9329,7 +9329,7 @@ class LoyaltyHardeningTests(TestCase):
 
     def setUp(self):
         self.client = Client()
-        self.org = Organization.objects.create(name='Hard Org', slug='hard-org')
+        self.org = Organization.objects.create(name='Hard Org', slug='hard-org', loyalty_feature_enabled=True)
         self.other_org = Organization.objects.create(name='Hard Other', slug='hard-other')
         self.host = User.objects.create_user(username='hhost', email='hhost@x.com', password='pw12345')
         UserProfile.objects.create(user=self.host, organization=self.org, org_role=UserProfile.OrgRole.OWNER)
@@ -9503,7 +9503,7 @@ class LoyaltyPointsServiceTests(TestCase):
     """Points wallet service: earn math, idempotency, applied-delta revokes."""
 
     def setUp(self):
-        self.org = Organization.objects.create(name='Pts Org', slug='pts-org')
+        self.org = Organization.objects.create(name='Pts Org', slug='pts-org', loyalty_feature_enabled=True)
         self.venue = Venue.objects.create(organization=self.org, name='Hall', city='Town')
         self.event = Event.objects.create(
             organization=self.org, name='Show', venue=self.venue,
@@ -9691,7 +9691,7 @@ class LoyaltyPointsHookTests(TestCase):
 
     def setUp(self):
         self.client = Client()
-        self.org = Organization.objects.create(name='Hook Org', slug='hook-org')
+        self.org = Organization.objects.create(name='Hook Org', slug='hook-org', loyalty_feature_enabled=True)
         self.user = User.objects.create_user(username='hooks', email='hooks@x.com', password='pw12345')
         UserProfile.objects.create(user=self.user, organization=self.org, org_role=UserProfile.OrgRole.OWNER)
         OrganizationMembership.objects.create(user=self.user, organization=self.org, org_role=UserProfile.OrgRole.OWNER)
@@ -9896,7 +9896,7 @@ class LoyaltyPointsTierAndFormTests(TestCase):
 
     def setUp(self):
         self.client = Client()
-        self.org = Organization.objects.create(name='PtsTier Org', slug='ptstier-org')
+        self.org = Organization.objects.create(name='PtsTier Org', slug='ptstier-org', loyalty_feature_enabled=True)
         self.user = User.objects.create_user(username='ptier', email='ptier@x.com', password='pw12345')
         UserProfile.objects.create(user=self.user, organization=self.org, org_role=UserProfile.OrgRole.OWNER)
         OrganizationMembership.objects.create(user=self.user, organization=self.org, org_role=UserProfile.OrgRole.OWNER)
@@ -9987,3 +9987,119 @@ class LoyaltyPointsTierAndFormTests(TestCase):
         self.assertContains(resp, 'Outstanding points')
         self.assertContains(resp, '40')
         self.assertContains(resp, '90')
+
+
+class LoyaltyFeatureFlagTests(TestCase):
+    """Organization.loyalty_feature_enabled gates UI, earning, and tasks."""
+
+    def setUp(self):
+        self.client = Client()
+        # Flag OFF by default — that's the case under test.
+        self.org = Organization.objects.create(name='Flag Org', slug='flag-org')
+        self.user = User.objects.create_user(username='flaguser', email='flag@x.com', password='pw12345')
+        UserProfile.objects.create(user=self.user, organization=self.org, org_role=UserProfile.OrgRole.OWNER)
+        OrganizationMembership.objects.create(user=self.user, organization=self.org, org_role=UserProfile.OrgRole.OWNER)
+        self.venue = Venue.objects.create(organization=self.org, name='V', city='C')
+        self.event = Event.objects.create(
+            organization=self.org, name='FlagEvent', venue=self.venue,
+            start_date=date(2026, 9, 1), start_time=time(20, 0, 0),
+        )
+        self.program = LoyaltyProgram.objects.create(
+            organization=self.org, name='Flagged Club', is_active=True,
+            points_enabled=True, points_rate=Decimal('10'),
+        )
+        self.tier = LoyaltyTier.objects.create(program=self.program, name='Member', rank=1)
+        self.customer = Customer.objects.create(organization=self.org, email='f@x.com', name='F')
+
+    def _login(self):
+        self.client.login(username='flag@x.com', password='pw12345')
+        self.client.get(reverse('tickets:home'))
+
+    def _order(self, number='FLAG-1'):
+        order = TicketOrder.objects.create(
+            customer=self.customer, event=self.event, order_number=number,
+            order_date=timezone.now(), total_amount=Decimal('20.00'),
+        )
+        Ticket.objects.create(ticket_order=order, price=Decimal('20.00'))
+        return order
+
+    def test_all_loyalty_views_404_when_flag_off(self):
+        self._login()
+        urls = [
+            reverse('tickets:loyalty_program_list'),
+            reverse('tickets:loyalty_program_create'),
+            reverse('tickets:loyalty_program_detail', args=[self.program.id]),
+            reverse('tickets:loyalty_program_edit', args=[self.program.id]),
+            reverse('tickets:loyalty_tier_members', args=[self.program.id, self.tier.id]),
+        ]
+        for url in urls:
+            self.assertEqual(self.client.get(url).status_code, 404, url)
+        post_urls = [
+            reverse('tickets:loyalty_recalculate', args=[self.program.id]),
+            reverse('tickets:loyalty_program_delete', args=[self.program.id]),
+        ]
+        for url in post_urls:
+            self.assertEqual(self.client.post(url).status_code, 404, url)
+
+    def test_views_work_when_flag_on(self):
+        self.org.loyalty_feature_enabled = True
+        self.org.save(update_fields=['loyalty_feature_enabled'])
+        self._login()
+        self.assertEqual(self.client.get(reverse('tickets:loyalty_program_list')).status_code, 200)
+        self.assertEqual(
+            self.client.get(reverse('tickets:loyalty_program_detail', args=[self.program.id])).status_code, 200
+        )
+
+    def test_sidebar_link_hidden_when_flag_off(self):
+        self._login()
+        resp = self.client.get(reverse('tickets:home'))
+        self.assertNotContains(resp, reverse('tickets:loyalty_program_list'))
+        self.org.loyalty_feature_enabled = True
+        self.org.save(update_fields=['loyalty_feature_enabled'])
+        clear_org_cache_session = self.client.session  # org PK cached; flag read fresh from DB
+        resp = self.client.get(reverse('tickets:home'))
+        self.assertContains(resp, reverse('tickets:loyalty_program_list'))
+
+    def test_no_earning_when_flag_off(self):
+        from tickets.services.loyalty import award_points_for_order, get_points_program
+        self.assertIsNone(get_points_program(self.org))
+        self.assertEqual(award_points_for_order(self._order()), 0)
+        self.customer.refresh_from_db()
+        self.assertEqual(self.customer.points_balance, 0)
+        self.assertEqual(LoyaltyPointsTransaction.objects.count(), 0)
+
+    def test_revoke_still_works_when_flag_off(self):
+        # Earn while ON, then turn OFF: clawback of past earns must still apply.
+        from tickets.services.loyalty import award_points_for_order, revoke_points_for_order
+        self.org.loyalty_feature_enabled = True
+        self.org.save(update_fields=['loyalty_feature_enabled'])
+        order = self._order(number='FLAG-REV')
+        self.assertEqual(award_points_for_order(order), 10)
+        self.org.loyalty_feature_enabled = False
+        self.org.save(update_fields=['loyalty_feature_enabled'])
+        self.assertEqual(revoke_points_for_order(order), 10)
+        self.customer.refresh_from_db()
+        self.assertEqual(self.customer.points_balance, 0)
+
+    def test_tasks_noop_when_flag_off(self):
+        from tickets.tasks import backfill_loyalty_points_task, recalculate_loyalty_tiers_task
+        self._order(number='FLAG-BF')
+        result = backfill_loyalty_points_task.apply(args=[str(self.program.id)])
+        self.assertEqual(result.result, 0)
+        self.customer.refresh_from_db()
+        self.assertEqual(self.customer.points_balance, 0)
+        result = recalculate_loyalty_tiers_task.apply(args=[str(self.program.id)])
+        self.assertEqual(result.result, 0)
+        self.customer.refresh_from_db()
+        self.assertIsNone(self.customer.loyalty_tier)
+
+    def test_customer_detail_hides_tier_badge_when_flag_off(self):
+        Customer.objects.filter(id=self.customer.id).update(loyalty_tier=self.tier)
+        self._login()
+        resp = self.client.get(reverse('tickets:customer_detail', args=[self.customer.id]))
+        self.assertEqual(resp.status_code, 200)
+        self.assertNotContains(resp, 'Loyalty Tier')
+        self.org.loyalty_feature_enabled = True
+        self.org.save(update_fields=['loyalty_feature_enabled'])
+        resp = self.client.get(reverse('tickets:customer_detail', args=[self.customer.id]))
+        self.assertContains(resp, 'Loyalty Tier')

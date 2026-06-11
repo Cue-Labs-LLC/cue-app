@@ -2992,6 +2992,23 @@ def recalculate_segments(request):
 # Loyalty programs
 # ---------------------------------------------------------------------------
 
+def require_loyalty_feature(view):
+    """Gate a view behind the org's loyalty_feature_enabled flag (pilot rollout).
+
+    Mirrors require_sms_feature in sms_views.py: per-org flag on Organization
+    (the global FeatureFlagSettings singleton cannot scope to orgs).
+    """
+    from functools import wraps
+
+    @wraps(view)
+    def wrapped(request, *args, **kwargs):
+        org = get_organization(request)
+        if not org or not org.loyalty_feature_enabled:
+            raise Http404('Loyalty programs are not enabled for this organization.')
+        return view(request, *args, **kwargs)
+    return wrapped
+
+
 def _active_loyalty_programs(org):
     """Org-scoped, non-deleted programs (AuditBaseModel hides soft-deleted rows manually)."""
     return LoyaltyProgram.objects.filter(organization=org, deleted_at__isnull=True)
@@ -3000,6 +3017,7 @@ def _active_loyalty_programs(org):
 @login_required
 @require_org
 @require_host
+@require_loyalty_feature
 def loyalty_program_list(request):
     """List the org's loyalty programs with member counts."""
     org = get_organization(request)
@@ -3095,6 +3113,7 @@ def _save_loyalty_program(request, program):
 @login_required
 @require_org
 @require_host
+@require_loyalty_feature
 @require_http_methods(["GET", "POST"])
 def loyalty_program_create(request):
     """Builder: create a program and its tiers on one page."""
@@ -3112,6 +3131,7 @@ def loyalty_program_create(request):
 @login_required
 @require_org
 @require_host
+@require_loyalty_feature
 @require_http_methods(["GET", "POST"])
 def loyalty_program_edit(request, program_id):
     """Builder: edit an existing program and its tiers."""
@@ -3129,6 +3149,7 @@ def loyalty_program_edit(request, program_id):
 @login_required
 @require_org
 @require_host
+@require_loyalty_feature
 def loyalty_program_detail(request, program_id):
     """Dashboard: tier distribution, member counts, perks, recalc controls."""
     org = get_organization(request)
@@ -3155,6 +3176,7 @@ def loyalty_program_detail(request, program_id):
 @login_required
 @require_org
 @require_host
+@require_loyalty_feature
 def loyalty_tier_members(request, program_id, tier_id):
     """Paginated member list for a single tier."""
     org = get_organization(request)
@@ -3176,6 +3198,7 @@ def loyalty_tier_members(request, program_id, tier_id):
 @login_required
 @require_org
 @require_host
+@require_loyalty_feature
 @require_http_methods(["POST"])
 def loyalty_recalculate(request, program_id):
     """Enqueue tier reassignment for a program; redirect with message."""
@@ -3195,6 +3218,7 @@ def loyalty_recalculate(request, program_id):
 @login_required
 @require_org
 @require_host
+@require_loyalty_feature
 @require_http_methods(["POST"])
 def loyalty_program_delete(request, program_id):
     """Soft-delete a program and clear its members' tier assignment."""
