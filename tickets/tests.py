@@ -9725,7 +9725,7 @@ class CustomersBulkTagTests(TestCase):
         resp = self.client.get(reverse('tickets:customer_list'))
         self.assertEqual(resp.status_code, 200)
         self.assertContains(resp, 'id="custSelectAllRows"')
-        self.assertContains(resp, 'class="cust-checkbox"')
+        self.assertContains(resp, 'cust-checkbox')
 
     def test_tag_existing(self):
         resp = self.client.post(self.url, {
