@@ -2546,9 +2546,79 @@ class CustomerSegmentationViewTests(TestCase):
         response = self.client.get(reverse('tickets:customer_detail', args=[customer.id]))
 
         self.assertEqual(response.status_code, 200)
-        self.assertContains(response, 'Behavior Profile')
+        self.assertContains(response, 'Behavior')
         self.assertContains(response, 'Steady Repeat')
         self.assertContains(response, 'Average days between orders')
+
+
+class CustomerDetailMarketingTabTests(TestCase):
+    """The Marketing Activity tab surfaces per-customer native-SMS delivery state."""
+
+    def setUp(self):
+        self.client = Client()
+        self.org = Organization.objects.create(
+            name='SMS Org', slug='sms-org', sms_marketing_enabled=True,
+        )
+        self.user = User.objects.create_user(
+            username='smsuser', email='sms@test.com', password='testpass123',
+        )
+        UserProfile.objects.create(
+            user=self.user, organization=self.org, org_role=UserProfile.OrgRole.OWNER,
+        )
+        self.client.login(username='sms@test.com', password='testpass123')
+        self.client.get(reverse('tickets:home'))
+        self.customer = Customer.objects.create(
+            organization=self.org,
+            email='sms-customer@example.com',
+            name='SMS Customer',
+            phone='+15551234567',
+            lifetime_value=Decimal('50.00'),
+        )
+
+    def _make_message(self, **kwargs):
+        from .models import SMSCampaign, SMSMessageRecipient
+        campaign = kwargs.pop('campaign', None) or SMSCampaign.objects.create(
+            organization=self.org, name='Summer Promo', body='Tickets on sale now',
+        )
+        defaults = dict(
+            campaign=campaign,
+            customer=self.customer,
+            phone=self.customer.phone,
+            status=SMSMessageRecipient.Status.DELIVERED,
+            sent_at=timezone.now() - timedelta(hours=2),
+            delivered_at=timezone.now() - timedelta(hours=2),
+        )
+        defaults.update(kwargs)
+        return SMSMessageRecipient.objects.create(**defaults)
+
+    def test_marketing_tab_lists_sms_activity(self):
+        self._make_message(first_clicked_at=timezone.now() - timedelta(hours=1), click_count=2)
+
+        response = self.client.get(reverse('tickets:customer_detail', args=[self.customer.id]))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context['sms_stats']['total'], 1)
+        self.assertEqual(response.context['sms_stats']['delivered'], 1)
+        self.assertEqual(response.context['sms_stats']['clicked'], 1)
+        self.assertContains(response, 'Marketing Activity')
+        self.assertContains(response, 'Summer Promo')
+        self.assertContains(response, 'Delivered')
+
+    def test_marketing_tab_empty_state(self):
+        response = self.client.get(reverse('tickets:customer_detail', args=[self.customer.id]))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context['sms_stats']['total'], 0)
+        self.assertContains(response, 'No marketing messages sent to this customer yet.')
+
+    def test_marketing_tab_hidden_when_feature_disabled(self):
+        self.org.sms_marketing_enabled = False
+        self.org.save(update_fields=['sms_marketing_enabled'])
+
+        response = self.client.get(reverse('tickets:customer_detail', args=[self.customer.id]))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertNotContains(response, 'Marketing Activity')
 
 
 class EventCachedStatsTest(TestCase):
