@@ -4288,9 +4288,22 @@ def _recompute_utm_attribution_for_event(org, event):
         logger.exception("UTM attribution recompute failed for org=%s event=%s", org.id, event.id)
 
 
+# How long to skip re-hitting Meta for an event's linked-campaign spend after a refresh.
+_META_ADS_REFRESH_TTL_SECONDS = 30 * 60
+
+
 def _refresh_meta_ads_expenses_for_event(org, event, user=None):
-    """Best-effort refresh of linked Meta Ads campaign spend before event stats render."""
+    """Best-effort refresh of linked Meta Ads campaign spend before event stats render.
+
+    Lifetime insights are a heavy, rate-limited Graph API call, so we throttle to
+    at most one refresh per event per window via a short-TTL cache marker instead
+    of hitting Meta on every event-detail page load.
+    """
     if not org.meta_ads_access_token or not org.meta_ads_account_id:
+        return False
+
+    refresh_marker_key = f"meta_ads_refresh:{event.pk}"
+    if django_cache.get(refresh_marker_key):
         return False
 
     meta_expenses = list(
@@ -4327,6 +4340,10 @@ def _refresh_meta_ads_expenses_for_event(org, event, user=None):
         synced = True
         if _update_meta_ads_expense_from_insights(expense, insights, user):
             changed = True
+
+    # Mark refreshed regardless of per-campaign outcome so a failing account can't
+    # re-trigger the full set of API calls on every subsequent page load.
+    django_cache.set(refresh_marker_key, True, _META_ADS_REFRESH_TTL_SECONDS)
 
     if synced:
         django_cache.delete(_event_stats_cache_key(event.pk))
@@ -6738,8 +6755,10 @@ def event_meta_ads_match(request, event_id):
         campaigns = client.list_campaigns(org.meta_ads_account_id)
         match_result = MetaCampaignMatcher(org).rank(event, campaigns)
     except MetaAdsAPIError as exc:
+        # Upstream provider error, not a gateway failure on our side — return a
+        # handled response so it doesn't log/alert as a 502 "Bad Gateway".
         if wants_json:
-            return JsonResponse({'success': False, 'error': f'Could not load Meta campaigns: {exc}'}, status=502)
+            return JsonResponse({'success': False, 'error': f'Could not load Meta campaigns: {exc}'})
         messages.error(request, f'Could not load Meta campaigns: {exc}')
         return redirect('tickets:event_detail', event_id=event.id)
     except Exception as exc:
@@ -6939,9 +6958,11 @@ def event_meta_ads_refresh(request, event_id, expense_id):
             expense.external_id,
             exc,
         )
-        msg = 'Could not refresh this Meta Ads campaign spend.'
+        msg = f'Could not refresh this Meta Ads campaign spend: {exc}'
+        # Upstream provider error, not a gateway failure on our side — return a
+        # handled response so it doesn't log/alert as a 502 "Bad Gateway".
         if ajax:
-            return JsonResponse({'ok': False, 'error': msg}, status=502)
+            return JsonResponse({'ok': False, 'error': msg})
         messages.warning(request, msg)
         return _marketing_tab_redirect(event)
 
