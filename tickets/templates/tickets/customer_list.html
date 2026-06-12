@@ -91,7 +91,7 @@
                 <thead>
                     <tr>
                         {% if org.sms_marketing_enabled and is_org_host %}
-                        <th style="width: 44px;"><input type="checkbox" id="custSelectAllRows" aria-label="Select all customers on this page"></th>
+                        <th style="width: 44px;"><input type="checkbox" class="cust-check" id="custSelectAllRows" aria-label="Select all customers on this page"></th>
                         {% endif %}
                         <th>
                             {% with asc='name' desc='-name' %}
@@ -167,7 +167,7 @@
                     {% for customer in page_obj %}
                     <tr style="cursor: pointer;" onclick="window.location='{% url 'tickets:customer_detail' customer.id %}'">
                         {% if org.sms_marketing_enabled and is_org_host %}
-                        <td onclick="event.stopPropagation()"><input type="checkbox" class="cust-checkbox" value="{{ customer.id }}" aria-label="Select {{ customer.name }}" onclick="event.stopPropagation()"></td>
+                        <td onclick="event.stopPropagation()"><input type="checkbox" class="cust-checkbox cust-check" value="{{ customer.id }}" aria-label="Select {{ customer.name }}" onclick="event.stopPropagation()"></td>
                         {% endif %}
                         <td class="customer-card-cell">
                             <div class="customer-card-name"><strong>{{ customer.name }}</strong></div>
