@@ -1088,6 +1088,9 @@ button.detail-meta-weather--severe:focus-visible {
                                 {% if meta_ads_expense.external_id %}
                                 <div class="text-body-secondary small">{{ meta_ads_expense.external_id }}</div>
                                 {% endif %}
+                                <div class="text-body-secondary small" data-field="attribution_source" title="Source of the attributed orders/revenue shown">
+                                    {% if meta_ads_expense.attribution_source == 'manual' %}Attribution: manual entry{% elif meta_ads_expense.attribution_source == 'cue' %}Attribution: Cue-tracked (UTM){% elif meta_ads_expense.attribution_source == 'api' %}Attribution: Meta estimate{% else %}Attribution: no data{% endif %}
+                                </div>
                             </td>
                             <td data-field="effective_attributed_orders" data-editable="true" data-field-name="manual_attributed_orders" data-input-type="number" data-step="1" data-min="0" data-numeric-value="{% if meta_ads_expense.manual_attributed_orders is not None %}{{ meta_ads_expense.manual_attributed_orders }}{% elif meta_ads_expense.effective_attributed_orders %}{{ meta_ads_expense.effective_attributed_orders }}{% else %}{% endif %}" data-edit-url="{% url 'tickets:event_meta_ads_metrics_edit' event.id meta_ads_expense.id %}" data-row-id="{{ meta_ads_expense.id }}" data-channel="ads" title="Click to edit">{{ meta_ads_expense.effective_attributed_orders|default:"—" }}</td>
                             <td data-field="effective_attributed_revenue" data-editable="true" data-field-name="manual_attributed_revenue" data-input-type="number" data-step="0.01" data-min="0" data-numeric-value="{% if meta_ads_expense.manual_attributed_revenue is not None %}{{ meta_ads_expense.manual_attributed_revenue }}{% elif meta_ads_expense.effective_attributed_revenue %}{{ meta_ads_expense.effective_attributed_revenue }}{% else %}{% endif %}" data-edit-url="{% url 'tickets:event_meta_ads_metrics_edit' event.id meta_ads_expense.id %}" data-row-id="{{ meta_ads_expense.id }}" data-channel="ads" title="Click to edit">${{ meta_ads_expense.effective_attributed_revenue|currency }}</td>
@@ -1097,6 +1100,9 @@ button.detail-meta-weather--severe:focus-visible {
                             </td>
                             <td class="text-end">
                                 <div class="d-inline-flex gap-1 flex-wrap">
+                                    {% if meta_ads_expense.external_id %}
+                                    <button type="button" class="btn btn-sm btn-outline-primary" data-copy-tracked-url="{{ request.scheme }}://{{ request.get_host }}{% url 'tickets:public_event_buy' event.public_id %}?utm_source=facebook&utm_medium=paid&utm_id={{ meta_ads_expense.external_id }}" title="Copy this campaign's tracked ticket URL to paste into the ad's destination">Copy tracked URL</button>
+                                    {% endif %}
                                     <form method="post" action="{% url 'tickets:event_meta_ads_unconfirm' event.id meta_ads_expense.id %}" class="d-inline{% if not meta_ads_expense.is_confirmed %} d-none{% endif %}" data-marketing-form="unconfirm" data-row-id="{{ meta_ads_expense.id }}" data-channel="ads">
                                         {% csrf_token %}
                                         <button type="submit" class="btn btn-sm btn-outline-warning">Unconfirm</button>
@@ -1139,7 +1145,7 @@ button.detail-meta-weather--severe:focus-visible {
         </div>
         {% endif %}
         <p id="metaAdsHelpText" class="mb-0 text-body-secondary{% if not meta_ads_expenses and is_org_admin %} d-none{% endif %}">
-            Use campaign matching to find Meta campaigns for this event, pull lifetime campaign spend and attributed purchases from Meta, and save it as a marketing expense. Click an attribution cell to override Meta's value.
+            Use campaign matching to find Meta campaigns for this event, pull lifetime campaign spend and attributed purchases from Meta, and save it as a marketing expense. Click an attribution cell to override the value. Use "Copy tracked URL" to set each ad's destination — orders from that link are attributed to the campaign (Cue-tracked), which is more accurate than Meta's cross-event estimate.
         </p>
         {% else %}
         <div class="empty-state" style="padding: 24px;">
@@ -4483,6 +4489,16 @@ function copyScannnerPin() {
         });
     }
 }
+// Delegated: copy a campaign's tracked ad URL (works for dynamically re-rendered rows).
+document.addEventListener('click', function(evt) {
+    const btn = evt.target.closest('[data-copy-tracked-url]');
+    if (!btn) return;
+    navigator.clipboard.writeText(btn.getAttribute('data-copy-tracked-url')).then(function() {
+        const orig = btn.textContent;
+        btn.textContent = 'Copied';
+        setTimeout(function() { btn.textContent = orig; }, 2000);
+    });
+});
 </script>
 {% endif %}
 

@@ -1179,6 +1179,8 @@ class EventExpense(AuditBaseModel):
     manual_attributed_revenue = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
     api_attributed_orders = models.PositiveIntegerField(null=True, blank=True)
     api_attributed_revenue = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    cue_attributed_orders = models.PositiveIntegerField(null=True, blank=True)
+    cue_attributed_revenue = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
     confirmed_at = models.DateTimeField(null=True, blank=True, db_index=True)
     confirmed_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
@@ -1209,15 +1211,30 @@ class EventExpense(AuditBaseModel):
         return f"{self.get_category_display()} - {self.description} (${self.amount})"
 
     @property
+    def attribution_source(self):
+        """Which input populates effective_* (manual → cue → api → none)."""
+        if self.manual_attributed_orders is not None or self.manual_attributed_revenue is not None:
+            return 'manual'
+        if self.cue_attributed_orders is not None or self.cue_attributed_revenue is not None:
+            return 'cue'
+        if self.api_attributed_orders is not None or self.api_attributed_revenue is not None:
+            return 'api'
+        return 'none'
+
+    @property
     def effective_attributed_orders(self):
         if self.manual_attributed_orders is not None:
             return self.manual_attributed_orders
+        if self.cue_attributed_orders is not None:
+            return self.cue_attributed_orders
         return self.api_attributed_orders if self.api_attributed_orders is not None else 0
 
     @property
     def effective_attributed_revenue(self):
         if self.manual_attributed_revenue is not None:
             return self.manual_attributed_revenue
+        if self.cue_attributed_revenue is not None:
+            return self.cue_attributed_revenue
         return self.api_attributed_revenue if self.api_attributed_revenue is not None else Decimal('0.00')
 
     @property
@@ -1946,6 +1963,10 @@ class TicketOrder(AuditBaseModel):
         on_delete=models.SET_NULL,
         related_name='checkins',
     )
+    attribution = models.JSONField(
+        default=dict, blank=True,
+        help_text='First-party UTM/fbclid/referrer captured at checkout for campaign attribution.',
+    )
 
     class Meta:
         ordering = ['-order_date']
@@ -2594,6 +2615,10 @@ class StripeCheckoutSession(BaseModel):
     fb_browser_data = models.JSONField(
         default=dict, blank=True,
         help_text='Stores _fbp, _fbc, client IP, user agent for CAPI Purchase call on webhook.',
+    )
+    attribution = models.JSONField(
+        default=dict, blank=True,
+        help_text='First-party UTM/fbclid/referrer captured at checkout; copied to the order on fulfillment.',
     )
 
     class Meta:

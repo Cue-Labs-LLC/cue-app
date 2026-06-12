@@ -4224,6 +4224,15 @@ def _get_adjacent_event(org, event, direction):
     ).order_by('-start_date', '-sort_start_time', 'name').first()
 
 
+def _recompute_utm_attribution_for_event(org, event):
+    """Best-effort local recompute of Cue-tracked campaign attribution. Never raises."""
+    try:
+        from tickets.services.marketing.utm_attribution import UTMAttributionCalculator
+        UTMAttributionCalculator(org).recompute_event(event)
+    except Exception:
+        logger.exception("UTM attribution recompute failed for org=%s event=%s", org.id, event.id)
+
+
 def _refresh_meta_ads_expenses_for_event(org, event, user=None):
     """Best-effort refresh of linked Meta Ads campaign spend before event stats render."""
     if not org.meta_ads_access_token or not org.meta_ads_account_id:
@@ -4623,6 +4632,7 @@ def event_detail(request, event_id):
 
     if _refresh_meta_ads_expenses_for_event(org, event, request.user):
         messages.warning(request, 'Could not refresh one or more Meta Ads campaign spends.')
+    _recompute_utm_attribution_for_event(org, event)
     mailchimp_connection = _get_mailchimp_connection(org)
 
     weather_forecast = get_event_weather_forecast(event)
@@ -7342,6 +7352,9 @@ def _serialize_ads_row(e):
         'manual_attributed_revenue': f'{e.manual_attributed_revenue:.2f}' if e.manual_attributed_revenue is not None else '',
         'api_attributed_orders': e.api_attributed_orders,
         'api_attributed_revenue': f'{e.api_attributed_revenue:.2f}' if e.api_attributed_revenue is not None else '',
+        'cue_attributed_orders': e.cue_attributed_orders,
+        'cue_attributed_revenue': f'{e.cue_attributed_revenue:.2f}' if e.cue_attributed_revenue is not None else '',
+        'attribution_source': e.attribution_source,
         'is_confirmed': e.is_confirmed,
         'needs_review': e.needs_review,
         'status_label': _status_label(e),
@@ -9480,6 +9493,27 @@ def _build_public_event_preview_context(event, *, suffix):
     }
 
 
+UTM_PARAM_KEYS = (
+    'utm_source', 'utm_medium', 'utm_campaign', 'utm_id', 'utm_content', 'utm_term',
+)
+
+
+def _extract_utm_params(request):
+    """Pull non-empty UTM params, fbclid, and referrer from a landing request."""
+    params = {}
+    for key in UTM_PARAM_KEYS:
+        value = (request.GET.get(key) or '').strip()
+        if value:
+            params[key] = value[:200]
+    fbclid = (request.GET.get('fbclid') or '').strip()
+    if fbclid:
+        params['fbclid'] = fbclid[:255]
+    referrer = (request.META.get('HTTP_REFERER') or '').strip()
+    if referrer:
+        params['referrer'] = referrer[:500]
+    return params
+
+
 def public_event_buy(request, public_id):
     """Public ticket selector page. POST stores cart in session and redirects to checkout."""
     event = get_object_or_404(
@@ -9598,6 +9632,12 @@ def public_event_buy(request, public_id):
         ref = request.GET.get('ref')
         if ref:
             request.session[f'tracking_ref_{event.id}'] = ref
+        utm_params = _extract_utm_params(request)
+        if utm_params:
+            # Last-non-empty wins within the session (standard last-click).
+            stored = dict(request.session.get(f'utm_{event.id}') or {})
+            stored.update(utm_params)
+            request.session[f'utm_{event.id}'] = stored
         form = PublicTicketPurchaseForm(all_types, per_ticket_remaining=per_ticket_remaining)
 
     all_bound_fields = list(form)
@@ -10016,6 +10056,7 @@ def checkout_payment(request, public_id):
                 total_amount=Decimal('0.00'),
                 promo_code=promo_code_obj,
                 discount_amount=discount_amount_val,
+                attribution=request.session.get(f'utm_{event.id}') or {},
             )
             if promo_code_obj:
                 PromoCode.objects.filter(pk=promo_code_obj.pk).update(times_used=F('times_used') + 1)
@@ -10053,6 +10094,9 @@ def checkout_payment(request, public_id):
                 logger.exception("Points award failed for order %s", order.id)
             _invalidate_event_list_cache(org)
             _invalidate_marketing_cache(org)
+
+        if order.attribution:
+            _recompute_utm_attribution_for_event(org, event)
 
         from tickets.tasks import send_order_confirmation_email_task
         send_order_confirmation_email_task.delay(str(order.id))
@@ -10333,6 +10377,7 @@ def create_payment_intent(request, public_id):
         fb_browser_data=fb_browser_data,
         tracking_link=tracking_link_obj,
         sms_opt_in=sms_opt_in,
+        attribution=request.session.get(f'utm_{event.id}') or {},
     )
 
     return JsonResponse({
@@ -10844,6 +10889,7 @@ def _fulfill_payment_intent(payment_intent):
             total_amount=Decimal(str(session_obj.amount_total_cents)) / 100,
             promo_code_id=session_obj.promo_code_id,
             discount_amount=Decimal(str(session_obj.discount_cents)) / 100 if session_obj.discount_cents else None,
+            attribution=session_obj.attribution or {},
         )
         if session_obj.promo_code_id:
             PromoCode.objects.filter(pk=session_obj.promo_code_id).update(times_used=F('times_used') + 1)
@@ -10927,6 +10973,9 @@ def _fulfill_payment_intent(payment_intent):
         _invalidate_event_list_cache(org)
 
         _invalidate_marketing_cache(org)
+
+        if order.attribution:
+            _recompute_utm_attribution_for_event(org, event)
 
         from tickets.tasks import send_order_confirmation_email_task
         send_order_confirmation_email_task.delay(str(order.id))
