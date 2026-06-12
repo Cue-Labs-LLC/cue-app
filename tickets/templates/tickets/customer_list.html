@@ -63,8 +63,24 @@
         </select>
         <input type="text" id="custNewTag" name="new_tag_name" class="form-control form-control-sm{% if org_tags %} d-none{% endif %}" style="max-width: 240px;" placeholder="New tag name" maxlength="50">
         <button type="submit" class="btn btn-primary btn-sm">Tag selected</button>
+        <span class="vr d-none d-sm-inline"></span>
+        <button type="submit" class="btn btn-outline-success btn-sm" formaction="{% url 'tickets:customers_bulk_sms_status' %}" name="sms_status" value="opt_in">Opt in to SMS</button>
+        <button type="submit" class="btn btn-outline-danger btn-sm" formaction="{% url 'tickets:customers_bulk_sms_status' %}" name="sms_status" value="opt_out">Opt out of SMS</button>
     </div>
 </form>
+
+{% if page_obj.paginator.num_pages > 1 %}
+<div id="custSelectAllBanner" class="text-center small text-muted mb-3 d-none">
+    <span id="custSelectAllPrompt">
+        All {{ page_obj|length }} customer(s) on this page are selected.
+        <a href="#" id="custSelectAllLink">Select all {{ page_obj.paginator.count }} matching customers</a>
+    </span>
+    <span id="custSelectAllNotice" class="d-none">
+        All {{ page_obj.paginator.count }} matching customers are selected.
+        <a href="#" id="custClearSelectAllLink">Clear selection</a>
+    </span>
+</div>
+{% endif %}
 {% endif %}
 
 <div class="card">
@@ -201,19 +217,6 @@
             </table>
         </div>
 
-        {% if org.sms_marketing_enabled and is_org_host and page_obj.paginator.num_pages > 1 %}
-        <div id="custSelectAllBanner" class="text-center small text-muted border-top py-2 d-none">
-            <span id="custSelectAllPrompt">
-                All {{ page_obj|length }} customer(s) on this page are selected.
-                <a href="#" id="custSelectAllLink">Select all {{ page_obj.paginator.count }} matching customers</a>
-            </span>
-            <span id="custSelectAllNotice" class="d-none">
-                All {{ page_obj.paginator.count }} matching customers are selected.
-                <a href="#" id="custClearSelectAllLink">Clear selection</a>
-            </span>
-        </div>
-        {% endif %}
-
         {% if page_obj.has_other_pages %}
         <div class="d-flex justify-content-center py-3">
             <nav>
@@ -330,13 +333,18 @@
     });
 
     form.addEventListener('submit', function(e) {
-        var mode = (document.querySelector('input[name="tag_mode"]:checked') || {}).value;
-        if (mode === 'existing') {
-            if (!tagSelect || !tagSelect.value) { e.preventDefault(); return; }
-            if (newTagInput) newTagInput.disabled = true;  // don't submit a stale name
-        } else {
-            if (!newTagInput || !newTagInput.value.trim()) { e.preventDefault(); return; }
-            if (tagSelect) tagSelect.disabled = true;  // don't submit a stale tag_id
+        // The SMS opt-in/out buttons post to a different endpoint and don't need
+        // a tag, so skip the tag-mode validation when one of them is the submitter.
+        var isSms = e.submitter && e.submitter.name === 'sms_status';
+        if (!isSms) {
+            var mode = (document.querySelector('input[name="tag_mode"]:checked') || {}).value;
+            if (mode === 'existing') {
+                if (!tagSelect || !tagSelect.value) { e.preventDefault(); return; }
+                if (newTagInput) newTagInput.disabled = true;  // don't submit a stale name
+            } else {
+                if (!newTagInput || !newTagInput.value.trim()) { e.preventDefault(); return; }
+                if (tagSelect) tagSelect.disabled = true;  // don't submit a stale tag_id
+            }
         }
         // Inject the current page's checked ids (skipped when "all matching" is
         // active — the server resolves the full set from the filters).

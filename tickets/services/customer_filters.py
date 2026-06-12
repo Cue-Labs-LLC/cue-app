@@ -12,6 +12,10 @@ Criteria keys (all optional):
     behavior_profile  str | list[str]
     min_ltv           Decimal | str | number
     last_order_after  date | 'YYYY-MM-DD'
+    all_subscribers   bool — no-op narrowing; audience is the whole org. Used so an
+                      "all opted-in subscribers" send has non-empty criteria (and so
+                      passes SMSCampaign.candidate_customers' empty-criteria fail-safe)
+                      without filtering anyone out here.
 """
 
 import uuid as _uuid
@@ -79,6 +83,11 @@ def filter_customers(org, criteria):
     event_ids = _valid_uuids(_as_list(criteria.get('event_id')) + _as_list(criteria.get('event_ids')))
     if event_ids:
         qs = qs.filter(ticket_orders__event_id__in=event_ids)
+
+    # 'all_subscribers' is deliberately not narrowed here — it means "the whole org".
+    # The opted-in + has-phone restriction lives in SMSCampaign.candidate_customers.
+
+
 
     min_ltv = criteria.get('min_ltv')
     if min_ltv not in (None, ''):

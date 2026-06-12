@@ -33,6 +33,7 @@ from .models import (
 )
 from .forms import SMSCampaignForm
 from .services.customer_filters import filter_customers
+from .services.sms_consent import set_sms_opt_in
 from .services.tagging import tag_customers
 from .sms import (
     normalize_phone, validate_twilio_request, sms_segment_info, send_sms, extract_first_url,
@@ -77,7 +78,9 @@ def _annotate_counts(qs):
 def _criteria_from_post(post):
     """Build an inline filter_criteria dict + manual id lists from raw POST data
     (used by the live audience-preview endpoint, which fires before the campaign
-    is saved). The compose UI offers tags + segments; event mode passes `event`."""
+    is saved). The compose UI offers tags + segments; event mode passes `event`
+    plus an `audience_scope` of 'event' (ticket buyers), 'all' (all subscribers),
+    or 'tag' (customers with the chosen tag)."""
     criteria = {}
     segments = [s for s in post.getlist('rfm_segment') if s]
     if segments:
@@ -87,7 +90,15 @@ def _criteria_from_post(post):
         criteria['tag_ids'] = tag_ids
     event_id = (post.get('event') or '').strip()
     if event_id:
-        criteria['event_id'] = event_id
+        # Event mode is a single-choice audience; the scope picks exactly one
+        # narrowing, so ignore any stray tag/segment values from hidden controls.
+        scope = post.get('audience_scope') or 'event'
+        if scope == 'all':
+            criteria = {'all_subscribers': True}
+        elif scope == 'tag':
+            criteria = {'tag_ids': tag_ids} if tag_ids else {}
+        else:
+            criteria = {'event_id': event_id}
     includes = [s.strip() for s in (post.get('manual_include_ids') or '').split(',') if s.strip()]
     excludes = [s.strip() for s in (post.get('manual_exclude_ids') or '').split(',') if s.strip()]
     return criteria, includes, excludes
@@ -198,6 +209,47 @@ def customers_bulk_tag(request):
     return redirect(back)
 
 
+@login_required
+@require_org
+@require_host
+@require_POST
+def customers_bulk_sms_status(request):
+    """Bulk opt selected, or all-matching, customers in or out of marketing SMS.
+    'Select all' resolves the same filtered queryset the list page shows
+    (search / segment / tag), mirroring ``customers_bulk_tag``."""
+    org = get_organization(request)
+    if request.POST.get('select_all') == '1':
+        criteria = {
+            'search': request.POST.get('search') or None,
+            'rfm_segment': request.POST.get('segment') or None,
+            'tag_id': request.POST.get('tag') or None,
+        }
+        customers = filter_customers(org, criteria).distinct()
+    else:
+        posted = [s for s in request.POST.getlist('customer_ids') if s]
+        customers = Customer.objects.filter(organization=org, id__in=posted).distinct()
+
+    # Return to the list with the active filters preserved.
+    params = urlencode({k: v for k, v in (
+        ('search', request.POST.get('search', '')),
+        ('segment', request.POST.get('segment', '')),
+        ('tag', request.POST.get('tag', '')),
+        ('sort', request.POST.get('sort', '')),
+    ) if v})
+    back = reverse('tickets:customer_list') + (f'?{params}' if params else '')
+
+    opt_in = request.POST.get('sms_status') == 'opt_in'
+    count = set_sms_opt_in(customers, opt_in=opt_in)
+    verb = 'Opted in' if opt_in else 'Opted out'
+    if count == 0:
+        # Either nothing was selected or every selected customer was already in
+        # the target state — nothing actually changed either way.
+        messages.info(request, 'No customers needed updating.')
+    else:
+        messages.success(request, f'{verb} {count} customer(s).')
+    return redirect(back)
+
+
 # ---------------------------------------------------------------------------
 # Campaigns
 # ---------------------------------------------------------------------------
@@ -275,11 +327,19 @@ def sms_campaign_create(request):
     if request.method == 'POST':
         form = SMSCampaignForm(request.POST, organization=org, event=event)
         if form.is_valid():
-            # Audience lives inline on the campaign. Event mode targets that
-            # event's attendees; otherwise the composed tags/segments.
+            # Audience lives inline on the campaign. In event mode the scope picks
+            # exactly one audience — the event's ticket buyers, all subscribers, or
+            # customers with the chosen tag; otherwise the composed tags/segments.
             criteria = dict(form.filter_criteria)
+            audience_scope = request.POST.get('audience_scope') or 'event'
             if event:
-                criteria['event_id'] = str(event.id)
+                if audience_scope == 'all':
+                    criteria = {'all_subscribers': True}
+                elif audience_scope == 'tag':
+                    tag_ids = [str(t.id) for t in form.cleaned_data.get('tag_ids') or []]
+                    criteria = {'tag_ids': tag_ids} if tag_ids else {}
+                else:
+                    criteria = {'event_id': str(event.id)}
             recipients = SMSCampaign(
                 organization=org, filter_criteria=criteria,
             ).materialize(org, cap=cap + 1)
@@ -292,6 +352,8 @@ def sms_campaign_create(request):
                     f'This audience resolves to more than {cap} recipients. '
                     f'Narrow the audience before sending.',
                 )
+            elif event and audience_scope == 'tag' and not criteria.get('tag_ids'):
+                form.add_error(None, 'Pick at least one tag to send to.')
             elif confirm_count == 0:
                 form.add_error(None, 'This audience has no contactable recipients.')
             else:

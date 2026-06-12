@@ -438,10 +438,19 @@
                             <span class="sms-aud-count" id="aud-count-pill"><b id="aud-count">—</b> recipients</span>
                         </div>
                         {% if event %}
-                        <div class="sms-hint" style="margin-top:10px;">Texting everyone who bought a ticket to <strong>{{ event.name }}</strong>.</div>
-                        {% else %}
+                        <div class="sms-aud-group" data-aud-group="scope">
+                            <div class="sms-aud-chips" data-aud-chips="scope">
+                                <span class="sms-chip-wrap"><input type="radio" name="audience_scope" id="scope-event" value="event" checked autocomplete="off"><label class="sms-chip" for="scope-event"><span class="sms-chip-dot"></span>Ticket buyers for this event</label></span>
+                                <span class="sms-chip-wrap"><input type="radio" name="audience_scope" id="scope-all" value="all" autocomplete="off"><label class="sms-chip" for="scope-all"><span class="sms-chip-dot"></span>All SMS subscribers</label></span>
+                                {% if form.tag_ids.field.queryset %}
+                                <span class="sms-chip-wrap"><input type="radio" name="audience_scope" id="scope-tag" value="tag" autocomplete="off"><label class="sms-chip" for="scope-tag"><span class="sms-chip-dot"></span>Customers with a tag</label></span>
+                                {% endif %}
+                            </div>
+                            <div class="sms-hint" style="margin-top:10px;" id="scope-hint">Texting ticket buyers for <strong>{{ event.name }}</strong>.</div>
+                        </div>
+                        {% endif %}
                         {% if form.tag_ids.field.queryset %}
-                        <div class="sms-aud-group" data-aud-group="tags">
+                        <div class="sms-aud-group" data-aud-group="tags"{% if event %} id="aud-tags-group" hidden{% endif %}>
                             <div class="sms-aud-grouprow">
                                 <span class="sms-aud-grouplabel">Tags</span>
                                 <div class="sms-aud-tools">
@@ -474,6 +483,7 @@
                             <div class="sms-aud-selected" data-aud-selected="tags"></div>
                         </div>
                         {% endif %}
+                        {% if not event %}
                         <div class="sms-aud-group" data-aud-group="segments">
                             <div class="sms-aud-grouprow">
                                 <span class="sms-aud-grouplabel">Segments</span>
@@ -896,6 +906,33 @@
         document.querySelectorAll('#audience-section input[type=checkbox]').forEach(function (cb) {
             cb.addEventListener('change', function () { syncAll(); refreshAudience(); });
         });
+
+        // Event mode: the scope radios (ticket buyers / all subscribers / a tag) pick a
+        // single audience. Reveal the tag picker only for the tag scope, swap the hint,
+        // and re-size the audience on every change.
+        var scopeRadios = document.querySelectorAll('#audience-section input[name="audience_scope"]');
+        var tagsGroup = document.getElementById('aud-tags-group');
+        var scopeHint = document.getElementById('scope-hint');
+        var eventHintHTML = scopeHint ? scopeHint.innerHTML : '';
+        function selectedScope() {
+            var r = document.querySelector('#audience-section input[name="audience_scope"]:checked');
+            return r ? r.value : 'event';
+        }
+        function syncScope() {
+            if (!scopeRadios.length) return;
+            var scope = selectedScope();
+            if (tagsGroup) tagsGroup.hidden = scope !== 'tag';
+            if (scopeHint) {
+                if (scope === 'all') scopeHint.textContent = 'Texting everyone in your org who has opted in to SMS.';
+                else if (scope === 'tag') scopeHint.textContent = 'Texting opted-in customers who have the selected tag(s).';
+                else scopeHint.innerHTML = eventHintHTML;
+            }
+        }
+        scopeRadios.forEach(function (r) {
+            r.addEventListener('change', function () { syncScope(); refreshAudience(); });
+        });
+
+        syncScope();
         syncAll();
         refreshAudience();
     });
