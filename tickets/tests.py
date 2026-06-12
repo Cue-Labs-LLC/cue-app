@@ -12256,3 +12256,195 @@ class MigrateLegacyBalancesCommandTests(TestCase):
         call_command('migrate_legacy_balances', '--apply')
         mock_transfer.assert_not_called()
         self.assertEqual(Payout.objects.count(), 0)
+
+
+class MetaAdsErrorHandlingTests(TestCase):
+    """Diagnostics + throttle behavior for the Meta Ads integration (PR #202 fixes)."""
+
+    def setUp(self):
+        from django.core.cache import cache as django_cache
+        django_cache.clear()
+        self.client = Client()
+        self.org = Organization.objects.create(
+            name='Meta Org', slug='meta-org',
+            meta_ads_access_token='tok-123',
+            meta_ads_account_id='act_999',
+            meta_ads_account_name='Ad Account',
+        )
+        self.admin_user = User.objects.create_user(
+            username='metaadmin', email='metaadmin@example.com', password='testpass123',
+        )
+        UserProfile.objects.create(
+            user=self.admin_user, organization=self.org, org_role=UserProfile.OrgRole.OWNER,
+        )
+        OrganizationMembership.objects.create(
+            user=self.admin_user, organization=self.org, org_role=UserProfile.OrgRole.OWNER,
+        )
+        self.venue = Venue.objects.create(organization=self.org, name='Venue', city='City')
+        self.event = Event.objects.create(
+            organization=self.org, name='Meta Event', venue=self.venue,
+            start_date=date(2026, 8, 1),
+        )
+        self.expense = EventExpense.objects.create(
+            event=self.event, category='marketing', description='Campaign',
+            amount=Decimal('100.00'), source='meta_ads', external_id='120246175133360162',
+        )
+
+    def tearDown(self):
+        from django.core.cache import cache as django_cache
+        django_cache.clear()
+
+    def _login(self):
+        self.client.login(username='metaadmin@example.com', password='testpass123')
+        self.client.get(reverse('tickets:home'))
+
+    # --- error extraction -------------------------------------------------
+
+    def test_error_from_response_includes_code_subcode_and_logs_fbtrace(self):
+        from tickets.services import meta_ads
+
+        class _Resp:
+            status_code = 500
+            def json(self):
+                return {'error': {
+                    'message': 'An unknown error has occurred.',
+                    'code': 1, 'error_subcode': 99, 'fbtrace_id': 'TRACE123',
+                }}
+
+        with self.assertLogs('tickets.services.meta_ads', level='WARNING') as logs:
+            err = meta_ads._error_from_response(_Resp())
+
+        self.assertIsInstance(err, meta_ads.MetaAdsAPIError)
+        self.assertEqual(err.code, 1)
+        self.assertEqual(err.subcode, 99)
+        self.assertEqual(err.fbtrace_id, 'TRACE123')
+        self.assertTrue(err.is_transient)
+        self.assertIn('code 1', str(err))
+        self.assertIn('subcode 99', str(err))
+        self.assertIn('An unknown error has occurred.', str(err))
+        # The fbtrace id must reach the logs so a recurrence is diagnosable.
+        self.assertIn('TRACE123', '\n'.join(logs.output))
+
+    def test_error_from_response_handles_non_json_body(self):
+        from tickets.services import meta_ads
+
+        class _Resp:
+            status_code = 503
+            def json(self):
+                raise ValueError('no json')
+
+        with self.assertLogs('tickets.services.meta_ads', level='WARNING'):
+            err = meta_ads._error_from_response(_Resp())
+        self.assertIn('503', str(err))
+        self.assertFalse(err.is_transient)
+
+    def test_request_retries_once_on_transient_error(self):
+        from tickets.services import meta_ads
+
+        class _Resp:
+            def __init__(self, status_code, payload):
+                self.status_code = status_code
+                self._payload = payload
+            def json(self):
+                return self._payload
+
+        responses = [
+            _Resp(500, {'error': {'message': 'An unknown error has occurred.', 'code': 1}}),
+            _Resp(200, {'id': '1', 'name': 'Acct'}),
+        ]
+        with patch('tickets.services.meta_ads.time.sleep') as sleep_mock, \
+                patch('tickets.services.meta_ads.requests.get', side_effect=responses) as get_mock:
+            client = meta_ads.MetaAdsClient('tok')
+            result = client.get_user_profile()
+
+        self.assertEqual(result, {'id': '1', 'name': 'Acct'})
+        self.assertEqual(get_mock.call_count, 2)
+        sleep_mock.assert_called_once()
+
+    def test_request_does_not_retry_non_transient_error(self):
+        from tickets.services import meta_ads
+
+        class _Resp:
+            status_code = 400
+            def json(self):
+                return {'error': {'message': 'Bad token', 'code': 190}}
+
+        with patch('tickets.services.meta_ads.requests.get', return_value=_Resp()) as get_mock:
+            client = meta_ads.MetaAdsClient('tok')
+            with self.assertRaises(meta_ads.MetaAdsAPIError):
+                client.get_user_profile()
+        self.assertEqual(get_mock.call_count, 1)
+
+    # --- staleness gate ---------------------------------------------------
+
+    def test_refresh_throttles_repeat_calls_within_window(self):
+        from tickets import views
+        from tickets.services.meta_ads import CampaignInsights
+
+        fake_client = MagicMock()
+        fake_client.get_campaign_insights.return_value = CampaignInsights(
+            spend=Decimal('12.00'), purchases=1, purchase_value=Decimal('20.00'),
+        )
+        with patch('tickets.views.MetaAdsClient', return_value=fake_client):
+            views._refresh_meta_ads_expenses_for_event(self.org, self.event, self.admin_user)
+            views._refresh_meta_ads_expenses_for_event(self.org, self.event, self.admin_user)
+
+        # Second call must be short-circuited by the cache marker — Meta hit once.
+        self.assertEqual(fake_client.get_campaign_insights.call_count, 1)
+
+    def test_refresh_catches_api_error_and_still_sets_marker(self):
+        from tickets import views
+        from tickets.services.meta_ads import MetaAdsAPIError
+
+        fake_client = MagicMock()
+        fake_client.get_campaign_insights.side_effect = MetaAdsAPIError(
+            'Meta API error (code 1): An unknown error has occurred.', code=1,
+        )
+        with patch('tickets.views.MetaAdsClient', return_value=fake_client):
+            with self.assertLogs('tickets.views', level='WARNING'):
+                had_error = views._refresh_meta_ads_expenses_for_event(
+                    self.org, self.event, self.admin_user,
+                )
+            self.assertTrue(had_error)
+            # Marker set despite the error, so the next load doesn't re-storm Meta.
+            had_error_2 = views._refresh_meta_ads_expenses_for_event(
+                self.org, self.event, self.admin_user,
+            )
+        self.assertFalse(had_error_2)
+        self.assertEqual(fake_client.get_campaign_insights.call_count, 1)
+
+    # --- endpoint status codes -------------------------------------------
+
+    def test_match_endpoint_returns_handled_error_not_502(self):
+        from tickets.services.meta_ads import MetaAdsAPIError
+        self._login()
+
+        fake_client = MagicMock()
+        fake_client.list_campaigns.side_effect = MetaAdsAPIError(
+            'Meta API error (code 1): An unknown error has occurred.', code=1,
+        )
+        url = reverse('tickets:event_meta_ads_match', args=[self.event.id]) + '?format=json'
+        with patch('tickets.views.MetaAdsClient', return_value=fake_client):
+            resp = self.client.get(url)
+
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertFalse(data['success'])
+        self.assertIn('code 1', data['error'])
+
+    def test_refresh_endpoint_returns_handled_error_not_502(self):
+        from tickets.services.meta_ads import MetaAdsAPIError
+        self._login()
+
+        fake_client = MagicMock()
+        fake_client.get_campaign_insights.side_effect = MetaAdsAPIError(
+            'Meta API error (code 1): An unknown error has occurred.', code=1,
+        )
+        url = reverse('tickets:event_meta_ads_refresh', args=[self.event.id, self.expense.id])
+        with patch('tickets.views.MetaAdsClient', return_value=fake_client):
+            resp = self.client.post(url, HTTP_X_REQUESTED_WITH='XMLHttpRequest')
+
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertFalse(data['ok'])
+        self.assertIn('code 1', data['error'])
