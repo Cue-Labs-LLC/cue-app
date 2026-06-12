@@ -1,8 +1,12 @@
+import logging
+import time
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 
 import requests
 from django.conf import settings
+
+logger = logging.getLogger(__name__)
 
 # Meta reports overlapping purchase action types; use the first present
 # (never sum across types — that double counts the same conversions).
@@ -13,9 +17,31 @@ PURCHASE_ACTION_TYPES = (
     'onsite_web_purchase',
 )
 
+# Meta error codes that are explicitly "transient — retry later":
+# 1 = "An unknown error has occurred.", 2 = "Service temporarily unavailable".
+_META_TRANSIENT_CODES = (1, 2)
+
 
 class MetaAdsAPIError(Exception):
-    """Raised when the Meta Graph API returns an error response."""
+    """Raised when the Meta Graph API returns an error response.
+
+    Carries the structured Graph API error fields (code/subcode/fbtrace_id) so
+    callers can branch on them and so the generic ``"An unknown error has
+    occurred."`` message is no longer the only thing we know about a failure.
+    """
+
+    def __init__(self, message, *, code=None, subcode=None, fbtrace_id=None,
+                 status=None, payload=None):
+        super().__init__(message)
+        self.code = code
+        self.subcode = subcode
+        self.fbtrace_id = fbtrace_id
+        self.status = status
+        self.payload = payload
+
+    @property
+    def is_transient(self) -> bool:
+        return self.code in _META_TRANSIENT_CODES
 
 
 @dataclass(frozen=True)
@@ -120,7 +146,7 @@ class MetaAdsClient:
     def _get(self, path: str, params: dict | None = None) -> dict:
         return self._request(f"{self.base_url}{path}", params or {})
 
-    def _request(self, url: str, params: dict | None = None) -> dict:
+    def _request(self, url: str, params: dict | None = None, _retries: int = 1) -> dict:
         request_params = {} if "access_token=" in url else {"access_token": self.access_token}
         if params:
             request_params.update(params)
@@ -130,7 +156,13 @@ class MetaAdsClient:
             raise MetaAdsAPIError(f"Meta request failed: {exc}") from exc
 
         if response.status_code < 200 or response.status_code >= 300:
-            raise MetaAdsAPIError(_extract_error_message(response))
+            error = _error_from_response(response)
+            # GET is idempotent; Meta marks codes 1/2 as retryable, so give one
+            # short-backoff retry before surfacing the failure to the caller.
+            if error.is_transient and _retries > 0:
+                time.sleep(0.5)
+                return self._request(url, params, _retries=_retries - 1)
+            raise error
         return response.json()
 
     @staticmethod
@@ -164,14 +196,52 @@ def _oauth_request(params: dict) -> dict:
         raise MetaAdsAPIError(f"Meta OAuth request failed: {exc}") from exc
 
     if response.status_code < 200 or response.status_code >= 300:
-        raise MetaAdsAPIError(_extract_error_message(response))
+        raise _error_from_response(response)
     return response.json()
 
 
-def _extract_error_message(response) -> str:
+def _error_from_response(response) -> MetaAdsAPIError:
+    """Build a diagnosable MetaAdsAPIError from a non-2xx Graph API response.
+
+    The Graph API frequently returns a generic ``message`` (e.g. "An unknown
+    error has occurred.") while hiding the real cause in ``code`` /
+    ``error_subcode`` / ``error_user_msg`` / ``fbtrace_id``. We fold those into
+    the exception string and log the full parsed payload so each failure is
+    actionable instead of opaque.
+    """
+    status = response.status_code
     try:
         payload = response.json()
     except ValueError:
-        return f"Meta API error ({response.status_code})."
-    error = payload.get("error") or {}
-    return error.get("message") or f"Meta API error ({response.status_code})."
+        payload = None
+
+    error = (payload or {}).get("error") or {}
+    code = error.get("code")
+    subcode = error.get("error_subcode")
+    fbtrace_id = error.get("fbtrace_id")
+    detail = (
+        error.get("error_user_msg")
+        or error.get("message")
+        or f"Meta API error ({status})."
+    )
+
+    code_bits = []
+    if code is not None:
+        code_bits.append(f"code {code}")
+    if subcode:
+        code_bits.append(f"subcode {subcode}")
+    prefix = f"Meta API error ({', '.join(code_bits)})" if code_bits else f"Meta API error ({status})"
+    message = f"{prefix}: {detail}"
+
+    logger.warning(
+        "Meta Graph API error: status=%s code=%s subcode=%s fbtrace_id=%s payload=%s",
+        status, code, subcode, fbtrace_id, payload,
+    )
+    return MetaAdsAPIError(
+        message,
+        code=code,
+        subcode=subcode,
+        fbtrace_id=fbtrace_id,
+        status=status,
+        payload=payload,
+    )
