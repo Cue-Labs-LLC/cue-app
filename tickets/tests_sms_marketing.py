@@ -192,6 +192,14 @@ class SMSCampaignSendTests(TestCase):
         from .tasks import _with_stop_footer
         self.assertIn('Reply STOP to opt out', _with_stop_footer('Hello'))
         self.assertEqual(_with_stop_footer('Text STOP anytime'), 'Text STOP anytime')
+        self.assertEqual(_with_stop_footer('Reply STOP to cancel'), 'Reply STOP to cancel')
+
+    def test_stop_footer_not_suppressed_by_casual_stop(self):
+        # Only explicit opt-out phrasing suppresses the footer — a casual "stop"
+        # must not strip the compliance disclosure.
+        from .tasks import _with_stop_footer
+        self.assertIn('Reply STOP to opt out', _with_stop_footer('stop by the bar after the show'))
+        self.assertIn('Reply STOP to opt out', _with_stop_footer('Non-stop hits all night'))
 
 
 @override_settings(E2E_TEST_MODE=True)
@@ -768,6 +776,34 @@ class EventSMSTests(TestCase):
         # a1 + a2 (buyers) + non-attendee; opt-out excluded.
         self.assertEqual(phones, {'+13105550001', '+13105550002', '+13105550004'})
 
+    def test_review_preserves_all_subscribers_scope(self):
+        # Regression: the review POST re-renders the form; the chosen scope chip must
+        # stay checked or the confirm POST silently falls back to ticket buyers.
+        resp = self.client.post(reverse('tickets:sms_campaign_create'), {
+            'name': self.event.name, 'body': 'Big news for everyone!',
+            'send_mode': 'now', 'event': str(self.event.id), 'audience_scope': 'all',
+        })
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.context['confirm_count'], 3)  # org-wide, not the 2 buyers
+        self.assertContains(resp, 'value="all" checked')
+        self.assertNotContains(resp, 'value="event" checked')
+        # The review button stays in the DOM (hidden) so the JS can swap it back in
+        # when an audience/body edit invalidates the stale confirm panel.
+        self.assertContains(resp, 'id="review-btn" hidden')
+
+    def test_review_preserves_tag_scope(self):
+        tag = CustomerTag.objects.create(organization=self.org, name='Press')
+        self.a1.tags.add(tag)
+        resp = self.client.post(reverse('tickets:sms_campaign_create'), {
+            'name': self.event.name, 'body': 'Press release!',
+            'send_mode': 'now', 'event': str(self.event.id),
+            'audience_scope': 'tag', 'tag_ids': [str(tag.id)],
+        })
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.context['confirm_count'], 1)
+        self.assertContains(resp, 'value="tag" checked')
+        self.assertNotContains(resp, 'value="event" checked')
+
     def test_create_event_mode_renders_tag_scope_when_org_has_tags(self):
         CustomerTag.objects.create(organization=self.org, name='Press')
         resp = self.client.get(reverse('tickets:sms_campaign_create'), {'event': str(self.event.id)})
@@ -1150,6 +1186,15 @@ class SMSTokenFilterTests(TestCase):
         # 3 recipients, short body -> 1 segment each = 3 tokens (not cents/price).
         self.assertEqual(estimate_campaign_cost_tokens(3, 'hi'), 3)
         self.assertEqual(estimate_campaign_cost_tokens(0, 'hi'), 0)
+
+    def test_cost_tokens_includes_stop_footer_segments(self):
+        # The auto-appended footer ("\n\nReply STOP to opt out", 23 GSM-7 chars) is
+        # part of what's sent and billed: 150 typed chars look like 1 segment but
+        # send as 173 chars = 2 segments. The composer meter mirrors this math.
+        from .services.sms_credits import estimate_campaign_cost_tokens
+        self.assertEqual(estimate_campaign_cost_tokens(572, 'x' * 150), 1144)
+        # Explicit opt-out phrasing → no footer added → stays 1 segment.
+        self.assertEqual(estimate_campaign_cost_tokens(572, 'x' * 130 + ' Reply STOP to end'), 572)
 
 
 @override_settings(E2E_TEST_MODE=True, SITE_URL='https://test.cueup.co')

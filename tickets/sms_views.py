@@ -37,6 +37,7 @@ from .services.sms_consent import set_sms_opt_in
 from .services.tagging import tag_customers
 from .sms import (
     normalize_phone, validate_twilio_request, sms_segment_info, send_sms, extract_first_url,
+    with_stop_footer,
 )
 from .tasks import send_sms_campaign_task
 from .utils import get_organization, require_org, require_host
@@ -324,6 +325,13 @@ def sms_campaign_create(request):
     # second campaign or double-charge. Preserved across the review→confirm POSTs.
     idem_key = request.POST.get('idempotency_key') or uuid.uuid4().hex
 
+    # Event-mode audience scope. Read outside form handling (and normalized) so the
+    # re-rendered confirm page can keep the chosen chip checked — otherwise the
+    # selection silently resets to 'event' between review and confirm.
+    audience_scope = request.POST.get('audience_scope') or 'event'
+    if audience_scope not in ('event', 'all', 'tag'):
+        audience_scope = 'event'
+
     if request.method == 'POST':
         form = SMSCampaignForm(request.POST, organization=org, event=event)
         if form.is_valid():
@@ -331,7 +339,6 @@ def sms_campaign_create(request):
             # exactly one audience — the event's ticket buyers, all subscribers, or
             # customers with the chosen tag; otherwise the composed tags/segments.
             criteria = dict(form.filter_criteria)
-            audience_scope = request.POST.get('audience_scope') or 'event'
             if event:
                 if audience_scope == 'all':
                     criteria = {'all_subscribers': True}
@@ -464,9 +471,14 @@ def sms_campaign_create(request):
         if ev.effective_status == EVENT_STATUS_LIVE
     ]
 
-    encoding, segments = sms_segment_info(request.POST.get('body', '') if request.method == 'POST' else '')
+    # Initial meter values match billing: segments are counted on the body plus
+    # the auto-appended STOP footer (the JS meter mirrors this).
+    encoding, segments = sms_segment_info(
+        with_stop_footer(request.POST.get('body', '') if request.method == 'POST' else '')
+    )
     return render(request, 'tickets/marketing/sms/campaign_form.html', {
         'form': form,
+        'audience_scope': audience_scope,
         'confirm_count': confirm_count,
         'exceeds_cap': exceeds_cap,
         'cap': cap,
