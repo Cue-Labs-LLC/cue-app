@@ -2548,7 +2548,20 @@ class EventDailyPageView(BaseModel):
 
 
 class StripeCheckoutSession(BaseModel):
-    """One row per Stripe Checkout Session - idempotency anchor for webhook processing."""
+    """One row per Stripe Checkout Session - idempotency anchor for webhook processing.
+
+    Money flow per ``charge_flow`` (see Payout for the payout-side pools):
+
+        platform     buyer ──► PLATFORM acct ──(payout-time Transfer)──► connected acct
+                     Legacy flow; rows swept to the connected account by the
+                     migrate_legacy_balances command after cutover.
+        destination  buyer ──► PLATFORM acct ──(transfer_data at charge time)──► connected acct
+                     Organizer net (amount - platform fee) lands in the connected
+                     balance at sale time; refunds claw it back via transfer reversal.
+        direct       buyer ──► CONNECTED acct (card_present / Tap to Pay)
+                     Platform fee collected via application_fee_amount; the
+                     connected account pays Stripe processing fees.
+    """
 
     class Status(models.TextChoices):
         PENDING            = 'pending',            'Pending'
@@ -2557,6 +2570,11 @@ class StripeCheckoutSession(BaseModel):
         CANCELED           = 'canceled',           'Canceled'
         PARTIALLY_REFUNDED = 'partially_refunded', 'Partially refunded'
         REFUNDED           = 'refunded',           'Refunded'
+
+    class ChargeFlow(models.TextChoices):
+        PLATFORM    = 'platform',    'Platform charge (legacy)'
+        DESTINATION = 'destination', 'Destination charge'
+        DIRECT      = 'direct',      'Direct charge (connected account)'
 
     event = models.ForeignKey(
         Event,
@@ -2611,6 +2629,27 @@ class StripeCheckoutSession(BaseModel):
     available_on = models.DateTimeField(
         null=True, blank=True,
         help_text='When this payment settles into the Stripe platform balance (from balance_transaction.available_on).',
+    )
+    charge_flow = models.CharField(
+        max_length=20,
+        choices=ChargeFlow.choices,
+        default=ChargeFlow.PLATFORM,
+        db_index=True,
+        help_text='How the money moved: platform (legacy), destination, or direct (in-person).',
+    )
+    stripe_transfer_id = models.CharField(
+        max_length=255, blank=True, default='',
+        help_text='Transfer (tr_xxx) created by the destination charge; empty for platform/direct flows.',
+    )
+    transfer_cents = models.PositiveIntegerField(
+        default=0,
+        help_text='Organizer net sent to the connected account by the destination charge.',
+    )
+    # Display/ledger cache only. Stripe Transfer.amount_reversed is the
+    # authority for reversal math — never compute a reversal delta from this.
+    transfer_reversed_cents = models.PositiveIntegerField(
+        default=0,
+        help_text='Cumulative cents reversed back to the platform after refunds (cache of Stripe state).',
     )
     fb_browser_data = models.JSONField(
         default=dict, blank=True,
@@ -2926,7 +2965,16 @@ class TypeformFormSubscription(AuditBaseModel):
 
 
 class Payout(BaseModel):
-    """Platform-to-organizer Stripe Transfer record."""
+    """One organizer withdrawal (or platform-funds movement) to track in history.
+
+    ``origin`` states which money pool the payout drew from — never infer it
+    from field nullness:
+
+        legacy_transfer  pre-cutover flow: platform Transfer + bank Payout
+        migration        migrate_legacy_balances true-up Transfer (platform pool)
+        cue              in-app Request Payout against the connected balance
+        stripe_dashboard organizer-initiated payout discovered via webhook
+    """
 
     class Status(models.TextChoices):
         PENDING    = 'pending',    'Pending'
@@ -2934,10 +2982,23 @@ class Payout(BaseModel):
         COMPLETED  = 'completed',  'Completed'
         FAILED     = 'failed',     'Failed'
 
+    class Origin(models.TextChoices):
+        LEGACY_TRANSFER  = 'legacy_transfer',  'Legacy transfer + payout'
+        MIGRATION        = 'migration',        'Balance migration (true-up)'
+        CUE              = 'cue',              'Requested in Cue'
+        STRIPE_DASHBOARD = 'stripe_dashboard', 'Initiated via Stripe'
+
     organization = models.ForeignKey(
         Organization, on_delete=models.CASCADE, related_name='payouts', db_index=True,
     )
     amount = models.DecimalField(max_digits=10, decimal_places=2)
+    origin = models.CharField(
+        max_length=20,
+        choices=Origin.choices,
+        default=Origin.CUE,
+        db_index=True,
+        help_text='Which money pool this payout drew from; set explicitly at every creation site.',
+    )
     stripe_transfer_id = models.CharField(
         max_length=255, unique=True, null=True, blank=True,
         help_text='Stripe Transfer ID (tr_xxx) - set after successful Transfer call.',

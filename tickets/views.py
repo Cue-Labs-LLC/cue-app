@@ -5343,6 +5343,15 @@ def refund_order(request, order_id):
         messages.error(request, 'This order cannot be refunded.')
         return redirect('tickets:order_detail', order_id=order_id)
 
+    if session.charge_flow == StripeCheckoutSession.ChargeFlow.DIRECT:
+        # In-person charges live on the connected account; the platform key
+        # can't refund them. Stripe keeps the platform fee on these refunds.
+        messages.error(
+            request,
+            'In-person orders must be refunded from your Stripe dashboard for now.',
+        )
+        return redirect('tickets:order_detail', order_id=order_id)
+
     refund_type = request.POST.get('refund_type', 'full')
     if refund_type == 'partial':
         raw_amount = request.POST.get('refund_amount', '').strip()
@@ -9291,6 +9300,12 @@ def event_cancel(request, event_id):
         if session is None or session.status != StripeCheckoutSession.Status.COMPLETED:
             continue
 
+        if session.charge_flow == StripeCheckoutSession.ChargeFlow.DIRECT:
+            # In-person charges live on the connected account; the platform
+            # key can't refund them. Count into the manual-refund warning.
+            failed_count += 1
+            continue
+
         try:
             stripe_lib.Refund.create(payment_intent=session.stripe_session_id)
         except stripe_lib.error.StripeError as e:
@@ -10338,6 +10353,23 @@ def create_payment_intent(request, public_id):
     fee_cents = extract_fee_from_display_cents(discounted_subtotal_cents)
     charge_cents = discounted_subtotal_cents  # Display price is fee-inclusive; buyer pays display total
 
+    # Destination charge: organizer net rides transfer_data into the connected
+    # account at sale time. Fall back to a plain platform charge when the org
+    # isn't onboarded (funds join the legacy pool, swept later by the true-up
+    # command) or when the fee consumes the whole charge — Stripe rejects a
+    # zero/negative transfer_data.amount.
+    org_for_charge = event.organization
+    transfer_amount_cents = charge_cents - fee_cents
+    use_destination = bool(
+        org_for_charge.stripe_onboarding_complete
+        and org_for_charge.stripe_account_id
+        and transfer_amount_cents > 0
+    )
+    charge_flow = (
+        StripeCheckoutSession.ChargeFlow.DESTINATION if use_destination
+        else StripeCheckoutSession.ChargeFlow.PLATFORM
+    )
+
     profile_pk = None
     stripe_customer_id = None
     payment_method_id = use_saved_pm or None
@@ -10376,6 +10408,11 @@ def create_payment_intent(request, public_id):
                 'currency': django_settings.STRIPE_CURRENCY,
                 'metadata': md,
             }
+            if use_destination:
+                kw['transfer_data'] = {
+                    'destination': org_for_charge.stripe_account_id,
+                    'amount': transfer_amount_cents,
+                }
             if stripe_customer_id:
                 kw['customer'] = stripe_customer_id
             if save_card and stripe_customer_id:
@@ -10448,6 +10485,7 @@ def create_payment_intent(request, public_id):
         line_items_snapshot=cart,
         amount_total_cents=charge_cents,
         platform_fee_cents=fee_cents,
+        charge_flow=charge_flow,
         promo_code_id=promo_code_id,
         discount_cents=discount_cents,
         fb_browser_data=fb_browser_data,
@@ -10782,8 +10820,40 @@ def stripe_connect_webhook(request):
     event_type = event['type']
     if event_type in ('payout.created', 'payout.updated', 'payout.paid', 'payout.failed'):
         _handle_stripe_payout_event(event)
+    elif event_type == 'charge.refunded':
+        # Direct (in-person) charges live on connected accounts, so their
+        # refund events arrive here, not on the platform endpoint.
+        _sync_charge_refund(event['data']['object'])
 
     return HttpResponse(status=200)
+
+
+# Stripe payout status → local Payout status. 'pending' matters for
+# organizer-initiated payouts discovered via webhook before dispatch.
+_STRIPE_PAYOUT_STATUS_MAP = {
+    'pending':    Payout.Status.PENDING,
+    'in_transit': Payout.Status.IN_TRANSIT,
+    'paid':       Payout.Status.COMPLETED,
+    'failed':     Payout.Status.FAILED,
+    'canceled':   Payout.Status.FAILED,
+}
+
+
+def _apply_stripe_payout_status(payout, stripe_status, stripe_payout_id=None):
+    """Apply a Stripe payout's status (and optionally its po_ id) to a local
+    Payout row. The single translation point — webhook, initiate_payout, and
+    recovery must never carry their own copies of this mapping."""
+    update_fields = []
+    if stripe_payout_id and not payout.stripe_payout_id:
+        payout.stripe_payout_id = stripe_payout_id
+        update_fields.append('stripe_payout_id')
+    new_status = _STRIPE_PAYOUT_STATUS_MAP.get(stripe_status)
+    if new_status and payout.status != new_status:
+        payout.status = new_status
+        update_fields.append('status')
+    if update_fields:
+        payout.save(update_fields=update_fields)
+    return update_fields
 
 
 def _handle_stripe_payout_event(event):
@@ -10792,10 +10862,12 @@ def _handle_stripe_payout_event(event):
 
     Stripe fires these on the connected account, so the event includes an
     'account' field with the Express account ID. We use that to find the org
-    and then reconcile by Stripe payout ID first, with best-effort fallback
-    to metadata or the oldest open payout of the same amount.
+    and reconcile by Stripe payout ID first, then by our payout_id metadata
+    (covers the race where payout.created beats initiate_payout's save).
+    Anything still unmatched is an organizer-initiated payout (Express
+    Dashboard) — record it as a new Payout row so history stays truthful.
 
-    payout.created  → confirm/store stripe_payout_id
+    payout.created  → confirm/store stripe_payout_id (or record organizer payout)
     payout.updated  → advance to IN_TRANSIT when Stripe dispatches to bank
     payout.paid     → advance to COMPLETED (funds arrived at bank)
     payout.failed   → advance to FAILED
@@ -10838,43 +10910,38 @@ def _handle_stripe_payout_event(event):
             .first()
         )
 
-    if not payout and stripe_payout_amount is not None:
-        payout_amount = Decimal(str(stripe_payout_amount)) / 100
-        payout = (
-            Payout.objects
-            .filter(
-                organization=org,
-                amount=payout_amount,
-                stripe_payout_id__isnull=True,
-                status__in=[Payout.Status.PENDING, Payout.Status.IN_TRANSIT],
-            )
-            .order_by('created_at')
-            .first()
-        )
-
     if not payout:
-        logger.info("No matching Payout record for Stripe payout %s (org %s)", stripe_payout_id, org.id)
-        return
+        # Organizer-initiated payout from the Express Dashboard: no local row
+        # exists, so create one. get_or_create on the unique po_ id absorbs
+        # duplicate webhook delivery.
+        if not stripe_payout_id or stripe_payout_amount is None:
+            logger.info(
+                "Ignoring unmatched Stripe payout without id/amount (org %s): %s",
+                org.id, stripe_payout_id,
+            )
+            return
+        payout, created = Payout.objects.get_or_create(
+            stripe_payout_id=stripe_payout_id,
+            defaults={
+                'organization': org,
+                'amount': Decimal(str(stripe_payout_amount)) / 100,
+                'status': _STRIPE_PAYOUT_STATUS_MAP.get(stripe_payout_status, Payout.Status.PENDING),
+                'origin': Payout.Origin.STRIPE_DASHBOARD,
+                'initiated_by': None,
+                'notes': 'Initiated via Stripe',
+            },
+        )
+        if created:
+            logger.info(
+                "Recorded organizer-initiated Stripe payout %s for org %s (%s)",
+                stripe_payout_id, org.id, stripe_payout_status,
+            )
+            _bust_connected_balance_cache(org)
+            return
+        # Lost a race with a concurrent delivery — fall through to status sync.
 
-    update_fields = []
-
-    if not payout.stripe_payout_id and stripe_payout_id:
-        payout.stripe_payout_id = stripe_payout_id
-        update_fields.append('stripe_payout_id')
-
-    status_map = {
-        'in_transit': Payout.Status.IN_TRANSIT,
-        'paid':       Payout.Status.COMPLETED,
-        'failed':     Payout.Status.FAILED,
-        'canceled':   Payout.Status.FAILED,
-    }
-    new_status = status_map.get(stripe_payout_status)
-    if new_status and payout.status != new_status:
-        payout.status = new_status
-        update_fields.append('status')
-
+    update_fields = _apply_stripe_payout_status(payout, stripe_payout_status, stripe_payout_id)
     if update_fields:
-        payout.save(update_fields=update_fields)
         logger.info(
             "Payout %s advanced to %s via Stripe payout %s",
             payout.id, payout.status, stripe_payout_id,
@@ -11117,14 +11184,28 @@ def _fulfill_payment_intent(payment_intent):
                 latest_charge_id,
                 expand=['balance_transaction'],
             )
+            session_updates = {}
             bt = charge.balance_transaction
             if bt and getattr(bt, 'available_on', None):
                 import datetime as _dt
-                available_on_dt = _dt.datetime.fromtimestamp(bt.available_on, tz=_dt.timezone.utc)
-                StripeCheckoutSession.objects.filter(stripe_session_id=pi_id).update(
-                    available_on=available_on_dt,
+                session_updates['available_on'] = _dt.datetime.fromtimestamp(
+                    bt.available_on, tz=_dt.timezone.utc,
                 )
-                logger.info("Set available_on=%s for PaymentIntent %s", available_on_dt, pi_id)
+            # Destination charges carry a transfer (tr_xxx). Trust the charge,
+            # not the session flag: a PENDING session created before the
+            # destination-charge deploy fulfills here with no transfer and
+            # correctly stays in the legacy platform pool.
+            transfer_id = getattr(charge, 'transfer', None)
+            if transfer_id and isinstance(transfer_id, str):
+                transfer = stripe_lib_bt.Transfer.retrieve(transfer_id)
+                session_updates.update(
+                    stripe_transfer_id=transfer_id,
+                    transfer_cents=int(transfer.amount),
+                    charge_flow=StripeCheckoutSession.ChargeFlow.DESTINATION,
+                )
+            if session_updates:
+                StripeCheckoutSession.objects.filter(stripe_session_id=pi_id).update(**session_updates)
+                logger.info("Recorded settlement/transfer state for PaymentIntent %s: %s", pi_id, session_updates)
         except Exception:
             logger.exception("Could not fetch balance_transaction for charge %s (PI %s)", latest_charge_id, pi_id)
 
@@ -11175,6 +11256,80 @@ def _find_session_for_payment_intent(pi_id):
     ).select_related('ticket_order', 'organization').first()
 
 
+def _reverse_transfer_for_refund(charge, session=None):
+    """Claw back the organizer's share of a refunded destination charge.
+
+    Stripe is the authority on both sides of the math: the cumulative
+    ``charge.amount_refunded`` sets the target, and ``Transfer.amount_reversed``
+    says how much has already been clawed back — so a stale or missing local
+    row can never cause an over-reversal, and webhook retries replay the same
+    cumulative target through the same idempotency key as no-ops.
+
+    Works without a session row (event hard-deletes CASCADE sessions away;
+    the refund webhook may also beat fulfillment's transfer capture): the
+    transfer id comes from the charge payload itself. Charges with no
+    transfer (platform, direct, SMS top-ups) no-op.
+
+    Refund semantics: a partial refund of R reverses exactly R (organizer
+    bears it 1:1) until the transfer is exhausted; a full refund reverses the
+    whole transfer, so the platform funds the fee portion of the buyer's
+    refund — the fee-waiver-on-full-refund economics the ledger math in
+    _aggregate_session_cents assumes.
+
+    Failures log loudly and return — order/session state sync must proceed;
+    the charge.refunded retry or backfill_refund_state converges later.
+    """
+    transfer_id = None
+    if session is not None and session.stripe_transfer_id:
+        transfer_id = session.stripe_transfer_id
+    if not transfer_id:
+        payload_transfer = _stripe_value(charge, 'transfer')
+        if payload_transfer and isinstance(payload_transfer, str):
+            transfer_id = payload_transfer
+    if not transfer_id:
+        return
+
+    refunded_cents = int(_stripe_value(charge, 'amount_refunded') or 0)
+    if refunded_cents <= 0:
+        return
+
+    import stripe as stripe_lib
+    from django.conf import settings as django_settings
+    stripe_lib.api_key = django_settings.STRIPE_SECRET_KEY
+    try:
+        transfer = stripe_lib.Transfer.retrieve(transfer_id)
+        target_cents = min(refunded_cents, int(transfer.amount))
+        delta_cents = target_cents - int(transfer.amount_reversed or 0)
+        if delta_cents > 0:
+            stripe_lib.Transfer.create_reversal(
+                transfer_id,
+                amount=delta_cents,
+                idempotency_key=f'trrev-{transfer_id}-{target_cents}',
+                metadata={
+                    'reason': 'refund_clawback',
+                    'payment_intent': str(_stripe_value(charge, 'payment_intent') or ''),
+                },
+            )
+            logger.info(
+                "Reversed %s cents of transfer %s for refund (cumulative target %s)",
+                delta_cents, transfer_id, target_cents,
+            )
+    except stripe_lib.error.StripeError:
+        logger.exception("Transfer reversal failed for %s — state sync continues, backfill will converge", transfer_id)
+        return
+
+    if session is not None:
+        session_updates = {'transfer_reversed_cents': target_cents}
+        if not session.stripe_transfer_id:
+            # Recovered from the charge payload before fulfillment stored it.
+            session_updates.update(
+                stripe_transfer_id=transfer_id,
+                transfer_cents=int(transfer.amount),
+                charge_flow=StripeCheckoutSession.ChargeFlow.DESTINATION,
+            )
+        StripeCheckoutSession.objects.filter(pk=session.pk).update(**session_updates)
+
+
 def _sync_charge_refund(charge):
     """Sync a Stripe refund (any origin, incl. dashboard) into the DB.
 
@@ -11186,13 +11341,21 @@ def _sync_charge_refund(charge):
     webhook after an app-initiated refund (refund_order writes the same state
     first) become no-ops. Inventory restore and waitlist notifications fire
     only on the transition into REFUNDED.
+
+    The transfer clawback runs BEFORE the state no-op guard: the echo webhook
+    after an app-initiated refund is exactly when the reversal must happen
+    (refund_order only writes local state), and the reversal carries its own
+    Stripe-side idempotency.
     """
     pi_id = _stripe_value(charge, 'payment_intent')
     if not pi_id:
         return
     session = _find_session_for_payment_intent(pi_id)
     if session is None:
-        # SMS top-up or charge that isn't ours — nothing to sync.
+        # SMS top-up, a charge that isn't ours, or a session lost to an event
+        # hard-delete. The clawback must still happen for destination charges —
+        # everything it needs lives on Stripe (D1 session-less fallback).
+        _reverse_transfer_for_refund(charge, session=None)
         return
     if not session.stripe_payment_intent_id:
         # Legacy Checkout-flow row matched via the cs_… fallback: persist the
@@ -11205,6 +11368,8 @@ def _sync_charge_refund(charge):
         StripeCheckoutSession.Status.REFUNDED,
     ):
         return
+
+    _reverse_transfer_for_refund(charge, session=session)
 
     order = session.ticket_order
     refunded_total = Decimal(int(_stripe_value(charge, 'amount_refunded') or 0)) / 100
@@ -11252,9 +11417,10 @@ def _sync_charge_refund(charge):
         _invalidate_event_list_cache(session.organization)
         _invalidate_marketing_cache(session.organization)
 
-    # Bust the cached platform balance so the Finance page reflects the refund
-    # immediately instead of after the 60s TTL.
+    # Bust the cached balances so the Finance page reflects the refund (and
+    # any clawback) immediately instead of after the 60s TTL.
     django_cache.delete(_STRIPE_PLATFORM_AVAILABLE_CACHE_KEY)
+    _bust_connected_balance_cache(session.organization)
     logger.info(
         "Synced charge.refunded for session %s (refunded=%s, full=%s)",
         session.stripe_session_id, refunded_total, fully_refunded,
@@ -11630,6 +11796,11 @@ def _aggregate_session_cents(sessions):
     The clamp runs in Python with exact Decimal math — refunded_amount is a
     Decimal in dollars on the related order while session amounts are integer
     cents, and a Cast(... * 100) in SQL float-truncates on SQLite.
+
+    Direct (in-person) sessions intentionally get the same treatment with no
+    fee-waiver special case: Stripe keeps the application fee when an
+    in-person charge is refunded from the organizer's dashboard, so a fully
+    refunded direct session displaying as 0 is the documented policy.
     """
     agg = sessions.aggregate(
         total_charged=Coalesce(Sum('amount_total_cents'), 0),
@@ -11709,21 +11880,28 @@ def _get_stripe_platform_available_cents(use_cache=False):
         return None
 
 
-def _compute_settled_payout_balance(org):
+def _compute_legacy_settled_balance(org, clamp=True):
     """
-    Return the amount available for payout for this org, in dollars.
+    Return the settled, still-platform-held organizer balance, in dollars.
 
-    Counts sessions whose funds have an explicit available_on <= now, plus
-    sessions with available_on=NULL (payments that pre-date that field, treated
-    as already settled per the model's documented intent). Partially refunded
-    sessions count net of their refunded amount.
-    Subtracts completed payouts.
+    LEGACY POOL ONLY: counts platform-flow sessions (pre-destination-charge
+    money that landed on the platform account) whose funds have settled —
+    explicit available_on <= now, or available_on=NULL for payments that
+    pre-date that field. Partially refunded sessions count net of their
+    refunded amount. Subtracts the payouts that drew platform funds
+    (origin legacy_transfer/migration), so the migrate_legacy_balances
+    true-up can re-run safely: each run moves exactly the not-yet-moved
+    remainder.
+
+    Destination/direct sessions never enter this number — their money lives
+    in the connected account, whose Stripe balance is the source of truth.
     """
     from django.utils import timezone as django_tz
     now = django_tz.now()
     settled_sessions = StripeCheckoutSession.objects.filter(
         organization=org,
         status__in=_BALANCE_SESSION_STATUSES,
+        charge_flow=StripeCheckoutSession.ChargeFlow.PLATFORM,
     ).filter(
         Q(available_on__lte=now) | Q(available_on__isnull=True)
     )
@@ -11733,12 +11911,63 @@ def _compute_settled_payout_balance(org):
 
     paid_out = Payout.objects.filter(
         organization=org,
+        origin__in=[Payout.Origin.LEGACY_TRANSFER, Payout.Origin.MIGRATION],
     ).exclude(status=Payout.Status.FAILED).aggregate(
         total=Coalesce(Sum('amount'), Decimal('0.00'))
     )['total']
 
     settled = Decimal(str(settled_organizer_cents)) / 100 - paid_out
+    if not clamp:
+        # Raw value for the true-up dry-run: negative means a legacy refund
+        # landed after its funds were already trued-up (platform absorbed it).
+        return settled
     return max(Decimal('0.00'), settled)
+
+
+_CONNECTED_BALANCE_CACHE_TTL = 60
+
+
+def _connected_balance_cache_key(org):
+    return f'stripe_connected_balance:{org.pk}'
+
+
+def _bust_connected_balance_cache(org):
+    django_cache.delete(_connected_balance_cache_key(org))
+
+
+def _get_connected_balance_cents(org, use_cache=True):
+    """
+    Return (available_cents, pending_cents) for the org's connected Stripe
+    account, or (None, None) on error / no account. This is the source of
+    truth for "Ready to Withdraw" (available) and "Settling" (pending).
+    """
+    if not org.stripe_account_id:
+        return (None, None)
+    cache_key = _connected_balance_cache_key(org)
+    if use_cache:
+        cached = django_cache.get(cache_key)
+        if cached is not None:
+            return tuple(cached)
+
+    import stripe as stripe_lib
+    from django.conf import settings as django_settings
+    stripe_lib.api_key = django_settings.STRIPE_SECRET_KEY
+    try:
+        balance = stripe_lib.Balance.retrieve(stripe_account=org.stripe_account_id)
+        currency = django_settings.STRIPE_CURRENCY.lower()
+        available = sum(
+            entry.amount for entry in balance.available
+            if entry.currency.lower() == currency
+        )
+        pending = sum(
+            entry.amount for entry in balance.pending
+            if entry.currency.lower() == currency
+        )
+        django_cache.set(cache_key, (available, pending), _CONNECTED_BALANCE_CACHE_TTL)
+        return (available, pending)
+    except Exception:
+        logger.exception("Could not retrieve connected Stripe balance for org %s", org.id)
+        return (None, None)
 
 
 def _extract_bank_account(acct):
@@ -11907,22 +12136,15 @@ def finance_overview(request):
             logger.exception("Could not retrieve Stripe account state for org %s", org.id)
 
     if org.stripe_onboarding_complete and org.stripe_account_id:
-        db_settled = _compute_settled_payout_balance(org)
-        stripe_actual_cents = _get_stripe_platform_available_cents(use_cache=True)
-        if stripe_actual_cents is not None:
-            stripe_actual = Decimal(str(stripe_actual_cents)) / 100
-            if stripe_actual < db_settled:
-                logger.warning(
-                    "Stripe-available below DB-settled for org %s: db=%s stripe=%s gap=%s",
-                    org.id, db_settled, stripe_actual, db_settled - stripe_actual,
-                )
-            # Clamp at zero: the shared platform balance can go negative
-            # (e.g. after refunds), which must never surface as a negative
-            # "Ready to Withdraw" or inflate the settling figure below.
-            stripe_available = max(Decimal('0.00'), min(db_settled, stripe_actual))
-        else:
-            stripe_available = db_settled
-        settling_balance = max(Decimal('0.00'), available_balance - stripe_available)
+        # The connected account balance IS the organizer's money now:
+        # available = withdrawable, pending = settling. Clamp at zero for
+        # display — available can go negative after a refund clawback that
+        # follows a withdrawal. On Stripe API failure render unknowns (None)
+        # rather than misrepresenting platform-pool figures as withdrawable.
+        available_cents, pending_cents = _get_connected_balance_cents(org)
+        if available_cents is not None:
+            stripe_available = max(Decimal('0.00'), Decimal(str(available_cents)) / 100)
+            settling_balance = max(Decimal('0.00'), Decimal(str(pending_cents)) / 100)
 
     legacy_pending_payouts = Payout.objects.filter(
         organization=org,
@@ -12194,6 +12416,12 @@ def stripe_connect_return(request):
             stripe_state = _get_connected_account_state(stripe_lib, org.stripe_account_id)
             _sync_org_payout_readiness(org, stripe_state['payouts_ready'])
             if stripe_state['payouts_ready']:
+                # Manual schedule from day one so the balance accumulates for
+                # organizer-initiated withdrawals instead of auto-sweeping.
+                try:
+                    _ensure_manual_payout_schedule(stripe_lib, org.stripe_account_id)
+                except stripe_lib.error.StripeError:
+                    logger.exception("Could not set manual payout schedule for %s", org.stripe_account_id)
                 messages.success(request, 'Bank account connected successfully. You can now request payouts.')
             else:
                 messages.warning(
@@ -12322,92 +12550,53 @@ def initiate_payout(request):
         messages.error(request, f'Minimum payout is ${_MIN_PAYOUT:.2f}.')
         return redirect('tickets:finance_overview')
 
-    _, _, _, available_balance = _compute_available_balance(org)
-    if amount > available_balance:
-        messages.error(request, f'Payout amount exceeds available balance (${available_balance:.2f}).')
+    # The connected account balance is the only gate that matters now: the
+    # organizer's money already lives there (destination charges + true-up).
+    available_cents, _pending_cents = _get_connected_balance_cents(org, use_cache=False)
+    if available_cents is None:
+        messages.error(request, 'Could not check your Stripe balance. Please try again.')
         return redirect('tickets:finance_overview')
-
-    stripe_available = _compute_settled_payout_balance(org)
-    if amount > stripe_available:
+    available = Decimal(str(available_cents)) / 100
+    if amount > available:
         messages.error(
             request,
-            f'Only ${stripe_available:.2f} has settled and is available to pay out. '
+            f'Payout amount exceeds your available balance (${max(available, Decimal("0.00")):.2f}). '
             f'Funds from recent sales typically settle within 2\u20137 business days.',
         )
         return redirect('tickets:finance_overview')
-
-    stripe_actual_cents = _get_stripe_platform_available_cents()
-    if stripe_actual_cents is not None:
-        stripe_actual = Decimal(str(stripe_actual_cents)) / 100
-        if amount > stripe_actual:
-            messages.error(
-                request,
-                f'Your Stripe balance has ${stripe_actual:.2f} available right now. '
-                f'Funds from recent sales typically settle within 2\u20137 business days.',
-            )
-            return redirect('tickets:finance_overview')
 
     notes = request.POST.get('notes', '').strip()[:500]
     payout = Payout.objects.create(
         organization=org,
         amount=amount,
         status=Payout.Status.PENDING,
+        origin=Payout.Origin.CUE,
         initiated_by=request.user,
         notes=notes,
     )
 
     try:
         _ensure_manual_payout_schedule(stripe_lib, org.stripe_account_id)
-        transfer = stripe_lib.Transfer.create(
-            amount=int(amount * 100),
-            currency=django_settings.STRIPE_CURRENCY,
-            destination=org.stripe_account_id,
-            description=f'Payout to {org.name}',
-            metadata={'org_id': str(org.id), 'payout_id': str(payout.id)},
-        )
-        payout.stripe_transfer_id = transfer.id
-        payout.save(update_fields=['stripe_transfer_id'])
-
+        # No Transfer step anymore — the money is already in the connected
+        # account. The idempotency key makes a timeout retry return the
+        # original payout instead of withdrawing twice.
         stripe_payout = stripe_lib.Payout.create(
             amount=int(amount * 100),
             currency=django_settings.STRIPE_CURRENCY,
             metadata={'org_id': str(org.id), 'payout_id': str(payout.id)},
             stripe_account=org.stripe_account_id,
+            idempotency_key=f'payout-{payout.id}',
         )
-        payout.stripe_payout_id = stripe_payout.id
-        payout_status_map = {
-            'in_transit': Payout.Status.IN_TRANSIT,
-            'paid': Payout.Status.COMPLETED,
-            'failed': Payout.Status.FAILED,
-            'canceled': Payout.Status.FAILED,
-        }
-        update_fields = ['stripe_payout_id']
-        new_status = payout_status_map.get(getattr(stripe_payout, 'status', None))
-        if new_status and payout.status != new_status:
-            payout.status = new_status
-            update_fields.append('status')
-        payout.save(update_fields=update_fields)
+        _apply_stripe_payout_status(payout, getattr(stripe_payout, 'status', None), stripe_payout.id)
         messages.success(request, f'Payout of ${amount:.2f} processing. Funds will arrive in 1–5 business days.')
     except stripe_lib.error.StripeError as e:
-        transfer = locals().get('transfer')
-        if transfer is not None:
-            try:
-                stripe_lib.Transfer.create_reversal(
-                    transfer.id,
-                    metadata={'org_id': str(org.id), 'payout_id': str(payout.id), 'reason': 'payout_create_failed'},
-                )
-            except stripe_lib.error.StripeError:
-                logger.exception("Could not reverse transfer %s after payout failure for payout %s", transfer.id, payout.id)
         payout.status = Payout.Status.FAILED
         error_note = f' [Stripe error: {str(e)[:400]}]'
         payout.notes = (payout.notes + error_note)[:500]
-        update_fields = ['status', 'notes']
-        if transfer is not None and payout.stripe_transfer_id != transfer.id:
-            payout.stripe_transfer_id = transfer.id
-            update_fields.append('stripe_transfer_id')
-        payout.save(update_fields=update_fields)
+        payout.save(update_fields=['status', 'notes'])
         messages.error(request, f'Payout failed: {getattr(e, "user_message", None) or str(e)}')
 
+    _bust_connected_balance_cache(org)
     return redirect('tickets:finance_overview')
 
 
@@ -12459,20 +12648,9 @@ def recover_pending_payouts(request):
                 currency=django_settings.STRIPE_CURRENCY,
                 metadata={'org_id': str(org.id), 'payout_id': str(payout.id)},
                 stripe_account=org.stripe_account_id,
+                idempotency_key=f'payout-{payout.id}',
             )
-            payout.stripe_payout_id = stripe_payout.id
-            payout_status_map = {
-                'in_transit': Payout.Status.IN_TRANSIT,
-                'paid': Payout.Status.COMPLETED,
-                'failed': Payout.Status.FAILED,
-                'canceled': Payout.Status.FAILED,
-            }
-            update_fields = ['stripe_payout_id']
-            new_status = payout_status_map.get(getattr(stripe_payout, 'status', None))
-            if new_status and payout.status != new_status:
-                payout.status = new_status
-                update_fields.append('status')
-            payout.save(update_fields=update_fields)
+            _apply_stripe_payout_status(payout, getattr(stripe_payout, 'status', None), stripe_payout.id)
             recovered += 1
         except stripe_lib.error.StripeError as e:
             error_note = f' [Recovery failed: {str(e)[:400]}]'
