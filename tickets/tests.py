@@ -11198,3 +11198,264 @@ class CustomerListPointsColumnTests(TestCase):
         resp = self.client.get(reverse('tickets:customer_list') + '?sort=points_balance')
         names = [c.name for c in resp.context['page_obj']]
         self.assertEqual(names, ['Lola', 'Hiro'])
+
+
+class LoyaltyPointsRecomputeTests(TestCase):
+    """Recompute = reset_first + re-award at current rate + ledger reconciliation."""
+
+    def setUp(self):
+        self.client = Client()
+        self.org = Organization.objects.create(
+            name='Recompute Org', slug='recompute-org', loyalty_feature_enabled=True,
+        )
+        self.user = User.objects.create_user(username='recomp', email='recomp@x.com', password='pw12345')
+        UserProfile.objects.create(user=self.user, organization=self.org, org_role=UserProfile.OrgRole.OWNER)
+        OrganizationMembership.objects.create(user=self.user, organization=self.org, org_role=UserProfile.OrgRole.OWNER)
+        self.venue = Venue.objects.create(organization=self.org, name='V', city='C')
+        self.event = Event.objects.create(
+            organization=self.org, name='Show', venue=self.venue,
+            start_date=date(2026, 9, 1), start_time=time(20, 0, 0),
+        )
+        # Start per-ticket, rate 1.
+        self.program = LoyaltyProgram.objects.create(
+            organization=self.org, name='Recompute Club', is_active=True,
+            points_enabled=True, points_basis=LoyaltyProgram.PointsBasis.PER_TICKET,
+            points_rate=Decimal('1'),
+        )
+        self.customer = Customer.objects.create(organization=self.org, email='rc@x.com', name='RC')
+
+    def _login(self):
+        self.client.login(username='recomp@x.com', password='pw12345')
+        self.client.get(reverse('tickets:home'))
+
+    def _order(self, number, amount, tickets):
+        from tickets.services.loyalty import award_points_for_order
+        order = TicketOrder.objects.create(
+            customer=self.customer, event=self.event, order_number=number,
+            order_date=timezone.now(), total_amount=Decimal(str(amount)),
+        )
+        for _ in range(tickets):
+            Ticket.objects.create(ticket_order=order, price=Decimal('10.00'))
+        award_points_for_order(order)
+        return order
+
+    def _ledger_sum(self, customer):
+        from django.db.models import Sum
+        return (customer.points_transactions.aggregate(s=Sum('amount'))['s']) or 0
+
+    # --- task: recompute correctness ---
+    def test_reset_first_recomputes_at_new_rate(self):
+        from tickets.tasks import backfill_loyalty_points_task
+        self._order('R-1', amount=50, tickets=2)  # per-ticket rate 1 -> 2 pts
+        self.customer.refresh_from_db()
+        self.assertEqual(self.customer.points_balance, 2)
+        # Switch to per-dollar rate 1.
+        self.program.points_basis = LoyaltyProgram.PointsBasis.PER_DOLLAR
+        self.program.save()
+        with patch('tickets.tasks.recalculate_loyalty_tiers_task.delay'):
+            result = backfill_loyalty_points_task.apply(args=[str(self.program.id)], kwargs={'reset_first': True})
+        self.assertEqual(result.result, 50)  # $50 * 1
+        self.customer.refresh_from_db()
+        self.assertEqual(self.customer.points_balance, 50)
+        self.assertEqual(self.customer.lifetime_points, 50)
+        # Exactly one EARN row for the order (old one gone).
+        self.assertEqual(
+            LoyaltyPointsTransaction.objects.filter(
+                customer=self.customer, kind=LoyaltyPointsTransaction.Kind.EARN
+            ).count(), 1
+        )
+        self.assertEqual(self._ledger_sum(self.customer), 50)
+
+    def test_reset_first_false_is_unchanged_regression(self):
+        from tickets.tasks import backfill_loyalty_points_task
+        # Order with no EARN yet (created without awarding).
+        o = TicketOrder.objects.create(
+            customer=self.customer, event=self.event, order_number='R-REG',
+            order_date=timezone.now(), total_amount=Decimal('30'),
+        )
+        Ticket.objects.create(ticket_order=o, price=Decimal('30'))
+        with patch('tickets.tasks.recalculate_loyalty_tiers_task.delay'):
+            result = backfill_loyalty_points_task.apply(args=[str(self.program.id)])  # default reset_first=False
+        self.assertEqual(result.result, 1)  # 1 ticket
+        # No reset happened: a pre-existing manual EARN would survive (idempotent path).
+
+    def test_recompute_wipes_soft_deleted_prior_program_rows(self):
+        from tickets.tasks import backfill_loyalty_points_task
+        self._order('R-CUR', amount=10, tickets=1)
+        # Stale ledger row from a since-deleted program (org-scoped wipe must clear it).
+        old_program = LoyaltyProgram.objects.create(
+            organization=self.org, name='Old', is_active=False, points_enabled=True,
+        )
+        old_program.delete()  # soft delete
+        LoyaltyPointsTransaction.objects.create(
+            organization=self.org, customer=self.customer, ticket_order=None,
+            kind=LoyaltyPointsTransaction.Kind.EARN, amount=999,
+            balance_after=999, lifetime_after=999, description='stale',
+        )
+        with patch('tickets.tasks.recalculate_loyalty_tiers_task.delay'):
+            backfill_loyalty_points_task.apply(args=[str(self.program.id)], kwargs={'reset_first': True})
+        # The stale 999 row is gone; balance reflects only the live order at current rate.
+        self.assertFalse(
+            LoyaltyPointsTransaction.objects.filter(description='stale').exists()
+        )
+        self.customer.refresh_from_db()
+        self.assertEqual(self.customer.points_balance, self._ledger_sum(self.customer))
+
+    def test_recompute_refunded_order_nets_zero(self):
+        from tickets.tasks import backfill_loyalty_points_task
+        o = self._order('R-REF', amount=40, tickets=2)
+        o.refunded_at = timezone.now()
+        o.save(update_fields=['refunded_at'])
+        with patch('tickets.tasks.recalculate_loyalty_tiers_task.delay'):
+            backfill_loyalty_points_task.apply(args=[str(self.program.id)], kwargs={'reset_first': True})
+        self.customer.refresh_from_db()
+        self.assertEqual(self.customer.points_balance, 0)  # refunded -> no EARN
+        self.assertFalse(
+            LoyaltyPointsTransaction.objects.filter(customer=self.customer).exists()
+        )
+
+    def test_recompute_chains_recalc_and_clears_flag(self):
+        from tickets.tasks import backfill_loyalty_points_task
+        self._order('R-CHAIN', amount=20, tickets=1)
+        with patch('tickets.tasks.recalculate_loyalty_tiers_task.delay') as mock_recalc:
+            backfill_loyalty_points_task.apply(args=[str(self.program.id)], kwargs={'reset_first': True})
+        mock_recalc.assert_called_once_with(str(self.program.id))
+        self.program.refresh_from_db()
+        self.assertFalse(self.program.recalc_in_progress)
+
+    def test_recompute_skipped_when_recalc_in_progress(self):
+        from tickets.tasks import backfill_loyalty_points_task
+        self._order('R-BUSY', amount=20, tickets=1)
+        self.customer.refresh_from_db()
+        before = self.customer.points_balance
+        self.program.recalc_in_progress = True
+        self.program.save(update_fields=['recalc_in_progress'])
+        result = backfill_loyalty_points_task.apply(args=[str(self.program.id)], kwargs={'reset_first': True})
+        self.assertEqual(result.result, 0)
+        # Claim failed BEFORE the try -> no reset ran, ledger intact.
+        self.assertTrue(LoyaltyPointsTransaction.objects.filter(customer=self.customer).exists())
+        self.customer.refresh_from_db()
+        self.assertEqual(self.customer.points_balance, before)
+
+    # --- reconciliation (the race fix) ---
+    def test_reconcile_sets_balance_to_ledger_sum(self):
+        from tickets.services.loyalty import reconcile_points_balances
+        # Simulate the race aftermath: a stray EARN row exists but balance is stale/zero.
+        LoyaltyPointsTransaction.objects.create(
+            organization=self.org, customer=self.customer, ticket_order=None,
+            kind=LoyaltyPointsTransaction.Kind.EARN, amount=70,
+            balance_after=70, lifetime_after=70, description='survived live award',
+        )
+        Customer.objects.filter(id=self.customer.id).update(points_balance=0, lifetime_points=0)
+        reconcile_points_balances(self.org)
+        self.customer.refresh_from_db()
+        self.assertEqual(self.customer.points_balance, 70)
+        self.assertEqual(self.customer.lifetime_points, 70)
+        self.assertEqual(self.customer.points_balance, self._ledger_sum(self.customer))
+
+    def test_reconcile_is_idempotent_and_zeroes_empty_ledger(self):
+        from tickets.services.loyalty import reconcile_points_balances
+        # Customer with a stale non-zero balance but no ledger rows -> reconcile to 0.
+        Customer.objects.filter(id=self.customer.id).update(points_balance=99, lifetime_points=99)
+        reconcile_points_balances(self.org)
+        self.customer.refresh_from_db()
+        self.assertEqual(self.customer.points_balance, 0)
+        reconcile_points_balances(self.org)  # idempotent
+        self.customer.refresh_from_db()
+        self.assertEqual(self.customer.points_balance, 0)
+
+    # --- view ---
+    @patch('tickets.tasks.backfill_loyalty_points_task.delay')
+    def test_view_enqueues_with_correct_confirm_name(self, mock_delay):
+        self._login()
+        resp = self.client.post(
+            reverse('tickets:loyalty_recompute_points', args=[self.program.id]),
+            {'confirm_name': 'Recompute Club'},
+        )
+        self.assertEqual(resp.status_code, 302)
+        mock_delay.assert_called_once_with(str(self.program.id), reset_first=True)
+
+    @patch('tickets.tasks.backfill_loyalty_points_task.delay')
+    def test_view_rejects_wrong_confirm_name(self, mock_delay):
+        self._login()
+        self._order('R-GUARD', amount=10, tickets=1)
+        resp = self.client.post(
+            reverse('tickets:loyalty_recompute_points', args=[self.program.id]),
+            {'confirm_name': 'wrong'},
+        )
+        self.assertEqual(resp.status_code, 302)
+        mock_delay.assert_not_called()
+        self.assertTrue(LoyaltyPointsTransaction.objects.filter(customer=self.customer).exists())
+
+    @patch('tickets.tasks.backfill_loyalty_points_task.delay')
+    def test_view_rejects_missing_confirm_name(self, mock_delay):
+        self._login()
+        resp = self.client.post(reverse('tickets:loyalty_recompute_points', args=[self.program.id]), {})
+        self.assertEqual(resp.status_code, 302)
+        mock_delay.assert_not_called()
+
+    @patch('tickets.tasks.backfill_loyalty_points_task.delay')
+    def test_view_guards_points_disabled_and_inactive_and_in_progress(self, mock_delay):
+        self._login()
+        url = reverse('tickets:loyalty_recompute_points', args=[self.program.id])
+        # points disabled
+        self.program.points_enabled = False
+        self.program.save(update_fields=['points_enabled'])
+        self.client.post(url, {'confirm_name': 'Recompute Club'})
+        # inactive
+        self.program.points_enabled = True
+        self.program.is_active = False
+        self.program.save(update_fields=['points_enabled', 'is_active'])
+        self.client.post(url, {'confirm_name': 'Recompute Club'})
+        # in progress
+        self.program.is_active = True
+        self.program.recalc_in_progress = True
+        self.program.save(update_fields=['is_active', 'recalc_in_progress'])
+        self.client.post(url, {'confirm_name': 'Recompute Club'})
+        mock_delay.assert_not_called()
+
+    def test_view_get_405_and_flag_off_404(self):
+        self._login()
+        url = reverse('tickets:loyalty_recompute_points', args=[self.program.id])
+        self.assertEqual(self.client.get(url).status_code, 405)
+        self.org.loyalty_feature_enabled = False
+        self.org.save(update_fields=['loyalty_feature_enabled'])
+        self.assertEqual(self.client.post(url, {'confirm_name': 'Recompute Club'}).status_code, 404)
+
+    # --- integration: the bug-report scenario, end to end through the view ---
+    def test_integration_per_ticket_to_per_dollar_via_view(self):
+        self._login()
+        self._order('R-INT', amount=50, tickets=2)  # 2 pts at per-ticket
+        self.customer.refresh_from_db()
+        self.assertEqual(self.customer.points_balance, 2)
+        self.program.points_basis = LoyaltyProgram.PointsBasis.PER_DOLLAR
+        self.program.save()
+        with patch('tickets.tasks.recalculate_loyalty_tiers_task.delay'):
+            resp = self.client.post(
+                reverse('tickets:loyalty_recompute_points', args=[self.program.id]),
+                {'confirm_name': 'Recompute Club'},
+            )
+        self.assertEqual(resp.status_code, 302)
+        self.customer.refresh_from_db()
+        self.assertEqual(self.customer.points_balance, 50)  # $50 * 1, eager Celery ran inline
+
+    # --- templates ---
+    def test_detail_shows_recompute_control_with_confirm_input(self):
+        self._login()
+        resp = self.client.get(reverse('tickets:loyalty_program_detail', args=[self.program.id]))
+        self.assertContains(resp, 'Recompute points at current rate')
+        self.assertContains(resp, 'name="confirm_name"')
+        self.assertContains(resp, 'id="recomputeSubmit"')
+
+    def test_detail_hides_recompute_when_points_disabled(self):
+        self.program.points_enabled = False
+        self.program.save(update_fields=['points_enabled'])
+        self._login()
+        resp = self.client.get(reverse('tickets:loyalty_program_detail', args=[self.program.id]))
+        self.assertNotContains(resp, 'name="confirm_name"')
+
+    def test_edit_form_shows_forward_only_warning(self):
+        self._login()
+        resp = self.client.get(reverse('tickets:loyalty_program_edit', args=[self.program.id]))
+        self.assertContains(resp, 'affects')
+        self.assertContains(resp, 'future orders only')

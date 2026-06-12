@@ -122,6 +122,7 @@ urlpatterns = [
     path('loyalty/<uuid:program_id>/', views.loyalty_program_detail, name='loyalty_program_detail'),
     path('loyalty/<uuid:program_id>/edit/', views.loyalty_program_edit, name='loyalty_program_edit'),
     path('loyalty/<uuid:program_id>/recalculate/', views.loyalty_recalculate, name='loyalty_recalculate'),
+    path('loyalty/<uuid:program_id>/recompute/', views.loyalty_recompute_points, name='loyalty_recompute_points'),
     path('loyalty/<uuid:program_id>/delete/', views.loyalty_program_delete, name='loyalty_program_delete'),
     path('loyalty/<uuid:program_id>/tiers/<uuid:tier_id>/members/', views.loyalty_tier_members, name='loyalty_tier_members'),
     # External Survey

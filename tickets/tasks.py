@@ -391,7 +391,7 @@ def recalculate_loyalty_tiers_task(self, program_id):
 
 
 @shared_task(bind=True, max_retries=2, default_retry_delay=30)
-def backfill_loyalty_points_task(self, program_id):
+def backfill_loyalty_points_task(self, program_id, reset_first=False):
     """Award loyalty points for an org's historical orders, then recalc tiers.
 
     Idempotent end-to-end (one EARN per order, DB-enforced), which makes this
@@ -400,11 +400,22 @@ def backfill_loyalty_points_task(self, program_id):
     manual recalcs can't assign tiers from a partial ledger — and clears the
     flag BEFORE enqueueing the chained recalc (which checks the same flag and
     would otherwise skip itself).
+
+    ``reset_first=True`` powers the organizer "Recompute points" action: it wipes
+    the org's ledger + balances FIRST so every order is re-awarded at the CURRENT
+    basis/rate (a plain re-run skips already-earned orders), then runs a final
+    ledger-driven reconciliation so a purchase that interleaves with the wipe
+    can't leave a balance behind. Both the reset and the reconcile live inside
+    the claim window and the try, so a failure clears the flag and retries clean.
     """
     from django.db import transaction
     from django.utils import timezone
     from tickets.models import LoyaltyProgram, TicketOrder
-    from tickets.services.loyalty import award_points_for_orders
+    from tickets.services.loyalty import (
+        award_points_for_orders,
+        reconcile_points_balances,
+        reset_points_for_organization,
+    )
 
     CHUNK = 500
 
@@ -433,6 +444,12 @@ def backfill_loyalty_points_task(self, program_id):
     org = program.organization
     total = 0
     try:
+        # Recompute mode: wipe the org's ledger + balances so every order is
+        # re-awarded at the CURRENT rate (a plain backfill skips already-earned
+        # orders). Inside the try + claim window so a failure retries clean.
+        if reset_first:
+            reset_points_for_organization(org)
+
         orders_qs = (
             TicketOrder.objects.filter(
                 customer__organization=org,
@@ -450,6 +467,11 @@ def backfill_loyalty_points_task(self, program_id):
                 chunk = []
         if chunk:
             total += award_points_for_orders(chunk, program, description='Historical backfill')
+
+        # Race-closer: after a recompute, set every balance = SUM(ledger) so a
+        # purchase that interleaved with the wipe is reconciled to ledger truth.
+        if reset_first:
+            reconcile_points_balances(org)
 
         org.loyalty_points_backfilled_at = timezone.now()
         org.save(update_fields=['loyalty_points_backfilled_at'])

@@ -29,7 +29,8 @@ import logging
 from decimal import Decimal
 
 from django.db import IntegrityError, transaction
-from django.db.models import Count
+from django.db.models import Count, IntegerField, OuterRef, Subquery, Sum, Value
+from django.db.models.functions import Coalesce, Greatest
 
 from tickets.models import (
     Customer,
@@ -217,6 +218,40 @@ def reset_points_for_organization(organization):
         organization.id, deleted, customers_reset,
     )
     return {'transactions_deleted': deleted, 'customers_reset': customers_reset}
+
+
+def reconcile_points_balances(organization):
+    """Recompute every customer's denormalized balance straight from the ledger.
+
+    Sets ``points_balance = max(0, SUM(all ledger amounts))`` and
+    ``lifetime_points = max(0, SUM(EARN amounts))`` per customer in a single
+    correlated-subquery UPDATE. Because each customer's balance is set to the
+    SUM of their rows atomically at the DB, a concurrent ``award_points_for_order``
+    is either fully included or applied afterward — never lost or double-counted.
+
+    This is the race-closer for the recompute flow: a live purchase can insert an
+    EARN *after* ``reset_points_for_organization``'s DELETE but have its balance
+    increment clobbered by the same call's bulk ``UPDATE balance=0`` (and the
+    re-backfill then skips that order via the already-earned guard). Reconciling
+    from the ledger makes the denormalized columns match ledger truth regardless
+    of interleaving. Idempotent. Returns the number of customers updated.
+    """
+    rows = LoyaltyPointsTransaction.objects.filter(customer=OuterRef('pk'))
+    balance_sq = rows.values('customer').annotate(s=Sum('amount')).values('s')
+    earned_sq = (
+        rows.filter(kind=LoyaltyPointsTransaction.Kind.EARN)
+        .values('customer').annotate(s=Sum('amount')).values('s')
+    )
+    return Customer.objects.filter(organization=organization).update(
+        points_balance=Greatest(
+            Coalesce(Subquery(balance_sq, output_field=IntegerField()), Value(0)),
+            Value(0),
+        ),
+        lifetime_points=Greatest(
+            Coalesce(Subquery(earned_sq, output_field=IntegerField()), Value(0)),
+            Value(0),
+        ),
+    )
 
 
 def _apply_revoke(locked_customer, earn, description, created_by=None):
