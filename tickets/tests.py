@@ -23,6 +23,7 @@ from .models import (
     ExternalSurveyUpload, ExternalSurveyResponse, EventDailyPageView,
     LoyaltyProgram, LoyaltyTier, LoyaltyPointsTransaction,
 )
+from .utils import extract_fee_from_display_cents
 
 
 class AITokenUsageTests(TestCase):
@@ -1303,10 +1304,28 @@ class MobileAPITests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()['status'], 'refunded')
 
+    def _sell_payload(self, tt, quantity=2, payment_intent_id='pi_test_123'):
+        return {
+            'event_id': str(self.event.pk),
+            'payment_intent_id': payment_intent_id,
+            'buyer_email': 'newbuyer@example.com',
+            'buyer_name': 'New Buyer',
+            'line_items': [
+                {
+                    'ticket_type_id': str(tt.pk),
+                    'quantity': quantity,
+                    'name': 'VIP',
+                    'price': '50.00',
+                }
+            ],
+        }
+
     @patch('stripe.PaymentIntent.retrieve')
     def test_sell_creates_order(self, mock_retrieve):
         mock_pi = MagicMock()
         mock_pi.status = 'succeeded'
+        mock_pi.amount_received = 10000  # 2 x $50.00, Stripe-confirmed
+        mock_pi.application_fee_amount = 832
         mock_retrieve.return_value = mock_pi
 
         tt = SaleableTicketType.objects.create(
@@ -1317,20 +1336,7 @@ class MobileAPITests(TestCase):
 
         response = self.client.post(
             '/api/organizer/sell/',
-            data={
-                'event_id': str(self.event.pk),
-                'payment_intent_id': 'pi_test_123',
-                'buyer_email': 'newbuyer@example.com',
-                'buyer_name': 'New Buyer',
-                'line_items': [
-                    {
-                        'ticket_type_id': str(tt.pk),
-                        'quantity': 2,
-                        'name': 'VIP',
-                        'price': '50.00',
-                    }
-                ],
-            },
+            data=self._sell_payload(tt),
             content_type='application/json',
             **self.auth_header,
         )
@@ -1343,6 +1349,69 @@ class MobileAPITests(TestCase):
         self.assertTrue(new_order.is_in_person)
         self.assertIsNotNone(new_order.checked_in_at)
         self.assertEqual(new_order.tickets.count(), 2)
+        # Ledger row: direct charge, Stripe-confirmed amounts.
+        session = StripeCheckoutSession.objects.get(stripe_session_id='pi_test_123')
+        self.assertEqual(session.charge_flow, StripeCheckoutSession.ChargeFlow.DIRECT)
+        self.assertEqual(session.status, StripeCheckoutSession.Status.COMPLETED)
+        self.assertEqual(session.amount_total_cents, 10000)
+        self.assertEqual(session.platform_fee_cents, 832)
+        self.assertEqual(session.ticket_order, new_order)
+        self.assertIsNotNone(session.fulfilled_at)
+
+    @patch('stripe.PaymentIntent.retrieve')
+    def test_sell_duplicate_finalize_returns_existing_order(self, mock_retrieve):
+        mock_pi = MagicMock()
+        mock_pi.status = 'succeeded'
+        mock_pi.amount_received = 10000
+        mock_pi.application_fee_amount = 832
+        mock_retrieve.return_value = mock_pi
+
+        tt = SaleableTicketType.objects.create(
+            event=self.event, name='VIP', price=Decimal('50.00'),
+        )
+        kwargs = dict(
+            data=self._sell_payload(tt), content_type='application/json', **self.auth_header,
+        )
+
+        first = self.client.post('/api/organizer/sell/', **kwargs)
+        second = self.client.post('/api/organizer/sell/', **kwargs)
+
+        self.assertEqual(first.status_code, 201)
+        self.assertEqual(second.status_code, 200)
+        self.assertEqual(second.json()['order_number'], first.json()['order_number'])
+        self.assertEqual(second.json()['ticket_count'], 2)
+        # One order, one session row, inventory bumped once.
+        self.assertEqual(
+            TicketOrder.objects.filter(event=self.event, is_in_person=True).count(), 1,
+        )
+        self.assertEqual(
+            StripeCheckoutSession.objects.filter(stripe_session_id='pi_test_123').count(), 1,
+        )
+        tt.refresh_from_db()
+        self.assertEqual(tt.quantity_sold, 2)
+
+    @patch('stripe.PaymentIntent.retrieve')
+    def test_sell_rejects_amount_mismatch(self, mock_retrieve):
+        # PI charged $80 but current server prices say $100 — stale client.
+        mock_pi = MagicMock()
+        mock_pi.status = 'succeeded'
+        mock_pi.amount_received = 8000
+        mock_pi.application_fee_amount = 0
+        mock_retrieve.return_value = mock_pi
+
+        tt = SaleableTicketType.objects.create(
+            event=self.event, name='VIP', price=Decimal('50.00'),
+        )
+
+        response = self.client.post(
+            '/api/organizer/sell/',
+            data=self._sell_payload(tt),
+            content_type='application/json',
+            **self.auth_header,
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(TicketOrder.objects.filter(event=self.event, is_in_person=True).count(), 0)
+        self.assertFalse(StripeCheckoutSession.objects.filter(stripe_session_id='pi_test_123').exists())
 
     def test_token_auth_required(self):
         response = self.client.get('/api/organizer/events/')
@@ -1582,9 +1651,7 @@ class FinancePayoutTests(TestCase):
         }.get(key, default)
         return account
 
-    @patch('tickets.views._compute_available_balance')
-    @patch('tickets.views._compute_settled_payout_balance')
-    @patch('tickets.views._get_stripe_platform_available_cents')
+    @patch('tickets.views._get_connected_balance_cents')
     @patch('stripe.Account.retrieve')
     @patch('stripe.Account.modify')
     @patch('stripe.Payout.create')
@@ -1595,22 +1662,9 @@ class FinancePayoutTests(TestCase):
         mock_payout_create,
         mock_account_modify,
         mock_account_retrieve,
-        mock_platform_available,
-        mock_settled_balance,
-        mock_available_balance,
+        mock_connected_balance,
     ):
-        mock_available_balance.return_value = (
-            Decimal('500.00'),
-            Decimal('50.00'),
-            Decimal('0.00'),
-            Decimal('450.00'),
-        )
-        mock_settled_balance.return_value = Decimal('450.00')
-        mock_platform_available.return_value = 45000
-        mock_transfer_create.side_effect = [
-            MagicMock(id='tr_first'),
-            MagicMock(id='tr_second'),
-        ]
+        mock_connected_balance.return_value = (45000, 0)
         mock_payout_create.side_effect = [
             MagicMock(id='po_first', status='pending'),
             MagicMock(id='po_second', status='pending'),
@@ -1627,11 +1681,19 @@ class FinancePayoutTests(TestCase):
         self.assertEqual(len(payouts), 2)
         self.assertEqual([payout.amount for payout in payouts], [Decimal('100.00'), Decimal('50.00')])
         self.assertEqual([payout.status for payout in payouts], [Payout.Status.PENDING, Payout.Status.PENDING])
-        self.assertEqual([payout.stripe_transfer_id for payout in payouts], ['tr_first', 'tr_second'])
+        self.assertEqual([payout.origin for payout in payouts], [Payout.Origin.CUE, Payout.Origin.CUE])
+        # Destination-charge model: the money already lives in the connected
+        # account, so no platform Transfer is ever created.
+        self.assertEqual([payout.stripe_transfer_id for payout in payouts], [None, None])
         self.assertEqual([payout.stripe_payout_id for payout in payouts], ['po_first', 'po_second'])
+        mock_transfer_create.assert_not_called()
         self.assertEqual(mock_account_modify.call_count, 2)
-        self.assertEqual(mock_transfer_create.call_count, 2)
         self.assertEqual(mock_payout_create.call_count, 2)
+        # Each Stripe payout carries a row-derived idempotency key so a
+        # timeout retry can't withdraw twice.
+        for call, payout in zip(mock_payout_create.call_args_list, payouts):
+            self.assertEqual(call.kwargs['idempotency_key'], f'payout-{payout.id}')
+            self.assertEqual(call.kwargs['stripe_account'], self.org.stripe_account_id)
 
     @patch('stripe.Account.modify')
     @patch('stripe.Account.retrieve')
@@ -1650,25 +1712,14 @@ class FinancePayoutTests(TestCase):
             capabilities={'card_payments': {'requested': True}},
         )
 
-    @patch('tickets.views._compute_available_balance')
-    @patch('tickets.views._compute_settled_payout_balance')
-    @patch('tickets.views._get_stripe_platform_available_cents')
+    @patch('tickets.views._get_connected_balance_cents')
     @patch('stripe.Account.retrieve')
     def test_initiate_payout_rejected_when_payouts_disabled(
         self,
         mock_account_retrieve,
-        mock_platform_available,
-        mock_settled_balance,
-        mock_available_balance,
+        mock_connected_balance,
     ):
-        mock_available_balance.return_value = (
-            Decimal('500.00'),
-            Decimal('50.00'),
-            Decimal('0.00'),
-            Decimal('450.00'),
-        )
-        mock_settled_balance.return_value = Decimal('450.00')
-        mock_platform_available.return_value = 45000
+        mock_connected_balance.return_value = (45000, 0)
         mock_account_retrieve.return_value = self._mock_account(payouts_enabled=False)
 
         response = self.client.post(self.payout_url, {'amount': '100.00'})
@@ -1677,37 +1728,40 @@ class FinancePayoutTests(TestCase):
         payout = Payout.objects.count()
         self.assertEqual(payout, 0)
 
-    @patch('tickets.views._compute_available_balance')
-    @patch('tickets.views._compute_settled_payout_balance')
-    @patch('tickets.views._get_stripe_platform_available_cents')
+    @patch('tickets.views._get_connected_balance_cents')
+    @patch('stripe.Account.retrieve')
+    def test_initiate_payout_rejected_when_exceeding_connected_balance(
+        self,
+        mock_account_retrieve,
+        mock_connected_balance,
+    ):
+        mock_connected_balance.return_value = (5000, 0)
+        mock_account_retrieve.return_value = self._mock_account(payouts_enabled=True)
+
+        response = self.client.post(self.payout_url, {'amount': '100.00'})
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(Payout.objects.count(), 0)
+
+    @patch('tickets.views._get_connected_balance_cents')
     @patch('stripe.Account.retrieve')
     @patch('stripe.Account.modify')
     @patch('stripe.Transfer.create_reversal')
     @patch('stripe.Payout.create')
     @patch('stripe.Transfer.create')
-    def test_initiate_payout_reverses_transfer_when_bank_payout_creation_fails(
+    def test_initiate_payout_marks_failed_when_bank_payout_creation_fails(
         self,
         mock_transfer_create,
         mock_payout_create,
         mock_create_reversal,
         mock_account_modify,
         mock_account_retrieve,
-        mock_platform_available,
-        mock_settled_balance,
-        mock_available_balance,
+        mock_connected_balance,
     ):
         import stripe as stripe_lib
 
-        mock_available_balance.return_value = (
-            Decimal('500.00'),
-            Decimal('50.00'),
-            Decimal('0.00'),
-            Decimal('450.00'),
-        )
-        mock_settled_balance.return_value = Decimal('450.00')
-        mock_platform_available.return_value = 45000
+        mock_connected_balance.return_value = (45000, 0)
         mock_account_retrieve.return_value = self._mock_account(payouts_enabled=True)
-        mock_transfer_create.return_value = MagicMock(id='tr_fail')
         mock_payout_create.side_effect = stripe_lib.error.InvalidRequestError('bank unavailable', 'amount')
 
         response = self.client.post(self.payout_url, {'amount': '100.00'})
@@ -1715,9 +1769,11 @@ class FinancePayoutTests(TestCase):
         self.assertEqual(response.status_code, 302)
         payout = Payout.objects.get(organization=self.org)
         self.assertEqual(payout.status, Payout.Status.FAILED)
-        self.assertEqual(payout.stripe_transfer_id, 'tr_fail')
+        self.assertIn('Stripe error', payout.notes)
         self.assertIsNone(payout.stripe_payout_id)
-        mock_create_reversal.assert_called_once()
+        # No transfer is involved anymore, so nothing to reverse on failure.
+        mock_transfer_create.assert_not_called()
+        mock_create_reversal.assert_not_called()
 
     @patch('stripe.Webhook.construct_event')
     def test_connect_webhook_matches_by_stripe_payout_id_with_multiple_pending_payouts(self, mock_construct):
@@ -1832,24 +1888,21 @@ class FinancePayoutTests(TestCase):
         self.assertEqual(target.stripe_payout_id, 'po_target')
 
     @patch('stripe.Webhook.construct_event')
-    def test_connect_webhook_matches_oldest_open_payout_by_amount(self, mock_construct):
-        first = Payout.objects.create(
-            organization=self.org,
-            amount=Decimal('25.00'),
-            status=Payout.Status.PENDING,
-        )
-        second = Payout.objects.create(
+    def test_connect_webhook_records_organizer_initiated_payout(self, mock_construct):
+        # A Cue payout with the same amount must NOT be claimed by an
+        # organizer-initiated Express Dashboard payout (no amount matching).
+        existing = Payout.objects.create(
             organization=self.org,
             amount=Decimal('25.00'),
             status=Payout.Status.PENDING,
         )
         mock_construct.return_value = {
-            'type': 'payout.updated',
+            'type': 'payout.created',
             'account': self.org.stripe_account_id,
             'data': {
                 'object': {
-                    'id': 'po_amount_match',
-                    'status': 'in_transit',
+                    'id': 'po_organizer',
+                    'status': 'pending',
                     'amount': 2500,
                     'metadata': {},
                 }
@@ -1864,16 +1917,91 @@ class FinancePayoutTests(TestCase):
         )
 
         self.assertEqual(response.status_code, 200)
-        first.refresh_from_db()
-        second.refresh_from_db()
-        self.assertEqual(first.status, Payout.Status.IN_TRANSIT)
-        self.assertEqual(first.stripe_payout_id, 'po_amount_match')
-        self.assertEqual(second.status, Payout.Status.PENDING)
-        self.assertIsNone(second.stripe_payout_id)
+        existing.refresh_from_db()
+        self.assertEqual(existing.status, Payout.Status.PENDING)
+        self.assertIsNone(existing.stripe_payout_id)
 
+        recorded = Payout.objects.get(stripe_payout_id='po_organizer')
+        self.assertEqual(recorded.organization, self.org)
+        self.assertEqual(recorded.amount, Decimal('25.00'))
+        self.assertEqual(recorded.status, Payout.Status.PENDING)
+        self.assertEqual(recorded.origin, Payout.Origin.STRIPE_DASHBOARD)
+        self.assertIsNone(recorded.initiated_by)
+        self.assertEqual(recorded.notes, 'Initiated via Stripe')
+
+    @patch('stripe.Webhook.construct_event')
+    def test_connect_webhook_organizer_payout_duplicate_delivery_is_idempotent(self, mock_construct):
+        event_payload = {
+            'type': 'payout.created',
+            'account': self.org.stripe_account_id,
+            'data': {
+                'object': {
+                    'id': 'po_dup',
+                    'status': 'pending',
+                    'amount': 1200,
+                    'metadata': {},
+                }
+            },
+        }
+        mock_construct.return_value = event_payload
+
+        for _ in range(2):
+            response = self.client.post(
+                self.connect_webhook_url,
+                data='{}',
+                content_type='application/json',
+                HTTP_STRIPE_SIGNATURE='sig_test',
+            )
+            self.assertEqual(response.status_code, 200)
+
+        self.assertEqual(Payout.objects.filter(stripe_payout_id='po_dup').count(), 1)
+
+        # A later lifecycle event advances the webhook-created row.
+        event_payload['data']['object']['status'] = 'paid'
+        event_payload['type'] = 'payout.paid'
+        response = self.client.post(
+            self.connect_webhook_url,
+            data='{}',
+            content_type='application/json',
+            HTTP_STRIPE_SIGNATURE='sig_test',
+        )
+        self.assertEqual(response.status_code, 200)
+        recorded = Payout.objects.get(stripe_payout_id='po_dup')
+        self.assertEqual(recorded.status, Payout.Status.COMPLETED)
+
+    @patch('stripe.Webhook.construct_event')
+    def test_connect_webhook_unknown_account_returns_200(self, mock_construct):
+        mock_construct.return_value = {
+            'type': 'payout.created',
+            'account': 'acct_does_not_exist',
+            'data': {
+                'object': {
+                    'id': 'po_unknown_acct',
+                    'status': 'pending',
+                    'amount': 500,
+                    'metadata': {},
+                }
+            },
+        }
+
+        response = self.client.post(
+            self.connect_webhook_url,
+            data='{}',
+            content_type='application/json',
+            HTTP_STRIPE_SIGNATURE='sig_test',
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(Payout.objects.count(), 0)
+
+    @patch('stripe.Balance.retrieve')
     @patch('stripe.Account.retrieve')
-    def test_finance_history_renders_processing_for_pending_payouts(self, mock_account_retrieve):
+    def test_finance_history_renders_processing_for_pending_payouts(self, mock_account_retrieve, mock_balance_retrieve):
         mock_account_retrieve.return_value = self._mock_account(payouts_enabled=True)
+        mock_balance_retrieve.return_value = MagicMock(
+            available=[MagicMock(amount=10000, currency='usd')],
+            pending=[MagicMock(amount=2500, currency='usd')],
+        )
         Payout.objects.create(
             organization=self.org,
             amount=Decimal('42.00'),
@@ -1886,6 +2014,50 @@ class FinancePayoutTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, 'Processing')
         self.assertNotContains(response, 'Queued')
+
+    @patch('stripe.Balance.retrieve')
+    @patch('stripe.Account.retrieve')
+    def test_finance_overview_shows_connected_balance_figures(self, mock_account_retrieve, mock_balance_retrieve):
+        mock_account_retrieve.return_value = self._mock_account(payouts_enabled=True)
+        mock_balance_retrieve.return_value = MagicMock(
+            available=[MagicMock(amount=13415, currency='usd')],
+            pending=[MagicMock(amount=8639, currency='usd')],
+        )
+
+        response = self.client.get(self.finance_url)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context['stripe_available'], Decimal('134.15'))
+        self.assertEqual(response.context['settling_balance'], Decimal('86.39'))
+        mock_balance_retrieve.assert_called_once_with(stripe_account=self.org.stripe_account_id)
+
+    @patch('stripe.Balance.retrieve')
+    @patch('stripe.Account.retrieve')
+    def test_finance_overview_renders_when_balance_api_fails(self, mock_account_retrieve, mock_balance_retrieve):
+        # REGRESSION-CRITICAL: a Stripe outage must never 500 the Finance page.
+        mock_account_retrieve.return_value = self._mock_account(payouts_enabled=True)
+        mock_balance_retrieve.side_effect = Exception('stripe down')
+
+        response = self.client.get(self.finance_url)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIsNone(response.context['stripe_available'])
+
+    @patch('stripe.Balance.retrieve')
+    @patch('stripe.Account.retrieve')
+    def test_finance_overview_clamps_negative_connected_available(self, mock_account_retrieve, mock_balance_retrieve):
+        # Available can go negative after a refund clawback that follows a
+        # withdrawal — display clamps at zero.
+        mock_account_retrieve.return_value = self._mock_account(payouts_enabled=True)
+        mock_balance_retrieve.return_value = MagicMock(
+            available=[MagicMock(amount=-1500, currency='usd')],
+            pending=[MagicMock(amount=0, currency='usd')],
+        )
+
+        response = self.client.get(self.finance_url)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context['stripe_available'], Decimal('0.00'))
 
     @patch('stripe.Account.retrieve')
     @patch('stripe.Account.modify')
@@ -7430,6 +7602,12 @@ class ScannerInPersonSellTests(TestCase):
         self.assertEqual(body['location_id'], 'tml_test_existing')
         pi_mock.assert_called_once()
         self.assertEqual(pi_mock.call_args.kwargs['stripe_account'], 'acct_test_sell')
+        # Direct charge: Cue's platform fee rides application_fee_amount,
+        # same fee-inclusive display formula as online checkout.
+        self.assertEqual(
+            pi_mock.call_args.kwargs['application_fee_amount'],
+            extract_fee_from_display_cents(5000),
+        )
 
     def test_terminal_payment_intent_returns_cached_location_id(self):
         """When the org already has a Terminal Location cached, the PI
@@ -7554,6 +7732,8 @@ class ScannerInPersonSellTests(TestCase):
     def test_sell_creates_in_person_order_with_no_checked_in_by(self):
         fake_pi = MagicMock()
         fake_pi.status = 'succeeded'
+        fake_pi.amount_received = 5000  # 2 x $25.00, Stripe-confirmed
+        fake_pi.application_fee_amount = 462
         with patch('stripe.PaymentIntent.retrieve', return_value=fake_pi) as retrieve_mock:
             res = self.client.post(
                 '/api/scanner/sell/',
@@ -7954,15 +8134,13 @@ class EnableTapToPayViewTests(TestCase):
     # ---- finance_overview context ----
 
     @patch('tickets.views._compute_available_balance')
-    @patch('tickets.views._compute_settled_payout_balance')
-    @patch('tickets.views._get_stripe_platform_available_cents')
+    @patch('tickets.views._get_connected_balance_cents')
     @patch('stripe.Account.retrieve')
     def test_finance_overview_context_pending(
-        self, mock_retrieve, mock_platform, mock_settled, mock_available,
+        self, mock_retrieve, mock_connected, mock_available,
     ):
         mock_available.return_value = (Decimal('0'), Decimal('0'), Decimal('0'), Decimal('0'))
-        mock_settled.return_value = Decimal('0')
-        mock_platform.return_value = 0
+        mock_connected.return_value = (0, 0)
         mock_retrieve.return_value = self._mock_account(ttp='inactive')
 
         res = self.client.get(self.finance_url)
@@ -7972,15 +8150,13 @@ class EnableTapToPayViewTests(TestCase):
         self.assertEqual(ttp_ui['country'], 'US')
 
     @patch('tickets.views._compute_available_balance')
-    @patch('tickets.views._compute_settled_payout_balance')
-    @patch('tickets.views._get_stripe_platform_available_cents')
+    @patch('tickets.views._get_connected_balance_cents')
     @patch('stripe.Account.retrieve')
     def test_finance_overview_context_enabled(
-        self, mock_retrieve, mock_platform, mock_settled, mock_available,
+        self, mock_retrieve, mock_connected, mock_available,
     ):
         mock_available.return_value = (Decimal('0'), Decimal('0'), Decimal('0'), Decimal('0'))
-        mock_settled.return_value = Decimal('0')
-        mock_platform.return_value = 0
+        mock_connected.return_value = (0, 0)
         mock_retrieve.return_value = self._mock_account(ttp='active')
 
         res = self.client.get(self.finance_url)
@@ -7988,15 +8164,13 @@ class EnableTapToPayViewTests(TestCase):
         self.assertEqual(res.context['tap_to_pay_ui']['status'], 'enabled')
 
     @patch('tickets.views._compute_available_balance')
-    @patch('tickets.views._compute_settled_payout_balance')
-    @patch('tickets.views._get_stripe_platform_available_cents')
+    @patch('tickets.views._get_connected_balance_cents')
     @patch('stripe.Account.retrieve')
     def test_finance_overview_context_unsupported_country(
-        self, mock_retrieve, mock_platform, mock_settled, mock_available,
+        self, mock_retrieve, mock_connected, mock_available,
     ):
         mock_available.return_value = (Decimal('0'), Decimal('0'), Decimal('0'), Decimal('0'))
-        mock_settled.return_value = Decimal('0')
-        mock_platform.return_value = 0
+        mock_connected.return_value = (0, 0)
         mock_retrieve.return_value = self._mock_account(country='ZW', ttp='active')
 
         res = self.client.get(self.finance_url)
@@ -8769,8 +8943,8 @@ class FinanceBalanceComputationTests(TestCase):
         # No order to read refunds from: treated as 0 refunded, no crash.
         self.assertEqual(available, Decimal('47.50'))
 
-    def test_settled_balance_applies_refund_and_settlement_window(self):
-        from tickets.views import _compute_settled_payout_balance
+    def test_legacy_settled_balance_applies_refund_and_settlement_window(self):
+        from tickets.views import _compute_legacy_settled_balance
         # Unsettled: available_on in the future — excluded entirely.
         self._create_session(
             10000, 500, StripeCheckoutSession.Status.COMPLETED,
@@ -8785,23 +8959,53 @@ class FinanceBalanceComputationTests(TestCase):
             organization=self.org,
             amount=Decimal('20.00'),
             status=Payout.Status.COMPLETED,
+            origin=Payout.Origin.LEGACY_TRANSFER,
         )
 
-        settled = _compute_settled_payout_balance(self.org)
+        settled = _compute_legacy_settled_balance(self.org)
 
         # (50.00 - 2.50 - 10.00) - 20.00 payout = 17.50
         self.assertEqual(settled, Decimal('17.50'))
 
-    def test_settled_balance_floors_at_zero(self):
-        from tickets.views import _compute_settled_payout_balance
+    def test_legacy_settled_balance_floors_at_zero(self):
+        from tickets.views import _compute_legacy_settled_balance
         self._create_session(5000, 250, StripeCheckoutSession.Status.COMPLETED)
         Payout.objects.create(
             organization=self.org,
             amount=Decimal('100.00'),
             status=Payout.Status.COMPLETED,
+            origin=Payout.Origin.MIGRATION,
         )
 
-        self.assertEqual(_compute_settled_payout_balance(self.org), Decimal('0.00'))
+        self.assertEqual(_compute_legacy_settled_balance(self.org), Decimal('0.00'))
+        # Raw (unclamped) value surfaces the negative for the true-up dry-run.
+        self.assertEqual(
+            _compute_legacy_settled_balance(self.org, clamp=False), Decimal('-52.50'),
+        )
+
+    def test_legacy_settled_balance_ignores_connected_pool(self):
+        from tickets.views import _compute_legacy_settled_balance
+        # Platform-flow session: the only thing that counts.
+        self._create_session(5000, 250, StripeCheckoutSession.Status.COMPLETED)
+        # Destination/direct sessions live in the connected account — excluded.
+        dest = self._create_session(8000, 400, StripeCheckoutSession.Status.COMPLETED)
+        dest.charge_flow = StripeCheckoutSession.ChargeFlow.DESTINATION
+        dest.save(update_fields=['charge_flow'])
+        direct = self._create_session(6000, 300, StripeCheckoutSession.Status.COMPLETED)
+        direct.charge_flow = StripeCheckoutSession.ChargeFlow.DIRECT
+        direct.save(update_fields=['charge_flow'])
+        # Connected-pool payouts (in-app + Express Dashboard) never deduct
+        # from the legacy pool.
+        Payout.objects.create(
+            organization=self.org, amount=Decimal('10.00'),
+            status=Payout.Status.COMPLETED, origin=Payout.Origin.CUE,
+        )
+        Payout.objects.create(
+            organization=self.org, amount=Decimal('5.00'),
+            status=Payout.Status.COMPLETED, origin=Payout.Origin.STRIPE_DASHBOARD,
+        )
+
+        self.assertEqual(_compute_legacy_settled_balance(self.org), Decimal('47.50'))
 
 
 class FinanceOverviewBalanceTests(TestCase):
@@ -8877,43 +9081,15 @@ class FinanceOverviewBalanceTests(TestCase):
         }.get(key, default)
         return account
 
-    @patch('tickets.views._get_stripe_platform_available_cents')
+    @patch('tickets.views._get_connected_balance_cents')
     @patch('stripe.Account.retrieve')
-    def test_negative_platform_balance_clamped(self, mock_retrieve, mock_platform):
+    def test_connected_balance_drives_cards(self, mock_retrieve, mock_connected):
+        # The connected account balance is the source of truth: Ready to
+        # Withdraw = available, Settling = pending — independent of ledger.
         mock_retrieve.return_value = self._mock_account()
-        mock_platform.return_value = -699  # platform balance went negative after refunds
+        mock_connected.return_value = (5150, 2850)
 
-        self._create_session(10000, 340)  # settled (NULL available_on): net 96.60
-        Payout.objects.create(
-            organization=self.org, amount=Decimal('3.00'), status=Payout.Status.COMPLETED,
-        )
-
-        res = self.client.get(self.finance_url)
-        self.assertEqual(res.status_code, 200)
-
-        # Never a negative Ready to Withdraw, never Settling > Sales.
-        self.assertEqual(res.context['stripe_available'], Decimal('0.00'))
-        self.assertEqual(res.context['net_sales'], Decimal('96.60'))
-        self.assertEqual(res.context['settling_balance'], Decimal('93.60'))
-        self.assertLessEqual(res.context['settling_balance'], res.context['net_sales'])
-
-    @patch('tickets.views._get_stripe_platform_available_cents')
-    @patch('stripe.Account.retrieve')
-    def test_sales_identity_holds(self, mock_retrieve, mock_platform):
-        mock_retrieve.return_value = self._mock_account()
-        mock_platform.return_value = 100_000_000  # platform balance doesn't bind
-
-        # Settled completed session: net 47.50
-        self._create_session(5000, 250)
-        # Unsettled session: net 28.50, still settling
-        self._create_session(
-            3000, 150, available_on=timezone.now() + timedelta(days=3),
-        )
-        # Settled partial refund: net 20.00 - 1.00 - 5.00 = 14.00
-        self._create_session(
-            2000, 100, status=StripeCheckoutSession.Status.PARTIALLY_REFUNDED,
-            refunded_amount=Decimal('5.00'),
-        )
+        self._create_session(5000, 250)  # ledger Sales: net 47.50
         Payout.objects.create(
             organization=self.org, amount=Decimal('10.00'), status=Payout.Status.COMPLETED,
         )
@@ -8921,18 +9097,27 @@ class FinanceOverviewBalanceTests(TestCase):
         res = self.client.get(self.finance_url)
         self.assertEqual(res.status_code, 200)
 
-        net_sales = res.context['net_sales']
-        paid_out = res.context['paid_out']
-        settling = res.context['settling_balance']
-        ready = res.context['stripe_available']
+        self.assertEqual(res.context['net_sales'], Decimal('47.50'))
+        self.assertEqual(res.context['paid_out'], Decimal('10.00'))
+        self.assertEqual(res.context['stripe_available'], Decimal('51.50'))
+        self.assertEqual(res.context['settling_balance'], Decimal('28.50'))
 
-        self.assertEqual(net_sales, Decimal('90.00'))
-        self.assertEqual(paid_out, Decimal('10.00'))
-        self.assertEqual(ready, Decimal('51.50'))      # settled net 61.50 - 10.00 paid out
-        self.assertEqual(settling, Decimal('28.50'))   # the unsettled session
-        self.assertEqual(net_sales, paid_out + settling + ready)
-        self.assertGreaterEqual(ready, Decimal('0.00'))
-        self.assertGreaterEqual(settling, Decimal('0.00'))
+    @patch('tickets.views._get_connected_balance_cents')
+    @patch('stripe.Account.retrieve')
+    def test_negative_connected_balance_clamped(self, mock_retrieve, mock_connected):
+        # Refund clawback after a withdrawal can push the connected balance
+        # negative — never render a negative Ready to Withdraw or Settling.
+        mock_retrieve.return_value = self._mock_account()
+        mock_connected.return_value = (-699, -100)
+
+        self._create_session(10000, 340)
+
+        res = self.client.get(self.finance_url)
+        self.assertEqual(res.status_code, 200)
+
+        self.assertEqual(res.context['stripe_available'], Decimal('0.00'))
+        self.assertEqual(res.context['settling_balance'], Decimal('0.00'))
+        self.assertEqual(res.context['net_sales'], Decimal('96.60'))
 
 
 class ChargeRefundedWebhookTests(TestCase):
@@ -11532,3 +11717,542 @@ class LoyaltyPointsRecomputeTests(TestCase):
         resp = self.client.get(reverse('tickets:loyalty_program_edit', args=[self.program.id]))
         self.assertContains(resp, 'affects')
         self.assertContains(resp, 'future orders only')
+
+
+class DestinationChargeCreateTests(TestCase):
+    """create_payment_intent: organizer net rides transfer_data for onboarded orgs."""
+
+    def setUp(self):
+        self.client = Client()
+        self.org = Organization.objects.create(
+            name='Dest Charge Org',
+            slug='dest-charge-org',
+            stripe_account_id='acct_dest_test',
+            stripe_onboarding_complete=True,
+        )
+        self.venue = Venue.objects.create(organization=self.org, name='Venue', city='City')
+        self.event = Event.objects.create(
+            organization=self.org, name='Dest Event', venue=self.venue,
+            start_date=date.today() + timedelta(days=14),
+            ticketing_type='direct',
+            status='live',
+        )
+        self.ticket_type = SaleableTicketType.objects.create(
+            event=self.event, name='General', price=Decimal('25.00'),
+            quantity_limit=100, quantity_sold=0,
+        )
+        self.user = User.objects.create_user(
+            username='dest-buyer', email='dest-buyer@example.com',
+            password='testpass123', first_name='Dest', last_name='Buyer',
+        )
+        self.client.login(username='dest-buyer@example.com', password='testpass123')
+        self._set_cart(qty=2)
+        self.url = reverse('tickets:create_payment_intent', args=[self.event.public_id])
+
+    def _set_cart(self, *, qty):
+        session = self.client.session
+        session[f'cart_{self.event.id}'] = [{
+            'saleable_ticket_type_id': str(self.ticket_type.id),
+            'name': self.ticket_type.name,
+            'price': '25.00',
+            'quantity': qty,
+            'tier_id': None,
+            'tier_name': None,
+        }]
+        session.save()
+
+    @patch('stripe.PaymentIntent.create')
+    def test_onboarded_org_gets_destination_charge(self, mock_pi_create):
+        mock_pi_create.return_value = MagicMock(id='pi_dest_1', client_secret='cs_dest_1')
+
+        response = self.client.post(self.url, data='{}', content_type='application/json')
+
+        self.assertEqual(response.status_code, 200)
+        fee_cents = extract_fee_from_display_cents(5000)
+        kwargs = mock_pi_create.call_args.kwargs
+        self.assertEqual(kwargs['transfer_data'], {
+            'destination': 'acct_dest_test',
+            'amount': 5000 - fee_cents,
+        })
+        session = StripeCheckoutSession.objects.get(stripe_session_id='pi_dest_1')
+        self.assertEqual(session.charge_flow, StripeCheckoutSession.ChargeFlow.DESTINATION)
+        self.assertEqual(session.platform_fee_cents, fee_cents)
+
+    @patch('stripe.PaymentIntent.create')
+    def test_unonboarded_org_falls_back_to_platform_charge(self, mock_pi_create):
+        self.org.stripe_onboarding_complete = False
+        self.org.save(update_fields=['stripe_onboarding_complete'])
+        mock_pi_create.return_value = MagicMock(id='pi_plat_1', client_secret='cs_plat_1')
+
+        response = self.client.post(self.url, data='{}', content_type='application/json')
+
+        self.assertEqual(response.status_code, 200)
+        self.assertNotIn('transfer_data', mock_pi_create.call_args.kwargs)
+        session = StripeCheckoutSession.objects.get(stripe_session_id='pi_plat_1')
+        self.assertEqual(session.charge_flow, StripeCheckoutSession.ChargeFlow.PLATFORM)
+
+
+class DestinationTransferCaptureTests(TestCase):
+    """Fulfillment captures the destination charge's transfer onto the session."""
+
+    def setUp(self):
+        self.client = Client()
+        self.org = Organization.objects.create(name='Capture Org', slug='capture-org')
+        self.venue = Venue.objects.create(organization=self.org, name='Venue', city='City')
+        self.event = Event.objects.create(
+            organization=self.org, name='Capture Event', venue=self.venue,
+            start_date=date(2025, 6, 15), start_time=time(19, 0),
+        )
+        self.ticket_type = SaleableTicketType.objects.create(
+            event=self.event, name='General', price=Decimal('25.00'),
+            quantity_limit=100, quantity_sold=0,
+        )
+        self.session = StripeCheckoutSession.objects.create(
+            event=self.event,
+            organization=self.org,
+            stripe_session_id='pi_capture_1',
+            stripe_payment_intent_id='pi_capture_1',
+            buyer_email='buyer@example.com',
+            buyer_name='Buyer',
+            status=StripeCheckoutSession.Status.PENDING,
+            line_items_snapshot=[{
+                'saleable_ticket_type_id': str(self.ticket_type.id),
+                'name': 'General', 'price': '25.00', 'quantity': 2,
+            }],
+            amount_total_cents=5000,
+            platform_fee_cents=462,
+            charge_flow=StripeCheckoutSession.ChargeFlow.DESTINATION,
+        )
+        self.webhook_url = reverse('tickets:stripe_webhook')
+
+    @patch('stripe.Transfer.retrieve')
+    @patch('stripe.Charge.retrieve')
+    @patch('stripe.Webhook.construct_event')
+    def test_webhook_persists_transfer_and_settlement(
+        self, mock_construct, mock_charge_retrieve, mock_transfer_retrieve,
+    ):
+        charge = MagicMock()
+        charge.transfer = 'tr_capture_1'
+        charge.balance_transaction = MagicMock(available_on=1750000000)
+        mock_charge_retrieve.return_value = charge
+        mock_transfer_retrieve.return_value = MagicMock(amount=4538)
+        mock_construct.return_value = {
+            'type': 'payment_intent.succeeded',
+            'data': {'object': {
+                'id': 'pi_capture_1',
+                'amount_received': 5000,
+                'latest_charge': 'ch_capture_1',
+            }},
+        }
+
+        response = self.client.post(
+            self.webhook_url,
+            data='{}',
+            content_type='application/json',
+            HTTP_STRIPE_SIGNATURE='sig_test',
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.session.refresh_from_db()
+        self.assertEqual(self.session.status, StripeCheckoutSession.Status.COMPLETED)
+        self.assertEqual(self.session.stripe_transfer_id, 'tr_capture_1')
+        self.assertEqual(self.session.transfer_cents, 4538)
+        self.assertEqual(self.session.charge_flow, StripeCheckoutSession.ChargeFlow.DESTINATION)
+        self.assertIsNotNone(self.session.available_on)
+        mock_transfer_retrieve.assert_called_once_with('tr_capture_1')
+
+
+class TransferReversalTests(TestCase):
+    """Refund clawback: exact, Stripe-authoritative transfer reversals."""
+
+    def setUp(self):
+        self.client = Client()
+        self.org = Organization.objects.create(name='Reversal Org', slug='reversal-org')
+        self.venue = Venue.objects.create(organization=self.org, name='Venue', city='City')
+        self.event = Event.objects.create(
+            organization=self.org, name='Reversal Event', venue=self.venue,
+            start_date=date.today() + timedelta(days=14),
+            ticketing_type='direct',
+        )
+        self.ticket_type = SaleableTicketType.objects.create(
+            event=self.event, name='General', price=Decimal('50.00'),
+            quantity_limit=100, quantity_sold=2,
+        )
+        self.customer = Customer.objects.create(
+            organization=self.org, email='buyer@example.com', name='Buyer',
+        )
+        self.order = TicketOrder.objects.create(
+            event=self.event,
+            customer=self.customer,
+            order_number='REV-001',
+            order_date=timezone.now(),
+            total_amount=Decimal('100.00'),
+        )
+        self.session = StripeCheckoutSession.objects.create(
+            event=self.event,
+            organization=self.org,
+            stripe_session_id='pi_reversal_1',
+            stripe_payment_intent_id='pi_reversal_1',
+            buyer_email='buyer@example.com',
+            buyer_name='Buyer',
+            status=StripeCheckoutSession.Status.COMPLETED,
+            amount_total_cents=10000,
+            platform_fee_cents=500,
+            charge_flow=StripeCheckoutSession.ChargeFlow.DESTINATION,
+            stripe_transfer_id='tr_reversal_1',
+            transfer_cents=9500,
+            line_items_snapshot=[{
+                'saleable_ticket_type_id': str(self.ticket_type.id),
+                'name': 'General', 'price': '50.00', 'quantity': 2,
+            }],
+            ticket_order=self.order,
+        )
+        self.webhook_url = reverse('tickets:stripe_webhook')
+
+    def _post_refund_event(self, mock_construct, *, amount_refunded, refunded,
+                           payment_intent='pi_reversal_1', transfer='tr_reversal_1'):
+        obj = {
+            'id': 'ch_reversal',
+            'payment_intent': payment_intent,
+            'amount_refunded': amount_refunded,
+            'refunded': refunded,
+        }
+        if transfer:
+            obj['transfer'] = transfer
+        mock_construct.return_value = {
+            'type': 'charge.refunded',
+            'data': {'object': obj},
+        }
+        return self.client.post(
+            self.webhook_url,
+            data='{}',
+            content_type='application/json',
+            HTTP_STRIPE_SIGNATURE='sig_test',
+        )
+
+    def _mock_transfer(self, amount=9500, amount_reversed=0):
+        return MagicMock(amount=amount, amount_reversed=amount_reversed)
+
+    @patch('stripe.Transfer.create_reversal')
+    @patch('stripe.Transfer.retrieve')
+    @patch('stripe.Webhook.construct_event')
+    def test_partial_refund_reverses_exactly_refund_amount(
+        self, mock_construct, mock_retrieve, mock_reversal,
+    ):
+        mock_retrieve.return_value = self._mock_transfer()
+
+        res = self._post_refund_event(mock_construct, amount_refunded=1000, refunded=False)
+
+        self.assertEqual(res.status_code, 200)
+        mock_reversal.assert_called_once()
+        args, kwargs = mock_reversal.call_args
+        self.assertEqual(args[0], 'tr_reversal_1')
+        self.assertEqual(kwargs['amount'], 1000)
+        self.assertEqual(kwargs['idempotency_key'], 'trrev-tr_reversal_1-1000')
+        self.session.refresh_from_db()
+        self.assertEqual(self.session.transfer_reversed_cents, 1000)
+        self.assertEqual(self.session.status, StripeCheckoutSession.Status.PARTIALLY_REFUNDED)
+
+    @patch('stripe.Transfer.create_reversal')
+    @patch('stripe.Transfer.retrieve')
+    @patch('stripe.Webhook.construct_event')
+    def test_cumulative_partials_reverse_only_the_delta(
+        self, mock_construct, mock_retrieve, mock_reversal,
+    ):
+        # Stripe already holds a $10 reversal from the first partial refund.
+        mock_retrieve.return_value = self._mock_transfer(amount_reversed=1000)
+
+        res = self._post_refund_event(mock_construct, amount_refunded=2500, refunded=False)
+
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(mock_reversal.call_args.kwargs['amount'], 1500)
+        self.assertEqual(
+            mock_reversal.call_args.kwargs['idempotency_key'], 'trrev-tr_reversal_1-2500',
+        )
+        self.session.refresh_from_db()
+        self.assertEqual(self.session.transfer_reversed_cents, 2500)
+
+    @patch('stripe.Transfer.create_reversal')
+    @patch('stripe.Transfer.retrieve')
+    @patch('stripe.Webhook.construct_event')
+    def test_full_refund_reverses_whole_transfer_and_caps_there(
+        self, mock_construct, mock_retrieve, mock_reversal,
+    ):
+        mock_retrieve.return_value = self._mock_transfer()
+
+        # Buyer refunded $100, but only $95 ever reached the organizer:
+        # reversal clamps at the transfer — platform funds the fee portion.
+        res = self._post_refund_event(mock_construct, amount_refunded=10000, refunded=True)
+
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(mock_reversal.call_args.kwargs['amount'], 9500)
+        self.session.refresh_from_db()
+        self.assertEqual(self.session.transfer_reversed_cents, 9500)
+        self.assertEqual(self.session.status, StripeCheckoutSession.Status.REFUNDED)
+
+    @patch('stripe.Transfer.create_reversal')
+    @patch('stripe.Transfer.retrieve')
+    @patch('stripe.Webhook.construct_event')
+    def test_webhook_retry_does_not_double_reverse(
+        self, mock_construct, mock_retrieve, mock_reversal,
+    ):
+        # Stripe says the cumulative target is already reversed.
+        mock_retrieve.return_value = self._mock_transfer(amount_reversed=1000)
+
+        res = self._post_refund_event(mock_construct, amount_refunded=1000, refunded=False)
+
+        self.assertEqual(res.status_code, 200)
+        mock_reversal.assert_not_called()
+
+    @patch('stripe.Transfer.create_reversal')
+    @patch('stripe.Transfer.retrieve')
+    @patch('stripe.Webhook.construct_event')
+    def test_echo_after_app_refund_still_reverses(
+        self, mock_construct, mock_retrieve, mock_reversal,
+    ):
+        # refund_order already wrote local state — the echo webhook is the
+        # only place the clawback happens, so it must run despite the
+        # state no-op guard.
+        self.order.refunded_amount = Decimal('10.00')
+        self.order.save(update_fields=['refunded_amount'])
+        self.session.status = StripeCheckoutSession.Status.PARTIALLY_REFUNDED
+        self.session.save(update_fields=['status'])
+        mock_retrieve.return_value = self._mock_transfer()
+
+        res = self._post_refund_event(mock_construct, amount_refunded=1000, refunded=False)
+
+        self.assertEqual(res.status_code, 200)
+        mock_reversal.assert_called_once()
+        self.assertEqual(mock_reversal.call_args.kwargs['amount'], 1000)
+
+    @patch('stripe.checkout.Session.list', return_value={'data': []})
+    @patch('stripe.Transfer.create_reversal')
+    @patch('stripe.Transfer.retrieve')
+    @patch('stripe.Webhook.construct_event')
+    def test_sessionless_fallback_reverses_from_charge_payload(
+        self, mock_construct, mock_retrieve, mock_reversal, mock_cs_list,
+    ):
+        # Event hard-delete CASCADEs the session away — the clawback must
+        # still happen from the charge payload alone.
+        self.session.delete()
+        mock_retrieve.return_value = self._mock_transfer()
+
+        res = self._post_refund_event(mock_construct, amount_refunded=2000, refunded=False)
+
+        self.assertEqual(res.status_code, 200)
+        mock_reversal.assert_called_once()
+        self.assertEqual(mock_reversal.call_args.kwargs['amount'], 2000)
+
+    @patch('stripe.Transfer.create_reversal')
+    @patch('stripe.Transfer.retrieve')
+    @patch('stripe.Webhook.construct_event')
+    def test_transfer_id_recovered_from_payload_when_capture_was_missed(
+        self, mock_construct, mock_retrieve, mock_reversal,
+    ):
+        # Refund webhook beat fulfillment's transfer capture.
+        self.session.stripe_transfer_id = ''
+        self.session.transfer_cents = 0
+        self.session.charge_flow = StripeCheckoutSession.ChargeFlow.PLATFORM
+        self.session.save(update_fields=['stripe_transfer_id', 'transfer_cents', 'charge_flow'])
+        mock_retrieve.return_value = self._mock_transfer()
+
+        res = self._post_refund_event(mock_construct, amount_refunded=1000, refunded=False)
+
+        self.assertEqual(res.status_code, 200)
+        mock_reversal.assert_called_once()
+        self.session.refresh_from_db()
+        self.assertEqual(self.session.stripe_transfer_id, 'tr_reversal_1')
+        self.assertEqual(self.session.transfer_cents, 9500)
+        self.assertEqual(self.session.charge_flow, StripeCheckoutSession.ChargeFlow.DESTINATION)
+        self.assertEqual(self.session.transfer_reversed_cents, 1000)
+
+    @patch('stripe.Transfer.create_reversal')
+    @patch('stripe.Transfer.retrieve')
+    @patch('stripe.Webhook.construct_event')
+    def test_reversal_failure_does_not_block_state_sync(
+        self, mock_construct, mock_retrieve, mock_reversal,
+    ):
+        import stripe as stripe_lib
+        mock_retrieve.return_value = self._mock_transfer()
+        mock_reversal.side_effect = stripe_lib.error.InvalidRequestError('boom', 'amount')
+
+        res = self._post_refund_event(mock_construct, amount_refunded=1000, refunded=False)
+
+        self.assertEqual(res.status_code, 200)
+        self.order.refresh_from_db()
+        self.session.refresh_from_db()
+        self.assertEqual(self.order.refunded_amount, Decimal('10.00'))
+        self.assertEqual(self.session.status, StripeCheckoutSession.Status.PARTIALLY_REFUNDED)
+        # Local cache untouched — backfill/webhook retry converges later.
+        self.assertEqual(self.session.transfer_reversed_cents, 0)
+
+    @patch('stripe.Transfer.create_reversal')
+    @patch('stripe.Transfer.retrieve')
+    @patch('stripe.Webhook.construct_event')
+    def test_direct_charge_refund_no_reversal(
+        self, mock_construct, mock_retrieve, mock_reversal,
+    ):
+        # In-person (direct) charges have no transfer — nothing to claw back.
+        self.session.stripe_transfer_id = ''
+        self.session.transfer_cents = 0
+        self.session.charge_flow = StripeCheckoutSession.ChargeFlow.DIRECT
+        self.session.save(update_fields=['stripe_transfer_id', 'transfer_cents', 'charge_flow'])
+
+        res = self._post_refund_event(
+            mock_construct, amount_refunded=1000, refunded=False, transfer=None,
+        )
+
+        self.assertEqual(res.status_code, 200)
+        mock_retrieve.assert_not_called()
+        mock_reversal.assert_not_called()
+        self.session.refresh_from_db()
+        self.assertEqual(self.session.status, StripeCheckoutSession.Status.PARTIALLY_REFUNDED)
+
+
+class ConnectedBalanceCacheTests(TestCase):
+    """_get_connected_balance_cents caching + explicit busting."""
+
+    def setUp(self):
+        self.org = Organization.objects.create(
+            name='Cache Org', slug=f'cache-org-{uuid.uuid4().hex[:8]}',
+            stripe_account_id='acct_cache_test',
+        )
+
+    @patch('stripe.Balance.retrieve')
+    def test_cache_hit_and_bust(self, mock_balance):
+        from tickets.views import _get_connected_balance_cents, _bust_connected_balance_cache
+        mock_balance.return_value = MagicMock(
+            available=[MagicMock(amount=1000, currency='usd')],
+            pending=[MagicMock(amount=200, currency='usd')],
+        )
+
+        self.assertEqual(_get_connected_balance_cents(self.org), (1000, 200))
+        self.assertEqual(_get_connected_balance_cents(self.org), (1000, 200))
+        self.assertEqual(mock_balance.call_count, 1)  # second call served from cache
+
+        _bust_connected_balance_cache(self.org)
+        self.assertEqual(_get_connected_balance_cents(self.org), (1000, 200))
+        self.assertEqual(mock_balance.call_count, 2)  # bust forced a refetch
+
+
+class MigrateLegacyBalancesCommandTests(TestCase):
+    """True-up command: dry-run safety, crash-safe apply, repair, re-runs."""
+
+    def setUp(self):
+        self.org = Organization.objects.create(
+            name='Trueup Org',
+            slug='trueup-org',
+            stripe_account_id='acct_trueup',
+            stripe_onboarding_complete=True,
+        )
+        self.venue = Venue.objects.create(organization=self.org, name='Venue', city='City')
+        self.event = Event.objects.create(
+            organization=self.org, name='Trueup Event', venue=self.venue,
+            start_date=date.today() + timedelta(days=14),
+            ticketing_type='direct',
+        )
+        self.customer = Customer.objects.create(
+            organization=self.org, email='buyer@example.com', name='Buyer',
+        )
+        order = TicketOrder.objects.create(
+            event=self.event,
+            customer=self.customer,
+            order_number='TU-001',
+            order_date=timezone.now(),
+            total_amount=Decimal('50.00'),
+        )
+        # Settled legacy session: organizer net $47.50.
+        StripeCheckoutSession.objects.create(
+            event=self.event,
+            organization=self.org,
+            stripe_session_id='pi_trueup_1',
+            stripe_payment_intent_id='pi_trueup_1',
+            buyer_email='buyer@example.com',
+            buyer_name='Buyer',
+            status=StripeCheckoutSession.Status.COMPLETED,
+            amount_total_cents=5000,
+            platform_fee_cents=250,
+            ticket_order=order,
+        )
+
+    def test_dry_run_writes_nothing(self):
+        call_command('migrate_legacy_balances')
+        self.assertEqual(Payout.objects.count(), 0)
+
+    @patch('stripe.Transfer.create')
+    @patch('tickets.views._get_stripe_platform_available_cents', return_value=1_000_000)
+    def test_apply_transfers_and_records_migration_payout(self, mock_platform, mock_transfer):
+        mock_transfer.return_value = MagicMock(id='tr_trueup_1')
+
+        call_command('migrate_legacy_balances', '--apply')
+
+        payout = Payout.objects.get(organization=self.org)
+        self.assertEqual(payout.amount, Decimal('47.50'))
+        self.assertEqual(payout.status, Payout.Status.COMPLETED)
+        self.assertEqual(payout.origin, Payout.Origin.MIGRATION)
+        self.assertEqual(payout.stripe_transfer_id, 'tr_trueup_1')
+        self.assertIsNone(payout.initiated_by)
+        kwargs = mock_transfer.call_args.kwargs
+        self.assertEqual(kwargs['amount'], 4750)
+        self.assertEqual(kwargs['destination'], 'acct_trueup')
+        self.assertEqual(kwargs['idempotency_key'], f'trueup-{payout.id}')
+
+        # Re-run: the migration payout self-deducts — nothing more to move.
+        call_command('migrate_legacy_balances', '--apply')
+        self.assertEqual(Payout.objects.count(), 1)
+        self.assertEqual(mock_transfer.call_count, 1)
+
+    @patch('stripe.Transfer.create')
+    @patch('tickets.views._get_stripe_platform_available_cents', return_value=1_000_000)
+    def test_stranded_pending_row_blocks_apply_and_repair_completes_it(
+        self, mock_platform, mock_transfer,
+    ):
+        stranded = Payout.objects.create(
+            organization=self.org,
+            amount=Decimal('47.50'),
+            status=Payout.Status.PENDING,
+            origin=Payout.Origin.MIGRATION,
+            notes='Balance migration to Stripe account',
+        )
+
+        # Apply refuses to act while a stranded row exists — no double-pay.
+        call_command('migrate_legacy_balances', '--apply')
+        mock_transfer.assert_not_called()
+        self.assertEqual(Payout.objects.count(), 1)
+
+        # Repair replays the stable idempotency key and completes the row.
+        mock_transfer.return_value = MagicMock(id='tr_trueup_repair')
+        call_command('migrate_legacy_balances', '--repair')
+        stranded.refresh_from_db()
+        self.assertEqual(stranded.status, Payout.Status.COMPLETED)
+        self.assertEqual(stranded.stripe_transfer_id, 'tr_trueup_repair')
+        self.assertEqual(
+            mock_transfer.call_args.kwargs['idempotency_key'], f'trueup-{stranded.id}',
+        )
+
+    @patch('stripe.Transfer.create')
+    @patch('tickets.views._get_stripe_platform_available_cents', return_value=1_000_000)
+    def test_transfer_failure_marks_failed_and_is_retryable(self, mock_platform, mock_transfer):
+        import stripe as stripe_lib
+        mock_transfer.side_effect = stripe_lib.error.InvalidRequestError('no funds', 'amount')
+
+        call_command('migrate_legacy_balances', '--apply')
+
+        failed = Payout.objects.get(organization=self.org)
+        self.assertEqual(failed.status, Payout.Status.FAILED)
+        self.assertIn('Stripe error', failed.notes)
+
+        # FAILED rows are excluded from the pool sums — a retry moves the
+        # full amount on a fresh row.
+        mock_transfer.side_effect = None
+        mock_transfer.return_value = MagicMock(id='tr_trueup_retry')
+        call_command('migrate_legacy_balances', '--apply')
+        completed = Payout.objects.get(organization=self.org, status=Payout.Status.COMPLETED)
+        self.assertEqual(completed.amount, Decimal('47.50'))
+
+    @patch('stripe.Transfer.create')
+    @patch('tickets.views._get_stripe_platform_available_cents', return_value=100)
+    def test_insufficient_platform_balance_skips(self, mock_platform, mock_transfer):
+        call_command('migrate_legacy_balances', '--apply')
+        mock_transfer.assert_not_called()
+        self.assertEqual(Payout.objects.count(), 0)
