@@ -3476,6 +3476,25 @@ def customer_detail(request, customer_id):
     if loyalty_tier and loyalty_tier.program.organization_id != org.id:
         loyalty_tier = None
 
+    # Marketing (native SMS) activity — one row per message sent to this customer.
+    # Org-scoped already since `customer` is org-scoped. select_related avoids an
+    # N+1 on campaign.name in the template. SMS has no "opened" event, so the
+    # closest engagement signal is the tracked link click (first_clicked_at).
+    sms_messages = (
+        customer.sms_message_recipients
+        .select_related('campaign')
+        .order_by('-created_at')
+    )
+    sms_paginator = Paginator(sms_messages, 20)
+    sms_page_obj = sms_paginator.get_page(request.GET.get('sms_page'))
+    # Single-pass summary counts for the tab's stat cards.
+    sms_stats = customer.sms_message_recipients.aggregate(
+        total=Count('id'),
+        delivered=Count('id', filter=Q(status='delivered')),
+        failed=Count('id', filter=Q(status__in=['failed', 'undelivered'])),
+        clicked=Count('id', filter=Q(first_clicked_at__isnull=False)),
+    )
+
     context = {
         'customer': customer,
         'loyalty_tier': loyalty_tier,
@@ -3494,6 +3513,9 @@ def customer_detail(request, customer_id):
         'assigned_tags': assigned_tags,
         'available_tags': available_tags,
         'org_tags': org_tags,
+        'sms_page_obj': sms_page_obj,
+        'sms_stats': sms_stats,
+        'sms_marketing_enabled': org.sms_marketing_enabled,
     }
     return render(request, 'tickets/customer_detail.html', context)
 
