@@ -23,6 +23,14 @@
                 <div class="card-header"><h5 class="mb-0">Program Details</h5></div>
                 <div class="card-body">
                     {% crispy form %}
+                    {% if editing and program.points_enabled %}
+                    <div class="alert alert-warning small mb-0 mt-2">
+                        <i class="bi bi-exclamation-triangle"></i>
+                        Changing the basis or rate affects <strong>future orders only</strong>. Members keep the
+                        points they have already earned. To re-apply the new rate to past orders, use
+                        <strong>Recompute points</strong> on the program page.
+                    </div>
+                    {% endif %}
                 </div>
             </div>
 

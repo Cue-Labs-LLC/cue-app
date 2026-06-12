@@ -38,6 +38,31 @@
 </div>
 {% endif %}
 
+{% if program.points_enabled %}
+<details class="mb-3">
+    <summary class="btn btn-outline-warning btn-sm"><i class="bi bi-arrow-repeat"></i> Recompute points at current rate</summary>
+    <div class="card mt-2 border-warning">
+        <div class="card-body">
+            <p class="small mb-2">
+                Changing the basis or rate only affects <strong>future</strong> orders. Recompute
+                <strong>deletes the points history for every member</strong> and rebuilds it at the current
+                rate ({{ program.points_rate|floatformat:"-2" }} pts {{ program.get_points_basis_display|lower }}).
+                This cannot be undone.
+            </p>
+            <form method="post" action="{% url 'tickets:loyalty_recompute_points' program.id %}"
+                  class="d-flex gap-2 align-items-center flex-wrap"
+                  onsubmit="return confirm('Recompute all loyalty balances at the current rate? This deletes the existing points history for every member and rebuilds it. This cannot be undone.');">
+                {% csrf_token %}
+                <label class="small mb-0" for="recomputeConfirmName">Type <strong>{{ program.name }}</strong> to confirm:</label>
+                <input type="text" name="confirm_name" id="recomputeConfirmName" class="form-control form-control-sm"
+                       style="max-width: 240px;" autocomplete="off" {% if program.recalc_in_progress %}disabled{% endif %}>
+                <button type="submit" id="recomputeSubmit" class="btn btn-sm btn-warning" disabled>Recompute</button>
+            </form>
+        </div>
+    </div>
+</details>
+{% endif %}
+
 {% if points_stats %}
 <div class="row g-3 mb-4">
     <div class="col-md-4">
@@ -126,5 +151,23 @@
 
 {% if program.last_recalculated_at %}
 <p class="text-muted small mt-3">Members last recalculated {{ program.last_recalculated_at|naturaltime }}.</p>
+{% endif %}
+{% endblock %}
+
+{% block extra_js %}
+{% if program.points_enabled and not program.recalc_in_progress %}
+<script>
+// Type-to-confirm: the Recompute button only enables when the organizer types
+// the exact program name. The server re-validates confirm_name regardless.
+(function () {
+    var input = document.getElementById('recomputeConfirmName');
+    var btn = document.getElementById('recomputeSubmit');
+    if (!input || !btn) return;
+    var target = "{{ program.name|escapejs }}";
+    input.addEventListener('input', function () {
+        btn.disabled = input.value.trim() !== target;
+    });
+})();
+</script>
 {% endif %}
 {% endblock %}

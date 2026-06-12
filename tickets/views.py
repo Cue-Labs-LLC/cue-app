@@ -3221,6 +3221,39 @@ def loyalty_recalculate(request, program_id):
 @require_host
 @require_loyalty_feature
 @require_http_methods(["POST"])
+def loyalty_recompute_points(request, program_id):
+    """Wipe + rebuild the org's points ledger at the CURRENT rate (reset + re-backfill).
+
+    Irreversible and org-wide, so it's gated by a server-validated typed
+    confirmation (confirm_name == program.name) on top of the client type-to-
+    confirm. The actual reset + re-award + reconciliation run in the backfill
+    task under its claim lock.
+    """
+    org = get_organization(request)
+    program = get_object_or_404(_active_loyalty_programs(org), id=program_id)
+    if not program.points_enabled:
+        messages.warning(request, 'Enable points on this program before recomputing balances.')
+    elif not program.is_active:
+        messages.warning(request, 'Activate this program before recomputing its points.')
+    elif request.POST.get('confirm_name', '').strip() != program.name:
+        messages.warning(request, 'Type the program name exactly to confirm the recompute.')
+    elif program.recalc_in_progress:
+        messages.info(request, 'A recalculation or recompute is already in progress.')
+    else:
+        from .tasks import backfill_loyalty_points_task
+        backfill_loyalty_points_task.delay(str(program.id), reset_first=True)
+        messages.success(
+            request,
+            'Recomputing all balances at the current rate — this rebuilds points history for every member.',
+        )
+    return redirect('tickets:loyalty_program_detail', program_id=program.id)
+
+
+@login_required
+@require_org
+@require_host
+@require_loyalty_feature
+@require_http_methods(["POST"])
 def loyalty_program_delete(request, program_id):
     """Soft-delete a program and clear its members' tier assignment."""
     org = get_organization(request)
