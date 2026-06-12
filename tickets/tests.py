@@ -11090,11 +11090,14 @@ class LoyaltyFeatureFlagTests(TestCase):
         self._login()
         resp = self.client.get(reverse('tickets:customer_detail', args=[self.customer.id]))
         self.assertEqual(resp.status_code, 200)
-        self.assertNotContains(resp, 'Loyalty Tier')
+        # The loyalty block renders the program name only when the flag is on;
+        # assert on that (stable across the customer-detail label redesign) rather
+        # than a heading string the redesign changed.
+        self.assertNotContains(resp, self.program.name)
         self.org.loyalty_feature_enabled = True
         self.org.save(update_fields=['loyalty_feature_enabled'])
         resp = self.client.get(reverse('tickets:customer_detail', args=[self.customer.id]))
-        self.assertContains(resp, 'Loyalty Tier')
+        self.assertContains(resp, self.program.name)
 
 
 class SurveyResponseDetailViewTests(TestCase):
