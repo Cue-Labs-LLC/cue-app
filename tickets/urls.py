@@ -289,6 +289,7 @@ urlpatterns = [
     path('events/<uuid:event_id>/ticket-types/reorder/', views.saleable_ticket_type_reorder, name='saleable_ticket_type_reorder'),
     path('events/<uuid:event_id>/ticket-types/<uuid:ticket_type_id>/edit/', views.saleable_ticket_type_edit, name='saleable_ticket_type_edit'),
     path('events/<uuid:event_id>/ticket-types/<uuid:ticket_type_id>/data/', views.saleable_ticket_type_data, name='saleable_ticket_type_data'),
+    path('events/<uuid:event_id>/ticket-types/<uuid:ticket_type_id>/orders/', views.saleable_ticket_type_orders, name='saleable_ticket_type_orders'),
     path('events/<uuid:event_id>/ticket-types/<uuid:ticket_type_id>/toggle/', views.saleable_ticket_type_toggle, name='saleable_ticket_type_toggle'),
     path('events/<uuid:event_id>/ticket-types/<uuid:ticket_type_id>/delete/', views.saleable_ticket_type_delete, name='saleable_ticket_type_delete'),
 

@@ -161,6 +161,14 @@
     overflow: hidden;
     text-overflow: ellipsis;
 }
+.ta-name__link {
+    color: inherit;
+    text-decoration: none;
+}
+.ta-name__link:hover {
+    color: var(--accent);
+    text-decoration: underline;
+}
 .ta-bar-wrap {
     height: 14px;
     background: var(--border);
@@ -737,7 +745,7 @@ button.detail-meta-weather--severe:focus-visible {
             <div class="ta-row">
                 <span class="ta-name">
                     <span class="ta-dot"></span>
-                    <span class="ta-name__text">{{ chart.label }}</span>
+                    <a href="{% url 'tickets:saleable_ticket_type_orders' event.id chart.tt_id %}" class="ta-name__text ta-name__link">{{ chart.label }}</a>
                     <span class="ta-chip">Unlimited</span>
                 </span>
                 <div class="ta-bar-wrap">
@@ -753,7 +761,7 @@ button.detail-meta-weather--severe:focus-visible {
             <div class="ta-row{% if chart.remaining == 0 %} ta-row--soldout{% endif %}">
                 <span class="ta-name">
                     <span class="ta-dot{% if chart.remaining == 0 %} ta-dot--pulse{% elif chart.percent_sold >= 90 %} ta-dot--pulse{% elif chart.percent_sold < 50 %} ta-dot--low{% elif chart.percent_sold < 75 %} ta-dot--mid{% endif %}"></span>
-                    <span class="ta-name__text">{{ chart.label }}</span>
+                    <a href="{% url 'tickets:saleable_ticket_type_orders' event.id chart.tt_id %}" class="ta-name__text ta-name__link">{{ chart.label }}</a>
                     {% if chart.remaining == 0 %}
                         <span class="ta-chip ta-chip--soldout">Sold out</span>
                     {% elif chart.remaining <= 10 %}

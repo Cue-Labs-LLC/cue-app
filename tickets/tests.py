@@ -3237,14 +3237,14 @@ class EventDetailAllocationChartTest(TestCase):
     def test_compute_event_stats_returns_direct_allocation_chart_data(self):
         from tickets.views import _compute_event_stats
 
-        SaleableTicketType.objects.create(
+        ga = SaleableTicketType.objects.create(
             event=self.event,
             name='General Admission',
             price=Decimal('25.00'),
             quantity_limit=100,
             quantity_sold=25,
         )
-        SaleableTicketType.objects.create(
+        vip = SaleableTicketType.objects.create(
             event=self.event,
             name='VIP',
             price=Decimal('75.00'),
@@ -3258,6 +3258,7 @@ class EventDetailAllocationChartTest(TestCase):
             stats['ticket_type_allocation_charts'],
             [
                 {
+                    'tt_id': str(ga.id),
                     'label': 'General Admission',
                     'sold': 25,
                     'allocated': 100,
@@ -3266,6 +3267,7 @@ class EventDetailAllocationChartTest(TestCase):
                     'is_unlimited': False,
                 },
                 {
+                    'tt_id': str(vip.id),
                     'label': 'VIP',
                     'sold': 3,
                     'allocated': None,
@@ -3337,6 +3339,115 @@ class EventDetailAllocationChartTest(TestCase):
         self.assertContains(response, 'Ticket Breakdown')
         self.assertContains(response, 'id="ticketBreakdownChart"')
         self.assertNotContains(response, 'Ticket Allocation')
+
+    def _make_order_with_types(self, type_names, *, name='Buyer'):
+        """Create an order with one Ticket per name in type_names."""
+        customer = Customer.objects.create(
+            organization=self.org,
+            email=f'{name.lower()}@example.com',
+            name=name,
+        )
+        order = TicketOrder.objects.create(
+            event=self.event,
+            customer=customer,
+            order_number=str(uuid.uuid4())[:12],
+            total_amount=Decimal('25.00'),
+            order_date=timezone.now(),
+        )
+        for tn in type_names:
+            Ticket.objects.create(ticket_order=order, ticket_type=tn, price=Decimal('25.00'))
+        return order
+
+    def test_ticket_type_orders_lists_only_orders_with_that_type(self):
+        ga = SaleableTicketType.objects.create(
+            event=self.event, name='General Admission',
+            price=Decimal('25.00'), quantity_limit=100, quantity_sold=2,
+        )
+        SaleableTicketType.objects.create(
+            event=self.event, name='VIP',
+            price=Decimal('75.00'), quantity_limit=50, quantity_sold=1,
+        )
+        ga_order = self._make_order_with_types(['General Admission'], name='GaBuyer')
+        vip_order = self._make_order_with_types(['VIP'], name='VipBuyer')
+        self._login()
+
+        response = self.client.get(
+            reverse('tickets:saleable_ticket_type_orders', args=[self.event.pk, ga.pk])
+        )
+
+        self.assertEqual(response.status_code, 200)
+        order_ids = {o.id for o in response.context['page_obj']}
+        self.assertIn(ga_order.id, order_ids)
+        self.assertNotIn(vip_order.id, order_ids)
+
+    def test_ticket_type_orders_dedupes_multi_ticket_order_and_counts_type(self):
+        ga = SaleableTicketType.objects.create(
+            event=self.event, name='General Admission',
+            price=Decimal('25.00'), quantity_limit=100, quantity_sold=3,
+        )
+        # One order with 2 GA + 1 VIP — should appear once, type_count == 2.
+        order = self._make_order_with_types(
+            ['General Admission', 'General Admission', 'VIP'], name='MixBuyer'
+        )
+        self._login()
+
+        response = self.client.get(
+            reverse('tickets:saleable_ticket_type_orders', args=[self.event.pk, ga.pk])
+        )
+
+        page = list(response.context['page_obj'])
+        self.assertEqual([o.id for o in page], [order.id])
+        self.assertEqual(page[0].type_count, 2)
+
+    def test_ticket_type_orders_is_paginated(self):
+        ga = SaleableTicketType.objects.create(
+            event=self.event, name='General Admission',
+            price=Decimal('25.00'), quantity_limit=None, quantity_sold=130,
+        )
+        for i in range(130):
+            self._make_order_with_types(['General Admission'], name=f'Buyer{i}')
+        self._login()
+
+        # Page 1 caps at the page size (100) and exposes a second page.
+        page1 = self.client.get(
+            reverse('tickets:saleable_ticket_type_orders', args=[self.event.pk, ga.pk])
+        )
+        self.assertEqual(page1.status_code, 200)
+        po = page1.context['page_obj']
+        self.assertEqual(po.paginator.count, 130)
+        self.assertEqual(po.paginator.num_pages, 2)
+        self.assertEqual(len(po.object_list), 100)
+        self.assertTrue(po.has_other_pages())
+        self.assertContains(page1, 'pagination')
+
+        # Page 2 holds the remaining orders.
+        page2 = self.client.get(
+            reverse('tickets:saleable_ticket_type_orders', args=[self.event.pk, ga.pk]) + '?page=2'
+        )
+        self.assertEqual(page2.status_code, 200)
+        self.assertEqual(len(page2.context['page_obj'].object_list), 30)
+
+    def test_ticket_type_orders_scoped_to_org(self):
+        other_org = Organization.objects.create(name='Other Org', slug='other-org')
+        other_venue = Venue.objects.create(
+            organization=other_org, name='Other Venue', city='Los Angeles',
+        )
+        other_event = Event.objects.create(
+            organization=other_org, name='Other Event', venue=other_venue,
+            start_date=date.today() + timedelta(days=7),
+            ticketing_type='direct', status='live',
+        )
+        other_tt = SaleableTicketType.objects.create(
+            event=other_event, name='General Admission',
+            price=Decimal('25.00'), quantity_limit=100,
+        )
+        self._login()
+
+        response = self.client.get(
+            reverse('tickets:saleable_ticket_type_orders', args=[other_event.pk, other_tt.pk])
+        )
+
+        self.assertEqual(response.status_code, 404)
 
 
 class EventDailyPageViewTest(TestCase):

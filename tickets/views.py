@@ -3911,6 +3911,7 @@ def _compute_event_stats(event):
             remaining = None if is_unlimited else max(allocated - sold, 0)
             percent_sold = None if is_unlimited or allocated == 0 else round(min(sold / allocated * 100, 100))
             ticket_type_allocation_charts.append({
+                'tt_id': str(tt.id),
                 'label': tt.name,
                 'sold': sold,
                 'allocated': allocated,
@@ -9166,6 +9167,55 @@ def saleable_ticket_type_data(request, event_id, ticket_type_id):
         'password': tt.password or '',
         'unlocks_after_id': str(tt.unlocks_after_id) if tt.unlocks_after_id else '',
         'waitlist_enabled': tt.waitlist_enabled,
+    })
+
+
+@login_required
+@require_org
+@require_organizer
+def saleable_ticket_type_orders(request, event_id, ticket_type_id):
+    """List the orders that contain a given direct-ticketing ticket type.
+
+    Reached from the Ticket Allocation card on event_detail. Orders are matched
+    by ticket-type *name* (Ticket.ticket_type is the denormalized name string,
+    not a FK), so two ticket types sharing a name on one event collapse together
+    — tracked in TODOS.md for a future key-based filter.
+    """
+    org = get_organization(request)
+    event = get_object_or_404(Event.objects.filter(organization=org), id=event_id)
+    ticket_type = get_object_or_404(
+        SaleableTicketType.objects.filter(event=event), id=ticket_type_id
+    )
+
+    # Mirror the orders annotation pattern used by event_detail so the table
+    # renders identically (customer, status, gross total, ticket counts).
+    _platform_fee_subq = Subquery(
+        StripeCheckoutSession.objects.filter(ticket_order=OuterRef('pk')).values('platform_fee_cents')[:1],
+        output_field=DecimalField(max_digits=10, decimal_places=2),
+    )
+    orders_qs = event.ticket_orders.filter(
+        tickets__ticket_type=ticket_type.name
+    ).select_related(
+        'customer', 'uploaded_file'
+    ).annotate(
+        tickets_count=Count('tickets'),
+        type_count=Count('tickets', filter=Q(tickets__ticket_type=ticket_type.name)),
+        gross_total=ExpressionWrapper(
+            F('total_amount') - Cast(
+                Coalesce(_platform_fee_subq, 0),
+                output_field=DecimalField(max_digits=10, decimal_places=2),
+            ) * Decimal('0.01'),
+            output_field=DecimalField(max_digits=10, decimal_places=2),
+        ),
+    ).distinct().order_by('-order_date')
+
+    paginator = Paginator(orders_qs, 100)
+    page_obj = paginator.get_page(request.GET.get('page'))
+
+    return render(request, 'tickets/saleable_ticket_type_orders.html', {
+        'event': event,
+        'ticket_type': ticket_type,
+        'page_obj': page_obj,
     })
 
 

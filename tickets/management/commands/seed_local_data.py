@@ -139,8 +139,11 @@ class Command(BaseCommand):
             customers = self._create_customers(org, tags, rng)
             events = self._create_events(org, venues, owner, today, rng)
             promo_codes = self._create_promo_codes(org, events, now)
-            self._create_orders_and_tickets(events, customers, uploads, promo_codes, owner, today, rng)
+            # Direct-ticketing catalog must exist before orders so direct events
+            # sell against their real SaleableTicketTypes (keeps quantity_sold and
+            # the underlying Ticket rows consistent).
             self._create_direct_ticketing(events, now, rng)
+            self._create_orders_and_tickets(events, customers, uploads, promo_codes, owner, today, rng)
             self._create_stripe_sessions(org, events, customers, now, rng)
             self._create_tracking_links(org, events, rng)
             self._create_expenses_and_income(org, events, owner, rng)
@@ -419,7 +422,8 @@ class Command(BaseCommand):
         return codes
 
     def _create_orders_and_tickets(self, events, customers, uploads, promos, owner, today, rng):
-        ticket_types = [
+        # External (CSV-style) events draw from a generic ticket-type list.
+        external_ticket_types = [
             ("General Admission", 25, 35),
             ("Tier 2", 35, 45),
             ("VIP", 60, 95),
@@ -432,6 +436,12 @@ class Command(BaseCommand):
                 continue
             if event.name == LIVE_EVENT_WITHOUT_ORDERS:
                 continue  # freshly announced — intentionally has no orders yet
+            # Direct events sell against their real SaleableTicketType catalog so
+            # quantity_sold and the underlying Ticket rows stay consistent. Track
+            # remaining capacity so a limited type is never oversold.
+            is_direct = event.ticketing_type == TICKETING_TYPE_DIRECT
+            direct_types = list(event.saleable_ticket_types.all()) if is_direct else None
+            direct_sold = {tt.id: 0 for tt in direct_types} if is_direct else None
             if event.status == EVENT_STATUS_CANCELLED:
                 num_orders = 5
             else:
@@ -440,8 +450,16 @@ class Command(BaseCommand):
             for _ in range(num_orders):
                 customer = rng.choice(customers)
                 qty = rng.choices([1, 2, 3, 4, 5, 6], weights=[35, 30, 15, 10, 6, 4])[0]
-                tt_name, tt_low, tt_high = rng.choice(ticket_types)
-                price = _decimal(rng.randint(tt_low, tt_high)) if tt_high else _decimal(0)
+                if is_direct:
+                    pick = self._pick_direct_type(direct_types, direct_sold, qty, rng)
+                    if pick is None:
+                        break  # catalog fully sold out
+                    tt, qty = pick
+                    tt_name = tt.name
+                    price = tt.price
+                else:
+                    tt_name, tt_low, tt_high = rng.choice(external_ticket_types)
+                    price = _decimal(rng.randint(tt_low, tt_high)) if tt_high else _decimal(0)
                 total = price * qty
                 # Spread order_date across the 8 weeks before the event
                 days_before = rng.randint(2, 56)
@@ -490,7 +508,38 @@ class Command(BaseCommand):
                         price=price,
                     )
                     tickets_count += 1
+                if is_direct:
+                    direct_sold[tt.id] += qty
+            # Persist the true sold count for direct types from the tickets created.
+            if is_direct:
+                for tt in direct_types:
+                    if tt.quantity_sold != direct_sold[tt.id]:
+                        tt.quantity_sold = direct_sold[tt.id]
+                        tt.save(update_fields=["quantity_sold"])
         self.stdout.write(self.style.SUCCESS(f"Orders: {orders_count} | Tickets: {tickets_count}"))
+
+    @staticmethod
+    def _pick_direct_type(types, sold, qty, rng):
+        """Choose a SaleableTicketType for one order, respecting remaining capacity.
+
+        Returns (ticket_type, adjusted_qty) or None if the whole catalog is sold
+        out. GA-style types are weighted more popular than VIP. qty is clamped to
+        the chosen type's remaining allotment so a limited type is never oversold.
+        """
+        available, weights = [], []
+        for tt in types:
+            limit = tt.quantity_limit
+            remaining = None if limit is None else max(limit - sold[tt.id], 0)
+            if remaining == 0:
+                continue
+            available.append((tt, remaining))
+            weights.append(30 if "VIP" in tt.name else 70)
+        if not available:
+            return None
+        tt, remaining = rng.choices(available, weights=weights)[0]
+        if remaining is not None:
+            qty = min(qty, remaining)
+        return tt, qty
 
     def _create_direct_ticketing(self, events, now, rng):
         direct_events = [
@@ -500,17 +549,19 @@ class Command(BaseCommand):
         ]
         for i, event in enumerate(direct_events):
             no_orders = event.name == LIVE_EVENT_WITHOUT_ORDERS
+            # quantity_sold starts at 0; _create_orders_and_tickets sells real
+            # orders against these types and writes back the true count.
             ga = SaleableTicketType.objects.create(
                 event=event, name="General Admission", price=_decimal(30),
                 quantity_limit=200, max_per_customer=6,
-                quantity_sold=0 if no_orders else rng.randint(40, 120),
+                quantity_sold=0,
                 order=1, sale_start=now - timedelta(days=14),
                 description="Standing room. First come, first served.",
             )
             vip = SaleableTicketType.objects.create(
                 event=event, name="VIP Lounge", price=_decimal(85),
                 quantity_limit=40, max_per_customer=4,
-                quantity_sold=0 if no_orders else rng.randint(8, 30),
+                quantity_sold=0,
                 order=2, sale_start=now - timedelta(days=14),
                 description="Reserved table + welcome drink.",
             )
