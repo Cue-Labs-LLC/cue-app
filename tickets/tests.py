@@ -22,6 +22,7 @@ from .models import (
     SurveyInvitation, SurveyResponse, SurveyAnswer, SurveyQuestion, Payout,
     ExternalSurveyUpload, ExternalSurveyResponse, EventDailyPageView,
     LoyaltyProgram, LoyaltyTier, LoyaltyPointsTransaction,
+    TICKETING_TYPE_DIRECT,
 )
 from .utils import extract_fee_from_display_cents
 
@@ -12448,3 +12449,71 @@ class MetaAdsErrorHandlingTests(TestCase):
         data = resp.json()
         self.assertFalse(data['ok'])
         self.assertIn('code 1', data['error'])
+
+
+class ResendOrderConfirmationTests(TestCase):
+    """Resend confirmation email endpoint on the order detail page."""
+
+    def setUp(self):
+        self.client = Client()
+        self.org = Organization.objects.create(name='Resend Org', slug='resend-org')
+        self.user = User.objects.create_user(
+            username='resend-host', email='host@example.com', password='testpass123',
+        )
+        UserProfile.objects.create(
+            user=self.user, organization=self.org, org_role=UserProfile.OrgRole.HOST,
+        )
+        OrganizationMembership.objects.create(
+            user=self.user, organization=self.org, org_role=UserProfile.OrgRole.HOST,
+        )
+        self.client.login(username='host@example.com', password='testpass123')
+        self.client.get(reverse('tickets:home'))
+
+        self.venue = Venue.objects.create(organization=self.org, name='Venue', city='City')
+        self.event = Event.objects.create(
+            organization=self.org, name='Direct Event', venue=self.venue,
+            start_date=date(2025, 6, 15), start_time=time(19, 0),
+            ticketing_type=TICKETING_TYPE_DIRECT,
+        )
+        self.customer = Customer.objects.create(
+            organization=self.org, email='buyer@example.com', name='Buyer',
+        )
+        self.order = TicketOrder.objects.create(
+            customer=self.customer, event=self.event,
+            order_number='ORD-RS-1', order_date='2025-06-01 10:00:00',
+            total_amount=Decimal('50.00'),
+        )
+        self.session = StripeCheckoutSession.objects.create(
+            event=self.event, organization=self.org,
+            stripe_session_id='pi_resend_1', stripe_payment_intent_id='pi_resend_1',
+            buyer_email='buyer@example.com', buyer_name='Buyer',
+            status=StripeCheckoutSession.Status.COMPLETED,
+            line_items_snapshot=[], amount_total_cents=5000,
+            ticket_order=self.order,
+        )
+        self.url = reverse('tickets:resend_order_confirmation', args=[self.order.id])
+
+    @patch('tickets.tasks.send_order_confirmation_email_task.delay')
+    def test_resend_queues_task_for_direct_order(self, mock_delay):
+        response = self.client.post(self.url)
+        self.assertRedirects(
+            response, reverse('tickets:order_detail', args=[self.order.id])
+        )
+        mock_delay.assert_called_once_with(str(self.order.id))
+
+    @patch('tickets.tasks.send_order_confirmation_email_task.delay')
+    def test_resend_rejects_non_direct_order(self, mock_delay):
+        self.session.delete()
+        self.event.ticketing_type = 'csv'
+        self.event.save(update_fields=['ticketing_type'])
+        response = self.client.post(self.url)
+        self.assertRedirects(
+            response, reverse('tickets:order_detail', args=[self.order.id])
+        )
+        mock_delay.assert_not_called()
+
+    @patch('tickets.tasks.send_order_confirmation_email_task.delay')
+    def test_resend_rejects_get(self, mock_delay):
+        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, 405)
+        mock_delay.assert_not_called()
