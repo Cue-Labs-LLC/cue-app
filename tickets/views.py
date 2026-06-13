@@ -5297,6 +5297,11 @@ def order_detail(request, order_id):
         and order.refunded_at is None
         and remaining_refundable > 0
     )
+    can_resend = (
+        order.event.ticketing_type == TICKETING_TYPE_DIRECT
+        and stripe_session is not None
+        and bool(order.customer.email)
+    )
 
     context = {
         'order': order,
@@ -5305,6 +5310,7 @@ def order_detail(request, order_id):
         'ticket_types': ticket_types,
         'stripe_session': stripe_session,
         'can_refund': can_refund,
+        'can_resend': can_resend,
         'remaining_refundable': remaining_refundable,
     }
     return render(request, 'tickets/order_detail.html', context)
@@ -5438,6 +5444,33 @@ def refund_order(request, order_id):
             f'Refunded ${refund_amount} on order {order.display_order_number}. '
             f'Remaining refundable: ${new_remaining}.',
         )
+    return redirect('tickets:order_detail', order_id=order_id)
+
+
+@login_required
+@require_org
+@require_host
+@require_http_methods(["POST"])
+def resend_order_confirmation(request, order_id):
+    """Re-send the order confirmation email for a direct-purchase order."""
+    org = get_organization(request)
+    order = get_object_or_404(
+        TicketOrder.objects.filter(event__organization=org).select_related(
+            'customer', 'event', 'stripe_checkout_session',
+        ),
+        id=order_id
+    )
+    stripe_session = getattr(order, 'stripe_checkout_session', None)
+    if order.event.ticketing_type != TICKETING_TYPE_DIRECT or stripe_session is None:
+        messages.error(request, 'Confirmation emails can only be resent for direct-purchase orders.')
+        return redirect('tickets:order_detail', order_id=order_id)
+    if not order.customer.email:
+        messages.error(request, 'This order has no customer email on file.')
+        return redirect('tickets:order_detail', order_id=order_id)
+
+    from .tasks import send_order_confirmation_email_task
+    send_order_confirmation_email_task.delay(str(order.id))
+    messages.success(request, f'Confirmation email queued to {order.customer.email}.')
     return redirect('tickets:order_detail', order_id=order_id)
 
 
