@@ -118,7 +118,7 @@
 /* Shared row: dot + name + bar + count */
 .ta-list {
     display: grid;
-    grid-template-columns: 8px minmax(0, 1.1fr) minmax(0, 2.2fr) auto;
+    grid-template-columns: minmax(0, 1.1fr) minmax(0, 2.2fr) auto;
     column-gap: 16px;
 }
 .ta-row {
@@ -134,6 +134,7 @@
 .ta-row:last-child { border-bottom: none; }
 .ta-row:hover { background: rgba(255, 255, 255, 0.02); }
 .ta-dot {
+    flex: none;
     width: 8px;
     height: 8px;
     border-radius: 50%;
@@ -240,7 +241,7 @@
     .checkin-hero__readout { align-items: center; }
     .ta-summary { grid-template-columns: 1fr 1fr; gap: 16px; }
     .ta-row {
-        grid-template-columns: 8px 1fr auto;
+        grid-template-columns: 1fr auto;
         row-gap: 10px;
     }
     .ta-row .ta-bar-wrap { grid-column: 1 / -1; }
@@ -689,8 +690,10 @@ button.detail-meta-weather--severe:focus-visible {
         <div class="ta-list" style="margin: 20px -20px -20px; border-top: 1px solid var(--border-light);">
             {% for row in checkin_by_type %}
             <div class="ta-row">
-                <span class="ta-dot{% if row.percent < 50 %} ta-dot--low{% elif row.percent < 75 %} ta-dot--mid{% endif %}"></span>
-                <span class="ta-name"><span class="ta-name__text">{{ row.label }}</span></span>
+                <span class="ta-name">
+                    <span class="ta-dot{% if row.percent < 50 %} ta-dot--low{% elif row.percent < 75 %} ta-dot--mid{% endif %}"></span>
+                    <span class="ta-name__text">{{ row.label }}</span>
+                </span>
                 <div class="ta-bar-wrap">
                     <div class="ta-bar-fill" style="width:{{ row.percent }}%"></div>
                 </div>
@@ -732,8 +735,8 @@ button.detail-meta-weather--severe:focus-visible {
             {% for chart in ticket_type_allocation_charts %}
             {% if chart.is_unlimited %}
             <div class="ta-row">
-                <span class="ta-dot"></span>
                 <span class="ta-name">
+                    <span class="ta-dot"></span>
                     <span class="ta-name__text">{{ chart.label }}</span>
                     <span class="ta-chip">Unlimited</span>
                 </span>
@@ -748,8 +751,8 @@ button.detail-meta-weather--severe:focus-visible {
             {% else %}
             {% widthratio chart.sold chart.allocated 100 as pct %}
             <div class="ta-row{% if chart.remaining == 0 %} ta-row--soldout{% endif %}">
-                <span class="ta-dot{% if chart.remaining == 0 %} ta-dot--pulse{% elif chart.percent_sold >= 90 %} ta-dot--pulse{% elif chart.percent_sold < 50 %} ta-dot--low{% elif chart.percent_sold < 75 %} ta-dot--mid{% endif %}"></span>
                 <span class="ta-name">
+                    <span class="ta-dot{% if chart.remaining == 0 %} ta-dot--pulse{% elif chart.percent_sold >= 90 %} ta-dot--pulse{% elif chart.percent_sold < 50 %} ta-dot--low{% elif chart.percent_sold < 75 %} ta-dot--mid{% endif %}"></span>
                     <span class="ta-name__text">{{ chart.label }}</span>
                     {% if chart.remaining == 0 %}
                         <span class="ta-chip ta-chip--soldout">Sold out</span>
