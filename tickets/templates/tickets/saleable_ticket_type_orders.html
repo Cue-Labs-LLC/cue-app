@@ -1,0 +1,90 @@
+{% extends 'tickets/base.html' %}
+{% load humanize %}
+
+{% block title %}Orders &middot; {{ ticket_type.name }}{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div>
+        <div class="mb-1">
+            <a href="{% url 'tickets:event_detail' event.id %}" class="text-decoration-none small text-muted">
+                <i class="bi bi-arrow-left"></i> {{ event.name }}
+            </a>
+        </div>
+        <h1 class="mb-0">{{ ticket_type.name }} &middot; Orders</h1>
+    </div>
+</div>
+
+<div class="card mb-4">
+    <div class="card-header">
+        <h5 class="mb-0">
+            Orders containing this ticket type
+            {% if page_obj.paginator.count %}
+            <span class="text-muted fw-normal">({{ page_obj.paginator.count|intcomma }})</span>
+            {% endif %}
+        </h5>
+    </div>
+    <div class="card-body p-0">
+        {% if page_obj.paginator.count %}
+        <div class="table-responsive">
+            <table class="table table-hover mb-0">
+                <thead>
+                    <tr>
+                        <th>Customer</th>
+                        <th>Status</th>
+                        <th>Order Number</th>
+                        <th>Date</th>
+                        <th>Qty ({{ ticket_type.name }})</th>
+                        <th>Gross Total</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for order in page_obj %}
+                    <tr>
+                        <td><a href="{% url 'tickets:customer_detail' order.customer.id %}">{{ order.customer.name }}</a></td>
+                        <td>
+                            {% if order.refunded_at %}
+                            <span class="badge bg-danger">Refunded</span>
+                            {% elif order.refunded_amount > 0 %}
+                            <span class="badge bg-warning text-dark">Partially refunded</span>
+                            {% elif order.checked_in_at %}
+                            <span class="badge bg-success">Checked in</span>
+                            {% else %}
+                            <span class="badge bg-primary">Paid</span>
+                            {% endif %}
+                        </td>
+                        <td><a href="{% url 'tickets:order_detail' order.id %}"><strong>{{ order.display_order_number }}</strong></a></td>
+                        <td>{{ order.order_date|date:"M d, Y H:i" }}</td>
+                        <td>{{ order.type_count }}</td>
+                        <td>${{ order.gross_total|floatformat:2 }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+
+        {% if page_obj.has_other_pages %}
+        <div class="d-flex justify-content-center py-3">
+            <nav>
+                <ul class="pagination mb-0">
+                    {% if page_obj.has_previous %}
+                    <li class="page-item"><a class="page-link" href="?page={{ page_obj.previous_page_number }}">Previous</a></li>
+                    {% endif %}
+                    <li class="page-item active"><span class="page-link">{{ page_obj.number }} / {{ page_obj.paginator.num_pages }}</span></li>
+                    {% if page_obj.has_next %}
+                    <li class="page-item"><a class="page-link" href="?page={{ page_obj.next_page_number }}">Next</a></li>
+                    {% endif %}
+                </ul>
+            </nav>
+        </div>
+        {% endif %}
+        {% else %}
+        <div class="empty-state" style="padding: 48px 0;">
+            <i class="bi bi-receipt fs-2 text-muted"></i>
+            <p class="text-muted mt-2 mb-0">No orders yet for {{ ticket_type.name }}.</p>
+            <a href="{% url 'tickets:event_detail' event.id %}" class="btn btn-outline-secondary btn-sm mt-3">Back to event</a>
+        </div>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}
