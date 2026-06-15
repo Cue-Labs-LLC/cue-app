@@ -25,7 +25,9 @@ You are an event-performance analyst for "{org_name}". You are writing a post-ev
 debrief for the organizer, who can already see every raw number on their dashboard. \
 Your job is NOT to repeat those numbers back to them — it is to connect the dots \
 *across* sales, attendee segments, survey sentiment, and finances and tell them what \
-to do next.
+to do next. Treat all submitted survey responses as one whole — never distinguish how \
+the survey was collected. When a Check-In section is present, factor the door check-in / \
+no-show rate into your analysis and recommendations.
 
 Write four short markdown sections, in this order:
 
@@ -85,16 +87,15 @@ Expenses (Total: ${total_expenses}):
 
 Profit/Loss: ${profit} (Margin: {margin_pct})
 
-Survey Results:
-- Invitations Sent: {survey_invitations_count}
-- Responses Received: {survey_responses_count}
-- External Survey Responses: {ext_survey_count}
+Survey Results (all attendees who submitted a survey):
+- Total Responses: {survey_response_count}
 - Average Star Rating: {avg_star_rating}
-- NPS Score: {nps_score}
-- Overall Rating Breakdown: {overall_rating_breakdown}
+- NPS Score: {nps_score} (from {nps_rated_count} rated responses)
+- Promoters / Passives / Detractors: {promoters_pct}% / {passives_pct}% / {detractors_pct}%
+- Rating Breakdown: {overall_rating_breakdown}
 - Recent Comments:
 {comment_lines}
-"""
+{checkin_section}"""
 
 
 class EventSummaryService:
@@ -191,12 +192,16 @@ class EventSummaryService:
         else:
             expense_lines = "- No expenses recorded"
 
-        # Survey data
+        # Survey data — all submitted responses treated as one whole
         survey = event_data.get('survey_results')
         if survey:
+            survey_response_count = survey.get('total', 0)
+            nps_rated_count = survey.get('nps_total', 0)
+            promoters_pct = survey.get('promoters_pct', 0)
+            passives_pct = survey.get('passives_pct', 0)
+            detractors_pct = survey.get('detractors_pct', 0)
             avg_star_rating = f"{survey['avg_star_rating']}/5" if survey.get('avg_star_rating') else "N/A"
             nps_score = str(survey['nps_score']) if survey.get('nps_score') is not None else "N/A"
-            ext_survey_count = survey.get('ext_response_count', 0)
             rating_breakdown = survey.get('overall_rating_breakdown', [])
             if rating_breakdown:
                 overall_rating_breakdown = ', '.join(
@@ -213,11 +218,29 @@ class EventSummaryService:
             else:
                 comment_lines = "- No comments"
         else:
+            survey_response_count = 0
+            nps_rated_count = 0
+            promoters_pct = passives_pct = detractors_pct = 0
             avg_star_rating = "N/A"
             nps_score = "N/A"
-            ext_survey_count = 0
             overall_rating_breakdown = "N/A"
             comment_lines = "- No survey data available"
+
+        # Check-in (door attendance) — only present for direct events past start
+        checkin = event_data.get('checkin') or {}
+        if checkin.get('show') and checkin.get('total_tickets'):
+            type_lines = "\n".join(
+                f"- {t['label']}: {t['checked_in']}/{t['total']} ({t['percent']}%)"
+                for t in checkin.get('by_type', [])
+            ) or "- No per-type data"
+            checkin_section = (
+                "\nCheck-In (door attendance):\n"
+                f"- Checked In: {checkin['checked_in']} of {checkin['total_tickets']} "
+                f"({checkin['percent']}%)\n"
+                f"{type_lines}\n"
+            )
+        else:
+            checkin_section = ""
 
         # Capacity utilization
         capacity = event.capacity
@@ -253,11 +276,14 @@ class EventSummaryService:
             expense_lines=expense_lines,
             profit=f"{event_data['profit']:,.2f}",
             margin_pct=margin_str,
-            survey_invitations_count=event_data['survey_invitations_count'],
-            survey_responses_count=event_data['survey_responses_count'],
-            ext_survey_count=ext_survey_count,
+            survey_response_count=survey_response_count,
+            nps_rated_count=nps_rated_count,
+            promoters_pct=promoters_pct,
+            passives_pct=passives_pct,
+            detractors_pct=detractors_pct,
             avg_star_rating=avg_star_rating,
             nps_score=nps_score,
             overall_rating_breakdown=overall_rating_breakdown,
+            checkin_section=checkin_section,
             comment_lines=comment_lines,
         )
