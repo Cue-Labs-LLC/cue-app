@@ -62,6 +62,24 @@ class OrgProfileForm(forms.ModelForm):
         )
 
 
+class OrgDisplayPreferencesForm(forms.ModelForm):
+    """Form for org-level display preferences (which optional cards appear)."""
+
+    class Meta:
+        model = Organization
+        fields = ['ai_event_summary_enabled']
+        widgets = {
+            'ai_event_summary_enabled': forms.CheckboxInput(
+                attrs={'class': 'form-check-input', 'role': 'switch'}
+            ),
+        }
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.helper = FormHelper()
+        self.helper.form_tag = False
+
+
 class MemberInviteForm(forms.Form):
     """Form to invite a member to the organization by email or phone."""
 

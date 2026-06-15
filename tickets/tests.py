@@ -12628,3 +12628,274 @@ class ResendOrderConfirmationTests(TestCase):
         response = self.client.get(self.url)
         self.assertEqual(response.status_code, 405)
         mock_delay.assert_not_called()
+
+
+class EventSummaryStreamTests(TestCase):
+    """Test cases for the AI event debrief streaming endpoint."""
+
+    def setUp(self):
+        self.client = Client()
+        self.org = Organization.objects.create(name='Summary Test Org', slug='summary-test-org')
+        self.user = User.objects.create_user(
+            username='summaryuser',
+            email='summary@test.com',
+            password='testpass123',
+        )
+        UserProfile.objects.create(
+            user=self.user, organization=self.org,
+            org_role=UserProfile.OrgRole.OWNER,
+        )
+        self.client.login(username='summary@test.com', password='testpass123')
+        self.client.get(reverse('tickets:home'))
+
+        self.venue = Venue.objects.create(
+            organization=self.org, name='Summary Venue', city='Summary City',
+        )
+        self.event = Event.objects.create(
+            organization=self.org, name='Summary Event',
+            venue=self.venue, start_date=date(2024, 9, 15),
+        )
+        self.url = reverse('tickets:event_summary_stream', args=[self.event.id])
+
+    def test_unauthenticated_redirects(self):
+        """Unauthenticated user is redirected to login."""
+        self.client.logout()
+        response = self.client.post(self.url)
+        self.assertEqual(response.status_code, 302)
+
+    def test_get_not_allowed(self):
+        """GET method is not allowed — POST only."""
+        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, 405)
+
+    def test_wrong_org_returns_404(self):
+        """Event belonging to a different org returns 404."""
+        other_org = Organization.objects.create(name='Other Org', slug='other-org')
+        other_venue = Venue.objects.create(
+            organization=other_org, name='Other Venue', city='Other City',
+        )
+        other_event = Event.objects.create(
+            organization=other_org, name='Other Event',
+            venue=other_venue, start_date=date(2024, 9, 15),
+        )
+        url = reverse('tickets:event_summary_stream', args=[other_event.id])
+        response = self.client.post(url)
+        self.assertEqual(response.status_code, 404)
+
+    @patch('langchain_openai.ChatOpenAI')
+    def test_stream_returns_sse_content_type(self, mock_llm_cls):
+        """Successful request returns text/event-stream content type."""
+        mock_instance = MagicMock()
+        mock_chunk = MagicMock()
+        mock_chunk.content = 'Test debrief'
+        mock_instance.stream.return_value = [mock_chunk]
+        mock_llm_cls.return_value = mock_instance
+
+        response = self.client.post(self.url)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response['Content-Type'], 'text/event-stream')
+
+    @patch('langchain_openai.ChatOpenAI')
+    def test_stream_persists_summary(self, mock_llm_cls):
+        """After streaming, the summary is saved to the event."""
+        mock_instance = MagicMock()
+        mock_chunk = MagicMock()
+        mock_chunk.content = 'Generated debrief text'
+        mock_chunk.usage_metadata = None
+        mock_instance.stream.return_value = [mock_chunk]
+        mock_llm_cls.return_value = mock_instance
+
+        response = self.client.post(self.url)
+        # Consume the streaming response to trigger the generator
+        list(response.streaming_content)
+
+        self.event.refresh_from_db()
+        self.assertEqual(self.event.ai_summary, 'Generated debrief text')
+        self.assertIsNotNone(self.event.ai_summary_generated_at)
+
+    @patch('langchain_openai.ChatOpenAI')
+    def test_stream_records_token_usage(self, mock_llm_cls):
+        """A successful generation records a billable AITokenUsage row."""
+        mock_instance = MagicMock()
+        mock_chunk = MagicMock()
+        mock_chunk.content = 'Debrief with usage'
+        mock_chunk.usage_metadata = {
+            'input_tokens': 1200,
+            'output_tokens': 300,
+            'total_tokens': 1500,
+        }
+        mock_instance.stream.return_value = [mock_chunk]
+        mock_llm_cls.return_value = mock_instance
+
+        response = self.client.post(self.url)
+        list(response.streaming_content)
+
+        usage = AITokenUsage.objects.filter(
+            organization=self.org,
+            feature=AITokenUsage.FEATURE_EVENT_SUMMARY,
+        )
+        self.assertEqual(usage.count(), 1)
+        record = usage.first()
+        self.assertEqual(record.total_tokens, 1500)
+        self.assertEqual(record.user, self.user)
+        self.assertEqual(record.metadata.get('event_id'), str(self.event.id))
+
+    @patch('langchain_openai.ChatOpenAI')
+    def test_stream_handles_llm_error(self, mock_llm_cls):
+        """LLM API error yields an error SSE event, not a 500."""
+        mock_instance = MagicMock()
+        mock_instance.stream.side_effect = Exception('API key invalid')
+        mock_llm_cls.return_value = mock_instance
+
+        response = self.client.post(self.url)
+        self.assertEqual(response.status_code, 200)
+        content = b''.join(response.streaming_content).decode()
+        self.assertIn('"type": "error"', content)
+        self.assertIn('"type": "done"', content)
+
+    def test_ai_summary_field_persistence(self):
+        """ai_summary field saves and loads correctly."""
+        self.event.ai_summary = 'Test stored debrief'
+        self.event.ai_summary_generated_at = timezone.now()
+        self.event.save(update_fields=['ai_summary', 'ai_summary_generated_at'])
+
+        self.event.refresh_from_db()
+        self.assertEqual(self.event.ai_summary, 'Test stored debrief')
+        self.assertIsNotNone(self.event.ai_summary_generated_at)
+
+    @patch('langchain_openai.ChatOpenAI')
+    def test_rate_limit_returns_429(self, mock_llm_cls):
+        """After 10 requests, the endpoint returns 429."""
+        mock_instance = MagicMock()
+        mock_chunk = MagicMock()
+        mock_chunk.content = 'Debrief'
+        mock_instance.stream.return_value = [mock_chunk]
+        mock_llm_cls.return_value = mock_instance
+
+        from django.core.cache import cache as django_cache
+        rate_key = f"summary_ratelimit:{self.org.id}"
+        django_cache.set(rate_key, 10, timeout=3600)
+
+        response = self.client.post(self.url)
+        self.assertEqual(response.status_code, 429)
+
+        django_cache.delete(rate_key)
+
+    def test_event_detail_still_works(self):
+        """Regression: event_detail view still renders after stats extraction."""
+        url = reverse('tickets:event_detail', args=[self.event.id])
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'Summary Event')
+
+    def test_build_prompt_structure(self):
+        """_build_prompt returns the forward-looking debrief sections and event name."""
+        from tickets.services.event_summary import EventSummaryService
+        from tickets.views import _compute_event_stats
+
+        service = EventSummaryService(self.org, user=self.user)
+        event_data = _compute_event_stats(self.event)
+        prompt = service._build_prompt(self.event, event_data)
+
+        self.assertIn('What worked', prompt)
+        self.assertIn('What underperformed', prompt)
+        self.assertIn('Recommended next steps', prompt)
+        self.assertIn('Summary Event', prompt)
+
+
+class DisplayPreferencesTests(TestCase):
+    """Org admins can toggle the AI Event Summary card from /settings/display/."""
+
+    def setUp(self):
+        self.client = Client()
+        self.org = Organization.objects.create(name='Prefs Org', slug='prefs-org')
+
+        self.admin_user = User.objects.create_user(
+            username='prefsadmin', email='prefsadmin@test.com', password='testpass123',
+        )
+        UserProfile.objects.create(
+            user=self.admin_user, organization=self.org, org_role=UserProfile.OrgRole.OWNER,
+        )
+        OrganizationMembership.objects.create(
+            user=self.admin_user, organization=self.org, org_role=UserProfile.OrgRole.OWNER,
+        )
+
+        self.member_user = User.objects.create_user(
+            username='prefshost', email='prefshost@test.com', password='testpass123',
+        )
+        UserProfile.objects.create(
+            user=self.member_user, organization=self.org, org_role=UserProfile.OrgRole.HOST,
+        )
+        OrganizationMembership.objects.create(
+            user=self.member_user, organization=self.org, org_role=UserProfile.OrgRole.HOST,
+        )
+
+        self.venue = Venue.objects.create(
+            organization=self.org, name='Prefs Venue', city='Prefs City',
+        )
+        # Past event so the AI summary card is eligible to render
+        self.event = Event.objects.create(
+            organization=self.org, name='Prefs Event',
+            venue=self.venue, start_date=date(2024, 9, 15),
+        )
+        self.url = reverse('tickets:settings_display_preferences')
+
+    def _login(self, email):
+        self.client.login(username=email, password='testpass123')
+        self.client.get(reverse('tickets:home'))
+
+    def test_admin_can_view_preferences(self):
+        """Admin sees the preferences page with the toggle."""
+        self._login('prefsadmin@test.com')
+        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'ai_event_summary_enabled')
+
+    def test_non_admin_forbidden(self):
+        """A non-admin member is denied access."""
+        self._login('prefshost@test.com')
+        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, 403)
+
+    def test_post_disables_flag(self):
+        """Posting with the box unchecked turns the flag off."""
+        self._login('prefsadmin@test.com')
+        response = self.client.post(self.url, {})
+        self.assertEqual(response.status_code, 302)
+        self.org.refresh_from_db()
+        self.assertFalse(self.org.ai_event_summary_enabled)
+
+    def test_post_enables_flag(self):
+        """Posting with the box checked turns the flag on."""
+        self.org.ai_event_summary_enabled = False
+        self.org.save(update_fields=['ai_event_summary_enabled'])
+        self._login('prefsadmin@test.com')
+        response = self.client.post(self.url, {'ai_event_summary_enabled': 'on'})
+        self.assertEqual(response.status_code, 302)
+        self.org.refresh_from_db()
+        self.assertTrue(self.org.ai_event_summary_enabled)
+
+    def test_card_shown_when_enabled(self):
+        """Default (enabled) renders the AI summary card on event detail."""
+        self._login('prefsadmin@test.com')
+        response = self.client.get(reverse('tickets:event_detail', args=[self.event.id]))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'id="ai-summary-card"')
+
+    def test_card_hidden_when_disabled(self):
+        """When disabled, the AI summary card is not rendered."""
+        self.org.ai_event_summary_enabled = False
+        self.org.save(update_fields=['ai_event_summary_enabled'])
+        self._login('prefsadmin@test.com')
+        response = self.client.get(reverse('tickets:event_detail', args=[self.event.id]))
+        self.assertEqual(response.status_code, 200)
+        self.assertNotContains(response, 'id="ai-summary-card"')
+
+    def test_stream_404_when_disabled(self):
+        """The streaming endpoint is unavailable while the card is hidden."""
+        self.org.ai_event_summary_enabled = False
+        self.org.save(update_fields=['ai_event_summary_enabled'])
+        self._login('prefsadmin@test.com')
+        url = reverse('tickets:event_summary_stream', args=[self.event.id])
+        response = self.client.post(url)
+        self.assertEqual(response.status_code, 404)

@@ -60,6 +60,7 @@ from .forms import (
     SaleableTicketTypeForm, SaleableTicketTypeTierFormSet, PublicTicketPurchaseForm,
     DirectEventForm, DirectTicketTypeFormSet,
     PromoCodeForm, SurveyUploadForm, UserProfileForm, OrgProfileForm,
+    OrgDisplayPreferencesForm,
     WaitlistJoinForm, OrganizerWaitlistForm,
     LoyaltyProgramForm, LoyaltyTierFormSet,
 )
@@ -5136,6 +5137,54 @@ def event_uploads_summary(request, event_id):
 @require_org
 @require_organizer
 @require_http_methods(["POST"])
+def event_summary_stream(request, event_id):
+    """SSE endpoint - streams an LLM-generated event summary."""
+    from django.http import StreamingHttpResponse
+    from django.core.cache import cache as django_cache
+
+    from .services.event_summary import EventSummaryService
+
+    org = get_organization(request)
+
+    # Respect the org's display preference — endpoint is unavailable when hidden
+    if not org.ai_event_summary_enabled:
+        raise Http404()
+
+    # Rate limit: 10 generations per org per hour
+    rate_key = f"summary_ratelimit:{org.id}"
+    try:
+        current_count = django_cache.get(rate_key, 0)
+        if current_count >= 10:
+            return JsonResponse(
+                {'error': 'Rate limit exceeded. Please try again later.'},
+                status=429,
+            )
+        django_cache.set(rate_key, current_count + 1, timeout=3600)
+    except Exception:
+        # Redis unavailable — skip rate limiting rather than blocking the request
+        pass
+
+    event = get_object_or_404(
+        Event.objects.filter(organization=org).select_related('venue'),
+        id=event_id,
+    )
+
+    event_data = _compute_event_stats(event)
+
+    service = EventSummaryService(org, user=request.user)
+    response = StreamingHttpResponse(
+        service.stream_summary(event, event_data),
+        content_type='text/event-stream',
+    )
+    response['Cache-Control'] = 'no-cache'
+    response['X-Accel-Buffering'] = 'no'
+    return response
+
+
+@login_required
+@require_org
+@require_organizer
+@require_http_methods(["POST"])
 def generate_scanner_pin(request, event_id):
     org = get_organization(request)
     event = get_object_or_404(Event.objects.filter(organization=org), id=event_id)
@@ -6610,6 +6659,23 @@ def org_profile(request):
     else:
         form = OrgProfileForm(instance=org)
     return render(request, 'tickets/settings_org_profile.html', {'form': form, 'org': org})
+
+
+@login_required
+@require_org
+@require_admin
+def settings_display_preferences(request):
+    """Toggle which optional cards appear on event pages (e.g. AI Event Summary)."""
+    org = get_organization(request)
+    if request.method == 'POST':
+        form = OrgDisplayPreferencesForm(request.POST, instance=org)
+        if form.is_valid():
+            form.save()
+            messages.success(request, 'Display preferences updated.')
+            return redirect('tickets:settings_display_preferences')
+    else:
+        form = OrgDisplayPreferencesForm(instance=org)
+    return render(request, 'tickets/settings_display_preferences.html', {'form': form, 'org': org})
 
 
 # Forecast Tool Views

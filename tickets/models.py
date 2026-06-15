@@ -181,6 +181,10 @@ class Organization(BaseModel):
         default=False,
         help_text='Enable the waitlist feature for this organization.',
     )
+    ai_event_summary_enabled = models.BooleanField(
+        default=True,
+        help_text='Show the AI Event Summary card on event detail pages.',
+    )
     photo = models.ImageField(
         upload_to='org_photos/',
         storage=_get_media_storage,
@@ -982,6 +986,8 @@ class Event(AuditBaseModel):
     )
     name = models.CharField(max_length=200, db_index=True)
     summary = models.CharField(max_length=500, blank=True)
+    ai_summary = models.TextField(blank=True, default='')
+    ai_summary_generated_at = models.DateTimeField(blank=True, null=True)
     venue = models.ForeignKey(
         'Venue',
         on_delete=models.PROTECT,
@@ -2207,6 +2213,7 @@ class AITokenUsage(BaseModel):
     FEATURE_SLICKTEXT_CAMPAIGN_MATCH = 'slicktext_campaign_match'
     FEATURE_MARKETING_NARRATIVE = 'marketing_narrative'
     FEATURE_TYPEFORM_EVENT_MATCH = 'typeform_event_match'
+    FEATURE_EVENT_SUMMARY = 'event_summary'
 
     FEATURE_CHOICES = [
         (FEATURE_CHAT_AGENT, 'Chat agent'),
@@ -2215,6 +2222,7 @@ class AITokenUsage(BaseModel):
         (FEATURE_SLICKTEXT_CAMPAIGN_MATCH, 'SlickText campaign match'),
         (FEATURE_MARKETING_NARRATIVE, 'Marketing narrative'),
         (FEATURE_TYPEFORM_EVENT_MATCH, 'Typeform event match'),
+        (FEATURE_EVENT_SUMMARY, 'Event summary'),
     ]
 
     organization = models.ForeignKey(

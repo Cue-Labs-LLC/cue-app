@@ -153,6 +153,7 @@ urlpatterns = [
     path('events/create/', views.event_type_select, name='event_type_select'),
     path('events/create/<str:ticketing_type>/', views.event_create, name='event_create'),
     path('events/<uuid:event_id>/', views.event_detail, name='event_detail'),
+    path('events/<uuid:event_id>/summary/stream/', views.event_summary_stream, name='event_summary_stream'),
     path('events/<uuid:event_id>/weather/hourly/', views.event_weather_hourly, name='event_weather_hourly'),
     path('events/<uuid:event_id>/surveys/match/',  views.event_survey_match,  name='event_survey_match'),
     path('events/<uuid:event_id>/surveys/apply/',  views.event_survey_apply,  name='event_survey_apply'),
@@ -250,6 +251,7 @@ urlpatterns = [
     # Settings
     path('settings/google-calendar/', views.settings_google_calendar, name='settings_google_calendar'),
     path('settings/', views.settings_overview, name='settings_overview'),
+    path('settings/display/', views.settings_display_preferences, name='settings_display_preferences'),
     path('settings/google-calendar/disconnect/', views.settings_google_calendar_disconnect, name='settings_google_calendar_disconnect'),
     path('settings/meta-ads/', views.meta_ads_settings, name='meta_ads_settings'),
     path('settings/meta-ads/connect/', views.meta_ads_connect, name='meta_ads_connect'),
