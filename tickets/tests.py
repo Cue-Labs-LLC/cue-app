@@ -12802,6 +12802,63 @@ class EventSummaryStreamTests(TestCase):
         self.assertIn('Recommended next steps', prompt)
         self.assertIn('Summary Event', prompt)
 
+    def test_build_prompt_unifies_survey_responses(self):
+        """Survey block uses combined totals and drops internal/external/invitation framing."""
+        from tickets.services.event_summary import EventSummaryService
+        from tickets.views import _compute_event_stats
+
+        service = EventSummaryService(self.org, user=self.user)
+        event_data = _compute_event_stats(self.event)
+        prompt = service._build_prompt(self.event, event_data)
+
+        self.assertIn('Total Responses', prompt)
+        self.assertNotIn('Invitations Sent', prompt)
+        self.assertNotIn('External Survey Responses', prompt)
+        self.assertNotIn('Responses Received', prompt)
+
+    def _make_direct_checked_in_event(self):
+        """A past direct-ticketing event with one fully checked-in GA ticket."""
+        event = Event.objects.create(
+            organization=self.org, name='Direct Event',
+            venue=self.venue, start_date=date(2024, 9, 15),
+            ticketing_type=TICKETING_TYPE_DIRECT,
+        )
+        customer = Customer.objects.create(
+            organization=self.org, email='attendee@test.com', name='Attendee',
+        )
+        order = TicketOrder.objects.create(
+            customer=customer, event=event, order_number='DIR-001',
+            order_date='2024-09-10 10:00:00', total_amount=Decimal('50.00'),
+            checked_in_at=timezone.now(),
+        )
+        Ticket.objects.create(ticket_order=order, ticket_type='GA', price=Decimal('50.00'))
+        return event
+
+    def test_build_prompt_includes_checkin_for_direct_event(self):
+        """Direct events past start surface a Check-In section with percentages."""
+        from tickets.services.event_summary import EventSummaryService
+        from tickets.views import _compute_event_stats
+
+        event = self._make_direct_checked_in_event()
+        service = EventSummaryService(self.org, user=self.user)
+        event_data = _compute_event_stats(event)
+        prompt = service._build_prompt(event, event_data)
+
+        self.assertIn('Check-In (door attendance)', prompt)
+        self.assertIn('1 of 1 (100%)', prompt)
+        self.assertIn('GA: 1/1 (100%)', prompt)
+
+    def test_build_prompt_omits_checkin_for_non_direct_event(self):
+        """Non-direct (external) events have no Check-In section."""
+        from tickets.services.event_summary import EventSummaryService
+        from tickets.views import _compute_event_stats
+
+        service = EventSummaryService(self.org, user=self.user)
+        event_data = _compute_event_stats(self.event)  # default (external) ticketing
+        prompt = service._build_prompt(self.event, event_data)
+
+        self.assertNotIn('Check-In (door attendance)', prompt)
+
 
 class DisplayPreferencesTests(TestCase):
     """Org admins can toggle the AI Event Summary card from /settings/display/."""

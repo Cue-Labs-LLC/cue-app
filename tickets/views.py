@@ -4117,6 +4117,15 @@ def _compute_event_stats(event):
         for r in segment_rows
     ]
 
+    ci_show, ci_total, ci_checked, ci_by_type = _compute_event_checkin_stats(event)
+    checkin = {
+        'show': ci_show,
+        'total_tickets': ci_total,
+        'checked_in': ci_checked,
+        'percent': round(ci_checked / ci_total * 100) if ci_total else 0,
+        'by_type': ci_by_type,
+    }
+
     result = {
         'total_orders': total_orders,
         'ticket_revenue': ticket_revenue,
@@ -4145,6 +4154,7 @@ def _compute_event_stats(event):
         'survey_total_response_count': survey_total_response_count,
         'survey_results': survey_results,
         'attendee_segments': attendee_segments,
+        'checkin': checkin,
     }
     safe_cache_set(cache_key, result, timeout=300)
     return result
