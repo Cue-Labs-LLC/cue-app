@@ -3373,9 +3373,12 @@ def market_trends(request):
     period = request.GET.get('period', 'quarter')
     if period not in ('month', 'quarter'):
         period = 'quarter'
+    metric = request.GET.get('metric', 'revenue')
+    if metric not in ('revenue', 'tickets'):
+        metric = 'revenue'
 
     from tickets.services.market_trends import MarketTrendCalculator
-    result = MarketTrendCalculator(org, period=period).calculate()
+    result = MarketTrendCalculator(org, period=period, metric=metric).calculate()
     markets = result['markets']
 
     return render(request, 'tickets/market_trends.html', {
@@ -3383,6 +3386,7 @@ def market_trends(request):
         'markets_json': json.dumps(markets, default=str),
         'summary': result['summary'],
         'period': period,
+        'metric': metric,
         'sms_marketing_enabled': org.sms_marketing_enabled,
     })
 

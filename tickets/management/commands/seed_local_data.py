@@ -576,6 +576,12 @@ class Command(BaseCommand):
         ("Portland", "Doug Fir Lounge", [
             (24, 0), (25, 35), (23, 40), (25, 42), (24, 41), (25, 43),
         ]),
+        # Sacramento: ticket VOLUME holds steady but average price erodes — looks
+        # stable by tickets, declining by revenue (dominant driver = price). The
+        # optional 3rd tuple element pins the per-ticket price for that quarter.
+        ("Sacramento", "Ace of Spades", [
+            (28, 35, 42), (28, 40, 40), (27, 38, 36), (28, 42, 30), (28, 40, 24), (28, 43, 18),
+        ]),
         # Boise: just two shows on the books — not enough history to read a trend.
         ("Boise", "Neurolux", [
             (28, 0), (22, 30),
@@ -607,12 +613,15 @@ class Command(BaseCommand):
             venue = Venue.objects.create(
                 organization=org, name=venue_name, city=city,
                 state="", country="USA",
-                capacity=max(tpe for tpe, _ in quarters) * self.EVENTS_PER_QUARTER + 50,
+                capacity=max(q[0] for q in quarters) * self.EVENTS_PER_QUARTER + 50,
             )
             anchors = self._past_quarter_dates(today, len(quarters))
             seen = []   # customers with at least one prior order in this market
             cust_seq = 0
-            for qi, (tickets_per_event, ret_pct) in enumerate(quarters):
+            for qi, q in enumerate(quarters):
+                # Quarter tuple is (tickets_per_event, returning_pct[, fixed_price]).
+                tickets_per_event, ret_pct = q[0], q[1]
+                quarter_price = q[2] if len(q) > 2 else None
                 anchor = anchors[qi]
                 # Spread this quarter's events across its first two months.
                 q_events = []
@@ -659,7 +668,8 @@ class Command(BaseCommand):
                 rng.shuffle(buyers)
                 for bi, cust in enumerate(buyers):
                     event = q_events[bi % len(q_events)]
-                    price = _decimal(rng.choice([25, 30, 35, 40]))
+                    price = _decimal(quarter_price if quarter_price is not None
+                                     else rng.choice([25, 30, 35, 40]))
                     order_dt = timezone.make_aware(timezone.datetime.combine(
                         event.start_date - timedelta(days=rng.randint(3, 30)),
                         timezone.datetime.min.time(),

@@ -13541,10 +13541,32 @@ class MarketTrendCalculatorTests(TestCase):
             for s in range(n):
                 self._order_with_tickets(event, 1, '{}q{}'.format(city.lower(), i), s)
 
+    def _build_priced_market(self, city, specs):
+        """One event per quarter; specs[i] = (tickets, price) for that quarter (all new buyers).
+
+        Each ticket is a 1-ticket order at the quarter's price, so tickets-per-event
+        and revenue-per-event can be controlled independently."""
+        venue = self._venue(city)
+        for i, (n, price) in enumerate(specs):
+            event = self._event(venue, self.quarters[i], '{} Q{}'.format(city, i + 1))
+            for s in range(n):
+                customer = Customer.objects.create(
+                    organization=self.org,
+                    email='{}-{}-{}@example.com'.format(city.lower(), i, s),
+                    name='{} {} {}'.format(city, i, s),
+                )
+                order = TicketOrder.objects.create(
+                    customer=customer, event=event,
+                    order_number='ORDP-{}-{}-{}'.format(city.lower(), i, s),
+                    order_date=timezone.make_aware(datetime.combine(event.start_date, time(10, 0))),
+                    total_amount=Decimal(str(price)),
+                )
+                Ticket.objects.create(ticket_order=order, ticket_type='GA', price=Decimal(str(price)))
+
     def test_declining_demand_market(self):
         from tickets.services.market_trends import MarketTrendCalculator
         self._build_market('Austin', [40, 30, 20, 10])
-        result = MarketTrendCalculator(self.org, period='quarter').calculate()
+        result = MarketTrendCalculator(self.org, period='quarter', metric='tickets').calculate()
         austin = next(m for m in result['markets'] if m['city'] == 'Austin')
         self.assertEqual(austin['trend'], 'declining')
         self.assertLess(austin['norm_slope_pct'], 0)
@@ -13557,7 +13579,7 @@ class MarketTrendCalculatorTests(TestCase):
     def test_stable_market(self):
         from tickets.services.market_trends import MarketTrendCalculator
         self._build_market('Denver', [25, 25, 25, 25])
-        result = MarketTrendCalculator(self.org, period='quarter').calculate()
+        result = MarketTrendCalculator(self.org, period='quarter', metric='tickets').calculate()
         denver = next(m for m in result['markets'] if m['city'] == 'Denver')
         self.assertEqual(denver['trend'], 'stable')
         self.assertEqual(denver['dominant_driver'], None)
@@ -13565,7 +13587,7 @@ class MarketTrendCalculatorTests(TestCase):
     def test_growing_market(self):
         from tickets.services.market_trends import MarketTrendCalculator
         self._build_market('Miami', [10, 20, 30, 40])
-        result = MarketTrendCalculator(self.org, period='quarter').calculate()
+        result = MarketTrendCalculator(self.org, period='quarter', metric='tickets').calculate()
         miami = next(m for m in result['markets'] if m['city'] == 'Miami')
         self.assertEqual(miami['trend'], 'growing')
         self.assertGreater(miami['norm_slope_pct'], 0)
@@ -13573,7 +13595,7 @@ class MarketTrendCalculatorTests(TestCase):
     def test_insufficient_data_market(self):
         from tickets.services.market_trends import MarketTrendCalculator
         self._build_market('Boise', [30, 20])  # only 2 periods
-        result = MarketTrendCalculator(self.org, period='quarter').calculate()
+        result = MarketTrendCalculator(self.org, period='quarter', metric='tickets').calculate()
         boise = next(m for m in result['markets'] if m['city'] == 'Boise')
         self.assertEqual(boise['trend'], 'insufficient_data')
         self.assertEqual(boise['dominant_driver'], None)
@@ -13594,7 +13616,7 @@ class MarketTrendCalculatorTests(TestCase):
         from tickets.services.market_trends import MarketTrendCalculator
         self._build_market('Austin', [40, 30, 20, 10])   # declining
         self._build_market('Miami', [10, 20, 30, 40])     # growing
-        result = MarketTrendCalculator(self.org, period='quarter').calculate()
+        result = MarketTrendCalculator(self.org, period='quarter', metric='tickets').calculate()
         self.assertEqual(result['markets'][0]['city'], 'Austin')
         self.assertEqual(result['summary']['declining_count'], 1)
         self.assertEqual(result['summary']['growing_count'], 1)
@@ -13606,6 +13628,7 @@ class MarketTrendCalculatorTests(TestCase):
         resp = self.client.get(reverse('tickets:market_trends'))
         self.assertEqual(resp.status_code, 200)
         self.assertIn('markets', resp.context)
+        self.assertEqual(resp.context['metric'], 'revenue')  # revenue is the default
         self.assertContains(resp, 'Austin')
         # Embedded JSON parses.
         json.loads(resp.context['markets_json'])
@@ -13657,4 +13680,43 @@ class MarketTrendCalculatorTests(TestCase):
         self.assertEqual(periods[1]['returning_count'], 1)
         self.assertEqual(periods[2]['new_count'], 1)
         self.assertEqual(periods[2]['returning_count'], 1)
+
+    def test_revenue_is_default_metric(self):
+        from tickets.services.market_trends import MarketTrendCalculator
+        self._build_market('Austin', [40, 30, 20, 10])
+        result = MarketTrendCalculator(self.org).calculate()  # no metric arg
+        austin = next(m for m in result['markets'] if m['city'] == 'Austin')
+        self.assertEqual(austin['metric'], 'revenue')
+        # total_revenue is exposed; total_sold still computed.
+        self.assertEqual(austin['total_sold'], 100)
+        self.assertEqual(austin['total_revenue'], 1000.0)  # 100 tickets x $10
+
+    def test_revenue_declining_via_price_erosion(self):
+        """Flat ticket volume but falling price: stable by tickets, declining by
+        revenue with price as the dominant driver."""
+        from tickets.services.market_trends import MarketTrendCalculator
+        # 20 tickets/quarter (flat), price falls 40 -> 36 -> 30 -> 24.
+        specs = [(20, 40), (20, 36), (20, 30), (20, 24)]
+        self._build_priced_market('Reno', specs)
+
+        tickets_view = MarketTrendCalculator(self.org, metric='tickets').calculate()
+        reno_t = next(m for m in tickets_view['markets'] if m['city'] == 'Reno')
+        self.assertEqual(reno_t['trend'], 'stable')
+
+        revenue_view = MarketTrendCalculator(self.org, metric='revenue').calculate()
+        reno_r = next(m for m in revenue_view['markets'] if m['city'] == 'Reno')
+        self.assertEqual(reno_r['trend'], 'declining')
+        self.assertEqual(reno_r['dominant_driver'], 'price')
+        self.assertIn('Revenue in Reno', reno_r['diagnosis_text'])
+
+    def test_view_metric_toggle(self):
+        self._build_market('Austin', [40, 30, 20, 10])
+        self.client.login(username='trend_owner@example.com', password='pw')
+        self.client.get(reverse('tickets:home'))  # prime session org / host routing
+        resp = self.client.get(reverse('tickets:market_trends'), {'metric': 'tickets'})
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.context['metric'], 'tickets')
+        # Invalid metric falls back to revenue.
+        resp2 = self.client.get(reverse('tickets:market_trends'), {'metric': 'bogus'})
+        self.assertEqual(resp2.context['metric'], 'revenue')
 
