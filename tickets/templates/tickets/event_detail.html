@@ -521,6 +521,9 @@ button.detail-meta-weather--severe:focus-visible {
     <button class="nav-link" id="tab-orders-btn" data-bs-toggle="tab" data-bs-target="#tab-orders" type="button" role="tab">Orders{% if total_orders %} ({{ total_orders }}){% endif %}</button>
     <button class="nav-link" id="tab-finance-btn" data-bs-toggle="tab" data-bs-target="#tab-finance" type="button" role="tab">Finance</button>
     <button class="nav-link" id="tab-marketing-btn" data-bs-toggle="tab" data-bs-target="#tab-marketing" type="button" role="tab">Marketing</button>
+    {% if show_audience_tab %}
+    <button class="nav-link" id="tab-audience-btn" data-bs-toggle="tab" data-bs-target="#tab-audience" type="button" role="tab">Audience</button>
+    {% endif %}
     {% if org.sms_marketing_enabled and is_org_host %}
     <button class="nav-link" id="tab-customers-btn" data-bs-toggle="tab" data-bs-target="#tab-customers" type="button" role="tab">Customers{% if total_customers %} ({{ total_customers }}){% endif %}</button>
     {% endif %}
@@ -1570,6 +1573,123 @@ document.addEventListener('DOMContentLoaded', function() {
 </div><!-- /Linked campaigns view -->
 
 </div><!-- /tab-marketing -->
+
+{% if show_audience_tab %}
+<!-- ===== TAB: Audience ===== -->
+<div class="tab-pane fade" id="tab-audience" role="tabpanel">
+
+<div class="stats-grid">
+    <div class="stat-card stat-card--info">
+        <div class="stat-label">Attendees</div>
+        <div class="stat-value">{{ audience.attendees|intcomma }}</div>
+        <div class="stat-detail" style="font-size: 0.75rem; margin-top: 4px;">of {{ audience.total_buyers|intcomma }} buyer{{ audience.total_buyers|pluralize }} checked in</div>
+    </div>
+    <div class="stat-card stat-card--accent">
+        <div class="stat-label">First-time attendees</div>
+        <div class="stat-value">{{ audience.first_time_attendees|intcomma }}</div>
+        <div class="stat-detail" style="font-size: 0.75rem; margin-top: 4px;">first event with {{ org_name }}</div>
+    </div>
+    <div class="stat-card stat-card--success">
+        <div class="stat-label">Returning attendees</div>
+        <div class="stat-value">{{ audience.attendees_returning|intcomma }}</div>
+        <div class="stat-detail" style="font-size: 0.75rem; margin-top: 4px;">attended a prior event</div>
+    </div>
+    <div class="stat-card stat-card--danger">
+        <div class="stat-label">High-value attendees</div>
+        <div class="stat-value">{{ audience.high_value_attendees|intcomma }}</div>
+        <div class="stat-detail" style="font-size: 0.75rem; margin-top: 4px;">VIPs &amp; top spenders</div>
+    </div>
+    <div class="stat-card stat-card--warning">
+        <div class="stat-label">High-value turnout</div>
+        <div class="stat-value">{{ audience.high_value_attended|intcomma }} / {{ audience.high_value_total|intcomma }}</div>
+        <div class="stat-detail" style="font-size: 0.75rem; margin-top: 4px;">high-value buyers who showed</div>
+    </div>
+</div>
+
+<div class="card mb-4">
+    <div class="card-header"><h5 class="mb-0">New vs returning attendees</h5></div>
+    <div class="card-body">
+        <div class="checkin-hero">
+            <div class="checkin-hero__donut">
+                <canvas id="audienceDonut"
+                        data-new="{{ audience.first_time_attendees }}"
+                        data-returning="{{ audience.attendees_returning }}"></canvas>
+            </div>
+            <div class="checkin-hero__readout">
+                <span class="checkin-hero__sub">First-time</span>
+                <span class="checkin-hero__big">{% if audience.attendees %}{% widthratio audience.first_time_attendees audience.attendees 100 %}{% else %}0{% endif %}<span class="checkin-hero__big-unit">%</span></span>
+                <span class="checkin-hero__count">
+                    {{ audience.first_time_attendees|intcomma }} first-time &middot; {{ audience.attendees_returning|intcomma }} returning
+                </span>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="card mb-4">
+    <div class="card-header d-flex justify-content-between align-items-center">
+        <h5 class="mb-0">Notable attendees</h5>
+        {% if notable_attendees_page and notable_attendees_page.paginator.count %}
+        <span class="text-body-secondary small">High-value &amp; frequent buyers</span>
+        {% endif %}
+    </div>
+    <div class="card-body p-0">
+        {% if notable_attendees_page and notable_attendees_page.paginator.count %}
+        <div class="table-responsive">
+            <table class="table table-hover mb-0 align-middle">
+                <thead>
+                    <tr>
+                        <th>Name</th>
+                        <th class="d-none d-md-table-cell">Email</th>
+                        <th class="d-none d-sm-table-cell">Segment</th>
+                        <th class="text-end">Events</th>
+                        <th class="text-end">Lifetime value</th>
+                        <th class="d-none d-md-table-cell">Checked in</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for a in notable_attendees_page %}
+                    <tr>
+                        <td>
+                            <a href="{% url 'tickets:customer_detail' a.id %}">{{ a.name|default:'—' }}</a>
+                            {% if a.events_count >= 2 %}<span class="badge bg-primary ms-1" title="Frequent buyer">Regular</span>{% endif %}
+                        </td>
+                        <td class="d-none d-md-table-cell">{{ a.email }}</td>
+                        <td class="d-none d-sm-table-cell">{% if a.rfm_segment %}<span class="badge bg-{{ segment_badge_colors|get_item:a.rfm_segment }}">{{ a.rfm_segment }}</span>{% else %}<span class="text-body-secondary">—</span>{% endif %}</td>
+                        <td class="text-end{% if a.events_count >= 2 %} fw-semibold{% endif %}">{{ a.events_count }}</td>
+                        <td class="text-end"><span class="revenue">${{ a.lifetime_value|currency }}</span></td>
+                        <td class="d-none d-md-table-cell">{% if a.event_checked_in_at %}{{ a.event_checked_in_at|date:"M j, g:i a" }}{% else %}—{% endif %}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% if notable_attendees_page.paginator.num_pages > 1 %}
+        <div class="d-flex justify-content-center py-3 border-top">
+            <nav>
+                <ul class="pagination mb-0">
+                    {% if notable_attendees_page.has_previous %}
+                    <li class="page-item"><a class="page-link" href="?tab=audience&audience_page={{ notable_attendees_page.previous_page_number }}">Previous</a></li>
+                    {% endif %}
+                    <li class="page-item active"><span class="page-link">{{ notable_attendees_page.number }} / {{ notable_attendees_page.paginator.num_pages }}</span></li>
+                    {% if notable_attendees_page.has_next %}
+                    <li class="page-item"><a class="page-link" href="?tab=audience&audience_page={{ notable_attendees_page.next_page_number }}">Next</a></li>
+                    {% endif %}
+                </ul>
+            </nav>
+        </div>
+        {% endif %}
+        {% else %}
+        <div class="empty-state">
+            <i class="bi bi-stars"></i>
+            <p class="mb-0">No high-value or frequent buyers have checked in yet.</p>
+        </div>
+        {% endif %}
+    </div>
+</div>
+
+</div><!-- /tab-audience -->
+{% endif %}
 
 {% if org.sms_marketing_enabled and is_org_host %}
 <!-- ===== TAB: Customers ===== -->
@@ -4491,6 +4611,52 @@ document.addEventListener('DOMContentLoaded', function () {
                 duration: 900,
                 easing: 'easeOutCubic'
             },
+            plugins: {
+                legend: { display: false },
+                tooltip: {
+                    enabled: hasData,
+                    callbacks: {
+                        label: function (ctx) {
+                            var n = ctx.parsed;
+                            var pct = total ? Math.round(n / total * 100) : 0;
+                            return ' ' + ctx.label + ': ' + n + ' (' + pct + '%)';
+                        }
+                    }
+                }
+            }
+        }
+    });
+});
+</script>
+<script>
+document.addEventListener('DOMContentLoaded', function () {
+    var canvas = document.getElementById('audienceDonut');
+    if (!canvas) return;
+    var newCount = parseInt(canvas.dataset.new || '0', 10);
+    var returningCount = parseInt(canvas.dataset.returning || '0', 10);
+    var total = newCount + returningCount;
+    var rootStyle = getComputedStyle(document.documentElement);
+    var accentColor = (rootStyle.getPropertyValue('--accent') || '').trim() || '#00FF87';
+    var returningColor = (rootStyle.getPropertyValue('--success') || '').trim() || '#6A9E7F';
+    var trackColor = 'rgba(255, 255, 255, 0.06)';
+    var hasData = total > 0;
+    new Chart(canvas, {
+        type: 'doughnut',
+        data: {
+            labels: ['First-time', 'Returning'],
+            datasets: [{
+                data: hasData ? [newCount, returningCount] : [0, 1],
+                backgroundColor: hasData ? [accentColor, returningColor] : [trackColor, trackColor],
+                borderWidth: 0,
+                borderRadius: hasData ? [6, 6] : 0,
+                spacing: hasData && newCount > 0 && returningCount > 0 ? 2 : 0,
+            }]
+        },
+        options: {
+            cutout: '78%',
+            responsive: true,
+            maintainAspectRatio: false,
+            animation: { animateRotate: true, duration: 900, easing: 'easeOutCubic' },
             plugins: {
                 legend: { display: false },
                 tooltip: {

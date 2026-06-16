@@ -13156,3 +13156,160 @@ class POSHScanImportAndBuiltinFormatTests(TestCase):
         self.assertEqual(
             self.client.get(reverse('tickets:format_edit', args=[copy.id])).status_code, 200
         )
+
+
+class EventAudienceTests(TestCase):
+    """EventAudienceCalculator metrics + Audience tab visibility."""
+
+    def setUp(self):
+        self.client = Client()
+        self.org = Organization.objects.create(name='Aud Org', slug='aud-org')
+        self.user = User.objects.create_user(
+            username='audhost', email='audhost@example.com', password='pw12345',
+        )
+        UserProfile.objects.create(
+            user=self.user, organization=self.org, org_role=UserProfile.OrgRole.OWNER,
+        )
+        OrganizationMembership.objects.create(
+            user=self.user, organization=self.org, org_role=UserProfile.OrgRole.OWNER,
+        )
+        self.venue = Venue.objects.create(organization=self.org, name='V', city='C')
+        # Past external event (so check-in/audience can surface once scans exist).
+        self.event = Event.objects.create(
+            organization=self.org, name='Aud Night', venue=self.venue,
+            start_date=date(2026, 1, 1), start_time=time(20, 0, 0),
+            ticketing_type='external',
+        )
+        self.prior_event = Event.objects.create(
+            organization=self.org, name='Prior', venue=self.venue,
+            start_date=date(2025, 6, 1), ticketing_type='external',
+        )
+
+    def _customer(self, email, **kwargs):
+        return Customer.objects.create(
+            organization=self.org, email=email, name=email.split('@')[0], **kwargs
+        )
+
+    def _order(self, customer, event, number, scanned=False, tickets=1):
+        order = TicketOrder.objects.create(
+            customer=customer, event=event, order_number=number,
+            order_date=timezone.now(), total_amount=Decimal('20.00'),
+        )
+        now = timezone.now()
+        for i in range(tickets):
+            Ticket.objects.create(
+                ticket_order=order, ticket_type='GA', price=Decimal('20.00'),
+                scanned_at=now if scanned else None,
+            )
+        return order
+
+    def test_calculator_metrics(self):
+        from tickets.services.audience import EventAudienceCalculator
+
+        # New customer, checked in (first-time attendee).
+        new_att = self._customer('new_att@x.com')
+        self._order(new_att, self.event, 'N1', scanned=True)
+
+        # Returning customer (has an order at a prior event), checked in.
+        ret = self._customer('ret@x.com')
+        self._order(ret, self.prior_event, 'R0', scanned=False)
+        self._order(ret, self.event, 'R1', scanned=True)
+
+        # High-value (VIP) customer, new, checked in.
+        vip = self._customer('vip@x.com', rfm_segment='VIP', rfm_monetary_score=5,
+                             lifetime_value=Decimal('900.00'))
+        self._order(vip, self.event, 'V1', scanned=True)
+
+        # Bought but did NOT check in (no scan).
+        noshow = self._customer('noshow@x.com')
+        self._order(noshow, self.event, 'X1', scanned=False)
+
+        result = EventAudienceCalculator(self.event).calculate()
+
+        self.assertTrue(result['show'])
+        self.assertEqual(result['total_buyers'], 4)
+        # Attendees = customers with >=1 scanned ticket: new_att, ret, vip
+        self.assertEqual(result['attendees'], 3)
+        self.assertEqual(result['attendees_returning'], 1)  # ret
+        self.assertEqual(result['attendees_new'], 2)        # new_att, vip
+        self.assertEqual(result['first_time_attendees'], 2)
+        # High value = VIP/Big Spender or monetary>=4; only vip qualifies and attended.
+        self.assertEqual(result['high_value_total'], 1)
+        self.assertEqual(result['high_value_attended'], 1)
+        self.assertEqual(result['high_value_attendees'], 1)
+        # Notable attendees (queryset): VIP (high-value) and the returning customer
+        # qualifies as a frequent buyer (2 distinct events). new_att (1 event, not
+        # high-value) is excluded.
+        notable = list(EventAudienceCalculator(self.event).notable_attendees_queryset())
+        emails = {c.email for c in notable}
+        self.assertEqual(emails, {'vip@x.com', 'ret@x.com'})
+        self.assertNotIn('new_att@x.com', emails)
+        # ret has events_count == 2 (frequent), vip has 1 -> ret ranks first.
+        by_email = {c.email: c for c in notable}
+        self.assertEqual(by_email['ret@x.com'].events_count, 2)
+        self.assertEqual(by_email['vip@x.com'].events_count, 1)
+        self.assertEqual(notable[0].email, 'ret@x.com')
+
+    def test_high_value_via_monetary_score_without_named_segment(self):
+        from tickets.services.audience import EventAudienceCalculator
+        # Top-spend signal alone (no VIP/Big Spender label) still counts as high value.
+        spender = self._customer('spender@x.com', rfm_segment='Loyal',
+                                 rfm_monetary_score=4, lifetime_value=Decimal('500.00'))
+        self._order(spender, self.event, 'S1', scanned=True)
+        result = EventAudienceCalculator(self.event).calculate()
+        self.assertEqual(result['high_value_attended'], 1)
+
+    def test_frequent_buyer_not_high_value_is_notable(self):
+        from tickets.services.audience import EventAudienceCalculator
+        # No VIP/top-spend signal, but purchased at 2 events -> notable as a frequent buyer.
+        freq = self._customer('freq@x.com')
+        self._order(freq, self.prior_event, 'F0', scanned=False)
+        self._order(freq, self.event, 'F1', scanned=True)
+        # A plain first-timer who is not high-value is NOT notable.
+        plain = self._customer('plain@x.com')
+        self._order(plain, self.event, 'P1', scanned=True)
+        notable = list(EventAudienceCalculator(self.event).notable_attendees_queryset())
+        emails = {c.email for c in notable}
+        self.assertIn('freq@x.com', emails)
+        self.assertNotIn('plain@x.com', emails)
+
+    def test_notable_attendees_paginated_ten_per_page(self):
+        # 12 frequent buyers -> 10 on page 1, 2 on page 2.
+        for i in range(12):
+            c = self._customer('freq%02d@x.com' % i)
+            self._order(c, self.prior_event, 'PR%02d' % i, scanned=False)
+            self._order(c, self.event, 'EV%02d' % i, scanned=True)
+        self._login()
+        resp = self.client.get(reverse('tickets:event_detail', args=[self.event.id]))
+        page = resp.context['notable_attendees_page']
+        self.assertEqual(page.paginator.count, 12)
+        self.assertEqual(page.paginator.per_page, 10)
+        self.assertEqual(len(page.object_list), 10)
+        resp2 = self.client.get(
+            reverse('tickets:event_detail', args=[self.event.id]),
+            {'tab': 'audience', 'audience_page': 2},
+        )
+        self.assertEqual(len(resp2.context['notable_attendees_page'].object_list), 2)
+
+    def _login(self):
+        self.client.login(username='audhost@example.com', password='pw12345')
+        self.client.get(reverse('tickets:home'))
+
+    def test_audience_tab_shown_for_external_event_with_scans(self):
+        self._login()
+        c = self._customer('a@x.com')
+        self._order(c, self.event, 'A1', scanned=True)
+        resp = self.client.get(reverse('tickets:event_detail', args=[self.event.id]))
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, 'id="tab-audience"')
+        self.assertContains(resp, 'audienceDonut')
+        # The tab button shows no count.
+        self.assertContains(resp, 'role="tab">Audience</button>')
+
+    def test_audience_tab_hidden_for_external_event_without_scans(self):
+        self._login()
+        c = self._customer('b@x.com')
+        self._order(c, self.event, 'B1', scanned=False)  # bought, never scanned
+        resp = self.client.get(reverse('tickets:event_detail', args=[self.event.id]))
+        self.assertEqual(resp.status_code, 200)
+        self.assertNotContains(resp, 'id="tab-audience"')
