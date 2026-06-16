@@ -112,6 +112,7 @@ class MarketingAnalyticsService:
             'top_campaigns': top_email + top_sms,
             'top_events_by_roi': top_events,
             'native_sms': self._native_sms_summary(),
+            'broadcast_audience': self._broadcast_audience_series(),
             'meta': {
                 'window_start': self.window_start.isoformat() if self.window_start else None,
                 'window_end': self.window_end.isoformat(),
@@ -500,6 +501,64 @@ class MarketingAnalyticsService:
                 bucket(month_key)['sms_clicks'] = row['clicks']
 
         return sorted(months.values(), key=lambda r: r['month'])
+
+    def _broadcast_audience_series(self):
+        """One point per broadcast (native SMS + external SlickText) for the
+        audience-over-time scatter and the by-market breakdown.
+
+        Market = the linked event's venue city ('No market' when a native campaign
+        has no event). Market-independent and window-scoped, so it caches with the
+        rest of the metrics dict — the view applies the market filter afterward.
+        """
+        from tickets.models import SMSCampaign
+
+        def market_of(city):
+            return (city or '').strip() or 'No market'
+
+        rows = []
+
+        native = (
+            SMSCampaign.objects.filter(
+                organization=self.organization,
+                deleted_at__isnull=True,
+                status=SMSCampaign.Status.SENT,
+                sent_at__isnull=False,
+            )
+            .select_related('event', 'event__venue')
+        )
+        if self.window_start is not None:
+            native = native.filter(sent_at__gte=self.window_start)
+        for c in native.values('name', 'sent_at', 'audience_size', 'event__venue__city'):
+            sent_at = c['sent_at']
+            rows.append({
+                'channel': 'native',
+                'name': c['name'] or 'Untitled SMS',
+                'sent_at': sent_at.isoformat(),
+                'sent_ms': int(sent_at.timestamp() * 1000),
+                'audience': c['audience_size'] or 0,
+                'market': market_of(c['event__venue__city']),
+            })
+
+        slicktext = (
+            self._sms_qs()
+            .exclude(send_time__isnull=True)
+            .select_related('event', 'event__venue')
+            .annotate(eff_audience=self._coalesce_int('manual_audience', 'audience_size'))
+            .values('name', 'send_time', 'eff_audience', 'event__venue__city')
+        )
+        for c in slicktext:
+            send_time = c['send_time']
+            rows.append({
+                'channel': 'slicktext',
+                'name': c['name'] or 'Untitled SMS',
+                'sent_at': send_time.isoformat(),
+                'sent_ms': int(send_time.timestamp() * 1000),
+                'audience': c['eff_audience'] or 0,
+                'market': market_of(c['event__venue__city']),
+            })
+
+        rows.sort(key=lambda r: r['sent_ms'])
+        return rows
 
     def _top_events_by_roi(self, limit=10):
         """Per-event ROI using the isolated-Subquery pattern (CLAUDE.md).

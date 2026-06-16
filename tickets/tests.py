@@ -2794,6 +2794,71 @@ class CustomerDetailMarketingTabTests(TestCase):
         self.assertNotContains(response, 'Marketing Activity')
 
 
+class SMSBroadcastAudienceTests(TestCase):
+    """The SMS tab's broadcast-audience chart + by-market breakdown combine native
+    SMS campaigns and external SlickText broadcasts, grouped by the linked event's
+    venue city (the 'market')."""
+
+    def setUp(self):
+        from .models import SMSCampaign, EventSMSCampaign
+        self.client = Client()
+        self.org = Organization.objects.create(
+            name='SMS Aud Org', slug='sms-aud-org', sms_marketing_enabled=True,
+        )
+        self.user = User.objects.create_user(
+            username='audhost', email='aud@test.com', password='testpass123',
+        )
+        UserProfile.objects.create(
+            user=self.user, organization=self.org, org_role=UserProfile.OrgRole.OWNER,
+        )
+        self.client.login(username='aud@test.com', password='testpass123')
+        self.client.get(reverse('tickets:home'))  # warm org cache
+
+        self.venue = Venue.objects.create(organization=self.org, name='Echo', city='Austin')
+        self.event = Event.objects.create(
+            organization=self.org, name='Austin Show', venue=self.venue,
+            start_date=date(2026, 6, 1), start_time=time(20, 0, 0),
+        )
+        # Native SMS campaign (sent), event-scoped -> Austin market.
+        SMSCampaign.objects.create(
+            organization=self.org, name='Native Blast', body='Tickets!',
+            event=self.event, status=SMSCampaign.Status.SENT,
+            sent_at=timezone.now() - timedelta(days=3), audience_size=120,
+        )
+        # External SlickText broadcast (confirmed) on the same event -> Austin market.
+        EventSMSCampaign.objects.create(
+            event=self.event, source='slicktext', external_id='st-1',
+            name='SlickText Blast', send_time=timezone.now() - timedelta(days=5),
+            audience_size=80, confirmed_at=timezone.now(),
+        )
+        self.url = reverse('tickets:sms_campaign_list')
+
+    def test_breakdown_sums_audience_across_sources(self):
+        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, 200)
+        breakdown = {r['market']: r for r in response.context['market_breakdown']}
+        self.assertIn('Austin', breakdown)
+        self.assertEqual(breakdown['Austin']['broadcasts'], 2)
+        self.assertEqual(breakdown['Austin']['total_audience'], 200)
+        self.assertEqual(breakdown['Austin']['avg_audience'], 100)
+        self.assertIn('Austin', response.context['market_choices'])
+
+    def test_market_filter_scopes_chart_points(self):
+        response = self.client.get(self.url, {'market': 'Austin'})
+        self.assertEqual(response.status_code, 200)
+        points = json.loads(response.context['audience_points_json'])
+        self.assertEqual(len(points['native']), 1)
+        self.assertEqual(len(points['slicktext']), 1)
+        self.assertEqual(points['native'][0]['market'], 'Austin')
+        self.assertEqual(points['native'][0]['y'], 120)
+        self.assertEqual(response.context['selected_market'], 'Austin')
+
+    def test_unknown_market_falls_back_to_all(self):
+        response = self.client.get(self.url, {'market': 'Nowhere'})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context['selected_market'], '')
+
+
 class EventCachedStatsTest(TestCase):
     """Tests for Event cached stat fields and net_revenue calculation."""
 

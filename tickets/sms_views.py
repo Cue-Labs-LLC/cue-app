@@ -279,6 +279,38 @@ def sms_campaign_list(request):
         'sms_clicks': [row['sms_clicks'] for row in metrics['engagement_trends']],
     }
 
+    # Broadcast audience over time + by market. The cached series is
+    # market-independent; the market filter is applied here in Python.
+    series = metrics['broadcast_audience']
+    selected_market = request.GET.get('market', '')
+    # Only list cities that actually have broadcasts; 'No market' sorts last.
+    market_choices = sorted(
+        {row['market'] for row in series},
+        key=lambda m: (m == 'No market', m.lower()),
+    )
+    if selected_market and selected_market not in market_choices:
+        selected_market = ''
+
+    visible = [r for r in series if not selected_market or r['market'] == selected_market]
+    audience_points = {'native': [], 'slicktext': []}
+    for r in visible:
+        audience_points[r['channel']].append({
+            'x': r['sent_ms'], 'y': r['audience'], 'name': r['name'], 'market': r['market'],
+        })
+
+    # By-market breakdown spans ALL markets (always-on comparison), independent of
+    # the chart's market filter.
+    breakdown = {}
+    for r in series:
+        agg = breakdown.setdefault(
+            r['market'], {'market': r['market'], 'broadcasts': 0, 'total_audience': 0},
+        )
+        agg['broadcasts'] += 1
+        agg['total_audience'] += r['audience']
+    market_breakdown = sorted(breakdown.values(), key=lambda a: a['total_audience'], reverse=True)
+    for agg in market_breakdown:
+        agg['avg_audience'] = round(agg['total_audience'] / agg['broadcasts']) if agg['broadcasts'] else 0
+
     return render(request, 'tickets/marketing/sms/campaign_list.html', {
         'page_obj': page_obj,
         'balance_cents': org.sms_credit_balance_cents,
@@ -291,6 +323,10 @@ def sms_campaign_list(request):
         'sms_channel': metrics['channels']['sms'],
         'top_sms_campaigns': metrics['top_sms_campaigns'],
         'engagement_chart_json': json.dumps(engagement_chart),
+        'selected_market': selected_market,
+        'market_choices': market_choices,
+        'market_breakdown': market_breakdown,
+        'audience_points_json': json.dumps(audience_points),
     })
 
 
