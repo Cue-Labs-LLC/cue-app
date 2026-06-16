@@ -92,12 +92,14 @@ class MarketTrendCalculator:
 
         # Query B — tickets sold per (city, period). Counting the reverse
         # TicketOrder->Ticket relation is a single join; no Sum over a
-        # different relation is mixed in, so there is no row inflation.
+        # different relation is mixed in, so there is no row inflation. In-person
+        # (door/cash) sales ARE counted here so turnout and revenue reflect every
+        # ticket sold, matching the per-event P&L. Buyer identity work below still
+        # excludes in-person, since those orders carry no Customer.
         sold_rows = (
             TicketOrder.objects.filter(
                 event__organization=org,
                 event__start_date__lt=today,
-                is_in_person=False,
             )
             .annotate(period=trunc('event__start_date'))
             .values('event__venue__city', 'period')
@@ -107,11 +109,12 @@ class MarketTrendCalculator:
         # Query B2 — gross revenue per (city, period). Summed over TicketOrder
         # only (no ticket join), so it must be a SEPARATE query from `sold` —
         # mixing Sum('total_amount') with Count('tickets') would inflate rows.
+        # Includes in-person orders so revenue/profit reconcile with the
+        # event-detail page and profitability_overview (which sum all orders).
         revenue_rows = (
             TicketOrder.objects.filter(
                 event__organization=org,
                 event__start_date__lt=today,
-                is_in_person=False,
             )
             .annotate(period=trunc('event__start_date'))
             .values('event__venue__city', 'period')
@@ -309,8 +312,9 @@ class MarketTrendCalculator:
             expenses = cell['expenses'] or 0.0
             income = cell['income'] or 0.0
             fees = cell['fees'] or 0.0
-            # Profit mirrors the profitability_overview view: ticket revenue +
-            # other income - platform fees - expenses. `cost` is the net drag.
+            # Profit mirrors the profitability_overview view: ticket revenue
+            # (all orders, incl. in-person) + other income - platform fees -
+            # expenses. `cost` is the net drag.
             profit = revenue + income - fees - expenses
             cost = expenses + fees - income
             avg_sold = (sold / events_held) if events_held else 0.0

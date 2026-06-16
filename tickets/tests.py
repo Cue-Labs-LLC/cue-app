@@ -13813,6 +13813,71 @@ class MarketTrendCalculatorTests(TestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp.context['metric'], 'profitability')
 
+    def test_in_person_revenue_included_in_profit(self):
+        """Regression: in-person (door/cash) ticket revenue must count toward a
+        market's profit, the same way the event-detail page and
+        profitability_overview do. Otherwise expenses are charged in full while
+        the door-sale revenue that paid for them is dropped, flipping a real
+        profit into a large fake loss.
+
+        Mirrors the reported case: one Seattle event, $6,131.99 in tickets
+        ($4,126.00 online + $2,005.99 in-person) + $892.00 other income, against
+        $7,018.00 of expenses, nets exactly $5.99."""
+        from tickets.models import EventIncome, IncomeSource
+        from tickets.services.market_trends import MarketTrendCalculator
+        from tickets.views import _compute_event_stats
+
+        venue = self._venue('Seattle')
+        event = self._event(venue, self.quarters[0], 'Familiar Faces: Seattle')
+
+        # Online order ($4,126.00) — has customer identity.
+        online_customer = Customer.objects.create(
+            organization=self.org, email='online@example.com', name='Online Buyer',
+        )
+        TicketOrder.objects.create(
+            customer=online_customer, event=event, order_number='ORD-ONLINE',
+            order_date=timezone.make_aware(datetime.combine(event.start_date, time(10, 0))),
+            total_amount=Decimal('4126.00'), is_in_person=False,
+        )
+        # In-person / door order ($2,005.99) — no identity, but real revenue.
+        door_customer = Customer.objects.create(
+            organization=self.org, email='door@example.com', name='Door Buyer',
+        )
+        TicketOrder.objects.create(
+            customer=door_customer, event=event, order_number='ORD-DOOR',
+            order_date=timezone.make_aware(datetime.combine(event.start_date, time(10, 0))),
+            total_amount=Decimal('2005.99'), is_in_person=True,
+        )
+        # Other income ($892.00) and expenses ($7,018.00).
+        income_source = IncomeSource.objects.create(
+            organization=self.org, name='Bar', order=1,
+        )
+        EventIncome.objects.create(
+            event=event, income_source=income_source, amount=Decimal('892.00'),
+        )
+        EventExpense.objects.create(
+            event=event, category='production', description='show costs',
+            amount=Decimal('7018.00'), expense_date=event.start_date,
+            created_by=self.user,
+        )
+
+        # The event-detail P&L nets $5.99 (external ticketing -> no Stripe fees).
+        stats = _compute_event_stats(event)
+        self.assertEqual(stats['profit'], Decimal('5.99'))
+
+        # Market Trends must reconcile to that same figure, not exclude the
+        # in-person revenue while keeping the full expense.
+        result = MarketTrendCalculator(self.org, metric='profitability').calculate()
+        seattle = next(m for m in result['markets'] if m['city'] == 'Seattle')
+        self.assertAlmostEqual(seattle['total_profit'], 5.99, places=2)
+        # Revenue series is ticket revenue (online + in-person); other income
+        # feeds profit, not this figure.
+        self.assertAlmostEqual(seattle['total_revenue'], 6131.99, places=2)
+        # Single event in the market -> avg profit / event equals the net profit.
+        self.assertAlmostEqual(
+            seattle['periods'][0]['avg_profit_per_event'], 5.99, places=2,
+        )
+
     def test_nps_total_score(self):
         from tickets.services.market_trends import MarketTrendCalculator
         # All promoters every quarter -> overall NPS = 100.
