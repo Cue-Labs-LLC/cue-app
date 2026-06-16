@@ -354,6 +354,7 @@ EVENT_STATS_REQUIRED_KEYS = frozenset({
     'survey_total_response_count',
     'survey_results',
     'attendee_segments',
+    'audience',
 })
 
 
@@ -4126,6 +4127,14 @@ def _compute_event_stats(event):
         'by_type': ci_by_type,
     }
 
+    # Audience analytics — only when the event has attendance data to show
+    # (direct events past start, or external events with imported scan data).
+    if ci_show:
+        from tickets.services.audience import EventAudienceCalculator
+        audience = EventAudienceCalculator(event).calculate()
+    else:
+        audience = {'show': False}
+
     result = {
         'total_orders': total_orders,
         'ticket_revenue': ticket_revenue,
@@ -4155,6 +4164,7 @@ def _compute_event_stats(event):
         'survey_results': survey_results,
         'attendee_segments': attendee_segments,
         'checkin': checkin,
+        'audience': audience,
     }
     safe_cache_set(cache_key, result, timeout=300)
     return result
@@ -4869,6 +4879,15 @@ def event_detail(request, event_id):
     show_checkin_chart, checkin_total_tickets, checkin_count, checkin_by_type = _compute_event_checkin_stats(event)
     checkin_percent = round(checkin_count / checkin_total_tickets * 100) if checkin_total_tickets else 0
 
+    audience = stats.get('audience') or {'show': False}
+    notable_attendees_page = None
+    if audience.get('show'):
+        from tickets.services.audience import EventAudienceCalculator
+        from tickets.services.segmentation.segment_definitions import SEGMENT_BADGE_COLORS
+        notable_qs = EventAudienceCalculator(event).notable_attendees_queryset()
+        notable_paginator = Paginator(notable_qs, 10)
+        notable_attendees_page = notable_paginator.get_page(request.GET.get('audience_page'))
+
     prev_event = _get_adjacent_event(org, event, 'prev')
     next_event = _get_adjacent_event(org, event, 'next')
 
@@ -4967,6 +4986,10 @@ def event_detail(request, event_id):
         'checkin_count': checkin_count,
         'checkin_percent': checkin_percent,
         'checkin_by_type': checkin_by_type,
+        'audience': audience,
+        'show_audience_tab': audience.get('show'),
+        'notable_attendees_page': notable_attendees_page,
+        'segment_badge_colors': SEGMENT_BADGE_COLORS if audience.get('show') else {},
         'prev_event_id': prev_event.id if prev_event else None,
         'next_event_id': next_event.id if next_event else None,
         'prev_event_name': prev_event.name if prev_event else None,
