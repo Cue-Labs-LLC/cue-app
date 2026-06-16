@@ -4023,6 +4023,7 @@ def _compute_event_stats(event):
     ext_nps_total = ext_promoters = ext_passives = ext_detractors = 0
     ext_comments = []
     ext_rating_breakdown = []
+    ext_structured = {}
 
     if ext_count > 0:
         # Single aggregate instead of 4 separate .count() calls
@@ -4057,6 +4058,37 @@ def _compute_event_stats(event):
             .annotate(count=Count('id'))
             .order_by('-count')
         )
+
+        # Structured multi-select answers (JSON lists) — count value frequency.
+        from collections import Counter
+        enjoyed_c, genres_c, improvements_c = Counter(), Counter(), Counter()
+        for r in ext_qs.values('enjoyed', 'genres', 'improvements'):
+            enjoyed_c.update(v for v in (r['enjoyed'] or []) if v)
+            genres_c.update(v for v in (r['genres'] or []) if v)
+            improvements_c.update(v for v in (r['improvements'] or []) if v)
+
+        def _top(counter):
+            return [{'label': label, 'count': count} for label, count in counter.most_common(5)]
+
+        # Single-select answers (CharFields) — same breakdown pattern as overall_rating.
+        def _char_breakdown(field):
+            return [
+                {'label': row[field], 'count': row['count']}
+                for row in ext_qs.exclude(**{field: ''})
+                .values(field)
+                .annotate(count=Count('id'))
+                .order_by('-count')[:5]
+            ]
+
+        ext_structured = {
+            'enjoyed': _top(enjoyed_c),
+            'genres': _top(genres_c),
+            'improvements': _top(improvements_c),
+            'crowd_vibe': _char_breakdown('crowd_vibe'),
+            'venue_feel': _char_breakdown('venue_feel'),
+            'pre_event_info': _char_breakdown('pre_event_info'),
+            'found_out_how': _char_breakdown('found_out_how'),
+        }
 
     # Merge both sources
     survey_results = None
@@ -4096,6 +4128,7 @@ def _compute_event_stats(event):
             'internal_response_count': survey_responses_count,
             'ext_response_count': ext_count,
             'overall_rating_breakdown': ext_rating_breakdown,
+            'ext_structured': ext_structured,
         }
 
     # Customer segment breakdown for attendees of this event.

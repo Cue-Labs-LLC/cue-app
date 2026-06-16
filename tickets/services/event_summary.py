@@ -95,7 +95,7 @@ Survey Results (all attendees who submitted a survey):
 - Rating Breakdown: {overall_rating_breakdown}
 - Recent Comments:
 {comment_lines}
-{checkin_section}"""
+{survey_structured_section}{checkin_section}"""
 
 
 class EventSummaryService:
@@ -245,6 +245,28 @@ class EventSummaryService:
             overall_rating_breakdown = "N/A"
             comment_lines = "- No survey data available"
 
+        # Structured survey answers (multi/single-select questions). Presented as
+        # ordinary survey feedback — never labeled by collection channel.
+        structured = (survey or {}).get('ext_structured') or {}
+        structured_specs = [
+            ('enjoyed', 'Top things enjoyed'),
+            ('genres', 'Top genres'),
+            ('improvements', 'Most requested improvements'),
+            ('crowd_vibe', 'Crowd vibe'),
+            ('venue_feel', 'Venue feel'),
+            ('pre_event_info', 'Pre-event info'),
+            ('found_out_how', 'How attendees discovered the event'),
+        ]
+        structured_lines = []
+        for key, label in structured_specs:
+            items = structured.get(key) or []
+            if items:
+                parts = ', '.join(f"{i['label']} ({i['count']})" for i in items)
+                structured_lines.append(f"- {label}: {parts}")
+        survey_structured_section = (
+            "\n".join(structured_lines) + "\n" if structured_lines else ""
+        )
+
         # Check-in (door attendance) — only present for direct events past start
         checkin = event_data.get('checkin') or {}
         if checkin.get('show') and checkin.get('total_tickets'):
@@ -307,6 +329,7 @@ class EventSummaryService:
             avg_star_rating=avg_star_rating,
             nps_score=nps_score,
             overall_rating_breakdown=overall_rating_breakdown,
+            survey_structured_section=survey_structured_section,
             checkin_section=checkin_section,
             comment_lines=comment_lines,
         )

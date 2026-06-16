@@ -12898,6 +12898,61 @@ class EventSummaryStreamTests(TestCase):
         self.assertIn('Ticket Type Breakdown:', prompt)
         self.assertNotIn('Do NOT draw any conclusion about sell-through', prompt)
 
+    def _add_external_responses(self, event):
+        """Create external survey responses with structured (Typeform-style) answers."""
+        upload = ExternalSurveyUpload.objects.create(
+            organization=self.org, filename='typeform.csv',
+            status=ExternalSurveyUpload.Status.COMPLETED,
+        )
+        rows = [
+            dict(enjoyed=['DJ set', 'Lighting'], genres=['House'],
+                 improvements=['Better sound'], crowd_vibe='Energetic',
+                 venue_feel='Intimate', found_out_how='Instagram'),
+            dict(enjoyed=['DJ set'], genres=['House', 'Techno'],
+                 improvements=[], crowd_vibe='Energetic',
+                 venue_feel='Intimate', found_out_how='Instagram'),
+            dict(enjoyed=['Venue'], genres=['Techno'],
+                 improvements=['Better sound'], crowd_vibe='Chill',
+                 venue_feel='Spacious', found_out_how='Word of mouth'),
+        ]
+        for i, row in enumerate(rows):
+            ExternalSurveyResponse.objects.create(
+                organization=self.org, upload=upload, event=event,
+                responded_at=timezone.now(), email=f'guest{i}@example.com',
+                nps_score=9, **row,
+            )
+
+    def test_build_prompt_includes_external_structured_answers(self):
+        """Structured Typeform answers are aggregated (with counts) into the prompt."""
+        from tickets.services.event_summary import EventSummaryService
+        from tickets.views import _compute_event_stats
+
+        event = Event.objects.create(
+            organization=self.org, name='Typeform Event',
+            venue=self.venue, start_date=date(2024, 9, 15),
+        )
+        self._add_external_responses(event)
+        service = EventSummaryService(self.org, user=self.user)
+        prompt = service._build_prompt(event, _compute_event_stats(event))
+
+        self.assertIn('Top things enjoyed: DJ set (2)', prompt)
+        self.assertIn('Most requested improvements: Better sound (2)', prompt)
+        self.assertIn('Crowd vibe: Energetic (2)', prompt)
+        self.assertIn('How attendees discovered the event: Instagram (2)', prompt)
+        # Most common value ranks first.
+        self.assertLess(prompt.index('DJ set'), prompt.index('Lighting'))
+
+    def test_build_prompt_omits_structured_when_no_external_data(self):
+        """Events without external structured answers get no structured lines."""
+        from tickets.services.event_summary import EventSummaryService
+        from tickets.views import _compute_event_stats
+
+        service = EventSummaryService(self.org, user=self.user)
+        prompt = service._build_prompt(self.event, _compute_event_stats(self.event))
+
+        self.assertNotIn('Top things enjoyed', prompt)
+        self.assertNotIn('How attendees discovered the event', prompt)
+
 
 class DisplayPreferencesTests(TestCase):
     """Org admins can toggle the AI Event Summary card from /settings/display/."""
