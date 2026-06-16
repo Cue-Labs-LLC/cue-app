@@ -1,16 +1,17 @@
 """
 Detects and diagnoses declining turnout per market (Event.venue.city) over time.
 
-Turnout is measured per event as either *revenue* (default) or *tickets sold* —
-both always available, no scan dependency. For each market we build a per-period
-time series, fit an ordinary least-squares trend, classify it (declining /
-stable / growing), and — for declining markets — attribute the drop to a
-dominant driver (fewer events, softer demand, lower prices, fewer new buyers, or
-fewer returning buyers).
+Turnout is measured per event as *revenue* (default), *tickets sold*, or
+*profitability*. For each market we build a per-period time series, fit an
+ordinary least-squares trend, classify it (declining / stable / growing), and —
+for declining markets — attribute the drop to a dominant driver (fewer events,
+softer demand, lower prices, higher costs, fewer new buyers, or fewer returning
+buyers).
 
-All data derives from existing Event / TicketOrder / Customer tables; no new
-models. A few grouped queries + one flat pull keep this independent of the
-number of markets, events, or periods (no N+1).
+All data derives from existing Event / TicketOrder / Customer / EventExpense /
+EventIncome / StripeCheckoutSession tables; no new models. A few grouped queries
++ one flat pull keep this independent of the number of markets, events, or
+periods (no N+1).
 """
 from datetime import date
 from decimal import Decimal
@@ -20,7 +21,9 @@ import pandas as pd
 from django.db.models import Count, Sum
 from django.db.models.functions import Coalesce, TruncMonth, TruncQuarter
 
-from tickets.models import Event, TicketOrder
+from tickets.models import (
+    Event, EventExpense, EventIncome, StripeCheckoutSession, TicketOrder,
+)
 
 
 # Tunable thresholds.
@@ -28,10 +31,13 @@ TREND_THRESHOLD = 0.05   # |per-period fractional change| <= this => "stable"
 MIN_PERIODS = 3          # fewer observed periods => trend is not meaningful
 CONFIDENCE_R2 = 0.5      # R^2 of the fit at/above this => "high" confidence
 
+_VALID_METRICS = ('revenue', 'tickets', 'profitability')
+
 _DRIVER_LABELS = {
     'events': 'Fewer events',
     'demand': 'Lower demand per event',
     'price': 'Lower ticket prices',
+    'costs': 'Higher costs per event',
     'acquisition': 'Fewer new buyers',
     'retention': 'Fewer returning buyers',
 }
@@ -41,8 +47,8 @@ class MarketTrendCalculator:
     def __init__(self, organization, period='quarter', metric='revenue'):
         self.organization = organization
         self.period = 'month' if period == 'month' else 'quarter'
-        # The primary metric the trend is read on: 'revenue' or 'tickets'.
-        self.metric = 'tickets' if metric == 'tickets' else 'revenue'
+        # The primary metric the trend is read on: revenue / tickets / profitability.
+        self.metric = metric if metric in _VALID_METRICS else 'revenue'
 
     # ----- period bucketing ------------------------------------------------
 
@@ -106,7 +112,38 @@ class MarketTrendCalculator:
             .annotate(revenue=Coalesce(Sum('total_amount'), Decimal('0.00')))
         )
 
-        # markets[city][period_key] = {events_held, sold, revenue, new_count, returning_count}
+        # Queries D/E/F — profit components per (city, period). Each is isolated
+        # (single relation, no ticket join) and bucketed by the EVENT's start
+        # date so it lines up with the revenue/tickets series.
+        expense_rows = (
+            EventExpense.objects.visible()
+            .filter(event__organization=org, event__start_date__lt=today)
+            .annotate(period=trunc('event__start_date'))
+            .values('event__venue__city', 'period')
+            .annotate(expenses=Coalesce(Sum('amount'), Decimal('0.00')))
+        )
+        income_rows = (
+            EventIncome.objects.filter(
+                deleted_at__isnull=True,
+                event__organization=org,
+                event__start_date__lt=today,
+            )
+            .annotate(period=trunc('event__start_date'))
+            .values('event__venue__city', 'period')
+            .annotate(income=Coalesce(Sum('amount'), Decimal('0.00')))
+        )
+        fee_rows = (
+            StripeCheckoutSession.objects.filter(
+                ticket_order__event__organization=org,
+                ticket_order__event__start_date__lt=today,
+                ticket_order__event__ticketing_type='direct',
+            )
+            .annotate(period=trunc('ticket_order__event__start_date'))
+            .values('ticket_order__event__venue__city', 'period')
+            .annotate(fee_cents=Coalesce(Sum('platform_fee_cents'), 0))
+        )
+
+        # markets[city][period_key] = {events_held, sold, revenue, expenses, income, fees, ...}
         markets = {}
 
         def _bucket(city):
@@ -127,6 +164,21 @@ class MarketTrendCalculator:
             cell = p.setdefault(r['period'], self._empty_cell())
             cell['revenue'] = float(r['revenue'] or 0)
 
+        for r in expense_rows:
+            p = _bucket(r['event__venue__city'])
+            cell = p.setdefault(r['period'], self._empty_cell())
+            cell['expenses'] = float(r['expenses'] or 0)
+
+        for r in income_rows:
+            p = _bucket(r['event__venue__city'])
+            cell = p.setdefault(r['period'], self._empty_cell())
+            cell['income'] = float(r['income'] or 0)
+
+        for r in fee_rows:
+            p = _bucket(r['ticket_order__event__venue__city'])
+            cell = p.setdefault(r['period'], self._empty_cell())
+            cell['fees'] = float(r['fee_cents'] or 0) / 100.0
+
         # Query C — new vs returning buyers per (city, period), reusing the
         # earliest-order = "new" rule from RepeatCustomerCalculator.
         for city, key, new_count, ret_count in self._new_returning_by_market_period():
@@ -138,13 +190,13 @@ class MarketTrendCalculator:
         for city, period_map in markets.items():
             market_results.append(self._build_market(city, period_map))
 
-        # Most-declining first; insufficient-data markets sink to the bottom.
-        def _sort_key(m):
-            if m['trend'] == 'insufficient_data':
-                return (1, 0.0)
-            return (0, m['norm_slope_pct'])
-
-        market_results.sort(key=_sort_key)
+        # Leaderboard order: highest to lowest by the selected metric's total.
+        total_field = {
+            'revenue': 'total_revenue',
+            'profitability': 'total_profit',
+            'tickets': 'total_sold',
+        }[self.metric]
+        market_results.sort(key=lambda m: m[total_field], reverse=True)
 
         summary = {
             'markets_count': len(market_results),
@@ -159,6 +211,7 @@ class MarketTrendCalculator:
     @staticmethod
     def _empty_cell():
         return {'events_held': 0, 'sold': 0, 'revenue': 0.0,
+                'expenses': 0.0, 'income': 0.0, 'fees': 0.0,
                 'new_count': 0, 'returning_count': 0}
 
     def _new_returning_by_market_period(self):
@@ -213,8 +266,17 @@ class MarketTrendCalculator:
             events_held = cell['events_held'] or 0
             sold = cell['sold'] or 0
             revenue = cell['revenue'] or 0.0
+            expenses = cell['expenses'] or 0.0
+            income = cell['income'] or 0.0
+            fees = cell['fees'] or 0.0
+            # Profit mirrors the profitability_overview view: ticket revenue +
+            # other income - platform fees - expenses. `cost` is the net drag.
+            profit = revenue + income - fees - expenses
+            cost = expenses + fees - income
             avg_sold = (sold / events_held) if events_held else 0.0
             avg_revenue = (revenue / events_held) if events_held else 0.0
+            avg_profit = (profit / events_held) if events_held else 0.0
+            avg_cost = (cost / events_held) if events_held else 0.0
             avg_price = (revenue / sold) if sold else 0.0
             total_buyers = cell['new_count'] + cell['returning_count']
             returning_pct = (
@@ -227,8 +289,11 @@ class MarketTrendCalculator:
                 'events_held': events_held,
                 'sold': sold,
                 'revenue': round(revenue, 2),
+                'profit': round(profit, 2),
                 'avg_sold_per_event': round(avg_sold, 1),
                 'avg_revenue_per_event': round(avg_revenue, 2),
+                'avg_profit_per_event': round(avg_profit, 2),
+                'avg_cost_per_event': round(avg_cost, 2),
                 'avg_price': round(avg_price, 2),
                 'new_count': cell['new_count'],
                 'returning_count': cell['returning_count'],
@@ -236,9 +301,11 @@ class MarketTrendCalculator:
             })
 
         # The series the trend is read on depends on the selected metric.
-        series_field = (
-            'avg_revenue_per_event' if self.metric == 'revenue' else 'avg_sold_per_event'
-        )
+        series_field = {
+            'revenue': 'avg_revenue_per_event',
+            'tickets': 'avg_sold_per_event',
+            'profitability': 'avg_profit_per_event',
+        }[self.metric]
         result = {
             'city': city,
             'metric': self.metric,
@@ -246,6 +313,7 @@ class MarketTrendCalculator:
             'sparkline': [p[series_field] for p in periods],
             'total_sold': sum(p['sold'] for p in periods),
             'total_revenue': round(sum(p['revenue'] for p in periods), 2),
+            'total_profit': round(sum(p['profit'] for p in periods), 2),
             'total_events': sum(p['events_held'] for p in periods),
             'trend': 'insufficient_data',
             'norm_slope_pct': 0.0,
@@ -264,7 +332,9 @@ class MarketTrendCalculator:
 
         ys = [p[series_field] for p in observed]
         slope, intercept, mean_y, r2 = _ols(ys)
-        norm_slope = (slope / mean_y) if mean_y else 0.0
+        # Normalize by |mean| so a worsening loss (negative mean profit) still
+        # reads as declining; for revenue/tickets the mean is positive anyway.
+        norm_slope = (slope / abs(mean_y)) if mean_y else 0.0
 
         result['norm_slope_pct'] = round(norm_slope * 100, 1)
         result['confidence'] = 'high' if r2 >= CONFIDENCE_R2 else 'low'
@@ -292,21 +362,24 @@ class MarketTrendCalculator:
         def _mean(rows, field):
             return sum(r[field] for r in rows) / len(rows) if rows else 0.0
 
-        # In revenue mode, revenue/event = tickets/event x avg price, so price
-        # joins demand as a candidate component of the decline.
+        # Candidate drivers depend on the metric. `hurts_when` records the
+        # direction that drags the metric down: 'down' for the usual metrics
+        # (a fall hurts) and 'up' for costs (a rise hurts profit).
         candidates = [
-            ('events', 'events_held'),
-            ('demand', 'avg_sold_per_event'),
+            ('events', 'events_held', 'down'),
+            ('demand', 'avg_sold_per_event', 'down'),
         ]
-        if self.metric == 'revenue':
-            candidates.append(('price', 'avg_price'))
+        if self.metric in ('revenue', 'profitability'):
+            candidates.append(('price', 'avg_price', 'down'))
+        if self.metric == 'profitability':
+            candidates.append(('costs', 'avg_cost_per_event', 'up'))
         candidates += [
-            ('acquisition', 'new_count'),
-            ('retention', 'returning_pct'),
+            ('acquisition', 'new_count', 'down'),
+            ('retention', 'returning_pct', 'down'),
         ]
 
         drivers = []
-        for key, field in candidates:
+        for key, field, hurts_when in candidates:
             a = _mean(first, field)
             b = _mean(last, field)
             change = ((b - a) / a) if a else 0.0
@@ -316,12 +389,17 @@ class MarketTrendCalculator:
                 'change_pct': round(change * 100, 1),
                 'first': round(a, 1),
                 'last': round(b, 1),
+                'hurts_when': hurts_when,
             })
 
         result['driver_contributions'] = drivers
-        # Dominant = largest negative magnitude (most responsible for the drop).
-        dominant = min(drivers, key=lambda d: d['change_pct'])
-        if dominant['change_pct'] >= 0:
+        # Rank by impact on the metric: a fall hurts the usual drivers, a rise
+        # hurts costs. Dominant = the driver dragging the metric down the most.
+        def _impact(d):
+            return d['change_pct'] if d['hurts_when'] == 'down' else -d['change_pct']
+
+        dominant = min(drivers, key=_impact)
+        if _impact(dominant) >= 0:
             # Decline isn't cleanly attributable to one declining driver.
             result['dominant_driver'] = None
             result['diagnosis_text'] = (
@@ -338,7 +416,7 @@ class MarketTrendCalculator:
         result['recommended_action'] = self._recommended_action(dominant['key'])
 
     def _metric_noun(self):
-        return 'revenue' if self.metric == 'revenue' else 'turnout'
+        return {'revenue': 'revenue', 'profitability': 'profit'}.get(self.metric, 'turnout')
 
     def _diagnosis_text(self, result, dominant):
         drop = abs(result['norm_slope_pct'])
@@ -354,6 +432,10 @@ class MarketTrendCalculator:
             )
         elif key == 'price':
             phrase = 'lower ticket prices (avg fell ${}→${})'.format(
+                dominant['first'], dominant['last'],
+            )
+        elif key == 'costs':
+            phrase = 'higher costs per event (avg rose ${}→${})'.format(
                 dominant['first'], dominant['last'],
             )
         elif key == 'acquisition':
@@ -400,6 +482,13 @@ class MarketTrendCalculator:
                         'pricing and tier structure for upcoming shows here.',
                 'url_name': None,
                 'icon': 'bi-tag',
+            }
+        if driver_key == 'costs':
+            return {
+                'key': 'costs',
+                'label': 'Review event expenses',
+                'url_name': 'tickets:expense_analytics',
+                'icon': 'bi-receipt-cutoff',
             }
         # 'events' — programming/booking issue, informational only.
         return {

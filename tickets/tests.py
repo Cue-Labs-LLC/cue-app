@@ -13563,6 +13563,34 @@ class MarketTrendCalculatorTests(TestCase):
                 )
                 Ticket.objects.create(ticket_order=order, ticket_type='GA', price=Decimal(str(price)))
 
+    def _build_cost_market(self, city, specs):
+        """specs[i] = (tickets, price, cost_per_event) per quarter (all new buyers).
+
+        One event per quarter with `tickets` 1-ticket orders at `price`, plus a
+        single EventExpense of `cost_per_event` — lets profit-per-event move
+        independently of revenue/tickets."""
+        venue = self._venue(city)
+        for i, (n, price, cost) in enumerate(specs):
+            event = self._event(venue, self.quarters[i], '{} Q{}'.format(city, i + 1))
+            for s in range(n):
+                customer = Customer.objects.create(
+                    organization=self.org,
+                    email='{}-c{}-{}@example.com'.format(city.lower(), i, s),
+                    name='{} {} {}'.format(city, i, s),
+                )
+                order = TicketOrder.objects.create(
+                    customer=customer, event=event,
+                    order_number='ORDC-{}-{}-{}'.format(city.lower(), i, s),
+                    order_date=timezone.make_aware(datetime.combine(event.start_date, time(10, 0))),
+                    total_amount=Decimal(str(price)),
+                )
+                Ticket.objects.create(ticket_order=order, ticket_type='GA', price=Decimal(str(price)))
+            EventExpense.objects.create(
+                event=event, category='production', description='cost',
+                amount=Decimal(str(cost)), expense_date=event.start_date,
+                created_by=self.user,
+            )
+
     def test_declining_demand_market(self):
         from tickets.services.market_trends import MarketTrendCalculator
         self._build_market('Austin', [40, 30, 20, 10])
@@ -13612,12 +13640,13 @@ class MarketTrendCalculatorTests(TestCase):
         self.assertEqual(reno['total_sold'], direct)
         self.assertEqual(reno['total_sold'], 30)
 
-    def test_most_declining_sorted_first(self):
+    def test_sorted_highest_to_lowest_by_metric(self):
         from tickets.services.market_trends import MarketTrendCalculator
-        self._build_market('Austin', [40, 30, 20, 10])   # declining
-        self._build_market('Miami', [10, 20, 30, 40])     # growing
+        self._build_market('Boston', [50, 40, 30, 20])   # total 140, declining
+        self._build_market('Dallas', [10, 20, 30, 40])   # total 100, growing
         result = MarketTrendCalculator(self.org, period='quarter', metric='tickets').calculate()
-        self.assertEqual(result['markets'][0]['city'], 'Austin')
+        # Largest market by tickets sold leads, regardless of trend direction.
+        self.assertEqual([m['city'] for m in result['markets']], ['Boston', 'Dallas'])
         self.assertEqual(result['summary']['declining_count'], 1)
         self.assertEqual(result['summary']['growing_count'], 1)
 
@@ -13719,4 +13748,44 @@ class MarketTrendCalculatorTests(TestCase):
         # Invalid metric falls back to revenue.
         resp2 = self.client.get(reverse('tickets:market_trends'), {'metric': 'bogus'})
         self.assertEqual(resp2.context['metric'], 'revenue')
+
+    def test_profit_is_revenue_minus_costs(self):
+        from tickets.services.market_trends import MarketTrendCalculator
+        # 20 tickets x $30 = $600 revenue/quarter; expenses 200+300+400+500 = 1400.
+        specs = [(20, 30, 200), (20, 30, 300), (20, 30, 400), (20, 30, 500)]
+        self._build_cost_market('Tucson', specs)
+        result = MarketTrendCalculator(self.org, metric='profitability').calculate()
+        tuc = next(m for m in result['markets'] if m['city'] == 'Tucson')
+        self.assertEqual(tuc['total_revenue'], 2400.0)
+        self.assertEqual(tuc['total_profit'], 1000.0)  # 2400 - 1400
+
+    def test_profitability_declining_via_rising_costs(self):
+        """Flat volume and price, rising cost: stable by tickets & revenue, but
+        declining by profit with costs as the dominant driver."""
+        from tickets.services.market_trends import MarketTrendCalculator
+        specs = [(20, 30, 200), (20, 30, 300), (20, 30, 400), (20, 30, 500)]
+        self._build_cost_market('Tucson', specs)
+
+        tickets_view = MarketTrendCalculator(self.org, metric='tickets').calculate()
+        self.assertEqual(next(m for m in tickets_view['markets'] if m['city'] == 'Tucson')['trend'], 'stable')
+        revenue_view = MarketTrendCalculator(self.org, metric='revenue').calculate()
+        self.assertEqual(next(m for m in revenue_view['markets'] if m['city'] == 'Tucson')['trend'], 'stable')
+
+        profit_view = MarketTrendCalculator(self.org, metric='profitability').calculate()
+        tuc = next(m for m in profit_view['markets'] if m['city'] == 'Tucson')
+        self.assertEqual(tuc['trend'], 'declining')
+        self.assertEqual(tuc['dominant_driver'], 'costs')
+        self.assertTrue(tuc['diagnosis_text'].startswith('Profit in Tucson'))
+        # The costs driver is flagged as a rising drag.
+        costs = next(d for d in tuc['driver_contributions'] if d['key'] == 'costs')
+        self.assertEqual(costs['hurts_when'], 'up')
+        self.assertGreater(costs['change_pct'], 0)
+
+    def test_view_profitability_metric(self):
+        self._build_market('Austin', [40, 30, 20, 10])
+        self.client.login(username='trend_owner@example.com', password='pw')
+        self.client.get(reverse('tickets:home'))  # prime session org / host routing
+        resp = self.client.get(reverse('tickets:market_trends'), {'metric': 'profitability'})
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.context['metric'], 'profitability')
 

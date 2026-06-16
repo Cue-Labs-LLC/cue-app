@@ -582,6 +582,13 @@ class Command(BaseCommand):
         ("Sacramento", "Ace of Spades", [
             (28, 35, 42), (28, 40, 40), (27, 38, 36), (28, 42, 30), (28, 40, 24), (28, 43, 18),
         ]),
+        # Tucson: tickets AND price steady, but cost per event keeps rising — looks
+        # stable by tickets and revenue, declining by PROFIT (dominant driver =
+        # costs). The optional 4th tuple element pins the per-event cost.
+        ("Tucson", "Club Congress", [
+            (28, 0, 35, 300), (28, 38, 35, 380), (28, 40, 35, 480),
+            (28, 39, 35, 600), (28, 41, 35, 740), (28, 40, 35, 900),
+        ]),
         # Boise: just two shows on the books — not enough history to read a trend.
         ("Boise", "Neurolux", [
             (28, 0), (22, 30),
@@ -605,10 +612,15 @@ class Command(BaseCommand):
         pairs.reverse()
         return [date(yy, qq * 3 + 1, 15) for yy, qq in pairs]
 
+    # Default per-event cost as a fraction of that event's ticket revenue, so
+    # profit tracks revenue for most markets (~45% margin). Markets with an
+    # explicit 4th tuple element override this with a fixed per-event cost.
+    DEFAULT_COST_FRACTION = 0.55
+
     def _create_market_trend_history(self, org, owner, today, rng):
         from tickets.models import EVENT_STATUS_ENDED, TICKETING_TYPE_EXTERNAL
 
-        markets_made = events_made = orders_made = 0
+        markets_made = events_made = orders_made = expenses_made = 0
         for city, venue_name, quarters in self.MARKET_TREND_SPECS:
             venue = Venue.objects.create(
                 organization=org, name=venue_name, city=city,
@@ -619,9 +631,10 @@ class Command(BaseCommand):
             seen = []   # customers with at least one prior order in this market
             cust_seq = 0
             for qi, q in enumerate(quarters):
-                # Quarter tuple is (tickets_per_event, returning_pct[, fixed_price]).
+                # Quarter tuple is (tickets_per_event, returning_pct[, fixed_price[, fixed_cost]]).
                 tickets_per_event, ret_pct = q[0], q[1]
                 quarter_price = q[2] if len(q) > 2 else None
+                quarter_cost = q[3] if len(q) > 3 else None
                 anchor = anchors[qi]
                 # Spread this quarter's events across its first two months.
                 q_events = []
@@ -666,6 +679,7 @@ class Command(BaseCommand):
                 # (counted "new"); returning buyers debuted earlier ("returning").
                 buyers = returning_buyers + new_buyers
                 rng.shuffle(buyers)
+                event_revenue = {e.id: Decimal("0.00") for e in q_events}
                 for bi, cust in enumerate(buyers):
                     event = q_events[bi % len(q_events)]
                     price = _decimal(quarter_price if quarter_price is not None
@@ -685,7 +699,27 @@ class Command(BaseCommand):
                     Ticket.objects.create(
                         ticket_order=order, ticket_type="General Admission", price=price,
                     )
+                    event_revenue[event.id] += price
                     orders_made += 1
+
+                # One expense per event so the profitability lens is meaningful:
+                # a fixed per-event cost when specified, else ~55% of revenue.
+                for event in q_events:
+                    if quarter_cost is not None:
+                        cost = _decimal(quarter_cost)
+                    else:
+                        cost = _decimal(
+                            float(event_revenue[event.id]) * self.DEFAULT_COST_FRACTION
+                        )
+                    EventExpense.objects.create(
+                        event=event,
+                        category="production",
+                        description="Production & venue",
+                        amount=cost,
+                        expense_date=event.start_date - timedelta(days=7),
+                        created_by=owner,
+                    )
+                    expenses_made += 1
 
                 # New buyers can return in later quarters.
                 seen.extend(new_buyers)
@@ -693,7 +727,7 @@ class Command(BaseCommand):
 
         self.stdout.write(self.style.SUCCESS(
             f"Market trend history: {markets_made} markets, "
-            f"{events_made} events, {orders_made} orders"
+            f"{events_made} events, {orders_made} orders, {expenses_made} expenses"
         ))
 
     def _create_direct_ticketing(self, events, now, rng):
