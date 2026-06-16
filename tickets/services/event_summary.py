@@ -14,7 +14,7 @@ import logging
 from django.conf import settings
 from django.utils import timezone
 
-from tickets.models import AITokenUsage
+from tickets.models import AITokenUsage, TICKETING_TYPE_DIRECT
 from tickets.services.ai_metering import TokenUsageAccumulator, record_ai_token_usage
 
 logger = logging.getLogger(__name__)
@@ -54,7 +54,7 @@ follow-up). Make them actionable, not generic advice.
 Rules: Be concise and professional. No emojis. Use only the data provided — do not \
 invent numbers. If a data section is empty, work with what you have rather than \
 dwelling on the gap. Prioritize synthesis over recitation: if a bullet just restates a \
-single figure from the data below, cut it.
+single figure from the data below, cut it.{allocation_caveat}
 
 ---
 EVENT DATA:
@@ -69,7 +69,7 @@ Ticket Sales:
 - Unique Customers: {total_customers}
 - Capacity Utilization: {utilization_pct}
 
-Ticket Type Breakdown:
+{ticket_breakdown_heading}
 {ticket_type_lines}
 
 Attendee Segments (RFM):
@@ -160,6 +160,11 @@ class EventSummaryService:
 
     def _build_prompt(self, event, event_data):
         """Format the prompt template with event data."""
+        # Direct events have real ticket allocations; external (CSV-upload) events
+        # don't carry allocation/availability totals, so we must not let the model
+        # reason about sell-through for them.
+        is_direct = event.ticketing_type == TICKETING_TYPE_DIRECT
+
         # Ticket type breakdown
         breakdown = event_data.get('ticket_type_breakdown', [])
         if breakdown:
@@ -169,6 +174,20 @@ class EventSummaryService:
             )
         else:
             ticket_type_lines = "- No ticket type data available"
+
+        if is_direct:
+            ticket_breakdown_heading = "Ticket Type Breakdown:"
+            allocation_caveat = ""
+        else:
+            ticket_breakdown_heading = (
+                "Ticket Type Breakdown (tickets sold; allocation totals not available):"
+            )
+            allocation_caveat = (
+                " Ticket allocation and availability totals are unknown for this event — "
+                "only the number of tickets sold is known. Do NOT draw any conclusion about "
+                "sell-through rate, percent sold, capacity utilization, or whether any tier "
+                "sold out."
+            )
 
         # Attendee segment breakdown
         segments = event_data.get('attendee_segments', [])
@@ -242,10 +261,12 @@ class EventSummaryService:
         else:
             checkin_section = ""
 
-        # Capacity utilization
+        # Capacity utilization — only meaningful for direct events with a real allocation.
         capacity = event.capacity
         total_tickets = event_data['total_tickets']
-        if capacity and capacity > 0:
+        if not is_direct:
+            utilization_pct = "Not available — uploaded events don't include ticket allocation totals"
+        elif capacity and capacity > 0:
             utilization_pct = f"{total_tickets / capacity * 100:.1f}%"
         else:
             utilization_pct = "N/A (no capacity set)"
@@ -265,6 +286,8 @@ class EventSummaryService:
             total_tickets=total_tickets,
             total_customers=event_data['total_customers'],
             utilization_pct=utilization_pct,
+            ticket_breakdown_heading=ticket_breakdown_heading,
+            allocation_caveat=allocation_caveat,
             ticket_type_lines=ticket_type_lines,
             attendee_segment_lines=attendee_segment_lines,
             ticket_revenue=f"{event_data['ticket_revenue']:,.2f}",

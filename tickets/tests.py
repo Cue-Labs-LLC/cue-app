@@ -12859,6 +12859,41 @@ class EventSummaryStreamTests(TestCase):
 
         self.assertNotIn('Check-In (door attendance)', prompt)
 
+    def test_build_prompt_excludes_allocation_for_external_event(self):
+        """External-upload events must not invite sell-through/allocation conclusions."""
+        from tickets.services.event_summary import EventSummaryService
+        from tickets.views import _compute_event_stats
+
+        self.event.capacity = 100
+        self.event.save(update_fields=['capacity'])
+        service = EventSummaryService(self.org, user=self.user)
+        event_data = _compute_event_stats(self.event)  # default (external) ticketing
+        prompt = service._build_prompt(self.event, event_data)
+
+        self.assertIn('Do NOT draw any conclusion about sell-through', prompt)
+        self.assertIn("uploaded events don't include ticket allocation totals", prompt)
+        self.assertIn('allocation totals not available', prompt)
+        # No computed utilization percentage even though capacity is set.
+        self.assertNotIn('Capacity Utilization: 0.0%', prompt)
+
+    def test_build_prompt_keeps_allocation_for_direct_event(self):
+        """Direct events keep real capacity utilization and no allocation caveat."""
+        from tickets.services.event_summary import EventSummaryService
+        from tickets.views import _compute_event_stats
+
+        event = self._make_direct_checked_in_event()
+        event.capacity = 4
+        event.save(update_fields=['capacity'])
+        service = EventSummaryService(self.org, user=self.user)
+        event_data = _compute_event_stats(event)
+        prompt = service._build_prompt(event, event_data)
+
+        # Direct branch computes a numeric utilization (not the external note).
+        self.assertRegex(prompt, r'Capacity Utilization: \d+\.\d%')
+        self.assertNotIn("uploaded events don't include ticket allocation totals", prompt)
+        self.assertIn('Ticket Type Breakdown:', prompt)
+        self.assertNotIn('Do NOT draw any conclusion about sell-through', prompt)
+
 
 class DisplayPreferencesTests(TestCase):
     """Org admins can toggle the AI Event Summary card from /settings/display/."""
