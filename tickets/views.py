@@ -3374,7 +3374,7 @@ def market_trends(request):
     if period not in ('month', 'quarter'):
         period = 'quarter'
     metric = request.GET.get('metric', 'revenue')
-    if metric not in ('revenue', 'tickets', 'profitability'):
+    if metric not in ('revenue', 'tickets', 'profitability', 'nps'):
         metric = 'revenue'
 
     from tickets.services.market_trends import MarketTrendCalculator
@@ -3387,6 +3387,7 @@ def market_trends(request):
         'summary': result['summary'],
         'period': period,
         'metric': metric,
+        'change_unit': 'pts' if metric == 'nps' else '%',
         'sms_marketing_enabled': org.sms_marketing_enabled,
     })
 
