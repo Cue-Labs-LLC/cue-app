@@ -13470,3 +13470,191 @@ class EventAudienceTests(TestCase):
         resp = self.client.get(reverse('tickets:event_detail', args=[self.event.id]))
         self.assertEqual(resp.status_code, 200)
         self.assertNotContains(resp, 'id="tab-audience"')
+
+
+class OLSHelperTests(TestCase):
+    """Unit tests for the OLS fit used by market trend classification."""
+
+    def test_linear_series_exact_fit(self):
+        from tickets.services.market_trends.market_trend_calculator import _ols
+        slope, intercept, mean_y, r2 = _ols([10, 20, 30])
+        self.assertAlmostEqual(slope, 10.0)
+        self.assertAlmostEqual(intercept, 10.0)
+        self.assertAlmostEqual(mean_y, 20.0)
+        self.assertAlmostEqual(r2, 1.0)
+
+    def test_flat_series_zero_slope(self):
+        from tickets.services.market_trends.market_trend_calculator import _ols
+        slope, intercept, mean_y, r2 = _ols([5, 5, 5, 5])
+        self.assertEqual(slope, 0.0)
+        self.assertEqual(mean_y, 5.0)
+        self.assertEqual(r2, 1.0)  # a flat fit explains a flat series exactly
+
+
+class MarketTrendCalculatorTests(TestCase):
+    """Tests for per-market turnout trend detection and diagnosis."""
+
+    def setUp(self):
+        self.org = Organization.objects.create(name='Trend Org', slug='trend-org')
+        self.user = User.objects.create_user(
+            username='trend_owner', email='trend_owner@example.com', password='pw',
+        )
+        UserProfile.objects.create(
+            user=self.user, organization=self.org, org_role=UserProfile.OrgRole.OWNER,
+        )
+        OrganizationMembership.objects.create(
+            user=self.user, organization=self.org, org_role=UserProfile.OrgRole.OWNER,
+        )
+        # Quarter anchor dates well in the past so start_date < today always holds.
+        self.quarters = [date(2023, 1, 15), date(2023, 4, 15), date(2023, 7, 15), date(2023, 10, 15)]
+
+    def _venue(self, city):
+        return Venue.objects.create(organization=self.org, name=city + ' Hall', city=city)
+
+    def _event(self, venue, start_date, name):
+        return Event.objects.create(
+            organization=self.org, name=name, venue=venue, start_date=start_date,
+        )
+
+    def _order_with_tickets(self, event, n_tickets, customer_prefix, seq):
+        """Create one order at `event` with `n_tickets` tickets, each a unique customer."""
+        customer = Customer.objects.create(
+            organization=self.org,
+            email='{}-{}@example.com'.format(customer_prefix, seq),
+            name='{} {}'.format(customer_prefix, seq),
+        )
+        order = TicketOrder.objects.create(
+            customer=customer, event=event,
+            order_number='ORD-{}-{}'.format(customer_prefix, seq),
+            order_date=timezone.make_aware(datetime.combine(event.start_date, time(10, 0))),
+            total_amount=Decimal('10.00'),
+        )
+        for t in range(n_tickets):
+            Ticket.objects.create(ticket_order=order, ticket_type='GA', price=Decimal('10.00'))
+        return order
+
+    def _build_market(self, city, counts):
+        """One event per quarter; `counts[i]` = tickets sold that quarter (all new buyers)."""
+        venue = self._venue(city)
+        for i, n in enumerate(counts):
+            event = self._event(venue, self.quarters[i], '{} Q{}'.format(city, i + 1))
+            for s in range(n):
+                self._order_with_tickets(event, 1, '{}q{}'.format(city.lower(), i), s)
+
+    def test_declining_demand_market(self):
+        from tickets.services.market_trends import MarketTrendCalculator
+        self._build_market('Austin', [40, 30, 20, 10])
+        result = MarketTrendCalculator(self.org, period='quarter').calculate()
+        austin = next(m for m in result['markets'] if m['city'] == 'Austin')
+        self.assertEqual(austin['trend'], 'declining')
+        self.assertLess(austin['norm_slope_pct'], 0)
+        # All buyers are new each quarter, so demand falls in lockstep with
+        # acquisition; demand is first in the driver order and wins the tie.
+        self.assertEqual(austin['dominant_driver'], 'demand')
+        self.assertIn('Austin', austin['diagnosis_text'])
+        self.assertIsNotNone(austin['recommended_action'])
+
+    def test_stable_market(self):
+        from tickets.services.market_trends import MarketTrendCalculator
+        self._build_market('Denver', [25, 25, 25, 25])
+        result = MarketTrendCalculator(self.org, period='quarter').calculate()
+        denver = next(m for m in result['markets'] if m['city'] == 'Denver')
+        self.assertEqual(denver['trend'], 'stable')
+        self.assertEqual(denver['dominant_driver'], None)
+
+    def test_growing_market(self):
+        from tickets.services.market_trends import MarketTrendCalculator
+        self._build_market('Miami', [10, 20, 30, 40])
+        result = MarketTrendCalculator(self.org, period='quarter').calculate()
+        miami = next(m for m in result['markets'] if m['city'] == 'Miami')
+        self.assertEqual(miami['trend'], 'growing')
+        self.assertGreater(miami['norm_slope_pct'], 0)
+
+    def test_insufficient_data_market(self):
+        from tickets.services.market_trends import MarketTrendCalculator
+        self._build_market('Boise', [30, 20])  # only 2 periods
+        result = MarketTrendCalculator(self.org, period='quarter').calculate()
+        boise = next(m for m in result['markets'] if m['city'] == 'Boise')
+        self.assertEqual(boise['trend'], 'insufficient_data')
+        self.assertEqual(boise['dominant_driver'], None)
+
+    def test_sold_totals_match_ticket_count_no_inflation(self):
+        from tickets.services.market_trends import MarketTrendCalculator
+        self._build_market('Reno', [12, 8, 6, 4])
+        result = MarketTrendCalculator(self.org, period='quarter').calculate()
+        reno = next(m for m in result['markets'] if m['city'] == 'Reno')
+        direct = Ticket.objects.filter(
+            ticket_order__event__organization=self.org,
+            ticket_order__event__venue__city='Reno',
+        ).count()
+        self.assertEqual(reno['total_sold'], direct)
+        self.assertEqual(reno['total_sold'], 30)
+
+    def test_most_declining_sorted_first(self):
+        from tickets.services.market_trends import MarketTrendCalculator
+        self._build_market('Austin', [40, 30, 20, 10])   # declining
+        self._build_market('Miami', [10, 20, 30, 40])     # growing
+        result = MarketTrendCalculator(self.org, period='quarter').calculate()
+        self.assertEqual(result['markets'][0]['city'], 'Austin')
+        self.assertEqual(result['summary']['declining_count'], 1)
+        self.assertEqual(result['summary']['growing_count'], 1)
+
+    def test_view_smoke(self):
+        self._build_market('Austin', [40, 30, 20, 10])
+        self.client.login(username='trend_owner@example.com', password='pw')
+        self.client.get(reverse('tickets:home'))  # prime session org / host routing
+        resp = self.client.get(reverse('tickets:market_trends'))
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn('markets', resp.context)
+        self.assertContains(resp, 'Austin')
+        # Embedded JSON parses.
+        json.loads(resp.context['markets_json'])
+
+    def test_view_period_toggle(self):
+        self._build_market('Austin', [40, 30, 20, 10])
+        self.client.login(username='trend_owner@example.com', password='pw')
+        self.client.get(reverse('tickets:home'))  # prime session org / host routing
+        resp = self.client.get(reverse('tickets:market_trends'), {'period': 'month'})
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.context['period'], 'month')
+
+    def test_returning_buyer_classified_new_then_returning(self):
+        """A buyer is 'new' in their first period and 'returning' afterward —
+        regardless of DB row order (guards the order-independent classification)."""
+        from tickets.services.market_trends import MarketTrendCalculator
+        venue = self._venue('Tahoe')
+        e1 = self._event(venue, self.quarters[0], 'Tahoe Q1')
+        e2 = self._event(venue, self.quarters[1], 'Tahoe Q2')
+        e3 = self._event(venue, self.quarters[2], 'Tahoe Q3')
+        loyal = Customer.objects.create(
+            organization=self.org, email='loyal@example.com', name='Loyal Fan',
+        )
+
+        def _order(event, customer, num):
+            o = TicketOrder.objects.create(
+                customer=customer, event=event, order_number='O-{}'.format(num),
+                order_date=timezone.make_aware(datetime.combine(event.start_date, time(10, 0))),
+                total_amount=Decimal('10.00'),
+            )
+            Ticket.objects.create(ticket_order=o, ticket_type='GA', price=Decimal('10.00'))
+
+        # Loyal fan buys in all three quarters; a fresh buyer joins each quarter.
+        for i, ev in enumerate((e1, e2, e3)):
+            _order(ev, loyal, 'loyal{}'.format(i))
+            fresh = Customer.objects.create(
+                organization=self.org, email='fresh{}@example.com'.format(i), name='Fresh {}'.format(i),
+            )
+            _order(ev, fresh, 'fresh{}'.format(i))
+
+        result = MarketTrendCalculator(self.org, period='quarter').calculate()
+        tahoe = next(m for m in result['markets'] if m['city'] == 'Tahoe')
+        periods = tahoe['periods']
+        # Q1: both buyers brand new.
+        self.assertEqual(periods[0]['new_count'], 2)
+        self.assertEqual(periods[0]['returning_count'], 0)
+        # Q2 & Q3: loyal fan is returning, the fresh buyer is new.
+        self.assertEqual(periods[1]['new_count'], 1)
+        self.assertEqual(periods[1]['returning_count'], 1)
+        self.assertEqual(periods[2]['new_count'], 1)
+        self.assertEqual(periods[2]['returning_count'], 1)
+
