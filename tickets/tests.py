@@ -13591,6 +13591,30 @@ class MarketTrendCalculatorTests(TestCase):
                 created_by=self.user,
             )
 
+    def _build_nps_market(self, city, specs):
+        """specs[i] = (promoters, passives, detractors) survey responses for quarter i.
+
+        One event per quarter; each response's `responded_at` sits in that quarter
+        so the NPS series (bucketed by responded_at) has one point per quarter."""
+        from tickets.models import ExternalSurveyUpload, ExternalSurveyResponse
+        venue = self._venue(city)
+        upload = ExternalSurveyUpload.objects.create(
+            organization=self.org, filename='nps.csv',
+            status=ExternalSurveyUpload.Status.COMPLETED, created_by=self.user,
+        )
+        seq = 0
+        for i, (promoters, passives, detractors) in enumerate(specs):
+            event = self._event(venue, self.quarters[i], '{} Q{}'.format(city, i + 1))
+            responded = timezone.make_aware(datetime.combine(self.quarters[i], time(12, 0)))
+            for score, count in ((10, promoters), (8, passives), (3, detractors)):
+                for _ in range(count):
+                    ExternalSurveyResponse.objects.create(
+                        organization=self.org, upload=upload, event=event,
+                        responded_at=responded, email='{}-{}@example.com'.format(city.lower(), seq),
+                        nps_score=score, city=city,
+                    )
+                    seq += 1
+
     def test_declining_demand_market(self):
         from tickets.services.market_trends import MarketTrendCalculator
         self._build_market('Austin', [40, 30, 20, 10])
@@ -13788,4 +13812,34 @@ class MarketTrendCalculatorTests(TestCase):
         resp = self.client.get(reverse('tickets:market_trends'), {'metric': 'profitability'})
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp.context['metric'], 'profitability')
+
+    def test_nps_total_score(self):
+        from tickets.services.market_trends import MarketTrendCalculator
+        # All promoters every quarter -> overall NPS = 100.
+        self._build_nps_market('Reno', [(10, 0, 0), (10, 0, 0), (10, 0, 0), (10, 0, 0)])
+        result = MarketTrendCalculator(self.org, metric='nps').calculate()
+        reno = next(m for m in result['markets'] if m['city'] == 'Reno')
+        self.assertEqual(reno['total_nps'], 100)
+        self.assertEqual(reno['change_unit'], 'pts')
+
+    def test_nps_declining_via_detractors(self):
+        from tickets.services.market_trends import MarketTrendCalculator
+        # Promoter share falls and detractor share climbs -> NPS slides; the
+        # detractor rise is the larger driver.
+        self._build_nps_market('Nashville', [(12, 6, 2), (9, 6, 5), (6, 6, 8), (4, 6, 10)])
+        result = MarketTrendCalculator(self.org, metric='nps').calculate()
+        nash = next(m for m in result['markets'] if m['city'] == 'Nashville')
+        self.assertEqual(nash['trend'], 'declining')
+        self.assertEqual(nash['dominant_driver'], 'detractors')
+        self.assertTrue(nash['diagnosis_text'].startswith('NPS in Nashville'))
+        self.assertEqual(nash['change_unit'], 'pts')
+
+    def test_view_nps_metric(self):
+        self._build_nps_market('Nashville', [(12, 6, 2), (9, 6, 5), (6, 6, 8), (4, 6, 10)])
+        self.client.login(username='trend_owner@example.com', password='pw')
+        self.client.get(reverse('tickets:home'))  # prime session org / host routing
+        resp = self.client.get(reverse('tickets:market_trends'), {'metric': 'nps'})
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.context['metric'], 'nps')
+        self.assertEqual(resp.context['change_unit'], 'pts')
 

@@ -617,11 +617,37 @@ class Command(BaseCommand):
     # explicit 4th tuple element override this with a fixed per-event cost.
     DEFAULT_COST_FRACTION = 0.55
 
-    def _create_market_trend_history(self, org, owner, today, rng):
-        from tickets.models import EVENT_STATUS_ENDED, TICKETING_TYPE_EXTERNAL
+    # Per-market promoter-share trajectory (start -> end across the quarters) used
+    # to seed NPS survey responses so the NPS lens has real trends. Most markets
+    # are flat (stable NPS); Nashville's sentiment sours (declining NPS, driven by
+    # more detractors) and Seattle's improves (growing NPS).
+    NPS_PROMOTER_TRAJECTORY = {
+        'Nashville': (0.55, 0.20),
+        'Seattle': (0.30, 0.62),
+    }
+    NPS_DEFAULT_PROMOTER = 0.45
+    NPS_PASSIVE_P = 0.30
+    NPS_RESPONSES_PER_EVENT = (8, 16)   # rng range
 
-        markets_made = events_made = orders_made = expenses_made = 0
+    def _create_market_trend_history(self, org, owner, today, rng):
+        from tickets.models import (
+            EVENT_STATUS_ENDED, TICKETING_TYPE_EXTERNAL,
+            ExternalSurveyResponse, ExternalSurveyUpload,
+        )
+
+        nps_upload = ExternalSurveyUpload.objects.create(
+            organization=org,
+            filename='market-trends-nps.csv',
+            status=ExternalSurveyUpload.Status.COMPLETED,
+            created_by=owner,
+        )
+
+        markets_made = events_made = orders_made = expenses_made = nps_made = 0
         for city, venue_name, quarters in self.MARKET_TREND_SPECS:
+            n_quarters = len(quarters)
+            prom_start, prom_end = self.NPS_PROMOTER_TRAJECTORY.get(
+                city, (self.NPS_DEFAULT_PROMOTER, self.NPS_DEFAULT_PROMOTER)
+            )
             venue = Venue.objects.create(
                 organization=org, name=venue_name, city=city,
                 state="", country="USA",
@@ -721,13 +747,45 @@ class Command(BaseCommand):
                     )
                     expenses_made += 1
 
+                # NPS survey responses per event so the NPS lens has trend data.
+                # Promoter share interpolates across the quarters per the market's
+                # trajectory; responded_at sits just after the show.
+                frac = qi / (n_quarters - 1) if n_quarters > 1 else 0.0
+                promoter_p = prom_start + (prom_end - prom_start) * frac
+                for event in q_events:
+                    for _ in range(rng.randint(*self.NPS_RESPONSES_PER_EVENT)):
+                        roll = rng.random()
+                        if roll < promoter_p:
+                            nps = rng.randint(9, 10)
+                        elif roll < promoter_p + self.NPS_PASSIVE_P:
+                            nps = rng.randint(7, 8)
+                        else:
+                            nps = rng.randint(0, 6)
+                        responded_at = timezone.make_aware(timezone.datetime.combine(
+                            event.start_date + timedelta(days=rng.randint(1, 14)),
+                            timezone.datetime.min.time(),
+                        )) + timedelta(hours=rng.randint(8, 22))
+                        ExternalSurveyResponse.objects.create(
+                            organization=org,
+                            upload=nps_upload,
+                            event=event,
+                            responded_at=responded_at,
+                            email=f"nps{nps_made:05d}@example.test",
+                            nps_score=None if rng.random() < 0.12 else nps,
+                            city=city,
+                        )
+                        nps_made += 1
+
                 # New buyers can return in later quarters.
                 seen.extend(new_buyers)
             markets_made += 1
 
+        nps_upload.row_count = nps_made
+        nps_upload.save(update_fields=['row_count'])
         self.stdout.write(self.style.SUCCESS(
             f"Market trend history: {markets_made} markets, "
-            f"{events_made} events, {orders_made} orders, {expenses_made} expenses"
+            f"{events_made} events, {orders_made} orders, {expenses_made} expenses, "
+            f"{nps_made} NPS responses"
         ))
 
     def _create_direct_ticketing(self, events, now, rng):
