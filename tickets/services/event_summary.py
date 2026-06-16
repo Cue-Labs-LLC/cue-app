@@ -111,8 +111,13 @@ class EventSummaryService:
         self.organization = organization
         self.user = user
 
-    def stream_summary(self, event, event_data):
-        """Generator yielding SSE-formatted chunks. Saves result to event.ai_summary."""
+    def stream_summary(self, event, event_data, rate_limit_key=None):
+        """Generator yielding SSE-formatted chunks. Saves result to event.ai_summary.
+
+        When ``rate_limit_key`` is given, the per-org hourly counter is incremented
+        only after a summary is successfully produced, so failed attempts (e.g. a
+        missing OpenAI key) don't consume the budget.
+        """
         from langchain_openai import ChatOpenAI
 
         prompt = self._build_prompt(event, event_data)
@@ -163,6 +168,15 @@ class EventSummaryService:
                 usage=usage.total(),
                 metadata={'event_id': str(event.id)},
             )
+
+            # Count only successful generations against the hourly rate limit.
+            if rate_limit_key:
+                try:
+                    from django.core.cache import cache as django_cache
+                    current = django_cache.get(rate_limit_key, 0) or 0
+                    django_cache.set(rate_limit_key, current + 1, timeout=3600)
+                except Exception:
+                    pass
 
     def _build_prompt(self, event, event_data):
         """Format the prompt template with event data."""

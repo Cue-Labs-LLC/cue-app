@@ -5225,16 +5225,17 @@ def event_summary_stream(request, event_id):
     if not org.ai_event_summary_enabled:
         raise Http404()
 
-    # Rate limit: 10 generations per org per hour
+    # Rate limit: 30 *successful* generations per org per hour. We only check the
+    # ceiling here; the counter is incremented by the service after a summary is
+    # actually produced, so failed attempts (e.g. a missing OpenAI key) don't burn
+    # the budget or mask the real error behind a misleading "rate limit" message.
     rate_key = f"summary_ratelimit:{org.id}"
     try:
-        current_count = django_cache.get(rate_key, 0)
-        if current_count >= 10:
+        if (django_cache.get(rate_key, 0) or 0) >= 30:
             return JsonResponse(
                 {'error': 'Rate limit exceeded. Please try again later.'},
                 status=429,
             )
-        django_cache.set(rate_key, current_count + 1, timeout=3600)
     except Exception:
         # Redis unavailable — skip rate limiting rather than blocking the request
         pass
@@ -5248,7 +5249,7 @@ def event_summary_stream(request, event_id):
 
     service = EventSummaryService(org, user=request.user)
     response = StreamingHttpResponse(
-        service.stream_summary(event, event_data),
+        service.stream_summary(event, event_data, rate_limit_key=rate_key),
         content_type='text/event-stream',
     )
     response['Cache-Control'] = 'no-cache'
