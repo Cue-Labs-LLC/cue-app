@@ -12781,6 +12781,43 @@ class EventSummaryStreamTests(TestCase):
 
         django_cache.delete(rate_key)
 
+    @patch('langchain_openai.ChatOpenAI')
+    def test_failed_generation_does_not_consume_rate_limit(self, mock_llm_cls):
+        """A failed generation must not burn the hourly budget (regression)."""
+        from django.core.cache import cache as django_cache
+        rate_key = f"summary_ratelimit:{self.org.id}"
+        django_cache.delete(rate_key)
+
+        mock_instance = MagicMock()
+        mock_instance.stream.side_effect = Exception('API key invalid')
+        mock_llm_cls.return_value = mock_instance
+
+        response = self.client.post(self.url)
+        b''.join(response.streaming_content)  # drive the generator to completion
+
+        self.assertEqual(django_cache.get(rate_key, 0), 0)
+        django_cache.delete(rate_key)
+
+    @patch('langchain_openai.ChatOpenAI')
+    def test_successful_generation_increments_rate_limit(self, mock_llm_cls):
+        """A successful generation counts once against the hourly budget."""
+        from django.core.cache import cache as django_cache
+        rate_key = f"summary_ratelimit:{self.org.id}"
+        django_cache.delete(rate_key)
+
+        mock_instance = MagicMock()
+        mock_chunk = MagicMock()
+        mock_chunk.content = 'Generated summary text'
+        mock_chunk.usage_metadata = None
+        mock_instance.stream.return_value = [mock_chunk]
+        mock_llm_cls.return_value = mock_instance
+
+        response = self.client.post(self.url)
+        b''.join(response.streaming_content)
+
+        self.assertEqual(django_cache.get(rate_key, 0), 1)
+        django_cache.delete(rate_key)
+
     def test_event_detail_still_works(self):
         """Regression: event_detail view still renders after stats extraction."""
         url = reverse('tickets:event_detail', args=[self.event.id])
