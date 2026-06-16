@@ -6,7 +6,6 @@
 
 {% block extra_css %}
 <style>
-#event-flyer-card { max-width: 380px; }
 .flyer-drop-zone { border: 2px dashed var(--bs-border-color); border-radius: var(--bs-border-radius); overflow: hidden; }
 .flyer-drop-zone.flyer-dragover { border-color: var(--bs-primary); background: rgba(var(--bs-primary-rgb), 0.05); }
 .tt-drag-handle { user-select: none; }
@@ -92,47 +91,50 @@
 <div class="row">
     <div class="col-12">
         {% if ticketing_type == 'direct' %}
-        {# Flyer drag-and-drop card #}
-        <div class="card mb-4" id="event-flyer-card">
-            <div class="card-header"><h5 class="mb-0">Event Flyer</h5></div>
-            <div class="card-body p-0 text-center">
-                <input type="hidden" id="flyer-csrf" value="{{ csrf_token }}">
-                <input type="file" id="flyer-file-input" accept="image/*,.heic,.heif" class="d-none"
-                       data-flyer-url="{% url 'tickets:event_flyer_upload' event.id %}">
-                <div id="flyer-drop-zone" class="flyer-drop-zone position-relative" style="aspect-ratio: 4/5; cursor: pointer;">
-                    {% if event.flyer %}
-                    <img id="event-flyer-img" src="{{ event.flyer.url }}" alt="{{ event.name }} event image" style="width: 100%; height: 100%; object-fit: cover;">
-                    <p class="small text-muted position-absolute bottom-0 start-50 translate-middle-x pb-2">Click or drag to replace</p>
-                    {% else %}
-                    <div class="d-flex flex-column align-items-center justify-content-center h-100 text-muted">
-                        <i class="bi bi-image fs-1 mb-2"></i>
-                        <p class="mb-0">Click or drop an image to add a flyer</p>
-                    </div>
-                    {% endif %}
-                </div>
-                <p class="small text-muted mt-2 mb-1 text-center">
-                    <i class="bi bi-info-circle"></i> Best results with a 4:5 image (e.g. 1080&times;1350 px)
-                </p>
-            </div>
-        </div>
-        <form method="post" enctype="multipart/form-data">
-            {% csrf_token %}
-            <div class="card mb-3">
-                <div class="card-body">
-                    <div class="mb-3">
-                        <label class="form-label fw-semibold">Ticketing Type</label>
-                        <div class="text-muted">
-                            {{ event.get_ticketing_type_display }}
-                            <small class="d-block text-muted">Cannot be changed after event creation.</small>
+        <div class="row g-4 mb-4">
+            <div class="col-lg-8">
+                <form method="post" enctype="multipart/form-data" id="event-edit-form">
+                    {% csrf_token %}
+                    <div class="card">
+                        <div class="card-body">
+                            <div class="mb-3">
+                                <label class="form-label fw-semibold">Ticketing Type</label>
+                                <div class="text-muted">
+                                    {{ event.get_ticketing_type_display }}
+                                    <small class="d-block text-muted">Cannot be changed after event creation.</small>
+                                </div>
+                            </div>
+                            {% crispy form %}
                         </div>
                     </div>
-                    {% crispy form %}
+                </form>
+            </div>
+            <div class="col-lg-4">
+                {# Flyer drag-and-drop card #}
+                <div class="card" id="event-flyer-card">
+                    <div class="card-header"><h5 class="mb-0">Event Flyer</h5></div>
+                    <div class="card-body p-0 text-center">
+                        <input type="hidden" id="flyer-csrf" value="{{ csrf_token }}">
+                        <input type="file" id="flyer-file-input" accept="image/*,.heic,.heif" class="d-none"
+                               data-flyer-url="{% url 'tickets:event_flyer_upload' event.id %}">
+                        <div id="flyer-drop-zone" class="flyer-drop-zone position-relative" style="aspect-ratio: 4/5; cursor: pointer;">
+                            {% if event.flyer %}
+                            <img id="event-flyer-img" src="{{ event.flyer.url }}" alt="{{ event.name }} event image" style="width: 100%; height: 100%; object-fit: cover;">
+                            <p class="small text-muted position-absolute bottom-0 start-50 translate-middle-x pb-2">Click or drag to replace</p>
+                            {% else %}
+                            <div class="d-flex flex-column align-items-center justify-content-center h-100 text-muted">
+                                <i class="bi bi-image fs-1 mb-2"></i>
+                                <p class="mb-0">Click or drop an image to add a flyer</p>
+                            </div>
+                            {% endif %}
+                        </div>
+                        <p class="small text-muted mt-2 mb-1 text-center">
+                            <i class="bi bi-info-circle"></i> Best results with a 4:5 image (e.g. 1080&times;1350 px)
+                        </p>
+                    </div>
                 </div>
             </div>
-            <div class="mb-3">
-                <button type="submit" class="btn btn-primary">Save Changes</button>
-            </div>
-        </form>
+        </div>
 
         {% if smart_pricing_recommendations_enabled %}
         <div class="card mb-4 pricing-reco-card" id="pricing-recommendation-card"
@@ -353,8 +355,7 @@
                 </div>
                 {% else %}
                 <div class="empty-state" style="padding: 32px;">
-                    <p class="mb-2">No promo codes yet. Create a discount code for this event.</p>
-                    <a href="{% url 'tickets:promo_code_create' event.id %}" class="btn btn-sm btn-outline-primary"><i class="bi bi-plus-lg"></i> Add First Promo Code</a>
+                    <p class="mb-0">No promo codes yet. Create a discount code for this event.</p>
                 </div>
                 {% endif %}
             </div>
@@ -424,10 +425,13 @@
         {% endif %}
 
 
-        <div class="mt-3">
+        <div class="mt-3 d-flex justify-content-between align-items-center">
             <a href="{% url 'tickets:event_detail' event.id %}" class="btn btn-outline-secondary">
                 <i class="bi bi-arrow-left"></i> Back to Event
             </a>
+            {% if ticketing_type == 'direct' %}
+            <button type="submit" form="event-edit-form" class="btn btn-primary">Save Changes</button>
+            {% endif %}
         </div>
     </div>
 </div>
