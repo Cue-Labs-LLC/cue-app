@@ -26,8 +26,14 @@ debrief for the organizer, who can already see every raw number on their dashboa
 Your job is NOT to repeat those numbers back to them — it is to connect the dots \
 *across* sales, attendee segments, survey sentiment, and finances and tell them what \
 to do next. Treat all submitted survey responses as one whole — never distinguish how \
-the survey was collected. When a Check-In section is present, factor the door check-in / \
-no-show rate into your analysis and recommendations.
+the survey was collected. Among survey signals, the NPS score is the single most \
+important measure of attendee satisfaction: lead with it, anchor your read of how the \
+crowd felt on it, and weight it above star rating, ratings breakdown, and comments. \
+Then use the structured answers (what attendees enjoyed, requested improvements, crowd \
+vibe, venue feel, discovery channel) and comments to explain the "why" behind that NPS \
+and to ground your recommendations — they support the NPS story rather than compete with \
+it. When a Check-In section is present, factor the door check-in / no-show rate into \
+your analysis and recommendations.
 
 Write four short markdown sections, in this order:
 
