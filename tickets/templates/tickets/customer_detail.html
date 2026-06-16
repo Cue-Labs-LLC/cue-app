@@ -10,9 +10,11 @@
 
     /* Masthead -------------------------------------------------------- */
     .cd-masthead {
-        padding-bottom: 28px;
+        background: var(--bg-surface);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        padding: 24px 28px;
         margin-bottom: 24px;
-        border-bottom: 1px solid var(--border);
     }
     .cd-identity {
         display: flex;
@@ -185,11 +187,19 @@
         border-bottom: 1px solid var(--border-light);
     }
     .cd-panel {
+        background: var(--bg-surface);
         border: 1px solid var(--border);
         border-radius: var(--radius);
         overflow: hidden;
     }
-    .cd-events { list-style: none; margin: 0; padding: 0; }
+    .cd-events {
+        list-style: none;
+        margin: 0;
+        background: var(--bg-surface);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        padding: 4px 20px;
+    }
     .cd-events li {
         padding: 11px 0;
         border-top: 1px solid var(--border-light);
@@ -256,7 +266,7 @@
                 <div class="cd-meta">
                     <span>{{ customer.email }}</span>
                     {% if customer.phone %}<span class="cd-dot">&middot;</span><span>{{ customer.phone }}</span>{% endif %}
-                    <span class="cd-dot">&middot;</span><span>Customer since {{ customer.created_at|date:"M d, Y" }}</span>
+                    <span class="cd-dot">&middot;</span><span>Customer since {% if first_order_date %}{{ first_order_date|date:"M d, Y" }}{% else %}{{ customer.created_at|date:"M d, Y" }}{% endif %}</span>
                 </div>
             </div>
         </div>
@@ -362,12 +372,12 @@
 
 <!-- ===== Tabs ===== -->
 <div class="cd-reveal cd-reveal-2">
+{% if sms_marketing_enabled %}
 <nav class="nav nav-tabs" id="customerDetailTabs" role="tablist">
     <button class="nav-link active" id="tab-overview-btn" data-bs-toggle="tab" data-bs-target="#tab-overview" type="button" role="tab">Overview</button>
-    {% if sms_marketing_enabled %}
     <button class="nav-link" id="tab-marketing-btn" data-bs-toggle="tab" data-bs-target="#tab-marketing" type="button" role="tab">Marketing Activity{% if sms_stats.total %} ({{ sms_stats.total }}){% endif %}</button>
-    {% endif %}
 </nav>
+{% endif %}
 <div class="tab-content">
 
 <!-- ===== TAB: Overview ===== -->

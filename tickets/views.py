@@ -3434,10 +3434,12 @@ def customer_detail(request, customer_id):
     order_stats = customer.ticket_orders.annotate(net_amount=_net_amount).aggregate(
         total_orders=Count('id'),
         avg_order_value=Coalesce(Avg('net_amount'), Decimal('0.00')),
+        first_order_date=Min('order_date'),
         last_order_date=Max('order_date'),
     )
     total_orders = order_stats['total_orders']
     avg_order_value = order_stats['avg_order_value']
+    first_order_date = order_stats['first_order_date']
     last_order_date = order_stats['last_order_date']
     total_tickets = Ticket.objects.filter(ticket_order__customer=customer).count()
 
@@ -3503,6 +3505,7 @@ def customer_detail(request, customer_id):
         'total_orders': total_orders,
         'total_tickets': total_tickets,
         'avg_order_value': avg_order_value,
+        'first_order_date': first_order_date,
         'last_order_date': last_order_date,
         'events_attended': events_attended,
         'page_obj': page_obj,
