@@ -18,11 +18,12 @@ from decimal import Decimal
 
 import pandas as pd
 
-from django.db.models import Count, Sum
+from django.db.models import Count, Q, Sum
 from django.db.models.functions import Coalesce, TruncMonth, TruncQuarter
 
 from tickets.models import (
-    Event, EventExpense, EventIncome, StripeCheckoutSession, TicketOrder,
+    Event, EventExpense, EventIncome, ExternalSurveyResponse,
+    StripeCheckoutSession, TicketOrder,
 )
 
 
@@ -30,8 +31,11 @@ from tickets.models import (
 TREND_THRESHOLD = 0.05   # |per-period fractional change| <= this => "stable"
 MIN_PERIODS = 3          # fewer observed periods => trend is not meaningful
 CONFIDENCE_R2 = 0.5      # R^2 of the fit at/above this => "high" confidence
+# NPS is already a fixed -100..100 scale, so its slope is normalized by the
+# half-range (100) rather than by the mean — a 5pt/period slide hits TREND_THRESHOLD.
+NPS_SCALE = 100.0
 
-_VALID_METRICS = ('revenue', 'tickets', 'profitability')
+_VALID_METRICS = ('revenue', 'tickets', 'profitability', 'nps')
 
 _DRIVER_LABELS = {
     'events': 'Fewer events',
@@ -40,6 +44,8 @@ _DRIVER_LABELS = {
     'costs': 'Higher costs per event',
     'acquisition': 'Fewer new buyers',
     'retention': 'Fewer returning buyers',
+    'promoters': 'Fewer promoters',
+    'detractors': 'More detractors',
 }
 
 
@@ -143,7 +149,27 @@ class MarketTrendCalculator:
             .annotate(fee_cents=Coalesce(Sum('platform_fee_cents'), 0))
         )
 
-        # markets[city][period_key] = {events_held, sold, revenue, expenses, income, fees, ...}
+        # Query G — NPS response counts per (city, period). Bucketed by
+        # `responded_at` (the natural NPS-over-time axis), unlike the financial
+        # series which bucket by the event's start_date. Promoters 9-10,
+        # detractors 0-6 (matches services/external_survey/analytics.py).
+        nps_rows = (
+            ExternalSurveyResponse.objects.filter(
+                organization=org,
+                event__isnull=False,
+                nps_score__isnull=False,
+            )
+            .annotate(period=trunc('responded_at'))
+            .values('event__venue__city', 'period')
+            .annotate(
+                nps_responses=Count('id'),
+                promoters=Count('id', filter=Q(nps_score__gte=9)),
+                passives=Count('id', filter=Q(nps_score__gte=7, nps_score__lte=8)),
+                detractors=Count('id', filter=Q(nps_score__lte=6)),
+            )
+        )
+
+        # markets[city][period_key] = {events_held, sold, revenue, expenses, income, fees, nps..., ...}
         markets = {}
 
         def _bucket(city):
@@ -179,6 +205,18 @@ class MarketTrendCalculator:
             cell = p.setdefault(r['period'], self._empty_cell())
             cell['fees'] = float(r['fee_cents'] or 0) / 100.0
 
+        for r in nps_rows:
+            p = _bucket(r['event__venue__city'])
+            # responded_at is a datetime, so Trunc returns a datetime — coerce to a
+            # date so the period key matches the date-based financial buckets.
+            period = r['period']
+            period = period.date() if hasattr(period, 'date') else period
+            cell = p.setdefault(period, self._empty_cell())
+            cell['nps_responses'] = r['nps_responses']
+            cell['promoters'] = r['promoters']
+            cell['passives'] = r['passives']
+            cell['detractors'] = r['detractors']
+
         # Query C — new vs returning buyers per (city, period), reusing the
         # earliest-order = "new" rule from RepeatCustomerCalculator.
         for city, key, new_count, ret_count in self._new_returning_by_market_period():
@@ -195,6 +233,7 @@ class MarketTrendCalculator:
             'revenue': 'total_revenue',
             'profitability': 'total_profit',
             'tickets': 'total_sold',
+            'nps': 'total_nps',
         }[self.metric]
         market_results.sort(key=lambda m: m[total_field], reverse=True)
 
@@ -212,7 +251,8 @@ class MarketTrendCalculator:
     def _empty_cell():
         return {'events_held': 0, 'sold': 0, 'revenue': 0.0,
                 'expenses': 0.0, 'income': 0.0, 'fees': 0.0,
-                'new_count': 0, 'returning_count': 0}
+                'new_count': 0, 'returning_count': 0,
+                'nps_responses': 0, 'promoters': 0, 'passives': 0, 'detractors': 0}
 
     def _new_returning_by_market_period(self):
         """Yield (city, period_key, new_count, returning_count) tuples."""
@@ -283,6 +323,13 @@ class MarketTrendCalculator:
                 round(cell['returning_count'] / total_buyers * 100, 1)
                 if total_buyers else 0.0
             )
+            nps_responses = cell['nps_responses'] or 0
+            nps = (
+                round((cell['promoters'] - cell['detractors']) / nps_responses * 100)
+                if nps_responses else 0
+            )
+            promoter_pct = round(cell['promoters'] / nps_responses * 100, 1) if nps_responses else 0.0
+            detractor_pct = round(cell['detractors'] / nps_responses * 100, 1) if nps_responses else 0.0
             periods.append({
                 'period_key': k.isoformat(),
                 'period_label': self._period_label(k),
@@ -298,6 +345,10 @@ class MarketTrendCalculator:
                 'new_count': cell['new_count'],
                 'returning_count': cell['returning_count'],
                 'returning_pct': returning_pct,
+                'nps_responses': nps_responses,
+                'nps': nps,
+                'promoter_pct': promoter_pct,
+                'detractor_pct': detractor_pct,
             })
 
         # The series the trend is read on depends on the selected metric.
@@ -305,15 +356,25 @@ class MarketTrendCalculator:
             'revenue': 'avg_revenue_per_event',
             'tickets': 'avg_sold_per_event',
             'profitability': 'avg_profit_per_event',
+            'nps': 'nps',
         }[self.metric]
+        is_nps = self.metric == 'nps'
+        # Overall NPS across all of the market's responses.
+        tot_resp = sum(period_map[k]['nps_responses'] for k in keys)
+        tot_prom = sum(period_map[k]['promoters'] for k in keys)
+        tot_detr = sum(period_map[k]['detractors'] for k in keys)
+        total_nps = round((tot_prom - tot_detr) / tot_resp * 100) if tot_resp else 0
         result = {
             'city': city,
             'metric': self.metric,
+            'change_unit': 'pts' if is_nps else '%',
             'periods': periods,
             'sparkline': [p[series_field] for p in periods],
             'total_sold': sum(p['sold'] for p in periods),
             'total_revenue': round(sum(p['revenue'] for p in periods), 2),
             'total_profit': round(sum(p['profit'] for p in periods), 2),
+            'total_nps': total_nps,
+            'total_responses': tot_resp,
             'total_events': sum(p['events_held'] for p in periods),
             'trend': 'insufficient_data',
             'norm_slope_pct': 0.0,
@@ -325,16 +386,19 @@ class MarketTrendCalculator:
             'recommended_action': None,
         }
 
-        # Only periods where events actually happened carry a turnout signal.
-        observed = [p for p in periods if p['events_held'] > 0]
+        # Which periods carry signal depends on the metric: NPS needs survey
+        # responses, the financial metrics need events.
+        observe_field = 'nps_responses' if is_nps else 'events_held'
+        observed = [p for p in periods if p[observe_field] > 0]
         if len(observed) < MIN_PERIODS:
             return result
 
         ys = [p[series_field] for p in observed]
         slope, intercept, mean_y, r2 = _ols(ys)
-        # Normalize by |mean| so a worsening loss (negative mean profit) still
-        # reads as declining; for revenue/tickets the mean is positive anyway.
-        norm_slope = (slope / abs(mean_y)) if mean_y else 0.0
+        # NPS normalizes by its fixed half-range; financial metrics by |mean| so a
+        # worsening loss (negative mean profit) still reads as declining.
+        denom = NPS_SCALE if is_nps else abs(mean_y)
+        norm_slope = (slope / denom) if denom else 0.0
 
         result['norm_slope_pct'] = round(norm_slope * 100, 1)
         result['confidence'] = 'high' if r2 >= CONFIDENCE_R2 else 'low'
@@ -365,18 +429,25 @@ class MarketTrendCalculator:
         # Candidate drivers depend on the metric. `hurts_when` records the
         # direction that drags the metric down: 'down' for the usual metrics
         # (a fall hurts) and 'up' for costs (a rise hurts profit).
-        candidates = [
-            ('events', 'events_held', 'down'),
-            ('demand', 'avg_sold_per_event', 'down'),
-        ]
-        if self.metric in ('revenue', 'profitability'):
-            candidates.append(('price', 'avg_price', 'down'))
-        if self.metric == 'profitability':
-            candidates.append(('costs', 'avg_cost_per_event', 'up'))
-        candidates += [
-            ('acquisition', 'new_count', 'down'),
-            ('retention', 'returning_pct', 'down'),
-        ]
+        if self.metric == 'nps':
+            # NPS = promoter share - detractor share; decompose into those two.
+            candidates = [
+                ('promoters', 'promoter_pct', 'down'),
+                ('detractors', 'detractor_pct', 'up'),
+            ]
+        else:
+            candidates = [
+                ('events', 'events_held', 'down'),
+                ('demand', 'avg_sold_per_event', 'down'),
+            ]
+            if self.metric in ('revenue', 'profitability'):
+                candidates.append(('price', 'avg_price', 'down'))
+            if self.metric == 'profitability':
+                candidates.append(('costs', 'avg_cost_per_event', 'up'))
+            candidates += [
+                ('acquisition', 'new_count', 'down'),
+                ('retention', 'returning_pct', 'down'),
+            ]
 
         drivers = []
         for key, field, hurts_when in candidates:
@@ -403,10 +474,10 @@ class MarketTrendCalculator:
             # Decline isn't cleanly attributable to one declining driver.
             result['dominant_driver'] = None
             result['diagnosis_text'] = (
-                '{} in {} is trending down ~{}% per {}, but no single driver '
+                '{} in {} is trending down ~{}{} per {}, but no single driver '
                 'stands out — worth a closer look.'.format(
-                    self._metric_noun().capitalize(), result['city'],
-                    abs(result['norm_slope_pct']), self.period,
+                    self._metric_noun(), result['city'],
+                    abs(result['norm_slope_pct']), self._change_unit(), self.period,
                 )
             )
             return
@@ -416,7 +487,15 @@ class MarketTrendCalculator:
         result['recommended_action'] = self._recommended_action(dominant['key'])
 
     def _metric_noun(self):
-        return {'revenue': 'revenue', 'profitability': 'profit'}.get(self.metric, 'turnout')
+        """Display-ready, properly-cased noun for the selected metric."""
+        return {
+            'revenue': 'Revenue',
+            'profitability': 'Profit',
+            'nps': 'NPS',
+        }.get(self.metric, 'Turnout')
+
+    def _change_unit(self):
+        return 'pts' if self.metric == 'nps' else '%'
 
     def _diagnosis_text(self, result, dominant):
         drop = abs(result['norm_slope_pct'])
@@ -442,12 +521,20 @@ class MarketTrendCalculator:
             phrase = 'fewer new buyers entering the market ({}→{} per {})'.format(
                 dominant['first'], dominant['last'], self.period,
             )
+        elif key == 'promoters':
+            phrase = 'fewer promoters (9-10 share fell {}%→{}%)'.format(
+                dominant['first'], dominant['last'],
+            )
+        elif key == 'detractors':
+            phrase = 'more detractors (0-6 share rose {}%→{}%)'.format(
+                dominant['first'], dominant['last'],
+            )
         else:  # retention
             phrase = 'fewer returning buyers (repeat mix fell {}%→{}%)'.format(
                 dominant['first'], dominant['last'],
             )
-        return '{} in {} is down ~{}% per {}, driven mainly by {}.'.format(
-            self._metric_noun().capitalize(), city, drop, self.period, phrase,
+        return '{} in {} is down ~{}{} per {}, driven mainly by {}.'.format(
+            self._metric_noun(), city, drop, self._change_unit(), self.period, phrase,
         )
 
     @staticmethod
@@ -489,6 +576,13 @@ class MarketTrendCalculator:
                 'label': 'Review event expenses',
                 'url_name': 'tickets:expense_analytics',
                 'icon': 'bi-receipt-cutoff',
+            }
+        if driver_key in ('promoters', 'detractors'):
+            return {
+                'key': driver_key,
+                'label': 'Review survey feedback',
+                'url_name': 'tickets:survey_analytics',
+                'icon': 'bi-chat-square-heart',
             }
         # 'events' — programming/booking issue, informational only.
         return {
