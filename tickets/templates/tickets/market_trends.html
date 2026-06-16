@@ -1,5 +1,5 @@
 {% extends 'tickets/base.html' %}
-{% load humanize %}
+{% load humanize tickets_extras %}
 
 {% block title %}Market Trends{% endblock %}
 
@@ -11,14 +11,18 @@
 <div class="page-header">
     <div>
         <h1>Market Trends</h1>
-        <p class="page-header-subtitle">Spot markets where turnout is slipping and diagnose why. Turnout is measured as tickets sold per event.</p>
+        <p class="page-header-subtitle">Spot markets where {% if metric == 'revenue' %}revenue{% else %}turnout{% endif %} is slipping and diagnose why. Measured per event as {% if metric == 'revenue' %}gross revenue{% else %}tickets sold{% endif %}.</p>
     </div>
 </div>
 
 <div class="d-flex align-items-center justify-content-between flex-wrap gap-2 mb-3">
     <div class="chart-control-group">
-        <a href="?period=quarter" class="chart-control-btn{% if period == 'quarter' %} active{% endif %}">Quarterly</a>
-        <a href="?period=month" class="chart-control-btn{% if period == 'month' %} active{% endif %}">Monthly</a>
+        <a href="?metric=revenue&period={{ period }}" class="chart-control-btn{% if metric == 'revenue' %} active{% endif %}">Revenue</a>
+        <a href="?metric=tickets&period={{ period }}" class="chart-control-btn{% if metric == 'tickets' %} active{% endif %}">Tickets sold</a>
+    </div>
+    <div class="chart-control-group">
+        <a href="?metric={{ metric }}&period=quarter" class="chart-control-btn{% if period == 'quarter' %} active{% endif %}">Quarterly</a>
+        <a href="?metric={{ metric }}&period=month" class="chart-control-btn{% if period == 'month' %} active{% endif %}">Monthly</a>
     </div>
 </div>
 
@@ -54,6 +58,26 @@
     </div>
 </div>
 
+<div class="card mb-4" id="detail-card" style="display:none;">
+    <div class="card-header">
+        <h5 class="mb-0" id="detail-title">Market detail</h5>
+    </div>
+    <div class="card-body">
+        <div class="row g-4">
+            <div class="col-lg-7">
+                <div class="chart-container" style="height: 320px;">
+                    <canvas id="detailChart"></canvas>
+                </div>
+            </div>
+            <div class="col-lg-5">
+                <div id="diagnosis-panel">
+                    <p class="text-muted">Select a market to see its diagnosis.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
 <div class="card mb-4">
     <div class="card-header">
         <h5 class="mb-0">Markets by trend</h5>
@@ -68,7 +92,7 @@
                         <th>Trend</th>
                         <th class="text-end">Change / period</th>
                         <th class="d-none d-md-table-cell">Confidence</th>
-                        <th class="d-none d-sm-table-cell text-end">Tickets sold</th>
+                        <th class="d-none d-sm-table-cell text-end">{% if metric == 'revenue' %}Revenue{% else %}Tickets sold{% endif %}</th>
                         <th>Direction</th>
                     </tr>
                 </thead>
@@ -93,7 +117,7 @@
                             {% elif m.confidence == 'low' %}<span class="text-muted small">Low (volatile)</span>
                             {% else %}<span class="text-muted small">—</span>{% endif %}
                         </td>
-                        <td class="d-none d-sm-table-cell text-end">{{ m.total_sold|intcomma }}</td>
+                        <td class="d-none d-sm-table-cell text-end">{% if metric == 'revenue' %}${{ m.total_revenue|currency }}{% else %}{{ m.total_sold|intcomma }}{% endif %}</td>
                         <td style="width:120px;">
                             <canvas class="sparkline" data-city="{{ m.city }}" width="100" height="28"></canvas>
                         </td>
@@ -105,32 +129,20 @@
     </div>
 </div>
 
-<div class="card" id="detail-card" style="display:none;">
-    <div class="card-header">
-        <h5 class="mb-0" id="detail-title">Market detail</h5>
-    </div>
-    <div class="card-body">
-        <div class="row g-4">
-            <div class="col-lg-7">
-                <div class="chart-container" style="height: 320px;">
-                    <canvas id="detailChart"></canvas>
-                </div>
-            </div>
-            <div class="col-lg-5">
-                <div id="diagnosis-panel">
-                    <p class="text-muted">Select a market to see its turnout diagnosis.</p>
-                </div>
-            </div>
-        </div>
-    </div>
-</div>
-
 <script>
 document.addEventListener('DOMContentLoaded', function() {
     var isDark = document.documentElement.getAttribute('data-theme') === 'dark';
     var gridColor = isDark ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.1)';
     var textColor = isDark ? '#adb5bd' : '#666';
     var DANGER = '#dc3545', SUCCESS = '#198754', PRIMARY = '#0d6efd', MUTED = '#adb5bd';
+
+    var METRIC = "{{ metric }}";                 // 'revenue' | 'tickets'
+    var IS_REVENUE = METRIC === 'revenue';
+    var METRIC_NOUN = IS_REVENUE ? 'Revenue' : 'Turnout';
+    var SERIES_FIELD = IS_REVENUE ? 'avg_revenue_per_event' : 'avg_sold_per_event';
+
+    function money(v) { return '$' + Number(v).toLocaleString('en-US', { maximumFractionDigits: 0 }); }
+    function fmtValue(v) { return IS_REVENUE ? money(v) : Number(v).toLocaleString('en-US'); }
 
     var markets = JSON.parse(document.getElementById('markets-data').textContent);
     var actionUrls = JSON.parse(document.getElementById('action-urls').textContent);
@@ -178,6 +190,31 @@ document.addEventListener('DOMContentLoaded', function() {
         return sign + d.change_pct + '%';
     }
 
+    // Plain-language help for each diagnostic-detail metric (shown on hover).
+    var DRIVER_HELP = {
+        events: 'Average number of events held per period in this market.',
+        demand: 'Average tickets sold per event.',
+        price: 'Average ticket price (revenue ÷ tickets sold).',
+        acquisition: 'First-time buyers (never purchased before) per period.',
+        retention: 'Share of buyers who had purchased before — the repeat mix.'
+    };
+
+    function fmtDriverRange(d) {
+        // Shows the first-third vs last-third averages behind the % change.
+        if (d.key === 'price') return '$' + d.first + ' → $' + d.last;
+        if (d.key === 'retention') return d.first + '% → ' + d.last + '%';
+        return d.first + ' → ' + d.last;
+    }
+
+    function initPanelTooltips() {
+        if (!(window.bootstrap && bootstrap.Tooltip)) return;
+        document.querySelectorAll('#diagnosis-panel [data-bs-toggle="tooltip"]').forEach(function(el) {
+            var existing = bootstrap.Tooltip.getInstance(el);
+            if (existing) existing.dispose();
+            new bootstrap.Tooltip(el);
+        });
+    }
+
     function buildDiagnosis(m) {
         if (m.trend === 'insufficient_data') {
             return '<p class="text-muted">Not enough history yet — at least 3 periods with events are needed to read a trend.</p>';
@@ -191,8 +228,11 @@ document.addEventListener('DOMContentLoaded', function() {
                     var isDominant = d.key === m.dominant_driver;
                     var barColor = d.change_pct < 0 ? DANGER : SUCCESS;
                     var width = Math.min(100, Math.abs(d.change_pct));
+                    var tip = (DRIVER_HELP[d.key] || '') + ' (' + fmtDriverRange(d) + ')';
+                    var labelCls = 'mt-metric' + (isDominant ? ' fw-semibold' : '');
                     html += '<div class="d-flex align-items-center justify-content-between small mb-1">'
-                        + '<span' + (isDominant ? ' class="fw-semibold"' : '') + '>' + d.label
+                        + '<span><span class="' + labelCls + '" data-bs-toggle="tooltip" title="' + tip
+                        + '" style="cursor:help;border-bottom:1px dotted currentColor;">' + d.label + '</span>'
                         + (isDominant ? ' <span class="badge bg-danger ms-1">main driver</span>' : '') + '</span>'
                         + '<span class="' + (d.change_pct < 0 ? 'text-danger' : 'text-success') + '">' + fractionLabel(d) + '</span></div>';
                     html += '<div style="height:6px;background:' + gridColor + ';border-radius:3px;margin-bottom:8px;">'
@@ -202,10 +242,10 @@ document.addEventListener('DOMContentLoaded', function() {
             }
             html += renderAction(m);
         } else if (m.trend === 'growing') {
-            html += '<p class="text-success"><i class="bi bi-graph-up-arrow"></i> Turnout in ' + m.city
+            html += '<p class="text-success"><i class="bi bi-graph-up-arrow"></i> ' + METRIC_NOUN + ' in ' + m.city
                 + ' is growing about ' + Math.abs(m.norm_slope_pct) + '% per period. Keep doing what works here.</p>';
         } else {
-            html += '<p class="text-muted">Turnout in ' + m.city + ' is holding steady. No action needed.</p>';
+            html += '<p class="text-muted">' + METRIC_NOUN + ' in ' + m.city + ' is holding steady. No action needed.</p>';
         }
         return html;
     }
@@ -234,24 +274,26 @@ document.addEventListener('DOMContentLoaded', function() {
         var m = byCity[city];
         if (!m) return;
         document.getElementById('detail-card').style.display = '';
-        document.getElementById('detail-title').textContent = city + ' — tickets sold per event';
+        document.getElementById('detail-title').textContent =
+            city + (IS_REVENUE ? ' — revenue per event' : ' — tickets sold per event');
         document.getElementById('diagnosis-panel').innerHTML = buildDiagnosis(m);
+        initPanelTooltips();
 
         // Plot only periods where events happened, so the trend line aligns.
         var observed = m.periods.filter(function(p) { return p.events_held > 0; });
         var labels = observed.map(function(p) { return p.period_label; });
-        var soldSeries = observed.map(function(p) { return p.avg_sold_per_event; });
+        var series = observed.map(function(p) { return p[SERIES_FIELD]; });
 
         var datasets = [{
-            label: 'Avg tickets sold / event',
-            data: soldSeries,
+            label: IS_REVENUE ? 'Avg revenue / event' : 'Avg tickets sold / event',
+            data: series,
             borderColor: trendColor(m.trend),
             backgroundColor: 'transparent',
             borderWidth: 2,
             tension: 0.3,
             pointRadius: 3,
         }];
-        if (m.trend_line && m.trend_line.length === soldSeries.length) {
+        if (m.trend_line && m.trend_line.length === series.length) {
             datasets.push({
                 label: 'Trend',
                 data: m.trend_line,
@@ -270,13 +312,21 @@ document.addEventListener('DOMContentLoaded', function() {
             options: {
                 responsive: true,
                 maintainAspectRatio: false,
-                plugins: { legend: { labels: { color: textColor } } },
+                plugins: {
+                    legend: { labels: { color: textColor } },
+                    tooltip: { callbacks: { label: function(c) {
+                        return c.dataset.label + ': ' + fmtValue(c.parsed.y);
+                    } } }
+                },
                 scales: {
                     x: { ticks: { color: textColor, maxRotation: 45 }, grid: { color: gridColor } },
                     y: {
                         beginAtZero: true,
-                        title: { display: true, text: 'Avg tickets / event', color: textColor },
-                        ticks: { color: textColor },
+                        title: { display: true, text: IS_REVENUE ? 'Avg revenue / event ($)' : 'Avg tickets / event', color: textColor },
+                        ticks: {
+                            color: textColor,
+                            callback: function(v) { return IS_REVENUE ? money(v) : v; }
+                        },
                         grid: { color: gridColor }
                     }
                 }

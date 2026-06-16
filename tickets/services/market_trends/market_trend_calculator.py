@@ -1,22 +1,24 @@
 """
 Detects and diagnoses declining turnout per market (Event.venue.city) over time.
 
-Turnout is measured as *tickets sold per event* — always available, no scan
-dependency. For each market we build a per-period time series, fit an ordinary
-least-squares trend, classify it (declining / stable / growing), and — for
-declining markets — attribute the drop to a dominant driver (fewer events,
-softer demand, fewer new buyers, or fewer returning buyers).
+Turnout is measured per event as either *revenue* (default) or *tickets sold* —
+both always available, no scan dependency. For each market we build a per-period
+time series, fit an ordinary least-squares trend, classify it (declining /
+stable / growing), and — for declining markets — attribute the drop to a
+dominant driver (fewer events, softer demand, lower prices, fewer new buyers, or
+fewer returning buyers).
 
 All data derives from existing Event / TicketOrder / Customer tables; no new
-models. Three grouped queries + one flat pull keep this independent of the
+models. A few grouped queries + one flat pull keep this independent of the
 number of markets, events, or periods (no N+1).
 """
 from datetime import date
+from decimal import Decimal
 
 import pandas as pd
 
-from django.db.models import Count
-from django.db.models.functions import TruncMonth, TruncQuarter
+from django.db.models import Count, Sum
+from django.db.models.functions import Coalesce, TruncMonth, TruncQuarter
 
 from tickets.models import Event, TicketOrder
 
@@ -29,15 +31,18 @@ CONFIDENCE_R2 = 0.5      # R^2 of the fit at/above this => "high" confidence
 _DRIVER_LABELS = {
     'events': 'Fewer events',
     'demand': 'Lower demand per event',
+    'price': 'Lower ticket prices',
     'acquisition': 'Fewer new buyers',
     'retention': 'Fewer returning buyers',
 }
 
 
 class MarketTrendCalculator:
-    def __init__(self, organization, period='quarter'):
+    def __init__(self, organization, period='quarter', metric='revenue'):
         self.organization = organization
         self.period = 'month' if period == 'month' else 'quarter'
+        # The primary metric the trend is read on: 'revenue' or 'tickets'.
+        self.metric = 'tickets' if metric == 'tickets' else 'revenue'
 
     # ----- period bucketing ------------------------------------------------
 
@@ -87,7 +92,21 @@ class MarketTrendCalculator:
             .annotate(sold=Count('tickets'))
         )
 
-        # markets[city][period_key] = {events_held, sold, new_count, returning_count}
+        # Query B2 — gross revenue per (city, period). Summed over TicketOrder
+        # only (no ticket join), so it must be a SEPARATE query from `sold` —
+        # mixing Sum('total_amount') with Count('tickets') would inflate rows.
+        revenue_rows = (
+            TicketOrder.objects.filter(
+                event__organization=org,
+                event__start_date__lt=today,
+                is_in_person=False,
+            )
+            .annotate(period=trunc('event__start_date'))
+            .values('event__venue__city', 'period')
+            .annotate(revenue=Coalesce(Sum('total_amount'), Decimal('0.00')))
+        )
+
+        # markets[city][period_key] = {events_held, sold, revenue, new_count, returning_count}
         markets = {}
 
         def _bucket(city):
@@ -102,6 +121,11 @@ class MarketTrendCalculator:
             p = _bucket(r['event__venue__city'])
             cell = p.setdefault(r['period'], self._empty_cell())
             cell['sold'] = r['sold']
+
+        for r in revenue_rows:
+            p = _bucket(r['event__venue__city'])
+            cell = p.setdefault(r['period'], self._empty_cell())
+            cell['revenue'] = float(r['revenue'] or 0)
 
         # Query C — new vs returning buyers per (city, period), reusing the
         # earliest-order = "new" rule from RepeatCustomerCalculator.
@@ -134,7 +158,8 @@ class MarketTrendCalculator:
 
     @staticmethod
     def _empty_cell():
-        return {'events_held': 0, 'sold': 0, 'new_count': 0, 'returning_count': 0}
+        return {'events_held': 0, 'sold': 0, 'revenue': 0.0,
+                'new_count': 0, 'returning_count': 0}
 
     def _new_returning_by_market_period(self):
         """Yield (city, period_key, new_count, returning_count) tuples."""
@@ -187,7 +212,10 @@ class MarketTrendCalculator:
             cell = period_map[k]
             events_held = cell['events_held'] or 0
             sold = cell['sold'] or 0
-            avg = (sold / events_held) if events_held else 0.0
+            revenue = cell['revenue'] or 0.0
+            avg_sold = (sold / events_held) if events_held else 0.0
+            avg_revenue = (revenue / events_held) if events_held else 0.0
+            avg_price = (revenue / sold) if sold else 0.0
             total_buyers = cell['new_count'] + cell['returning_count']
             returning_pct = (
                 round(cell['returning_count'] / total_buyers * 100, 1)
@@ -198,17 +226,26 @@ class MarketTrendCalculator:
                 'period_label': self._period_label(k),
                 'events_held': events_held,
                 'sold': sold,
-                'avg_sold_per_event': round(avg, 1),
+                'revenue': round(revenue, 2),
+                'avg_sold_per_event': round(avg_sold, 1),
+                'avg_revenue_per_event': round(avg_revenue, 2),
+                'avg_price': round(avg_price, 2),
                 'new_count': cell['new_count'],
                 'returning_count': cell['returning_count'],
                 'returning_pct': returning_pct,
             })
 
+        # The series the trend is read on depends on the selected metric.
+        series_field = (
+            'avg_revenue_per_event' if self.metric == 'revenue' else 'avg_sold_per_event'
+        )
         result = {
             'city': city,
+            'metric': self.metric,
             'periods': periods,
-            'sparkline': [p['avg_sold_per_event'] for p in periods],
+            'sparkline': [p[series_field] for p in periods],
             'total_sold': sum(p['sold'] for p in periods),
+            'total_revenue': round(sum(p['revenue'] for p in periods), 2),
             'total_events': sum(p['events_held'] for p in periods),
             'trend': 'insufficient_data',
             'norm_slope_pct': 0.0,
@@ -225,7 +262,7 @@ class MarketTrendCalculator:
         if len(observed) < MIN_PERIODS:
             return result
 
-        ys = [p['avg_sold_per_event'] for p in observed]
+        ys = [p[series_field] for p in observed]
         slope, intercept, mean_y, r2 = _ols(ys)
         norm_slope = (slope / mean_y) if mean_y else 0.0
 
@@ -255,13 +292,21 @@ class MarketTrendCalculator:
         def _mean(rows, field):
             return sum(r[field] for r in rows) / len(rows) if rows else 0.0
 
-        drivers = []
-        for key, field in (
+        # In revenue mode, revenue/event = tickets/event x avg price, so price
+        # joins demand as a candidate component of the decline.
+        candidates = [
             ('events', 'events_held'),
             ('demand', 'avg_sold_per_event'),
+        ]
+        if self.metric == 'revenue':
+            candidates.append(('price', 'avg_price'))
+        candidates += [
             ('acquisition', 'new_count'),
             ('retention', 'returning_pct'),
-        ):
+        ]
+
+        drivers = []
+        for key, field in candidates:
             a = _mean(first, field)
             b = _mean(last, field)
             change = ((b - a) / a) if a else 0.0
@@ -280,9 +325,10 @@ class MarketTrendCalculator:
             # Decline isn't cleanly attributable to one declining driver.
             result['dominant_driver'] = None
             result['diagnosis_text'] = (
-                'Turnout in {} is trending down ~{}% per {}, but no single driver '
+                '{} in {} is trending down ~{}% per {}, but no single driver '
                 'stands out — worth a closer look.'.format(
-                    result['city'], abs(result['norm_slope_pct']), self.period,
+                    self._metric_noun().capitalize(), result['city'],
+                    abs(result['norm_slope_pct']), self.period,
                 )
             )
             return
@@ -290,6 +336,9 @@ class MarketTrendCalculator:
         result['dominant_driver'] = dominant['key']
         result['diagnosis_text'] = self._diagnosis_text(result, dominant)
         result['recommended_action'] = self._recommended_action(dominant['key'])
+
+    def _metric_noun(self):
+        return 'revenue' if self.metric == 'revenue' else 'turnout'
 
     def _diagnosis_text(self, result, dominant):
         drop = abs(result['norm_slope_pct'])
@@ -303,6 +352,10 @@ class MarketTrendCalculator:
             phrase = 'softer demand per event (avg tickets sold fell {}→{})'.format(
                 dominant['first'], dominant['last'],
             )
+        elif key == 'price':
+            phrase = 'lower ticket prices (avg fell ${}→${})'.format(
+                dominant['first'], dominant['last'],
+            )
         elif key == 'acquisition':
             phrase = 'fewer new buyers entering the market ({}→{} per {})'.format(
                 dominant['first'], dominant['last'], self.period,
@@ -311,8 +364,8 @@ class MarketTrendCalculator:
             phrase = 'fewer returning buyers (repeat mix fell {}%→{}%)'.format(
                 dominant['first'], dominant['last'],
             )
-        return 'Turnout in {} is down ~{}% per {}, driven mainly by {}.'.format(
-            city, drop, self.period, phrase,
+        return '{} in {} is down ~{}% per {}, driven mainly by {}.'.format(
+            self._metric_noun().capitalize(), city, drop, self.period, phrase,
         )
 
     @staticmethod
@@ -337,6 +390,16 @@ class MarketTrendCalculator:
                 'label': 'Open the forecast tool',
                 'url_name': 'tickets:forecast_tool',
                 'icon': 'bi-graph-up-arrow',
+            }
+        if driver_key == 'price':
+            # No pricing tool exists — surface as guidance only.
+            return {
+                'key': 'price',
+                'label': None,
+                'note': 'Average ticket price in this market has slipped. Revisit '
+                        'pricing and tier structure for upcoming shows here.',
+                'url_name': None,
+                'icon': 'bi-tag',
             }
         # 'events' — programming/booking issue, informational only.
         return {
