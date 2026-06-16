@@ -33,6 +33,7 @@ from tickets.models import (
     Event,
     EventExpense,
     EventIncome,
+    EventSMSCampaign,
     EVENT_STATUS_CANCELLED,
     EVENT_STATUS_DRAFT,
     EVENT_STATUS_ENDED,
@@ -46,6 +47,8 @@ from tickets.models import (
     PromoCode,
     SaleableTicketType,
     SaleableTicketTypeTier,
+    SMSCampaign,
+    SMSMessageRecipient,
     StripeCheckoutSession,
     SurveyInvitation,
     SurveyQuestion,
@@ -149,6 +152,7 @@ class Command(BaseCommand):
             self._create_expenses_and_income(org, events, owner, rng)
             self._create_surveys(org, events, customers, owner, rng)
             self._create_external_survey_responses(org, events, owner, rng)
+            self._create_sms_broadcasts(org, events, customers, owner, now, rng)
 
             for customer in Customer.objects.filter(organization=org):
                 customer.update_lifetime_value()
@@ -791,6 +795,118 @@ class Command(BaseCommand):
         upload.row_count = total
         upload.save(update_fields=['row_count'])
         self.stdout.write(self.style.SUCCESS(f"External survey responses: {total}"))
+
+    def _create_sms_broadcasts(self, org, events, customers, owner, now, rng):
+        """Native SMS campaigns (with per-recipient delivery) + external SlickText
+        broadcasts, so Marketing -> SMS has audience-over-time points, a by-market
+        breakdown, delivery/click stats, and a top-broadcasts table.
+
+        Native campaigns grow their audience over time (so the chart reads as
+        audience growth); some are event-scoped (market = the event's venue city)
+        and some are general (no market). SlickText broadcasts are confirmed metric
+        records linked to ended events with bigger audiences.
+        """
+        contactable = [c for c in customers if c.phone and c.sms_opt_in]
+        eventful = [e for e in events if e.venue and e.venue.city]
+
+        def _event(idx):
+            return eventful[idx % len(eventful)] if eventful else None
+
+        # (name, days_ago, target_audience, link, event)
+        native_specs = [
+            ("Winter list warm-up",      150, 12, "",                            None),
+            ("Late Bloom presale",       120, 18, "https://cueup.co/late-bloom", _event(0)),
+            ("Open Decks reminder",       90, 24, "https://cueup.co/open-decks", _event(1)),
+            ("VIP early access",          60, 30, "https://cueup.co/vip",        None),
+            ("Bloom weekend blast",       30, 36, "https://cueup.co/bloom",      _event(2)),
+            ("This weekend: doors 8pm",    7, 40, "https://cueup.co/doors",      _event(0)),
+        ]
+        native_count = 0
+        for name, days_ago, target, link, event in native_specs:
+            sent_at = now - timedelta(days=days_ago)
+            pool = contactable[:]
+            rng.shuffle(pool)
+            recips = pool[:min(target, len(pool))]
+            criteria = {'event_id': str(event.id)} if event else {'all_subscribers': True}
+            campaign = SMSCampaign.objects.create(
+                organization=org,
+                event=event,
+                name=name,
+                body=f"{name} - grab tickets before they're gone. Reply STOP to opt out.",
+                link_url=link,
+                filter_criteria=criteria,
+                status=SMSCampaign.Status.SENT,
+                scheduled_at=sent_at,
+                started_at=sent_at,
+                sent_at=sent_at,
+                audience_size=len(recips),
+                created_by=owner,
+            )
+            rows = []
+            for cust in recips:
+                roll = rng.random()
+                if roll < 0.88:
+                    status = SMSMessageRecipient.Status.DELIVERED
+                    delivered_at = sent_at + timedelta(minutes=2)
+                elif roll < 0.95:
+                    status = SMSMessageRecipient.Status.UNDELIVERED
+                    delivered_at = None
+                else:
+                    status = SMSMessageRecipient.Status.FAILED
+                    delivered_at = None
+                delivered = status == SMSMessageRecipient.Status.DELIVERED
+                clicked = bool(link) and delivered and rng.random() < 0.22
+                opted_out = delivered and rng.random() < 0.04
+                rows.append(SMSMessageRecipient(
+                    campaign=campaign,
+                    customer=cust,
+                    phone=cust.phone,
+                    status=status,
+                    sent_at=sent_at,
+                    delivered_at=delivered_at,
+                    click_count=rng.randint(1, 3) if clicked else 0,
+                    first_clicked_at=(sent_at + timedelta(hours=1)) if clicked else None,
+                    opted_out_at=(sent_at + timedelta(hours=2)) if opted_out else None,
+                ))
+            SMSMessageRecipient.objects.bulk_create(rows)
+            native_count += 1
+
+        # External SlickText broadcasts (tracked metrics only) on ended events.
+        slick_count = 0
+        ended = [e for e in events if e.status == EVENT_STATUS_ENDED and e.venue and e.venue.city]
+        for i, event in enumerate(ended):
+            days_until = (event.start_date - now.date()).days
+            send_time = now + timedelta(days=days_until, hours=-3)
+            audience = rng.randint(180, 650)
+            unique_clicks = max(1, int(audience * rng.uniform(0.06, 0.16)))
+            clicks = unique_clicks + rng.randint(0, unique_clicks)
+            unsubs = int(audience * rng.uniform(0.005, 0.02))
+            orders = max(0, int(unique_clicks * rng.uniform(0.1, 0.3)))
+            revenue = _decimal(orders * rng.randint(25, 60))
+            click_rate = Decimal(str(round(unique_clicks / audience, 4))) if audience else Decimal("0.0000")
+            EventSMSCampaign.objects.create(
+                event=event,
+                source='slicktext',
+                external_id=f"st-seed-{i + 1}",
+                name=f"{event.name} - SlickText blast",
+                message="Tonight! Doors at 8. Tap for tickets.",
+                send_time=send_time,
+                audience_size=audience,
+                clicks=clicks,
+                unique_clicks=unique_clicks,
+                click_rate=click_rate,
+                unsubscribes=unsubs,
+                orders=orders,
+                revenue=revenue,
+                confirmed_at=now,
+                confirmed_by=owner,
+                last_synced_at=now,
+            )
+            slick_count += 1
+
+        self.stdout.write(self.style.SUCCESS(
+            f"SMS: {native_count} native campaigns, {slick_count} SlickText broadcasts"
+        ))
 
     # ------------------------------------------------------------------
     # Output
