@@ -644,10 +644,17 @@ class CSVFormat(AuditBaseModel):
         Organization,
         on_delete=models.CASCADE,
         related_name='csv_formats',
+        null=True,
+        blank=True,
+        help_text="Owning organization, or NULL for a global built-in format.",
     )
     name = models.CharField(max_length=200, unique=True)
     description = models.TextField(blank=True)
     is_default = models.BooleanField(default=False)
+    is_system = models.BooleanField(
+        default=False,
+        help_text="Built-in format maintained by Cue; read-only for organizations.",
+    )
     requires_manual_pricing = models.BooleanField(
         default=False,
         help_text="If True, CSV lacks price/total columns and requires manual price entry"
@@ -697,6 +704,14 @@ class CSVFormat(AuditBaseModel):
                 organization=self.organization_id, is_default=True
             ).exclude(id=self.id).update(is_default=False)
         super().save(*args, **kwargs)
+
+    @classmethod
+    def available_for(cls, organization):
+        """Formats an organization can select: its own plus global built-ins."""
+        return cls.objects.filter(
+            models.Q(organization=organization)
+            | models.Q(organization__isnull=True, is_system=True)
+        ).order_by('-is_default', 'name')
 
 
 class UploadedFile(AuditBaseModel):
@@ -2057,6 +2072,12 @@ class Ticket(BaseModel):
         null=True,
         blank=True,
         help_text="Denormalized tier name for display/querying"
+    )
+    scanned_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        db_index=True,
+        help_text="When this individual ticket was scanned in (import or live check-in).",
     )
 
     class Meta:

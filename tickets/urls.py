@@ -247,7 +247,8 @@ urlpatterns = [
     path('formats/<uuid:format_id>/edit/', views.format_edit, name='format_edit'),
     path('formats/<uuid:format_id>/delete/', views.format_delete, name='format_delete'),
     path('formats/<uuid:format_id>/set-default/', views.format_set_default, name='format_set_default'),
-    
+    path('formats/<uuid:format_id>/duplicate/', views.format_duplicate, name='format_duplicate'),
+
     # Settings
     path('settings/google-calendar/', views.settings_google_calendar, name='settings_google_calendar'),
     path('settings/', views.settings_overview, name='settings_overview'),
