@@ -149,17 +149,18 @@ class MarketTrendCalculator:
             .annotate(fee_cents=Coalesce(Sum('platform_fee_cents'), 0))
         )
 
-        # Query G — NPS response counts per (city, period). Bucketed by
-        # `responded_at` (the natural NPS-over-time axis), unlike the financial
-        # series which bucket by the event's start_date. Promoters 9-10,
+        # Query G — NPS response counts per (city, period). Bucketed by the
+        # EVENT's start_date (not the survey submission date) so NPS lines up on
+        # the same period axis as the financial series. Promoters 9-10,
         # detractors 0-6 (matches services/external_survey/analytics.py).
         nps_rows = (
             ExternalSurveyResponse.objects.filter(
                 organization=org,
                 event__isnull=False,
+                event__start_date__lt=today,
                 nps_score__isnull=False,
             )
-            .annotate(period=trunc('responded_at'))
+            .annotate(period=trunc('event__start_date'))
             .values('event__venue__city', 'period')
             .annotate(
                 nps_responses=Count('id'),
@@ -207,11 +208,7 @@ class MarketTrendCalculator:
 
         for r in nps_rows:
             p = _bucket(r['event__venue__city'])
-            # responded_at is a datetime, so Trunc returns a datetime — coerce to a
-            # date so the period key matches the date-based financial buckets.
-            period = r['period']
-            period = period.date() if hasattr(period, 'date') else period
-            cell = p.setdefault(period, self._empty_cell())
+            cell = p.setdefault(r['period'], self._empty_cell())
             cell['nps_responses'] = r['nps_responses']
             cell['promoters'] = r['promoters']
             cell['passives'] = r['passives']
@@ -359,6 +356,13 @@ class MarketTrendCalculator:
             'nps': 'nps',
         }[self.metric]
         is_nps = self.metric == 'nps'
+        # Which periods carry signal depends on the metric: NPS needs survey
+        # responses, the financial metrics need events. The sparkline and detail
+        # chart plot exactly these periods so the trend line aligns.
+        observe_field = 'nps_responses' if is_nps else 'events_held'
+        observed = [p for p in periods if p[observe_field] > 0]
+        sparkline_periods = observed or periods
+
         # Overall NPS across all of the market's responses.
         tot_resp = sum(period_map[k]['nps_responses'] for k in keys)
         tot_prom = sum(period_map[k]['promoters'] for k in keys)
@@ -369,7 +373,7 @@ class MarketTrendCalculator:
             'metric': self.metric,
             'change_unit': 'pts' if is_nps else '%',
             'periods': periods,
-            'sparkline': [p[series_field] for p in periods],
+            'sparkline': [p[series_field] for p in sparkline_periods],
             'total_sold': sum(p['sold'] for p in periods),
             'total_revenue': round(sum(p['revenue'] for p in periods), 2),
             'total_profit': round(sum(p['profit'] for p in periods), 2),
@@ -386,10 +390,6 @@ class MarketTrendCalculator:
             'recommended_action': None,
         }
 
-        # Which periods carry signal depends on the metric: NPS needs survey
-        # responses, the financial metrics need events.
-        observe_field = 'nps_responses' if is_nps else 'events_held'
-        observed = [p for p in periods if p[observe_field] > 0]
         if len(observed) < MIN_PERIODS:
             return result
 

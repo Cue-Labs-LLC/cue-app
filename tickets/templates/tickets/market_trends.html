@@ -304,8 +304,10 @@ document.addEventListener('DOMContentLoaded', function() {
         document.getElementById('diagnosis-panel').innerHTML = buildDiagnosis(m);
         initPanelTooltips();
 
-        // Plot only periods where events happened, so the trend line aligns.
-        var observed = m.periods.filter(function(p) { return p.events_held > 0; });
+        // Plot only periods that carry signal, matching the server's trend fit so
+        // the trend line aligns: survey responses for NPS, events otherwise.
+        var observeField = IS_NPS ? 'nps_responses' : 'events_held';
+        var observed = m.periods.filter(function(p) { return p[observeField] > 0; });
         var labels = observed.map(function(p) { return p.period_label; });
         var series = observed.map(function(p) { return p[SERIES_FIELD]; });
 
