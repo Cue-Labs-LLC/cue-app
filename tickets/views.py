@@ -5225,13 +5225,13 @@ def event_summary_stream(request, event_id):
     if not org.ai_event_summary_enabled:
         raise Http404()
 
-    # Rate limit: 10 *successful* generations per org per hour. We only check the
+    # Rate limit: 30 *successful* generations per org per hour. We only check the
     # ceiling here; the counter is incremented by the service after a summary is
     # actually produced, so failed attempts (e.g. a missing OpenAI key) don't burn
     # the budget or mask the real error behind a misleading "rate limit" message.
     rate_key = f"summary_ratelimit:{org.id}"
     try:
-        if (django_cache.get(rate_key, 0) or 0) >= 10:
+        if (django_cache.get(rate_key, 0) or 0) >= 30:
             return JsonResponse(
                 {'error': 'Rate limit exceeded. Please try again later.'},
                 status=429,

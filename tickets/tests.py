@@ -12765,7 +12765,7 @@ class EventSummaryStreamTests(TestCase):
 
     @patch('langchain_openai.ChatOpenAI')
     def test_rate_limit_returns_429(self, mock_llm_cls):
-        """After 10 requests, the endpoint returns 429."""
+        """Once the hourly ceiling is reached, the endpoint returns 429."""
         mock_instance = MagicMock()
         mock_chunk = MagicMock()
         mock_chunk.content = 'Debrief'
@@ -12774,7 +12774,7 @@ class EventSummaryStreamTests(TestCase):
 
         from django.core.cache import cache as django_cache
         rate_key = f"summary_ratelimit:{self.org.id}"
-        django_cache.set(rate_key, 10, timeout=3600)
+        django_cache.set(rate_key, 30, timeout=3600)
 
         response = self.client.post(self.url)
         self.assertEqual(response.status_code, 429)
