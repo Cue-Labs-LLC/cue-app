@@ -3367,6 +3367,29 @@ def repeat_customers(request):
 @login_required
 @require_org
 @require_host
+def market_trends(request):
+    """Analytics page: per-market turnout trend, decline diagnosis, and next-step CTA."""
+    org = get_organization(request)
+    period = request.GET.get('period', 'quarter')
+    if period not in ('month', 'quarter'):
+        period = 'quarter'
+
+    from tickets.services.market_trends import MarketTrendCalculator
+    result = MarketTrendCalculator(org, period=period).calculate()
+    markets = result['markets']
+
+    return render(request, 'tickets/market_trends.html', {
+        'markets': markets,
+        'markets_json': json.dumps(markets, default=str),
+        'summary': result['summary'],
+        'period': period,
+        'sms_marketing_enabled': org.sms_marketing_enabled,
+    })
+
+
+@login_required
+@require_org
+@require_host
 def cohort_retention(request):
     """Analytics page: monthly cohort retention heatmap and line chart."""
     org = get_organization(request)

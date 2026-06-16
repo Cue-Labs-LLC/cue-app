@@ -16,7 +16,7 @@ Login after seeding:
 import random
 import string
 import uuid
-from datetime import timedelta
+from datetime import date, timedelta
 from decimal import Decimal
 
 from django.conf import settings
@@ -144,6 +144,7 @@ class Command(BaseCommand):
             # the underlying Ticket rows consistent).
             self._create_direct_ticketing(events, now, rng)
             self._create_orders_and_tickets(events, customers, uploads, promo_codes, owner, today, rng)
+            self._create_market_trend_history(org, owner, today, rng)
             self._create_stripe_sessions(org, events, customers, now, rng)
             self._create_tracking_links(org, events, rng)
             self._create_expenses_and_income(org, events, owner, rng)
@@ -540,6 +541,146 @@ class Command(BaseCommand):
         if remaining is not None:
             qty = min(qty, remaining)
         return tt, qty
+
+    # Demo markets for the Market Trends analytics page. Each market is a distinct
+    # city with one event per spec slot across several past quarters, so the page
+    # can fit a real per-market turnout trend. The per-quarter tuples are
+    # (tickets_per_event, returning_pct) and are tuned to produce one market of
+    # each trend shape / dominant decline driver. EVENTS_PER_QUARTER events are
+    # created per slot. Verified against MarketTrendCalculator; see the unit tests
+    # in tickets/tests.py (MarketTrendCalculatorTests).
+    MARKET_TREND_SPECS = [
+        # city, venue, quarter tuples (oldest -> newest)
+        # Denver: turnout sliding as loyal regulars stop coming back (retention).
+        ("Denver", "Larimer Lounge", [
+            (32, 0), (30, 55), (28, 45), (24, 30), (20, 18), (16, 8),
+        ]),
+        # Nashville: turnout sliding as new-buyer acquisition dries up.
+        ("Nashville", "The Basement East", [
+            (34, 0), (28, 35), (22, 45), (17, 52), (13, 58), (10, 62),
+        ]),
+        # Memphis: turnout sliding on softening demand; a pure first-timer market
+        # that never builds a returning base, so the drop is all about demand.
+        ("Memphis", "Growlers", [
+            (32, 0), (28, 0), (23, 0), (18, 0), (14, 0), (11, 0),
+        ]),
+        # Seattle: turnout climbing — the bright spot.
+        ("Seattle", "Neumos", [
+            (12, 0), (16, 30), (21, 38), (26, 42), (31, 45), (36, 48),
+        ]),
+        # Portland: holding steady, no action needed.
+        ("Portland", "Doug Fir Lounge", [
+            (24, 0), (25, 35), (23, 40), (25, 42), (24, 41), (25, 43),
+        ]),
+        # Boise: just two shows on the books — not enough history to read a trend.
+        ("Boise", "Neurolux", [
+            (28, 0), (22, 30),
+        ]),
+    ]
+    EVENTS_PER_QUARTER = 2
+
+    def _past_quarter_dates(self, today, n):
+        """Return `n` dates, oldest first, each in a distinct fully-past quarter.
+
+        Anchored on the 15th of each quarter's first month so every date is
+        comfortably before `today` (the current, in-progress quarter is skipped).
+        """
+        cy, cq = today.year, (today.month - 1) // 3  # 0-based current quarter
+        pairs = []
+        for _ in range(n):
+            cq -= 1
+            if cq < 0:
+                cq, cy = 3, cy - 1
+            pairs.append((cy, cq))
+        pairs.reverse()
+        return [date(yy, qq * 3 + 1, 15) for yy, qq in pairs]
+
+    def _create_market_trend_history(self, org, owner, today, rng):
+        from tickets.models import EVENT_STATUS_ENDED, TICKETING_TYPE_EXTERNAL
+
+        markets_made = events_made = orders_made = 0
+        for city, venue_name, quarters in self.MARKET_TREND_SPECS:
+            venue = Venue.objects.create(
+                organization=org, name=venue_name, city=city,
+                state="", country="USA",
+                capacity=max(tpe for tpe, _ in quarters) * self.EVENTS_PER_QUARTER + 50,
+            )
+            anchors = self._past_quarter_dates(today, len(quarters))
+            seen = []   # customers with at least one prior order in this market
+            cust_seq = 0
+            for qi, (tickets_per_event, ret_pct) in enumerate(quarters):
+                anchor = anchors[qi]
+                # Spread this quarter's events across its first two months.
+                q_events = []
+                for ei in range(self.EVENTS_PER_QUARTER):
+                    start_date = anchor + timedelta(days=ei * 35)
+                    if start_date >= today:
+                        start_date = today - timedelta(days=3)
+                    q_events.append(Event.objects.create(
+                        organization=org,
+                        name=f"{city} Nights — Q{qi + 1} #{ei + 1}",
+                        summary=f"{city} show.",
+                        venue=venue,
+                        start_date=start_date,
+                        end_date=start_date,
+                        start_time=timezone.now().time().replace(microsecond=0),
+                        capacity=venue.capacity,
+                        ticketing_type=TICKETING_TYPE_EXTERNAL,
+                        status=EVENT_STATUS_ENDED,
+                        timezone="America/Los_Angeles",
+                        created_by=owner,
+                    ))
+                events_made += len(q_events)
+
+                total = tickets_per_event * len(q_events)
+                returning_target = min(round(ret_pct / 100 * total), len(seen))
+                new_target = total - returning_target
+
+                returning_buyers = rng.sample(seen, returning_target) if returning_target else []
+                new_buyers = []
+                for _ in range(new_target):
+                    name = _gen_name(rng)
+                    cust = Customer.objects.create(
+                        organization=org,
+                        email=f"{slugify(city)}.{slugify(name)}.{cust_seq:04d}@example.test",
+                        name=name,
+                    )
+                    cust_seq += 1
+                    new_buyers.append(cust)
+
+                # Each buyer places one 1-ticket order this quarter, spread over the
+                # quarter's events. New buyers' first-ever order is this quarter
+                # (counted "new"); returning buyers debuted earlier ("returning").
+                buyers = returning_buyers + new_buyers
+                rng.shuffle(buyers)
+                for bi, cust in enumerate(buyers):
+                    event = q_events[bi % len(q_events)]
+                    price = _decimal(rng.choice([25, 30, 35, 40]))
+                    order_dt = timezone.make_aware(timezone.datetime.combine(
+                        event.start_date - timedelta(days=rng.randint(3, 30)),
+                        timezone.datetime.min.time(),
+                    )) + timedelta(hours=rng.randint(9, 21))
+                    order = TicketOrder.objects.create(
+                        customer=cust,
+                        event=event,
+                        order_number=f"ORD-{OrderCounter.next():06d}",
+                        order_date=order_dt,
+                        total_amount=price,
+                        created_by=owner,
+                    )
+                    Ticket.objects.create(
+                        ticket_order=order, ticket_type="General Admission", price=price,
+                    )
+                    orders_made += 1
+
+                # New buyers can return in later quarters.
+                seen.extend(new_buyers)
+            markets_made += 1
+
+        self.stdout.write(self.style.SUCCESS(
+            f"Market trend history: {markets_made} markets, "
+            f"{events_made} events, {orders_made} orders"
+        ))
 
     def _create_direct_ticketing(self, events, now, rng):
         direct_events = [

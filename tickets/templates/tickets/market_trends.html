@@ -1,0 +1,309 @@
+{% extends 'tickets/base.html' %}
+{% load humanize %}
+
+{% block title %}Market Trends{% endblock %}
+
+{% block extra_head %}
+<script defer src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1>Market Trends</h1>
+        <p class="page-header-subtitle">Spot markets where turnout is slipping and diagnose why. Turnout is measured as tickets sold per event.</p>
+    </div>
+</div>
+
+<div class="d-flex align-items-center justify-content-between flex-wrap gap-2 mb-3">
+    <div class="chart-control-group">
+        <a href="?period=quarter" class="chart-control-btn{% if period == 'quarter' %} active{% endif %}">Quarterly</a>
+        <a href="?period=month" class="chart-control-btn{% if period == 'month' %} active{% endif %}">Monthly</a>
+    </div>
+</div>
+
+{% if markets %}
+<script type="application/json" id="markets-data">{{ markets_json|safe }}</script>
+
+{# Resolved hrefs for data-driven recommended-action buttons. #}
+<script type="application/json" id="action-urls">{
+    "tickets:churn_overview": "{% url 'tickets:churn_overview' %}",
+    "tickets:customer_segments": "{% url 'tickets:customer_segments' %}",
+    "tickets:forecast_tool": "{% url 'tickets:forecast_tool' %}"{% if sms_marketing_enabled %},
+    "tickets:sms_campaign_create": "{% url 'tickets:sms_campaign_create' %}"{% endif %}
+}</script>
+
+<div class="row mb-4 g-3">
+    <div class="col-md-4">
+        <div class="stat-card stat-card--accent">
+            <div class="stat-label">Markets Tracked</div>
+            <div class="stat-value">{{ summary.markets_count|intcomma }}</div>
+        </div>
+    </div>
+    <div class="col-md-4">
+        <div class="stat-card" style="border-left:4px solid var(--bs-danger,#dc3545);">
+            <div class="stat-label">Declining</div>
+            <div class="stat-value">{{ summary.declining_count }}</div>
+        </div>
+    </div>
+    <div class="col-md-4">
+        <div class="stat-card stat-card--success">
+            <div class="stat-label">Growing</div>
+            <div class="stat-value">{{ summary.growing_count }}</div>
+        </div>
+    </div>
+</div>
+
+<div class="card mb-4">
+    <div class="card-header">
+        <h5 class="mb-0">Markets by trend</h5>
+        <span class="text-muted small">Most-declining first. Select a market for the full diagnosis.</span>
+    </div>
+    <div class="card-body p-0">
+        <div class="table-responsive">
+            <table class="table table-hover mb-0 align-middle">
+                <thead>
+                    <tr>
+                        <th>Market</th>
+                        <th>Trend</th>
+                        <th class="text-end">Change / period</th>
+                        <th class="d-none d-md-table-cell">Confidence</th>
+                        <th class="d-none d-sm-table-cell text-end">Tickets sold</th>
+                        <th>Direction</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for m in markets %}
+                    <tr class="market-row" data-city="{{ m.city }}" style="cursor:pointer;">
+                        <td class="fw-semibold">{{ m.city }}</td>
+                        <td>
+                            {% if m.trend == 'declining' %}<span class="badge bg-danger">Declining</span>
+                            {% elif m.trend == 'growing' %}<span class="badge bg-success">Growing</span>
+                            {% elif m.trend == 'stable' %}<span class="badge bg-secondary">Stable</span>
+                            {% else %}<span class="badge bg-light text-muted">Insufficient data</span>{% endif %}
+                        </td>
+                        <td class="text-end">
+                            {% if m.trend == 'insufficient_data' %}<span class="text-muted">—</span>
+                            {% elif m.norm_slope_pct > 0 %}<span class="text-success">+{{ m.norm_slope_pct }}%</span>
+                            {% elif m.norm_slope_pct < 0 %}<span class="text-danger">{{ m.norm_slope_pct }}%</span>
+                            {% else %}0%{% endif %}
+                        </td>
+                        <td class="d-none d-md-table-cell">
+                            {% if m.confidence == 'high' %}<span class="text-muted small">High</span>
+                            {% elif m.confidence == 'low' %}<span class="text-muted small">Low (volatile)</span>
+                            {% else %}<span class="text-muted small">—</span>{% endif %}
+                        </td>
+                        <td class="d-none d-sm-table-cell text-end">{{ m.total_sold|intcomma }}</td>
+                        <td style="width:120px;">
+                            <canvas class="sparkline" data-city="{{ m.city }}" width="100" height="28"></canvas>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<div class="card" id="detail-card" style="display:none;">
+    <div class="card-header">
+        <h5 class="mb-0" id="detail-title">Market detail</h5>
+    </div>
+    <div class="card-body">
+        <div class="row g-4">
+            <div class="col-lg-7">
+                <div class="chart-container" style="height: 320px;">
+                    <canvas id="detailChart"></canvas>
+                </div>
+            </div>
+            <div class="col-lg-5">
+                <div id="diagnosis-panel">
+                    <p class="text-muted">Select a market to see its turnout diagnosis.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    var isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+    var gridColor = isDark ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.1)';
+    var textColor = isDark ? '#adb5bd' : '#666';
+    var DANGER = '#dc3545', SUCCESS = '#198754', PRIMARY = '#0d6efd', MUTED = '#adb5bd';
+
+    var markets = JSON.parse(document.getElementById('markets-data').textContent);
+    var actionUrls = JSON.parse(document.getElementById('action-urls').textContent);
+    var byCity = {};
+    markets.forEach(function(m) { byCity[m.city] = m; });
+
+    function trendColor(trend) {
+        if (trend === 'declining') return DANGER;
+        if (trend === 'growing') return SUCCESS;
+        return MUTED;
+    }
+
+    // Row sparklines (avg tickets sold per event).
+    document.querySelectorAll('canvas.sparkline').forEach(function(cv) {
+        var m = byCity[cv.getAttribute('data-city')];
+        if (!m || !m.sparkline.length) return;
+        new Chart(cv.getContext('2d'), {
+            type: 'line',
+            data: {
+                labels: m.sparkline.map(function(_, i) { return i; }),
+                datasets: [{
+                    data: m.sparkline,
+                    borderColor: trendColor(m.trend),
+                    borderWidth: 2,
+                    pointRadius: 0,
+                    tension: 0.3,
+                    fill: false,
+                }]
+            },
+            options: {
+                responsive: false,
+                animation: false,
+                plugins: { legend: { display: false }, tooltip: { enabled: false } },
+                scales: { x: { display: false }, y: { display: false } },
+                elements: { line: { borderCapStyle: 'round' } }
+            }
+        });
+    });
+
+    // Detail chart + diagnosis.
+    var detailChart = null;
+
+    function fractionLabel(d) {
+        var sign = d.change_pct > 0 ? '+' : '';
+        return sign + d.change_pct + '%';
+    }
+
+    function buildDiagnosis(m) {
+        if (m.trend === 'insufficient_data') {
+            return '<p class="text-muted">Not enough history yet — at least 3 periods with events are needed to read a trend.</p>';
+        }
+        var html = '';
+        if (m.trend === 'declining') {
+            html += '<p>' + m.diagnosis_text + '</p>';
+            if (m.driver_contributions && m.driver_contributions.length) {
+                html += '<div class="mb-3">';
+                m.driver_contributions.forEach(function(d) {
+                    var isDominant = d.key === m.dominant_driver;
+                    var barColor = d.change_pct < 0 ? DANGER : SUCCESS;
+                    var width = Math.min(100, Math.abs(d.change_pct));
+                    html += '<div class="d-flex align-items-center justify-content-between small mb-1">'
+                        + '<span' + (isDominant ? ' class="fw-semibold"' : '') + '>' + d.label
+                        + (isDominant ? ' <span class="badge bg-danger ms-1">main driver</span>' : '') + '</span>'
+                        + '<span class="' + (d.change_pct < 0 ? 'text-danger' : 'text-success') + '">' + fractionLabel(d) + '</span></div>';
+                    html += '<div style="height:6px;background:' + gridColor + ';border-radius:3px;margin-bottom:8px;">'
+                        + '<div style="height:6px;width:' + width + '%;background:' + barColor + ';border-radius:3px;"></div></div>';
+                });
+                html += '</div>';
+            }
+            html += renderAction(m);
+        } else if (m.trend === 'growing') {
+            html += '<p class="text-success"><i class="bi bi-graph-up-arrow"></i> Turnout in ' + m.city
+                + ' is growing about ' + Math.abs(m.norm_slope_pct) + '% per period. Keep doing what works here.</p>';
+        } else {
+            html += '<p class="text-muted">Turnout in ' + m.city + ' is holding steady. No action needed.</p>';
+        }
+        return html;
+    }
+
+    function renderAction(m) {
+        var a = m.recommended_action;
+        if (!a) return '';
+        var html = '<div class="mt-3 pt-3 border-top">';
+        html += '<div class="text-muted small mb-2">Recommended next step</div>';
+        if (a.label && a.url_name && actionUrls[a.url_name]) {
+            html += '<a href="' + actionUrls[a.url_name] + '" class="btn btn-sm btn-primary">'
+                + '<i class="bi ' + a.icon + '"></i> ' + a.label + '</a>';
+        }
+        if (a.note) {
+            html += '<p class="text-muted small mb-0">' + a.note + '</p>';
+        }
+        // Audience-erosion markets can also kick off an SMS re-engagement.
+        if ((a.key === 'retention' || a.key === 'acquisition') && actionUrls['tickets:sms_campaign_create']) {
+            html += ' <a href="' + actionUrls['tickets:sms_campaign_create'] + '" class="btn btn-sm btn-outline-primary">'
+                + '<i class="bi bi-chat-dots"></i> Send an SMS campaign</a>';
+        }
+        return html + '</div>';
+    }
+
+    function showDetail(city) {
+        var m = byCity[city];
+        if (!m) return;
+        document.getElementById('detail-card').style.display = '';
+        document.getElementById('detail-title').textContent = city + ' — tickets sold per event';
+        document.getElementById('diagnosis-panel').innerHTML = buildDiagnosis(m);
+
+        // Plot only periods where events happened, so the trend line aligns.
+        var observed = m.periods.filter(function(p) { return p.events_held > 0; });
+        var labels = observed.map(function(p) { return p.period_label; });
+        var soldSeries = observed.map(function(p) { return p.avg_sold_per_event; });
+
+        var datasets = [{
+            label: 'Avg tickets sold / event',
+            data: soldSeries,
+            borderColor: trendColor(m.trend),
+            backgroundColor: 'transparent',
+            borderWidth: 2,
+            tension: 0.3,
+            pointRadius: 3,
+        }];
+        if (m.trend_line && m.trend_line.length === soldSeries.length) {
+            datasets.push({
+                label: 'Trend',
+                data: m.trend_line,
+                borderColor: textColor,
+                borderDash: [6, 4],
+                borderWidth: 1.5,
+                pointRadius: 0,
+                tension: 0,
+            });
+        }
+
+        if (detailChart) detailChart.destroy();
+        detailChart = new Chart(document.getElementById('detailChart').getContext('2d'), {
+            type: 'line',
+            data: { labels: labels, datasets: datasets },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: { legend: { labels: { color: textColor } } },
+                scales: {
+                    x: { ticks: { color: textColor, maxRotation: 45 }, grid: { color: gridColor } },
+                    y: {
+                        beginAtZero: true,
+                        title: { display: true, text: 'Avg tickets / event', color: textColor },
+                        ticks: { color: textColor },
+                        grid: { color: gridColor }
+                    }
+                }
+            }
+        });
+        document.getElementById('detail-card').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }
+
+    document.querySelectorAll('tr.market-row').forEach(function(row) {
+        row.addEventListener('click', function() { showDetail(row.getAttribute('data-city')); });
+    });
+
+    // Open the most-declining market by default (first row).
+    var firstRow = document.querySelector('tr.market-row');
+    if (firstRow) showDetail(firstRow.getAttribute('data-city'));
+});
+</script>
+
+{% else %}
+<div class="card">
+    <div class="card-body">
+        <div class="empty-state">
+            <i class="bi bi-graph-down-arrow d-block"></i>
+            <p>No past events with market data yet. Upload ticket orders with venues to track turnout trends across markets.</p>
+            <a href="{% url 'tickets:event_list' %}" class="btn btn-primary"><i class="bi bi-calendar-event"></i> View Events</a>
+        </div>
+    </div>
+</div>
+{% endif %}
+{% endblock %}
