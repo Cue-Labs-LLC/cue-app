@@ -12826,12 +12826,16 @@ class EventSummaryStreamTests(TestCase):
         customer = Customer.objects.create(
             organization=self.org, email='attendee@test.com', name='Attendee',
         )
+        now = timezone.now()
         order = TicketOrder.objects.create(
             customer=customer, event=event, order_number='DIR-001',
             order_date='2024-09-10 10:00:00', total_amount=Decimal('50.00'),
-            checked_in_at=timezone.now(),
+            checked_in_at=now,
         )
-        Ticket.objects.create(ticket_order=order, ticket_type='GA', price=Decimal('50.00'))
+        # An admitted order stamps each of its tickets (the scan source of truth).
+        Ticket.objects.create(
+            ticket_order=order, ticket_type='GA', price=Decimal('50.00'), scanned_at=now,
+        )
         return event
 
     def test_build_prompt_includes_checkin_for_direct_event(self):
@@ -12956,3 +12960,164 @@ class DisplayPreferencesTests(TestCase):
         url = reverse('tickets:event_summary_stream', args=[self.event.id])
         response = self.client.post(url)
         self.assertEqual(response.status_code, 404)
+
+
+class POSHScanImportAndBuiltinFormatTests(TestCase):
+    """Per-ticket scan import (POSH) + global built-in CSV format behavior."""
+
+    def setUp(self):
+        self.client = Client()
+        self.org = Organization.objects.create(name='Scan Org', slug='scan-org')
+        self.user = User.objects.create_user(
+            username='scanhost', email='scanhost@example.com', password='pw12345',
+        )
+        UserProfile.objects.create(
+            user=self.user, organization=self.org, org_role=UserProfile.OrgRole.OWNER,
+        )
+        OrganizationMembership.objects.create(
+            user=self.user, organization=self.org, org_role=UserProfile.OrgRole.OWNER,
+        )
+        self.venue = Venue.objects.create(organization=self.org, name='Venue', city='City')
+        # External (CSV) event whose start has passed.
+        self.event = Event.objects.create(
+            organization=self.org, name='Scan Night', venue=self.venue,
+            start_date=date(2026, 1, 1), start_time=time(20, 0, 0),
+            ticketing_type='external',
+        )
+
+    # --- parse_scan_details unit coverage -------------------------------------
+    def _processor(self):
+        from tickets.csv_processor import CSVProcessor
+        return CSVProcessor.__new__(CSVProcessor)
+
+    def test_parse_scan_details_variants(self):
+        p = self._processor()
+        self.assertEqual(p.parse_scan_details(''), [])
+        self.assertEqual(
+            p.parse_scan_details('ga - Not Scanned (N/A), ga - Not Scanned (N/A)'),
+            [None, None],
+        )
+        one = p.parse_scan_details('ga - Scanned (06-14-2026 7:40:36 pm)')
+        self.assertEqual(len(one), 1)
+        self.assertIsNotNone(one[0])
+        mixed = p.parse_scan_details(
+            'early bird - Scanned (06-14-2026 7:07:28 pm), ga - Not Scanned (N/A)'
+        )
+        self.assertIsNotNone(mixed[0])
+        self.assertIsNone(mixed[1])
+
+    # --- end-to-end import ----------------------------------------------------
+    def _import(self, csv_body):
+        import io
+        posh = CSVFormat.objects.get(name='POSH')
+        upload = UploadedFile.objects.create(
+            organization=self.org, csv_format=posh, filename='posh.csv', status='pending',
+            metadata={'event_id': str(self.event.id), 'event_name': self.event.name,
+                      'event_start_date': '2026-01-01'},
+        )
+        from tickets.csv_processor import CSVProcessor
+        processor = CSVProcessor(upload, posh)
+        return processor.process_and_save(io.BytesIO(csv_body.encode('utf-8')))
+
+    def test_import_sets_per_ticket_scanned_and_order_checkin(self):
+        header = (
+            '"Order Number","Order Date/Time","Order Subtotal","Order Total",'
+            '"# of Tickets","First Name","Last Name","Email","Phone Number",'
+            '"Tickets Purchased","Ticket Scan Details"\n'
+        )
+        rows = (
+            # Fully scanned single ticket
+            '"A1","05-12-2026 1:40:11 pm","21.00","21.00","1","Amy","R","a@x.com","+17025550000",'
+            '"general admission","general admission - Scanned (06-14-2026 7:40:36 pm)"\n'
+            # Partially scanned 2-ticket order (1 of 2)
+            '"A2","05-12-2026 1:42:50 pm","0.00","0.00","2","Bo","J","b@x.com","+17025550001",'
+            '"free rsvp, free rsvp","free rsvp - Scanned (06-14-2026 5:35:26 pm), free rsvp - Not Scanned (N/A)"\n'
+            # Not scanned at all
+            '"A3","05-12-2026 1:50:00 pm","0.00","0.00","1","Cy","K","c@x.com","+17025550002",'
+            '"free rsvp","free rsvp - Not Scanned (N/A)"\n'
+        )
+        results = self._import(header + rows)
+        self.assertEqual(results['success_count'], 3)
+
+        o1 = TicketOrder.objects.get(external_order_number='A1')
+        o2 = TicketOrder.objects.get(external_order_number='A2')
+        o3 = TicketOrder.objects.get(external_order_number='A3')
+
+        # Per-ticket scanned_at
+        self.assertEqual(o1.tickets.filter(scanned_at__isnull=False).count(), 1)
+        self.assertEqual(o2.tickets.count(), 2)
+        self.assertEqual(o2.tickets.filter(scanned_at__isnull=False).count(), 1)
+        self.assertEqual(o3.tickets.filter(scanned_at__isnull=False).count(), 0)
+
+        # Order-level marker: set when ANY ticket scanned, NULL when none.
+        self.assertIsNotNone(o1.checked_in_at)
+        self.assertIsNotNone(o2.checked_in_at)
+        self.assertIsNone(o3.checked_in_at)
+
+    def test_checkin_stats_count_tickets_and_surface_external_event(self):
+        from tickets.views import _compute_event_checkin_stats
+        header = (
+            '"Order Number","Order Date/Time","Order Subtotal","Order Total",'
+            '"# of Tickets","First Name","Last Name","Email","Phone Number",'
+            '"Tickets Purchased","Ticket Scan Details"\n'
+        )
+        rows = (
+            '"A2","05-12-2026 1:42:50 pm","0.00","0.00","2","Bo","J","b@x.com","+17025550001",'
+            '"free rsvp, free rsvp","free rsvp - Scanned (06-14-2026 5:35:26 pm), free rsvp - Not Scanned (N/A)"\n'
+        )
+        self._import(header + rows)
+        show, total, checked, by_type = _compute_event_checkin_stats(self.event)
+        # External event surfaces because it has imported scan data.
+        self.assertTrue(show)
+        self.assertEqual(total, 2)
+        # Only 1 of 2 tickets scanned -> no order-level overcount.
+        self.assertEqual(checked, 1)
+
+    def test_external_event_without_scan_data_is_hidden(self):
+        from tickets.views import _compute_event_checkin_stats
+        # An order with no scan data.
+        cust = Customer.objects.create(organization=self.org, email='n@x.com', name='N')
+        order = TicketOrder.objects.create(
+            customer=cust, event=self.event, order_number='NOSCAN',
+            order_date=timezone.now(), total_amount=Decimal('10.00'),
+        )
+        Ticket.objects.create(ticket_order=order, ticket_type='GA', price=Decimal('10.00'))
+        show, total, checked, by_type = _compute_event_checkin_stats(self.event)
+        self.assertFalse(show)
+
+    # --- built-in format read-only + duplicate --------------------------------
+    def _login(self):
+        self.client.login(username='scanhost@example.com', password='pw12345')
+        self.client.get(reverse('tickets:home'))  # prime org session cache
+
+    def test_posh_builtin_is_global_and_visible(self):
+        posh = CSVFormat.objects.get(name='POSH')
+        self.assertIsNone(posh.organization_id)
+        self.assertTrue(posh.is_system)
+        self.assertIn('POSH', list(
+            CSVFormat.available_for(self.org).values_list('name', flat=True)
+        ))
+
+    def test_builtin_format_not_editable_or_deletable(self):
+        self._login()
+        posh = CSVFormat.objects.get(name='POSH')
+        # Org-scoped views 404 on a global built-in.
+        self.assertEqual(
+            self.client.get(reverse('tickets:format_edit', args=[posh.id])).status_code, 404
+        )
+        self.assertEqual(
+            self.client.post(reverse('tickets:format_delete', args=[posh.id])).status_code, 404
+        )
+
+    def test_duplicate_builtin_creates_editable_org_copy(self):
+        self._login()
+        posh = CSVFormat.objects.get(name='POSH')
+        resp = self.client.get(reverse('tickets:format_duplicate', args=[posh.id]))
+        self.assertEqual(resp.status_code, 302)
+        copy = CSVFormat.objects.get(organization=self.org, name='POSH (Custom)')
+        self.assertFalse(copy.is_system)
+        self.assertEqual(copy.column_mapping, posh.column_mapping)
+        # The copy is editable (org-scoped view resolves it).
+        self.assertEqual(
+            self.client.get(reverse('tickets:format_edit', args=[copy.id])).status_code, 200
+        )

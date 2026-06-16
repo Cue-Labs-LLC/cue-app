@@ -4214,15 +4214,16 @@ def _compute_marketing_events(event):
 def _compute_event_checkin_stats(event):
     """Return (should_show, total_tickets, checked_in_tickets, by_type).
 
-    should_show is True when the event is direct ticketing AND its local start
-    datetime has passed. Tickets are counted at the ticket level (a TicketOrder
-    can hold multiple tickets, and a single check-in admits the whole order).
-    by_type is a list of {label, total, checked_in, percent} dicts grouped by
+    Check-ins are counted at the individual ticket level via Ticket.scanned_at,
+    which is the single source of truth: live check-ins stamp every ticket in the
+    admitted order, and CSV imports stamp each scanned ticket (so partially-scanned
+    multi-ticket orders are counted accurately).
+
+    should_show is True when the event's local start datetime has passed AND it is
+    either a direct-ticketing event or an external event that has imported scan
+    data. by_type is a list of {label, total, checked_in, percent} dicts grouped by
     Ticket.ticket_type, sorted by total desc.
     """
-    if event.ticketing_type != 'direct':
-        return False, 0, 0, []
-
     tz_name = event.timezone or 'America/Los_Angeles'
     try:
         tz = ZoneInfo(tz_name)
@@ -4237,15 +4238,20 @@ def _compute_event_checkin_stats(event):
 
     agg = event.ticket_orders.aggregate(
         total=Count('tickets'),
-        checked_in=Count('tickets', filter=Q(checked_in_at__isnull=False)),
+        checked_in=Count('tickets', filter=Q(tickets__scanned_at__isnull=False)),
     )
+
+    # Direct events always show (even at 0%); external events only once they have
+    # imported scan data, so untouched external events don't show an empty chart.
+    if event.ticketing_type != 'direct' and not (agg['checked_in'] or 0):
+        return False, 0, 0, []
 
     by_type_qs = (
         Ticket.objects.filter(ticket_order__event=event)
         .values('ticket_type')
         .annotate(
             total=Count('id'),
-            checked_in=Count('id', filter=Q(ticket_order__checked_in_at__isnull=False)),
+            checked_in=Count('id', filter=Q(scanned_at__isnull=False)),
         )
         .order_by('-total')
     )
@@ -5540,9 +5546,9 @@ def resend_order_confirmation(request, order_id):
 @require_org
 @require_host
 def format_list(request):
-    """List all CSV formats."""
+    """List all CSV formats available to the org (its own + global built-ins)."""
     org = get_organization(request)
-    formats = CSVFormat.objects.filter(organization=org)
+    formats = CSVFormat.available_for(org)
     context = {
         'formats': formats,
     }
@@ -5646,6 +5652,41 @@ def format_set_default(request, format_id):
     
     messages.success(request, f"'{format_obj.name}' is now the default CSV format.")
     return redirect('tickets:format_list')
+
+
+@login_required
+@require_org
+@require_host
+def format_duplicate(request, format_id):
+    """Copy a visible format (incl. a global built-in) into an editable org copy."""
+    org = get_organization(request)
+    # Source can be one of the org's own formats or a global built-in.
+    source = get_object_or_404(CSVFormat.available_for(org), id=format_id)
+
+    # Build a unique name within the global-unique constraint.
+    base_name = f"{source.name} (Custom)"
+    new_name = base_name
+    suffix = 2
+    while CSVFormat.objects.filter(name=new_name).exists():
+        new_name = f"{base_name} {suffix}"
+        suffix += 1
+
+    copy = CSVFormat(
+        organization=org,
+        name=new_name,
+        description=source.description,
+        is_default=False,
+        is_system=False,
+        requires_manual_pricing=source.requires_manual_pricing,
+        uses_tiers=source.uses_tiers,
+        column_mapping=source.column_mapping,
+    )
+    copy.save()
+    messages.success(
+        request,
+        f"Created an editable copy '{copy.name}'. Customize it below.",
+    )
+    return redirect('tickets:format_edit', format_id=copy.id)
 
 
 # Venue Management Views

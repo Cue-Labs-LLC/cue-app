@@ -10,6 +10,18 @@ from django.utils import timezone
 from .models import Organization, CSVFormat, Venue, Event, EventTalent, EventExpense, CustomField, CustomFieldOption, IncomeSource, EventIncome, SaleableTicketType, SaleableTicketTypeTier, UserProfile, PromoCode, OrganizerWaitlist, CustomerTag, SMSCampaign, LoyaltyProgram, LoyaltyTier
 
 
+def _default_csv_format_for(organization):
+    """Format to preselect on upload: the org's default, else a global built-in."""
+    default_format = CSVFormat.objects.filter(
+        organization=organization, is_default=True
+    ).first()
+    if default_format:
+        return default_format
+    return CSVFormat.objects.filter(
+        organization__isnull=True, is_system=True
+    ).order_by('name').first()
+
+
 def _normalize_phone(raw: str) -> str:
     """Normalize a phone number string to E.164 format (+1XXXXXXXXXX for US numbers).
 
@@ -483,9 +495,7 @@ class CSVUploadForm(forms.Form):
         organization = kwargs.pop('organization', None)
         super().__init__(*args, **kwargs)
         if organization is not None:
-            self.fields['csv_format'].queryset = CSVFormat.objects.filter(
-                organization=organization
-            ).order_by('-is_default', 'name')
+            self.fields['csv_format'].queryset = CSVFormat.available_for(organization)
             self.fields['venue'].queryset = Venue.objects.filter(
                 organization=organization
             ).order_by('name', 'city')
@@ -505,13 +515,9 @@ class CSVUploadForm(forms.Form):
             Submit('submit', 'Upload CSV', css_class='btn btn-primary')
         )
 
-        # Auto-select default format if available (org-scoped)
+        # Auto-select default format (org default, else a global built-in)
         if organization is not None:
-            default_format = CSVFormat.objects.filter(
-                organization=organization, is_default=True
-            ).first()
-            if default_format:
-                self.fields['csv_format'].initial = default_format
+            self.fields['csv_format'].initial = _default_csv_format_for(organization)
 
     def clean(self):
         """Validate form data."""
@@ -561,9 +567,7 @@ class EventCSVUploadForm(forms.Form):
         organization = kwargs.pop('organization', None)
         super().__init__(*args, **kwargs)
         if organization is not None:
-            self.fields['csv_format'].queryset = CSVFormat.objects.filter(
-                organization=organization
-            ).order_by('-is_default', 'name')
+            self.fields['csv_format'].queryset = CSVFormat.available_for(organization)
         self.helper = FormHelper()
         self.helper.layout = Layout(
             Field('csv_file'),
@@ -573,11 +577,7 @@ class EventCSVUploadForm(forms.Form):
         )
 
         if organization is not None:
-            default_format = CSVFormat.objects.filter(
-                organization=organization, is_default=True
-            ).first()
-            if default_format:
-                self.fields['csv_format'].initial = default_format
+            self.fields['csv_format'].initial = _default_csv_format_for(organization)
 
     def clean_csv_file(self):
         file = self.cleaned_data.get('csv_file')

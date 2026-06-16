@@ -35,13 +35,18 @@
                         <tr>
                             <td>
                                 <strong>{{ format.name }}</strong>
+                                {% if format.is_system %}
+                                    <span class="badge bg-info">Built-in</span>
+                                {% endif %}
                                 {% if format.is_default %}
                                     <span class="badge bg-primary">Default</span>
                                 {% endif %}
                             </td>
                             <td>{{ format.description|truncatewords:10|default:"-" }}</td>
                             <td>
-                                {% if format.is_default %}
+                                {% if format.is_system %}
+                                    <span class="text-muted">-</span>
+                                {% elif format.is_default %}
                                     <i class="bi bi-check-circle text-success"></i>
                                 {% else %}
                                     <a href="{% url 'tickets:format_set_default' format.id %}"
@@ -59,14 +64,25 @@
                             </td>
                             <td>{{ format.created_at|date:"M d, Y" }}</td>
                             <td>
-                                <a href="{% url 'tickets:format_edit' format.id %}"
-                                   class="btn btn-sm btn-outline-secondary">
-                                    <i class="bi bi-pencil"></i> Edit
-                                </a>
-                                <a href="{% url 'tickets:format_delete' format.id %}"
-                                   class="btn btn-sm btn-outline-danger">
-                                    <i class="bi bi-trash"></i> Delete
-                                </a>
+                                {% if format.is_system %}
+                                    <a href="{% url 'tickets:format_duplicate' format.id %}"
+                                       class="btn btn-sm btn-outline-primary">
+                                        <i class="bi bi-files"></i> Duplicate to customize
+                                    </a>
+                                {% else %}
+                                    <a href="{% url 'tickets:format_edit' format.id %}"
+                                       class="btn btn-sm btn-outline-secondary">
+                                        <i class="bi bi-pencil"></i> Edit
+                                    </a>
+                                    <a href="{% url 'tickets:format_duplicate' format.id %}"
+                                       class="btn btn-sm btn-outline-secondary">
+                                        <i class="bi bi-files"></i> Duplicate
+                                    </a>
+                                    <a href="{% url 'tickets:format_delete' format.id %}"
+                                       class="btn btn-sm btn-outline-danger">
+                                        <i class="bi bi-trash"></i> Delete
+                                    </a>
+                                {% endif %}
                             </td>
                         </tr>
                     {% endfor %}
