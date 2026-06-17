@@ -37,6 +37,7 @@ from .services.sms_consent import set_sms_opt_in
 from .services.tagging import tag_customers
 from .sms import (
     normalize_phone, validate_twilio_request, sms_segment_info, send_sms, extract_first_url,
+    with_stop_footer,
 )
 from .tasks import send_sms_campaign_task
 from .utils import get_organization, require_org, require_host
@@ -278,6 +279,38 @@ def sms_campaign_list(request):
         'sms_clicks': [row['sms_clicks'] for row in metrics['engagement_trends']],
     }
 
+    # Broadcast audience over time + by market. The cached series is
+    # market-independent; the market filter is applied here in Python.
+    series = metrics['broadcast_audience']
+    selected_market = request.GET.get('market', '')
+    # Only list cities that actually have broadcasts; 'No market' sorts last.
+    market_choices = sorted(
+        {row['market'] for row in series},
+        key=lambda m: (m == 'No market', m.lower()),
+    )
+    if selected_market and selected_market not in market_choices:
+        selected_market = ''
+
+    visible = [r for r in series if not selected_market or r['market'] == selected_market]
+    audience_points = {'native': [], 'slicktext': []}
+    for r in visible:
+        audience_points[r['channel']].append({
+            'x': r['sent_ms'], 'y': r['audience'], 'name': r['name'], 'market': r['market'],
+        })
+
+    # By-market breakdown spans ALL markets (always-on comparison), independent of
+    # the chart's market filter.
+    breakdown = {}
+    for r in series:
+        agg = breakdown.setdefault(
+            r['market'], {'market': r['market'], 'broadcasts': 0, 'total_audience': 0},
+        )
+        agg['broadcasts'] += 1
+        agg['total_audience'] += r['audience']
+    market_breakdown = sorted(breakdown.values(), key=lambda a: a['total_audience'], reverse=True)
+    for agg in market_breakdown:
+        agg['avg_audience'] = round(agg['total_audience'] / agg['broadcasts']) if agg['broadcasts'] else 0
+
     return render(request, 'tickets/marketing/sms/campaign_list.html', {
         'page_obj': page_obj,
         'balance_cents': org.sms_credit_balance_cents,
@@ -290,6 +323,10 @@ def sms_campaign_list(request):
         'sms_channel': metrics['channels']['sms'],
         'top_sms_campaigns': metrics['top_sms_campaigns'],
         'engagement_chart_json': json.dumps(engagement_chart),
+        'selected_market': selected_market,
+        'market_choices': market_choices,
+        'market_breakdown': market_breakdown,
+        'audience_points_json': json.dumps(audience_points),
     })
 
 
@@ -324,6 +361,13 @@ def sms_campaign_create(request):
     # second campaign or double-charge. Preserved across the review→confirm POSTs.
     idem_key = request.POST.get('idempotency_key') or uuid.uuid4().hex
 
+    # Event-mode audience scope. Read outside form handling (and normalized) so the
+    # re-rendered confirm page can keep the chosen chip checked — otherwise the
+    # selection silently resets to 'event' between review and confirm.
+    audience_scope = request.POST.get('audience_scope') or 'event'
+    if audience_scope not in ('event', 'all', 'tag'):
+        audience_scope = 'event'
+
     if request.method == 'POST':
         form = SMSCampaignForm(request.POST, organization=org, event=event)
         if form.is_valid():
@@ -331,7 +375,6 @@ def sms_campaign_create(request):
             # exactly one audience — the event's ticket buyers, all subscribers, or
             # customers with the chosen tag; otherwise the composed tags/segments.
             criteria = dict(form.filter_criteria)
-            audience_scope = request.POST.get('audience_scope') or 'event'
             if event:
                 if audience_scope == 'all':
                     criteria = {'all_subscribers': True}
@@ -464,9 +507,14 @@ def sms_campaign_create(request):
         if ev.effective_status == EVENT_STATUS_LIVE
     ]
 
-    encoding, segments = sms_segment_info(request.POST.get('body', '') if request.method == 'POST' else '')
+    # Initial meter values match billing: segments are counted on the body plus
+    # the auto-appended STOP footer (the JS meter mirrors this).
+    encoding, segments = sms_segment_info(
+        with_stop_footer(request.POST.get('body', '') if request.method == 'POST' else '')
+    )
     return render(request, 'tickets/marketing/sms/campaign_form.html', {
         'form': form,
+        'audience_scope': audience_scope,
         'confirm_count': confirm_count,
         'exceeds_cap': exceeds_cap,
         'cap': cap,

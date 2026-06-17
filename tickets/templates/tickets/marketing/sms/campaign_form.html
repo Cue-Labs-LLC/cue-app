@@ -440,10 +440,10 @@
                         {% if event %}
                         <div class="sms-aud-group" data-aud-group="scope">
                             <div class="sms-aud-chips" data-aud-chips="scope">
-                                <span class="sms-chip-wrap"><input type="radio" name="audience_scope" id="scope-event" value="event" checked autocomplete="off"><label class="sms-chip" for="scope-event"><span class="sms-chip-dot"></span>Ticket buyers for this event</label></span>
-                                <span class="sms-chip-wrap"><input type="radio" name="audience_scope" id="scope-all" value="all" autocomplete="off"><label class="sms-chip" for="scope-all"><span class="sms-chip-dot"></span>All SMS subscribers</label></span>
+                                <span class="sms-chip-wrap"><input type="radio" name="audience_scope" id="scope-event" value="event"{% if audience_scope == 'event' %} checked{% endif %} autocomplete="off"><label class="sms-chip" for="scope-event"><span class="sms-chip-dot"></span>Ticket buyers for this event</label></span>
+                                <span class="sms-chip-wrap"><input type="radio" name="audience_scope" id="scope-all" value="all"{% if audience_scope == 'all' %} checked{% endif %} autocomplete="off"><label class="sms-chip" for="scope-all"><span class="sms-chip-dot"></span>All SMS subscribers</label></span>
                                 {% if form.tag_ids.field.queryset %}
-                                <span class="sms-chip-wrap"><input type="radio" name="audience_scope" id="scope-tag" value="tag" autocomplete="off"><label class="sms-chip" for="scope-tag"><span class="sms-chip-dot"></span>Customers with a tag</label></span>
+                                <span class="sms-chip-wrap"><input type="radio" name="audience_scope" id="scope-tag" value="tag"{% if audience_scope == 'tag' %} checked{% endif %} autocomplete="off"><label class="sms-chip" for="scope-tag"><span class="sms-chip-dot"></span>Customers with a tag</label></span>
                                 {% endif %}
                             </div>
                             <div class="sms-hint" style="margin-top:10px;" id="scope-hint">Texting ticket buyers for <strong>{{ event.name }}</strong>.</div>
@@ -515,7 +515,7 @@
                             <span><b id="sms-segs">1</b> <span id="sms-segs-word">segment</span></span><span class="dot">&middot;</span>
                             <span id="sms-enc">GSM-7</span>
                         </div>
-                        <div class="sms-hint">"Reply STOP to opt out" is appended automatically &middot; any <code>https://</code> link is tracked per campaign.</div>
+                        <div class="sms-hint">"Reply STOP to opt out" is appended automatically and included in the segment count &middot; any <code>https://</code> link is tracked per campaign.</div>
                     </div>
 
                     {% if ticket_link_events %}
@@ -578,9 +578,9 @@
                         <button type="submit" name="confirm" value="1" class="btn btn-primary"><i class="bi bi-send"></i> Confirm &amp; send</button>
                     </div>
                     {% endif %}
-                    {% else %}
-                    <button type="submit" class="btn btn-primary">Review recipients</button>
                     {% endif %}
+                    {# Kept in the DOM even when the confirm panel shows: editing the audience or message after review invalidates the panel and reveals this again. #}
+                    <button type="submit" class="btn btn-primary" id="review-btn"{% if confirm_count is not None and not exceeds_cap and confirm_count > 0 %} hidden{% endif %}>Review recipients</button>
                 </div>
             </div>
 
@@ -626,6 +626,14 @@
     var GSM_EXT = "^{}\\[~]|€";
     var GSM = new Set((GSM_BASIC + GSM_EXT).split(''));
 
+    // Mirrors tickets/sms.py:with_stop_footer — the footer is part of what's
+    // actually sent and billed, so the meter must count it.
+    var STOP_FOOTER = "\n\nReply STOP to opt out";
+    var OPT_OUT_RE = /\b(?:reply|text|send)\s+["“]?stop\b/i;
+    function withStopFooter(body) {
+        return OPT_OUT_RE.test(body) ? body : body + STOP_FOOTER;
+    }
+
     function segmentInfo(body) {
         body = body || '';
         var isUnicode = false;
@@ -653,18 +661,34 @@
         var bubbleStop = document.getElementById('sms-bubble-stop');
         var delivered = document.getElementById('sms-delivered');
 
+        // The confirm panel's count/cost are snapshotted at review time. Any change
+        // to the audience or the message makes them stale — drop the panel and
+        // bring back "Review recipients" so what's shown always matches what sends.
+        var confirmPanel = document.querySelector('.sms-confirm');
+        var reviewBtn = document.getElementById('review-btn');
+        function invalidateConfirm() {
+            if (!confirmPanel) return;
+            confirmPanel.remove();
+            confirmPanel = null;
+            if (reviewBtn) reviewBtn.hidden = false;
+        }
+        var audSection = document.getElementById('audience-section');
+        if (audSection) audSection.addEventListener('change', invalidateConfirm);
+
         function render() {
             var text = body ? body.value : '';
-            var info = segmentInfo(text);
-            chars.textContent = info.length;
+            // Segments/encoding are computed on what actually goes out (typed text +
+            // auto-appended STOP footer); chars stay the typed length.
+            var info = segmentInfo(withStopFooter(text));
+            chars.textContent = text.length;
             segs.textContent = info.segments;
             segsWord.textContent = info.segments === 1 ? 'segment' : 'segments';
             enc.textContent = info.encoding;
             if (text.trim()) {
                 bubble.hidden = false;
                 bubbleText.textContent = text;
-                // Mirror _with_stop_footer: only show the STOP line if not already present.
-                bubbleStop.hidden = text.toUpperCase().indexOf('STOP') !== -1;
+                // Mirror with_stop_footer: only show the STOP line when it would be appended.
+                bubbleStop.hidden = OPT_OUT_RE.test(text);
                 if (delivered) delivered.hidden = false;
             } else {
                 // Empty message → no bubble at all, just the thread's date stamp.
@@ -673,7 +697,10 @@
                 if (delivered) delivered.hidden = true;
             }
         }
-        if (body) { body.addEventListener('input', render); }
+        if (body) {
+            body.addEventListener('input', render);
+            body.addEventListener('input', invalidateConfirm);  // cost depends on the body
+        }
         render();
 
         // Reveal the scheduled-time field only when "Schedule for later" is selected.
@@ -762,6 +789,7 @@
                     btn.innerHTML = '<i class="bi bi-x"></i>';
                     btn.addEventListener('click', function () {
                         input.checked = false;
+                        invalidateConfirm();  // programmatic uncheck — no 'change' event fires
                         syncAll();
                         refreshAudience();
                     });
@@ -780,6 +808,7 @@
                 var wrap = document.querySelector('[data-aud-group="' + group + '"]');
                 if (!wrap) return;
                 wrap.querySelectorAll('input[type=checkbox]:checked').forEach(function (b) { b.checked = false; });
+                invalidateConfirm();  // programmatic uncheck — no 'change' event fires
                 syncAll();
                 refreshAudience();
             });

@@ -37,13 +37,14 @@ from .models import (
     ReceiptSend,
     SaleableTicketType,
     ScannerSession,
+    StripeCheckoutSession,
     TapToPayTermsAcceptance,
     Ticket,
     TicketOrder,
     TICKETING_TYPE_DIRECT,
     UserProfile,
 )
-from .utils import next_order_number, link_customer_to_buyer
+from .utils import next_order_number, link_customer_to_buyer, extract_fee_from_display_cents
 
 logger = logging.getLogger(__name__)
 
@@ -1253,9 +1254,12 @@ def organizer_checkin(request):
                 'checked_in_count': checked_in_count,
             }, status=200)
 
-        order.checked_in_at = timezone.now()
+        now = timezone.now()
+        order.checked_in_at = now
         order.checked_in_by = request.user
         order.save(update_fields=['checked_in_at', 'checked_in_by'])
+        # Keep per-ticket scan data consistent: a whole-order admit scans all tickets.
+        order.tickets.update(scanned_at=now)
 
     checked_in_count = TicketOrder.objects.filter(
         event_id=event_id,
@@ -1411,6 +1415,10 @@ def _create_terminal_payment_intent(event, line_items):
     """Validate ticket-type inventory and create a card-present PaymentIntent
     on the merchant's Stripe Connect account.
 
+    This is a DIRECT charge: the connected account is the merchant and pays
+    Stripe's processing fees; Cue's platform fee rides application_fee_amount
+    (same display-price-inclusive formula as online checkout).
+
     Returns (payload, status). On success, payload is the response body and
     status is 201. On failure, payload is an {'error': ...} dict and status
     is 400 (validation), 403 (Connect not set up), or 502 (Stripe).
@@ -1454,8 +1462,10 @@ def _create_terminal_payment_intent(event, line_items):
 
     stripe_lib.api_key = django_settings.STRIPE_SECRET_KEY
 
+    fee_cents = extract_fee_from_display_cents(amount_cents)
+
     try:
-        pi = stripe_lib.PaymentIntent.create(
+        pi_kwargs = dict(
             amount=amount_cents,
             currency=django_settings.STRIPE_CURRENCY,
             payment_method_types=['card_present'],
@@ -1463,6 +1473,9 @@ def _create_terminal_payment_intent(event, line_items):
             stripe_account=org.stripe_account_id,
             metadata={'event_id': str(event.pk), 'org_id': str(org.pk)},
         )
+        if fee_cents > 0:
+            pi_kwargs['application_fee_amount'] = fee_cents
+        pi = stripe_lib.PaymentIntent.create(**pi_kwargs)
     except stripe_lib.error.StripeError as exc:
         logger.error("Stripe terminal PaymentIntent error: %s", exc)
         return {'error': str(exc)}, 502
@@ -1514,9 +1527,16 @@ def stripe_terminal_payment_intent(request):
 def _finalize_in_person_sale(event, payment_intent_id, buyer_name, buyer_email, line_items, checked_in_by):
     """Verify Stripe PaymentIntent succeeded and create the in-person TicketOrder.
 
+    Idempotent on the PaymentIntent id: a retried request (flaky venue wifi)
+    short-circuits to the already-created order before touching orders,
+    tickets, or inventory. The Stripe-confirmed amount is the money that
+    actually moved — client-supplied prices are validated against it and the
+    order/ledger amounts derive from the PI, not the request payload.
+
     Returns (payload, status). On success, payload is the response body and
-    status is 201. On failure, payload is an {'error': ...} dict and status
-    is 400 (validation), 403 (Connect not set up), or 502 (Stripe).
+    status is 201 (or 200 for an idempotent replay). On failure, payload is
+    an {'error': ...} dict and status is 400 (validation), 403 (Connect not
+    set up), or 502 (Stripe).
 
     checked_in_by may be None for scanner-PIN sessions (no Cue account).
     """
@@ -1528,6 +1548,23 @@ def _finalize_in_person_sale(event, payment_intent_id, buyer_name, buyer_email, 
     org = event.organization
     if not org.stripe_account_id:
         return {'error': 'This merchant has not connected a Stripe account yet.'}, 403
+
+    existing = (
+        StripeCheckoutSession.objects
+        .filter(stripe_session_id=payment_intent_id)
+        .select_related('ticket_order')
+        .first()
+    )
+    if existing is not None:
+        order = existing.ticket_order
+        if order is None:
+            return {'error': 'This payment was already processed.'}, 400
+        return {
+            'order_number': order.order_number,
+            'order_id': str(order.pk),
+            'total_amount': str(order.total_amount),
+            'ticket_count': order.tickets.count(),
+        }, 200
 
     try:
         pi = stripe_lib.PaymentIntent.retrieve(
@@ -1541,24 +1578,31 @@ def _finalize_in_person_sale(event, payment_intent_id, buyer_name, buyer_email, 
     if pi.status != 'succeeded':
         return {'error': f'PaymentIntent status is {pi.status!r}, expected succeeded'}, 400
 
-    total_amount = Decimal('0.00')
     resolved = []
+    expected_cents = 0
     for item in line_items:
         tt_id = item.get('ticket_type_id', '')
         qty = int(item.get('quantity', 1))
         item_name = item.get('name', '')
-        try:
-            item_price = Decimal(str(item.get('price', '0')))
-        except InvalidOperation:
-            return {'error': f'Invalid price for item {item_name}'}, 400
 
         try:
             tt = SaleableTicketType.objects.get(id=tt_id, event=event)
         except SaleableTicketType.DoesNotExist:
             return {'error': f'Ticket type {tt_id} not found'}, 400
 
-        total_amount += item_price * qty
-        resolved.append({'tt': tt, 'tt_id': tt_id, 'qty': qty, 'name': item_name or tt.name, 'price': item_price})
+        # Server price, not the client payload — the PI was created from
+        # tt.price, and tickets/orders must record the money that moved.
+        expected_cents += int((tt.price * qty * 100).to_integral_value())
+        resolved.append({'tt': tt, 'tt_id': tt_id, 'qty': qty, 'name': item_name or tt.name, 'price': tt.price})
+
+    charged_cents = int(getattr(pi, 'amount_received', 0) or 0)
+    if charged_cents != expected_cents:
+        logger.warning(
+            "In-person finalize amount mismatch for PI %s: charged=%s expected=%s (stale client prices?)",
+            payment_intent_id, charged_cents, expected_cents,
+        )
+        return {'error': 'Charged amount does not match current ticket prices. Refresh prices and retry.'}, 400
+    total_amount = (Decimal(charged_cents) / 100).quantize(Decimal('0.01'))
 
     now = timezone.now()
     customer, _ = Customer.objects.get_or_create(
@@ -1596,6 +1640,36 @@ def _finalize_in_person_sale(event, payment_intent_id, buyer_name, buyer_email, 
                 quantity_sold=F('quantity_sold') + item['qty']
             )
             ticket_count += item['qty']
+
+        # Ledger row: in-person sales count toward the Sales figure and carry
+        # the platform fee Stripe withheld via application_fee_amount.
+        # get_or_create on the unique PI id absorbs a create race between two
+        # concurrent retries.
+        StripeCheckoutSession.objects.get_or_create(
+            stripe_session_id=payment_intent_id,
+            defaults={
+                'event': event,
+                'organization': org,
+                'stripe_payment_intent_id': payment_intent_id,
+                'buyer_email': buyer_email,
+                'buyer_name': buyer_name or '',
+                'status': StripeCheckoutSession.Status.COMPLETED,
+                'charge_flow': StripeCheckoutSession.ChargeFlow.DIRECT,
+                'line_items_snapshot': [
+                    {
+                        'saleable_ticket_type_id': str(item['tt_id']),
+                        'name': item['name'],
+                        'price': str(item['price']),
+                        'quantity': item['qty'],
+                    }
+                    for item in resolved
+                ],
+                'amount_total_cents': charged_cents,
+                'platform_fee_cents': int(getattr(pi, 'application_fee_amount', 0) or 0),
+                'ticket_order': order,
+                'fulfilled_at': now,
+            },
+        )
 
     customer.update_lifetime_value()
     # Loyalty points: swallow failures — the sale must never fail on points.
@@ -1779,9 +1853,12 @@ def scanner_checkin(request):
                 'ticket_types': [t.ticket_type for t in order.tickets.all()],
                 'checked_in_count': checked_in_count,
             })
-        order.checked_in_at = timezone.now()
+        now = timezone.now()
+        order.checked_in_at = now
         order.checked_in_by = None  # no Cue account for scanner guests
         order.save(update_fields=['checked_in_at', 'checked_in_by'])
+        # Keep per-ticket scan data consistent: a whole-order admit scans all tickets.
+        order.tickets.update(scanned_at=now)
 
     checked_in_count = TicketOrder.objects.filter(
         event=event, customer__organization=org, checked_in_at__isnull=False

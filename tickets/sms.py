@@ -50,11 +50,17 @@ def normalize_phone(raw: str) -> str:
     return phone
 
 
+# Explicit opt-out phrasing ("Reply STOP", "Text STOP anytime", …). Only this
+# suppresses the auto-appended footer — a casual "stop by the bar" must not strip
+# the compliance disclosure. Mirrored in campaign_form.html's live meter.
+_OPT_OUT_RE = re.compile(r'\b(?:reply|text|send)\s+["“]?STOP\b', re.IGNORECASE)
+
+
 def with_stop_footer(body: str) -> str:
-    """Append the required opt-out footer unless the body already mentions STOP.
-    Shared by the send tasks and the credit cost estimator so all three agree on
-    exactly what text (and therefore how many segments) goes out."""
-    if 'STOP' in (body or '').upper():
+    """Append the required opt-out footer unless the body already carries explicit
+    opt-out phrasing. Shared by the send tasks and the credit cost estimator so
+    all three agree on exactly what text (and therefore how many segments) goes out."""
+    if _OPT_OUT_RE.search(body or ''):
         return body
     return f"{body}\n\nReply STOP to opt out"
 

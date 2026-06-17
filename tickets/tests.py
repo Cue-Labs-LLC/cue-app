@@ -22,7 +22,9 @@ from .models import (
     SurveyInvitation, SurveyResponse, SurveyAnswer, SurveyQuestion, Payout,
     ExternalSurveyUpload, ExternalSurveyResponse, EventDailyPageView,
     LoyaltyProgram, LoyaltyTier, LoyaltyPointsTransaction,
+    TICKETING_TYPE_DIRECT,
 )
+from .utils import extract_fee_from_display_cents
 
 
 class AITokenUsageTests(TestCase):
@@ -1303,10 +1305,28 @@ class MobileAPITests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()['status'], 'refunded')
 
+    def _sell_payload(self, tt, quantity=2, payment_intent_id='pi_test_123'):
+        return {
+            'event_id': str(self.event.pk),
+            'payment_intent_id': payment_intent_id,
+            'buyer_email': 'newbuyer@example.com',
+            'buyer_name': 'New Buyer',
+            'line_items': [
+                {
+                    'ticket_type_id': str(tt.pk),
+                    'quantity': quantity,
+                    'name': 'VIP',
+                    'price': '50.00',
+                }
+            ],
+        }
+
     @patch('stripe.PaymentIntent.retrieve')
     def test_sell_creates_order(self, mock_retrieve):
         mock_pi = MagicMock()
         mock_pi.status = 'succeeded'
+        mock_pi.amount_received = 10000  # 2 x $50.00, Stripe-confirmed
+        mock_pi.application_fee_amount = 832
         mock_retrieve.return_value = mock_pi
 
         tt = SaleableTicketType.objects.create(
@@ -1317,20 +1337,7 @@ class MobileAPITests(TestCase):
 
         response = self.client.post(
             '/api/organizer/sell/',
-            data={
-                'event_id': str(self.event.pk),
-                'payment_intent_id': 'pi_test_123',
-                'buyer_email': 'newbuyer@example.com',
-                'buyer_name': 'New Buyer',
-                'line_items': [
-                    {
-                        'ticket_type_id': str(tt.pk),
-                        'quantity': 2,
-                        'name': 'VIP',
-                        'price': '50.00',
-                    }
-                ],
-            },
+            data=self._sell_payload(tt),
             content_type='application/json',
             **self.auth_header,
         )
@@ -1343,6 +1350,69 @@ class MobileAPITests(TestCase):
         self.assertTrue(new_order.is_in_person)
         self.assertIsNotNone(new_order.checked_in_at)
         self.assertEqual(new_order.tickets.count(), 2)
+        # Ledger row: direct charge, Stripe-confirmed amounts.
+        session = StripeCheckoutSession.objects.get(stripe_session_id='pi_test_123')
+        self.assertEqual(session.charge_flow, StripeCheckoutSession.ChargeFlow.DIRECT)
+        self.assertEqual(session.status, StripeCheckoutSession.Status.COMPLETED)
+        self.assertEqual(session.amount_total_cents, 10000)
+        self.assertEqual(session.platform_fee_cents, 832)
+        self.assertEqual(session.ticket_order, new_order)
+        self.assertIsNotNone(session.fulfilled_at)
+
+    @patch('stripe.PaymentIntent.retrieve')
+    def test_sell_duplicate_finalize_returns_existing_order(self, mock_retrieve):
+        mock_pi = MagicMock()
+        mock_pi.status = 'succeeded'
+        mock_pi.amount_received = 10000
+        mock_pi.application_fee_amount = 832
+        mock_retrieve.return_value = mock_pi
+
+        tt = SaleableTicketType.objects.create(
+            event=self.event, name='VIP', price=Decimal('50.00'),
+        )
+        kwargs = dict(
+            data=self._sell_payload(tt), content_type='application/json', **self.auth_header,
+        )
+
+        first = self.client.post('/api/organizer/sell/', **kwargs)
+        second = self.client.post('/api/organizer/sell/', **kwargs)
+
+        self.assertEqual(first.status_code, 201)
+        self.assertEqual(second.status_code, 200)
+        self.assertEqual(second.json()['order_number'], first.json()['order_number'])
+        self.assertEqual(second.json()['ticket_count'], 2)
+        # One order, one session row, inventory bumped once.
+        self.assertEqual(
+            TicketOrder.objects.filter(event=self.event, is_in_person=True).count(), 1,
+        )
+        self.assertEqual(
+            StripeCheckoutSession.objects.filter(stripe_session_id='pi_test_123').count(), 1,
+        )
+        tt.refresh_from_db()
+        self.assertEqual(tt.quantity_sold, 2)
+
+    @patch('stripe.PaymentIntent.retrieve')
+    def test_sell_rejects_amount_mismatch(self, mock_retrieve):
+        # PI charged $80 but current server prices say $100 — stale client.
+        mock_pi = MagicMock()
+        mock_pi.status = 'succeeded'
+        mock_pi.amount_received = 8000
+        mock_pi.application_fee_amount = 0
+        mock_retrieve.return_value = mock_pi
+
+        tt = SaleableTicketType.objects.create(
+            event=self.event, name='VIP', price=Decimal('50.00'),
+        )
+
+        response = self.client.post(
+            '/api/organizer/sell/',
+            data=self._sell_payload(tt),
+            content_type='application/json',
+            **self.auth_header,
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(TicketOrder.objects.filter(event=self.event, is_in_person=True).count(), 0)
+        self.assertFalse(StripeCheckoutSession.objects.filter(stripe_session_id='pi_test_123').exists())
 
     def test_token_auth_required(self):
         response = self.client.get('/api/organizer/events/')
@@ -1582,9 +1652,7 @@ class FinancePayoutTests(TestCase):
         }.get(key, default)
         return account
 
-    @patch('tickets.views._compute_available_balance')
-    @patch('tickets.views._compute_settled_payout_balance')
-    @patch('tickets.views._get_stripe_platform_available_cents')
+    @patch('tickets.views._get_connected_balance_cents')
     @patch('stripe.Account.retrieve')
     @patch('stripe.Account.modify')
     @patch('stripe.Payout.create')
@@ -1595,22 +1663,9 @@ class FinancePayoutTests(TestCase):
         mock_payout_create,
         mock_account_modify,
         mock_account_retrieve,
-        mock_platform_available,
-        mock_settled_balance,
-        mock_available_balance,
+        mock_connected_balance,
     ):
-        mock_available_balance.return_value = (
-            Decimal('500.00'),
-            Decimal('50.00'),
-            Decimal('0.00'),
-            Decimal('450.00'),
-        )
-        mock_settled_balance.return_value = Decimal('450.00')
-        mock_platform_available.return_value = 45000
-        mock_transfer_create.side_effect = [
-            MagicMock(id='tr_first'),
-            MagicMock(id='tr_second'),
-        ]
+        mock_connected_balance.return_value = (45000, 0)
         mock_payout_create.side_effect = [
             MagicMock(id='po_first', status='pending'),
             MagicMock(id='po_second', status='pending'),
@@ -1627,11 +1682,19 @@ class FinancePayoutTests(TestCase):
         self.assertEqual(len(payouts), 2)
         self.assertEqual([payout.amount for payout in payouts], [Decimal('100.00'), Decimal('50.00')])
         self.assertEqual([payout.status for payout in payouts], [Payout.Status.PENDING, Payout.Status.PENDING])
-        self.assertEqual([payout.stripe_transfer_id for payout in payouts], ['tr_first', 'tr_second'])
+        self.assertEqual([payout.origin for payout in payouts], [Payout.Origin.CUE, Payout.Origin.CUE])
+        # Destination-charge model: the money already lives in the connected
+        # account, so no platform Transfer is ever created.
+        self.assertEqual([payout.stripe_transfer_id for payout in payouts], [None, None])
         self.assertEqual([payout.stripe_payout_id for payout in payouts], ['po_first', 'po_second'])
+        mock_transfer_create.assert_not_called()
         self.assertEqual(mock_account_modify.call_count, 2)
-        self.assertEqual(mock_transfer_create.call_count, 2)
         self.assertEqual(mock_payout_create.call_count, 2)
+        # Each Stripe payout carries a row-derived idempotency key so a
+        # timeout retry can't withdraw twice.
+        for call, payout in zip(mock_payout_create.call_args_list, payouts):
+            self.assertEqual(call.kwargs['idempotency_key'], f'payout-{payout.id}')
+            self.assertEqual(call.kwargs['stripe_account'], self.org.stripe_account_id)
 
     @patch('stripe.Account.modify')
     @patch('stripe.Account.retrieve')
@@ -1650,25 +1713,14 @@ class FinancePayoutTests(TestCase):
             capabilities={'card_payments': {'requested': True}},
         )
 
-    @patch('tickets.views._compute_available_balance')
-    @patch('tickets.views._compute_settled_payout_balance')
-    @patch('tickets.views._get_stripe_platform_available_cents')
+    @patch('tickets.views._get_connected_balance_cents')
     @patch('stripe.Account.retrieve')
     def test_initiate_payout_rejected_when_payouts_disabled(
         self,
         mock_account_retrieve,
-        mock_platform_available,
-        mock_settled_balance,
-        mock_available_balance,
+        mock_connected_balance,
     ):
-        mock_available_balance.return_value = (
-            Decimal('500.00'),
-            Decimal('50.00'),
-            Decimal('0.00'),
-            Decimal('450.00'),
-        )
-        mock_settled_balance.return_value = Decimal('450.00')
-        mock_platform_available.return_value = 45000
+        mock_connected_balance.return_value = (45000, 0)
         mock_account_retrieve.return_value = self._mock_account(payouts_enabled=False)
 
         response = self.client.post(self.payout_url, {'amount': '100.00'})
@@ -1677,37 +1729,40 @@ class FinancePayoutTests(TestCase):
         payout = Payout.objects.count()
         self.assertEqual(payout, 0)
 
-    @patch('tickets.views._compute_available_balance')
-    @patch('tickets.views._compute_settled_payout_balance')
-    @patch('tickets.views._get_stripe_platform_available_cents')
+    @patch('tickets.views._get_connected_balance_cents')
+    @patch('stripe.Account.retrieve')
+    def test_initiate_payout_rejected_when_exceeding_connected_balance(
+        self,
+        mock_account_retrieve,
+        mock_connected_balance,
+    ):
+        mock_connected_balance.return_value = (5000, 0)
+        mock_account_retrieve.return_value = self._mock_account(payouts_enabled=True)
+
+        response = self.client.post(self.payout_url, {'amount': '100.00'})
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(Payout.objects.count(), 0)
+
+    @patch('tickets.views._get_connected_balance_cents')
     @patch('stripe.Account.retrieve')
     @patch('stripe.Account.modify')
     @patch('stripe.Transfer.create_reversal')
     @patch('stripe.Payout.create')
     @patch('stripe.Transfer.create')
-    def test_initiate_payout_reverses_transfer_when_bank_payout_creation_fails(
+    def test_initiate_payout_marks_failed_when_bank_payout_creation_fails(
         self,
         mock_transfer_create,
         mock_payout_create,
         mock_create_reversal,
         mock_account_modify,
         mock_account_retrieve,
-        mock_platform_available,
-        mock_settled_balance,
-        mock_available_balance,
+        mock_connected_balance,
     ):
         import stripe as stripe_lib
 
-        mock_available_balance.return_value = (
-            Decimal('500.00'),
-            Decimal('50.00'),
-            Decimal('0.00'),
-            Decimal('450.00'),
-        )
-        mock_settled_balance.return_value = Decimal('450.00')
-        mock_platform_available.return_value = 45000
+        mock_connected_balance.return_value = (45000, 0)
         mock_account_retrieve.return_value = self._mock_account(payouts_enabled=True)
-        mock_transfer_create.return_value = MagicMock(id='tr_fail')
         mock_payout_create.side_effect = stripe_lib.error.InvalidRequestError('bank unavailable', 'amount')
 
         response = self.client.post(self.payout_url, {'amount': '100.00'})
@@ -1715,9 +1770,11 @@ class FinancePayoutTests(TestCase):
         self.assertEqual(response.status_code, 302)
         payout = Payout.objects.get(organization=self.org)
         self.assertEqual(payout.status, Payout.Status.FAILED)
-        self.assertEqual(payout.stripe_transfer_id, 'tr_fail')
+        self.assertIn('Stripe error', payout.notes)
         self.assertIsNone(payout.stripe_payout_id)
-        mock_create_reversal.assert_called_once()
+        # No transfer is involved anymore, so nothing to reverse on failure.
+        mock_transfer_create.assert_not_called()
+        mock_create_reversal.assert_not_called()
 
     @patch('stripe.Webhook.construct_event')
     def test_connect_webhook_matches_by_stripe_payout_id_with_multiple_pending_payouts(self, mock_construct):
@@ -1832,24 +1889,21 @@ class FinancePayoutTests(TestCase):
         self.assertEqual(target.stripe_payout_id, 'po_target')
 
     @patch('stripe.Webhook.construct_event')
-    def test_connect_webhook_matches_oldest_open_payout_by_amount(self, mock_construct):
-        first = Payout.objects.create(
-            organization=self.org,
-            amount=Decimal('25.00'),
-            status=Payout.Status.PENDING,
-        )
-        second = Payout.objects.create(
+    def test_connect_webhook_records_organizer_initiated_payout(self, mock_construct):
+        # A Cue payout with the same amount must NOT be claimed by an
+        # organizer-initiated Express Dashboard payout (no amount matching).
+        existing = Payout.objects.create(
             organization=self.org,
             amount=Decimal('25.00'),
             status=Payout.Status.PENDING,
         )
         mock_construct.return_value = {
-            'type': 'payout.updated',
+            'type': 'payout.created',
             'account': self.org.stripe_account_id,
             'data': {
                 'object': {
-                    'id': 'po_amount_match',
-                    'status': 'in_transit',
+                    'id': 'po_organizer',
+                    'status': 'pending',
                     'amount': 2500,
                     'metadata': {},
                 }
@@ -1864,16 +1918,91 @@ class FinancePayoutTests(TestCase):
         )
 
         self.assertEqual(response.status_code, 200)
-        first.refresh_from_db()
-        second.refresh_from_db()
-        self.assertEqual(first.status, Payout.Status.IN_TRANSIT)
-        self.assertEqual(first.stripe_payout_id, 'po_amount_match')
-        self.assertEqual(second.status, Payout.Status.PENDING)
-        self.assertIsNone(second.stripe_payout_id)
+        existing.refresh_from_db()
+        self.assertEqual(existing.status, Payout.Status.PENDING)
+        self.assertIsNone(existing.stripe_payout_id)
 
+        recorded = Payout.objects.get(stripe_payout_id='po_organizer')
+        self.assertEqual(recorded.organization, self.org)
+        self.assertEqual(recorded.amount, Decimal('25.00'))
+        self.assertEqual(recorded.status, Payout.Status.PENDING)
+        self.assertEqual(recorded.origin, Payout.Origin.STRIPE_DASHBOARD)
+        self.assertIsNone(recorded.initiated_by)
+        self.assertEqual(recorded.notes, 'Initiated via Stripe')
+
+    @patch('stripe.Webhook.construct_event')
+    def test_connect_webhook_organizer_payout_duplicate_delivery_is_idempotent(self, mock_construct):
+        event_payload = {
+            'type': 'payout.created',
+            'account': self.org.stripe_account_id,
+            'data': {
+                'object': {
+                    'id': 'po_dup',
+                    'status': 'pending',
+                    'amount': 1200,
+                    'metadata': {},
+                }
+            },
+        }
+        mock_construct.return_value = event_payload
+
+        for _ in range(2):
+            response = self.client.post(
+                self.connect_webhook_url,
+                data='{}',
+                content_type='application/json',
+                HTTP_STRIPE_SIGNATURE='sig_test',
+            )
+            self.assertEqual(response.status_code, 200)
+
+        self.assertEqual(Payout.objects.filter(stripe_payout_id='po_dup').count(), 1)
+
+        # A later lifecycle event advances the webhook-created row.
+        event_payload['data']['object']['status'] = 'paid'
+        event_payload['type'] = 'payout.paid'
+        response = self.client.post(
+            self.connect_webhook_url,
+            data='{}',
+            content_type='application/json',
+            HTTP_STRIPE_SIGNATURE='sig_test',
+        )
+        self.assertEqual(response.status_code, 200)
+        recorded = Payout.objects.get(stripe_payout_id='po_dup')
+        self.assertEqual(recorded.status, Payout.Status.COMPLETED)
+
+    @patch('stripe.Webhook.construct_event')
+    def test_connect_webhook_unknown_account_returns_200(self, mock_construct):
+        mock_construct.return_value = {
+            'type': 'payout.created',
+            'account': 'acct_does_not_exist',
+            'data': {
+                'object': {
+                    'id': 'po_unknown_acct',
+                    'status': 'pending',
+                    'amount': 500,
+                    'metadata': {},
+                }
+            },
+        }
+
+        response = self.client.post(
+            self.connect_webhook_url,
+            data='{}',
+            content_type='application/json',
+            HTTP_STRIPE_SIGNATURE='sig_test',
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(Payout.objects.count(), 0)
+
+    @patch('stripe.Balance.retrieve')
     @patch('stripe.Account.retrieve')
-    def test_finance_history_renders_processing_for_pending_payouts(self, mock_account_retrieve):
+    def test_finance_history_renders_processing_for_pending_payouts(self, mock_account_retrieve, mock_balance_retrieve):
         mock_account_retrieve.return_value = self._mock_account(payouts_enabled=True)
+        mock_balance_retrieve.return_value = MagicMock(
+            available=[MagicMock(amount=10000, currency='usd')],
+            pending=[MagicMock(amount=2500, currency='usd')],
+        )
         Payout.objects.create(
             organization=self.org,
             amount=Decimal('42.00'),
@@ -1886,6 +2015,50 @@ class FinancePayoutTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, 'Processing')
         self.assertNotContains(response, 'Queued')
+
+    @patch('stripe.Balance.retrieve')
+    @patch('stripe.Account.retrieve')
+    def test_finance_overview_shows_connected_balance_figures(self, mock_account_retrieve, mock_balance_retrieve):
+        mock_account_retrieve.return_value = self._mock_account(payouts_enabled=True)
+        mock_balance_retrieve.return_value = MagicMock(
+            available=[MagicMock(amount=13415, currency='usd')],
+            pending=[MagicMock(amount=8639, currency='usd')],
+        )
+
+        response = self.client.get(self.finance_url)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context['stripe_available'], Decimal('134.15'))
+        self.assertEqual(response.context['settling_balance'], Decimal('86.39'))
+        mock_balance_retrieve.assert_called_once_with(stripe_account=self.org.stripe_account_id)
+
+    @patch('stripe.Balance.retrieve')
+    @patch('stripe.Account.retrieve')
+    def test_finance_overview_renders_when_balance_api_fails(self, mock_account_retrieve, mock_balance_retrieve):
+        # REGRESSION-CRITICAL: a Stripe outage must never 500 the Finance page.
+        mock_account_retrieve.return_value = self._mock_account(payouts_enabled=True)
+        mock_balance_retrieve.side_effect = Exception('stripe down')
+
+        response = self.client.get(self.finance_url)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIsNone(response.context['stripe_available'])
+
+    @patch('stripe.Balance.retrieve')
+    @patch('stripe.Account.retrieve')
+    def test_finance_overview_clamps_negative_connected_available(self, mock_account_retrieve, mock_balance_retrieve):
+        # Available can go negative after a refund clawback that follows a
+        # withdrawal — display clamps at zero.
+        mock_account_retrieve.return_value = self._mock_account(payouts_enabled=True)
+        mock_balance_retrieve.return_value = MagicMock(
+            available=[MagicMock(amount=-1500, currency='usd')],
+            pending=[MagicMock(amount=0, currency='usd')],
+        )
+
+        response = self.client.get(self.finance_url)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context['stripe_available'], Decimal('0.00'))
 
     @patch('stripe.Account.retrieve')
     @patch('stripe.Account.modify')
@@ -2546,9 +2719,144 @@ class CustomerSegmentationViewTests(TestCase):
         response = self.client.get(reverse('tickets:customer_detail', args=[customer.id]))
 
         self.assertEqual(response.status_code, 200)
-        self.assertContains(response, 'Behavior Profile')
+        self.assertContains(response, 'Behavior')
         self.assertContains(response, 'Steady Repeat')
         self.assertContains(response, 'Average days between orders')
+
+
+class CustomerDetailMarketingTabTests(TestCase):
+    """The Marketing Activity tab surfaces per-customer native-SMS delivery state."""
+
+    def setUp(self):
+        self.client = Client()
+        self.org = Organization.objects.create(
+            name='SMS Org', slug='sms-org', sms_marketing_enabled=True,
+        )
+        self.user = User.objects.create_user(
+            username='smsuser', email='sms@test.com', password='testpass123',
+        )
+        UserProfile.objects.create(
+            user=self.user, organization=self.org, org_role=UserProfile.OrgRole.OWNER,
+        )
+        self.client.login(username='sms@test.com', password='testpass123')
+        self.client.get(reverse('tickets:home'))
+        self.customer = Customer.objects.create(
+            organization=self.org,
+            email='sms-customer@example.com',
+            name='SMS Customer',
+            phone='+15551234567',
+            lifetime_value=Decimal('50.00'),
+        )
+
+    def _make_message(self, **kwargs):
+        from .models import SMSCampaign, SMSMessageRecipient
+        campaign = kwargs.pop('campaign', None) or SMSCampaign.objects.create(
+            organization=self.org, name='Summer Promo', body='Tickets on sale now',
+        )
+        defaults = dict(
+            campaign=campaign,
+            customer=self.customer,
+            phone=self.customer.phone,
+            status=SMSMessageRecipient.Status.DELIVERED,
+            sent_at=timezone.now() - timedelta(hours=2),
+            delivered_at=timezone.now() - timedelta(hours=2),
+        )
+        defaults.update(kwargs)
+        return SMSMessageRecipient.objects.create(**defaults)
+
+    def test_marketing_tab_lists_sms_activity(self):
+        self._make_message(first_clicked_at=timezone.now() - timedelta(hours=1), click_count=2)
+
+        response = self.client.get(reverse('tickets:customer_detail', args=[self.customer.id]))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context['sms_stats']['total'], 1)
+        self.assertEqual(response.context['sms_stats']['delivered'], 1)
+        self.assertEqual(response.context['sms_stats']['clicked'], 1)
+        self.assertContains(response, 'Marketing Activity')
+        self.assertContains(response, 'Summer Promo')
+        self.assertContains(response, 'Delivered')
+
+    def test_marketing_tab_empty_state(self):
+        response = self.client.get(reverse('tickets:customer_detail', args=[self.customer.id]))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context['sms_stats']['total'], 0)
+        self.assertContains(response, 'No marketing messages sent to this customer yet.')
+
+    def test_marketing_tab_hidden_when_feature_disabled(self):
+        self.org.sms_marketing_enabled = False
+        self.org.save(update_fields=['sms_marketing_enabled'])
+
+        response = self.client.get(reverse('tickets:customer_detail', args=[self.customer.id]))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertNotContains(response, 'Marketing Activity')
+
+
+class SMSBroadcastAudienceTests(TestCase):
+    """The SMS tab's broadcast-audience chart + by-market breakdown combine native
+    SMS campaigns and external SlickText broadcasts, grouped by the linked event's
+    venue city (the 'market')."""
+
+    def setUp(self):
+        from .models import SMSCampaign, EventSMSCampaign
+        self.client = Client()
+        self.org = Organization.objects.create(
+            name='SMS Aud Org', slug='sms-aud-org', sms_marketing_enabled=True,
+        )
+        self.user = User.objects.create_user(
+            username='audhost', email='aud@test.com', password='testpass123',
+        )
+        UserProfile.objects.create(
+            user=self.user, organization=self.org, org_role=UserProfile.OrgRole.OWNER,
+        )
+        self.client.login(username='aud@test.com', password='testpass123')
+        self.client.get(reverse('tickets:home'))  # warm org cache
+
+        self.venue = Venue.objects.create(organization=self.org, name='Echo', city='Austin')
+        self.event = Event.objects.create(
+            organization=self.org, name='Austin Show', venue=self.venue,
+            start_date=date(2026, 6, 1), start_time=time(20, 0, 0),
+        )
+        # Native SMS campaign (sent), event-scoped -> Austin market.
+        SMSCampaign.objects.create(
+            organization=self.org, name='Native Blast', body='Tickets!',
+            event=self.event, status=SMSCampaign.Status.SENT,
+            sent_at=timezone.now() - timedelta(days=3), audience_size=120,
+        )
+        # External SlickText broadcast (confirmed) on the same event -> Austin market.
+        EventSMSCampaign.objects.create(
+            event=self.event, source='slicktext', external_id='st-1',
+            name='SlickText Blast', send_time=timezone.now() - timedelta(days=5),
+            audience_size=80, confirmed_at=timezone.now(),
+        )
+        self.url = reverse('tickets:sms_campaign_list')
+
+    def test_breakdown_sums_audience_across_sources(self):
+        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, 200)
+        breakdown = {r['market']: r for r in response.context['market_breakdown']}
+        self.assertIn('Austin', breakdown)
+        self.assertEqual(breakdown['Austin']['broadcasts'], 2)
+        self.assertEqual(breakdown['Austin']['total_audience'], 200)
+        self.assertEqual(breakdown['Austin']['avg_audience'], 100)
+        self.assertIn('Austin', response.context['market_choices'])
+
+    def test_market_filter_scopes_chart_points(self):
+        response = self.client.get(self.url, {'market': 'Austin'})
+        self.assertEqual(response.status_code, 200)
+        points = json.loads(response.context['audience_points_json'])
+        self.assertEqual(len(points['native']), 1)
+        self.assertEqual(len(points['slicktext']), 1)
+        self.assertEqual(points['native'][0]['market'], 'Austin')
+        self.assertEqual(points['native'][0]['y'], 120)
+        self.assertEqual(response.context['selected_market'], 'Austin')
+
+    def test_unknown_market_falls_back_to_all(self):
+        response = self.client.get(self.url, {'market': 'Nowhere'})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context['selected_market'], '')
 
 
 class EventCachedStatsTest(TestCase):
@@ -2994,14 +3302,14 @@ class EventDetailAllocationChartTest(TestCase):
     def test_compute_event_stats_returns_direct_allocation_chart_data(self):
         from tickets.views import _compute_event_stats
 
-        SaleableTicketType.objects.create(
+        ga = SaleableTicketType.objects.create(
             event=self.event,
             name='General Admission',
             price=Decimal('25.00'),
             quantity_limit=100,
             quantity_sold=25,
         )
-        SaleableTicketType.objects.create(
+        vip = SaleableTicketType.objects.create(
             event=self.event,
             name='VIP',
             price=Decimal('75.00'),
@@ -3015,6 +3323,7 @@ class EventDetailAllocationChartTest(TestCase):
             stats['ticket_type_allocation_charts'],
             [
                 {
+                    'tt_id': str(ga.id),
                     'label': 'General Admission',
                     'sold': 25,
                     'allocated': 100,
@@ -3023,6 +3332,7 @@ class EventDetailAllocationChartTest(TestCase):
                     'is_unlimited': False,
                 },
                 {
+                    'tt_id': str(vip.id),
                     'label': 'VIP',
                     'sold': 3,
                     'allocated': None,
@@ -3094,6 +3404,115 @@ class EventDetailAllocationChartTest(TestCase):
         self.assertContains(response, 'Ticket Breakdown')
         self.assertContains(response, 'id="ticketBreakdownChart"')
         self.assertNotContains(response, 'Ticket Allocation')
+
+    def _make_order_with_types(self, type_names, *, name='Buyer'):
+        """Create an order with one Ticket per name in type_names."""
+        customer = Customer.objects.create(
+            organization=self.org,
+            email=f'{name.lower()}@example.com',
+            name=name,
+        )
+        order = TicketOrder.objects.create(
+            event=self.event,
+            customer=customer,
+            order_number=str(uuid.uuid4())[:12],
+            total_amount=Decimal('25.00'),
+            order_date=timezone.now(),
+        )
+        for tn in type_names:
+            Ticket.objects.create(ticket_order=order, ticket_type=tn, price=Decimal('25.00'))
+        return order
+
+    def test_ticket_type_orders_lists_only_orders_with_that_type(self):
+        ga = SaleableTicketType.objects.create(
+            event=self.event, name='General Admission',
+            price=Decimal('25.00'), quantity_limit=100, quantity_sold=2,
+        )
+        SaleableTicketType.objects.create(
+            event=self.event, name='VIP',
+            price=Decimal('75.00'), quantity_limit=50, quantity_sold=1,
+        )
+        ga_order = self._make_order_with_types(['General Admission'], name='GaBuyer')
+        vip_order = self._make_order_with_types(['VIP'], name='VipBuyer')
+        self._login()
+
+        response = self.client.get(
+            reverse('tickets:saleable_ticket_type_orders', args=[self.event.pk, ga.pk])
+        )
+
+        self.assertEqual(response.status_code, 200)
+        order_ids = {o.id for o in response.context['page_obj']}
+        self.assertIn(ga_order.id, order_ids)
+        self.assertNotIn(vip_order.id, order_ids)
+
+    def test_ticket_type_orders_dedupes_multi_ticket_order_and_counts_type(self):
+        ga = SaleableTicketType.objects.create(
+            event=self.event, name='General Admission',
+            price=Decimal('25.00'), quantity_limit=100, quantity_sold=3,
+        )
+        # One order with 2 GA + 1 VIP — should appear once, type_count == 2.
+        order = self._make_order_with_types(
+            ['General Admission', 'General Admission', 'VIP'], name='MixBuyer'
+        )
+        self._login()
+
+        response = self.client.get(
+            reverse('tickets:saleable_ticket_type_orders', args=[self.event.pk, ga.pk])
+        )
+
+        page = list(response.context['page_obj'])
+        self.assertEqual([o.id for o in page], [order.id])
+        self.assertEqual(page[0].type_count, 2)
+
+    def test_ticket_type_orders_is_paginated(self):
+        ga = SaleableTicketType.objects.create(
+            event=self.event, name='General Admission',
+            price=Decimal('25.00'), quantity_limit=None, quantity_sold=130,
+        )
+        for i in range(130):
+            self._make_order_with_types(['General Admission'], name=f'Buyer{i}')
+        self._login()
+
+        # Page 1 caps at the page size (100) and exposes a second page.
+        page1 = self.client.get(
+            reverse('tickets:saleable_ticket_type_orders', args=[self.event.pk, ga.pk])
+        )
+        self.assertEqual(page1.status_code, 200)
+        po = page1.context['page_obj']
+        self.assertEqual(po.paginator.count, 130)
+        self.assertEqual(po.paginator.num_pages, 2)
+        self.assertEqual(len(po.object_list), 100)
+        self.assertTrue(po.has_other_pages())
+        self.assertContains(page1, 'pagination')
+
+        # Page 2 holds the remaining orders.
+        page2 = self.client.get(
+            reverse('tickets:saleable_ticket_type_orders', args=[self.event.pk, ga.pk]) + '?page=2'
+        )
+        self.assertEqual(page2.status_code, 200)
+        self.assertEqual(len(page2.context['page_obj'].object_list), 30)
+
+    def test_ticket_type_orders_scoped_to_org(self):
+        other_org = Organization.objects.create(name='Other Org', slug='other-org')
+        other_venue = Venue.objects.create(
+            organization=other_org, name='Other Venue', city='Los Angeles',
+        )
+        other_event = Event.objects.create(
+            organization=other_org, name='Other Event', venue=other_venue,
+            start_date=date.today() + timedelta(days=7),
+            ticketing_type='direct', status='live',
+        )
+        other_tt = SaleableTicketType.objects.create(
+            event=other_event, name='General Admission',
+            price=Decimal('25.00'), quantity_limit=100,
+        )
+        self._login()
+
+        response = self.client.get(
+            reverse('tickets:saleable_ticket_type_orders', args=[other_event.pk, other_tt.pk])
+        )
+
+        self.assertEqual(response.status_code, 404)
 
 
 class EventDailyPageViewTest(TestCase):
@@ -7360,6 +7779,12 @@ class ScannerInPersonSellTests(TestCase):
         self.assertEqual(body['location_id'], 'tml_test_existing')
         pi_mock.assert_called_once()
         self.assertEqual(pi_mock.call_args.kwargs['stripe_account'], 'acct_test_sell')
+        # Direct charge: Cue's platform fee rides application_fee_amount,
+        # same fee-inclusive display formula as online checkout.
+        self.assertEqual(
+            pi_mock.call_args.kwargs['application_fee_amount'],
+            extract_fee_from_display_cents(5000),
+        )
 
     def test_terminal_payment_intent_returns_cached_location_id(self):
         """When the org already has a Terminal Location cached, the PI
@@ -7484,6 +7909,8 @@ class ScannerInPersonSellTests(TestCase):
     def test_sell_creates_in_person_order_with_no_checked_in_by(self):
         fake_pi = MagicMock()
         fake_pi.status = 'succeeded'
+        fake_pi.amount_received = 5000  # 2 x $25.00, Stripe-confirmed
+        fake_pi.application_fee_amount = 462
         with patch('stripe.PaymentIntent.retrieve', return_value=fake_pi) as retrieve_mock:
             res = self.client.post(
                 '/api/scanner/sell/',
@@ -7884,15 +8311,13 @@ class EnableTapToPayViewTests(TestCase):
     # ---- finance_overview context ----
 
     @patch('tickets.views._compute_available_balance')
-    @patch('tickets.views._compute_settled_payout_balance')
-    @patch('tickets.views._get_stripe_platform_available_cents')
+    @patch('tickets.views._get_connected_balance_cents')
     @patch('stripe.Account.retrieve')
     def test_finance_overview_context_pending(
-        self, mock_retrieve, mock_platform, mock_settled, mock_available,
+        self, mock_retrieve, mock_connected, mock_available,
     ):
         mock_available.return_value = (Decimal('0'), Decimal('0'), Decimal('0'), Decimal('0'))
-        mock_settled.return_value = Decimal('0')
-        mock_platform.return_value = 0
+        mock_connected.return_value = (0, 0)
         mock_retrieve.return_value = self._mock_account(ttp='inactive')
 
         res = self.client.get(self.finance_url)
@@ -7902,15 +8327,13 @@ class EnableTapToPayViewTests(TestCase):
         self.assertEqual(ttp_ui['country'], 'US')
 
     @patch('tickets.views._compute_available_balance')
-    @patch('tickets.views._compute_settled_payout_balance')
-    @patch('tickets.views._get_stripe_platform_available_cents')
+    @patch('tickets.views._get_connected_balance_cents')
     @patch('stripe.Account.retrieve')
     def test_finance_overview_context_enabled(
-        self, mock_retrieve, mock_platform, mock_settled, mock_available,
+        self, mock_retrieve, mock_connected, mock_available,
     ):
         mock_available.return_value = (Decimal('0'), Decimal('0'), Decimal('0'), Decimal('0'))
-        mock_settled.return_value = Decimal('0')
-        mock_platform.return_value = 0
+        mock_connected.return_value = (0, 0)
         mock_retrieve.return_value = self._mock_account(ttp='active')
 
         res = self.client.get(self.finance_url)
@@ -7918,15 +8341,13 @@ class EnableTapToPayViewTests(TestCase):
         self.assertEqual(res.context['tap_to_pay_ui']['status'], 'enabled')
 
     @patch('tickets.views._compute_available_balance')
-    @patch('tickets.views._compute_settled_payout_balance')
-    @patch('tickets.views._get_stripe_platform_available_cents')
+    @patch('tickets.views._get_connected_balance_cents')
     @patch('stripe.Account.retrieve')
     def test_finance_overview_context_unsupported_country(
-        self, mock_retrieve, mock_platform, mock_settled, mock_available,
+        self, mock_retrieve, mock_connected, mock_available,
     ):
         mock_available.return_value = (Decimal('0'), Decimal('0'), Decimal('0'), Decimal('0'))
-        mock_settled.return_value = Decimal('0')
-        mock_platform.return_value = 0
+        mock_connected.return_value = (0, 0)
         mock_retrieve.return_value = self._mock_account(country='ZW', ttp='active')
 
         res = self.client.get(self.finance_url)
@@ -8699,8 +9120,8 @@ class FinanceBalanceComputationTests(TestCase):
         # No order to read refunds from: treated as 0 refunded, no crash.
         self.assertEqual(available, Decimal('47.50'))
 
-    def test_settled_balance_applies_refund_and_settlement_window(self):
-        from tickets.views import _compute_settled_payout_balance
+    def test_legacy_settled_balance_applies_refund_and_settlement_window(self):
+        from tickets.views import _compute_legacy_settled_balance
         # Unsettled: available_on in the future — excluded entirely.
         self._create_session(
             10000, 500, StripeCheckoutSession.Status.COMPLETED,
@@ -8715,23 +9136,53 @@ class FinanceBalanceComputationTests(TestCase):
             organization=self.org,
             amount=Decimal('20.00'),
             status=Payout.Status.COMPLETED,
+            origin=Payout.Origin.LEGACY_TRANSFER,
         )
 
-        settled = _compute_settled_payout_balance(self.org)
+        settled = _compute_legacy_settled_balance(self.org)
 
         # (50.00 - 2.50 - 10.00) - 20.00 payout = 17.50
         self.assertEqual(settled, Decimal('17.50'))
 
-    def test_settled_balance_floors_at_zero(self):
-        from tickets.views import _compute_settled_payout_balance
+    def test_legacy_settled_balance_floors_at_zero(self):
+        from tickets.views import _compute_legacy_settled_balance
         self._create_session(5000, 250, StripeCheckoutSession.Status.COMPLETED)
         Payout.objects.create(
             organization=self.org,
             amount=Decimal('100.00'),
             status=Payout.Status.COMPLETED,
+            origin=Payout.Origin.MIGRATION,
         )
 
-        self.assertEqual(_compute_settled_payout_balance(self.org), Decimal('0.00'))
+        self.assertEqual(_compute_legacy_settled_balance(self.org), Decimal('0.00'))
+        # Raw (unclamped) value surfaces the negative for the true-up dry-run.
+        self.assertEqual(
+            _compute_legacy_settled_balance(self.org, clamp=False), Decimal('-52.50'),
+        )
+
+    def test_legacy_settled_balance_ignores_connected_pool(self):
+        from tickets.views import _compute_legacy_settled_balance
+        # Platform-flow session: the only thing that counts.
+        self._create_session(5000, 250, StripeCheckoutSession.Status.COMPLETED)
+        # Destination/direct sessions live in the connected account — excluded.
+        dest = self._create_session(8000, 400, StripeCheckoutSession.Status.COMPLETED)
+        dest.charge_flow = StripeCheckoutSession.ChargeFlow.DESTINATION
+        dest.save(update_fields=['charge_flow'])
+        direct = self._create_session(6000, 300, StripeCheckoutSession.Status.COMPLETED)
+        direct.charge_flow = StripeCheckoutSession.ChargeFlow.DIRECT
+        direct.save(update_fields=['charge_flow'])
+        # Connected-pool payouts (in-app + Express Dashboard) never deduct
+        # from the legacy pool.
+        Payout.objects.create(
+            organization=self.org, amount=Decimal('10.00'),
+            status=Payout.Status.COMPLETED, origin=Payout.Origin.CUE,
+        )
+        Payout.objects.create(
+            organization=self.org, amount=Decimal('5.00'),
+            status=Payout.Status.COMPLETED, origin=Payout.Origin.STRIPE_DASHBOARD,
+        )
+
+        self.assertEqual(_compute_legacy_settled_balance(self.org), Decimal('47.50'))
 
 
 class FinanceOverviewBalanceTests(TestCase):
@@ -8807,43 +9258,15 @@ class FinanceOverviewBalanceTests(TestCase):
         }.get(key, default)
         return account
 
-    @patch('tickets.views._get_stripe_platform_available_cents')
+    @patch('tickets.views._get_connected_balance_cents')
     @patch('stripe.Account.retrieve')
-    def test_negative_platform_balance_clamped(self, mock_retrieve, mock_platform):
+    def test_connected_balance_drives_cards(self, mock_retrieve, mock_connected):
+        # The connected account balance is the source of truth: Ready to
+        # Withdraw = available, Settling = pending — independent of ledger.
         mock_retrieve.return_value = self._mock_account()
-        mock_platform.return_value = -699  # platform balance went negative after refunds
+        mock_connected.return_value = (5150, 2850)
 
-        self._create_session(10000, 340)  # settled (NULL available_on): net 96.60
-        Payout.objects.create(
-            organization=self.org, amount=Decimal('3.00'), status=Payout.Status.COMPLETED,
-        )
-
-        res = self.client.get(self.finance_url)
-        self.assertEqual(res.status_code, 200)
-
-        # Never a negative Ready to Withdraw, never Settling > Sales.
-        self.assertEqual(res.context['stripe_available'], Decimal('0.00'))
-        self.assertEqual(res.context['net_sales'], Decimal('96.60'))
-        self.assertEqual(res.context['settling_balance'], Decimal('93.60'))
-        self.assertLessEqual(res.context['settling_balance'], res.context['net_sales'])
-
-    @patch('tickets.views._get_stripe_platform_available_cents')
-    @patch('stripe.Account.retrieve')
-    def test_sales_identity_holds(self, mock_retrieve, mock_platform):
-        mock_retrieve.return_value = self._mock_account()
-        mock_platform.return_value = 100_000_000  # platform balance doesn't bind
-
-        # Settled completed session: net 47.50
-        self._create_session(5000, 250)
-        # Unsettled session: net 28.50, still settling
-        self._create_session(
-            3000, 150, available_on=timezone.now() + timedelta(days=3),
-        )
-        # Settled partial refund: net 20.00 - 1.00 - 5.00 = 14.00
-        self._create_session(
-            2000, 100, status=StripeCheckoutSession.Status.PARTIALLY_REFUNDED,
-            refunded_amount=Decimal('5.00'),
-        )
+        self._create_session(5000, 250)  # ledger Sales: net 47.50
         Payout.objects.create(
             organization=self.org, amount=Decimal('10.00'), status=Payout.Status.COMPLETED,
         )
@@ -8851,18 +9274,27 @@ class FinanceOverviewBalanceTests(TestCase):
         res = self.client.get(self.finance_url)
         self.assertEqual(res.status_code, 200)
 
-        net_sales = res.context['net_sales']
-        paid_out = res.context['paid_out']
-        settling = res.context['settling_balance']
-        ready = res.context['stripe_available']
+        self.assertEqual(res.context['net_sales'], Decimal('47.50'))
+        self.assertEqual(res.context['paid_out'], Decimal('10.00'))
+        self.assertEqual(res.context['stripe_available'], Decimal('51.50'))
+        self.assertEqual(res.context['settling_balance'], Decimal('28.50'))
 
-        self.assertEqual(net_sales, Decimal('90.00'))
-        self.assertEqual(paid_out, Decimal('10.00'))
-        self.assertEqual(ready, Decimal('51.50'))      # settled net 61.50 - 10.00 paid out
-        self.assertEqual(settling, Decimal('28.50'))   # the unsettled session
-        self.assertEqual(net_sales, paid_out + settling + ready)
-        self.assertGreaterEqual(ready, Decimal('0.00'))
-        self.assertGreaterEqual(settling, Decimal('0.00'))
+    @patch('tickets.views._get_connected_balance_cents')
+    @patch('stripe.Account.retrieve')
+    def test_negative_connected_balance_clamped(self, mock_retrieve, mock_connected):
+        # Refund clawback after a withdrawal can push the connected balance
+        # negative — never render a negative Ready to Withdraw or Settling.
+        mock_retrieve.return_value = self._mock_account()
+        mock_connected.return_value = (-699, -100)
+
+        self._create_session(10000, 340)
+
+        res = self.client.get(self.finance_url)
+        self.assertEqual(res.status_code, 200)
+
+        self.assertEqual(res.context['stripe_available'], Decimal('0.00'))
+        self.assertEqual(res.context['settling_balance'], Decimal('0.00'))
+        self.assertEqual(res.context['net_sales'], Decimal('96.60'))
 
 
 class ChargeRefundedWebhookTests(TestCase):
@@ -9725,7 +10157,7 @@ class CustomersBulkTagTests(TestCase):
         resp = self.client.get(reverse('tickets:customer_list'))
         self.assertEqual(resp.status_code, 200)
         self.assertContains(resp, 'id="custSelectAllRows"')
-        self.assertContains(resp, 'class="cust-checkbox"')
+        self.assertContains(resp, 'cust-checkbox')
 
     def test_tag_existing(self):
         resp = self.client.post(self.url, {
@@ -11020,11 +11452,14 @@ class LoyaltyFeatureFlagTests(TestCase):
         self._login()
         resp = self.client.get(reverse('tickets:customer_detail', args=[self.customer.id]))
         self.assertEqual(resp.status_code, 200)
-        self.assertNotContains(resp, 'Loyalty Tier')
+        # The loyalty block renders the program name only when the flag is on;
+        # assert on that (stable across the customer-detail label redesign) rather
+        # than a heading string the redesign changed.
+        self.assertNotContains(resp, self.program.name)
         self.org.loyalty_feature_enabled = True
         self.org.save(update_fields=['loyalty_feature_enabled'])
         resp = self.client.get(reverse('tickets:customer_detail', args=[self.customer.id]))
-        self.assertContains(resp, 'Loyalty Tier')
+        self.assertContains(resp, self.program.name)
 
 
 class SurveyResponseDetailViewTests(TestCase):
@@ -11459,3 +11894,2102 @@ class LoyaltyPointsRecomputeTests(TestCase):
         resp = self.client.get(reverse('tickets:loyalty_program_edit', args=[self.program.id]))
         self.assertContains(resp, 'affects')
         self.assertContains(resp, 'future orders only')
+
+
+class DestinationChargeCreateTests(TestCase):
+    """create_payment_intent: organizer net rides transfer_data for onboarded orgs."""
+
+    def setUp(self):
+        self.client = Client()
+        self.org = Organization.objects.create(
+            name='Dest Charge Org',
+            slug='dest-charge-org',
+            stripe_account_id='acct_dest_test',
+            stripe_onboarding_complete=True,
+        )
+        self.venue = Venue.objects.create(organization=self.org, name='Venue', city='City')
+        self.event = Event.objects.create(
+            organization=self.org, name='Dest Event', venue=self.venue,
+            start_date=date.today() + timedelta(days=14),
+            ticketing_type='direct',
+            status='live',
+        )
+        self.ticket_type = SaleableTicketType.objects.create(
+            event=self.event, name='General', price=Decimal('25.00'),
+            quantity_limit=100, quantity_sold=0,
+        )
+        self.user = User.objects.create_user(
+            username='dest-buyer', email='dest-buyer@example.com',
+            password='testpass123', first_name='Dest', last_name='Buyer',
+        )
+        self.client.login(username='dest-buyer@example.com', password='testpass123')
+        self._set_cart(qty=2)
+        self.url = reverse('tickets:create_payment_intent', args=[self.event.public_id])
+
+    def _set_cart(self, *, qty):
+        session = self.client.session
+        session[f'cart_{self.event.id}'] = [{
+            'saleable_ticket_type_id': str(self.ticket_type.id),
+            'name': self.ticket_type.name,
+            'price': '25.00',
+            'quantity': qty,
+            'tier_id': None,
+            'tier_name': None,
+        }]
+        session.save()
+
+    @patch('stripe.PaymentIntent.create')
+    def test_onboarded_org_gets_destination_charge(self, mock_pi_create):
+        mock_pi_create.return_value = MagicMock(id='pi_dest_1', client_secret='cs_dest_1')
+
+        response = self.client.post(self.url, data='{}', content_type='application/json')
+
+        self.assertEqual(response.status_code, 200)
+        fee_cents = extract_fee_from_display_cents(5000)
+        kwargs = mock_pi_create.call_args.kwargs
+        self.assertEqual(kwargs['transfer_data'], {
+            'destination': 'acct_dest_test',
+            'amount': 5000 - fee_cents,
+        })
+        session = StripeCheckoutSession.objects.get(stripe_session_id='pi_dest_1')
+        self.assertEqual(session.charge_flow, StripeCheckoutSession.ChargeFlow.DESTINATION)
+        self.assertEqual(session.platform_fee_cents, fee_cents)
+
+    @patch('stripe.PaymentIntent.create')
+    def test_unonboarded_org_falls_back_to_platform_charge(self, mock_pi_create):
+        self.org.stripe_onboarding_complete = False
+        self.org.save(update_fields=['stripe_onboarding_complete'])
+        mock_pi_create.return_value = MagicMock(id='pi_plat_1', client_secret='cs_plat_1')
+
+        response = self.client.post(self.url, data='{}', content_type='application/json')
+
+        self.assertEqual(response.status_code, 200)
+        self.assertNotIn('transfer_data', mock_pi_create.call_args.kwargs)
+        session = StripeCheckoutSession.objects.get(stripe_session_id='pi_plat_1')
+        self.assertEqual(session.charge_flow, StripeCheckoutSession.ChargeFlow.PLATFORM)
+
+
+class DestinationTransferCaptureTests(TestCase):
+    """Fulfillment captures the destination charge's transfer onto the session."""
+
+    def setUp(self):
+        self.client = Client()
+        self.org = Organization.objects.create(name='Capture Org', slug='capture-org')
+        self.venue = Venue.objects.create(organization=self.org, name='Venue', city='City')
+        self.event = Event.objects.create(
+            organization=self.org, name='Capture Event', venue=self.venue,
+            start_date=date(2025, 6, 15), start_time=time(19, 0),
+        )
+        self.ticket_type = SaleableTicketType.objects.create(
+            event=self.event, name='General', price=Decimal('25.00'),
+            quantity_limit=100, quantity_sold=0,
+        )
+        self.session = StripeCheckoutSession.objects.create(
+            event=self.event,
+            organization=self.org,
+            stripe_session_id='pi_capture_1',
+            stripe_payment_intent_id='pi_capture_1',
+            buyer_email='buyer@example.com',
+            buyer_name='Buyer',
+            status=StripeCheckoutSession.Status.PENDING,
+            line_items_snapshot=[{
+                'saleable_ticket_type_id': str(self.ticket_type.id),
+                'name': 'General', 'price': '25.00', 'quantity': 2,
+            }],
+            amount_total_cents=5000,
+            platform_fee_cents=462,
+            charge_flow=StripeCheckoutSession.ChargeFlow.DESTINATION,
+        )
+        self.webhook_url = reverse('tickets:stripe_webhook')
+
+    @patch('stripe.Transfer.retrieve')
+    @patch('stripe.Charge.retrieve')
+    @patch('stripe.Webhook.construct_event')
+    def test_webhook_persists_transfer_and_settlement(
+        self, mock_construct, mock_charge_retrieve, mock_transfer_retrieve,
+    ):
+        charge = MagicMock()
+        charge.transfer = 'tr_capture_1'
+        charge.balance_transaction = MagicMock(available_on=1750000000)
+        mock_charge_retrieve.return_value = charge
+        mock_transfer_retrieve.return_value = MagicMock(amount=4538)
+        mock_construct.return_value = {
+            'type': 'payment_intent.succeeded',
+            'data': {'object': {
+                'id': 'pi_capture_1',
+                'amount_received': 5000,
+                'latest_charge': 'ch_capture_1',
+            }},
+        }
+
+        response = self.client.post(
+            self.webhook_url,
+            data='{}',
+            content_type='application/json',
+            HTTP_STRIPE_SIGNATURE='sig_test',
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.session.refresh_from_db()
+        self.assertEqual(self.session.status, StripeCheckoutSession.Status.COMPLETED)
+        self.assertEqual(self.session.stripe_transfer_id, 'tr_capture_1')
+        self.assertEqual(self.session.transfer_cents, 4538)
+        self.assertEqual(self.session.charge_flow, StripeCheckoutSession.ChargeFlow.DESTINATION)
+        self.assertIsNotNone(self.session.available_on)
+        mock_transfer_retrieve.assert_called_once_with('tr_capture_1')
+
+
+class TransferReversalTests(TestCase):
+    """Refund clawback: exact, Stripe-authoritative transfer reversals."""
+
+    def setUp(self):
+        self.client = Client()
+        self.org = Organization.objects.create(name='Reversal Org', slug='reversal-org')
+        self.venue = Venue.objects.create(organization=self.org, name='Venue', city='City')
+        self.event = Event.objects.create(
+            organization=self.org, name='Reversal Event', venue=self.venue,
+            start_date=date.today() + timedelta(days=14),
+            ticketing_type='direct',
+        )
+        self.ticket_type = SaleableTicketType.objects.create(
+            event=self.event, name='General', price=Decimal('50.00'),
+            quantity_limit=100, quantity_sold=2,
+        )
+        self.customer = Customer.objects.create(
+            organization=self.org, email='buyer@example.com', name='Buyer',
+        )
+        self.order = TicketOrder.objects.create(
+            event=self.event,
+            customer=self.customer,
+            order_number='REV-001',
+            order_date=timezone.now(),
+            total_amount=Decimal('100.00'),
+        )
+        self.session = StripeCheckoutSession.objects.create(
+            event=self.event,
+            organization=self.org,
+            stripe_session_id='pi_reversal_1',
+            stripe_payment_intent_id='pi_reversal_1',
+            buyer_email='buyer@example.com',
+            buyer_name='Buyer',
+            status=StripeCheckoutSession.Status.COMPLETED,
+            amount_total_cents=10000,
+            platform_fee_cents=500,
+            charge_flow=StripeCheckoutSession.ChargeFlow.DESTINATION,
+            stripe_transfer_id='tr_reversal_1',
+            transfer_cents=9500,
+            line_items_snapshot=[{
+                'saleable_ticket_type_id': str(self.ticket_type.id),
+                'name': 'General', 'price': '50.00', 'quantity': 2,
+            }],
+            ticket_order=self.order,
+        )
+        self.webhook_url = reverse('tickets:stripe_webhook')
+
+    def _post_refund_event(self, mock_construct, *, amount_refunded, refunded,
+                           payment_intent='pi_reversal_1', transfer='tr_reversal_1'):
+        obj = {
+            'id': 'ch_reversal',
+            'payment_intent': payment_intent,
+            'amount_refunded': amount_refunded,
+            'refunded': refunded,
+        }
+        if transfer:
+            obj['transfer'] = transfer
+        mock_construct.return_value = {
+            'type': 'charge.refunded',
+            'data': {'object': obj},
+        }
+        return self.client.post(
+            self.webhook_url,
+            data='{}',
+            content_type='application/json',
+            HTTP_STRIPE_SIGNATURE='sig_test',
+        )
+
+    def _mock_transfer(self, amount=9500, amount_reversed=0):
+        return MagicMock(amount=amount, amount_reversed=amount_reversed)
+
+    @patch('stripe.Transfer.create_reversal')
+    @patch('stripe.Transfer.retrieve')
+    @patch('stripe.Webhook.construct_event')
+    def test_partial_refund_reverses_exactly_refund_amount(
+        self, mock_construct, mock_retrieve, mock_reversal,
+    ):
+        mock_retrieve.return_value = self._mock_transfer()
+
+        res = self._post_refund_event(mock_construct, amount_refunded=1000, refunded=False)
+
+        self.assertEqual(res.status_code, 200)
+        mock_reversal.assert_called_once()
+        args, kwargs = mock_reversal.call_args
+        self.assertEqual(args[0], 'tr_reversal_1')
+        self.assertEqual(kwargs['amount'], 1000)
+        self.assertEqual(kwargs['idempotency_key'], 'trrev-tr_reversal_1-1000')
+        self.session.refresh_from_db()
+        self.assertEqual(self.session.transfer_reversed_cents, 1000)
+        self.assertEqual(self.session.status, StripeCheckoutSession.Status.PARTIALLY_REFUNDED)
+
+    @patch('stripe.Transfer.create_reversal')
+    @patch('stripe.Transfer.retrieve')
+    @patch('stripe.Webhook.construct_event')
+    def test_cumulative_partials_reverse_only_the_delta(
+        self, mock_construct, mock_retrieve, mock_reversal,
+    ):
+        # Stripe already holds a $10 reversal from the first partial refund.
+        mock_retrieve.return_value = self._mock_transfer(amount_reversed=1000)
+
+        res = self._post_refund_event(mock_construct, amount_refunded=2500, refunded=False)
+
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(mock_reversal.call_args.kwargs['amount'], 1500)
+        self.assertEqual(
+            mock_reversal.call_args.kwargs['idempotency_key'], 'trrev-tr_reversal_1-2500',
+        )
+        self.session.refresh_from_db()
+        self.assertEqual(self.session.transfer_reversed_cents, 2500)
+
+    @patch('stripe.Transfer.create_reversal')
+    @patch('stripe.Transfer.retrieve')
+    @patch('stripe.Webhook.construct_event')
+    def test_full_refund_reverses_whole_transfer_and_caps_there(
+        self, mock_construct, mock_retrieve, mock_reversal,
+    ):
+        mock_retrieve.return_value = self._mock_transfer()
+
+        # Buyer refunded $100, but only $95 ever reached the organizer:
+        # reversal clamps at the transfer — platform funds the fee portion.
+        res = self._post_refund_event(mock_construct, amount_refunded=10000, refunded=True)
+
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(mock_reversal.call_args.kwargs['amount'], 9500)
+        self.session.refresh_from_db()
+        self.assertEqual(self.session.transfer_reversed_cents, 9500)
+        self.assertEqual(self.session.status, StripeCheckoutSession.Status.REFUNDED)
+
+    @patch('stripe.Transfer.create_reversal')
+    @patch('stripe.Transfer.retrieve')
+    @patch('stripe.Webhook.construct_event')
+    def test_webhook_retry_does_not_double_reverse(
+        self, mock_construct, mock_retrieve, mock_reversal,
+    ):
+        # Stripe says the cumulative target is already reversed.
+        mock_retrieve.return_value = self._mock_transfer(amount_reversed=1000)
+
+        res = self._post_refund_event(mock_construct, amount_refunded=1000, refunded=False)
+
+        self.assertEqual(res.status_code, 200)
+        mock_reversal.assert_not_called()
+
+    @patch('stripe.Transfer.create_reversal')
+    @patch('stripe.Transfer.retrieve')
+    @patch('stripe.Webhook.construct_event')
+    def test_echo_after_app_refund_still_reverses(
+        self, mock_construct, mock_retrieve, mock_reversal,
+    ):
+        # refund_order already wrote local state — the echo webhook is the
+        # only place the clawback happens, so it must run despite the
+        # state no-op guard.
+        self.order.refunded_amount = Decimal('10.00')
+        self.order.save(update_fields=['refunded_amount'])
+        self.session.status = StripeCheckoutSession.Status.PARTIALLY_REFUNDED
+        self.session.save(update_fields=['status'])
+        mock_retrieve.return_value = self._mock_transfer()
+
+        res = self._post_refund_event(mock_construct, amount_refunded=1000, refunded=False)
+
+        self.assertEqual(res.status_code, 200)
+        mock_reversal.assert_called_once()
+        self.assertEqual(mock_reversal.call_args.kwargs['amount'], 1000)
+
+    @patch('stripe.checkout.Session.list', return_value={'data': []})
+    @patch('stripe.Transfer.create_reversal')
+    @patch('stripe.Transfer.retrieve')
+    @patch('stripe.Webhook.construct_event')
+    def test_sessionless_fallback_reverses_from_charge_payload(
+        self, mock_construct, mock_retrieve, mock_reversal, mock_cs_list,
+    ):
+        # Event hard-delete CASCADEs the session away — the clawback must
+        # still happen from the charge payload alone.
+        self.session.delete()
+        mock_retrieve.return_value = self._mock_transfer()
+
+        res = self._post_refund_event(mock_construct, amount_refunded=2000, refunded=False)
+
+        self.assertEqual(res.status_code, 200)
+        mock_reversal.assert_called_once()
+        self.assertEqual(mock_reversal.call_args.kwargs['amount'], 2000)
+
+    @patch('stripe.Transfer.create_reversal')
+    @patch('stripe.Transfer.retrieve')
+    @patch('stripe.Webhook.construct_event')
+    def test_transfer_id_recovered_from_payload_when_capture_was_missed(
+        self, mock_construct, mock_retrieve, mock_reversal,
+    ):
+        # Refund webhook beat fulfillment's transfer capture.
+        self.session.stripe_transfer_id = ''
+        self.session.transfer_cents = 0
+        self.session.charge_flow = StripeCheckoutSession.ChargeFlow.PLATFORM
+        self.session.save(update_fields=['stripe_transfer_id', 'transfer_cents', 'charge_flow'])
+        mock_retrieve.return_value = self._mock_transfer()
+
+        res = self._post_refund_event(mock_construct, amount_refunded=1000, refunded=False)
+
+        self.assertEqual(res.status_code, 200)
+        mock_reversal.assert_called_once()
+        self.session.refresh_from_db()
+        self.assertEqual(self.session.stripe_transfer_id, 'tr_reversal_1')
+        self.assertEqual(self.session.transfer_cents, 9500)
+        self.assertEqual(self.session.charge_flow, StripeCheckoutSession.ChargeFlow.DESTINATION)
+        self.assertEqual(self.session.transfer_reversed_cents, 1000)
+
+    @patch('stripe.Transfer.create_reversal')
+    @patch('stripe.Transfer.retrieve')
+    @patch('stripe.Webhook.construct_event')
+    def test_reversal_failure_does_not_block_state_sync(
+        self, mock_construct, mock_retrieve, mock_reversal,
+    ):
+        import stripe as stripe_lib
+        mock_retrieve.return_value = self._mock_transfer()
+        mock_reversal.side_effect = stripe_lib.error.InvalidRequestError('boom', 'amount')
+
+        res = self._post_refund_event(mock_construct, amount_refunded=1000, refunded=False)
+
+        self.assertEqual(res.status_code, 200)
+        self.order.refresh_from_db()
+        self.session.refresh_from_db()
+        self.assertEqual(self.order.refunded_amount, Decimal('10.00'))
+        self.assertEqual(self.session.status, StripeCheckoutSession.Status.PARTIALLY_REFUNDED)
+        # Local cache untouched — backfill/webhook retry converges later.
+        self.assertEqual(self.session.transfer_reversed_cents, 0)
+
+    @patch('stripe.Transfer.create_reversal')
+    @patch('stripe.Transfer.retrieve')
+    @patch('stripe.Webhook.construct_event')
+    def test_direct_charge_refund_no_reversal(
+        self, mock_construct, mock_retrieve, mock_reversal,
+    ):
+        # In-person (direct) charges have no transfer — nothing to claw back.
+        self.session.stripe_transfer_id = ''
+        self.session.transfer_cents = 0
+        self.session.charge_flow = StripeCheckoutSession.ChargeFlow.DIRECT
+        self.session.save(update_fields=['stripe_transfer_id', 'transfer_cents', 'charge_flow'])
+
+        res = self._post_refund_event(
+            mock_construct, amount_refunded=1000, refunded=False, transfer=None,
+        )
+
+        self.assertEqual(res.status_code, 200)
+        mock_retrieve.assert_not_called()
+        mock_reversal.assert_not_called()
+        self.session.refresh_from_db()
+        self.assertEqual(self.session.status, StripeCheckoutSession.Status.PARTIALLY_REFUNDED)
+
+
+class ConnectedBalanceCacheTests(TestCase):
+    """_get_connected_balance_cents caching + explicit busting."""
+
+    def setUp(self):
+        self.org = Organization.objects.create(
+            name='Cache Org', slug=f'cache-org-{uuid.uuid4().hex[:8]}',
+            stripe_account_id='acct_cache_test',
+        )
+
+    @patch('stripe.Balance.retrieve')
+    def test_cache_hit_and_bust(self, mock_balance):
+        from tickets.views import _get_connected_balance_cents, _bust_connected_balance_cache
+        mock_balance.return_value = MagicMock(
+            available=[MagicMock(amount=1000, currency='usd')],
+            pending=[MagicMock(amount=200, currency='usd')],
+        )
+
+        self.assertEqual(_get_connected_balance_cents(self.org), (1000, 200))
+        self.assertEqual(_get_connected_balance_cents(self.org), (1000, 200))
+        self.assertEqual(mock_balance.call_count, 1)  # second call served from cache
+
+        _bust_connected_balance_cache(self.org)
+        self.assertEqual(_get_connected_balance_cents(self.org), (1000, 200))
+        self.assertEqual(mock_balance.call_count, 2)  # bust forced a refetch
+
+
+class MigrateLegacyBalancesCommandTests(TestCase):
+    """True-up command: dry-run safety, crash-safe apply, repair, re-runs."""
+
+    def setUp(self):
+        self.org = Organization.objects.create(
+            name='Trueup Org',
+            slug='trueup-org',
+            stripe_account_id='acct_trueup',
+            stripe_onboarding_complete=True,
+        )
+        self.venue = Venue.objects.create(organization=self.org, name='Venue', city='City')
+        self.event = Event.objects.create(
+            organization=self.org, name='Trueup Event', venue=self.venue,
+            start_date=date.today() + timedelta(days=14),
+            ticketing_type='direct',
+        )
+        self.customer = Customer.objects.create(
+            organization=self.org, email='buyer@example.com', name='Buyer',
+        )
+        order = TicketOrder.objects.create(
+            event=self.event,
+            customer=self.customer,
+            order_number='TU-001',
+            order_date=timezone.now(),
+            total_amount=Decimal('50.00'),
+        )
+        # Settled legacy session: organizer net $47.50.
+        StripeCheckoutSession.objects.create(
+            event=self.event,
+            organization=self.org,
+            stripe_session_id='pi_trueup_1',
+            stripe_payment_intent_id='pi_trueup_1',
+            buyer_email='buyer@example.com',
+            buyer_name='Buyer',
+            status=StripeCheckoutSession.Status.COMPLETED,
+            amount_total_cents=5000,
+            platform_fee_cents=250,
+            ticket_order=order,
+        )
+
+    def test_dry_run_writes_nothing(self):
+        call_command('migrate_legacy_balances')
+        self.assertEqual(Payout.objects.count(), 0)
+
+    @patch('stripe.Transfer.create')
+    @patch('tickets.views._get_stripe_platform_available_cents', return_value=1_000_000)
+    def test_apply_transfers_and_records_migration_payout(self, mock_platform, mock_transfer):
+        mock_transfer.return_value = MagicMock(id='tr_trueup_1')
+
+        call_command('migrate_legacy_balances', '--apply')
+
+        payout = Payout.objects.get(organization=self.org)
+        self.assertEqual(payout.amount, Decimal('47.50'))
+        self.assertEqual(payout.status, Payout.Status.COMPLETED)
+        self.assertEqual(payout.origin, Payout.Origin.MIGRATION)
+        self.assertEqual(payout.stripe_transfer_id, 'tr_trueup_1')
+        self.assertIsNone(payout.initiated_by)
+        kwargs = mock_transfer.call_args.kwargs
+        self.assertEqual(kwargs['amount'], 4750)
+        self.assertEqual(kwargs['destination'], 'acct_trueup')
+        self.assertEqual(kwargs['idempotency_key'], f'trueup-{payout.id}')
+
+        # Re-run: the migration payout self-deducts — nothing more to move.
+        call_command('migrate_legacy_balances', '--apply')
+        self.assertEqual(Payout.objects.count(), 1)
+        self.assertEqual(mock_transfer.call_count, 1)
+
+    @patch('stripe.Transfer.create')
+    @patch('tickets.views._get_stripe_platform_available_cents', return_value=1_000_000)
+    def test_stranded_pending_row_blocks_apply_and_repair_completes_it(
+        self, mock_platform, mock_transfer,
+    ):
+        stranded = Payout.objects.create(
+            organization=self.org,
+            amount=Decimal('47.50'),
+            status=Payout.Status.PENDING,
+            origin=Payout.Origin.MIGRATION,
+            notes='Balance migration to Stripe account',
+        )
+
+        # Apply refuses to act while a stranded row exists — no double-pay.
+        call_command('migrate_legacy_balances', '--apply')
+        mock_transfer.assert_not_called()
+        self.assertEqual(Payout.objects.count(), 1)
+
+        # Repair replays the stable idempotency key and completes the row.
+        mock_transfer.return_value = MagicMock(id='tr_trueup_repair')
+        call_command('migrate_legacy_balances', '--repair')
+        stranded.refresh_from_db()
+        self.assertEqual(stranded.status, Payout.Status.COMPLETED)
+        self.assertEqual(stranded.stripe_transfer_id, 'tr_trueup_repair')
+        self.assertEqual(
+            mock_transfer.call_args.kwargs['idempotency_key'], f'trueup-{stranded.id}',
+        )
+
+    @patch('stripe.Transfer.create')
+    @patch('tickets.views._get_stripe_platform_available_cents', return_value=1_000_000)
+    def test_transfer_failure_marks_failed_and_is_retryable(self, mock_platform, mock_transfer):
+        import stripe as stripe_lib
+        mock_transfer.side_effect = stripe_lib.error.InvalidRequestError('no funds', 'amount')
+
+        call_command('migrate_legacy_balances', '--apply')
+
+        failed = Payout.objects.get(organization=self.org)
+        self.assertEqual(failed.status, Payout.Status.FAILED)
+        self.assertIn('Stripe error', failed.notes)
+
+        # FAILED rows are excluded from the pool sums — a retry moves the
+        # full amount on a fresh row.
+        mock_transfer.side_effect = None
+        mock_transfer.return_value = MagicMock(id='tr_trueup_retry')
+        call_command('migrate_legacy_balances', '--apply')
+        completed = Payout.objects.get(organization=self.org, status=Payout.Status.COMPLETED)
+        self.assertEqual(completed.amount, Decimal('47.50'))
+
+    @patch('stripe.Transfer.create')
+    @patch('tickets.views._get_stripe_platform_available_cents', return_value=100)
+    def test_insufficient_platform_balance_skips(self, mock_platform, mock_transfer):
+        call_command('migrate_legacy_balances', '--apply')
+        mock_transfer.assert_not_called()
+        self.assertEqual(Payout.objects.count(), 0)
+
+
+class MetaAdsErrorHandlingTests(TestCase):
+    """Diagnostics + throttle behavior for the Meta Ads integration (PR #202 fixes)."""
+
+    def setUp(self):
+        from django.core.cache import cache as django_cache
+        django_cache.clear()
+        self.client = Client()
+        self.org = Organization.objects.create(
+            name='Meta Org', slug='meta-org',
+            meta_ads_access_token='tok-123',
+            meta_ads_account_id='act_999',
+            meta_ads_account_name='Ad Account',
+        )
+        self.admin_user = User.objects.create_user(
+            username='metaadmin', email='metaadmin@example.com', password='testpass123',
+        )
+        UserProfile.objects.create(
+            user=self.admin_user, organization=self.org, org_role=UserProfile.OrgRole.OWNER,
+        )
+        OrganizationMembership.objects.create(
+            user=self.admin_user, organization=self.org, org_role=UserProfile.OrgRole.OWNER,
+        )
+        self.venue = Venue.objects.create(organization=self.org, name='Venue', city='City')
+        self.event = Event.objects.create(
+            organization=self.org, name='Meta Event', venue=self.venue,
+            start_date=date(2026, 8, 1),
+        )
+        self.expense = EventExpense.objects.create(
+            event=self.event, category='marketing', description='Campaign',
+            amount=Decimal('100.00'), source='meta_ads', external_id='120246175133360162',
+        )
+
+    def tearDown(self):
+        from django.core.cache import cache as django_cache
+        django_cache.clear()
+
+    def _login(self):
+        self.client.login(username='metaadmin@example.com', password='testpass123')
+        self.client.get(reverse('tickets:home'))
+
+    # --- error extraction -------------------------------------------------
+
+    def test_error_from_response_includes_code_subcode_and_logs_fbtrace(self):
+        from tickets.services import meta_ads
+
+        class _Resp:
+            status_code = 500
+            def json(self):
+                return {'error': {
+                    'message': 'An unknown error has occurred.',
+                    'code': 1, 'error_subcode': 99, 'fbtrace_id': 'TRACE123',
+                }}
+
+        with self.assertLogs('tickets.services.meta_ads', level='WARNING') as logs:
+            err = meta_ads._error_from_response(_Resp())
+
+        self.assertIsInstance(err, meta_ads.MetaAdsAPIError)
+        self.assertEqual(err.code, 1)
+        self.assertEqual(err.subcode, 99)
+        self.assertEqual(err.fbtrace_id, 'TRACE123')
+        self.assertTrue(err.is_transient)
+        self.assertIn('code 1', str(err))
+        self.assertIn('subcode 99', str(err))
+        self.assertIn('An unknown error has occurred.', str(err))
+        # The fbtrace id must reach the logs so a recurrence is diagnosable.
+        self.assertIn('TRACE123', '\n'.join(logs.output))
+
+    def test_error_from_response_handles_non_json_body(self):
+        from tickets.services import meta_ads
+
+        class _Resp:
+            status_code = 503
+            def json(self):
+                raise ValueError('no json')
+
+        with self.assertLogs('tickets.services.meta_ads', level='WARNING'):
+            err = meta_ads._error_from_response(_Resp())
+        self.assertIn('503', str(err))
+        self.assertFalse(err.is_transient)
+
+    def test_request_retries_once_on_transient_error(self):
+        from tickets.services import meta_ads
+
+        class _Resp:
+            def __init__(self, status_code, payload):
+                self.status_code = status_code
+                self._payload = payload
+            def json(self):
+                return self._payload
+
+        responses = [
+            _Resp(500, {'error': {'message': 'An unknown error has occurred.', 'code': 1}}),
+            _Resp(200, {'id': '1', 'name': 'Acct'}),
+        ]
+        with patch('tickets.services.meta_ads.time.sleep') as sleep_mock, \
+                patch('tickets.services.meta_ads.requests.get', side_effect=responses) as get_mock:
+            client = meta_ads.MetaAdsClient('tok')
+            result = client.get_user_profile()
+
+        self.assertEqual(result, {'id': '1', 'name': 'Acct'})
+        self.assertEqual(get_mock.call_count, 2)
+        sleep_mock.assert_called_once()
+
+    def test_request_does_not_retry_non_transient_error(self):
+        from tickets.services import meta_ads
+
+        class _Resp:
+            status_code = 400
+            def json(self):
+                return {'error': {'message': 'Bad token', 'code': 190}}
+
+        with patch('tickets.services.meta_ads.requests.get', return_value=_Resp()) as get_mock:
+            client = meta_ads.MetaAdsClient('tok')
+            with self.assertRaises(meta_ads.MetaAdsAPIError):
+                client.get_user_profile()
+        self.assertEqual(get_mock.call_count, 1)
+
+    # --- staleness gate ---------------------------------------------------
+
+    def test_refresh_throttles_repeat_calls_within_window(self):
+        from tickets import views
+        from tickets.services.meta_ads import CampaignInsights
+
+        fake_client = MagicMock()
+        fake_client.get_campaign_insights.return_value = CampaignInsights(
+            spend=Decimal('12.00'), purchases=1, purchase_value=Decimal('20.00'),
+        )
+        with patch('tickets.views.MetaAdsClient', return_value=fake_client):
+            views._refresh_meta_ads_expenses_for_event(self.org, self.event, self.admin_user)
+            views._refresh_meta_ads_expenses_for_event(self.org, self.event, self.admin_user)
+
+        # Second call must be short-circuited by the cache marker — Meta hit once.
+        self.assertEqual(fake_client.get_campaign_insights.call_count, 1)
+
+    def test_refresh_catches_api_error_and_still_sets_marker(self):
+        from tickets import views
+        from tickets.services.meta_ads import MetaAdsAPIError
+
+        fake_client = MagicMock()
+        fake_client.get_campaign_insights.side_effect = MetaAdsAPIError(
+            'Meta API error (code 1): An unknown error has occurred.', code=1,
+        )
+        with patch('tickets.views.MetaAdsClient', return_value=fake_client):
+            with self.assertLogs('tickets.views', level='WARNING'):
+                had_error = views._refresh_meta_ads_expenses_for_event(
+                    self.org, self.event, self.admin_user,
+                )
+            self.assertTrue(had_error)
+            # Marker set despite the error, so the next load doesn't re-storm Meta.
+            had_error_2 = views._refresh_meta_ads_expenses_for_event(
+                self.org, self.event, self.admin_user,
+            )
+        self.assertFalse(had_error_2)
+        self.assertEqual(fake_client.get_campaign_insights.call_count, 1)
+
+    # --- endpoint status codes -------------------------------------------
+
+    def test_match_endpoint_returns_handled_error_not_502(self):
+        from tickets.services.meta_ads import MetaAdsAPIError
+        self._login()
+
+        fake_client = MagicMock()
+        fake_client.list_campaigns.side_effect = MetaAdsAPIError(
+            'Meta API error (code 1): An unknown error has occurred.', code=1,
+        )
+        url = reverse('tickets:event_meta_ads_match', args=[self.event.id]) + '?format=json'
+        with patch('tickets.views.MetaAdsClient', return_value=fake_client):
+            resp = self.client.get(url)
+
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertFalse(data['success'])
+        self.assertIn('code 1', data['error'])
+
+    def test_refresh_endpoint_returns_handled_error_not_502(self):
+        from tickets.services.meta_ads import MetaAdsAPIError
+        self._login()
+
+        fake_client = MagicMock()
+        fake_client.get_campaign_insights.side_effect = MetaAdsAPIError(
+            'Meta API error (code 1): An unknown error has occurred.', code=1,
+        )
+        url = reverse('tickets:event_meta_ads_refresh', args=[self.event.id, self.expense.id])
+        with patch('tickets.views.MetaAdsClient', return_value=fake_client):
+            resp = self.client.post(url, HTTP_X_REQUESTED_WITH='XMLHttpRequest')
+
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertFalse(data['ok'])
+        self.assertIn('code 1', data['error'])
+
+
+class ResendOrderConfirmationTests(TestCase):
+    """Resend confirmation email endpoint on the order detail page."""
+
+    def setUp(self):
+        self.client = Client()
+        self.org = Organization.objects.create(name='Resend Org', slug='resend-org')
+        self.user = User.objects.create_user(
+            username='resend-host', email='host@example.com', password='testpass123',
+        )
+        UserProfile.objects.create(
+            user=self.user, organization=self.org, org_role=UserProfile.OrgRole.HOST,
+        )
+        OrganizationMembership.objects.create(
+            user=self.user, organization=self.org, org_role=UserProfile.OrgRole.HOST,
+        )
+        self.client.login(username='host@example.com', password='testpass123')
+        self.client.get(reverse('tickets:home'))
+
+        self.venue = Venue.objects.create(organization=self.org, name='Venue', city='City')
+        self.event = Event.objects.create(
+            organization=self.org, name='Direct Event', venue=self.venue,
+            start_date=date(2025, 6, 15), start_time=time(19, 0),
+            ticketing_type=TICKETING_TYPE_DIRECT,
+        )
+        self.customer = Customer.objects.create(
+            organization=self.org, email='buyer@example.com', name='Buyer',
+        )
+        self.order = TicketOrder.objects.create(
+            customer=self.customer, event=self.event,
+            order_number='ORD-RS-1', order_date='2025-06-01 10:00:00',
+            total_amount=Decimal('50.00'),
+        )
+        self.session = StripeCheckoutSession.objects.create(
+            event=self.event, organization=self.org,
+            stripe_session_id='pi_resend_1', stripe_payment_intent_id='pi_resend_1',
+            buyer_email='buyer@example.com', buyer_name='Buyer',
+            status=StripeCheckoutSession.Status.COMPLETED,
+            line_items_snapshot=[], amount_total_cents=5000,
+            ticket_order=self.order,
+        )
+        self.url = reverse('tickets:resend_order_confirmation', args=[self.order.id])
+
+    @patch('tickets.tasks.send_order_confirmation_email_task.delay')
+    def test_resend_queues_task_for_direct_order(self, mock_delay):
+        response = self.client.post(self.url)
+        self.assertRedirects(
+            response, reverse('tickets:order_detail', args=[self.order.id])
+        )
+        mock_delay.assert_called_once_with(str(self.order.id))
+
+    @patch('tickets.tasks.send_order_confirmation_email_task.delay')
+    def test_resend_rejects_non_direct_order(self, mock_delay):
+        self.session.delete()
+        self.event.ticketing_type = 'csv'
+        self.event.save(update_fields=['ticketing_type'])
+        response = self.client.post(self.url)
+        self.assertRedirects(
+            response, reverse('tickets:order_detail', args=[self.order.id])
+        )
+        mock_delay.assert_not_called()
+
+    @patch('tickets.tasks.send_order_confirmation_email_task.delay')
+    def test_resend_rejects_get(self, mock_delay):
+        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, 405)
+        mock_delay.assert_not_called()
+
+
+class EventSummaryStreamTests(TestCase):
+    """Test cases for the AI event debrief streaming endpoint."""
+
+    def setUp(self):
+        self.client = Client()
+        self.org = Organization.objects.create(name='Summary Test Org', slug='summary-test-org')
+        self.user = User.objects.create_user(
+            username='summaryuser',
+            email='summary@test.com',
+            password='testpass123',
+        )
+        UserProfile.objects.create(
+            user=self.user, organization=self.org,
+            org_role=UserProfile.OrgRole.OWNER,
+        )
+        self.client.login(username='summary@test.com', password='testpass123')
+        self.client.get(reverse('tickets:home'))
+
+        self.venue = Venue.objects.create(
+            organization=self.org, name='Summary Venue', city='Summary City',
+        )
+        self.event = Event.objects.create(
+            organization=self.org, name='Summary Event',
+            venue=self.venue, start_date=date(2024, 9, 15),
+        )
+        self.url = reverse('tickets:event_summary_stream', args=[self.event.id])
+
+    def test_unauthenticated_redirects(self):
+        """Unauthenticated user is redirected to login."""
+        self.client.logout()
+        response = self.client.post(self.url)
+        self.assertEqual(response.status_code, 302)
+
+    def test_get_not_allowed(self):
+        """GET method is not allowed — POST only."""
+        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, 405)
+
+    def test_wrong_org_returns_404(self):
+        """Event belonging to a different org returns 404."""
+        other_org = Organization.objects.create(name='Other Org', slug='other-org')
+        other_venue = Venue.objects.create(
+            organization=other_org, name='Other Venue', city='Other City',
+        )
+        other_event = Event.objects.create(
+            organization=other_org, name='Other Event',
+            venue=other_venue, start_date=date(2024, 9, 15),
+        )
+        url = reverse('tickets:event_summary_stream', args=[other_event.id])
+        response = self.client.post(url)
+        self.assertEqual(response.status_code, 404)
+
+    @patch('langchain_openai.ChatOpenAI')
+    def test_stream_returns_sse_content_type(self, mock_llm_cls):
+        """Successful request returns text/event-stream content type."""
+        mock_instance = MagicMock()
+        mock_chunk = MagicMock()
+        mock_chunk.content = 'Test debrief'
+        mock_instance.stream.return_value = [mock_chunk]
+        mock_llm_cls.return_value = mock_instance
+
+        response = self.client.post(self.url)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response['Content-Type'], 'text/event-stream')
+
+    @patch('langchain_openai.ChatOpenAI')
+    def test_stream_persists_summary(self, mock_llm_cls):
+        """After streaming, the summary is saved to the event."""
+        mock_instance = MagicMock()
+        mock_chunk = MagicMock()
+        mock_chunk.content = 'Generated debrief text'
+        mock_chunk.usage_metadata = None
+        mock_instance.stream.return_value = [mock_chunk]
+        mock_llm_cls.return_value = mock_instance
+
+        response = self.client.post(self.url)
+        # Consume the streaming response to trigger the generator
+        list(response.streaming_content)
+
+        self.event.refresh_from_db()
+        self.assertEqual(self.event.ai_summary, 'Generated debrief text')
+        self.assertIsNotNone(self.event.ai_summary_generated_at)
+
+    @patch('langchain_openai.ChatOpenAI')
+    def test_stream_records_token_usage(self, mock_llm_cls):
+        """A successful generation records a billable AITokenUsage row."""
+        mock_instance = MagicMock()
+        mock_chunk = MagicMock()
+        mock_chunk.content = 'Debrief with usage'
+        mock_chunk.usage_metadata = {
+            'input_tokens': 1200,
+            'output_tokens': 300,
+            'total_tokens': 1500,
+        }
+        mock_instance.stream.return_value = [mock_chunk]
+        mock_llm_cls.return_value = mock_instance
+
+        response = self.client.post(self.url)
+        list(response.streaming_content)
+
+        usage = AITokenUsage.objects.filter(
+            organization=self.org,
+            feature=AITokenUsage.FEATURE_EVENT_SUMMARY,
+        )
+        self.assertEqual(usage.count(), 1)
+        record = usage.first()
+        self.assertEqual(record.total_tokens, 1500)
+        self.assertEqual(record.user, self.user)
+        self.assertEqual(record.metadata.get('event_id'), str(self.event.id))
+
+    @patch('langchain_openai.ChatOpenAI')
+    def test_stream_handles_llm_error(self, mock_llm_cls):
+        """LLM API error yields an error SSE event, not a 500."""
+        mock_instance = MagicMock()
+        mock_instance.stream.side_effect = Exception('API key invalid')
+        mock_llm_cls.return_value = mock_instance
+
+        response = self.client.post(self.url)
+        self.assertEqual(response.status_code, 200)
+        content = b''.join(response.streaming_content).decode()
+        self.assertIn('"type": "error"', content)
+        self.assertIn('"type": "done"', content)
+
+    def test_ai_summary_field_persistence(self):
+        """ai_summary field saves and loads correctly."""
+        self.event.ai_summary = 'Test stored debrief'
+        self.event.ai_summary_generated_at = timezone.now()
+        self.event.save(update_fields=['ai_summary', 'ai_summary_generated_at'])
+
+        self.event.refresh_from_db()
+        self.assertEqual(self.event.ai_summary, 'Test stored debrief')
+        self.assertIsNotNone(self.event.ai_summary_generated_at)
+
+    @patch('langchain_openai.ChatOpenAI')
+    def test_rate_limit_returns_429(self, mock_llm_cls):
+        """Once the hourly ceiling is reached, the endpoint returns 429."""
+        mock_instance = MagicMock()
+        mock_chunk = MagicMock()
+        mock_chunk.content = 'Debrief'
+        mock_instance.stream.return_value = [mock_chunk]
+        mock_llm_cls.return_value = mock_instance
+
+        from django.core.cache import cache as django_cache
+        rate_key = f"summary_ratelimit:{self.org.id}"
+        django_cache.set(rate_key, 30, timeout=3600)
+
+        response = self.client.post(self.url)
+        self.assertEqual(response.status_code, 429)
+
+        django_cache.delete(rate_key)
+
+    @patch('langchain_openai.ChatOpenAI')
+    def test_failed_generation_does_not_consume_rate_limit(self, mock_llm_cls):
+        """A failed generation must not burn the hourly budget (regression)."""
+        from django.core.cache import cache as django_cache
+        rate_key = f"summary_ratelimit:{self.org.id}"
+        django_cache.delete(rate_key)
+
+        mock_instance = MagicMock()
+        mock_instance.stream.side_effect = Exception('API key invalid')
+        mock_llm_cls.return_value = mock_instance
+
+        response = self.client.post(self.url)
+        b''.join(response.streaming_content)  # drive the generator to completion
+
+        self.assertEqual(django_cache.get(rate_key, 0), 0)
+        django_cache.delete(rate_key)
+
+    @patch('langchain_openai.ChatOpenAI')
+    def test_successful_generation_increments_rate_limit(self, mock_llm_cls):
+        """A successful generation counts once against the hourly budget."""
+        from django.core.cache import cache as django_cache
+        rate_key = f"summary_ratelimit:{self.org.id}"
+        django_cache.delete(rate_key)
+
+        mock_instance = MagicMock()
+        mock_chunk = MagicMock()
+        mock_chunk.content = 'Generated summary text'
+        mock_chunk.usage_metadata = None
+        mock_instance.stream.return_value = [mock_chunk]
+        mock_llm_cls.return_value = mock_instance
+
+        response = self.client.post(self.url)
+        b''.join(response.streaming_content)
+
+        self.assertEqual(django_cache.get(rate_key, 0), 1)
+        django_cache.delete(rate_key)
+
+    def test_event_detail_still_works(self):
+        """Regression: event_detail view still renders after stats extraction."""
+        url = reverse('tickets:event_detail', args=[self.event.id])
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'Summary Event')
+
+    def test_build_prompt_structure(self):
+        """_build_prompt returns the forward-looking debrief sections and event name."""
+        from tickets.services.event_summary import EventSummaryService
+        from tickets.views import _compute_event_stats
+
+        service = EventSummaryService(self.org, user=self.user)
+        event_data = _compute_event_stats(self.event)
+        prompt = service._build_prompt(self.event, event_data)
+
+        self.assertIn('What worked', prompt)
+        self.assertIn('What underperformed', prompt)
+        self.assertIn('Recommended next steps', prompt)
+        self.assertIn('Summary Event', prompt)
+
+    def test_build_prompt_unifies_survey_responses(self):
+        """Survey block uses combined totals and drops internal/external/invitation framing."""
+        from tickets.services.event_summary import EventSummaryService
+        from tickets.views import _compute_event_stats
+
+        service = EventSummaryService(self.org, user=self.user)
+        event_data = _compute_event_stats(self.event)
+        prompt = service._build_prompt(self.event, event_data)
+
+        self.assertIn('Total Responses', prompt)
+        self.assertNotIn('Invitations Sent', prompt)
+        self.assertNotIn('External Survey Responses', prompt)
+        self.assertNotIn('Responses Received', prompt)
+
+    def _make_direct_checked_in_event(self):
+        """A past direct-ticketing event with one fully checked-in GA ticket."""
+        event = Event.objects.create(
+            organization=self.org, name='Direct Event',
+            venue=self.venue, start_date=date(2024, 9, 15),
+            ticketing_type=TICKETING_TYPE_DIRECT,
+        )
+        customer = Customer.objects.create(
+            organization=self.org, email='attendee@test.com', name='Attendee',
+        )
+        now = timezone.now()
+        order = TicketOrder.objects.create(
+            customer=customer, event=event, order_number='DIR-001',
+            order_date='2024-09-10 10:00:00', total_amount=Decimal('50.00'),
+            checked_in_at=now,
+        )
+        # An admitted order stamps each of its tickets (the scan source of truth).
+        Ticket.objects.create(
+            ticket_order=order, ticket_type='GA', price=Decimal('50.00'), scanned_at=now,
+        )
+        return event
+
+    def test_build_prompt_includes_checkin_for_direct_event(self):
+        """Direct events past start surface a Check-In section with percentages."""
+        from tickets.services.event_summary import EventSummaryService
+        from tickets.views import _compute_event_stats
+
+        event = self._make_direct_checked_in_event()
+        service = EventSummaryService(self.org, user=self.user)
+        event_data = _compute_event_stats(event)
+        prompt = service._build_prompt(event, event_data)
+
+        self.assertIn('Check-In (door attendance)', prompt)
+        self.assertIn('1 of 1 (100%)', prompt)
+        self.assertIn('GA: 1/1 (100%)', prompt)
+
+    def test_build_prompt_omits_checkin_for_non_direct_event(self):
+        """Non-direct (external) events have no Check-In section."""
+        from tickets.services.event_summary import EventSummaryService
+        from tickets.views import _compute_event_stats
+
+        service = EventSummaryService(self.org, user=self.user)
+        event_data = _compute_event_stats(self.event)  # default (external) ticketing
+        prompt = service._build_prompt(self.event, event_data)
+
+        self.assertNotIn('Check-In (door attendance)', prompt)
+
+    def test_build_prompt_excludes_allocation_for_external_event(self):
+        """External-upload events must not invite sell-through/allocation conclusions."""
+        from tickets.services.event_summary import EventSummaryService
+        from tickets.views import _compute_event_stats
+
+        self.event.capacity = 100
+        self.event.save(update_fields=['capacity'])
+        service = EventSummaryService(self.org, user=self.user)
+        event_data = _compute_event_stats(self.event)  # default (external) ticketing
+        prompt = service._build_prompt(self.event, event_data)
+
+        self.assertIn('Do NOT draw any conclusion about sell-through', prompt)
+        self.assertIn("uploaded events don't include ticket allocation totals", prompt)
+        self.assertIn('allocation totals not available', prompt)
+        # No computed utilization percentage even though capacity is set.
+        self.assertNotIn('Capacity Utilization: 0.0%', prompt)
+
+    def test_build_prompt_keeps_allocation_for_direct_event(self):
+        """Direct events keep real capacity utilization and no allocation caveat."""
+        from tickets.services.event_summary import EventSummaryService
+        from tickets.views import _compute_event_stats
+
+        event = self._make_direct_checked_in_event()
+        event.capacity = 4
+        event.save(update_fields=['capacity'])
+        service = EventSummaryService(self.org, user=self.user)
+        event_data = _compute_event_stats(event)
+        prompt = service._build_prompt(event, event_data)
+
+        # Direct branch computes a numeric utilization (not the external note).
+        self.assertRegex(prompt, r'Capacity Utilization: \d+\.\d%')
+        self.assertNotIn("uploaded events don't include ticket allocation totals", prompt)
+        self.assertIn('Ticket Type Breakdown:', prompt)
+        self.assertNotIn('Do NOT draw any conclusion about sell-through', prompt)
+
+    def _add_external_responses(self, event):
+        """Create external survey responses with structured (Typeform-style) answers."""
+        upload = ExternalSurveyUpload.objects.create(
+            organization=self.org, filename='typeform.csv',
+            status=ExternalSurveyUpload.Status.COMPLETED,
+        )
+        rows = [
+            dict(enjoyed=['DJ set', 'Lighting'], genres=['House'],
+                 improvements=['Better sound'], crowd_vibe='Energetic',
+                 venue_feel='Intimate', found_out_how='Instagram'),
+            dict(enjoyed=['DJ set'], genres=['House', 'Techno'],
+                 improvements=[], crowd_vibe='Energetic',
+                 venue_feel='Intimate', found_out_how='Instagram'),
+            dict(enjoyed=['Venue'], genres=['Techno'],
+                 improvements=['Better sound'], crowd_vibe='Chill',
+                 venue_feel='Spacious', found_out_how='Word of mouth'),
+        ]
+        for i, row in enumerate(rows):
+            ExternalSurveyResponse.objects.create(
+                organization=self.org, upload=upload, event=event,
+                responded_at=timezone.now(), email=f'guest{i}@example.com',
+                nps_score=9, **row,
+            )
+
+    def test_build_prompt_includes_external_structured_answers(self):
+        """Structured Typeform answers are aggregated (with counts) into the prompt."""
+        from tickets.services.event_summary import EventSummaryService
+        from tickets.views import _compute_event_stats
+
+        event = Event.objects.create(
+            organization=self.org, name='Typeform Event',
+            venue=self.venue, start_date=date(2024, 9, 15),
+        )
+        self._add_external_responses(event)
+        service = EventSummaryService(self.org, user=self.user)
+        prompt = service._build_prompt(event, _compute_event_stats(event))
+
+        self.assertIn('Top things enjoyed: DJ set (2)', prompt)
+        self.assertIn('Most requested improvements: Better sound (2)', prompt)
+        self.assertIn('Crowd vibe: Energetic (2)', prompt)
+        self.assertIn('How attendees discovered the event: Instagram (2)', prompt)
+        # Most common value ranks first.
+        self.assertLess(prompt.index('DJ set'), prompt.index('Lighting'))
+
+    def test_build_prompt_omits_structured_when_no_external_data(self):
+        """Events without external structured answers get no structured lines."""
+        from tickets.services.event_summary import EventSummaryService
+        from tickets.views import _compute_event_stats
+
+        service = EventSummaryService(self.org, user=self.user)
+        prompt = service._build_prompt(self.event, _compute_event_stats(self.event))
+
+        self.assertNotIn('Top things enjoyed', prompt)
+        self.assertNotIn('How attendees discovered the event', prompt)
+
+
+class DisplayPreferencesTests(TestCase):
+    """Org admins can toggle the AI Event Summary card from /settings/display/."""
+
+    def setUp(self):
+        self.client = Client()
+        self.org = Organization.objects.create(name='Prefs Org', slug='prefs-org')
+
+        self.admin_user = User.objects.create_user(
+            username='prefsadmin', email='prefsadmin@test.com', password='testpass123',
+        )
+        UserProfile.objects.create(
+            user=self.admin_user, organization=self.org, org_role=UserProfile.OrgRole.OWNER,
+        )
+        OrganizationMembership.objects.create(
+            user=self.admin_user, organization=self.org, org_role=UserProfile.OrgRole.OWNER,
+        )
+
+        self.member_user = User.objects.create_user(
+            username='prefshost', email='prefshost@test.com', password='testpass123',
+        )
+        UserProfile.objects.create(
+            user=self.member_user, organization=self.org, org_role=UserProfile.OrgRole.HOST,
+        )
+        OrganizationMembership.objects.create(
+            user=self.member_user, organization=self.org, org_role=UserProfile.OrgRole.HOST,
+        )
+
+        self.venue = Venue.objects.create(
+            organization=self.org, name='Prefs Venue', city='Prefs City',
+        )
+        # Past event so the AI summary card is eligible to render
+        self.event = Event.objects.create(
+            organization=self.org, name='Prefs Event',
+            venue=self.venue, start_date=date(2024, 9, 15),
+        )
+        self.url = reverse('tickets:settings_display_preferences')
+
+    def _login(self, email):
+        self.client.login(username=email, password='testpass123')
+        self.client.get(reverse('tickets:home'))
+
+    def test_admin_can_view_preferences(self):
+        """Admin sees the preferences page with the toggle."""
+        self._login('prefsadmin@test.com')
+        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'ai_event_summary_enabled')
+
+    def test_non_admin_forbidden(self):
+        """A non-admin member is denied access."""
+        self._login('prefshost@test.com')
+        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, 403)
+
+    def test_post_disables_flag(self):
+        """Posting with the box unchecked turns the flag off."""
+        self._login('prefsadmin@test.com')
+        response = self.client.post(self.url, {})
+        self.assertEqual(response.status_code, 302)
+        self.org.refresh_from_db()
+        self.assertFalse(self.org.ai_event_summary_enabled)
+
+    def test_post_enables_flag(self):
+        """Posting with the box checked turns the flag on."""
+        self.org.ai_event_summary_enabled = False
+        self.org.save(update_fields=['ai_event_summary_enabled'])
+        self._login('prefsadmin@test.com')
+        response = self.client.post(self.url, {'ai_event_summary_enabled': 'on'})
+        self.assertEqual(response.status_code, 302)
+        self.org.refresh_from_db()
+        self.assertTrue(self.org.ai_event_summary_enabled)
+
+    def test_card_shown_when_enabled(self):
+        """Default (enabled) renders the AI summary card on event detail."""
+        self._login('prefsadmin@test.com')
+        response = self.client.get(reverse('tickets:event_detail', args=[self.event.id]))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'id="ai-summary-card"')
+
+    def test_card_hidden_when_disabled(self):
+        """When disabled, the AI summary card is not rendered."""
+        self.org.ai_event_summary_enabled = False
+        self.org.save(update_fields=['ai_event_summary_enabled'])
+        self._login('prefsadmin@test.com')
+        response = self.client.get(reverse('tickets:event_detail', args=[self.event.id]))
+        self.assertEqual(response.status_code, 200)
+        self.assertNotContains(response, 'id="ai-summary-card"')
+
+    def test_stream_404_when_disabled(self):
+        """The streaming endpoint is unavailable while the card is hidden."""
+        self.org.ai_event_summary_enabled = False
+        self.org.save(update_fields=['ai_event_summary_enabled'])
+        self._login('prefsadmin@test.com')
+        url = reverse('tickets:event_summary_stream', args=[self.event.id])
+        response = self.client.post(url)
+        self.assertEqual(response.status_code, 404)
+
+
+class POSHScanImportAndBuiltinFormatTests(TestCase):
+    """Per-ticket scan import (POSH) + global built-in CSV format behavior."""
+
+    def setUp(self):
+        self.client = Client()
+        self.org = Organization.objects.create(name='Scan Org', slug='scan-org')
+        self.user = User.objects.create_user(
+            username='scanhost', email='scanhost@example.com', password='pw12345',
+        )
+        UserProfile.objects.create(
+            user=self.user, organization=self.org, org_role=UserProfile.OrgRole.OWNER,
+        )
+        OrganizationMembership.objects.create(
+            user=self.user, organization=self.org, org_role=UserProfile.OrgRole.OWNER,
+        )
+        self.venue = Venue.objects.create(organization=self.org, name='Venue', city='City')
+        # External (CSV) event whose start has passed.
+        self.event = Event.objects.create(
+            organization=self.org, name='Scan Night', venue=self.venue,
+            start_date=date(2026, 1, 1), start_time=time(20, 0, 0),
+            ticketing_type='external',
+        )
+
+    # --- parse_scan_details unit coverage -------------------------------------
+    def _processor(self):
+        from tickets.csv_processor import CSVProcessor
+        return CSVProcessor.__new__(CSVProcessor)
+
+    def test_parse_scan_details_variants(self):
+        p = self._processor()
+        self.assertEqual(p.parse_scan_details(''), [])
+        self.assertEqual(
+            p.parse_scan_details('ga - Not Scanned (N/A), ga - Not Scanned (N/A)'),
+            [None, None],
+        )
+        one = p.parse_scan_details('ga - Scanned (06-14-2026 7:40:36 pm)')
+        self.assertEqual(len(one), 1)
+        self.assertIsNotNone(one[0])
+        mixed = p.parse_scan_details(
+            'early bird - Scanned (06-14-2026 7:07:28 pm), ga - Not Scanned (N/A)'
+        )
+        self.assertIsNotNone(mixed[0])
+        self.assertIsNone(mixed[1])
+
+    # --- end-to-end import ----------------------------------------------------
+    def _import(self, csv_body):
+        import io
+        posh = CSVFormat.objects.get(name='POSH')
+        upload = UploadedFile.objects.create(
+            organization=self.org, csv_format=posh, filename='posh.csv', status='pending',
+            metadata={'event_id': str(self.event.id), 'event_name': self.event.name,
+                      'event_start_date': '2026-01-01'},
+        )
+        from tickets.csv_processor import CSVProcessor
+        processor = CSVProcessor(upload, posh)
+        return processor.process_and_save(io.BytesIO(csv_body.encode('utf-8')))
+
+    def test_import_sets_per_ticket_scanned_and_order_checkin(self):
+        header = (
+            '"Order Number","Order Date/Time","Order Subtotal","Order Total",'
+            '"# of Tickets","First Name","Last Name","Email","Phone Number",'
+            '"Tickets Purchased","Ticket Scan Details"\n'
+        )
+        rows = (
+            # Fully scanned single ticket
+            '"A1","05-12-2026 1:40:11 pm","21.00","21.00","1","Amy","R","a@x.com","+17025550000",'
+            '"general admission","general admission - Scanned (06-14-2026 7:40:36 pm)"\n'
+            # Partially scanned 2-ticket order (1 of 2)
+            '"A2","05-12-2026 1:42:50 pm","0.00","0.00","2","Bo","J","b@x.com","+17025550001",'
+            '"free rsvp, free rsvp","free rsvp - Scanned (06-14-2026 5:35:26 pm), free rsvp - Not Scanned (N/A)"\n'
+            # Not scanned at all
+            '"A3","05-12-2026 1:50:00 pm","0.00","0.00","1","Cy","K","c@x.com","+17025550002",'
+            '"free rsvp","free rsvp - Not Scanned (N/A)"\n'
+        )
+        results = self._import(header + rows)
+        self.assertEqual(results['success_count'], 3)
+
+        o1 = TicketOrder.objects.get(external_order_number='A1')
+        o2 = TicketOrder.objects.get(external_order_number='A2')
+        o3 = TicketOrder.objects.get(external_order_number='A3')
+
+        # Per-ticket scanned_at
+        self.assertEqual(o1.tickets.filter(scanned_at__isnull=False).count(), 1)
+        self.assertEqual(o2.tickets.count(), 2)
+        self.assertEqual(o2.tickets.filter(scanned_at__isnull=False).count(), 1)
+        self.assertEqual(o3.tickets.filter(scanned_at__isnull=False).count(), 0)
+
+        # Order-level marker: set when ANY ticket scanned, NULL when none.
+        self.assertIsNotNone(o1.checked_in_at)
+        self.assertIsNotNone(o2.checked_in_at)
+        self.assertIsNone(o3.checked_in_at)
+
+    def test_checkin_stats_count_tickets_and_surface_external_event(self):
+        from tickets.views import _compute_event_checkin_stats
+        header = (
+            '"Order Number","Order Date/Time","Order Subtotal","Order Total",'
+            '"# of Tickets","First Name","Last Name","Email","Phone Number",'
+            '"Tickets Purchased","Ticket Scan Details"\n'
+        )
+        rows = (
+            '"A2","05-12-2026 1:42:50 pm","0.00","0.00","2","Bo","J","b@x.com","+17025550001",'
+            '"free rsvp, free rsvp","free rsvp - Scanned (06-14-2026 5:35:26 pm), free rsvp - Not Scanned (N/A)"\n'
+        )
+        self._import(header + rows)
+        show, total, checked, by_type = _compute_event_checkin_stats(self.event)
+        # External event surfaces because it has imported scan data.
+        self.assertTrue(show)
+        self.assertEqual(total, 2)
+        # Only 1 of 2 tickets scanned -> no order-level overcount.
+        self.assertEqual(checked, 1)
+
+    def test_external_event_without_scan_data_is_hidden(self):
+        from tickets.views import _compute_event_checkin_stats
+        # An order with no scan data.
+        cust = Customer.objects.create(organization=self.org, email='n@x.com', name='N')
+        order = TicketOrder.objects.create(
+            customer=cust, event=self.event, order_number='NOSCAN',
+            order_date=timezone.now(), total_amount=Decimal('10.00'),
+        )
+        Ticket.objects.create(ticket_order=order, ticket_type='GA', price=Decimal('10.00'))
+        show, total, checked, by_type = _compute_event_checkin_stats(self.event)
+        self.assertFalse(show)
+
+    # --- built-in format read-only + duplicate --------------------------------
+    def _login(self):
+        self.client.login(username='scanhost@example.com', password='pw12345')
+        self.client.get(reverse('tickets:home'))  # prime org session cache
+
+    def test_posh_builtin_is_global_and_visible(self):
+        posh = CSVFormat.objects.get(name='POSH')
+        self.assertIsNone(posh.organization_id)
+        self.assertTrue(posh.is_system)
+        self.assertIn('POSH', list(
+            CSVFormat.available_for(self.org).values_list('name', flat=True)
+        ))
+
+    def test_builtin_format_not_editable_or_deletable(self):
+        self._login()
+        posh = CSVFormat.objects.get(name='POSH')
+        # Org-scoped views 404 on a global built-in.
+        self.assertEqual(
+            self.client.get(reverse('tickets:format_edit', args=[posh.id])).status_code, 404
+        )
+        self.assertEqual(
+            self.client.post(reverse('tickets:format_delete', args=[posh.id])).status_code, 404
+        )
+
+    def test_duplicate_builtin_creates_editable_org_copy(self):
+        self._login()
+        posh = CSVFormat.objects.get(name='POSH')
+        resp = self.client.get(reverse('tickets:format_duplicate', args=[posh.id]))
+        self.assertEqual(resp.status_code, 302)
+        copy = CSVFormat.objects.get(organization=self.org, name='POSH (Custom)')
+        self.assertFalse(copy.is_system)
+        self.assertEqual(copy.column_mapping, posh.column_mapping)
+        # The copy is editable (org-scoped view resolves it).
+        self.assertEqual(
+            self.client.get(reverse('tickets:format_edit', args=[copy.id])).status_code, 200
+        )
+
+
+class EventAudienceTests(TestCase):
+    """EventAudienceCalculator metrics + Audience tab visibility."""
+
+    def setUp(self):
+        self.client = Client()
+        self.org = Organization.objects.create(name='Aud Org', slug='aud-org')
+        self.user = User.objects.create_user(
+            username='audhost', email='audhost@example.com', password='pw12345',
+        )
+        UserProfile.objects.create(
+            user=self.user, organization=self.org, org_role=UserProfile.OrgRole.OWNER,
+        )
+        OrganizationMembership.objects.create(
+            user=self.user, organization=self.org, org_role=UserProfile.OrgRole.OWNER,
+        )
+        self.venue = Venue.objects.create(organization=self.org, name='V', city='C')
+        # Past external event (so check-in/audience can surface once scans exist).
+        self.event = Event.objects.create(
+            organization=self.org, name='Aud Night', venue=self.venue,
+            start_date=date(2026, 1, 1), start_time=time(20, 0, 0),
+            ticketing_type='external',
+        )
+        self.prior_event = Event.objects.create(
+            organization=self.org, name='Prior', venue=self.venue,
+            start_date=date(2025, 6, 1), ticketing_type='external',
+        )
+
+    def _customer(self, email, **kwargs):
+        return Customer.objects.create(
+            organization=self.org, email=email, name=email.split('@')[0], **kwargs
+        )
+
+    def _order(self, customer, event, number, scanned=False, tickets=1):
+        order = TicketOrder.objects.create(
+            customer=customer, event=event, order_number=number,
+            order_date=timezone.now(), total_amount=Decimal('20.00'),
+        )
+        now = timezone.now()
+        for i in range(tickets):
+            Ticket.objects.create(
+                ticket_order=order, ticket_type='GA', price=Decimal('20.00'),
+                scanned_at=now if scanned else None,
+            )
+        return order
+
+    def test_calculator_metrics(self):
+        from tickets.services.audience import EventAudienceCalculator
+
+        # New customer, checked in (first-time attendee).
+        new_att = self._customer('new_att@x.com')
+        self._order(new_att, self.event, 'N1', scanned=True)
+
+        # Returning customer (has an order at a prior event), checked in.
+        ret = self._customer('ret@x.com')
+        self._order(ret, self.prior_event, 'R0', scanned=False)
+        self._order(ret, self.event, 'R1', scanned=True)
+
+        # High-value (VIP) customer, new, checked in.
+        vip = self._customer('vip@x.com', rfm_segment='VIP', rfm_monetary_score=5,
+                             lifetime_value=Decimal('900.00'))
+        self._order(vip, self.event, 'V1', scanned=True)
+
+        # Bought but did NOT check in (no scan).
+        noshow = self._customer('noshow@x.com')
+        self._order(noshow, self.event, 'X1', scanned=False)
+
+        result = EventAudienceCalculator(self.event).calculate()
+
+        self.assertTrue(result['show'])
+        self.assertEqual(result['total_buyers'], 4)
+        # Attendees = customers with >=1 scanned ticket: new_att, ret, vip
+        self.assertEqual(result['attendees'], 3)
+        self.assertEqual(result['attendees_returning'], 1)  # ret
+        self.assertEqual(result['attendees_new'], 2)        # new_att, vip
+        self.assertEqual(result['first_time_attendees'], 2)
+        # High value = VIP/Big Spender or monetary>=4; only vip qualifies and attended.
+        self.assertEqual(result['high_value_total'], 1)
+        self.assertEqual(result['high_value_attended'], 1)
+        self.assertEqual(result['high_value_attendees'], 1)
+        # Notable attendees (queryset): VIP (high-value) and the returning customer
+        # qualifies as a frequent buyer (2 distinct events). new_att (1 event, not
+        # high-value) is excluded.
+        notable = list(EventAudienceCalculator(self.event).notable_attendees_queryset())
+        emails = {c.email for c in notable}
+        self.assertEqual(emails, {'vip@x.com', 'ret@x.com'})
+        self.assertNotIn('new_att@x.com', emails)
+        # ret has events_count == 2 (frequent), vip has 1 -> ret ranks first.
+        by_email = {c.email: c for c in notable}
+        self.assertEqual(by_email['ret@x.com'].events_count, 2)
+        self.assertEqual(by_email['vip@x.com'].events_count, 1)
+        self.assertEqual(notable[0].email, 'ret@x.com')
+
+    def test_high_value_via_monetary_score_without_named_segment(self):
+        from tickets.services.audience import EventAudienceCalculator
+        # Top-spend signal alone (no VIP/Big Spender label) still counts as high value.
+        spender = self._customer('spender@x.com', rfm_segment='Loyal',
+                                 rfm_monetary_score=4, lifetime_value=Decimal('500.00'))
+        self._order(spender, self.event, 'S1', scanned=True)
+        result = EventAudienceCalculator(self.event).calculate()
+        self.assertEqual(result['high_value_attended'], 1)
+
+    def test_frequent_buyer_not_high_value_is_notable(self):
+        from tickets.services.audience import EventAudienceCalculator
+        # No VIP/top-spend signal, but purchased at 2 events -> notable as a frequent buyer.
+        freq = self._customer('freq@x.com')
+        self._order(freq, self.prior_event, 'F0', scanned=False)
+        self._order(freq, self.event, 'F1', scanned=True)
+        # A plain first-timer who is not high-value is NOT notable.
+        plain = self._customer('plain@x.com')
+        self._order(plain, self.event, 'P1', scanned=True)
+        notable = list(EventAudienceCalculator(self.event).notable_attendees_queryset())
+        emails = {c.email for c in notable}
+        self.assertIn('freq@x.com', emails)
+        self.assertNotIn('plain@x.com', emails)
+
+    def test_notable_attendees_paginated_ten_per_page(self):
+        # 12 frequent buyers -> 10 on page 1, 2 on page 2.
+        for i in range(12):
+            c = self._customer('freq%02d@x.com' % i)
+            self._order(c, self.prior_event, 'PR%02d' % i, scanned=False)
+            self._order(c, self.event, 'EV%02d' % i, scanned=True)
+        self._login()
+        resp = self.client.get(reverse('tickets:event_detail', args=[self.event.id]))
+        page = resp.context['notable_attendees_page']
+        self.assertEqual(page.paginator.count, 12)
+        self.assertEqual(page.paginator.per_page, 10)
+        self.assertEqual(len(page.object_list), 10)
+        resp2 = self.client.get(
+            reverse('tickets:event_detail', args=[self.event.id]),
+            {'tab': 'audience', 'audience_page': 2},
+        )
+        self.assertEqual(len(resp2.context['notable_attendees_page'].object_list), 2)
+
+    def _login(self):
+        self.client.login(username='audhost@example.com', password='pw12345')
+        self.client.get(reverse('tickets:home'))
+
+    def test_audience_tab_shown_for_external_event_with_scans(self):
+        self._login()
+        c = self._customer('a@x.com')
+        self._order(c, self.event, 'A1', scanned=True)
+        resp = self.client.get(reverse('tickets:event_detail', args=[self.event.id]))
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, 'id="tab-audience"')
+        self.assertContains(resp, 'audienceDonut')
+        # The tab button shows no count.
+        self.assertContains(resp, 'role="tab">Audience</button>')
+
+    def test_audience_tab_hidden_for_external_event_without_scans(self):
+        self._login()
+        c = self._customer('b@x.com')
+        self._order(c, self.event, 'B1', scanned=False)  # bought, never scanned
+        resp = self.client.get(reverse('tickets:event_detail', args=[self.event.id]))
+        self.assertEqual(resp.status_code, 200)
+        self.assertNotContains(resp, 'id="tab-audience"')
+
+
+class OLSHelperTests(TestCase):
+    """Unit tests for the OLS fit used by market trend classification."""
+
+    def test_linear_series_exact_fit(self):
+        from tickets.services.market_trends.market_trend_calculator import _ols
+        slope, intercept, mean_y, r2 = _ols([10, 20, 30])
+        self.assertAlmostEqual(slope, 10.0)
+        self.assertAlmostEqual(intercept, 10.0)
+        self.assertAlmostEqual(mean_y, 20.0)
+        self.assertAlmostEqual(r2, 1.0)
+
+    def test_flat_series_zero_slope(self):
+        from tickets.services.market_trends.market_trend_calculator import _ols
+        slope, intercept, mean_y, r2 = _ols([5, 5, 5, 5])
+        self.assertEqual(slope, 0.0)
+        self.assertEqual(mean_y, 5.0)
+        self.assertEqual(r2, 1.0)  # a flat fit explains a flat series exactly
+
+
+class MarketTrendCalculatorTests(TestCase):
+    """Tests for per-market turnout trend detection and diagnosis."""
+
+    def setUp(self):
+        self.org = Organization.objects.create(name='Trend Org', slug='trend-org')
+        self.user = User.objects.create_user(
+            username='trend_owner', email='trend_owner@example.com', password='pw',
+        )
+        UserProfile.objects.create(
+            user=self.user, organization=self.org, org_role=UserProfile.OrgRole.OWNER,
+        )
+        OrganizationMembership.objects.create(
+            user=self.user, organization=self.org, org_role=UserProfile.OrgRole.OWNER,
+        )
+        # Quarter anchor dates well in the past so start_date < today always holds.
+        self.quarters = [date(2023, 1, 15), date(2023, 4, 15), date(2023, 7, 15), date(2023, 10, 15)]
+
+    def _venue(self, city):
+        return Venue.objects.create(organization=self.org, name=city + ' Hall', city=city)
+
+    def _event(self, venue, start_date, name):
+        return Event.objects.create(
+            organization=self.org, name=name, venue=venue, start_date=start_date,
+        )
+
+    def _order_with_tickets(self, event, n_tickets, customer_prefix, seq):
+        """Create one order at `event` with `n_tickets` tickets, each a unique customer."""
+        customer = Customer.objects.create(
+            organization=self.org,
+            email='{}-{}@example.com'.format(customer_prefix, seq),
+            name='{} {}'.format(customer_prefix, seq),
+        )
+        order = TicketOrder.objects.create(
+            customer=customer, event=event,
+            order_number='ORD-{}-{}'.format(customer_prefix, seq),
+            order_date=timezone.make_aware(datetime.combine(event.start_date, time(10, 0))),
+            total_amount=Decimal('10.00'),
+        )
+        for t in range(n_tickets):
+            Ticket.objects.create(ticket_order=order, ticket_type='GA', price=Decimal('10.00'))
+        return order
+
+    def _build_market(self, city, counts):
+        """One event per quarter; `counts[i]` = tickets sold that quarter (all new buyers)."""
+        venue = self._venue(city)
+        for i, n in enumerate(counts):
+            event = self._event(venue, self.quarters[i], '{} Q{}'.format(city, i + 1))
+            for s in range(n):
+                self._order_with_tickets(event, 1, '{}q{}'.format(city.lower(), i), s)
+
+    def _build_priced_market(self, city, specs):
+        """One event per quarter; specs[i] = (tickets, price) for that quarter (all new buyers).
+
+        Each ticket is a 1-ticket order at the quarter's price, so tickets-per-event
+        and revenue-per-event can be controlled independently."""
+        venue = self._venue(city)
+        for i, (n, price) in enumerate(specs):
+            event = self._event(venue, self.quarters[i], '{} Q{}'.format(city, i + 1))
+            for s in range(n):
+                customer = Customer.objects.create(
+                    organization=self.org,
+                    email='{}-{}-{}@example.com'.format(city.lower(), i, s),
+                    name='{} {} {}'.format(city, i, s),
+                )
+                order = TicketOrder.objects.create(
+                    customer=customer, event=event,
+                    order_number='ORDP-{}-{}-{}'.format(city.lower(), i, s),
+                    order_date=timezone.make_aware(datetime.combine(event.start_date, time(10, 0))),
+                    total_amount=Decimal(str(price)),
+                )
+                Ticket.objects.create(ticket_order=order, ticket_type='GA', price=Decimal(str(price)))
+
+    def _build_cost_market(self, city, specs):
+        """specs[i] = (tickets, price, cost_per_event) per quarter (all new buyers).
+
+        One event per quarter with `tickets` 1-ticket orders at `price`, plus a
+        single EventExpense of `cost_per_event` — lets profit-per-event move
+        independently of revenue/tickets."""
+        venue = self._venue(city)
+        for i, (n, price, cost) in enumerate(specs):
+            event = self._event(venue, self.quarters[i], '{} Q{}'.format(city, i + 1))
+            for s in range(n):
+                customer = Customer.objects.create(
+                    organization=self.org,
+                    email='{}-c{}-{}@example.com'.format(city.lower(), i, s),
+                    name='{} {} {}'.format(city, i, s),
+                )
+                order = TicketOrder.objects.create(
+                    customer=customer, event=event,
+                    order_number='ORDC-{}-{}-{}'.format(city.lower(), i, s),
+                    order_date=timezone.make_aware(datetime.combine(event.start_date, time(10, 0))),
+                    total_amount=Decimal(str(price)),
+                )
+                Ticket.objects.create(ticket_order=order, ticket_type='GA', price=Decimal(str(price)))
+            EventExpense.objects.create(
+                event=event, category='production', description='cost',
+                amount=Decimal(str(cost)), expense_date=event.start_date,
+                created_by=self.user,
+            )
+
+    def _build_nps_market(self, city, specs):
+        """specs[i] = (promoters, passives, detractors) survey responses for quarter i.
+
+        One event per quarter; each response's `responded_at` sits in that quarter
+        so the NPS series (bucketed by responded_at) has one point per quarter."""
+        from tickets.models import ExternalSurveyUpload, ExternalSurveyResponse
+        venue = self._venue(city)
+        upload = ExternalSurveyUpload.objects.create(
+            organization=self.org, filename='nps.csv',
+            status=ExternalSurveyUpload.Status.COMPLETED, created_by=self.user,
+        )
+        seq = 0
+        for i, (promoters, passives, detractors) in enumerate(specs):
+            event = self._event(venue, self.quarters[i], '{} Q{}'.format(city, i + 1))
+            responded = timezone.make_aware(datetime.combine(self.quarters[i], time(12, 0)))
+            for score, count in ((10, promoters), (8, passives), (3, detractors)):
+                for _ in range(count):
+                    ExternalSurveyResponse.objects.create(
+                        organization=self.org, upload=upload, event=event,
+                        responded_at=responded, email='{}-{}@example.com'.format(city.lower(), seq),
+                        nps_score=score, city=city,
+                    )
+                    seq += 1
+
+    def _build_returning_revenue_market(self, city, specs):
+        """specs[i] = (new_count, returning_count, price) for quarter i.
+
+        One event per quarter; `returning_count` buyers are reused from earlier
+        quarters (so they count as returning), the rest are brand new. Lets the
+        returning-buyer share swing while demand (= buyers/event) and price are
+        controlled independently."""
+        venue = self._venue(city)
+        seen = []
+        seq = 0
+        for i, (new_count, returning_count, price) in enumerate(specs):
+            event = self._event(venue, self.quarters[i], '{} Q{}'.format(city, i + 1))
+            order_dt = timezone.make_aware(datetime.combine(self.quarters[i], time(10, 0)))
+            buyers = []
+            for r in (seen[:returning_count] if returning_count else []):
+                buyers.append(r)
+            for _ in range(new_count):
+                c = Customer.objects.create(
+                    organization=self.org,
+                    email='{}-r{}-{}@example.com'.format(city.lower(), i, seq),
+                    name='{} {}'.format(city, seq),
+                )
+                seq += 1
+                buyers.append(c)
+                seen.append(c)
+            for c in buyers:
+                o = TicketOrder.objects.create(
+                    customer=c, event=event, order_number='ORDR-{}-{}'.format(city.lower(), seq),
+                    order_date=order_dt, total_amount=Decimal(str(price)),
+                )
+                seq += 1
+                Ticket.objects.create(ticket_order=o, ticket_type='GA', price=Decimal(str(price)))
+
+    def test_revenue_top_driver_is_demand_not_returning_share(self):
+        """Returning-buyer share swings hard, but demand/price move the dollars —
+        so the revenue badge goes to demand (contribution), not retention."""
+        from tickets.services.market_trends import MarketTrendCalculator
+        # (new, returning, price): demand 20->38 and price 30->36 both climb,
+        # while returning share jumps 0% -> ~63%.
+        self._build_returning_revenue_market('Boston', [
+            (20, 0, 30), (18, 6, 32), (16, 14, 34), (14, 24, 36),
+        ])
+        result = MarketTrendCalculator(self.org, period='quarter', metric='revenue').calculate()
+        m = next(x for x in result['markets'] if x['city'] == 'Boston')
+        self.assertEqual(m['trend'], 'growing')
+        self.assertIn(m['dominant_driver'], ('demand', 'price'))
+        # Retention still shows as a context bar, just never the badged lead.
+        keys = {d['key'] for d in m['driver_contributions']}
+        self.assertIn('retention', keys)
+
+    def test_declining_demand_market(self):
+        from tickets.services.market_trends import MarketTrendCalculator
+        self._build_market('Austin', [40, 30, 20, 10])
+        result = MarketTrendCalculator(self.org, period='quarter', metric='tickets').calculate()
+        austin = next(m for m in result['markets'] if m['city'] == 'Austin')
+        self.assertEqual(austin['trend'], 'declining')
+        self.assertLess(austin['norm_slope_pct'], 0)
+        # All buyers are new each quarter, so the falling ticket volume is
+        # attributed to fewer new buyers (contribution by buyer count, not the
+        # tautological demand series).
+        self.assertEqual(austin['dominant_driver'], 'acquisition')
+        self.assertIn('Austin', austin['diagnosis_text'])
+        self.assertIsNotNone(austin['recommended_action'])
+
+    def test_stable_market(self):
+        from tickets.services.market_trends import MarketTrendCalculator
+        self._build_market('Denver', [25, 25, 25, 25])
+        result = MarketTrendCalculator(self.org, period='quarter', metric='tickets').calculate()
+        denver = next(m for m in result['markets'] if m['city'] == 'Denver')
+        self.assertEqual(denver['trend'], 'stable')
+        self.assertEqual(denver['dominant_driver'], None)
+
+    def test_growing_market(self):
+        from tickets.services.market_trends import MarketTrendCalculator
+        self._build_market('Miami', [10, 20, 30, 40])
+        result = MarketTrendCalculator(self.org, period='quarter', metric='tickets').calculate()
+        miami = next(m for m in result['markets'] if m['city'] == 'Miami')
+        self.assertEqual(miami['trend'], 'growing')
+        self.assertGreater(miami['norm_slope_pct'], 0)
+
+    def test_insufficient_data_market(self):
+        from tickets.services.market_trends import MarketTrendCalculator
+        self._build_market('Boise', [30, 20])  # only 2 periods
+        result = MarketTrendCalculator(self.org, period='quarter', metric='tickets').calculate()
+        boise = next(m for m in result['markets'] if m['city'] == 'Boise')
+        self.assertEqual(boise['trend'], 'insufficient_data')
+        self.assertEqual(boise['dominant_driver'], None)
+
+    def test_sold_totals_match_ticket_count_no_inflation(self):
+        from tickets.services.market_trends import MarketTrendCalculator
+        self._build_market('Reno', [12, 8, 6, 4])
+        result = MarketTrendCalculator(self.org, period='quarter').calculate()
+        reno = next(m for m in result['markets'] if m['city'] == 'Reno')
+        direct = Ticket.objects.filter(
+            ticket_order__event__organization=self.org,
+            ticket_order__event__venue__city='Reno',
+        ).count()
+        self.assertEqual(reno['total_sold'], direct)
+        self.assertEqual(reno['total_sold'], 30)
+
+    def test_sorted_highest_to_lowest_by_metric(self):
+        from tickets.services.market_trends import MarketTrendCalculator
+        self._build_market('Boston', [50, 40, 30, 20])   # total 140, declining
+        self._build_market('Dallas', [10, 20, 30, 40])   # total 100, growing
+        result = MarketTrendCalculator(self.org, period='quarter', metric='tickets').calculate()
+        # Largest market by tickets sold leads, regardless of trend direction.
+        self.assertEqual([m['city'] for m in result['markets']], ['Boston', 'Dallas'])
+        self.assertEqual(result['summary']['declining_count'], 1)
+        self.assertEqual(result['summary']['growing_count'], 1)
+
+    def test_view_smoke(self):
+        self._build_market('Austin', [40, 30, 20, 10])
+        self.client.login(username='trend_owner@example.com', password='pw')
+        self.client.get(reverse('tickets:home'))  # prime session org / host routing
+        resp = self.client.get(reverse('tickets:market_trends'))
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn('markets', resp.context)
+        self.assertEqual(resp.context['metric'], 'revenue')  # revenue is the default
+        self.assertContains(resp, 'Austin')
+        # Embedded JSON parses.
+        json.loads(resp.context['markets_json'])
+
+    def test_view_period_toggle(self):
+        self._build_market('Austin', [40, 30, 20, 10])
+        self.client.login(username='trend_owner@example.com', password='pw')
+        self.client.get(reverse('tickets:home'))  # prime session org / host routing
+        resp = self.client.get(reverse('tickets:market_trends'), {'period': 'month'})
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.context['period'], 'month')
+
+    def test_returning_buyer_classified_new_then_returning(self):
+        """A buyer is 'new' in their first period and 'returning' afterward —
+        regardless of DB row order (guards the order-independent classification)."""
+        from tickets.services.market_trends import MarketTrendCalculator
+        venue = self._venue('Tahoe')
+        e1 = self._event(venue, self.quarters[0], 'Tahoe Q1')
+        e2 = self._event(venue, self.quarters[1], 'Tahoe Q2')
+        e3 = self._event(venue, self.quarters[2], 'Tahoe Q3')
+        loyal = Customer.objects.create(
+            organization=self.org, email='loyal@example.com', name='Loyal Fan',
+        )
+
+        def _order(event, customer, num):
+            o = TicketOrder.objects.create(
+                customer=customer, event=event, order_number='O-{}'.format(num),
+                order_date=timezone.make_aware(datetime.combine(event.start_date, time(10, 0))),
+                total_amount=Decimal('10.00'),
+            )
+            Ticket.objects.create(ticket_order=o, ticket_type='GA', price=Decimal('10.00'))
+
+        # Loyal fan buys in all three quarters; a fresh buyer joins each quarter.
+        for i, ev in enumerate((e1, e2, e3)):
+            _order(ev, loyal, 'loyal{}'.format(i))
+            fresh = Customer.objects.create(
+                organization=self.org, email='fresh{}@example.com'.format(i), name='Fresh {}'.format(i),
+            )
+            _order(ev, fresh, 'fresh{}'.format(i))
+
+        result = MarketTrendCalculator(self.org, period='quarter').calculate()
+        tahoe = next(m for m in result['markets'] if m['city'] == 'Tahoe')
+        periods = tahoe['periods']
+        # Q1: both buyers brand new.
+        self.assertEqual(periods[0]['new_count'], 2)
+        self.assertEqual(periods[0]['returning_count'], 0)
+        # Q2 & Q3: loyal fan is returning, the fresh buyer is new.
+        self.assertEqual(periods[1]['new_count'], 1)
+        self.assertEqual(periods[1]['returning_count'], 1)
+        self.assertEqual(periods[2]['new_count'], 1)
+        self.assertEqual(periods[2]['returning_count'], 1)
+
+    def test_revenue_is_default_metric(self):
+        from tickets.services.market_trends import MarketTrendCalculator
+        self._build_market('Austin', [40, 30, 20, 10])
+        result = MarketTrendCalculator(self.org).calculate()  # no metric arg
+        austin = next(m for m in result['markets'] if m['city'] == 'Austin')
+        self.assertEqual(austin['metric'], 'revenue')
+        # total_revenue is exposed; total_sold still computed.
+        self.assertEqual(austin['total_sold'], 100)
+        self.assertEqual(austin['total_revenue'], 1000.0)  # 100 tickets x $10
+
+    def test_revenue_declining_via_price_erosion(self):
+        """Flat ticket volume but falling price: stable by tickets, declining by
+        revenue with price as the dominant driver."""
+        from tickets.services.market_trends import MarketTrendCalculator
+        # 20 tickets/quarter (flat), price falls 40 -> 36 -> 30 -> 24.
+        specs = [(20, 40), (20, 36), (20, 30), (20, 24)]
+        self._build_priced_market('Reno', specs)
+
+        tickets_view = MarketTrendCalculator(self.org, metric='tickets').calculate()
+        reno_t = next(m for m in tickets_view['markets'] if m['city'] == 'Reno')
+        self.assertEqual(reno_t['trend'], 'stable')
+
+        revenue_view = MarketTrendCalculator(self.org, metric='revenue').calculate()
+        reno_r = next(m for m in revenue_view['markets'] if m['city'] == 'Reno')
+        self.assertEqual(reno_r['trend'], 'declining')
+        self.assertEqual(reno_r['dominant_driver'], 'price')
+        self.assertIn('Revenue in Reno', reno_r['diagnosis_text'])
+
+    def test_view_metric_toggle(self):
+        self._build_market('Austin', [40, 30, 20, 10])
+        self.client.login(username='trend_owner@example.com', password='pw')
+        self.client.get(reverse('tickets:home'))  # prime session org / host routing
+        resp = self.client.get(reverse('tickets:market_trends'), {'metric': 'tickets'})
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.context['metric'], 'tickets')
+        # Invalid metric falls back to revenue.
+        resp2 = self.client.get(reverse('tickets:market_trends'), {'metric': 'bogus'})
+        self.assertEqual(resp2.context['metric'], 'revenue')
+
+    def test_profit_is_revenue_minus_costs(self):
+        from tickets.services.market_trends import MarketTrendCalculator
+        # 20 tickets x $30 = $600 revenue/quarter; expenses 200+300+400+500 = 1400.
+        specs = [(20, 30, 200), (20, 30, 300), (20, 30, 400), (20, 30, 500)]
+        self._build_cost_market('Tucson', specs)
+        result = MarketTrendCalculator(self.org, metric='profitability').calculate()
+        tuc = next(m for m in result['markets'] if m['city'] == 'Tucson')
+        self.assertEqual(tuc['total_revenue'], 2400.0)
+        self.assertEqual(tuc['total_profit'], 1000.0)  # 2400 - 1400
+
+    def test_profitability_declining_via_rising_costs(self):
+        """Flat volume and price, rising cost: stable by tickets & revenue, but
+        declining by profit with costs as the dominant driver."""
+        from tickets.services.market_trends import MarketTrendCalculator
+        specs = [(20, 30, 200), (20, 30, 300), (20, 30, 400), (20, 30, 500)]
+        self._build_cost_market('Tucson', specs)
+
+        tickets_view = MarketTrendCalculator(self.org, metric='tickets').calculate()
+        self.assertEqual(next(m for m in tickets_view['markets'] if m['city'] == 'Tucson')['trend'], 'stable')
+        revenue_view = MarketTrendCalculator(self.org, metric='revenue').calculate()
+        self.assertEqual(next(m for m in revenue_view['markets'] if m['city'] == 'Tucson')['trend'], 'stable')
+
+        profit_view = MarketTrendCalculator(self.org, metric='profitability').calculate()
+        tuc = next(m for m in profit_view['markets'] if m['city'] == 'Tucson')
+        self.assertEqual(tuc['trend'], 'declining')
+        self.assertEqual(tuc['dominant_driver'], 'costs')
+        self.assertTrue(tuc['diagnosis_text'].startswith('Profit in Tucson'))
+        # The costs driver is flagged as a rising drag.
+        costs = next(d for d in tuc['driver_contributions'] if d['key'] == 'costs')
+        self.assertEqual(costs['hurts_when'], 'up')
+        self.assertGreater(costs['change_pct'], 0)
+
+    def test_view_profitability_metric(self):
+        self._build_market('Austin', [40, 30, 20, 10])
+        self.client.login(username='trend_owner@example.com', password='pw')
+        self.client.get(reverse('tickets:home'))  # prime session org / host routing
+        resp = self.client.get(reverse('tickets:market_trends'), {'metric': 'profitability'})
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.context['metric'], 'profitability')
+
+    def test_in_person_revenue_included_in_profit(self):
+        """Regression: in-person (door/cash) ticket revenue must count toward a
+        market's profit, the same way the event-detail page and
+        profitability_overview do. Otherwise expenses are charged in full while
+        the door-sale revenue that paid for them is dropped, flipping a real
+        profit into a large fake loss.
+
+        Mirrors the reported case: one Seattle event, $6,131.99 in tickets
+        ($4,126.00 online + $2,005.99 in-person) + $892.00 other income, against
+        $7,018.00 of expenses, nets exactly $5.99."""
+        from tickets.models import EventIncome, IncomeSource
+        from tickets.services.market_trends import MarketTrendCalculator
+        from tickets.views import _compute_event_stats
+
+        venue = self._venue('Seattle')
+        event = self._event(venue, self.quarters[0], 'Familiar Faces: Seattle')
+
+        # Online order ($4,126.00) — has customer identity.
+        online_customer = Customer.objects.create(
+            organization=self.org, email='online@example.com', name='Online Buyer',
+        )
+        TicketOrder.objects.create(
+            customer=online_customer, event=event, order_number='ORD-ONLINE',
+            order_date=timezone.make_aware(datetime.combine(event.start_date, time(10, 0))),
+            total_amount=Decimal('4126.00'), is_in_person=False,
+        )
+        # In-person / door order ($2,005.99) — no identity, but real revenue.
+        door_customer = Customer.objects.create(
+            organization=self.org, email='door@example.com', name='Door Buyer',
+        )
+        TicketOrder.objects.create(
+            customer=door_customer, event=event, order_number='ORD-DOOR',
+            order_date=timezone.make_aware(datetime.combine(event.start_date, time(10, 0))),
+            total_amount=Decimal('2005.99'), is_in_person=True,
+        )
+        # Other income ($892.00) and expenses ($7,018.00).
+        income_source = IncomeSource.objects.create(
+            organization=self.org, name='Bar', order=1,
+        )
+        EventIncome.objects.create(
+            event=event, income_source=income_source, amount=Decimal('892.00'),
+        )
+        EventExpense.objects.create(
+            event=event, category='production', description='show costs',
+            amount=Decimal('7018.00'), expense_date=event.start_date,
+            created_by=self.user,
+        )
+
+        # The event-detail P&L nets $5.99 (external ticketing -> no Stripe fees).
+        stats = _compute_event_stats(event)
+        self.assertEqual(stats['profit'], Decimal('5.99'))
+
+        # Market Trends must reconcile to that same figure, not exclude the
+        # in-person revenue while keeping the full expense.
+        result = MarketTrendCalculator(self.org, metric='profitability').calculate()
+        seattle = next(m for m in result['markets'] if m['city'] == 'Seattle')
+        self.assertAlmostEqual(seattle['total_profit'], 5.99, places=2)
+        # Revenue series is ticket revenue (online + in-person); other income
+        # feeds profit, not this figure.
+        self.assertAlmostEqual(seattle['total_revenue'], 6131.99, places=2)
+        # Single event in the market -> avg profit / event equals the net profit.
+        self.assertAlmostEqual(
+            seattle['periods'][0]['avg_profit_per_event'], 5.99, places=2,
+        )
+
+    def test_nps_total_score(self):
+        from tickets.services.market_trends import MarketTrendCalculator
+        # All promoters every quarter -> overall NPS = 100.
+        self._build_nps_market('Reno', [(10, 0, 0), (10, 0, 0), (10, 0, 0), (10, 0, 0)])
+        result = MarketTrendCalculator(self.org, metric='nps').calculate()
+        reno = next(m for m in result['markets'] if m['city'] == 'Reno')
+        self.assertEqual(reno['total_nps'], 100)
+        self.assertEqual(reno['change_unit'], 'pts')
+
+    def test_nps_declining_via_detractors(self):
+        from tickets.services.market_trends import MarketTrendCalculator
+        # Promoter share falls and detractor share climbs -> NPS slides; the
+        # detractor rise is the larger driver.
+        self._build_nps_market('Nashville', [(12, 6, 2), (9, 6, 5), (6, 6, 8), (4, 6, 10)])
+        result = MarketTrendCalculator(self.org, metric='nps').calculate()
+        nash = next(m for m in result['markets'] if m['city'] == 'Nashville')
+        self.assertEqual(nash['trend'], 'declining')
+        self.assertEqual(nash['dominant_driver'], 'detractors')
+        self.assertTrue(nash['diagnosis_text'].startswith('NPS in Nashville'))
+        self.assertEqual(nash['change_unit'], 'pts')
+
+    def test_view_nps_metric(self):
+        self._build_nps_market('Nashville', [(12, 6, 2), (9, 6, 5), (6, 6, 8), (4, 6, 10)])
+        self.client.login(username='trend_owner@example.com', password='pw')
+        self.client.get(reverse('tickets:home'))  # prime session org / host routing
+        resp = self.client.get(reverse('tickets:market_trends'), {'metric': 'nps'})
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.context['metric'], 'nps')
+        self.assertEqual(resp.context['change_unit'], 'pts')
+
+    def test_growing_market_has_metrics_and_next_step(self):
+        from tickets.services.market_trends import MarketTrendCalculator
+        self._build_market('Miami', [10, 20, 30, 40])  # growing
+        result = MarketTrendCalculator(self.org, period='quarter', metric='tickets').calculate()
+        miami = next(m for m in result['markets'] if m['city'] == 'Miami')
+        self.assertEqual(miami['trend'], 'growing')
+        # Driver metrics and a "keep improving" step are present for growth too.
+        self.assertTrue(miami['driver_contributions'])
+        self.assertIsNotNone(miami['recommended_action'])
+        self.assertIn(miami['dominant_driver'], ('demand', 'acquisition'))
+        self.assertIn('is up', miami['diagnosis_text'])
+        self.assertIn('led by', miami['diagnosis_text'])
+
+    def test_stable_market_has_metrics_and_next_step(self):
+        from tickets.services.market_trends import MarketTrendCalculator
+        self._build_market('Reno', [25, 25, 25, 25])  # stable
+        result = MarketTrendCalculator(self.org, period='quarter', metric='tickets').calculate()
+        reno = next(m for m in result['markets'] if m['city'] == 'Reno')
+        self.assertEqual(reno['trend'], 'stable')
+        self.assertIsNone(reno['dominant_driver'])  # no single lead when flat
+        self.assertTrue(reno['driver_contributions'])
+        self.assertIsNotNone(reno['recommended_action'])
+        self.assertIn('holding steady', reno['diagnosis_text'])
+
+    def test_nps_growing_recommends_survey_feedback(self):
+        from tickets.services.market_trends import MarketTrendCalculator
+        # Promoters climb, detractors fall -> NPS grows.
+        self._build_nps_market('Seattle', [(4, 6, 10), (6, 6, 8), (9, 6, 5), (12, 6, 2)])
+        result = MarketTrendCalculator(self.org, metric='nps').calculate()
+        sea = next(m for m in result['markets'] if m['city'] == 'Seattle')
+        self.assertEqual(sea['trend'], 'growing')
+        self.assertIn(sea['dominant_driver'], ('promoters', 'detractors'))
+        self.assertEqual(sea['recommended_action']['url_name'], 'tickets:survey_analytics')
+

@@ -16,7 +16,7 @@ Login after seeding:
 import random
 import string
 import uuid
-from datetime import timedelta
+from datetime import date, timedelta
 from decimal import Decimal
 
 from django.conf import settings
@@ -33,6 +33,7 @@ from tickets.models import (
     Event,
     EventExpense,
     EventIncome,
+    EventSMSCampaign,
     EVENT_STATUS_CANCELLED,
     EVENT_STATUS_DRAFT,
     EVENT_STATUS_ENDED,
@@ -46,6 +47,8 @@ from tickets.models import (
     PromoCode,
     SaleableTicketType,
     SaleableTicketTypeTier,
+    SMSCampaign,
+    SMSMessageRecipient,
     StripeCheckoutSession,
     SurveyInvitation,
     SurveyQuestion,
@@ -139,13 +142,18 @@ class Command(BaseCommand):
             customers = self._create_customers(org, tags, rng)
             events = self._create_events(org, venues, owner, today, rng)
             promo_codes = self._create_promo_codes(org, events, now)
-            self._create_orders_and_tickets(events, customers, uploads, promo_codes, owner, today, rng)
+            # Direct-ticketing catalog must exist before orders so direct events
+            # sell against their real SaleableTicketTypes (keeps quantity_sold and
+            # the underlying Ticket rows consistent).
             self._create_direct_ticketing(events, now, rng)
+            self._create_orders_and_tickets(events, customers, uploads, promo_codes, owner, today, rng)
+            self._create_market_trend_history(org, owner, today, rng)
             self._create_stripe_sessions(org, events, customers, now, rng)
             self._create_tracking_links(org, events, rng)
             self._create_expenses_and_income(org, events, owner, rng)
             self._create_surveys(org, events, customers, owner, rng)
             self._create_external_survey_responses(org, events, owner, rng)
+            self._create_sms_broadcasts(org, events, customers, owner, now, rng)
 
             for customer in Customer.objects.filter(organization=org):
                 customer.update_lifetime_value()
@@ -419,7 +427,8 @@ class Command(BaseCommand):
         return codes
 
     def _create_orders_and_tickets(self, events, customers, uploads, promos, owner, today, rng):
-        ticket_types = [
+        # External (CSV-style) events draw from a generic ticket-type list.
+        external_ticket_types = [
             ("General Admission", 25, 35),
             ("Tier 2", 35, 45),
             ("VIP", 60, 95),
@@ -432,6 +441,12 @@ class Command(BaseCommand):
                 continue
             if event.name == LIVE_EVENT_WITHOUT_ORDERS:
                 continue  # freshly announced — intentionally has no orders yet
+            # Direct events sell against their real SaleableTicketType catalog so
+            # quantity_sold and the underlying Ticket rows stay consistent. Track
+            # remaining capacity so a limited type is never oversold.
+            is_direct = event.ticketing_type == TICKETING_TYPE_DIRECT
+            direct_types = list(event.saleable_ticket_types.all()) if is_direct else None
+            direct_sold = {tt.id: 0 for tt in direct_types} if is_direct else None
             if event.status == EVENT_STATUS_CANCELLED:
                 num_orders = 5
             else:
@@ -440,8 +455,16 @@ class Command(BaseCommand):
             for _ in range(num_orders):
                 customer = rng.choice(customers)
                 qty = rng.choices([1, 2, 3, 4, 5, 6], weights=[35, 30, 15, 10, 6, 4])[0]
-                tt_name, tt_low, tt_high = rng.choice(ticket_types)
-                price = _decimal(rng.randint(tt_low, tt_high)) if tt_high else _decimal(0)
+                if is_direct:
+                    pick = self._pick_direct_type(direct_types, direct_sold, qty, rng)
+                    if pick is None:
+                        break  # catalog fully sold out
+                    tt, qty = pick
+                    tt_name = tt.name
+                    price = tt.price
+                else:
+                    tt_name, tt_low, tt_high = rng.choice(external_ticket_types)
+                    price = _decimal(rng.randint(tt_low, tt_high)) if tt_high else _decimal(0)
                 total = price * qty
                 # Spread order_date across the 8 weeks before the event
                 days_before = rng.randint(2, 56)
@@ -490,7 +513,280 @@ class Command(BaseCommand):
                         price=price,
                     )
                     tickets_count += 1
+                if is_direct:
+                    direct_sold[tt.id] += qty
+            # Persist the true sold count for direct types from the tickets created.
+            if is_direct:
+                for tt in direct_types:
+                    if tt.quantity_sold != direct_sold[tt.id]:
+                        tt.quantity_sold = direct_sold[tt.id]
+                        tt.save(update_fields=["quantity_sold"])
         self.stdout.write(self.style.SUCCESS(f"Orders: {orders_count} | Tickets: {tickets_count}"))
+
+    @staticmethod
+    def _pick_direct_type(types, sold, qty, rng):
+        """Choose a SaleableTicketType for one order, respecting remaining capacity.
+
+        Returns (ticket_type, adjusted_qty) or None if the whole catalog is sold
+        out. GA-style types are weighted more popular than VIP. qty is clamped to
+        the chosen type's remaining allotment so a limited type is never oversold.
+        """
+        available, weights = [], []
+        for tt in types:
+            limit = tt.quantity_limit
+            remaining = None if limit is None else max(limit - sold[tt.id], 0)
+            if remaining == 0:
+                continue
+            available.append((tt, remaining))
+            weights.append(30 if "VIP" in tt.name else 70)
+        if not available:
+            return None
+        tt, remaining = rng.choices(available, weights=weights)[0]
+        if remaining is not None:
+            qty = min(qty, remaining)
+        return tt, qty
+
+    # Demo markets for the Market Trends analytics page. Each market is a distinct
+    # city with one event per spec slot across several past quarters, so the page
+    # can fit a real per-market turnout trend. The per-quarter tuples are
+    # (tickets_per_event, returning_pct) and are tuned to produce one market of
+    # each trend shape / dominant decline driver. EVENTS_PER_QUARTER events are
+    # created per slot. Verified against MarketTrendCalculator; see the unit tests
+    # in tickets/tests.py (MarketTrendCalculatorTests).
+    MARKET_TREND_SPECS = [
+        # city, venue, quarter tuples (oldest -> newest)
+        # Denver: turnout sliding as loyal regulars stop coming back (retention).
+        ("Denver", "Larimer Lounge", [
+            (32, 0), (30, 55), (28, 45), (24, 30), (20, 18), (16, 8),
+        ]),
+        # Nashville: turnout sliding as new-buyer acquisition dries up.
+        ("Nashville", "The Basement East", [
+            (34, 0), (28, 35), (22, 45), (17, 52), (13, 58), (10, 62),
+        ]),
+        # Memphis: turnout sliding on softening demand; a pure first-timer market
+        # that never builds a returning base, so the drop is all about demand.
+        ("Memphis", "Growlers", [
+            (32, 0), (28, 0), (23, 0), (18, 0), (14, 0), (11, 0),
+        ]),
+        # Seattle: turnout climbing — the bright spot.
+        ("Seattle", "Neumos", [
+            (12, 0), (16, 30), (21, 38), (26, 42), (31, 45), (36, 48),
+        ]),
+        # Portland: holding steady, no action needed.
+        ("Portland", "Doug Fir Lounge", [
+            (24, 0), (25, 35), (23, 40), (25, 42), (24, 41), (25, 43),
+        ]),
+        # Sacramento: ticket VOLUME holds steady but average price erodes — looks
+        # stable by tickets, declining by revenue (dominant driver = price). The
+        # optional 3rd tuple element pins the per-ticket price for that quarter.
+        ("Sacramento", "Ace of Spades", [
+            (28, 35, 42), (28, 40, 40), (27, 38, 36), (28, 42, 30), (28, 40, 24), (28, 43, 18),
+        ]),
+        # Tucson: tickets AND price steady, but cost per event keeps rising — looks
+        # stable by tickets and revenue, declining by PROFIT (dominant driver =
+        # costs). The optional 4th tuple element pins the per-event cost.
+        ("Tucson", "Club Congress", [
+            (28, 0, 35, 300), (28, 38, 35, 380), (28, 40, 35, 480),
+            (28, 39, 35, 600), (28, 41, 35, 740), (28, 40, 35, 900),
+        ]),
+        # Boise: just two shows on the books — not enough history to read a trend.
+        ("Boise", "Neurolux", [
+            (28, 0), (22, 30),
+        ]),
+    ]
+    EVENTS_PER_QUARTER = 2
+
+    def _past_quarter_dates(self, today, n):
+        """Return `n` dates, oldest first, each in a distinct fully-past quarter.
+
+        Anchored on the 15th of each quarter's first month so every date is
+        comfortably before `today` (the current, in-progress quarter is skipped).
+        """
+        cy, cq = today.year, (today.month - 1) // 3  # 0-based current quarter
+        pairs = []
+        for _ in range(n):
+            cq -= 1
+            if cq < 0:
+                cq, cy = 3, cy - 1
+            pairs.append((cy, cq))
+        pairs.reverse()
+        return [date(yy, qq * 3 + 1, 15) for yy, qq in pairs]
+
+    # Default per-event cost as a fraction of that event's ticket revenue, so
+    # profit tracks revenue for most markets (~45% margin). Markets with an
+    # explicit 4th tuple element override this with a fixed per-event cost.
+    DEFAULT_COST_FRACTION = 0.55
+
+    # Per-market promoter-share trajectory (start -> end across the quarters) used
+    # to seed NPS survey responses so the NPS lens has real trends. Most markets
+    # are flat (stable NPS); Nashville's sentiment sours (declining NPS, driven by
+    # more detractors) and Seattle's improves (growing NPS).
+    NPS_PROMOTER_TRAJECTORY = {
+        'Nashville': (0.55, 0.20),
+        'Seattle': (0.30, 0.62),
+    }
+    NPS_DEFAULT_PROMOTER = 0.45
+    NPS_PASSIVE_P = 0.30
+    NPS_RESPONSES_PER_EVENT = (8, 16)   # rng range
+
+    def _create_market_trend_history(self, org, owner, today, rng):
+        from tickets.models import (
+            EVENT_STATUS_ENDED, TICKETING_TYPE_EXTERNAL,
+            ExternalSurveyResponse, ExternalSurveyUpload,
+        )
+
+        nps_upload = ExternalSurveyUpload.objects.create(
+            organization=org,
+            filename='market-trends-nps.csv',
+            status=ExternalSurveyUpload.Status.COMPLETED,
+            created_by=owner,
+        )
+
+        markets_made = events_made = orders_made = expenses_made = nps_made = 0
+        for city, venue_name, quarters in self.MARKET_TREND_SPECS:
+            n_quarters = len(quarters)
+            prom_start, prom_end = self.NPS_PROMOTER_TRAJECTORY.get(
+                city, (self.NPS_DEFAULT_PROMOTER, self.NPS_DEFAULT_PROMOTER)
+            )
+            venue = Venue.objects.create(
+                organization=org, name=venue_name, city=city,
+                state="", country="USA",
+                capacity=max(q[0] for q in quarters) * self.EVENTS_PER_QUARTER + 50,
+            )
+            anchors = self._past_quarter_dates(today, len(quarters))
+            seen = []   # customers with at least one prior order in this market
+            cust_seq = 0
+            for qi, q in enumerate(quarters):
+                # Quarter tuple is (tickets_per_event, returning_pct[, fixed_price[, fixed_cost]]).
+                tickets_per_event, ret_pct = q[0], q[1]
+                quarter_price = q[2] if len(q) > 2 else None
+                quarter_cost = q[3] if len(q) > 3 else None
+                anchor = anchors[qi]
+                # Spread this quarter's events across its first two months.
+                q_events = []
+                for ei in range(self.EVENTS_PER_QUARTER):
+                    start_date = anchor + timedelta(days=ei * 35)
+                    if start_date >= today:
+                        start_date = today - timedelta(days=3)
+                    q_events.append(Event.objects.create(
+                        organization=org,
+                        name=f"{city} Nights — Q{qi + 1} #{ei + 1}",
+                        summary=f"{city} show.",
+                        venue=venue,
+                        start_date=start_date,
+                        end_date=start_date,
+                        start_time=timezone.now().time().replace(microsecond=0),
+                        capacity=venue.capacity,
+                        ticketing_type=TICKETING_TYPE_EXTERNAL,
+                        status=EVENT_STATUS_ENDED,
+                        timezone="America/Los_Angeles",
+                        created_by=owner,
+                    ))
+                events_made += len(q_events)
+
+                total = tickets_per_event * len(q_events)
+                returning_target = min(round(ret_pct / 100 * total), len(seen))
+                new_target = total - returning_target
+
+                returning_buyers = rng.sample(seen, returning_target) if returning_target else []
+                new_buyers = []
+                for _ in range(new_target):
+                    name = _gen_name(rng)
+                    cust = Customer.objects.create(
+                        organization=org,
+                        email=f"{slugify(city)}.{slugify(name)}.{cust_seq:04d}@example.test",
+                        name=name,
+                    )
+                    cust_seq += 1
+                    new_buyers.append(cust)
+
+                # Each buyer places one 1-ticket order this quarter, spread over the
+                # quarter's events. New buyers' first-ever order is this quarter
+                # (counted "new"); returning buyers debuted earlier ("returning").
+                buyers = returning_buyers + new_buyers
+                rng.shuffle(buyers)
+                event_revenue = {e.id: Decimal("0.00") for e in q_events}
+                for bi, cust in enumerate(buyers):
+                    event = q_events[bi % len(q_events)]
+                    price = _decimal(quarter_price if quarter_price is not None
+                                     else rng.choice([25, 30, 35, 40]))
+                    order_dt = timezone.make_aware(timezone.datetime.combine(
+                        event.start_date - timedelta(days=rng.randint(3, 30)),
+                        timezone.datetime.min.time(),
+                    )) + timedelta(hours=rng.randint(9, 21))
+                    order = TicketOrder.objects.create(
+                        customer=cust,
+                        event=event,
+                        order_number=f"ORD-{OrderCounter.next():06d}",
+                        order_date=order_dt,
+                        total_amount=price,
+                        created_by=owner,
+                    )
+                    Ticket.objects.create(
+                        ticket_order=order, ticket_type="General Admission", price=price,
+                    )
+                    event_revenue[event.id] += price
+                    orders_made += 1
+
+                # One expense per event so the profitability lens is meaningful:
+                # a fixed per-event cost when specified, else ~55% of revenue.
+                for event in q_events:
+                    if quarter_cost is not None:
+                        cost = _decimal(quarter_cost)
+                    else:
+                        cost = _decimal(
+                            float(event_revenue[event.id]) * self.DEFAULT_COST_FRACTION
+                        )
+                    EventExpense.objects.create(
+                        event=event,
+                        category="production",
+                        description="Production & venue",
+                        amount=cost,
+                        expense_date=event.start_date - timedelta(days=7),
+                        created_by=owner,
+                    )
+                    expenses_made += 1
+
+                # NPS survey responses per event so the NPS lens has trend data.
+                # Promoter share interpolates across the quarters per the market's
+                # trajectory; responded_at sits just after the show.
+                frac = qi / (n_quarters - 1) if n_quarters > 1 else 0.0
+                promoter_p = prom_start + (prom_end - prom_start) * frac
+                for event in q_events:
+                    for _ in range(rng.randint(*self.NPS_RESPONSES_PER_EVENT)):
+                        roll = rng.random()
+                        if roll < promoter_p:
+                            nps = rng.randint(9, 10)
+                        elif roll < promoter_p + self.NPS_PASSIVE_P:
+                            nps = rng.randint(7, 8)
+                        else:
+                            nps = rng.randint(0, 6)
+                        responded_at = timezone.make_aware(timezone.datetime.combine(
+                            event.start_date + timedelta(days=rng.randint(1, 14)),
+                            timezone.datetime.min.time(),
+                        )) + timedelta(hours=rng.randint(8, 22))
+                        ExternalSurveyResponse.objects.create(
+                            organization=org,
+                            upload=nps_upload,
+                            event=event,
+                            responded_at=responded_at,
+                            email=f"nps{nps_made:05d}@example.test",
+                            nps_score=None if rng.random() < 0.12 else nps,
+                            city=city,
+                        )
+                        nps_made += 1
+
+                # New buyers can return in later quarters.
+                seen.extend(new_buyers)
+            markets_made += 1
+
+        nps_upload.row_count = nps_made
+        nps_upload.save(update_fields=['row_count'])
+        self.stdout.write(self.style.SUCCESS(
+            f"Market trend history: {markets_made} markets, "
+            f"{events_made} events, {orders_made} orders, {expenses_made} expenses, "
+            f"{nps_made} NPS responses"
+        ))
 
     def _create_direct_ticketing(self, events, now, rng):
         direct_events = [
@@ -500,17 +796,19 @@ class Command(BaseCommand):
         ]
         for i, event in enumerate(direct_events):
             no_orders = event.name == LIVE_EVENT_WITHOUT_ORDERS
+            # quantity_sold starts at 0; _create_orders_and_tickets sells real
+            # orders against these types and writes back the true count.
             ga = SaleableTicketType.objects.create(
                 event=event, name="General Admission", price=_decimal(30),
                 quantity_limit=200, max_per_customer=6,
-                quantity_sold=0 if no_orders else rng.randint(40, 120),
+                quantity_sold=0,
                 order=1, sale_start=now - timedelta(days=14),
                 description="Standing room. First come, first served.",
             )
             vip = SaleableTicketType.objects.create(
                 event=event, name="VIP Lounge", price=_decimal(85),
                 quantity_limit=40, max_per_customer=4,
-                quantity_sold=0 if no_orders else rng.randint(8, 30),
+                quantity_sold=0,
                 order=2, sale_start=now - timedelta(days=14),
                 description="Reserved table + welcome drink.",
             )
@@ -740,6 +1038,118 @@ class Command(BaseCommand):
         upload.row_count = total
         upload.save(update_fields=['row_count'])
         self.stdout.write(self.style.SUCCESS(f"External survey responses: {total}"))
+
+    def _create_sms_broadcasts(self, org, events, customers, owner, now, rng):
+        """Native SMS campaigns (with per-recipient delivery) + external SlickText
+        broadcasts, so Marketing -> SMS has audience-over-time points, a by-market
+        breakdown, delivery/click stats, and a top-broadcasts table.
+
+        Native campaigns grow their audience over time (so the chart reads as
+        audience growth); some are event-scoped (market = the event's venue city)
+        and some are general (no market). SlickText broadcasts are confirmed metric
+        records linked to ended events with bigger audiences.
+        """
+        contactable = [c for c in customers if c.phone and c.sms_opt_in]
+        eventful = [e for e in events if e.venue and e.venue.city]
+
+        def _event(idx):
+            return eventful[idx % len(eventful)] if eventful else None
+
+        # (name, days_ago, target_audience, link, event)
+        native_specs = [
+            ("Winter list warm-up",      150, 12, "",                            None),
+            ("Late Bloom presale",       120, 18, "https://cueup.co/late-bloom", _event(0)),
+            ("Open Decks reminder",       90, 24, "https://cueup.co/open-decks", _event(1)),
+            ("VIP early access",          60, 30, "https://cueup.co/vip",        None),
+            ("Bloom weekend blast",       30, 36, "https://cueup.co/bloom",      _event(2)),
+            ("This weekend: doors 8pm",    7, 40, "https://cueup.co/doors",      _event(0)),
+        ]
+        native_count = 0
+        for name, days_ago, target, link, event in native_specs:
+            sent_at = now - timedelta(days=days_ago)
+            pool = contactable[:]
+            rng.shuffle(pool)
+            recips = pool[:min(target, len(pool))]
+            criteria = {'event_id': str(event.id)} if event else {'all_subscribers': True}
+            campaign = SMSCampaign.objects.create(
+                organization=org,
+                event=event,
+                name=name,
+                body=f"{name} - grab tickets before they're gone. Reply STOP to opt out.",
+                link_url=link,
+                filter_criteria=criteria,
+                status=SMSCampaign.Status.SENT,
+                scheduled_at=sent_at,
+                started_at=sent_at,
+                sent_at=sent_at,
+                audience_size=len(recips),
+                created_by=owner,
+            )
+            rows = []
+            for cust in recips:
+                roll = rng.random()
+                if roll < 0.88:
+                    status = SMSMessageRecipient.Status.DELIVERED
+                    delivered_at = sent_at + timedelta(minutes=2)
+                elif roll < 0.95:
+                    status = SMSMessageRecipient.Status.UNDELIVERED
+                    delivered_at = None
+                else:
+                    status = SMSMessageRecipient.Status.FAILED
+                    delivered_at = None
+                delivered = status == SMSMessageRecipient.Status.DELIVERED
+                clicked = bool(link) and delivered and rng.random() < 0.22
+                opted_out = delivered and rng.random() < 0.04
+                rows.append(SMSMessageRecipient(
+                    campaign=campaign,
+                    customer=cust,
+                    phone=cust.phone,
+                    status=status,
+                    sent_at=sent_at,
+                    delivered_at=delivered_at,
+                    click_count=rng.randint(1, 3) if clicked else 0,
+                    first_clicked_at=(sent_at + timedelta(hours=1)) if clicked else None,
+                    opted_out_at=(sent_at + timedelta(hours=2)) if opted_out else None,
+                ))
+            SMSMessageRecipient.objects.bulk_create(rows)
+            native_count += 1
+
+        # External SlickText broadcasts (tracked metrics only) on ended events.
+        slick_count = 0
+        ended = [e for e in events if e.status == EVENT_STATUS_ENDED and e.venue and e.venue.city]
+        for i, event in enumerate(ended):
+            days_until = (event.start_date - now.date()).days
+            send_time = now + timedelta(days=days_until, hours=-3)
+            audience = rng.randint(180, 650)
+            unique_clicks = max(1, int(audience * rng.uniform(0.06, 0.16)))
+            clicks = unique_clicks + rng.randint(0, unique_clicks)
+            unsubs = int(audience * rng.uniform(0.005, 0.02))
+            orders = max(0, int(unique_clicks * rng.uniform(0.1, 0.3)))
+            revenue = _decimal(orders * rng.randint(25, 60))
+            click_rate = Decimal(str(round(unique_clicks / audience, 4))) if audience else Decimal("0.0000")
+            EventSMSCampaign.objects.create(
+                event=event,
+                source='slicktext',
+                external_id=f"st-seed-{i + 1}",
+                name=f"{event.name} - SlickText blast",
+                message="Tonight! Doors at 8. Tap for tickets.",
+                send_time=send_time,
+                audience_size=audience,
+                clicks=clicks,
+                unique_clicks=unique_clicks,
+                click_rate=click_rate,
+                unsubscribes=unsubs,
+                orders=orders,
+                revenue=revenue,
+                confirmed_at=now,
+                confirmed_by=owner,
+                last_synced_at=now,
+            )
+            slick_count += 1
+
+        self.stdout.write(self.style.SUCCESS(
+            f"SMS: {native_count} native campaigns, {slick_count} SlickText broadcasts"
+        ))
 
     # ------------------------------------------------------------------
     # Output

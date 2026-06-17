@@ -982,6 +982,58 @@ a:hover {
     font-weight: 300;
 }
 
+/* Modern circular select for the customers table (header "select all" + rows).
+   Fill uses --accent and the checkmark uses --bg-surface, so contrast holds in
+   both the dark default and the light organizer theme automatically. */
+.cust-check {
+    appearance: none;
+    -webkit-appearance: none;
+    box-sizing: border-box;
+    position: relative;
+    width: 20px;
+    height: 20px;
+    margin: 0;
+    border: 1.5px solid var(--border);
+    border-radius: 50%;
+    background: var(--bg-inset);
+    cursor: pointer;
+    vertical-align: middle;
+    transition: background-color .15s ease, border-color .15s ease, box-shadow .15s ease;
+}
+.cust-check:hover {
+    border-color: var(--accent);
+}
+.cust-check:checked,
+.cust-check:indeterminate {
+    background: var(--accent);
+    border-color: var(--accent);
+}
+.cust-check:checked::after {
+    content: "";
+    position: absolute;
+    left: 6.5px;
+    top: 3px;
+    width: 5px;
+    height: 9px;
+    border: solid var(--bg-surface);
+    border-width: 0 2px 2px 0;
+    transform: rotate(45deg);
+}
+.cust-check:indeterminate::after {
+    content: "";
+    position: absolute;
+    left: 4.5px;
+    top: 8.5px;
+    width: 9px;
+    height: 2px;
+    border-radius: 1px;
+    background: var(--bg-surface);
+}
+.cust-check:focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 3px var(--accent-muted-border);
+}
+
 /* -- Nav Tabs (Status Filter) ------------------ */
 .nav-tabs {
     border-bottom: none;

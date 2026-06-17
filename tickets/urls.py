@@ -114,6 +114,7 @@ urlpatterns = [
     path('analytics/churn/bulk-tag/', views.churn_bulk_tag, name='churn_bulk_tag'),
     path('analytics/repeat-customers/', views.repeat_customers, name='repeat_customers'),
     path('analytics/cohort-retention/', views.cohort_retention, name='cohort_retention'),
+    path('analytics/market-trends/', views.market_trends, name='market_trends'),
     path('analytics/profitability/', views.profitability_overview, name='profitability_overview'),
     path('analytics/expenses/', views.expense_analytics, name='expense_analytics'),
     # Loyalty programs
@@ -153,6 +154,7 @@ urlpatterns = [
     path('events/create/', views.event_type_select, name='event_type_select'),
     path('events/create/<str:ticketing_type>/', views.event_create, name='event_create'),
     path('events/<uuid:event_id>/', views.event_detail, name='event_detail'),
+    path('events/<uuid:event_id>/summary/stream/', views.event_summary_stream, name='event_summary_stream'),
     path('events/<uuid:event_id>/weather/hourly/', views.event_weather_hourly, name='event_weather_hourly'),
     path('events/<uuid:event_id>/surveys/match/',  views.event_survey_match,  name='event_survey_match'),
     path('events/<uuid:event_id>/surveys/apply/',  views.event_survey_apply,  name='event_survey_apply'),
@@ -238,6 +240,7 @@ urlpatterns = [
     # Orders
     path('orders/<uuid:order_id>/', views.order_detail, name='order_detail'),
     path('orders/<uuid:order_id>/refund/', views.refund_order, name='refund_order'),
+    path('orders/<uuid:order_id>/resend-confirmation/', views.resend_order_confirmation, name='resend_order_confirmation'),
     
     # CSV Formats
     path('formats/', views.format_list, name='format_list'),
@@ -245,10 +248,12 @@ urlpatterns = [
     path('formats/<uuid:format_id>/edit/', views.format_edit, name='format_edit'),
     path('formats/<uuid:format_id>/delete/', views.format_delete, name='format_delete'),
     path('formats/<uuid:format_id>/set-default/', views.format_set_default, name='format_set_default'),
-    
+    path('formats/<uuid:format_id>/duplicate/', views.format_duplicate, name='format_duplicate'),
+
     # Settings
     path('settings/google-calendar/', views.settings_google_calendar, name='settings_google_calendar'),
     path('settings/', views.settings_overview, name='settings_overview'),
+    path('settings/display/', views.settings_display_preferences, name='settings_display_preferences'),
     path('settings/google-calendar/disconnect/', views.settings_google_calendar_disconnect, name='settings_google_calendar_disconnect'),
     path('settings/meta-ads/', views.meta_ads_settings, name='meta_ads_settings'),
     path('settings/meta-ads/connect/', views.meta_ads_connect, name='meta_ads_connect'),
@@ -288,6 +293,7 @@ urlpatterns = [
     path('events/<uuid:event_id>/ticket-types/reorder/', views.saleable_ticket_type_reorder, name='saleable_ticket_type_reorder'),
     path('events/<uuid:event_id>/ticket-types/<uuid:ticket_type_id>/edit/', views.saleable_ticket_type_edit, name='saleable_ticket_type_edit'),
     path('events/<uuid:event_id>/ticket-types/<uuid:ticket_type_id>/data/', views.saleable_ticket_type_data, name='saleable_ticket_type_data'),
+    path('events/<uuid:event_id>/ticket-types/<uuid:ticket_type_id>/orders/', views.saleable_ticket_type_orders, name='saleable_ticket_type_orders'),
     path('events/<uuid:event_id>/ticket-types/<uuid:ticket_type_id>/toggle/', views.saleable_ticket_type_toggle, name='saleable_ticket_type_toggle'),
     path('events/<uuid:event_id>/ticket-types/<uuid:ticket_type_id>/delete/', views.saleable_ticket_type_delete, name='saleable_ticket_type_delete'),
 

@@ -3,7 +3,251 @@
 
 {% block title %}{{ customer.name }} - Customer Details{% endblock %}
 
+{% block extra_head %}
+<style>
+    /* ===== Customer detail — "quiet dossier" minimalist layout ===== */
+    .cd-wrap { max-width: 1080px; }
+
+    /* Masthead -------------------------------------------------------- */
+    .cd-masthead {
+        background: var(--bg-surface);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        padding: 24px 28px;
+        margin-bottom: 24px;
+    }
+    .cd-identity {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 24px;
+        flex-wrap: wrap;
+    }
+    .cd-identity-main {
+        display: flex;
+        align-items: center;
+        gap: 16px;
+        min-width: 0;
+    }
+    .cd-avatar {
+        flex-shrink: 0;
+        width: 52px;
+        height: 52px;
+        border-radius: 50%;
+        background: var(--accent-muted);
+        border: 1px solid var(--accent-muted-border);
+        color: var(--accent);
+        font-family: var(--font-mono);
+        font-weight: 500;
+        font-size: 1.25rem;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        letter-spacing: 0;
+        text-transform: uppercase;
+    }
+    .cd-name {
+        font-family: var(--font-display);
+        font-size: 1.625rem;
+        font-weight: 600;
+        letter-spacing: 0.01em;
+        line-height: 1.15;
+        margin: 0;
+        color: var(--text-primary);
+        word-break: break-word;
+    }
+    .cd-meta {
+        margin-top: 5px;
+        color: var(--text-secondary);
+        font-size: 13px;
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 8px;
+    }
+    .cd-meta .cd-dot { color: var(--text-tertiary); }
+    .cd-hero { text-align: right; flex-shrink: 0; }
+    .cd-hero-label {
+        font-family: var(--font-mono);
+        font-size: 10px;
+        font-weight: 500;
+        text-transform: uppercase;
+        letter-spacing: 0.1em;
+        color: var(--text-tertiary);
+        margin-bottom: 2px;
+    }
+    .cd-hero-value {
+        font-family: var(--font-mono);
+        font-size: 2rem;
+        font-weight: 500;
+        letter-spacing: -0.02em;
+        line-height: 1;
+        color: var(--accent);
+        font-variant-numeric: tabular-nums;
+    }
+
+    /* Attributes definition grid -------------------------------------- */
+    .cd-attrs { margin-top: 26px; }
+    .cd-attr-row {
+        display: grid;
+        grid-template-columns: 116px 1fr;
+        gap: 16px;
+        padding: 13px 0;
+        align-items: start;
+        border-top: 1px solid var(--border-light);
+    }
+    .cd-attr-row:first-child { border-top: none; }
+    .cd-attr-label {
+        font-family: var(--font-mono);
+        font-size: 10px;
+        font-weight: 500;
+        text-transform: uppercase;
+        letter-spacing: 0.1em;
+        color: var(--text-tertiary);
+        padding-top: 4px;
+    }
+    .cd-attr-value {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 8px 12px;
+        min-width: 0;
+        color: var(--text-secondary);
+        font-size: 13px;
+    }
+    .cd-attr-value .badge.fs-6 { font-size: 11px !important; }
+    .cd-behavior-metrics {
+        flex-basis: 100%;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 22px;
+        margin-top: 4px;
+    }
+    .cd-bm-label {
+        font-size: 11px;
+        color: var(--text-tertiary);
+    }
+    .cd-bm-value {
+        font-family: var(--font-mono);
+        font-weight: 500;
+        color: var(--text-primary);
+        margin-left: 6px;
+    }
+    .cd-muted { color: var(--text-secondary); }
+    .cd-updated { margin-left: auto; color: var(--text-tertiary); font-size: 12px; }
+
+    /* Metrics rail ---------------------------------------------------- */
+    .cd-rail {
+        display: flex;
+        flex-wrap: wrap;
+        margin-top: 26px;
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        overflow: hidden;
+        background: var(--bg-surface);
+    }
+    .cd-rail-item {
+        flex: 1 1 0;
+        min-width: 120px;
+        padding: 14px 20px;
+        border-right: 1px solid var(--border-light);
+    }
+    .cd-rail-item:last-child { border-right: none; }
+    .cd-rail-label {
+        font-family: var(--font-mono);
+        font-size: 10px;
+        font-weight: 500;
+        text-transform: uppercase;
+        letter-spacing: 0.1em;
+        color: var(--text-tertiary);
+        margin-bottom: 5px;
+    }
+    .cd-rail-value {
+        font-family: var(--font-mono);
+        font-size: 1.4rem;
+        font-weight: 500;
+        letter-spacing: -0.02em;
+        line-height: 1.1;
+        color: var(--text-primary);
+        font-variant-numeric: tabular-nums;
+    }
+    .cd-rail-value.cd-rail-value--sm { font-size: 1rem; }
+
+    /* Sections (tables / lists) without heavy card chrome ------------- */
+    .cd-section { margin-top: 30px; }
+    .cd-section-title {
+        font-family: var(--font-mono);
+        font-size: 11px;
+        font-weight: 500;
+        text-transform: uppercase;
+        letter-spacing: 0.1em;
+        color: var(--text-tertiary);
+        margin: 0 0 12px;
+        padding-bottom: 10px;
+        border-bottom: 1px solid var(--border-light);
+    }
+    .cd-panel {
+        background: var(--bg-surface);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        overflow: hidden;
+    }
+    .cd-events {
+        list-style: none;
+        margin: 0;
+        background: var(--bg-surface);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        padding: 4px 20px;
+    }
+    .cd-events li {
+        padding: 11px 0;
+        border-top: 1px solid var(--border-light);
+        font-size: 13.5px;
+        color: var(--text-primary);
+    }
+    .cd-events li:first-child { border-top: none; }
+    .cd-events .cd-muted { color: var(--text-secondary); }
+
+    .cd-consent {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 10px;
+        font-size: 13px;
+        color: var(--text-secondary);
+        margin-top: 26px;
+    }
+    .cd-back { margin-top: 32px; }
+
+    /* Reveal ---------------------------------------------------------- */
+    @media (prefers-reduced-motion: no-preference) {
+        @keyframes cdReveal {
+            from { opacity: 0; transform: translateY(6px); }
+            to   { opacity: 1; transform: none; }
+        }
+        .cd-reveal { animation: cdReveal 0.32s ease both; }
+        .cd-reveal-1 { animation-delay: 0.04s; }
+        .cd-reveal-2 { animation-delay: 0.09s; }
+        .cd-reveal-3 { animation-delay: 0.14s; }
+    }
+
+    /* Responsive ------------------------------------------------------ */
+    @media (max-width: 640px) {
+        .cd-hero { text-align: left; }
+        .cd-attr-row { grid-template-columns: 1fr; gap: 6px; }
+        .cd-attr-label { padding-top: 0; }
+        .cd-rail-item { flex-basis: 50%; min-width: 0; }
+        .cd-rail-item:nth-child(2) { border-right: none; }
+        .cd-rail-item:nth-child(1), .cd-rail-item:nth-child(2) {
+            border-bottom: 1px solid var(--border-light);
+        }
+    }
+</style>
+{% endblock %}
+
 {% block content %}
+<div class="cd-wrap">
 <nav aria-label="breadcrumb">
     <ol class="breadcrumb">
         <li class="breadcrumb-item"><a href="{% url 'tickets:home' %}">Dashboard</a></li>
@@ -12,222 +256,326 @@
     </ol>
 </nav>
 
-<div class="page-header">
-    <div>
-        <h1>{{ customer.name }}</h1>
-        <p class="page-header-subtitle">{{ customer.email }}</p>
-    </div>
-</div>
-
-<div class="row mb-4 g-3">
-    <div class="col-md-4">
-        <div class="stat-card stat-card--success" style="height: 100%;">
-            <div class="stat-label">Lifetime Value</div>
-            <div class="stat-value">${{ customer.lifetime_value|currency }}</div>
-        </div>
-    </div>
-    <div class="col-md-8">
-        <div class="card" style="height: 100%;">
-            <div class="card-header"><h5>Customer Information</h5></div>
-            <div class="card-body">
-                <table class="table table-borderless mb-0">
-                    <tr><th style="width: 140px;">Name:</th><td>{{ customer.name }}</td></tr>
-                    <tr><th>Email:</th><td>{{ customer.email }}</td></tr>
-                    <tr><th>Phone:</th><td>{{ customer.phone|default:"-" }}</td></tr>
-                    <tr><th>Customer Since:</th><td>{{ customer.created_at|date:"M d, Y" }}</td></tr>
-                </table>
+<!-- ===== Masthead ===== -->
+<div class="cd-masthead cd-reveal cd-reveal-1">
+    <div class="cd-identity">
+        <div class="cd-identity-main">
+            <div class="cd-avatar">{{ customer.name|first|upper|default:"?" }}</div>
+            <div>
+                <h1 class="cd-name">{{ customer.name }}</h1>
+                <div class="cd-meta">
+                    <span>{{ customer.email }}</span>
+                    {% if customer.phone %}<span class="cd-dot">&middot;</span><span>{{ customer.phone }}</span>{% endif %}
+                    <span class="cd-dot">&middot;</span><span>Customer since {% if first_order_date %}{{ first_order_date|date:"M d, Y" }}{% else %}{{ customer.created_at|date:"M d, Y" }}{% endif %}</span>
+                </div>
             </div>
         </div>
-    </div>
-</div>
-
-<div class="card mb-4">
-    <div class="card-header d-flex justify-content-between align-items-center">
-        <h5 class="mb-0">Tags</h5>
-    </div>
-    <div class="card-body">
-        <div class="d-flex flex-wrap align-items-center gap-2">
-            {% for tag in assigned_tags %}
-            <form method="post" action="{% url 'tickets:customer_tag_remove' customer.id tag.id %}" class="d-inline m-0">
-                {% csrf_token %}
-                <button type="submit" class="badge {{ tag.color|badge_class }} border-0 text-decoration-none" style="cursor:pointer; font-size:0.85em;">
-                    {{ tag.name }} <i class="bi bi-x"></i>
-                </button>
-            </form>
-            {% empty %}
-            <span class="text-muted small">No tags assigned.</span>
-            {% endfor %}
-
-            {% if available_tags %}
-            <form method="post" action="{% url 'tickets:customer_tag_add' customer.id %}" class="d-inline-flex align-items-center gap-1 m-0">
-                {% csrf_token %}
-                <select name="tag_id" class="form-select form-select-sm" style="max-width: 160px;">
-                    <option value="">Add tag...</option>
-                    {% for tag in available_tags %}
-                    <option value="{{ tag.id }}">{{ tag.name }}</option>
-                    {% endfor %}
-                </select>
-                <button type="submit" class="btn btn-sm btn-outline-secondary">Add</button>
-            </form>
-            {% elif not org_tags %}
-            <a href="{% url 'tickets:customer_tag_list' %}" class="btn btn-sm btn-outline-secondary"><i class="bi bi-plus"></i> Create tags</a>
-            {% endif %}
+        <div class="cd-hero">
+            <div class="cd-hero-label">Lifetime Value</div>
+            <div class="cd-hero-value">${{ customer.lifetime_value|currency }}</div>
         </div>
     </div>
-</div>
 
-{% if customer.rfm_segment or customer.rfm_recency_score is not None %}
-<div class="card mb-4">
-    <div class="card-header"><h5 class="mb-0">Customer Segment</h5></div>
-    <div class="card-body">
-        <div class="d-flex flex-wrap align-items-center gap-3">
-            {% if customer.rfm_segment %}
-            <span class="badge bg-{{ segment_badge_color }} fs-6">{{ customer.rfm_segment }}</span>
-            {% endif %}
-            {% if rfm_recency_label %}
-            <span class="text-muted small"><i class="bi bi-clock"></i> {{ rfm_recency_label }}</span>
-            {% endif %}
-            {% if rfm_frequency_label %}
-            <span class="text-muted small"><i class="bi bi-arrow-repeat"></i> {{ rfm_frequency_label }}</span>
-            {% endif %}
-            {% if rfm_monetary_label %}
-            <span class="text-muted small"><i class="bi bi-currency-dollar"></i> {{ rfm_monetary_label }}</span>
-            {% endif %}
-            {% if customer.rfm_updated_at %}
-            <span class="text-muted small" style="margin-left: auto;">Updated {{ customer.rfm_updated_at|date:"M d, Y" }}</span>
-            {% endif %}
-        </div>
-    </div>
-</div>
-{% endif %}
-
-{% if loyalty_tier and loyalty_feature_enabled %}
-<div class="card mb-4">
-    <div class="card-header"><h5 class="mb-0">Loyalty Tier</h5></div>
-    <div class="card-body">
-        <div class="d-flex flex-wrap align-items-center gap-3">
-            <span class="badge {{ loyalty_tier.color|badge_class }} fs-6">{{ loyalty_tier.name }}</span>
-            <span class="text-muted small">{{ loyalty_tier.program.name }}</span>
-            {% if loyalty_tier.perks %}
-            <span class="text-muted small">{{ loyalty_tier.perks }}</span>
-            {% endif %}
-        </div>
-    </div>
-</div>
-{% endif %}
-
-{% if customer.behavior_profile %}
-<div class="card mb-4">
-    <div class="card-header"><h5 class="mb-0">Behavior Profile</h5></div>
-    <div class="card-body">
-        <div class="d-flex flex-wrap align-items-center gap-3 mb-3">
-            <span class="badge bg-{{ behavior_profile_badge_color }} fs-6">{{ customer.behavior_profile }}</span>
-            {% if customer.behavior_profile_reason %}
-            <span class="text-muted small">{{ customer.behavior_profile_reason }}</span>
-            {% endif %}
-        </div>
-        <div class="row g-3">
-            <div class="col-md-4">
-                <div class="small text-muted">{{ behavior_metric_labels.days_since_last_order }}</div>
-                <div class="fw-semibold">{% if customer.days_since_last_order is not None %}{{ customer.days_since_last_order }}{% else %}&mdash;{% endif %}</div>
+    <!-- Attributes: keep all data, calmly laid out -->
+    <div class="cd-attrs">
+        {% if customer.rfm_segment or customer.rfm_recency_score is not None %}
+        <div class="cd-attr-row">
+            <div class="cd-attr-label">Segment</div>
+            <div class="cd-attr-value">
+                {% if customer.rfm_segment %}<span class="badge bg-{{ segment_badge_color }} fs-6">{{ customer.rfm_segment }}</span>{% endif %}
+                {% if rfm_recency_label %}<span class="cd-muted"><i class="bi bi-clock"></i> {{ rfm_recency_label }}</span>{% endif %}
+                {% if rfm_frequency_label %}<span class="cd-muted"><i class="bi bi-arrow-repeat"></i> {{ rfm_frequency_label }}</span>{% endif %}
+                {% if rfm_monetary_label %}<span class="cd-muted"><i class="bi bi-currency-dollar"></i> {{ rfm_monetary_label }}</span>{% endif %}
+                {% if customer.rfm_updated_at %}<span class="cd-updated">Updated {{ customer.rfm_updated_at|date:"M d, Y" }}</span>{% endif %}
             </div>
-            <div class="col-md-4">
-                <div class="small text-muted">{{ behavior_metric_labels.avg_days_between_orders }}</div>
-                <div class="fw-semibold">{% if customer.avg_days_between_orders is not None %}{{ customer.avg_days_between_orders }}{% else %}&mdash;{% endif %}</div>
-            </div>
-            <div class="col-md-4">
-                <div class="small text-muted">{{ behavior_metric_labels.days_to_second_order }}</div>
-                <div class="fw-semibold">{% if customer.days_to_second_order is not None %}{{ customer.days_to_second_order }}{% else %}&mdash;{% endif %}</div>
-            </div>
-        </div>
-    </div>
-</div>
-{% endif %}
-
-<div class="stats-grid">
-    <div class="stat-card stat-card--accent">
-        <div class="stat-label">Total Orders</div>
-        <div class="stat-value">{{ total_orders }}</div>
-    </div>
-    <div class="stat-card stat-card--info">
-        <div class="stat-label">Total Tickets</div>
-        <div class="stat-value">{{ total_tickets }}</div>
-    </div>
-    <div class="stat-card stat-card--warning">
-        <div class="stat-label">Avg Order Value</div>
-        <div class="stat-value">${{ avg_order_value|currency }}</div>
-    </div>
-    <div class="stat-card">
-        <div class="stat-label">Last Order</div>
-        <div class="stat-value" style="font-size: 1.125rem;">{% if last_order_date %}{{ last_order_date|date:"M d, Y" }}{% else %}&mdash;{% endif %}</div>
-    </div>
-</div>
-
-<div class="card mb-4">
-    <div class="card-header"><h5>Order History</h5></div>
-    <div class="card-body p-0">
-        {% if page_obj %}
-        <div class="table-responsive">
-            <table class="table table-hover mb-0">
-                <thead>
-                    <tr>
-                        <th>Order Number</th>
-                        <th>Date</th>
-                        <th>Event</th>
-                        <th>Total Amount</th>
-                        <th>Tickets</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {% for order in page_obj %}
-                    <tr>
-                        <td><strong>{{ order.display_order_number }}</strong></td>
-                        <td>{{ order.order_date|date:"M d, Y H:i" }}</td>
-                        <td>{{ order.event.name }}</td>
-                        <td><strong>${{ order.net_amount|currency }}</strong></td>
-                        <td>{{ order.tickets_count }}</td>
-                    </tr>
-                    {% endfor %}
-                </tbody>
-            </table>
-        </div>
-
-        {% if page_obj.has_other_pages %}
-        <div class="d-flex justify-content-center py-3">
-            <nav>
-                <ul class="pagination mb-0">
-                    {% if page_obj.has_previous %}
-                    <li class="page-item"><a class="page-link" href="?page={{ page_obj.previous_page_number }}">Previous</a></li>
-                    {% endif %}
-                    <li class="page-item active"><span class="page-link">{{ page_obj.number }} / {{ page_obj.paginator.num_pages }}</span></li>
-                    {% if page_obj.has_next %}
-                    <li class="page-item"><a class="page-link" href="?page={{ page_obj.next_page_number }}">Next</a></li>
-                    {% endif %}
-                </ul>
-            </nav>
         </div>
         {% endif %}
+
+        {% if loyalty_tier and loyalty_feature_enabled %}
+        <div class="cd-attr-row">
+            <div class="cd-attr-label">Loyalty</div>
+            <div class="cd-attr-value">
+                <span class="badge {{ loyalty_tier.color|badge_class }} fs-6">{{ loyalty_tier.name }}</span>
+                <span class="cd-muted">{{ loyalty_tier.program.name }}</span>
+                {% if loyalty_tier.perks %}<span class="cd-muted">{{ loyalty_tier.perks }}</span>{% endif %}
+            </div>
+        </div>
+        {% endif %}
+
+        {% if customer.behavior_profile %}
+        <div class="cd-attr-row">
+            <div class="cd-attr-label">Behavior</div>
+            <div class="cd-attr-value">
+                <span class="badge bg-{{ behavior_profile_badge_color }} fs-6">{{ customer.behavior_profile }}</span>
+                {% if customer.behavior_profile_reason %}<span class="cd-muted">{{ customer.behavior_profile_reason }}</span>{% endif %}
+                <div class="cd-behavior-metrics">
+                    <span><span class="cd-bm-label">{{ behavior_metric_labels.days_since_last_order }}</span><span class="cd-bm-value">{% if customer.days_since_last_order is not None %}{{ customer.days_since_last_order }}{% else %}&mdash;{% endif %}</span></span>
+                    <span><span class="cd-bm-label">{{ behavior_metric_labels.avg_days_between_orders }}</span><span class="cd-bm-value">{% if customer.avg_days_between_orders is not None %}{{ customer.avg_days_between_orders }}{% else %}&mdash;{% endif %}</span></span>
+                    <span><span class="cd-bm-label">{{ behavior_metric_labels.days_to_second_order }}</span><span class="cd-bm-value">{% if customer.days_to_second_order is not None %}{{ customer.days_to_second_order }}{% else %}&mdash;{% endif %}</span></span>
+                </div>
+            </div>
+        </div>
+        {% endif %}
+
+        <div class="cd-attr-row">
+            <div class="cd-attr-label">Tags</div>
+            <div class="cd-attr-value">
+                {% for tag in assigned_tags %}
+                <form method="post" action="{% url 'tickets:customer_tag_remove' customer.id tag.id %}" class="d-inline m-0">
+                    {% csrf_token %}
+                    <button type="submit" class="badge {{ tag.color|badge_class }} border-0 text-decoration-none" style="cursor:pointer; font-size:11px;">
+                        {{ tag.name }} <i class="bi bi-x"></i>
+                    </button>
+                </form>
+                {% empty %}
+                <span class="cd-muted">No tags assigned.</span>
+                {% endfor %}
+
+                {% if available_tags %}
+                <form method="post" action="{% url 'tickets:customer_tag_add' customer.id %}" class="d-inline-flex align-items-center gap-1 m-0">
+                    {% csrf_token %}
+                    <select name="tag_id" class="form-select form-select-sm" style="max-width: 160px;">
+                        <option value="">Add tag...</option>
+                        {% for tag in available_tags %}
+                        <option value="{{ tag.id }}">{{ tag.name }}</option>
+                        {% endfor %}
+                    </select>
+                    <button type="submit" class="btn btn-sm btn-outline-secondary">Add</button>
+                </form>
+                {% elif not org_tags %}
+                <a href="{% url 'tickets:customer_tag_list' %}" class="btn btn-sm btn-outline-secondary"><i class="bi bi-plus"></i> Create tags</a>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+
+    <!-- Metrics rail -->
+    <div class="cd-rail">
+        <div class="cd-rail-item">
+            <div class="cd-rail-label">Total Orders</div>
+            <div class="cd-rail-value">{{ total_orders }}</div>
+        </div>
+        <div class="cd-rail-item">
+            <div class="cd-rail-label">Total Tickets</div>
+            <div class="cd-rail-value">{{ total_tickets }}</div>
+        </div>
+        <div class="cd-rail-item">
+            <div class="cd-rail-label">Avg Order Value</div>
+            <div class="cd-rail-value">${{ avg_order_value|currency }}</div>
+        </div>
+        <div class="cd-rail-item">
+            <div class="cd-rail-label">Last Order</div>
+            <div class="cd-rail-value cd-rail-value--sm">{% if last_order_date %}{{ last_order_date|date:"M d, Y" }}{% else %}&mdash;{% endif %}</div>
+        </div>
+    </div>
+</div>
+
+<!-- ===== Tabs ===== -->
+<div class="cd-reveal cd-reveal-2">
+{% if sms_marketing_enabled %}
+<nav class="nav nav-tabs" id="customerDetailTabs" role="tablist">
+    <button class="nav-link active" id="tab-overview-btn" data-bs-toggle="tab" data-bs-target="#tab-overview" type="button" role="tab">Overview</button>
+    <button class="nav-link" id="tab-marketing-btn" data-bs-toggle="tab" data-bs-target="#tab-marketing" type="button" role="tab">Marketing Activity{% if sms_stats.total %} ({{ sms_stats.total }}){% endif %}</button>
+</nav>
+{% endif %}
+<div class="tab-content">
+
+<!-- ===== TAB: Overview ===== -->
+<div class="tab-pane fade show active" id="tab-overview" role="tabpanel">
+
+    <div class="cd-section">
+        <h2 class="cd-section-title">Order History</h2>
+        {% if page_obj %}
+        <div class="cd-panel">
+            <div class="table-responsive">
+                <table class="table table-hover mb-0">
+                    <thead>
+                        <tr>
+                            <th>Order Number</th>
+                            <th>Date</th>
+                            <th>Event</th>
+                            <th>Total Amount</th>
+                            <th>Tickets</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for order in page_obj %}
+                        <tr>
+                            <td><strong>{{ order.display_order_number }}</strong></td>
+                            <td>{{ order.order_date|date:"M d, Y H:i" }}</td>
+                            <td>{{ order.event.name }}</td>
+                            <td><strong>${{ order.net_amount|currency }}</strong></td>
+                            <td>{{ order.tickets_count }}</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+
+            {% if page_obj.has_other_pages %}
+            <div class="d-flex justify-content-center py-3">
+                <nav>
+                    <ul class="pagination mb-0">
+                        {% if page_obj.has_previous %}
+                        <li class="page-item"><a class="page-link" href="?page={{ page_obj.previous_page_number }}">Previous</a></li>
+                        {% endif %}
+                        <li class="page-item active"><span class="page-link">{{ page_obj.number }} / {{ page_obj.paginator.num_pages }}</span></li>
+                        {% if page_obj.has_next %}
+                        <li class="page-item"><a class="page-link" href="?page={{ page_obj.next_page_number }}">Next</a></li>
+                        {% endif %}
+                    </ul>
+                </nav>
+            </div>
+            {% endif %}
+        </div>
         {% else %}
         <div class="empty-state" style="padding: 32px;"><p class="mb-0">No orders found.</p></div>
         {% endif %}
     </div>
-</div>
 
-{% if events_attended %}
-<div class="card mb-4">
-    <div class="card-header"><h5>Events Attended</h5></div>
-    <div class="card-body">
-        <ul class="list-group list-group-flush">
+    {% if events_attended %}
+    <div class="cd-section">
+        <h2 class="cd-section-title">Events Attended</h2>
+        <ul class="cd-events">
             {% for event in events_attended %}
-            <li class="list-group-item px-0">
+            <li>
                 <strong>{{ event.name }}</strong> &mdash; {{ event.venue.name }}, {{ event.venue.city }}
-                <span class="text-muted">({{ event.start_date|date:"M d, Y" }})</span>
+                <span class="cd-muted">({{ event.start_date|date:"M d, Y" }})</span>
             </li>
             {% endfor %}
         </ul>
     </div>
-</div>
+    {% endif %}
+
+</div><!-- /tab-overview -->
+
+{% if sms_marketing_enabled %}
+<!-- ===== TAB: Marketing Activity ===== -->
+<div class="tab-pane fade" id="tab-marketing" role="tabpanel">
+
+    <div class="cd-consent">
+        <span class="cd-attr-label" style="padding-top:0;">SMS Consent</span>
+        {% if customer.sms_opt_in %}
+        <span class="badge bg-success">Opted in</span>
+        {% if customer.sms_opt_in_date %}<span class="cd-muted">since {{ customer.sms_opt_in_date|date:"M d, Y" }}</span>{% endif %}
+        {% else %}
+        <span class="badge bg-secondary">Not opted in</span>
+        {% endif %}
+        <span class="cd-updated">{{ customer.phone|default:"No phone on file" }}</span>
+    </div>
+
+    <div class="cd-rail">
+        <div class="cd-rail-item">
+            <div class="cd-rail-label">Messages Sent</div>
+            <div class="cd-rail-value">{{ sms_stats.total }}</div>
+        </div>
+        <div class="cd-rail-item">
+            <div class="cd-rail-label">Delivered</div>
+            <div class="cd-rail-value">{{ sms_stats.delivered }}</div>
+        </div>
+        <div class="cd-rail-item">
+            <div class="cd-rail-label">Link Clicks</div>
+            <div class="cd-rail-value">{{ sms_stats.clicked }}</div>
+        </div>
+        <div class="cd-rail-item">
+            <div class="cd-rail-label">Failed</div>
+            <div class="cd-rail-value">{{ sms_stats.failed }}</div>
+        </div>
+    </div>
+
+    <div class="cd-section">
+        <h2 class="cd-section-title">SMS Activity</h2>
+        {% if sms_page_obj %}
+        <div class="cd-panel">
+            <div class="table-responsive">
+                <table class="table table-hover mb-0">
+                    <thead>
+                        <tr>
+                            <th>Campaign</th>
+                            <th>Status</th>
+                            <th>Sent</th>
+                            <th>Received</th>
+                            <th>Link Clicked</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for msg in sms_page_obj %}
+                        <tr>
+                            <td>
+                                <strong>{{ msg.campaign.name }}</strong>
+                                {% if msg.opted_out_at %}<span class="badge bg-secondary ms-1">Opted out</span>{% endif %}
+                                {% if msg.error_message %}<div class="cd-muted small">{{ msg.error_message }}</div>{% endif %}
+                            </td>
+                            <td>
+                                {% if msg.status == 'delivered' %}<span class="badge bg-success">Delivered</span>
+                                {% elif msg.status == 'sent' %}<span class="badge bg-primary">Sent</span>
+                                {% elif msg.status == 'queued' %}<span class="badge bg-warning text-dark">Queued</span>
+                                {% else %}<span class="badge bg-danger">{{ msg.get_status_display }}</span>{% endif %}
+                            </td>
+                            <td>{% if msg.sent_at %}{{ msg.sent_at|date:"M d, Y H:i" }}{% else %}<span class="cd-muted">&mdash;</span>{% endif %}</td>
+                            <td>{% if msg.delivered_at %}{{ msg.delivered_at|date:"M d, Y H:i" }}{% else %}<span class="cd-muted">&mdash;</span>{% endif %}</td>
+                            <td>
+                                {% if msg.first_clicked_at %}
+                                {{ msg.first_clicked_at|date:"M d, Y H:i" }}{% if msg.click_count > 1 %} <span class="cd-muted small">(&times;{{ msg.click_count }})</span>{% endif %}
+                                {% else %}<span class="cd-muted">&mdash;</span>{% endif %}
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+
+            {% if sms_page_obj.has_other_pages %}
+            <div class="d-flex justify-content-center py-3">
+                <nav>
+                    <ul class="pagination mb-0">
+                        {% if sms_page_obj.has_previous %}
+                        <li class="page-item"><a class="page-link" href="?sms_page={{ sms_page_obj.previous_page_number }}&tab=marketing">Previous</a></li>
+                        {% endif %}
+                        <li class="page-item active"><span class="page-link">{{ sms_page_obj.number }} / {{ sms_page_obj.paginator.num_pages }}</span></li>
+                        {% if sms_page_obj.has_next %}
+                        <li class="page-item"><a class="page-link" href="?sms_page={{ sms_page_obj.next_page_number }}&tab=marketing">Next</a></li>
+                        {% endif %}
+                    </ul>
+                </nav>
+            </div>
+            {% endif %}
+        </div>
+        {% else %}
+        <div class="empty-state" style="padding: 32px;"><p class="mb-0">No marketing messages sent to this customer yet.</p></div>
+        {% endif %}
+    </div>
+
+</div><!-- /tab-marketing -->
 {% endif %}
 
-<a href="{% url 'tickets:customer_list' %}" class="btn btn-outline-secondary"><i class="bi bi-arrow-left"></i> Back to Customers</a>
+</div><!-- /tab-content -->
+</div><!-- /tabs reveal -->
+
+<a href="{% url 'tickets:customer_list' %}" class="btn btn-outline-secondary cd-back"><i class="bi bi-arrow-left"></i> Back to Customers</a>
+</div><!-- /cd-wrap -->
+{% endblock %}
+
+{% block extra_js %}
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    var tabs = document.getElementById('customerDetailTabs');
+    if (!tabs) return;
+    var params = new URLSearchParams(window.location.search);
+    var activeTab = params.get('tab');
+    if (activeTab) {
+        var btn = tabs.querySelector('[data-bs-target="#tab-' + activeTab + '"]');
+        if (btn) { new bootstrap.Tab(btn).show(); }
+    }
+    tabs.addEventListener('shown.bs.tab', function(e) {
+        var target = e.target.getAttribute('data-bs-target');
+        if (!target) return;
+        var tabName = target.replace('#tab-', '');
+        var url = new URL(window.location);
+        if (tabName === 'overview') { url.searchParams.delete('tab'); }
+        else { url.searchParams.set('tab', tabName); }
+        history.replaceState(null, '', url.toString());
+    });
+});
+</script>
 {% endblock %}

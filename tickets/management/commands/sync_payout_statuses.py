@@ -109,6 +109,10 @@ class Command(BaseCommand):
                 continue
 
             # --- Path B: payout has stripe_transfer_id but no stripe_payout_id ---
+            # LEGACY ONLY: pre-cutover rows from the Transfer+Payout flow.
+            # Post-cutover payouts always store the po_ id at create time (or
+            # arrive via webhook with one), so the amount-match below never
+            # applies to them. Self-extinguishing once legacy rows drain.
             if payout.stripe_transfer_id:
                 try:
                     transfer = stripe_lib.Transfer.retrieve(

@@ -60,6 +60,7 @@ from .forms import (
     SaleableTicketTypeForm, SaleableTicketTypeTierFormSet, PublicTicketPurchaseForm,
     DirectEventForm, DirectTicketTypeFormSet,
     PromoCodeForm, SurveyUploadForm, UserProfileForm, OrgProfileForm,
+    OrgDisplayPreferencesForm,
     WaitlistJoinForm, OrganizerWaitlistForm,
     LoyaltyProgramForm, LoyaltyTierFormSet,
 )
@@ -353,6 +354,7 @@ EVENT_STATS_REQUIRED_KEYS = frozenset({
     'survey_total_response_count',
     'survey_results',
     'attendee_segments',
+    'audience',
 })
 
 
@@ -3365,6 +3367,34 @@ def repeat_customers(request):
 @login_required
 @require_org
 @require_host
+def market_trends(request):
+    """Analytics page: per-market turnout trend, decline diagnosis, and next-step CTA."""
+    org = get_organization(request)
+    period = request.GET.get('period', 'quarter')
+    if period not in ('month', 'quarter'):
+        period = 'quarter'
+    metric = request.GET.get('metric', 'revenue')
+    if metric not in ('revenue', 'tickets', 'profitability', 'nps'):
+        metric = 'revenue'
+
+    from tickets.services.market_trends import MarketTrendCalculator
+    result = MarketTrendCalculator(org, period=period, metric=metric).calculate()
+    markets = result['markets']
+
+    return render(request, 'tickets/market_trends.html', {
+        'markets': markets,
+        'markets_json': json.dumps(markets, default=str),
+        'summary': result['summary'],
+        'period': period,
+        'metric': metric,
+        'change_unit': 'pts' if metric == 'nps' else '%',
+        'sms_marketing_enabled': org.sms_marketing_enabled,
+    })
+
+
+@login_required
+@require_org
+@require_host
 def cohort_retention(request):
     """Analytics page: monthly cohort retention heatmap and line chart."""
     org = get_organization(request)
@@ -3432,10 +3462,12 @@ def customer_detail(request, customer_id):
     order_stats = customer.ticket_orders.annotate(net_amount=_net_amount).aggregate(
         total_orders=Count('id'),
         avg_order_value=Coalesce(Avg('net_amount'), Decimal('0.00')),
+        first_order_date=Min('order_date'),
         last_order_date=Max('order_date'),
     )
     total_orders = order_stats['total_orders']
     avg_order_value = order_stats['avg_order_value']
+    first_order_date = order_stats['first_order_date']
     last_order_date = order_stats['last_order_date']
     total_tickets = Ticket.objects.filter(ticket_order__customer=customer).count()
 
@@ -3476,12 +3508,32 @@ def customer_detail(request, customer_id):
     if loyalty_tier and loyalty_tier.program.organization_id != org.id:
         loyalty_tier = None
 
+    # Marketing (native SMS) activity — one row per message sent to this customer.
+    # Org-scoped already since `customer` is org-scoped. select_related avoids an
+    # N+1 on campaign.name in the template. SMS has no "opened" event, so the
+    # closest engagement signal is the tracked link click (first_clicked_at).
+    sms_messages = (
+        customer.sms_message_recipients
+        .select_related('campaign')
+        .order_by('-created_at')
+    )
+    sms_paginator = Paginator(sms_messages, 20)
+    sms_page_obj = sms_paginator.get_page(request.GET.get('sms_page'))
+    # Single-pass summary counts for the tab's stat cards.
+    sms_stats = customer.sms_message_recipients.aggregate(
+        total=Count('id'),
+        delivered=Count('id', filter=Q(status='delivered')),
+        failed=Count('id', filter=Q(status__in=['failed', 'undelivered'])),
+        clicked=Count('id', filter=Q(first_clicked_at__isnull=False)),
+    )
+
     context = {
         'customer': customer,
         'loyalty_tier': loyalty_tier,
         'total_orders': total_orders,
         'total_tickets': total_tickets,
         'avg_order_value': avg_order_value,
+        'first_order_date': first_order_date,
         'last_order_date': last_order_date,
         'events_attended': events_attended,
         'page_obj': page_obj,
@@ -3494,6 +3546,9 @@ def customer_detail(request, customer_id):
         'assigned_tags': assigned_tags,
         'available_tags': available_tags,
         'org_tags': org_tags,
+        'sms_page_obj': sms_page_obj,
+        'sms_stats': sms_stats,
+        'sms_marketing_enabled': org.sms_marketing_enabled,
     }
     return render(request, 'tickets/customer_detail.html', context)
 
@@ -3889,6 +3944,7 @@ def _compute_event_stats(event):
             remaining = None if is_unlimited else max(allocated - sold, 0)
             percent_sold = None if is_unlimited or allocated == 0 else round(min(sold / allocated * 100, 100))
             ticket_type_allocation_charts.append({
+                'tt_id': str(tt.id),
                 'label': tt.name,
                 'sold': sold,
                 'allocated': allocated,
@@ -3998,6 +4054,7 @@ def _compute_event_stats(event):
     ext_nps_total = ext_promoters = ext_passives = ext_detractors = 0
     ext_comments = []
     ext_rating_breakdown = []
+    ext_structured = {}
 
     if ext_count > 0:
         # Single aggregate instead of 4 separate .count() calls
@@ -4032,6 +4089,37 @@ def _compute_event_stats(event):
             .annotate(count=Count('id'))
             .order_by('-count')
         )
+
+        # Structured multi-select answers (JSON lists) — count value frequency.
+        from collections import Counter
+        enjoyed_c, genres_c, improvements_c = Counter(), Counter(), Counter()
+        for r in ext_qs.values('enjoyed', 'genres', 'improvements'):
+            enjoyed_c.update(v for v in (r['enjoyed'] or []) if v)
+            genres_c.update(v for v in (r['genres'] or []) if v)
+            improvements_c.update(v for v in (r['improvements'] or []) if v)
+
+        def _top(counter):
+            return [{'label': label, 'count': count} for label, count in counter.most_common(5)]
+
+        # Single-select answers (CharFields) — same breakdown pattern as overall_rating.
+        def _char_breakdown(field):
+            return [
+                {'label': row[field], 'count': row['count']}
+                for row in ext_qs.exclude(**{field: ''})
+                .values(field)
+                .annotate(count=Count('id'))
+                .order_by('-count')[:5]
+            ]
+
+        ext_structured = {
+            'enjoyed': _top(enjoyed_c),
+            'genres': _top(genres_c),
+            'improvements': _top(improvements_c),
+            'crowd_vibe': _char_breakdown('crowd_vibe'),
+            'venue_feel': _char_breakdown('venue_feel'),
+            'pre_event_info': _char_breakdown('pre_event_info'),
+            'found_out_how': _char_breakdown('found_out_how'),
+        }
 
     # Merge both sources
     survey_results = None
@@ -4071,6 +4159,7 @@ def _compute_event_stats(event):
             'internal_response_count': survey_responses_count,
             'ext_response_count': ext_count,
             'overall_rating_breakdown': ext_rating_breakdown,
+            'ext_structured': ext_structured,
         }
 
     # Customer segment breakdown for attendees of this event.
@@ -4092,6 +4181,23 @@ def _compute_event_stats(event):
         }
         for r in segment_rows
     ]
+
+    ci_show, ci_total, ci_checked, ci_by_type = _compute_event_checkin_stats(event)
+    checkin = {
+        'show': ci_show,
+        'total_tickets': ci_total,
+        'checked_in': ci_checked,
+        'percent': round(ci_checked / ci_total * 100) if ci_total else 0,
+        'by_type': ci_by_type,
+    }
+
+    # Audience analytics — only when the event has attendance data to show
+    # (direct events past start, or external events with imported scan data).
+    if ci_show:
+        from tickets.services.audience import EventAudienceCalculator
+        audience = EventAudienceCalculator(event).calculate()
+    else:
+        audience = {'show': False}
 
     result = {
         'total_orders': total_orders,
@@ -4121,6 +4227,8 @@ def _compute_event_stats(event):
         'survey_total_response_count': survey_total_response_count,
         'survey_results': survey_results,
         'attendee_segments': attendee_segments,
+        'checkin': checkin,
+        'audience': audience,
     }
     safe_cache_set(cache_key, result, timeout=300)
     return result
@@ -4180,15 +4288,16 @@ def _compute_marketing_events(event):
 def _compute_event_checkin_stats(event):
     """Return (should_show, total_tickets, checked_in_tickets, by_type).
 
-    should_show is True when the event is direct ticketing AND its local start
-    datetime has passed. Tickets are counted at the ticket level (a TicketOrder
-    can hold multiple tickets, and a single check-in admits the whole order).
-    by_type is a list of {label, total, checked_in, percent} dicts grouped by
+    Check-ins are counted at the individual ticket level via Ticket.scanned_at,
+    which is the single source of truth: live check-ins stamp every ticket in the
+    admitted order, and CSV imports stamp each scanned ticket (so partially-scanned
+    multi-ticket orders are counted accurately).
+
+    should_show is True when the event's local start datetime has passed AND it is
+    either a direct-ticketing event or an external event that has imported scan
+    data. by_type is a list of {label, total, checked_in, percent} dicts grouped by
     Ticket.ticket_type, sorted by total desc.
     """
-    if event.ticketing_type != 'direct':
-        return False, 0, 0, []
-
     tz_name = event.timezone or 'America/Los_Angeles'
     try:
         tz = ZoneInfo(tz_name)
@@ -4203,15 +4312,20 @@ def _compute_event_checkin_stats(event):
 
     agg = event.ticket_orders.aggregate(
         total=Count('tickets'),
-        checked_in=Count('tickets', filter=Q(checked_in_at__isnull=False)),
+        checked_in=Count('tickets', filter=Q(tickets__scanned_at__isnull=False)),
     )
+
+    # Direct events always show (even at 0%); external events only once they have
+    # imported scan data, so untouched external events don't show an empty chart.
+    if event.ticketing_type != 'direct' and not (agg['checked_in'] or 0):
+        return False, 0, 0, []
 
     by_type_qs = (
         Ticket.objects.filter(ticket_order__event=event)
         .values('ticket_type')
         .annotate(
             total=Count('id'),
-            checked_in=Count('id', filter=Q(ticket_order__checked_in_at__isnull=False)),
+            checked_in=Count('id', filter=Q(scanned_at__isnull=False)),
         )
         .order_by('-total')
     )
@@ -4266,9 +4380,22 @@ def _recompute_utm_attribution_for_event(org, event):
         logger.exception("UTM attribution recompute failed for org=%s event=%s", org.id, event.id)
 
 
+# How long to skip re-hitting Meta for an event's linked-campaign spend after a refresh.
+_META_ADS_REFRESH_TTL_SECONDS = 30 * 60
+
+
 def _refresh_meta_ads_expenses_for_event(org, event, user=None):
-    """Best-effort refresh of linked Meta Ads campaign spend before event stats render."""
+    """Best-effort refresh of linked Meta Ads campaign spend before event stats render.
+
+    Lifetime insights are a heavy, rate-limited Graph API call, so we throttle to
+    at most one refresh per event per window via a short-TTL cache marker instead
+    of hitting Meta on every event-detail page load.
+    """
     if not org.meta_ads_access_token or not org.meta_ads_account_id:
+        return False
+
+    refresh_marker_key = f"meta_ads_refresh:{event.pk}"
+    if django_cache.get(refresh_marker_key):
         return False
 
     meta_expenses = list(
@@ -4305,6 +4432,10 @@ def _refresh_meta_ads_expenses_for_event(org, event, user=None):
         synced = True
         if _update_meta_ads_expense_from_insights(expense, insights, user):
             changed = True
+
+    # Mark refreshed regardless of per-campaign outcome so a failing account can't
+    # re-trigger the full set of API calls on every subsequent page load.
+    django_cache.set(refresh_marker_key, True, _META_ADS_REFRESH_TTL_SECONDS)
 
     if synced:
         django_cache.delete(_event_stats_cache_key(event.pk))
@@ -4812,6 +4943,15 @@ def event_detail(request, event_id):
     show_checkin_chart, checkin_total_tickets, checkin_count, checkin_by_type = _compute_event_checkin_stats(event)
     checkin_percent = round(checkin_count / checkin_total_tickets * 100) if checkin_total_tickets else 0
 
+    audience = stats.get('audience') or {'show': False}
+    notable_attendees_page = None
+    if audience.get('show'):
+        from tickets.services.audience import EventAudienceCalculator
+        from tickets.services.segmentation.segment_definitions import SEGMENT_BADGE_COLORS
+        notable_qs = EventAudienceCalculator(event).notable_attendees_queryset()
+        notable_paginator = Paginator(notable_qs, 10)
+        notable_attendees_page = notable_paginator.get_page(request.GET.get('audience_page'))
+
     prev_event = _get_adjacent_event(org, event, 'prev')
     next_event = _get_adjacent_event(org, event, 'next')
 
@@ -4910,6 +5050,10 @@ def event_detail(request, event_id):
         'checkin_count': checkin_count,
         'checkin_percent': checkin_percent,
         'checkin_by_type': checkin_by_type,
+        'audience': audience,
+        'show_audience_tab': audience.get('show'),
+        'notable_attendees_page': notable_attendees_page,
+        'segment_badge_colors': SEGMENT_BADGE_COLORS if audience.get('show') else {},
         'prev_event_id': prev_event.id if prev_event else None,
         'next_event_id': next_event.id if next_event else None,
         'prev_event_name': prev_event.name if prev_event else None,
@@ -5096,6 +5240,55 @@ def event_uploads_summary(request, event_id):
 @require_org
 @require_organizer
 @require_http_methods(["POST"])
+def event_summary_stream(request, event_id):
+    """SSE endpoint - streams an LLM-generated event summary."""
+    from django.http import StreamingHttpResponse
+    from django.core.cache import cache as django_cache
+
+    from .services.event_summary import EventSummaryService
+
+    org = get_organization(request)
+
+    # Respect the org's display preference — endpoint is unavailable when hidden
+    if not org.ai_event_summary_enabled:
+        raise Http404()
+
+    # Rate limit: 30 *successful* generations per org per hour. We only check the
+    # ceiling here; the counter is incremented by the service after a summary is
+    # actually produced, so failed attempts (e.g. a missing OpenAI key) don't burn
+    # the budget or mask the real error behind a misleading "rate limit" message.
+    rate_key = f"summary_ratelimit:{org.id}"
+    try:
+        if (django_cache.get(rate_key, 0) or 0) >= 30:
+            return JsonResponse(
+                {'error': 'Rate limit exceeded. Please try again later.'},
+                status=429,
+            )
+    except Exception:
+        # Redis unavailable — skip rate limiting rather than blocking the request
+        pass
+
+    event = get_object_or_404(
+        Event.objects.filter(organization=org).select_related('venue'),
+        id=event_id,
+    )
+
+    event_data = _compute_event_stats(event)
+
+    service = EventSummaryService(org, user=request.user)
+    response = StreamingHttpResponse(
+        service.stream_summary(event, event_data, rate_limit_key=rate_key),
+        content_type='text/event-stream',
+    )
+    response['Cache-Control'] = 'no-cache'
+    response['X-Accel-Buffering'] = 'no'
+    return response
+
+
+@login_required
+@require_org
+@require_organizer
+@require_http_methods(["POST"])
 def generate_scanner_pin(request, event_id):
     org = get_organization(request)
     event = get_object_or_404(Event.objects.filter(organization=org), id=event_id)
@@ -5258,6 +5451,11 @@ def order_detail(request, order_id):
         and order.refunded_at is None
         and remaining_refundable > 0
     )
+    can_resend = (
+        order.event.ticketing_type == TICKETING_TYPE_DIRECT
+        and stripe_session is not None
+        and bool(order.customer.email)
+    )
 
     context = {
         'order': order,
@@ -5266,6 +5464,7 @@ def order_detail(request, order_id):
         'ticket_types': ticket_types,
         'stripe_session': stripe_session,
         'can_refund': can_refund,
+        'can_resend': can_resend,
         'remaining_refundable': remaining_refundable,
     }
     return render(request, 'tickets/order_detail.html', context)
@@ -5302,6 +5501,15 @@ def refund_order(request, order_id):
         or remaining <= 0
     ):
         messages.error(request, 'This order cannot be refunded.')
+        return redirect('tickets:order_detail', order_id=order_id)
+
+    if session.charge_flow == StripeCheckoutSession.ChargeFlow.DIRECT:
+        # In-person charges live on the connected account; the platform key
+        # can't refund them. Stripe keeps the platform fee on these refunds.
+        messages.error(
+            request,
+            'In-person orders must be refunded from your Stripe dashboard for now.',
+        )
         return redirect('tickets:order_detail', order_id=order_id)
 
     refund_type = request.POST.get('refund_type', 'full')
@@ -5393,15 +5601,42 @@ def refund_order(request, order_id):
     return redirect('tickets:order_detail', order_id=order_id)
 
 
+@login_required
+@require_org
+@require_host
+@require_http_methods(["POST"])
+def resend_order_confirmation(request, order_id):
+    """Re-send the order confirmation email for a direct-purchase order."""
+    org = get_organization(request)
+    order = get_object_or_404(
+        TicketOrder.objects.filter(event__organization=org).select_related(
+            'customer', 'event', 'stripe_checkout_session',
+        ),
+        id=order_id
+    )
+    stripe_session = getattr(order, 'stripe_checkout_session', None)
+    if order.event.ticketing_type != TICKETING_TYPE_DIRECT or stripe_session is None:
+        messages.error(request, 'Confirmation emails can only be resent for direct-purchase orders.')
+        return redirect('tickets:order_detail', order_id=order_id)
+    if not order.customer.email:
+        messages.error(request, 'This order has no customer email on file.')
+        return redirect('tickets:order_detail', order_id=order_id)
+
+    from .tasks import send_order_confirmation_email_task
+    send_order_confirmation_email_task.delay(str(order.id))
+    messages.success(request, f'Confirmation email queued to {order.customer.email}.')
+    return redirect('tickets:order_detail', order_id=order_id)
+
+
 # Format Management Views
 
 @login_required
 @require_org
 @require_host
 def format_list(request):
-    """List all CSV formats."""
+    """List all CSV formats available to the org (its own + global built-ins)."""
     org = get_organization(request)
-    formats = CSVFormat.objects.filter(organization=org)
+    formats = CSVFormat.available_for(org)
     context = {
         'formats': formats,
     }
@@ -5505,6 +5740,41 @@ def format_set_default(request, format_id):
     
     messages.success(request, f"'{format_obj.name}' is now the default CSV format.")
     return redirect('tickets:format_list')
+
+
+@login_required
+@require_org
+@require_host
+def format_duplicate(request, format_id):
+    """Copy a visible format (incl. a global built-in) into an editable org copy."""
+    org = get_organization(request)
+    # Source can be one of the org's own formats or a global built-in.
+    source = get_object_or_404(CSVFormat.available_for(org), id=format_id)
+
+    # Build a unique name within the global-unique constraint.
+    base_name = f"{source.name} (Custom)"
+    new_name = base_name
+    suffix = 2
+    while CSVFormat.objects.filter(name=new_name).exists():
+        new_name = f"{base_name} {suffix}"
+        suffix += 1
+
+    copy = CSVFormat(
+        organization=org,
+        name=new_name,
+        description=source.description,
+        is_default=False,
+        is_system=False,
+        requires_manual_pricing=source.requires_manual_pricing,
+        uses_tiers=source.uses_tiers,
+        column_mapping=source.column_mapping,
+    )
+    copy.save()
+    messages.success(
+        request,
+        f"Created an editable copy '{copy.name}'. Customize it below.",
+    )
+    return redirect('tickets:format_edit', format_id=copy.id)
 
 
 # Venue Management Views
@@ -6530,6 +6800,23 @@ def org_profile(request):
     return render(request, 'tickets/settings_org_profile.html', {'form': form, 'org': org})
 
 
+@login_required
+@require_org
+@require_admin
+def settings_display_preferences(request):
+    """Toggle which optional cards appear on event pages (e.g. AI Event Summary)."""
+    org = get_organization(request)
+    if request.method == 'POST':
+        form = OrgDisplayPreferencesForm(request.POST, instance=org)
+        if form.is_valid():
+            form.save()
+            messages.success(request, 'Display preferences updated.')
+            return redirect('tickets:settings_display_preferences')
+    else:
+        form = OrgDisplayPreferencesForm(instance=org)
+    return render(request, 'tickets/settings_display_preferences.html', {'form': form, 'org': org})
+
+
 # Forecast Tool Views
 
 @login_required
@@ -6716,8 +7003,10 @@ def event_meta_ads_match(request, event_id):
         campaigns = client.list_campaigns(org.meta_ads_account_id)
         match_result = MetaCampaignMatcher(org).rank(event, campaigns)
     except MetaAdsAPIError as exc:
+        # Upstream provider error, not a gateway failure on our side — return a
+        # handled response so it doesn't log/alert as a 502 "Bad Gateway".
         if wants_json:
-            return JsonResponse({'success': False, 'error': f'Could not load Meta campaigns: {exc}'}, status=502)
+            return JsonResponse({'success': False, 'error': f'Could not load Meta campaigns: {exc}'})
         messages.error(request, f'Could not load Meta campaigns: {exc}')
         return redirect('tickets:event_detail', event_id=event.id)
     except Exception as exc:
@@ -6917,9 +7206,11 @@ def event_meta_ads_refresh(request, event_id, expense_id):
             expense.external_id,
             exc,
         )
-        msg = 'Could not refresh this Meta Ads campaign spend.'
+        msg = f'Could not refresh this Meta Ads campaign spend: {exc}'
+        # Upstream provider error, not a gateway failure on our side — return a
+        # handled response so it doesn't log/alert as a 502 "Bad Gateway".
         if ajax:
-            return JsonResponse({'ok': False, 'error': msg}, status=502)
+            return JsonResponse({'ok': False, 'error': msg})
         messages.warning(request, msg)
         return _marketing_tab_redirect(event)
 
@@ -9086,6 +9377,55 @@ def saleable_ticket_type_data(request, event_id, ticket_type_id):
 
 @login_required
 @require_org
+@require_organizer
+def saleable_ticket_type_orders(request, event_id, ticket_type_id):
+    """List the orders that contain a given direct-ticketing ticket type.
+
+    Reached from the Ticket Allocation card on event_detail. Orders are matched
+    by ticket-type *name* (Ticket.ticket_type is the denormalized name string,
+    not a FK), so two ticket types sharing a name on one event collapse together
+    — tracked in TODOS.md for a future key-based filter.
+    """
+    org = get_organization(request)
+    event = get_object_or_404(Event.objects.filter(organization=org), id=event_id)
+    ticket_type = get_object_or_404(
+        SaleableTicketType.objects.filter(event=event), id=ticket_type_id
+    )
+
+    # Mirror the orders annotation pattern used by event_detail so the table
+    # renders identically (customer, status, gross total, ticket counts).
+    _platform_fee_subq = Subquery(
+        StripeCheckoutSession.objects.filter(ticket_order=OuterRef('pk')).values('platform_fee_cents')[:1],
+        output_field=DecimalField(max_digits=10, decimal_places=2),
+    )
+    orders_qs = event.ticket_orders.filter(
+        tickets__ticket_type=ticket_type.name
+    ).select_related(
+        'customer', 'uploaded_file'
+    ).annotate(
+        tickets_count=Count('tickets'),
+        type_count=Count('tickets', filter=Q(tickets__ticket_type=ticket_type.name)),
+        gross_total=ExpressionWrapper(
+            F('total_amount') - Cast(
+                Coalesce(_platform_fee_subq, 0),
+                output_field=DecimalField(max_digits=10, decimal_places=2),
+            ) * Decimal('0.01'),
+            output_field=DecimalField(max_digits=10, decimal_places=2),
+        ),
+    ).distinct().order_by('-order_date')
+
+    paginator = Paginator(orders_qs, 100)
+    page_obj = paginator.get_page(request.GET.get('page'))
+
+    return render(request, 'tickets/saleable_ticket_type_orders.html', {
+        'event': event,
+        'ticket_type': ticket_type,
+        'page_obj': page_obj,
+    })
+
+
+@login_required
+@require_org
 @require_host
 @require_http_methods(["POST"])
 def saleable_ticket_type_reorder(request, event_id):
@@ -9246,6 +9586,12 @@ def event_cancel(request, event_id):
     for order in orders:
         session = getattr(order, 'stripe_checkout_session', None)
         if session is None or session.status != StripeCheckoutSession.Status.COMPLETED:
+            continue
+
+        if session.charge_flow == StripeCheckoutSession.ChargeFlow.DIRECT:
+            # In-person charges live on the connected account; the platform
+            # key can't refund them. Count into the manual-refund warning.
+            failed_count += 1
             continue
 
         try:
@@ -10295,6 +10641,23 @@ def create_payment_intent(request, public_id):
     fee_cents = extract_fee_from_display_cents(discounted_subtotal_cents)
     charge_cents = discounted_subtotal_cents  # Display price is fee-inclusive; buyer pays display total
 
+    # Destination charge: organizer net rides transfer_data into the connected
+    # account at sale time. Fall back to a plain platform charge when the org
+    # isn't onboarded (funds join the legacy pool, swept later by the true-up
+    # command) or when the fee consumes the whole charge — Stripe rejects a
+    # zero/negative transfer_data.amount.
+    org_for_charge = event.organization
+    transfer_amount_cents = charge_cents - fee_cents
+    use_destination = bool(
+        org_for_charge.stripe_onboarding_complete
+        and org_for_charge.stripe_account_id
+        and transfer_amount_cents > 0
+    )
+    charge_flow = (
+        StripeCheckoutSession.ChargeFlow.DESTINATION if use_destination
+        else StripeCheckoutSession.ChargeFlow.PLATFORM
+    )
+
     profile_pk = None
     stripe_customer_id = None
     payment_method_id = use_saved_pm or None
@@ -10333,6 +10696,11 @@ def create_payment_intent(request, public_id):
                 'currency': django_settings.STRIPE_CURRENCY,
                 'metadata': md,
             }
+            if use_destination:
+                kw['transfer_data'] = {
+                    'destination': org_for_charge.stripe_account_id,
+                    'amount': transfer_amount_cents,
+                }
             if stripe_customer_id:
                 kw['customer'] = stripe_customer_id
             if save_card and stripe_customer_id:
@@ -10405,6 +10773,7 @@ def create_payment_intent(request, public_id):
         line_items_snapshot=cart,
         amount_total_cents=charge_cents,
         platform_fee_cents=fee_cents,
+        charge_flow=charge_flow,
         promo_code_id=promo_code_id,
         discount_cents=discount_cents,
         fb_browser_data=fb_browser_data,
@@ -10739,8 +11108,40 @@ def stripe_connect_webhook(request):
     event_type = event['type']
     if event_type in ('payout.created', 'payout.updated', 'payout.paid', 'payout.failed'):
         _handle_stripe_payout_event(event)
+    elif event_type == 'charge.refunded':
+        # Direct (in-person) charges live on connected accounts, so their
+        # refund events arrive here, not on the platform endpoint.
+        _sync_charge_refund(event['data']['object'])
 
     return HttpResponse(status=200)
+
+
+# Stripe payout status → local Payout status. 'pending' matters for
+# organizer-initiated payouts discovered via webhook before dispatch.
+_STRIPE_PAYOUT_STATUS_MAP = {
+    'pending':    Payout.Status.PENDING,
+    'in_transit': Payout.Status.IN_TRANSIT,
+    'paid':       Payout.Status.COMPLETED,
+    'failed':     Payout.Status.FAILED,
+    'canceled':   Payout.Status.FAILED,
+}
+
+
+def _apply_stripe_payout_status(payout, stripe_status, stripe_payout_id=None):
+    """Apply a Stripe payout's status (and optionally its po_ id) to a local
+    Payout row. The single translation point — webhook, initiate_payout, and
+    recovery must never carry their own copies of this mapping."""
+    update_fields = []
+    if stripe_payout_id and not payout.stripe_payout_id:
+        payout.stripe_payout_id = stripe_payout_id
+        update_fields.append('stripe_payout_id')
+    new_status = _STRIPE_PAYOUT_STATUS_MAP.get(stripe_status)
+    if new_status and payout.status != new_status:
+        payout.status = new_status
+        update_fields.append('status')
+    if update_fields:
+        payout.save(update_fields=update_fields)
+    return update_fields
 
 
 def _handle_stripe_payout_event(event):
@@ -10749,10 +11150,12 @@ def _handle_stripe_payout_event(event):
 
     Stripe fires these on the connected account, so the event includes an
     'account' field with the Express account ID. We use that to find the org
-    and then reconcile by Stripe payout ID first, with best-effort fallback
-    to metadata or the oldest open payout of the same amount.
+    and reconcile by Stripe payout ID first, then by our payout_id metadata
+    (covers the race where payout.created beats initiate_payout's save).
+    Anything still unmatched is an organizer-initiated payout (Express
+    Dashboard) — record it as a new Payout row so history stays truthful.
 
-    payout.created  → confirm/store stripe_payout_id
+    payout.created  → confirm/store stripe_payout_id (or record organizer payout)
     payout.updated  → advance to IN_TRANSIT when Stripe dispatches to bank
     payout.paid     → advance to COMPLETED (funds arrived at bank)
     payout.failed   → advance to FAILED
@@ -10795,43 +11198,38 @@ def _handle_stripe_payout_event(event):
             .first()
         )
 
-    if not payout and stripe_payout_amount is not None:
-        payout_amount = Decimal(str(stripe_payout_amount)) / 100
-        payout = (
-            Payout.objects
-            .filter(
-                organization=org,
-                amount=payout_amount,
-                stripe_payout_id__isnull=True,
-                status__in=[Payout.Status.PENDING, Payout.Status.IN_TRANSIT],
-            )
-            .order_by('created_at')
-            .first()
-        )
-
     if not payout:
-        logger.info("No matching Payout record for Stripe payout %s (org %s)", stripe_payout_id, org.id)
-        return
+        # Organizer-initiated payout from the Express Dashboard: no local row
+        # exists, so create one. get_or_create on the unique po_ id absorbs
+        # duplicate webhook delivery.
+        if not stripe_payout_id or stripe_payout_amount is None:
+            logger.info(
+                "Ignoring unmatched Stripe payout without id/amount (org %s): %s",
+                org.id, stripe_payout_id,
+            )
+            return
+        payout, created = Payout.objects.get_or_create(
+            stripe_payout_id=stripe_payout_id,
+            defaults={
+                'organization': org,
+                'amount': Decimal(str(stripe_payout_amount)) / 100,
+                'status': _STRIPE_PAYOUT_STATUS_MAP.get(stripe_payout_status, Payout.Status.PENDING),
+                'origin': Payout.Origin.STRIPE_DASHBOARD,
+                'initiated_by': None,
+                'notes': 'Initiated via Stripe',
+            },
+        )
+        if created:
+            logger.info(
+                "Recorded organizer-initiated Stripe payout %s for org %s (%s)",
+                stripe_payout_id, org.id, stripe_payout_status,
+            )
+            _bust_connected_balance_cache(org)
+            return
+        # Lost a race with a concurrent delivery — fall through to status sync.
 
-    update_fields = []
-
-    if not payout.stripe_payout_id and stripe_payout_id:
-        payout.stripe_payout_id = stripe_payout_id
-        update_fields.append('stripe_payout_id')
-
-    status_map = {
-        'in_transit': Payout.Status.IN_TRANSIT,
-        'paid':       Payout.Status.COMPLETED,
-        'failed':     Payout.Status.FAILED,
-        'canceled':   Payout.Status.FAILED,
-    }
-    new_status = status_map.get(stripe_payout_status)
-    if new_status and payout.status != new_status:
-        payout.status = new_status
-        update_fields.append('status')
-
+    update_fields = _apply_stripe_payout_status(payout, stripe_payout_status, stripe_payout_id)
     if update_fields:
-        payout.save(update_fields=update_fields)
         logger.info(
             "Payout %s advanced to %s via Stripe payout %s",
             payout.id, payout.status, stripe_payout_id,
@@ -11074,14 +11472,28 @@ def _fulfill_payment_intent(payment_intent):
                 latest_charge_id,
                 expand=['balance_transaction'],
             )
+            session_updates = {}
             bt = charge.balance_transaction
             if bt and getattr(bt, 'available_on', None):
                 import datetime as _dt
-                available_on_dt = _dt.datetime.fromtimestamp(bt.available_on, tz=_dt.timezone.utc)
-                StripeCheckoutSession.objects.filter(stripe_session_id=pi_id).update(
-                    available_on=available_on_dt,
+                session_updates['available_on'] = _dt.datetime.fromtimestamp(
+                    bt.available_on, tz=_dt.timezone.utc,
                 )
-                logger.info("Set available_on=%s for PaymentIntent %s", available_on_dt, pi_id)
+            # Destination charges carry a transfer (tr_xxx). Trust the charge,
+            # not the session flag: a PENDING session created before the
+            # destination-charge deploy fulfills here with no transfer and
+            # correctly stays in the legacy platform pool.
+            transfer_id = getattr(charge, 'transfer', None)
+            if transfer_id and isinstance(transfer_id, str):
+                transfer = stripe_lib_bt.Transfer.retrieve(transfer_id)
+                session_updates.update(
+                    stripe_transfer_id=transfer_id,
+                    transfer_cents=int(transfer.amount),
+                    charge_flow=StripeCheckoutSession.ChargeFlow.DESTINATION,
+                )
+            if session_updates:
+                StripeCheckoutSession.objects.filter(stripe_session_id=pi_id).update(**session_updates)
+                logger.info("Recorded settlement/transfer state for PaymentIntent %s: %s", pi_id, session_updates)
         except Exception:
             logger.exception("Could not fetch balance_transaction for charge %s (PI %s)", latest_charge_id, pi_id)
 
@@ -11132,6 +11544,80 @@ def _find_session_for_payment_intent(pi_id):
     ).select_related('ticket_order', 'organization').first()
 
 
+def _reverse_transfer_for_refund(charge, session=None):
+    """Claw back the organizer's share of a refunded destination charge.
+
+    Stripe is the authority on both sides of the math: the cumulative
+    ``charge.amount_refunded`` sets the target, and ``Transfer.amount_reversed``
+    says how much has already been clawed back — so a stale or missing local
+    row can never cause an over-reversal, and webhook retries replay the same
+    cumulative target through the same idempotency key as no-ops.
+
+    Works without a session row (event hard-deletes CASCADE sessions away;
+    the refund webhook may also beat fulfillment's transfer capture): the
+    transfer id comes from the charge payload itself. Charges with no
+    transfer (platform, direct, SMS top-ups) no-op.
+
+    Refund semantics: a partial refund of R reverses exactly R (organizer
+    bears it 1:1) until the transfer is exhausted; a full refund reverses the
+    whole transfer, so the platform funds the fee portion of the buyer's
+    refund — the fee-waiver-on-full-refund economics the ledger math in
+    _aggregate_session_cents assumes.
+
+    Failures log loudly and return — order/session state sync must proceed;
+    the charge.refunded retry or backfill_refund_state converges later.
+    """
+    transfer_id = None
+    if session is not None and session.stripe_transfer_id:
+        transfer_id = session.stripe_transfer_id
+    if not transfer_id:
+        payload_transfer = _stripe_value(charge, 'transfer')
+        if payload_transfer and isinstance(payload_transfer, str):
+            transfer_id = payload_transfer
+    if not transfer_id:
+        return
+
+    refunded_cents = int(_stripe_value(charge, 'amount_refunded') or 0)
+    if refunded_cents <= 0:
+        return
+
+    import stripe as stripe_lib
+    from django.conf import settings as django_settings
+    stripe_lib.api_key = django_settings.STRIPE_SECRET_KEY
+    try:
+        transfer = stripe_lib.Transfer.retrieve(transfer_id)
+        target_cents = min(refunded_cents, int(transfer.amount))
+        delta_cents = target_cents - int(transfer.amount_reversed or 0)
+        if delta_cents > 0:
+            stripe_lib.Transfer.create_reversal(
+                transfer_id,
+                amount=delta_cents,
+                idempotency_key=f'trrev-{transfer_id}-{target_cents}',
+                metadata={
+                    'reason': 'refund_clawback',
+                    'payment_intent': str(_stripe_value(charge, 'payment_intent') or ''),
+                },
+            )
+            logger.info(
+                "Reversed %s cents of transfer %s for refund (cumulative target %s)",
+                delta_cents, transfer_id, target_cents,
+            )
+    except stripe_lib.error.StripeError:
+        logger.exception("Transfer reversal failed for %s — state sync continues, backfill will converge", transfer_id)
+        return
+
+    if session is not None:
+        session_updates = {'transfer_reversed_cents': target_cents}
+        if not session.stripe_transfer_id:
+            # Recovered from the charge payload before fulfillment stored it.
+            session_updates.update(
+                stripe_transfer_id=transfer_id,
+                transfer_cents=int(transfer.amount),
+                charge_flow=StripeCheckoutSession.ChargeFlow.DESTINATION,
+            )
+        StripeCheckoutSession.objects.filter(pk=session.pk).update(**session_updates)
+
+
 def _sync_charge_refund(charge):
     """Sync a Stripe refund (any origin, incl. dashboard) into the DB.
 
@@ -11143,13 +11629,21 @@ def _sync_charge_refund(charge):
     webhook after an app-initiated refund (refund_order writes the same state
     first) become no-ops. Inventory restore and waitlist notifications fire
     only on the transition into REFUNDED.
+
+    The transfer clawback runs BEFORE the state no-op guard: the echo webhook
+    after an app-initiated refund is exactly when the reversal must happen
+    (refund_order only writes local state), and the reversal carries its own
+    Stripe-side idempotency.
     """
     pi_id = _stripe_value(charge, 'payment_intent')
     if not pi_id:
         return
     session = _find_session_for_payment_intent(pi_id)
     if session is None:
-        # SMS top-up or charge that isn't ours — nothing to sync.
+        # SMS top-up, a charge that isn't ours, or a session lost to an event
+        # hard-delete. The clawback must still happen for destination charges —
+        # everything it needs lives on Stripe (D1 session-less fallback).
+        _reverse_transfer_for_refund(charge, session=None)
         return
     if not session.stripe_payment_intent_id:
         # Legacy Checkout-flow row matched via the cs_… fallback: persist the
@@ -11162,6 +11656,8 @@ def _sync_charge_refund(charge):
         StripeCheckoutSession.Status.REFUNDED,
     ):
         return
+
+    _reverse_transfer_for_refund(charge, session=session)
 
     order = session.ticket_order
     refunded_total = Decimal(int(_stripe_value(charge, 'amount_refunded') or 0)) / 100
@@ -11209,9 +11705,10 @@ def _sync_charge_refund(charge):
         _invalidate_event_list_cache(session.organization)
         _invalidate_marketing_cache(session.organization)
 
-    # Bust the cached platform balance so the Finance page reflects the refund
-    # immediately instead of after the 60s TTL.
+    # Bust the cached balances so the Finance page reflects the refund (and
+    # any clawback) immediately instead of after the 60s TTL.
     django_cache.delete(_STRIPE_PLATFORM_AVAILABLE_CACHE_KEY)
+    _bust_connected_balance_cache(session.organization)
     logger.info(
         "Synced charge.refunded for session %s (refunded=%s, full=%s)",
         session.stripe_session_id, refunded_total, fully_refunded,
@@ -11587,6 +12084,11 @@ def _aggregate_session_cents(sessions):
     The clamp runs in Python with exact Decimal math — refunded_amount is a
     Decimal in dollars on the related order while session amounts are integer
     cents, and a Cast(... * 100) in SQL float-truncates on SQLite.
+
+    Direct (in-person) sessions intentionally get the same treatment with no
+    fee-waiver special case: Stripe keeps the application fee when an
+    in-person charge is refunded from the organizer's dashboard, so a fully
+    refunded direct session displaying as 0 is the documented policy.
     """
     agg = sessions.aggregate(
         total_charged=Coalesce(Sum('amount_total_cents'), 0),
@@ -11666,21 +12168,28 @@ def _get_stripe_platform_available_cents(use_cache=False):
         return None
 
 
-def _compute_settled_payout_balance(org):
+def _compute_legacy_settled_balance(org, clamp=True):
     """
-    Return the amount available for payout for this org, in dollars.
+    Return the settled, still-platform-held organizer balance, in dollars.
 
-    Counts sessions whose funds have an explicit available_on <= now, plus
-    sessions with available_on=NULL (payments that pre-date that field, treated
-    as already settled per the model's documented intent). Partially refunded
-    sessions count net of their refunded amount.
-    Subtracts completed payouts.
+    LEGACY POOL ONLY: counts platform-flow sessions (pre-destination-charge
+    money that landed on the platform account) whose funds have settled —
+    explicit available_on <= now, or available_on=NULL for payments that
+    pre-date that field. Partially refunded sessions count net of their
+    refunded amount. Subtracts the payouts that drew platform funds
+    (origin legacy_transfer/migration), so the migrate_legacy_balances
+    true-up can re-run safely: each run moves exactly the not-yet-moved
+    remainder.
+
+    Destination/direct sessions never enter this number — their money lives
+    in the connected account, whose Stripe balance is the source of truth.
     """
     from django.utils import timezone as django_tz
     now = django_tz.now()
     settled_sessions = StripeCheckoutSession.objects.filter(
         organization=org,
         status__in=_BALANCE_SESSION_STATUSES,
+        charge_flow=StripeCheckoutSession.ChargeFlow.PLATFORM,
     ).filter(
         Q(available_on__lte=now) | Q(available_on__isnull=True)
     )
@@ -11690,12 +12199,63 @@ def _compute_settled_payout_balance(org):
 
     paid_out = Payout.objects.filter(
         organization=org,
+        origin__in=[Payout.Origin.LEGACY_TRANSFER, Payout.Origin.MIGRATION],
     ).exclude(status=Payout.Status.FAILED).aggregate(
         total=Coalesce(Sum('amount'), Decimal('0.00'))
     )['total']
 
     settled = Decimal(str(settled_organizer_cents)) / 100 - paid_out
+    if not clamp:
+        # Raw value for the true-up dry-run: negative means a legacy refund
+        # landed after its funds were already trued-up (platform absorbed it).
+        return settled
     return max(Decimal('0.00'), settled)
+
+
+_CONNECTED_BALANCE_CACHE_TTL = 60
+
+
+def _connected_balance_cache_key(org):
+    return f'stripe_connected_balance:{org.pk}'
+
+
+def _bust_connected_balance_cache(org):
+    django_cache.delete(_connected_balance_cache_key(org))
+
+
+def _get_connected_balance_cents(org, use_cache=True):
+    """
+    Return (available_cents, pending_cents) for the org's connected Stripe
+    account, or (None, None) on error / no account. This is the source of
+    truth for "Ready to Withdraw" (available) and "Settling" (pending).
+    """
+    if not org.stripe_account_id:
+        return (None, None)
+    cache_key = _connected_balance_cache_key(org)
+    if use_cache:
+        cached = django_cache.get(cache_key)
+        if cached is not None:
+            return tuple(cached)
+
+    import stripe as stripe_lib
+    from django.conf import settings as django_settings
+    stripe_lib.api_key = django_settings.STRIPE_SECRET_KEY
+    try:
+        balance = stripe_lib.Balance.retrieve(stripe_account=org.stripe_account_id)
+        currency = django_settings.STRIPE_CURRENCY.lower()
+        available = sum(
+            entry.amount for entry in balance.available
+            if entry.currency.lower() == currency
+        )
+        pending = sum(
+            entry.amount for entry in balance.pending
+            if entry.currency.lower() == currency
+        )
+        django_cache.set(cache_key, (available, pending), _CONNECTED_BALANCE_CACHE_TTL)
+        return (available, pending)
+    except Exception:
+        logger.exception("Could not retrieve connected Stripe balance for org %s", org.id)
+        return (None, None)
 
 
 def _extract_bank_account(acct):
@@ -11864,22 +12424,15 @@ def finance_overview(request):
             logger.exception("Could not retrieve Stripe account state for org %s", org.id)
 
     if org.stripe_onboarding_complete and org.stripe_account_id:
-        db_settled = _compute_settled_payout_balance(org)
-        stripe_actual_cents = _get_stripe_platform_available_cents(use_cache=True)
-        if stripe_actual_cents is not None:
-            stripe_actual = Decimal(str(stripe_actual_cents)) / 100
-            if stripe_actual < db_settled:
-                logger.warning(
-                    "Stripe-available below DB-settled for org %s: db=%s stripe=%s gap=%s",
-                    org.id, db_settled, stripe_actual, db_settled - stripe_actual,
-                )
-            # Clamp at zero: the shared platform balance can go negative
-            # (e.g. after refunds), which must never surface as a negative
-            # "Ready to Withdraw" or inflate the settling figure below.
-            stripe_available = max(Decimal('0.00'), min(db_settled, stripe_actual))
-        else:
-            stripe_available = db_settled
-        settling_balance = max(Decimal('0.00'), available_balance - stripe_available)
+        # The connected account balance IS the organizer's money now:
+        # available = withdrawable, pending = settling. Clamp at zero for
+        # display — available can go negative after a refund clawback that
+        # follows a withdrawal. On Stripe API failure render unknowns (None)
+        # rather than misrepresenting platform-pool figures as withdrawable.
+        available_cents, pending_cents = _get_connected_balance_cents(org)
+        if available_cents is not None:
+            stripe_available = max(Decimal('0.00'), Decimal(str(available_cents)) / 100)
+            settling_balance = max(Decimal('0.00'), Decimal(str(pending_cents)) / 100)
 
     legacy_pending_payouts = Payout.objects.filter(
         organization=org,
@@ -12151,6 +12704,12 @@ def stripe_connect_return(request):
             stripe_state = _get_connected_account_state(stripe_lib, org.stripe_account_id)
             _sync_org_payout_readiness(org, stripe_state['payouts_ready'])
             if stripe_state['payouts_ready']:
+                # Manual schedule from day one so the balance accumulates for
+                # organizer-initiated withdrawals instead of auto-sweeping.
+                try:
+                    _ensure_manual_payout_schedule(stripe_lib, org.stripe_account_id)
+                except stripe_lib.error.StripeError:
+                    logger.exception("Could not set manual payout schedule for %s", org.stripe_account_id)
                 messages.success(request, 'Bank account connected successfully. You can now request payouts.')
             else:
                 messages.warning(
@@ -12279,92 +12838,53 @@ def initiate_payout(request):
         messages.error(request, f'Minimum payout is ${_MIN_PAYOUT:.2f}.')
         return redirect('tickets:finance_overview')
 
-    _, _, _, available_balance = _compute_available_balance(org)
-    if amount > available_balance:
-        messages.error(request, f'Payout amount exceeds available balance (${available_balance:.2f}).')
+    # The connected account balance is the only gate that matters now: the
+    # organizer's money already lives there (destination charges + true-up).
+    available_cents, _pending_cents = _get_connected_balance_cents(org, use_cache=False)
+    if available_cents is None:
+        messages.error(request, 'Could not check your Stripe balance. Please try again.')
         return redirect('tickets:finance_overview')
-
-    stripe_available = _compute_settled_payout_balance(org)
-    if amount > stripe_available:
+    available = Decimal(str(available_cents)) / 100
+    if amount > available:
         messages.error(
             request,
-            f'Only ${stripe_available:.2f} has settled and is available to pay out. '
+            f'Payout amount exceeds your available balance (${max(available, Decimal("0.00")):.2f}). '
             f'Funds from recent sales typically settle within 2\u20137 business days.',
         )
         return redirect('tickets:finance_overview')
-
-    stripe_actual_cents = _get_stripe_platform_available_cents()
-    if stripe_actual_cents is not None:
-        stripe_actual = Decimal(str(stripe_actual_cents)) / 100
-        if amount > stripe_actual:
-            messages.error(
-                request,
-                f'Your Stripe balance has ${stripe_actual:.2f} available right now. '
-                f'Funds from recent sales typically settle within 2\u20137 business days.',
-            )
-            return redirect('tickets:finance_overview')
 
     notes = request.POST.get('notes', '').strip()[:500]
     payout = Payout.objects.create(
         organization=org,
         amount=amount,
         status=Payout.Status.PENDING,
+        origin=Payout.Origin.CUE,
         initiated_by=request.user,
         notes=notes,
     )
 
     try:
         _ensure_manual_payout_schedule(stripe_lib, org.stripe_account_id)
-        transfer = stripe_lib.Transfer.create(
-            amount=int(amount * 100),
-            currency=django_settings.STRIPE_CURRENCY,
-            destination=org.stripe_account_id,
-            description=f'Payout to {org.name}',
-            metadata={'org_id': str(org.id), 'payout_id': str(payout.id)},
-        )
-        payout.stripe_transfer_id = transfer.id
-        payout.save(update_fields=['stripe_transfer_id'])
-
+        # No Transfer step anymore — the money is already in the connected
+        # account. The idempotency key makes a timeout retry return the
+        # original payout instead of withdrawing twice.
         stripe_payout = stripe_lib.Payout.create(
             amount=int(amount * 100),
             currency=django_settings.STRIPE_CURRENCY,
             metadata={'org_id': str(org.id), 'payout_id': str(payout.id)},
             stripe_account=org.stripe_account_id,
+            idempotency_key=f'payout-{payout.id}',
         )
-        payout.stripe_payout_id = stripe_payout.id
-        payout_status_map = {
-            'in_transit': Payout.Status.IN_TRANSIT,
-            'paid': Payout.Status.COMPLETED,
-            'failed': Payout.Status.FAILED,
-            'canceled': Payout.Status.FAILED,
-        }
-        update_fields = ['stripe_payout_id']
-        new_status = payout_status_map.get(getattr(stripe_payout, 'status', None))
-        if new_status and payout.status != new_status:
-            payout.status = new_status
-            update_fields.append('status')
-        payout.save(update_fields=update_fields)
+        _apply_stripe_payout_status(payout, getattr(stripe_payout, 'status', None), stripe_payout.id)
         messages.success(request, f'Payout of ${amount:.2f} processing. Funds will arrive in 1–5 business days.')
     except stripe_lib.error.StripeError as e:
-        transfer = locals().get('transfer')
-        if transfer is not None:
-            try:
-                stripe_lib.Transfer.create_reversal(
-                    transfer.id,
-                    metadata={'org_id': str(org.id), 'payout_id': str(payout.id), 'reason': 'payout_create_failed'},
-                )
-            except stripe_lib.error.StripeError:
-                logger.exception("Could not reverse transfer %s after payout failure for payout %s", transfer.id, payout.id)
         payout.status = Payout.Status.FAILED
         error_note = f' [Stripe error: {str(e)[:400]}]'
         payout.notes = (payout.notes + error_note)[:500]
-        update_fields = ['status', 'notes']
-        if transfer is not None and payout.stripe_transfer_id != transfer.id:
-            payout.stripe_transfer_id = transfer.id
-            update_fields.append('stripe_transfer_id')
-        payout.save(update_fields=update_fields)
+        payout.save(update_fields=['status', 'notes'])
         messages.error(request, f'Payout failed: {getattr(e, "user_message", None) or str(e)}')
 
+    _bust_connected_balance_cache(org)
     return redirect('tickets:finance_overview')
 
 
@@ -12416,20 +12936,9 @@ def recover_pending_payouts(request):
                 currency=django_settings.STRIPE_CURRENCY,
                 metadata={'org_id': str(org.id), 'payout_id': str(payout.id)},
                 stripe_account=org.stripe_account_id,
+                idempotency_key=f'payout-{payout.id}',
             )
-            payout.stripe_payout_id = stripe_payout.id
-            payout_status_map = {
-                'in_transit': Payout.Status.IN_TRANSIT,
-                'paid': Payout.Status.COMPLETED,
-                'failed': Payout.Status.FAILED,
-                'canceled': Payout.Status.FAILED,
-            }
-            update_fields = ['stripe_payout_id']
-            new_status = payout_status_map.get(getattr(stripe_payout, 'status', None))
-            if new_status and payout.status != new_status:
-                payout.status = new_status
-                update_fields.append('status')
-            payout.save(update_fields=update_fields)
+            _apply_stripe_payout_status(payout, getattr(stripe_payout, 'status', None), stripe_payout.id)
             recovered += 1
         except stripe_lib.error.StripeError as e:
             error_note = f' [Recovery failed: {str(e)[:400]}]'

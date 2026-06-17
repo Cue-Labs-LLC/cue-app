@@ -162,3 +162,83 @@
 **Context:** `backfill_loyalty_points_task(program_id)` already does the sweep + chains `recalculate_loyalty_tiers_task`, claims `recalc_in_progress` while running, and stamps `Organization.loyalty_points_backfilled_at`. The management command just needs to iterate orgs with an active points program and enqueue it (mirror `generate_ai_opportunities.py` with --sync and --organization-id flags). Eng review decision D10.
 
 **Depends on:** Loyalty points Phase 1 shipped.
+
+---
+
+## Payments: Hide refund button for in-person (direct-charge) orders
+
+**What:** `order_detail` still renders the refund button for in-person orders, but `refund_order` now rejects `charge_flow='direct'` sessions with "refund from your Stripe dashboard" — a guaranteed dead-end click. Add a view/template guard mirroring the endpoint rule and show the dashboard note instead.
+
+**Why:** Every in-person refund attempt currently hits an error message after a click that looked actionable. Cheap fix, real support-ticket saver.
+
+**Pros:** UI and endpoint enforce the same rule; organizers get told the actual refund path up front.
+
+**Cons:** One more template conditional to maintain until in-app direct refunds ship (see below — that TODO supersedes this one).
+
+**Context:** From the destination-charges eng review (decision D10, deferred by choice). The endpoint guard lives in `refund_order` (tickets/views.py, charge_flow check right after the eligibility guard). The order page's refund eligibility logic is in `order_detail` around views.py:5271. `StripeCheckoutSession.charge_flow` tells you everything you need.
+
+**Depends on:** Destination-charges PR merged.
+
+---
+
+## Payments: Connected-account refund discovery in backfill_refund_state
+
+**What:** Add a `--connected` mode to `backfill_refund_state` that iterates orgs with `stripe_account_id`, lists refunds on each connected account, and replays them through `_sync_charge_refund` — healing missed `charge.refunded` events for in-person (direct) charges.
+
+**Why:** Online refunds have webhook + backfill as belt-and-braces. In-person refunds arrive on the connect webhook endpoint only; if an event is ever missed, the order stays marked paid forever with no recovery path.
+
+**Pros:** Completes the healing story for every charge flow; reuses `_sync_charge_refund` verbatim, just a different iteration source. Stripe retains refund history, so late healing always works.
+
+**Cons:** Per-org Stripe API iteration; needs care with pagination and rate limits.
+
+**Context:** From the destination-charges eng review (Codex finding, decision D16: defer until after cutover). `_find_session_for_payment_intent` already matches direct sessions by PI id since the sell flow stores `stripe_session_id=pi_…`.
+
+**Depends on:** Destination-charges PR merged + cutover complete.
+
+---
+
+## Payments: Refund-time warning when connected balance can't cover the clawback
+
+**What:** Before issuing a refund in `refund_order`, check `_get_connected_balance_cents(org)` and require an explicit confirm step when the organizer's available balance is less than the transfer reversal the refund will trigger ("this refund will overdraw your payout balance").
+
+**Why:** If an organizer withdraws everything and then refunds, the reversal drives their Stripe balance negative and Cue is liable until future sales cover it. Today this is silent (logged only); a confirm step turns platform credit exposure into an informed organizer decision.
+
+**Pros:** Fewer surprise negative balances; clear paper trail when the organizer proceeds anyway.
+
+**Cons:** Adds a Stripe call + confirm step to the refund flow; can't catch refunds initiated from the Stripe dashboard.
+
+**Context:** From the destination-charges eng review (decision D17). The reversal math lives in `_reverse_transfer_for_refund` (tickets/views.py); the pending reversal for a session is `min(new cumulative refund, transfer_cents) − Transfer.amount_reversed`. Monitor negative-balance frequency first — if it never happens, deprioritize.
+
+**Depends on:** Destination-charges PR merged; monitoring data on negative connected balances.
+
+---
+
+## Payments: In-app refunds for in-person (direct-charge) orders
+
+**What:** Extend `refund_order` to support `charge_flow='direct'` sessions via `Refund.create(payment_intent=…, stripe_account=org.stripe_account_id)`, honoring the documented fee policy (Cue keeps the application fee on in-person refunds — decision D14).
+
+**Why:** In-person refunds are currently dashboard-only — the single remaining workflow that forces organizers into Stripe. One refund surface regardless of how the sale happened.
+
+**Pros:** Feature parity for in-person sales; supersedes the "hide refund button" TODO above; the connect-endpoint `charge.refunded` routing already syncs the resulting state.
+
+**Cons:** Needs connected-account error handling (insufficient organizer balance) and a decision on partial-refund UX for card-present payments.
+
+**Context:** From the destination-charges eng review (decision D18). Direct sessions now exist with `charge_flow='direct'`, PI id in `stripe_session_id`, and `platform_fee_cents` from `application_fee_amount`. The `_sync_charge_refund` reversal block no-ops for direct charges (no transfer), so only the Refund.create call site needs the `stripe_account` parameter. Do NOT pass `refund_application_fee` — keeping the fee is the documented policy.
+
+**Depends on:** Destination-charges PR merged; D14 fee policy stays as documented.
+
+---
+
+## Ticket Allocation: Filter drill-down by ticket-type key, not name
+
+**What:** The "ticket name → orders of that type" drill-down (`saleable_ticket_type_orders` in views.py, reached from the Ticket Allocation card on event_detail) filters orders by ticket-type **name** (`tickets__ticket_type=tt.name`). Give `Ticket` a real key to its `SaleableTicketType` and filter by that key instead.
+
+**Why:** `Ticket.ticket_type` is a denormalized `CharField` (the name string), and `SaleableTicketType.name` is not unique per event. If an organizer has two ticket types sharing a name on one event, clicking either name returns the **union** of both types' orders — while the allocation card's per-type `quantity_sold` counts stay independent. So the counts and the drill-down can disagree in that edge case.
+
+**Pros:** Truly independent drill-down per ticket type; counts and order lists always agree. Also unlocks accurate per-type analytics elsewhere.
+
+**Cons:** Requires a schema change: add a nullable `saleable_ticket_type` FK on `Ticket`, a data migration to backfill existing rows by name (best-effort, ambiguous for same-named types), and populating it at purchase time. Direct purchases already know the `tt_id` at creation (`api_views.py:1630`, where `ticket_type=item['name']` is set and `item['tt_id']` is in scope), so new rows are cheap to populate; CSV-imported (external) events have no `SaleableTicketType` so the FK stays null there.
+
+**Context:** Shipped with the clickable-ticket-name drill-down (plan: clickable ticket names → orders). Name-based filtering was accepted as the v1 to avoid a migration. The in-person sell path (`api_views.py` ~1627) and the Stripe webhook purchase path both create `Ticket` rows from `SaleableTicketType`; both have the `tt_id`/snapshot available to populate the FK.
+
+**Depends on:** Clickable ticket-name drill-down shipped.
