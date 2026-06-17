@@ -244,35 +244,34 @@ document.addEventListener('DOMContentLoaded', function() {
             var need = IS_NPS ? 'periods with survey responses' : 'periods with events';
             return '<p class="text-muted">Not enough history yet — at least 3 ' + need + ' are needed to read a trend.</p>';
         }
-        var html = '';
-        if (m.trend === 'declining') {
-            html += '<p>' + m.diagnosis_text + '</p>';
-            if (m.driver_contributions && m.driver_contributions.length) {
-                html += '<div class="mb-3">';
-                m.driver_contributions.forEach(function(d) {
-                    var isDominant = d.key === m.dominant_driver;
-                    var hurts = driverHurts(d);
-                    var barColor = hurts ? DANGER : SUCCESS;
-                    var width = Math.min(100, Math.abs(d.change_pct));
-                    var tip = (DRIVER_HELP[d.key] || '') + ' (' + fmtDriverRange(d) + ')';
-                    var labelCls = 'mt-metric' + (isDominant ? ' fw-semibold' : '');
-                    html += '<div class="d-flex align-items-center justify-content-between small mb-1">'
-                        + '<span><span class="' + labelCls + '" data-bs-toggle="tooltip" title="' + tip
-                        + '" style="cursor:help;border-bottom:1px dotted currentColor;">' + d.label + '</span>'
-                        + (isDominant ? ' <span class="badge bg-danger ms-1">main driver</span>' : '') + '</span>'
-                        + '<span class="' + (hurts ? 'text-danger' : 'text-success') + '">' + fractionLabel(d) + '</span></div>';
-                    html += '<div style="height:6px;background:' + gridColor + ';border-radius:3px;margin-bottom:8px;">'
-                        + '<div style="height:6px;width:' + width + '%;background:' + barColor + ';border-radius:3px;"></div></div>';
-                });
-                html += '</div>';
-            }
-            html += renderAction(m);
-        } else if (m.trend === 'growing') {
-            html += '<p class="text-success"><i class="bi bi-graph-up-arrow"></i> ' + METRIC_NOUN + ' in ' + m.city
-                + ' is growing about ' + Math.abs(m.norm_slope_pct) + CHANGE_UNIT + ' per period. Keep doing what works here.</p>';
-        } else {
-            html += '<p class="text-muted">' + METRIC_NOUN + ' in ' + m.city + ' is holding steady. No action needed.</p>';
+        // The lead metric is the drag for declining markets and the booster for
+        // growing ones; stable markets have no single lead.
+        // Same label both ways — the badge color signals whether the lead driver
+        // is dragging the metric down (red) or pushing it up (green).
+        var leadBadge = m.trend === 'declining'
+            ? '<span class="badge bg-danger ms-1">main driver</span>'
+            : '<span class="badge bg-success ms-1">main driver</span>';
+        var html = '<p>' + m.diagnosis_text + '</p>';
+        if (m.driver_contributions && m.driver_contributions.length) {
+            html += '<div class="mb-3">';
+            m.driver_contributions.forEach(function(d) {
+                var isLead = d.key === m.dominant_driver;
+                var hurts = driverHurts(d);
+                var barColor = hurts ? DANGER : SUCCESS;
+                var width = Math.min(100, Math.abs(d.change_pct));
+                var tip = (DRIVER_HELP[d.key] || '') + ' (' + fmtDriverRange(d) + ')';
+                var labelCls = 'mt-metric' + (isLead ? ' fw-semibold' : '');
+                html += '<div class="d-flex align-items-center justify-content-between small mb-1">'
+                    + '<span><span class="' + labelCls + '" data-bs-toggle="tooltip" title="' + tip
+                    + '" style="cursor:help;border-bottom:1px dotted currentColor;">' + d.label + '</span>'
+                    + (isLead ? leadBadge : '') + '</span>'
+                    + '<span class="' + (hurts ? 'text-danger' : 'text-success') + '">' + fractionLabel(d) + '</span></div>';
+                html += '<div style="height:6px;background:' + gridColor + ';border-radius:3px;margin-bottom:8px;">'
+                    + '<div style="height:6px;width:' + width + '%;background:' + barColor + ';border-radius:3px;"></div></div>';
+            });
+            html += '</div>';
         }
+        html += renderAction(m);
         return html;
     }
 
