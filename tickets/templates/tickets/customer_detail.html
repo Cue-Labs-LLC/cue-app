@@ -1,5 +1,6 @@
 {% extends 'tickets/base.html' %}
 {% load tickets_extras %}
+{% load humanize %}
 
 {% block title %}{{ customer.name }} - Customer Details{% endblock %}
 
@@ -298,6 +299,16 @@
                 <span class="badge {{ loyalty_tier.color|badge_class }} fs-6">{{ loyalty_tier.name }}</span>
                 <span class="cd-muted">{{ loyalty_tier.program.name }}</span>
                 {% if loyalty_tier.perks %}<span class="cd-muted">{{ loyalty_tier.perks }}</span>{% endif %}
+            </div>
+        </div>
+        {% endif %}
+
+        {% if loyalty_points_enabled and loyalty_feature_enabled %}
+        <div class="cd-attr-row">
+            <div class="cd-attr-label">Points</div>
+            <div class="cd-attr-value">
+                <span class="badge bg-success fs-6">{{ customer.points_balance|intcomma }} pts</span>
+                <span class="cd-muted">{{ customer.lifetime_points|intcomma }} lifetime earned</span>
             </div>
         </div>
         {% endif %}
