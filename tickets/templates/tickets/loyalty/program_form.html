@@ -1,5 +1,4 @@
 {% extends 'tickets/base.html' %}
-{% load crispy_forms_tags %}
 
 {% block title %}{% if editing %}Edit{% else %}New{% endif %} Loyalty Program{% endblock %}
 
@@ -15,114 +14,206 @@
     <h1>{% if editing %}Edit Loyalty Program{% else %}New Loyalty Program{% endif %}</h1>
 </div>
 
-<form method="post">
+<form method="post" class="loyalty-form">
     {% csrf_token %}
-    <div class="row">
-        <div class="col-lg-8">
-            <div class="card mb-4">
-                <div class="card-header"><h5 class="mb-0">Program Details</h5></div>
-                <div class="card-body">
-                    {% crispy form %}
-                    {% if editing and program.points_enabled %}
-                    <div class="alert alert-warning small mb-0 mt-2">
+
+    {% if form.non_field_errors %}
+    <div class="loyalty-note loyalty-note--danger mb-3">{{ form.non_field_errors }}</div>
+    {% endif %}
+
+    {# ── Program details ───────────────────────────────────────────── #}
+    <div class="card mb-4">
+        <div class="card-header"><h5 class="mb-0">Program Details</h5></div>
+        <div class="card-body">
+
+            <div class="loyalty-section">
+                <div class="loyalty-field">
+                    <label class="form-label" for="{{ form.name.id_for_label }}">Name</label>
+                    {{ form.name }}
+                    {{ form.name.errors }}
+                </div>
+                <div class="loyalty-field">
+                    <label class="form-label" for="{{ form.description.id_for_label }}">Description</label>
+                    {{ form.description }}
+                    {{ form.description.errors }}
+                </div>
+                <label class="loyalty-check">
+                    {{ form.is_active }}
+                    <span>
+                        <span class="loyalty-check__title">Active program</span>
+                        <span class="loyalty-help">{{ form.is_active.help_text }}</span>
+                    </span>
+                </label>
+            </div>
+
+            <div class="loyalty-section">
+                <div class="loyalty-eyebrow">Points</div>
+                <label class="loyalty-check">
+                    {{ form.points_enabled }}
+                    <span>
+                        <span class="loyalty-check__title">Award points</span>
+                        <span class="loyalty-help">{{ form.points_enabled.help_text }}</span>
+                    </span>
+                </label>
+
+                <div id="pointsConfig" class="loyalty-subsection">
+                    <div class="row g-3">
+                        <div class="col-sm-6 loyalty-field mb-0">
+                            <label class="form-label" for="{{ form.points_basis.id_for_label }}">Earn basis</label>
+                            {{ form.points_basis }}
+                        </div>
+                        <div class="col-sm-6 loyalty-field mb-0">
+                            <label class="form-label" for="{{ form.points_rate.id_for_label }}">Rate</label>
+                            {{ form.points_rate }}
+                        </div>
+                    </div>
+                    <p class="loyalty-help mt-1">{{ form.points_rate.help_text }}</p>
+
+                    <label class="loyalty-check mt-2">
+                        {{ form.backfill_past_orders }}
+                        <span>
+                            <span class="loyalty-check__title">{{ form.backfill_past_orders.label }}</span>
+                            <span class="loyalty-help">{{ form.backfill_past_orders.help_text }}</span>
+                        </span>
+                    </label>
+
+                    {% if editing %}
+                    <div class="loyalty-note mt-3">
                         <i class="bi bi-exclamation-triangle"></i>
-                        Changing the basis or rate affects <strong>future orders only</strong>. Members keep the
+                        <span>Changing the basis or rate affects <strong>future orders only</strong>. Members keep the
                         points they have already earned. To re-apply the new rate to past orders, use
-                        <strong>Recompute points</strong> on the program page.
+                        <strong>Recompute points</strong> on the program page.</span>
                     </div>
                     {% endif %}
                 </div>
             </div>
 
-            <div class="card mb-4">
-                <div class="card-header d-flex justify-content-between align-items-center">
-                    <div>
-                        <h5 class="mb-0">Tiers</h5>
-                        <span class="text-muted small">Higher-ranked tiers are checked first; customers land in the best tier they qualify for. Leave a rule blank to ignore it. A tier with no rules includes everyone.</span>
-                    </div>
-                    <button type="button" class="btn btn-sm btn-outline-secondary" id="addTierBtn"><i class="bi bi-plus-lg"></i> Add tier</button>
-                </div>
-                <div class="card-body">
-                    {{ formset.management_form }}
-                    {% if formset.non_form_errors %}
-                    <div class="alert alert-danger">{{ formset.non_form_errors }}</div>
-                    {% endif %}
-                    <div id="tiers-container">
-                        {% for tier_form in formset %}
-                        <div class="tier-row card mb-3">
-                            <div class="card-body">
-                                {{ tier_form.id }}
-                                {% for error in tier_form.non_field_errors %}
-                                <div class="text-danger small mb-2">{{ error }}</div>
-                                {% endfor %}
-                                <div class="row g-3">
-                                    <div class="col-md-5">
-                                        <label class="form-label small fw-medium">Tier name</label>
-                                        {{ tier_form.name }}
-                                        {{ tier_form.name.errors }}
-                                    </div>
-                                    <div class="col-md-3">
-                                        <label class="form-label small fw-medium">Rank</label>
-                                        {{ tier_form.rank }}
-                                        {{ tier_form.rank.errors }}
-                                    </div>
-                                    <div class="col-md-4">
-                                        <label class="form-label small fw-medium">Badge color</label>
-                                        {{ tier_form.color }}
-                                    </div>
-                                    <div class="col-12">
-                                        <label class="form-label small fw-medium">Perks (member-facing rewards)</label>
-                                        {{ tier_form.perks }}
-                                    </div>
+        </div>
+    </div>
+
+    {# ── Tiers ─────────────────────────────────────────────────────── #}
+    <div class="card mb-4">
+        <div class="card-header d-flex justify-content-between align-items-center">
+            <div>
+                <h5 class="mb-0">Tiers</h5>
+                <span class="loyalty-help d-block mt-1">Higher-ranked tiers win when a customer qualifies for several. A tier with no rules includes everyone.</span>
+            </div>
+            <button type="button" class="btn btn-sm btn-outline-secondary" id="addTierBtn"><i class="bi bi-plus-lg"></i> Add tier</button>
+        </div>
+        <div class="card-body p-0">
+            {{ formset.management_form }}
+            {% if formset.non_form_errors %}
+            <div class="loyalty-note loyalty-note--danger m-3">{{ formset.non_form_errors }}</div>
+            {% endif %}
+            <div id="tiers-container">
+                {% for tier_form in formset %}
+                {# UUID PKs are set on instantiation, so use the formset index to detect new forms. #}
+                <div class="tier-card{% if forloop.counter0 >= formset.initial_form_count or tier_form.errors or tier_form.non_field_errors %} tier-card--open{% endif %}">
+                    {{ tier_form.id }}
+                    <div class="d-none">{{ tier_form.DELETE }}</div>
+
+                    <button type="button" class="tier-card__header"
+                            aria-expanded="{% if forloop.counter0 >= formset.initial_form_count or tier_form.errors or tier_form.non_field_errors %}true{% else %}false{% endif %}">
+                        <span class="tier-card__swatch"></span>
+                        <span class="tier-card__title">New tier</span>
+                        <span class="tier-card__rank"></span>
+                        <span class="tier-card__summary"></span>
+                        <i class="bi bi-chevron-down tier-card__chevron"></i>
+                    </button>
+
+                    <div class="tier-card__body"{% if forloop.counter0 < formset.initial_form_count and not tier_form.errors and not tier_form.non_field_errors %} hidden{% endif %}>
+                        {% for error in tier_form.non_field_errors %}
+                        <div class="text-danger small mb-2">{{ error }}</div>
+                        {% endfor %}
+
+                        <div class="tier-row__head">
+                            <div class="tier-row__name loyalty-field mb-0">
+                                <label class="form-label" for="{{ tier_form.name.id_for_label }}">Tier name</label>
+                                {{ tier_form.name }}
+                                {{ tier_form.name.errors }}
+                            </div>
+                            <div class="tier-row__rank loyalty-field mb-0">
+                                <label class="form-label" for="{{ tier_form.rank.id_for_label }}">Rank</label>
+                                {{ tier_form.rank }}
+                                {{ tier_form.rank.errors }}
+                            </div>
+                            <div class="tier-row__color loyalty-field mb-0">
+                                <label class="form-label">Color</label>
+                                <div class="color-dots">
+                                    {% for value, label in tier_form.color.field.choices %}
+                                    <input type="radio" class="color-dot-input" name="{{ tier_form.color.html_name }}"
+                                           id="{{ tier_form.color.auto_id }}_{{ value }}" value="{{ value }}"
+                                           {% if tier_form.color.value|stringformat:'s' == value %}checked{% endif %}>
+                                    <label class="color-dot swatch-{{ value }}" for="{{ tier_form.color.auto_id }}_{{ value }}" title="{{ label }}"></label>
+                                    {% endfor %}
                                 </div>
-                                <hr class="my-3">
-                                <div class="small text-muted mb-2">Qualifying rules — a customer joins this tier when they meet every rule you set.</div>
-                                <div class="row g-3">
-                                    <div class="col-md-4">
-                                        <label class="form-label small fw-medium">Min lifetime spend ($)</label>
-                                        {{ tier_form.min_lifetime_value }}
-                                    </div>
-                                    <div class="col-md-4">
-                                        <label class="form-label small fw-medium">Min orders</label>
-                                        {{ tier_form.min_order_count }}
-                                    </div>
-                                    <div class="col-md-4">
-                                        <label class="form-label small fw-medium">Min events purchased</label>
-                                        {{ tier_form.min_events_purchased }}
-                                    </div>
-                                    <div class="col-md-4">
-                                        <label class="form-label small fw-medium">Min tickets purchased</label>
-                                        {{ tier_form.min_tickets_purchased }}
-                                    </div>
-                                    <div class="col-md-4">
-                                        <label class="form-label small fw-medium">Ordered within (days)</label>
-                                        {{ tier_form.max_days_since_last_order }}
-                                    </div>
-                                    <div class="col-md-4">
-                                        <label class="form-label small fw-medium">Min lifetime points</label>
-                                        {{ tier_form.min_lifetime_points }}
-                                    </div>
+                            </div>
+                            <button type="button" class="tier-remove" title="Remove tier" aria-label="Remove tier"><i class="bi bi-x-lg"></i></button>
+                        </div>
+
+                        <div class="loyalty-field mb-0 mt-3">
+                            <label class="form-label" for="{{ tier_form.perks.id_for_label }}">Perks</label>
+                            {{ tier_form.perks }}
+                        </div>
+
+                        <div class="tier-rules mt-3">
+                            <div class="loyalty-eyebrow">Qualifying rules</div>
+                            <div class="rule-list">
+                                <div class="rule{% if not tier_form.min_lifetime_value.value %} d-none{% endif %}" data-rule="spend">
+                                    <label class="form-label" for="{{ tier_form.min_lifetime_value.id_for_label }}">Lifetime spend <span class="rule__unit">$</span></label>
+                                    <span class="rule__input">{{ tier_form.min_lifetime_value }}</span>
+                                    <button type="button" class="rule-remove" aria-label="Remove condition"><i class="bi bi-x-lg"></i></button>
                                 </div>
-                                {% if tier_form.instance.pk %}
-                                <div class="form-check mt-3">
-                                    {{ tier_form.DELETE }}
-                                    <label class="form-check-label text-danger" for="{{ tier_form.DELETE.id_for_label }}">Delete this tier</label>
+                                <div class="rule{% if not tier_form.min_order_count.value %} d-none{% endif %}" data-rule="orders">
+                                    <label class="form-label" for="{{ tier_form.min_order_count.id_for_label }}">Orders</label>
+                                    <span class="rule__input">{{ tier_form.min_order_count }}</span>
+                                    <button type="button" class="rule-remove" aria-label="Remove condition"><i class="bi bi-x-lg"></i></button>
                                 </div>
-                                {% else %}
-                                <div class="form-check mt-3 d-none">{{ tier_form.DELETE }}</div>
-                                {% endif %}
+                                <div class="rule{% if not tier_form.min_events_purchased.value %} d-none{% endif %}" data-rule="events">
+                                    <label class="form-label" for="{{ tier_form.min_events_purchased.id_for_label }}">Events</label>
+                                    <span class="rule__input">{{ tier_form.min_events_purchased }}</span>
+                                    <button type="button" class="rule-remove" aria-label="Remove condition"><i class="bi bi-x-lg"></i></button>
+                                </div>
+                                <div class="rule{% if not tier_form.min_tickets_purchased.value %} d-none{% endif %}" data-rule="tickets">
+                                    <label class="form-label" for="{{ tier_form.min_tickets_purchased.id_for_label }}">Tickets</label>
+                                    <span class="rule__input">{{ tier_form.min_tickets_purchased }}</span>
+                                    <button type="button" class="rule-remove" aria-label="Remove condition"><i class="bi bi-x-lg"></i></button>
+                                </div>
+                                <div class="rule{% if not tier_form.max_days_since_last_order.value %} d-none{% endif %}" data-rule="days">
+                                    <label class="form-label" for="{{ tier_form.max_days_since_last_order.id_for_label }}">Within <span class="rule__unit">days</span></label>
+                                    <span class="rule__input">{{ tier_form.max_days_since_last_order }}</span>
+                                    <button type="button" class="rule-remove" aria-label="Remove condition"><i class="bi bi-x-lg"></i></button>
+                                </div>
+                                <div class="rule{% if not tier_form.min_lifetime_points.value %} d-none{% endif %}" data-rule="points">
+                                    <label class="form-label" for="{{ tier_form.min_lifetime_points.id_for_label }}">Lifetime <span class="rule__unit">pts</span></label>
+                                    <span class="rule__input">{{ tier_form.min_lifetime_points }}</span>
+                                    <button type="button" class="rule-remove" aria-label="Remove condition"><i class="bi bi-x-lg"></i></button>
+                                </div>
+                            </div>
+                            <div class="rule-add">
+                                <button type="button" class="rule-add__btn"><i class="bi bi-plus-lg"></i> Add condition</button>
+                                <span class="rule-empty-hint">Includes everyone</span>
+                                <div class="rule-add__menu" hidden>
+                                    <button type="button" class="rule-add__item" data-rule="spend">Lifetime spend</button>
+                                    <button type="button" class="rule-add__item" data-rule="orders">Orders</button>
+                                    <button type="button" class="rule-add__item" data-rule="events">Events</button>
+                                    <button type="button" class="rule-add__item" data-rule="tickets">Tickets</button>
+                                    <button type="button" class="rule-add__item" data-rule="days">Ordered within (days)</button>
+                                    <button type="button" class="rule-add__item" data-rule="points">Lifetime points</button>
+                                </div>
                             </div>
                         </div>
-                        {% endfor %}
                     </div>
                 </div>
-            </div>
-
-            <div class="d-flex gap-2 mb-4">
-                <button type="submit" class="btn btn-primary">{% if editing %}Save Program{% else %}Create Program{% endif %}</button>
-                <a href="{% url 'tickets:loyalty_program_list' %}" class="btn btn-outline-secondary">Cancel</a>
+                {% endfor %}
             </div>
         </div>
+    </div>
+
+    {# ── Sticky actions ────────────────────────────────────────────── #}
+    <div class="loyalty-actions">
+        <a href="{% url 'tickets:loyalty_program_list' %}" class="btn btn-outline-secondary">Cancel</a>
+        <button type="submit" class="btn btn-primary">{% if editing %}Save Program{% else %}Create Program{% endif %}</button>
     </div>
 </form>
 {% endblock %}
@@ -130,40 +221,209 @@
 {% block extra_js %}
 <script>
 (function () {
+    // ── Progressive disclosure: points config only when "Award points" is on ──
+    var pointsToggle = document.getElementById('id_points_enabled');
+    var pointsConfig = document.getElementById('pointsConfig');
+    if (pointsToggle && pointsConfig) {
+        var syncPoints = function () {
+            pointsConfig.style.display = pointsToggle.checked ? '' : 'none';
+        };
+        pointsToggle.addEventListener('change', syncPoints);
+        syncPoints();
+    }
+
     var container = document.getElementById('tiers-container');
     var addBtn = document.getElementById('addTierBtn');
     var totalForms = document.getElementById('id_{{ formset.prefix }}-TOTAL_FORMS');
+    if (!container) return;
 
-    addBtn.addEventListener('click', function () {
-        var rows = container.querySelectorAll('.tier-row');
-        var newIndex = parseInt(totalForms.value);
-        var lastRow = rows[rows.length - 1];
-        var newRow = lastRow.cloneNode(true);
+    var SWATCH = { blue: '#3b82f6', green: '#22c55e', red: '#ef4444',
+                   yellow: '#eab308', purple: '#7c3aed', orange: '#f97316' };
+    // Each rule input -> a short summary builder. Order = display order.
+    var RULES = [
+        ['min_lifetime_value', function (v) { return 'Spend ≥ $' + v; }],
+        ['min_order_count', function (v) { return 'Orders ≥ ' + v; }],
+        ['min_events_purchased', function (v) { return 'Events ≥ ' + v; }],
+        ['min_tickets_purchased', function (v) { return 'Tickets ≥ ' + v; }],
+        ['max_days_since_last_order', function (v) { return 'Within ' + v + 'd'; }],
+        ['min_lifetime_points', function (v) { return 'Points ≥ ' + v; }]
+    ];
 
-        newRow.querySelectorAll('input, select, textarea').forEach(function (el) {
-            if (el.name) {
-                el.name = el.name.replace(/-\d+-/, '-' + newIndex + '-');
-            }
-            if (el.id) {
-                el.id = el.id.replace(/-\d+-/, '-' + newIndex + '-');
-            }
-            if (el.type === 'checkbox') {
-                el.checked = false;
-            } else if (el.tagName === 'SELECT') {
-                el.selectedIndex = 0;
-            } else {
-                el.value = '';
-            }
+    function fieldEl(card, suffix) {
+        return card.querySelector('[name$="-' + suffix + '"]');
+    }
+
+    // Build the collapsed header (swatch + title + rank + rule digest) from the body.
+    function refreshSummary(card) {
+        var nameEl = fieldEl(card, 'name');
+        var rankEl = fieldEl(card, 'rank');
+        var checked = card.querySelector('.color-dot-input:checked');
+        var color = checked ? checked.value : 'blue';
+
+        var title = card.querySelector('.tier-card__title');
+        var rank = card.querySelector('.tier-card__rank');
+        var swatch = card.querySelector('.tier-card__swatch');
+        var summary = card.querySelector('.tier-card__summary');
+
+        if (title) { title.textContent = (nameEl && nameEl.value.trim()) || 'New tier'; }
+        if (rank) { rank.textContent = (rankEl && rankEl.value !== '') ? ('Rank ' + rankEl.value) : ''; }
+        if (swatch) { swatch.style.background = SWATCH[color] || SWATCH.blue; }
+
+        var parts = [];
+        RULES.forEach(function (r) {
+            var el = fieldEl(card, r[0]);
+            if (el && el.value !== '' && el.value !== null) { parts.push(r[1](el.value)); }
         });
-        newRow.querySelectorAll('label').forEach(function (el) {
-            if (el.htmlFor) {
-                el.htmlFor = el.htmlFor.replace(/-\d+-/, '-' + newIndex + '-');
-            }
-        });
+        if (summary) { summary.textContent = parts.length ? parts.join('  ·  ') : 'Includes everyone'; }
 
-        container.appendChild(newRow);
-        totalForms.value = newIndex + 1;
+        // Colored left edge + header swatch follow the tier color.
+        card.style.setProperty('--tier-color', SWATCH[color] || SWATCH.blue);
+    }
+
+    function setOpen(card, open) {
+        card.classList.toggle('tier-card--open', open);
+        var body = card.querySelector('.tier-card__body');
+        var header = card.querySelector('.tier-card__header');
+        if (body) { body.hidden = !open; }
+        if (header) { header.setAttribute('aria-expanded', open ? 'true' : 'false'); }
+    }
+
+    function closeAllRuleMenus() {
+        container.querySelectorAll('.rule-add__menu').forEach(function (m) { m.hidden = true; });
+    }
+
+    // Sync the "+ Add condition" menu + empty hint to which rule rows are shown.
+    function syncRuleMenu(card) {
+        var add = card.querySelector('.rule-add');
+        if (!add) return;
+        var shown = 0, total = 0;
+        card.querySelectorAll('.rule-list .rule').forEach(function (row) {
+            total++;
+            var isShown = !row.classList.contains('d-none');
+            if (isShown) shown++;
+            var item = add.querySelector('.rule-add__item[data-rule="' + row.getAttribute('data-rule') + '"]');
+            if (item) { item.hidden = isShown; }
+        });
+        var hint = add.querySelector('.rule-empty-hint');
+        if (hint) { hint.hidden = shown > 0; }
+        var btn = add.querySelector('.rule-add__btn');
+        if (btn) { btn.hidden = shown >= total; }
+    }
+
+    // Initial paint for every card.
+    container.querySelectorAll('.tier-card').forEach(function (card) {
+        refreshSummary(card);
+        syncRuleMenu(card);
     });
+
+    // ── Accordion toggle (header click, but not the remove button) ──
+    container.addEventListener('click', function (e) {
+        if (e.target.closest('.tier-remove')) return;
+        var header = e.target.closest('.tier-card__header');
+        if (!header) return;
+        var card = header.closest('.tier-card');
+        setOpen(card, !card.classList.contains('tier-card--open'));
+    });
+
+    // ── Keep the header summary live as the body is edited ──
+    container.addEventListener('input', function (e) {
+        var card = e.target.closest('.tier-card');
+        if (card) { refreshSummary(card); }
+    });
+    container.addEventListener('change', function (e) {
+        var card = e.target.closest('.tier-card');
+        if (card) { refreshSummary(card); }
+    });
+
+    // ── Remove (✕): mark DELETE, dim, collapse ──
+    container.addEventListener('click', function (e) {
+        var btn = e.target.closest('.tier-remove');
+        if (!btn) return;
+        var card = btn.closest('.tier-card');
+        var del = card.querySelector('input[name$="-DELETE"]');
+        var removing = card.classList.toggle('tier-card--removing');
+        if (del) { del.checked = removing; }
+        if (removing) { setOpen(card, false); }
+    });
+
+    // ── Conditions: open menu / add a rule / remove a rule ──
+    container.addEventListener('click', function (e) {
+        var openBtn = e.target.closest('.rule-add__btn');
+        if (openBtn) {
+            var menu = openBtn.parentElement.querySelector('.rule-add__menu');
+            var willOpen = menu.hidden;
+            closeAllRuleMenus();
+            menu.hidden = !willOpen;
+            return;
+        }
+        var item = e.target.closest('.rule-add__item');
+        if (item) {
+            var card = item.closest('.tier-card');
+            var row = card.querySelector('.rule-list .rule[data-rule="' + item.getAttribute('data-rule') + '"]');
+            if (row) {
+                row.classList.remove('d-none');
+                var inp = row.querySelector('input');
+                if (inp) { inp.focus(); }
+            }
+            closeAllRuleMenus();
+            syncRuleMenu(card);
+            refreshSummary(card);
+            return;
+        }
+        var rm = e.target.closest('.rule-remove');
+        if (rm) {
+            var card2 = rm.closest('.tier-card');
+            var row2 = rm.closest('.rule');
+            var inp2 = row2.querySelector('input');
+            if (inp2) { inp2.value = ''; }
+            row2.classList.add('d-none');
+            syncRuleMenu(card2);
+            refreshSummary(card2);
+        }
+    });
+
+    // Click outside an open menu closes it.
+    document.addEventListener('click', function (e) {
+        if (!e.target.closest('.rule-add')) { closeAllRuleMenus(); }
+    });
+
+    // ── Add tier (clone, reindex, open) ──
+    if (addBtn && totalForms) {
+        addBtn.addEventListener('click', function () {
+            var cards = container.querySelectorAll('.tier-card');
+            var newIndex = parseInt(totalForms.value);
+            var newCard = cards[cards.length - 1].cloneNode(true);
+
+            newCard.classList.remove('tier-card--removing');
+            newCard.querySelectorAll('input, select, textarea').forEach(function (el) {
+                if (el.name) { el.name = el.name.replace(/-\d+-/, '-' + newIndex + '-'); }
+                if (el.id) { el.id = el.id.replace(/-\d+-/, '-' + newIndex + '-'); }
+                if (el.type === 'checkbox' || el.type === 'radio') {
+                    el.checked = false;
+                } else if (el.tagName === 'SELECT') {
+                    el.selectedIndex = 0;
+                } else {
+                    el.value = '';
+                }
+            });
+            newCard.querySelectorAll('label').forEach(function (el) {
+                if (el.htmlFor) { el.htmlFor = el.htmlFor.replace(/-\d+-/, '-' + newIndex + '-'); }
+            });
+            var firstDot = newCard.querySelector('.color-dot-input');
+            if (firstDot) { firstDot.checked = true; }
+
+            // New tier starts with zero conditions: hide every rule row, reset menu.
+            newCard.querySelectorAll('.rule-list .rule').forEach(function (row) { row.classList.add('d-none'); });
+            var newMenu = newCard.querySelector('.rule-add__menu');
+            if (newMenu) { newMenu.hidden = true; }
+
+            container.appendChild(newCard);
+            totalForms.value = newIndex + 1;
+            setOpen(newCard, true);
+            refreshSummary(newCard);
+            syncRuleMenu(newCard);
+        });
+    }
 })();
 </script>
 {% endblock %}

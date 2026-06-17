@@ -2908,3 +2908,418 @@ input.manage-copy__text {
     background: var(--bg-inset);
     max-width: 300px;
 }
+
+/* ========================================================================
+   Loyalty program edit/create form — scoped, minimalist refresh.
+   All rules namespaced under .loyalty-form so nothing leaks to other pages;
+   reuses the global tokens (dark-mode automatic).
+   ======================================================================== */
+.loyalty-form {
+    max-width: 820px;
+}
+
+/* Hairline-divided sections inside a card body */
+.loyalty-form .loyalty-section {
+    padding: 4px 0;
+}
+.loyalty-form .loyalty-section + .loyalty-section {
+    margin-top: 22px;
+    padding-top: 22px;
+    border-top: 1px solid var(--border);
+}
+.loyalty-form .loyalty-field {
+    margin-bottom: 16px;
+}
+.loyalty-form .loyalty-field:last-child {
+    margin-bottom: 0;
+}
+
+/* The tiny uppercase tracked eyebrow, matching .card-header h5 treatment */
+.loyalty-form .loyalty-eyebrow {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    font-weight: 500;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--text-tertiary);
+    margin-bottom: 12px;
+}
+.loyalty-form .loyalty-help {
+    font-size: 12px;
+    font-weight: 300;
+    color: var(--text-secondary);
+    line-height: 1.5;
+}
+
+/* Checkbox rows: control + stacked title/help */
+.loyalty-form .loyalty-check {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    cursor: pointer;
+    margin: 0;
+}
+.loyalty-form .loyalty-check .form-check-input {
+    margin-top: 2px;
+    flex: 0 0 auto;
+}
+.loyalty-form .loyalty-check__title {
+    display: block;
+    font-size: 13.5px;
+    color: var(--text-primary);
+    font-weight: 400;
+}
+.loyalty-form .loyalty-check .loyalty-help {
+    display: block;
+    margin-top: 1px;
+}
+
+/* Revealed points config (progressive disclosure) */
+.loyalty-form .loyalty-subsection {
+    margin-top: 16px;
+    padding-left: 28px;
+    border-left: 1px solid var(--border-light);
+}
+
+/* Token-correct note (replaces raw Bootstrap .alert-warning) */
+.loyalty-form .loyalty-note {
+    display: flex;
+    gap: 9px;
+    align-items: flex-start;
+    background: var(--warning-muted);
+    border: 1px solid rgba(196, 154, 60, 0.22);
+    border-radius: var(--radius-sm);
+    padding: 10px 13px;
+    font-size: 12.5px;
+    font-weight: 300;
+    line-height: 1.5;
+    color: var(--text-secondary);
+}
+.loyalty-form .loyalty-note .bi {
+    color: var(--warning);
+    margin-top: 1px;
+}
+.loyalty-form .loyalty-note strong {
+    color: var(--text-primary);
+    font-weight: 500;
+}
+.loyalty-form .loyalty-note--danger {
+    background: var(--danger-muted);
+    border-color: rgba(217, 112, 96, 0.22);
+}
+.loyalty-form .loyalty-note--danger .errorlist {
+    margin: 0;
+    padding-left: 1em;
+}
+
+/* Tiers — separated, collapsible cards (accordion) */
+.loyalty-form #tiers-container {
+    padding: 16px;
+}
+.loyalty-form .tier-card {
+    background: var(--bg-surface);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--tier-color, var(--border));
+    border-radius: var(--radius);
+    transition: opacity 0.15s;
+}
+.loyalty-form .tier-card + .tier-card {
+    margin-top: 12px;
+}
+.loyalty-form .tier-card--removing {
+    opacity: 0.45;
+}
+.loyalty-form .tier-card--removing .tier-card__title {
+    text-decoration: line-through;
+}
+
+/* Collapsed header (the whole row is the toggle) */
+.loyalty-form .tier-card__header {
+    width: 100%;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    background: transparent;
+    border: none;
+    text-align: left;
+    padding: 13px 16px;
+    cursor: pointer;
+    color: var(--text-primary);
+    border-radius: var(--radius);
+}
+.loyalty-form .tier-card__header:hover {
+    background: var(--bg-sidebar-hover);
+}
+.loyalty-form .tier-card__swatch {
+    flex: 0 0 auto;
+    width: 11px;
+    height: 11px;
+    border-radius: 50%;
+    background: var(--border);
+    box-shadow: 0 0 0 1px var(--border) inset;
+}
+.loyalty-form .tier-card__title {
+    flex: 0 0 auto;
+    font-size: 14px;
+    font-weight: 500;
+}
+.loyalty-form .tier-card__rank {
+    flex: 0 0 auto;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--text-tertiary);
+}
+.loyalty-form .tier-card__summary {
+    flex: 1 1 auto;
+    min-width: 0;
+    font-size: 12px;
+    font-weight: 300;
+    color: var(--text-secondary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.loyalty-form .tier-card__chevron {
+    flex: 0 0 auto;
+    font-size: 11px;
+    color: var(--text-tertiary);
+    transition: transform 0.15s;
+}
+.loyalty-form .tier-card--open .tier-card__chevron {
+    transform: rotate(180deg);
+}
+/* When expanded, the header reads as a quieter title (summary hidden) */
+.loyalty-form .tier-card--open .tier-card__header {
+    border-bottom: 1px solid var(--border-light);
+    border-radius: var(--radius) var(--radius) 0 0;
+}
+.loyalty-form .tier-card--open .tier-card__summary {
+    visibility: hidden;
+}
+
+/* Expanded body */
+.loyalty-form .tier-card__body {
+    padding: 18px 16px;
+}
+.loyalty-form .tier-card__body[hidden] {
+    display: none;
+}
+
+.loyalty-form .tier-row__head {
+    display: flex;
+    align-items: flex-end;
+    gap: 14px;
+    flex-wrap: wrap;
+}
+.loyalty-form .tier-row__name {
+    flex: 1 1 200px;
+}
+.loyalty-form .tier-row__rank {
+    flex: 0 0 84px;
+}
+.loyalty-form .tier-row__color {
+    flex: 0 0 auto;
+}
+.loyalty-form .tier-remove {
+    flex: 0 0 auto;
+    margin-left: auto;
+    background: transparent;
+    border: 1px solid transparent;
+    color: var(--text-tertiary);
+    border-radius: var(--radius-sm);
+    width: 30px;
+    height: 30px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 12px;
+    transition: color 0.12s, background 0.12s;
+}
+.loyalty-form .tier-remove:hover {
+    color: var(--danger);
+    background: var(--danger-muted);
+}
+
+/* Color swatch picker (radio-backed, pure-CSS selection) */
+.loyalty-form .color-dots {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    height: 38px;
+}
+.loyalty-form .color-dot-input {
+    position: absolute;
+    opacity: 0;
+    width: 0;
+    height: 0;
+    pointer-events: none;
+}
+.loyalty-form .color-dot {
+    display: block;
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    cursor: pointer;
+    margin: 0;
+    box-shadow: 0 0 0 1px var(--border) inset;
+    transition: transform 0.1s, box-shadow 0.1s;
+}
+.loyalty-form .color-dot:hover {
+    transform: scale(1.12);
+}
+.loyalty-form .color-dot-input:checked + .color-dot {
+    box-shadow: 0 0 0 2px var(--bg-surface), 0 0 0 4px var(--accent);
+}
+.loyalty-form .color-dot-input:focus-visible + .color-dot {
+    box-shadow: 0 0 0 2px var(--bg-surface), 0 0 0 4px var(--accent);
+}
+.loyalty-form .swatch-blue   { background: #3b82f6; }
+.loyalty-form .swatch-green  { background: #22c55e; }
+.loyalty-form .swatch-red    { background: #ef4444; }
+.loyalty-form .swatch-yellow { background: #eab308; }
+.loyalty-form .swatch-purple { background: #7c3aed; }
+.loyalty-form .swatch-orange { background: #f97316; }
+
+/* Qualifying rules — only the conditions you've added show as compact rows */
+.loyalty-form .rule-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+.loyalty-form .rule-list:empty {
+    display: none;
+}
+.loyalty-form .rule {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+.loyalty-form .rule .form-label {
+    flex: 0 0 130px;
+    display: flex;
+    align-items: baseline;
+    gap: 5px;
+    margin: 0;
+}
+.loyalty-form .rule__input {
+    flex: 0 0 auto;
+}
+.loyalty-form .rule__input .form-control {
+    max-width: 120px;
+}
+.loyalty-form .rule__unit {
+    font-size: 9px;
+    letter-spacing: 0.06em;
+    color: var(--text-tertiary);
+    text-transform: none;
+}
+.loyalty-form .rule-remove {
+    flex: 0 0 auto;
+    background: transparent;
+    border: none;
+    color: var(--text-tertiary);
+    border-radius: var(--radius-sm);
+    width: 24px;
+    height: 24px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 10px;
+    transition: color 0.12s, background 0.12s;
+}
+.loyalty-form .rule-remove:hover {
+    color: var(--danger);
+    background: var(--danger-muted);
+}
+
+/* + Add condition (dropdown of the not-yet-added rules) */
+.loyalty-form .rule-add {
+    position: relative;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-top: 10px;
+}
+.loyalty-form .rule-add__btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    background: transparent;
+    border: 1px dashed var(--border);
+    color: var(--text-secondary);
+    border-radius: var(--radius-sm);
+    padding: 6px 11px;
+    font-size: 12px;
+    transition: border-color 0.12s, color 0.12s;
+}
+.loyalty-form .rule-add__btn:hover {
+    border-color: var(--text-tertiary);
+    color: var(--text-primary);
+}
+.loyalty-form .rule-add__btn[hidden] {
+    display: none;
+}
+.loyalty-form .rule-empty-hint {
+    font-size: 12px;
+    font-weight: 300;
+    color: var(--text-tertiary);
+}
+.loyalty-form .rule-empty-hint[hidden] {
+    display: none;
+}
+.loyalty-form .rule-add__menu {
+    position: absolute;
+    top: calc(100% + 4px);
+    left: 0;
+    z-index: 20;
+    min-width: 200px;
+    background: var(--bg-surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow-md);
+    padding: 4px;
+    display: flex;
+    flex-direction: column;
+}
+.loyalty-form .rule-add__menu[hidden] {
+    display: none;
+}
+.loyalty-form .rule-add__item {
+    text-align: left;
+    background: transparent;
+    border: none;
+    color: var(--text-primary);
+    border-radius: var(--radius-sm);
+    padding: 7px 10px;
+    font-size: 13px;
+    font-weight: 300;
+}
+.loyalty-form .rule-add__item:hover {
+    background: var(--bg-sidebar-hover);
+}
+.loyalty-form .rule-add__item[hidden] {
+    display: none;
+}
+
+/* Sticky action bar */
+.loyalty-form .loyalty-actions {
+    position: sticky;
+    bottom: 0;
+    display: flex;
+    justify-content: flex-end;
+    gap: 10px;
+    padding: 14px 0 calc(14px + env(safe-area-inset-bottom));
+    margin-top: 8px;
+    background: linear-gradient(to top, var(--bg-page) 70%, transparent);
+}
+
+@media (max-width: 575.98px) {
+    .loyalty-form .loyalty-subsection {
+        padding-left: 14px;
+    }
+    .loyalty-form .tier-row {
+        padding: 16px;
+    }
+}
