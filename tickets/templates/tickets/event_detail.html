@@ -4586,7 +4586,8 @@ document.addEventListener('DOMContentLoaded', function () {
     var remaining = Math.max(total - checkedIn, 0);
     var rootStyle = getComputedStyle(document.documentElement);
     var accentColor = (rootStyle.getPropertyValue('--accent') || '').trim() || '#00FF87';
-    var trackColor = 'rgba(255, 255, 255, 0.06)';
+    var isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+    var trackColor = isDark ? 'rgba(255, 255, 255, 0.10)' : 'rgba(15, 23, 42, 0.12)';
     var hasData = total > 0;
     new Chart(canvas, {
         type: 'doughnut',
@@ -4598,8 +4599,8 @@ document.addEventListener('DOMContentLoaded', function () {
                     ? [accentColor, trackColor]
                     : [trackColor, trackColor],
                 borderWidth: 0,
-                borderRadius: hasData ? [6, 0] : 0,
-                spacing: hasData && remaining > 0 ? 2 : 0,
+                borderRadius: hasData && checkedIn > 0 && remaining > 0 ? [6, 0] : 0,
+                spacing: hasData && checkedIn > 0 && remaining > 0 ? 2 : 0,
             }]
         },
         options: {
