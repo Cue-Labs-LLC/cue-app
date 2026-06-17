@@ -394,6 +394,7 @@
                             <th>Order Number</th>
                             <th>Date</th>
                             <th>Event</th>
+                            <th>Venue</th>
                             <th>Total Amount</th>
                             <th>Tickets</th>
                         </tr>
@@ -404,6 +405,7 @@
                             <td><strong>{{ order.display_order_number }}</strong></td>
                             <td>{{ order.order_date|date:"M d, Y H:i" }}</td>
                             <td>{{ order.event.name }}</td>
+                            <td>{{ order.event.venue.name }}</td>
                             <td><strong>${{ order.net_amount|currency }}</strong></td>
                             <td>{{ order.tickets_count }}</td>
                         </tr>
@@ -433,19 +435,6 @@
         {% endif %}
     </div>
 
-    {% if events_attended %}
-    <div class="cd-section">
-        <h2 class="cd-section-title">Events Attended</h2>
-        <ul class="cd-events">
-            {% for event in events_attended %}
-            <li>
-                <strong>{{ event.name }}</strong> &mdash; {{ event.venue.name }}, {{ event.venue.city }}
-                <span class="cd-muted">({{ event.start_date|date:"M d, Y" }})</span>
-            </li>
-            {% endfor %}
-        </ul>
-    </div>
-    {% endif %}
 
 </div><!-- /tab-overview -->
 
