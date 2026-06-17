@@ -108,105 +108,14 @@
             <div id="tiers-container">
                 {% for tier_form in formset %}
                 {# UUID PKs are set on instantiation, so use the formset index to detect new forms. #}
-                <div class="tier-card{% if forloop.counter0 >= formset.initial_form_count or tier_form.errors or tier_form.non_field_errors %} tier-card--open{% endif %}">
-                    {{ tier_form.id }}
-                    <div class="d-none">{{ tier_form.DELETE }}</div>
-
-                    <button type="button" class="tier-card__header"
-                            aria-expanded="{% if forloop.counter0 >= formset.initial_form_count or tier_form.errors or tier_form.non_field_errors %}true{% else %}false{% endif %}">
-                        <span class="tier-card__swatch"></span>
-                        <span class="tier-card__title">New tier</span>
-                        <span class="tier-card__rank"></span>
-                        <span class="tier-card__summary"></span>
-                        <i class="bi bi-chevron-down tier-card__chevron"></i>
-                    </button>
-
-                    <div class="tier-card__body"{% if forloop.counter0 < formset.initial_form_count and not tier_form.errors and not tier_form.non_field_errors %} hidden{% endif %}>
-                        {% for error in tier_form.non_field_errors %}
-                        <div class="text-danger small mb-2">{{ error }}</div>
-                        {% endfor %}
-
-                        <div class="tier-row__head">
-                            <div class="tier-row__name loyalty-field mb-0">
-                                <label class="form-label" for="{{ tier_form.name.id_for_label }}">Tier name</label>
-                                {{ tier_form.name }}
-                                {{ tier_form.name.errors }}
-                            </div>
-                            <div class="tier-row__rank loyalty-field mb-0">
-                                <label class="form-label" for="{{ tier_form.rank.id_for_label }}">Rank</label>
-                                {{ tier_form.rank }}
-                                {{ tier_form.rank.errors }}
-                            </div>
-                            <div class="tier-row__color loyalty-field mb-0">
-                                <label class="form-label">Color</label>
-                                <div class="color-dots">
-                                    {% for value, label in tier_form.color.field.choices %}
-                                    <input type="radio" class="color-dot-input" name="{{ tier_form.color.html_name }}"
-                                           id="{{ tier_form.color.auto_id }}_{{ value }}" value="{{ value }}"
-                                           {% if tier_form.color.value|stringformat:'s' == value %}checked{% endif %}>
-                                    <label class="color-dot swatch-{{ value }}" for="{{ tier_form.color.auto_id }}_{{ value }}" title="{{ label }}"></label>
-                                    {% endfor %}
-                                </div>
-                            </div>
-                            <button type="button" class="tier-remove" title="Remove tier" aria-label="Remove tier"><i class="bi bi-x-lg"></i></button>
-                        </div>
-
-                        <div class="loyalty-field mb-0 mt-3">
-                            <label class="form-label" for="{{ tier_form.perks.id_for_label }}">Perks</label>
-                            {{ tier_form.perks }}
-                        </div>
-
-                        <div class="tier-rules mt-3">
-                            <div class="loyalty-eyebrow">Qualifying rules</div>
-                            <div class="rule-list">
-                                <div class="rule{% if not tier_form.min_lifetime_value.value %} d-none{% endif %}" data-rule="spend">
-                                    <label class="form-label" for="{{ tier_form.min_lifetime_value.id_for_label }}">Lifetime spend <span class="rule__unit">$</span></label>
-                                    <span class="rule__input">{{ tier_form.min_lifetime_value }}</span>
-                                    <button type="button" class="rule-remove" aria-label="Remove condition"><i class="bi bi-x-lg"></i></button>
-                                </div>
-                                <div class="rule{% if not tier_form.min_order_count.value %} d-none{% endif %}" data-rule="orders">
-                                    <label class="form-label" for="{{ tier_form.min_order_count.id_for_label }}">Orders</label>
-                                    <span class="rule__input">{{ tier_form.min_order_count }}</span>
-                                    <button type="button" class="rule-remove" aria-label="Remove condition"><i class="bi bi-x-lg"></i></button>
-                                </div>
-                                <div class="rule{% if not tier_form.min_events_purchased.value %} d-none{% endif %}" data-rule="events">
-                                    <label class="form-label" for="{{ tier_form.min_events_purchased.id_for_label }}">Events</label>
-                                    <span class="rule__input">{{ tier_form.min_events_purchased }}</span>
-                                    <button type="button" class="rule-remove" aria-label="Remove condition"><i class="bi bi-x-lg"></i></button>
-                                </div>
-                                <div class="rule{% if not tier_form.min_tickets_purchased.value %} d-none{% endif %}" data-rule="tickets">
-                                    <label class="form-label" for="{{ tier_form.min_tickets_purchased.id_for_label }}">Tickets</label>
-                                    <span class="rule__input">{{ tier_form.min_tickets_purchased }}</span>
-                                    <button type="button" class="rule-remove" aria-label="Remove condition"><i class="bi bi-x-lg"></i></button>
-                                </div>
-                                <div class="rule{% if not tier_form.max_days_since_last_order.value %} d-none{% endif %}" data-rule="days">
-                                    <label class="form-label" for="{{ tier_form.max_days_since_last_order.id_for_label }}">Within <span class="rule__unit">days</span></label>
-                                    <span class="rule__input">{{ tier_form.max_days_since_last_order }}</span>
-                                    <button type="button" class="rule-remove" aria-label="Remove condition"><i class="bi bi-x-lg"></i></button>
-                                </div>
-                                <div class="rule{% if not tier_form.min_lifetime_points.value %} d-none{% endif %}" data-rule="points">
-                                    <label class="form-label" for="{{ tier_form.min_lifetime_points.id_for_label }}">Lifetime <span class="rule__unit">pts</span></label>
-                                    <span class="rule__input">{{ tier_form.min_lifetime_points }}</span>
-                                    <button type="button" class="rule-remove" aria-label="Remove condition"><i class="bi bi-x-lg"></i></button>
-                                </div>
-                            </div>
-                            <div class="rule-add">
-                                <button type="button" class="rule-add__btn"><i class="bi bi-plus-lg"></i> Add condition</button>
-                                <span class="rule-empty-hint">Includes everyone</span>
-                                <div class="rule-add__menu" hidden>
-                                    <button type="button" class="rule-add__item" data-rule="spend">Lifetime spend</button>
-                                    <button type="button" class="rule-add__item" data-rule="orders">Orders</button>
-                                    <button type="button" class="rule-add__item" data-rule="events">Events</button>
-                                    <button type="button" class="rule-add__item" data-rule="tickets">Tickets</button>
-                                    <button type="button" class="rule-add__item" data-rule="days">Ordered within (days)</button>
-                                    <button type="button" class="rule-add__item" data-rule="points">Lifetime points</button>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
+                {% include 'tickets/loyalty/_tier_card.html' with tier_form=tier_form index=forloop.counter0 initial_count=formset.initial_form_count only %}
                 {% endfor %}
             </div>
+            <p id="tiers-empty" class="loyalty-help m-3{% if formset.forms %} d-none{% endif %}">No tiers yet. Click <strong>Add tier</strong> to create one.</p>
+            {# Hidden clone source for "Add tier" — a <template> so its __prefix__ inputs aren't submitted. #}
+            <template id="tier-template">
+                {% include 'tickets/loyalty/_tier_card.html' with tier_form=formset.empty_form is_template=True only %}
+            </template>
         </div>
     </div>
 
@@ -310,11 +219,20 @@
         if (btn) { btn.hidden = shown >= total; }
     }
 
+    // Show the "no tiers yet" hint only when the list is empty.
+    var emptyMsg = document.getElementById('tiers-empty');
+    function syncEmpty() {
+        if (emptyMsg) {
+            emptyMsg.classList.toggle('d-none', container.querySelectorAll('.tier-card').length > 0);
+        }
+    }
+
     // Initial paint for every card.
     container.querySelectorAll('.tier-card').forEach(function (card) {
         refreshSummary(card);
         syncRuleMenu(card);
     });
+    syncEmpty();
 
     // ── Accordion toggle (header click, but not the remove button) ──
     container.addEventListener('click', function (e) {
@@ -387,32 +305,22 @@
         if (!e.target.closest('.rule-add')) { closeAllRuleMenus(); }
     });
 
-    // ── Add tier (clone, reindex, open) ──
-    if (addBtn && totalForms) {
+    // ── Add tier (build a fresh form from the hidden template, open it) ──
+    var template = document.getElementById('tier-template');
+    if (addBtn && totalForms && template) {
         addBtn.addEventListener('click', function () {
-            var cards = container.querySelectorAll('.tier-card');
             var newIndex = parseInt(totalForms.value);
-            var newCard = cards[cards.length - 1].cloneNode(true);
+            // empty_form uses a "__prefix__" placeholder in field names/ids.
+            var html = template.innerHTML.replace(/__prefix__/g, newIndex);
+            var wrap = document.createElement('div');
+            wrap.innerHTML = html.trim();
+            var newCard = wrap.querySelector('.tier-card');
+            if (!newCard) { return; }
 
+            // Fresh tier: first color selected, no conditions, not flagged for removal.
             newCard.classList.remove('tier-card--removing');
-            newCard.querySelectorAll('input, select, textarea').forEach(function (el) {
-                if (el.name) { el.name = el.name.replace(/-\d+-/, '-' + newIndex + '-'); }
-                if (el.id) { el.id = el.id.replace(/-\d+-/, '-' + newIndex + '-'); }
-                if (el.type === 'checkbox' || el.type === 'radio') {
-                    el.checked = false;
-                } else if (el.tagName === 'SELECT') {
-                    el.selectedIndex = 0;
-                } else {
-                    el.value = '';
-                }
-            });
-            newCard.querySelectorAll('label').forEach(function (el) {
-                if (el.htmlFor) { el.htmlFor = el.htmlFor.replace(/-\d+-/, '-' + newIndex + '-'); }
-            });
             var firstDot = newCard.querySelector('.color-dot-input');
             if (firstDot) { firstDot.checked = true; }
-
-            // New tier starts with zero conditions: hide every rule row, reset menu.
             newCard.querySelectorAll('.rule-list .rule').forEach(function (row) { row.classList.add('d-none'); });
             var newMenu = newCard.querySelector('.rule-add__menu');
             if (newMenu) { newMenu.hidden = true; }
@@ -422,6 +330,7 @@
             setOpen(newCard, true);
             refreshSummary(newCard);
             syncRuleMenu(newCard);
+            syncEmpty();
         });
     }
 })();
