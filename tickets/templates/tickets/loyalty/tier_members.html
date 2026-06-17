@@ -19,6 +19,19 @@
     </div>
 </div>
 
+{% if page_obj.object_list or search_query %}
+<div class="search-bar">
+    <form method="get" class="d-flex flex-wrap gap-2 w-100 align-items-center">
+        <input type="text" name="search" class="form-control" style="max-width: 240px;" placeholder="Search by name or email..." value="{{ search_query }}">
+        <input type="hidden" name="sort" value="{{ sort_by }}">
+        <button type="submit" class="btn btn-outline-secondary"><i class="bi bi-search"></i></button>
+        {% if search_query %}
+        <a href="{% url 'tickets:loyalty_tier_members' program.id tier.id %}" class="btn btn-outline-secondary">Clear</a>
+        {% endif %}
+    </form>
+</div>
+{% endif %}
+
 {% if page_obj.object_list %}
 <div class="card">
     <div class="card-body p-0">
@@ -26,10 +39,42 @@
             <table class="table table-hover mb-0 align-middle">
                 <thead>
                     <tr>
-                        <th>Customer</th>
-                        <th>Email</th>
-                        <th class="text-end">Lifetime value</th>
-                        <th class="text-end">Last order</th>
+                        <th>
+                            {% with asc='name' desc='-name' %}
+                            <a href="?sort={% if sort_by == asc %}{{ desc }}{% else %}{{ asc }}{% endif %}&search={{ search_query }}">Customer
+                                {% if sort_by == asc %}<i class="bi bi-arrow-up"></i>
+                                {% elif sort_by == desc %}<i class="bi bi-arrow-down"></i>
+                                {% else %}<i class="bi bi-arrow-down-up"></i>{% endif %}
+                            </a>
+                            {% endwith %}
+                        </th>
+                        <th>
+                            {% with asc='email' desc='-email' %}
+                            <a href="?sort={% if sort_by == asc %}{{ desc }}{% else %}{{ asc }}{% endif %}&search={{ search_query }}">Email
+                                {% if sort_by == asc %}<i class="bi bi-arrow-up"></i>
+                                {% elif sort_by == desc %}<i class="bi bi-arrow-down"></i>
+                                {% else %}<i class="bi bi-arrow-down-up"></i>{% endif %}
+                            </a>
+                            {% endwith %}
+                        </th>
+                        <th class="text-end">
+                            {% with asc='lifetime_value' desc='-lifetime_value' %}
+                            <a href="?sort={% if sort_by == desc %}{{ asc }}{% else %}{{ desc }}{% endif %}&search={{ search_query }}">Lifetime value
+                                {% if sort_by == asc %}<i class="bi bi-arrow-up"></i>
+                                {% elif sort_by == desc %}<i class="bi bi-arrow-down"></i>
+                                {% else %}<i class="bi bi-arrow-down-up"></i>{% endif %}
+                            </a>
+                            {% endwith %}
+                        </th>
+                        <th class="text-end">
+                            {% with asc='last_order_date' desc='-last_order_date' %}
+                            <a href="?sort={% if sort_by == desc %}{{ asc }}{% else %}{{ desc }}{% endif %}&search={{ search_query }}">Last order
+                                {% if sort_by == asc %}<i class="bi bi-arrow-up"></i>
+                                {% elif sort_by == desc %}<i class="bi bi-arrow-down"></i>
+                                {% else %}<i class="bi bi-arrow-down-up"></i>{% endif %}
+                            </a>
+                            {% endwith %}
+                        </th>
                     </tr>
                 </thead>
                 <tbody>
@@ -51,15 +96,21 @@
 <nav class="mt-3">
     <ul class="pagination justify-content-center">
         {% if page_obj.has_previous %}
-        <li class="page-item"><a class="page-link" href="?page={{ page_obj.previous_page_number }}">Previous</a></li>
+        <li class="page-item"><a class="page-link" href="?page={{ page_obj.previous_page_number }}&search={{ search_query }}&sort={{ sort_by }}">Previous</a></li>
         {% endif %}
         <li class="page-item disabled"><span class="page-link">Page {{ page_obj.number }} of {{ page_obj.paginator.num_pages }}</span></li>
         {% if page_obj.has_next %}
-        <li class="page-item"><a class="page-link" href="?page={{ page_obj.next_page_number }}">Next</a></li>
+        <li class="page-item"><a class="page-link" href="?page={{ page_obj.next_page_number }}&search={{ search_query }}&sort={{ sort_by }}">Next</a></li>
         {% endif %}
     </ul>
 </nav>
 {% endif %}
+{% elif search_query %}
+<div class="empty-state">
+    <i class="bi bi-search"></i>
+    <h3>No members match &ldquo;{{ search_query }}&rdquo;</h3>
+    <p>No customers in this tier match your search. <a href="{% url 'tickets:loyalty_tier_members' program.id tier.id %}">Clear search</a> to see all members.</p>
+</div>
 {% else %}
 <div class="empty-state">
     <i class="bi bi-people"></i>
