@@ -37,6 +37,10 @@ NPS_SCALE = 100.0
 
 _VALID_METRICS = ('revenue', 'tickets', 'profitability', 'nps')
 
+# Driver-bar labels are trend-aware: declining markets use the decline-framed
+# wording, while growing/stable markets use the positive counterpart. _diagnose
+# picks the set from the market's trend. (costs/detractors invert — their "good"
+# direction is down, so their positive label is "Lower"/"Fewer".)
 _DRIVER_LABELS = {
     'events': 'Fewer events',
     'demand': 'Lower demand per event',
@@ -46,6 +50,16 @@ _DRIVER_LABELS = {
     'retention': 'Fewer returning buyers',
     'promoters': 'Fewer promoters',
     'detractors': 'More detractors',
+}
+_DRIVER_LABELS_POSITIVE = {
+    'events': 'More events',
+    'demand': 'Higher demand per event',
+    'price': 'Higher ticket prices',
+    'costs': 'Lower costs per event',
+    'acquisition': 'More new buyers',
+    'retention': 'More returning buyers',
+    'promoters': 'More promoters',
+    'detractors': 'Fewer detractors',
 }
 
 
@@ -415,13 +429,14 @@ class MarketTrendCalculator:
         else:
             result['trend'] = 'stable'
 
-        if result['trend'] == 'declining':
+        if result['trend'] in ('declining', 'growing', 'stable'):
             self._diagnose(result, observed)
 
         return result
 
     def _diagnose(self, result, observed):
-        """Attribute the decline to its dominant driver (first vs last third)."""
+        """Build per-driver contributions and a next step for any trend
+        direction (first third vs last third)."""
         n = len(observed)
         third = max(1, n // 3)
         first = observed[:third]
@@ -453,6 +468,11 @@ class MarketTrendCalculator:
                 ('retention', 'returning_pct', 'down'),
             ]
 
+        # Negative-framed labels for declining markets; positive counterparts for
+        # growing/stable markets.
+        labels = (_DRIVER_LABELS_POSITIVE if result['trend'] in ('growing', 'stable')
+                  else _DRIVER_LABELS)
+
         drivers = []
         for key, field, hurts_when in candidates:
             a = _mean(first, field)
@@ -460,7 +480,7 @@ class MarketTrendCalculator:
             change = ((b - a) / a) if a else 0.0
             drivers.append({
                 'key': key,
-                'label': _DRIVER_LABELS[key],
+                'label': labels[key],
                 'change_pct': round(change * 100, 1),
                 'first': round(a, 1),
                 'last': round(b, 1),
@@ -468,27 +488,105 @@ class MarketTrendCalculator:
             })
 
         result['driver_contributions'] = drivers
-        # Rank by impact on the metric: a fall hurts the usual drivers, a rise
-        # hurts costs. Dominant = the driver dragging the metric down the most.
-        def _impact(d):
+        # Rank drivers to pick the badged lead by their estimated CONTRIBUTION to
+        # the per-event series change, not raw % movement (a ratio like returning
+        # share can swing wildly in % from a small base and isn't what moved the
+        # metric). Revenue/Profit: $-contribution (revenue/event = demand x price;
+        # profit nets out cost). Tickets: change in new- vs returning-buyer COUNT
+        # per event (demand is the aggregate series, events isn't a per-event
+        # factor, so both stay context bars at rank 0). NPS: relative % of the two
+        # symmetric shares. Positive rank => helps the metric, negative => hurts.
+        by_key = {d['key']: d for d in drivers}
+
+        def _rank(d):
+            if self.metric in ('revenue', 'profitability'):
+                return self._dollar_contribution(d['key'], by_key)
+            if self.metric == 'tickets':
+                return self._ticket_contribution(d['key'], first, last)
             return d['change_pct'] if d['hurts_when'] == 'down' else -d['change_pct']
 
-        dominant = min(drivers, key=_impact)
-        if _impact(dominant) >= 0:
-            # Decline isn't cleanly attributable to one declining driver.
-            result['dominant_driver'] = None
-            result['diagnosis_text'] = (
-                '{} in {} is trending down ~{}{} per {}, but no single driver '
-                'stands out — worth a closer look.'.format(
-                    self._metric_noun(), result['city'],
-                    abs(result['norm_slope_pct']), self._change_unit(), self.period,
+        trend = result['trend']
+        if trend == 'declining':
+            dominant = min(drivers, key=_rank)
+            if _rank(dominant) >= 0:
+                # Decline isn't cleanly attributable to one declining driver.
+                result['dominant_driver'] = None
+                result['diagnosis_text'] = (
+                    '{} in {} is trending down ~{}{} per {}, but no single driver '
+                    'stands out — worth a closer look.'.format(
+                        self._metric_noun(), result['city'],
+                        abs(result['norm_slope_pct']), self._change_unit(), self.period,
+                    )
                 )
-            )
-            return
+                result['recommended_action'] = self._growth_action()
+                return
+            result['dominant_driver'] = dominant['key']
+            result['diagnosis_text'] = self._diagnosis_text(result, dominant)
+            result['recommended_action'] = self._recommended_action(dominant['key'])
+        elif trend == 'growing':
+            lead = max(drivers, key=_rank)
+            if _rank(lead) > 0:
+                result['dominant_driver'] = lead['key']
+                result['diagnosis_text'] = self._growth_text(result, lead)
+                result['recommended_action'] = self._recommended_action(lead['key'], mode='reinforce')
+            else:
+                result['dominant_driver'] = None
+                result['diagnosis_text'] = (
+                    '{} in {} is up ~{}{} per {} — keep doing what works here.'.format(
+                        self._metric_noun(), result['city'],
+                        abs(result['norm_slope_pct']), self._change_unit(), self.period,
+                    )
+                )
+                result['recommended_action'] = self._growth_action()
+        else:  # stable
+            result['dominant_driver'] = None
+            result['diagnosis_text'] = self._steady_text(result)
+            result['recommended_action'] = self._growth_action()
 
-        result['dominant_driver'] = dominant['key']
-        result['diagnosis_text'] = self._diagnosis_text(result, dominant)
-        result['recommended_action'] = self._recommended_action(dominant['key'])
+    def _dollar_contribution(self, key, by_key):
+        """Estimated effect of a driver on the per-event series change, in $.
+
+        revenue/event = demand x price, so a first-order split of the change is
+        Δdemand·price_avg + Δprice·demand_avg (the interaction term is shared
+        evenly and the two sum to the revenue change). Profit nets out the cost
+        per event. Audience/volume drivers (events, new/returning buyers) are not
+        factors of the per-event series, so they contribute 0 and never get badged.
+        """
+        demand = by_key.get('demand')
+        price = by_key.get('price')
+        if not demand or not price:
+            return 0.0
+        d0, d1 = demand['first'], demand['last']
+        p0, p1 = price['first'], price['last']
+        if key == 'demand':
+            return (d1 - d0) * (p0 + p1) / 2.0
+        if key == 'price':
+            return (p1 - p0) * (d0 + d1) / 2.0
+        if key == 'costs':
+            costs = by_key.get('costs')
+            return -(costs['last'] - costs['first']) if costs else 0.0
+        return 0.0  # events / acquisition / retention — context only
+
+    @staticmethod
+    def _ticket_contribution(key, first, last):
+        """Change in a buyer segment's COUNT per event (first third vs last).
+
+        Tickets/event are filled by new + returning buyers, so the volume change
+        is attributed to whichever segment's per-event count moved more — putting
+        new and returning on equal footing (counts), instead of the returning
+        SHARE ratio that swings hard from a small base. `demand` is the aggregate
+        series itself and `events` isn't a per-event factor, so both rank 0 and
+        stay context bars. (Approximate: ignores tickets-per-buyer drift.)
+        """
+        field = {'acquisition': 'new_count', 'retention': 'returning_count'}.get(key)
+        if not field:
+            return 0.0
+
+        def _per_event(rows):
+            vals = [r[field] / r['events_held'] for r in rows if r['events_held']]
+            return sum(vals) / len(vals) if vals else 0.0
+
+        return _per_event(last) - _per_event(first)
 
     def _metric_noun(self):
         """Display-ready, properly-cased noun for the selected metric."""
@@ -541,8 +639,101 @@ class MarketTrendCalculator:
             self._metric_noun(), city, drop, self._change_unit(), self.period, phrase,
         )
 
+    def _growth_text(self, result, lead):
+        return '{} in {} is up ~{}{} per {}, led by {}.'.format(
+            self._metric_noun(), result['city'], abs(result['norm_slope_pct']),
+            self._change_unit(), self.period, self._boost_phrase(lead),
+        )
+
+    def _steady_text(self, result):
+        lever = ('turning passives into promoters' if self.metric == 'nps'
+                 else 'bringing in new buyers')
+        return '{} in {} is holding steady (~{}{} per {}). Best lever to grow: {}.'.format(
+            self._metric_noun(), result['city'], abs(result['norm_slope_pct']),
+            self._change_unit(), self.period, lever,
+        )
+
+    def _boost_phrase(self, d):
+        """Positive-framed phrase for the driver leading a market's gains."""
+        key = d['key']
+        if key == 'events':
+            return 'more events on the calendar (about {} up to {} per {})'.format(
+                d['first'], d['last'], self.period,
+            )
+        if key == 'demand':
+            return 'stronger demand per event (avg tickets sold rose {}→{})'.format(
+                d['first'], d['last'],
+            )
+        if key == 'price':
+            return 'higher ticket prices (avg ${}→${})'.format(d['first'], d['last'])
+        if key == 'costs':
+            return 'lower costs per event (avg ${}→${})'.format(d['first'], d['last'])
+        if key == 'acquisition':
+            return 'more new buyers entering the market ({}→{} per {})'.format(
+                d['first'], d['last'], self.period,
+            )
+        if key == 'promoters':
+            return 'more promoters (9-10 share rose {}%→{}%)'.format(d['first'], d['last'])
+        if key == 'detractors':
+            return 'fewer detractors (0-6 share fell {}%→{}%)'.format(d['first'], d['last'])
+        return 'a stronger repeat mix ({}%→{}%)'.format(d['first'], d['last'])  # retention
+
+    def _recommended_action(self, driver_key, mode='fix'):
+        if mode == 'reinforce':
+            return self._reinforce_action(driver_key)
+        return self._fix_action(driver_key)
+
+    def _growth_action(self):
+        """Default 'how to grow from here' step for stable / flat markets."""
+        if self.metric == 'nps':
+            return {
+                'key': 'promoters',
+                'label': 'Review survey feedback',
+                'url_name': 'tickets:survey_analytics',
+                'icon': 'bi-chat-square-heart',
+                'note': 'Sentiment is steady — keep gathering feedback to turn '
+                        'passives into promoters.',
+            }
+        return {
+            'key': 'acquisition',
+            'label': 'Review customer segments',
+            'url_name': 'tickets:customer_segments',
+            'icon': 'bi-diagram-3',
+            'note': 'Steady is good — to grow from here, focus on bringing in new buyers.',
+        }
+
     @staticmethod
-    def _recommended_action(driver_key):
+    def _reinforce_action(driver_key):
+        """Same tool as the fix step, framed as 'keep the momentum going'."""
+        tools = {
+            'retention': ('Review retention & win-backs', 'tickets:churn_overview', 'bi-person-dash'),
+            'acquisition': ('Review customer segments', 'tickets:customer_segments', 'bi-diagram-3'),
+            'demand': ('Open the forecast tool', 'tickets:forecast_tool', 'bi-graph-up-arrow'),
+            'costs': ('Review event expenses', 'tickets:expense_analytics', 'bi-receipt-cutoff'),
+            'promoters': ('Review survey feedback', 'tickets:survey_analytics', 'bi-chat-square-heart'),
+            'detractors': ('Review survey feedback', 'tickets:survey_analytics', 'bi-chat-square-heart'),
+        }
+        notes = {
+            'events': 'More events are lifting this market — keep the calendar full.',
+            'demand': 'Demand is leading the gains — line up capacity and dates to keep it climbing.',
+            'price': 'Pricing power is strong here — hold it and test premium tiers.',
+            'costs': 'Costs are trending down — bank the margin and keep them lean.',
+            'acquisition': 'New-buyer growth is your engine here — keep feeding the funnel.',
+            'retention': 'Repeat buyers are powering growth — protect them with loyalty and win-backs.',
+            'promoters': 'Promoters are climbing — keep gathering feedback and amplify what they love.',
+            'detractors': 'Detractors are shrinking — keep closing the loop on feedback.',
+        }
+        label, url_name, icon = tools.get(driver_key, (None, None, 'bi-stars'))
+        return {
+            'key': driver_key,
+            'label': label,
+            'url_name': url_name,
+            'icon': icon,
+            'note': notes.get(driver_key, ''),
+        }
+
+    @staticmethod
+    def _fix_action(driver_key):
         if driver_key == 'retention':
             return {
                 'key': 'retention',

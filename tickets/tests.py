@@ -13615,6 +13615,56 @@ class MarketTrendCalculatorTests(TestCase):
                     )
                     seq += 1
 
+    def _build_returning_revenue_market(self, city, specs):
+        """specs[i] = (new_count, returning_count, price) for quarter i.
+
+        One event per quarter; `returning_count` buyers are reused from earlier
+        quarters (so they count as returning), the rest are brand new. Lets the
+        returning-buyer share swing while demand (= buyers/event) and price are
+        controlled independently."""
+        venue = self._venue(city)
+        seen = []
+        seq = 0
+        for i, (new_count, returning_count, price) in enumerate(specs):
+            event = self._event(venue, self.quarters[i], '{} Q{}'.format(city, i + 1))
+            order_dt = timezone.make_aware(datetime.combine(self.quarters[i], time(10, 0)))
+            buyers = []
+            for r in (seen[:returning_count] if returning_count else []):
+                buyers.append(r)
+            for _ in range(new_count):
+                c = Customer.objects.create(
+                    organization=self.org,
+                    email='{}-r{}-{}@example.com'.format(city.lower(), i, seq),
+                    name='{} {}'.format(city, seq),
+                )
+                seq += 1
+                buyers.append(c)
+                seen.append(c)
+            for c in buyers:
+                o = TicketOrder.objects.create(
+                    customer=c, event=event, order_number='ORDR-{}-{}'.format(city.lower(), seq),
+                    order_date=order_dt, total_amount=Decimal(str(price)),
+                )
+                seq += 1
+                Ticket.objects.create(ticket_order=o, ticket_type='GA', price=Decimal(str(price)))
+
+    def test_revenue_top_driver_is_demand_not_returning_share(self):
+        """Returning-buyer share swings hard, but demand/price move the dollars —
+        so the revenue badge goes to demand (contribution), not retention."""
+        from tickets.services.market_trends import MarketTrendCalculator
+        # (new, returning, price): demand 20->38 and price 30->36 both climb,
+        # while returning share jumps 0% -> ~63%.
+        self._build_returning_revenue_market('Boston', [
+            (20, 0, 30), (18, 6, 32), (16, 14, 34), (14, 24, 36),
+        ])
+        result = MarketTrendCalculator(self.org, period='quarter', metric='revenue').calculate()
+        m = next(x for x in result['markets'] if x['city'] == 'Boston')
+        self.assertEqual(m['trend'], 'growing')
+        self.assertIn(m['dominant_driver'], ('demand', 'price'))
+        # Retention still shows as a context bar, just never the badged lead.
+        keys = {d['key'] for d in m['driver_contributions']}
+        self.assertIn('retention', keys)
+
     def test_declining_demand_market(self):
         from tickets.services.market_trends import MarketTrendCalculator
         self._build_market('Austin', [40, 30, 20, 10])
@@ -13622,9 +13672,10 @@ class MarketTrendCalculatorTests(TestCase):
         austin = next(m for m in result['markets'] if m['city'] == 'Austin')
         self.assertEqual(austin['trend'], 'declining')
         self.assertLess(austin['norm_slope_pct'], 0)
-        # All buyers are new each quarter, so demand falls in lockstep with
-        # acquisition; demand is first in the driver order and wins the tie.
-        self.assertEqual(austin['dominant_driver'], 'demand')
+        # All buyers are new each quarter, so the falling ticket volume is
+        # attributed to fewer new buyers (contribution by buyer count, not the
+        # tautological demand series).
+        self.assertEqual(austin['dominant_driver'], 'acquisition')
         self.assertIn('Austin', austin['diagnosis_text'])
         self.assertIsNotNone(austin['recommended_action'])
 
@@ -13907,4 +13958,38 @@ class MarketTrendCalculatorTests(TestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp.context['metric'], 'nps')
         self.assertEqual(resp.context['change_unit'], 'pts')
+
+    def test_growing_market_has_metrics_and_next_step(self):
+        from tickets.services.market_trends import MarketTrendCalculator
+        self._build_market('Miami', [10, 20, 30, 40])  # growing
+        result = MarketTrendCalculator(self.org, period='quarter', metric='tickets').calculate()
+        miami = next(m for m in result['markets'] if m['city'] == 'Miami')
+        self.assertEqual(miami['trend'], 'growing')
+        # Driver metrics and a "keep improving" step are present for growth too.
+        self.assertTrue(miami['driver_contributions'])
+        self.assertIsNotNone(miami['recommended_action'])
+        self.assertIn(miami['dominant_driver'], ('demand', 'acquisition'))
+        self.assertIn('is up', miami['diagnosis_text'])
+        self.assertIn('led by', miami['diagnosis_text'])
+
+    def test_stable_market_has_metrics_and_next_step(self):
+        from tickets.services.market_trends import MarketTrendCalculator
+        self._build_market('Reno', [25, 25, 25, 25])  # stable
+        result = MarketTrendCalculator(self.org, period='quarter', metric='tickets').calculate()
+        reno = next(m for m in result['markets'] if m['city'] == 'Reno')
+        self.assertEqual(reno['trend'], 'stable')
+        self.assertIsNone(reno['dominant_driver'])  # no single lead when flat
+        self.assertTrue(reno['driver_contributions'])
+        self.assertIsNotNone(reno['recommended_action'])
+        self.assertIn('holding steady', reno['diagnosis_text'])
+
+    def test_nps_growing_recommends_survey_feedback(self):
+        from tickets.services.market_trends import MarketTrendCalculator
+        # Promoters climb, detractors fall -> NPS grows.
+        self._build_nps_market('Seattle', [(4, 6, 10), (6, 6, 8), (9, 6, 5), (12, 6, 2)])
+        result = MarketTrendCalculator(self.org, metric='nps').calculate()
+        sea = next(m for m in result['markets'] if m['city'] == 'Seattle')
+        self.assertEqual(sea['trend'], 'growing')
+        self.assertIn(sea['dominant_driver'], ('promoters', 'detractors'))
+        self.assertEqual(sea['recommended_action']['url_name'], 'tickets:survey_analytics')
 
