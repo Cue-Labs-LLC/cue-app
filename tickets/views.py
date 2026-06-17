@@ -3471,13 +3471,9 @@ def customer_detail(request, customer_id):
     last_order_date = order_stats['last_order_date']
     total_tickets = Ticket.objects.filter(ticket_order__customer=customer).count()
 
-    # Event attendance - select_related to avoid N+1 on venue in template
-    events_attended = Event.objects.filter(
-        ticket_orders__customer=customer
-    ).select_related('venue').distinct()
-
-    # Paginate orders — annotate net_amount so the template shows post-fee totals
-    orders = customer.ticket_orders.select_related('event').annotate(
+    # Paginate orders — annotate net_amount so the template shows post-fee totals.
+    # select_related event__venue so the Venue column doesn't trigger an N+1.
+    orders = customer.ticket_orders.select_related('event', 'event__venue').annotate(
         tickets_count=Count('tickets'),
         net_amount=_net_amount,
     ).order_by('-order_date')
@@ -3535,7 +3531,6 @@ def customer_detail(request, customer_id):
         'avg_order_value': avg_order_value,
         'first_order_date': first_order_date,
         'last_order_date': last_order_date,
-        'events_attended': events_attended,
         'page_obj': page_obj,
         'segment_badge_color': segment_badge_color,
         'behavior_profile_badge_color': behavior_profile_badge_color,
