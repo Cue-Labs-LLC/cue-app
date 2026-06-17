@@ -3185,16 +3185,46 @@ def loyalty_tier_members(request, program_id, tier_id):
     org = get_organization(request)
     program = get_object_or_404(_active_loyalty_programs(org), id=program_id)
     tier = get_object_or_404(LoyaltyTier.objects.filter(program=program), id=tier_id)
-    members = (
-        Customer.objects.filter(organization=org, loyalty_tier=tier)
-        .order_by('-lifetime_value', 'name')
-    )
+    members = Customer.objects.filter(organization=org, loyalty_tier=tier)
+
+    # Search by name or email (kept inline rather than via filter_customers, which
+    # would drop placeholder-email CSV members from the tier list).
+    search_query = request.GET.get('search', '').strip()
+    if search_query:
+        members = members.filter(
+            Q(name__icontains=search_query) | Q(email__icontains=search_query)
+        )
+
+    # Sorting — validate against an allowlist, default to highest lifetime value.
+    allowed_sorts = {
+        'name', '-name', 'email', '-email',
+        'lifetime_value', '-lifetime_value',
+        'last_order_date', '-last_order_date',
+    }
+    sort_by = request.GET.get('sort', '-lifetime_value')
+    if sort_by not in allowed_sorts:
+        sort_by = '-lifetime_value'
+
+    if sort_by in ('last_order_date', '-last_order_date'):
+        last = F('last_order_date')
+        ordering = [
+            last.desc(nulls_last=True) if sort_by.startswith('-') else last.asc(nulls_last=True),
+            'name',
+        ]
+    elif sort_by in ('lifetime_value', '-lifetime_value'):
+        ordering = [sort_by, 'name']  # preserve the name tiebreak this page had
+    else:
+        ordering = [sort_by]
+    members = members.order_by(*ordering)
+
     paginator = Paginator(members, 50)
     page_obj = paginator.get_page(request.GET.get('page'))
     return render(request, 'tickets/loyalty/tier_members.html', {
         'program': program,
         'tier': tier,
         'page_obj': page_obj,
+        'search_query': search_query,
+        'sort_by': sort_by,
     })
 
 
