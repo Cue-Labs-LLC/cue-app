@@ -3085,9 +3085,18 @@ input.manage-copy__text {
     text-decoration: line-through;
 }
 
-/* Collapsed header (the whole row is the toggle) */
+/* Header bar: the toggle (header) grows, the remove button sits at the right. */
+.loyalty-form .tier-card__bar {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding-right: 10px;
+}
+
+/* Collapsed header (the row is the toggle; remove button is a sibling) */
 .loyalty-form .tier-card__header {
-    width: 100%;
+    flex: 1 1 auto;
+    min-width: 0;
     display: flex;
     align-items: center;
     gap: 10px;
@@ -3142,9 +3151,11 @@ input.manage-copy__text {
 .loyalty-form .tier-card--open .tier-card__chevron {
     transform: rotate(180deg);
 }
-/* When expanded, the header reads as a quieter title (summary hidden) */
-.loyalty-form .tier-card--open .tier-card__header {
+/* When expanded, the divider spans the whole bar (header + remove button) */
+.loyalty-form .tier-card--open .tier-card__bar {
     border-bottom: 1px solid var(--border-light);
+}
+.loyalty-form .tier-card--open .tier-card__header {
     border-radius: var(--radius) var(--radius) 0 0;
 }
 .loyalty-form .tier-card--open .tier-card__summary {

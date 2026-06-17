@@ -1340,7 +1340,7 @@ LoyaltyTierFormSet = inlineformset_factory(
     LoyaltyTier,
     form=LoyaltyTierForm,
     formset=BaseLoyaltyTierFormSet,
-    extra=1,
+    extra=0,
     can_delete=True,
 )
 
