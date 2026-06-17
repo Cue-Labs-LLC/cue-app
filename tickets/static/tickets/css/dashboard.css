@@ -3287,6 +3287,12 @@ input.manage-copy__text {
 }
 
 /* + Add condition (dropdown of the not-yet-added rules) */
+/* The "Add condition" dropdown is absolutely positioned and can extend past
+   the card box; the global `.card { overflow: hidden }` would clip it (cutting
+   off the last menu item for tiers near the bottom of the list). */
+.loyalty-form .card {
+    overflow: visible;
+}
 .loyalty-form .rule-add {
     position: relative;
     display: flex;
