@@ -17,14 +17,22 @@
 
 <div class="d-flex align-items-center justify-content-between flex-wrap gap-2 mb-3">
     <div class="chart-control-group">
-        <a href="?metric=revenue&period={{ period }}" class="chart-control-btn{% if metric == 'revenue' %} active{% endif %}">Revenue</a>
-        <a href="?metric=profitability&period={{ period }}" class="chart-control-btn{% if metric == 'profitability' %} active{% endif %}">Profitability</a>
-        <a href="?metric=tickets&period={{ period }}" class="chart-control-btn{% if metric == 'tickets' %} active{% endif %}">Tickets sold</a>
-        <a href="?metric=nps&period={{ period }}" class="chart-control-btn{% if metric == 'nps' %} active{% endif %}">NPS</a>
+        <a href="?metric=revenue&period={{ period }}&window={{ window }}" class="chart-control-btn{% if metric == 'revenue' %} active{% endif %}">Revenue</a>
+        <a href="?metric=profitability&period={{ period }}&window={{ window }}" class="chart-control-btn{% if metric == 'profitability' %} active{% endif %}">Profitability</a>
+        <a href="?metric=tickets&period={{ period }}&window={{ window }}" class="chart-control-btn{% if metric == 'tickets' %} active{% endif %}">Tickets sold</a>
+        <a href="?metric=nps&period={{ period }}&window={{ window }}" class="chart-control-btn{% if metric == 'nps' %} active{% endif %}">NPS</a>
     </div>
-    <div class="chart-control-group">
-        <a href="?metric={{ metric }}&period=quarter" class="chart-control-btn{% if period == 'quarter' %} active{% endif %}">Quarterly</a>
-        <a href="?metric={{ metric }}&period=month" class="chart-control-btn{% if period == 'month' %} active{% endif %}">Monthly</a>
+    <div class="d-flex flex-wrap gap-2">
+        <div class="chart-control-group">
+            <a href="?metric={{ metric }}&period=quarter&window={{ window }}" class="chart-control-btn{% if period == 'quarter' %} active{% endif %}">Quarterly</a>
+            <a href="?metric={{ metric }}&period=month&window={{ window }}" class="chart-control-btn{% if period == 'month' %} active{% endif %}">Monthly</a>
+        </div>
+        <div class="chart-control-group">
+            <a href="?metric={{ metric }}&period={{ period }}&window=1y" class="chart-control-btn{% if window == '1y' %} active{% endif %}">1Y</a>
+            <a href="?metric={{ metric }}&period={{ period }}&window=2y" class="chart-control-btn{% if window == '2y' %} active{% endif %}">2Y</a>
+            <a href="?metric={{ metric }}&period={{ period }}&window=3y" class="chart-control-btn{% if window == '3y' %} active{% endif %}">3Y</a>
+            <a href="?metric={{ metric }}&period={{ period }}&window=all" class="chart-control-btn{% if window == 'all' %} active{% endif %}">All</a>
+        </div>
     </div>
 </div>
 

@@ -37,6 +37,11 @@ NPS_SCALE = 100.0
 
 _VALID_METRICS = ('revenue', 'tickets', 'profitability', 'nps')
 
+# Trailing time-window keys -> number of years to look back ('all' => no bound).
+# Bounds how far back the per-period trend reads, so the slope/diagnosis reflect
+# recent performance rather than all of an org's history.
+_VALID_WINDOWS = {'1y': 1, '2y': 2, '3y': 3, 'all': None}
+
 # Driver-bar labels are trend-aware: declining markets use the decline-framed
 # wording, while growing/stable markets use the positive counterpart. _diagnose
 # picks the set from the market's trend. (costs/detractors invert — their "good"
@@ -64,11 +69,13 @@ _DRIVER_LABELS_POSITIVE = {
 
 
 class MarketTrendCalculator:
-    def __init__(self, organization, period='quarter', metric='revenue'):
+    def __init__(self, organization, period='quarter', metric='revenue', window='2y'):
         self.organization = organization
         self.period = 'month' if period == 'month' else 'quarter'
         # The primary metric the trend is read on: revenue / tickets / profitability.
         self.metric = metric if metric in _VALID_METRICS else 'revenue'
+        # Trailing window the trend reads over (1y/2y/3y/all). Defaults to 2y.
+        self.window = window if window in _VALID_WINDOWS else '2y'
 
     # ----- period bucketing ------------------------------------------------
 
@@ -96,9 +103,21 @@ class MarketTrendCalculator:
         today = date.today()
         trunc = TruncMonth if self.period == 'month' else TruncQuarter
 
+        # Trailing-window lower bound on the event's start_date (None => all time).
+        years = _VALID_WINDOWS[self.window]
+        start_cutoff = _subtract_years(today, years) if years else None
+
+        def _date_kwargs(prefix):
+            """Event-date bounds for a query whose path to Event.start_date has
+            the given field `prefix` (e.g. '', 'event__', 'ticket_order__event__')."""
+            kw = {prefix + 'start_date__lt': today}
+            if start_cutoff is not None:
+                kw[prefix + 'start_date__gte'] = start_cutoff
+            return kw
+
         # Query A — events held per (city, period).
         events_rows = (
-            Event.objects.filter(organization=org, start_date__lt=today)
+            Event.objects.filter(organization=org, **_date_kwargs(''))
             .annotate(period=trunc('start_date'))
             .values('venue__city', 'period')
             .annotate(events_held=Count('id'))
@@ -113,7 +132,7 @@ class MarketTrendCalculator:
         sold_rows = (
             TicketOrder.objects.filter(
                 event__organization=org,
-                event__start_date__lt=today,
+                **_date_kwargs('event__'),
             )
             .annotate(period=trunc('event__start_date'))
             .values('event__venue__city', 'period')
@@ -128,7 +147,7 @@ class MarketTrendCalculator:
         revenue_rows = (
             TicketOrder.objects.filter(
                 event__organization=org,
-                event__start_date__lt=today,
+                **_date_kwargs('event__'),
             )
             .annotate(period=trunc('event__start_date'))
             .values('event__venue__city', 'period')
@@ -140,7 +159,7 @@ class MarketTrendCalculator:
         # date so it lines up with the revenue/tickets series.
         expense_rows = (
             EventExpense.objects.visible()
-            .filter(event__organization=org, event__start_date__lt=today)
+            .filter(event__organization=org, **_date_kwargs('event__'))
             .annotate(period=trunc('event__start_date'))
             .values('event__venue__city', 'period')
             .annotate(expenses=Coalesce(Sum('amount'), Decimal('0.00')))
@@ -149,7 +168,7 @@ class MarketTrendCalculator:
             EventIncome.objects.filter(
                 deleted_at__isnull=True,
                 event__organization=org,
-                event__start_date__lt=today,
+                **_date_kwargs('event__'),
             )
             .annotate(period=trunc('event__start_date'))
             .values('event__venue__city', 'period')
@@ -158,8 +177,8 @@ class MarketTrendCalculator:
         fee_rows = (
             StripeCheckoutSession.objects.filter(
                 ticket_order__event__organization=org,
-                ticket_order__event__start_date__lt=today,
                 ticket_order__event__ticketing_type='direct',
+                **_date_kwargs('ticket_order__event__'),
             )
             .annotate(period=trunc('ticket_order__event__start_date'))
             .values('ticket_order__event__venue__city', 'period')
@@ -174,8 +193,8 @@ class MarketTrendCalculator:
             ExternalSurveyResponse.objects.filter(
                 organization=org,
                 event__isnull=False,
-                event__start_date__lt=today,
                 nps_score__isnull=False,
+                **_date_kwargs('event__'),
             )
             .annotate(period=trunc('event__start_date'))
             .values('event__venue__city', 'period')
@@ -233,7 +252,7 @@ class MarketTrendCalculator:
 
         # Query C — new vs returning buyers per (city, period), reusing the
         # earliest-order = "new" rule from RepeatCustomerCalculator.
-        for city, key, new_count, ret_count in self._new_returning_by_market_period():
+        for city, key, new_count, ret_count in self._new_returning_by_market_period(today, start_cutoff):
             cell = _bucket(city).setdefault(key, self._empty_cell())
             cell['new_count'] = new_count
             cell['returning_count'] = ret_count
@@ -257,7 +276,8 @@ class MarketTrendCalculator:
             'growing_count': sum(1 for m in market_results if m['trend'] == 'growing'),
             'stable_count': sum(1 for m in market_results if m['trend'] == 'stable'),
         }
-        return {'period': self.period, 'markets': market_results, 'summary': summary}
+        return {'period': self.period, 'window': self.window,
+                'markets': market_results, 'summary': summary}
 
     # ----- helpers ---------------------------------------------------------
 
@@ -268,13 +288,16 @@ class MarketTrendCalculator:
                 'new_count': 0, 'returning_count': 0,
                 'nps_responses': 0, 'promoters': 0, 'passives': 0, 'detractors': 0}
 
-    def _new_returning_by_market_period(self):
+    def _new_returning_by_market_period(self, today, start_cutoff):
         """Yield (city, period_key, new_count, returning_count) tuples."""
+        date_filter = {'event__start_date__lt': today}
+        if start_cutoff is not None:
+            date_filter['event__start_date__gte'] = start_cutoff
         rows = list(
             TicketOrder.objects.filter(
                 customer__organization=self.organization,
                 is_in_person=False,
-                event__start_date__lt=date.today(),
+                **date_filter,
             ).values(
                 'customer_id', 'event_id', 'order_date',
                 'event__venue__city', 'event__start_date',
@@ -788,6 +811,14 @@ class MarketTrendCalculator:
             'url_name': None,
             'icon': 'bi-calendar-plus',
         }
+
+
+def _subtract_years(d, n):
+    """Return the date `n` years before `d`, clamping Feb 29 -> Feb 28."""
+    try:
+        return d.replace(year=d.year - n)
+    except ValueError:
+        return d.replace(year=d.year - n, day=28)
 
 
 def _ols(ys):

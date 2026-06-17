@@ -13505,8 +13505,15 @@ class MarketTrendCalculatorTests(TestCase):
         OrganizationMembership.objects.create(
             user=self.user, organization=self.org, org_role=UserProfile.OrgRole.OWNER,
         )
-        # Quarter anchor dates well in the past so start_date < today always holds.
-        self.quarters = [date(2023, 1, 15), date(2023, 4, 15), date(2023, 7, 15), date(2023, 10, 15)]
+        # Four consecutive recent quarters, all strictly in the past and inside the
+        # calculator's default 2-year trailing window. Anchored relative to today
+        # (not fixed at 2023) so the default window doesn't filter the seed data out.
+        today = date.today()
+        abs_q = today.year * 4 + (today.month - 1) // 3  # current quarter, absolute index
+        self.quarters = []
+        for back in (5, 4, 3, 2):  # latest anchor = 2 quarters ago => safely past
+            y, q = divmod(abs_q - back, 4)
+            self.quarters.append(date(y, q * 3 + 1, 15))
 
     def _venue(self, city):
         return Venue.objects.create(organization=self.org, name=city + ' Hall', city=city)
@@ -13744,6 +13751,61 @@ class MarketTrendCalculatorTests(TestCase):
         resp = self.client.get(reverse('tickets:market_trends'), {'period': 'month'})
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp.context['period'], 'month')
+
+    def test_window_default_is_two_years(self):
+        from tickets.services.market_trends import MarketTrendCalculator
+        self._build_market('Austin', [40, 30, 20, 10])
+        result = MarketTrendCalculator(self.org).calculate()
+        self.assertEqual(result['window'], '2y')
+
+    def test_invalid_window_falls_back_to_two_years(self):
+        from tickets.services.market_trends import MarketTrendCalculator
+        self._build_market('Austin', [40, 30, 20, 10])
+        result = MarketTrendCalculator(self.org, window='bogus').calculate()
+        self.assertEqual(result['window'], '2y')
+
+    def test_narrow_window_excludes_older_periods(self):
+        """An event older than the trailing window drops out of the series."""
+        from tickets.services.market_trends import MarketTrendCalculator
+        venue = self._venue('Austin')
+        today = date.today()
+
+        def _months_back(d, m):
+            total = d.year * 12 + (d.month - 1) - m
+            y, mo = divmod(total, 12)
+            return date(y, mo + 1, min(d.day, 28))
+
+        # One old event (~18 months back) and one recent event (~2 months back).
+        old_date = _months_back(today, 18)
+        recent_date = _months_back(today, 2)
+        self._event(venue, old_date, 'Austin old')
+        self._event(venue, recent_date, 'Austin recent')
+        for e_date, n in ((old_date, 5), (recent_date, 3)):
+            ev = Event.objects.get(organization=self.org, start_date=e_date)
+            for s in range(n):
+                self._order_with_tickets(ev, 1, 'austin-{}'.format(e_date.isoformat()), s)
+
+        all_result = MarketTrendCalculator(self.org, period='month', window='all').calculate()
+        all_m = next(x for x in all_result['markets'] if x['city'] == 'Austin')
+        narrow_result = MarketTrendCalculator(self.org, period='month', window='1y').calculate()
+        narrow_m = next(x for x in narrow_result['markets'] if x['city'] == 'Austin')
+
+        # 'all' sees both events; the 1-year window only sees the recent one.
+        self.assertEqual(all_m['total_events'], 2)
+        self.assertEqual(narrow_m['total_events'], 1)
+        self.assertLessEqual(len(narrow_m['periods']), len(all_m['periods']))
+
+    def test_view_window_toggle(self):
+        self._build_market('Austin', [40, 30, 20, 10])
+        self.client.login(username='trend_owner@example.com', password='pw')
+        self.client.get(reverse('tickets:home'))  # prime session org / host routing
+        for w in ('1y', '2y', '3y', 'all'):
+            resp = self.client.get(reverse('tickets:market_trends'), {'window': w})
+            self.assertEqual(resp.status_code, 200)
+            self.assertEqual(resp.context['window'], w)
+        # Invalid window falls back to the 2y default in the view too.
+        resp = self.client.get(reverse('tickets:market_trends'), {'window': 'bogus'})
+        self.assertEqual(resp.context['window'], '2y')
 
     def test_returning_buyer_classified_new_then_returning(self):
         """A buyer is 'new' in their first period and 'returning' afterward —

@@ -3406,9 +3406,12 @@ def market_trends(request):
     metric = request.GET.get('metric', 'revenue')
     if metric not in ('revenue', 'tickets', 'profitability', 'nps'):
         metric = 'revenue'
+    window = request.GET.get('window', '2y')
+    if window not in ('1y', '2y', '3y', 'all'):
+        window = '2y'
 
     from tickets.services.market_trends import MarketTrendCalculator
-    result = MarketTrendCalculator(org, period=period, metric=metric).calculate()
+    result = MarketTrendCalculator(org, period=period, metric=metric, window=window).calculate()
     markets = result['markets']
 
     return render(request, 'tickets/market_trends.html', {
@@ -3417,6 +3420,7 @@ def market_trends(request):
         'summary': result['summary'],
         'period': period,
         'metric': metric,
+        'window': window,
         'change_unit': 'pts' if metric == 'nps' else '%',
         'sms_marketing_enabled': org.sms_marketing_enabled,
     })
