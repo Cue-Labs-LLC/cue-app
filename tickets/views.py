@@ -3534,6 +3534,11 @@ def customer_detail(request, customer_id):
     if loyalty_tier and loyalty_tier.program.organization_id != org.id:
         loyalty_tier = None
 
+    # Points: surface the balance when the org's active program awards points.
+    loyalty_points_enabled = _active_loyalty_programs(org).filter(
+        is_active=True, points_enabled=True
+    ).exists()
+
     # Marketing (native SMS) activity — one row per message sent to this customer.
     # Org-scoped already since `customer` is org-scoped. select_related avoids an
     # N+1 on campaign.name in the template. SMS has no "opened" event, so the
@@ -3556,6 +3561,7 @@ def customer_detail(request, customer_id):
     context = {
         'customer': customer,
         'loyalty_tier': loyalty_tier,
+        'loyalty_points_enabled': loyalty_points_enabled,
         'total_orders': total_orders,
         'total_tickets': total_tickets,
         'avg_order_value': avg_order_value,
