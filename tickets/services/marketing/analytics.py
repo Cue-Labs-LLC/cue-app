@@ -236,8 +236,8 @@ class MarketingAnalyticsService:
             eff_audience=self._coalesce_int('manual_audience', 'audience_size'),
             eff_clicks=self._coalesce_int('manual_clicks', 'unique_clicks'),
             eff_unsubs=self._coalesce_int('manual_unsubscribes', 'unsubscribes'),
-            eff_orders=self._coalesce_int('manual_orders', 'orders'),
-            eff_revenue=self._coalesce_decimal('manual_revenue', 'revenue'),
+            eff_orders=self._coalesce_int('manual_orders', 'cue_attributed_orders', 'orders'),
+            eff_revenue=self._coalesce_decimal('manual_revenue', 'cue_attributed_revenue', 'revenue'),
         ).aggregate(
             campaigns=Count('id'),
             audience=Coalesce(Sum('eff_audience'), 0),
