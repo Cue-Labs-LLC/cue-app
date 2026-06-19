@@ -1,0 +1,543 @@
+{% extends 'tickets/base.html' %}
+
+{% block title %}{% if event %}{{ event.name }} — Survey{% else %}Default Survey{% endif %}{% endblock %}
+
+{% block extra_head %}
+<style>
+  /* Survey builder — inline editor. Tuned to live inside Cue's design system;
+     polish comes from motion + precision, not a new palette. */
+  .qb-card {
+    border: 1px solid var(--border-color, rgba(0,0,0,.08));
+    border-radius: 14px;
+    background: var(--card-bg, #fff);
+    margin-bottom: 12px;
+    overflow: hidden;
+    transition: border-color .18s ease, box-shadow .18s ease, transform .18s ease;
+    animation: qbIn .34s cubic-bezier(.2,.7,.3,1) both;
+  }
+  .qb-card:hover { border-color: var(--border-strong, rgba(0,0,0,.16)); }
+  .qb-card.qb-editing { border-color: var(--bs-primary); box-shadow: 0 6px 28px -12px rgba(0,0,0,.28); }
+  .qb-card.qb-saved { animation: qbPulse .9s ease; }
+
+  @keyframes qbIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+  @keyframes qbPulse {
+    0% { box-shadow: 0 0 0 0 rgba(var(--bs-primary-rgb,13,110,253), .45); }
+    100% { box-shadow: 0 0 0 14px rgba(var(--bs-primary-rgb,13,110,253), 0); }
+  }
+
+  .qb-view { display: flex; align-items: center; gap: 14px; padding: 14px 16px; }
+  .qb-handle { display: flex; flex-direction: column; gap: 2px; color: var(--text-muted, #9aa0a6); }
+  .qb-handle button { border: 0; background: none; padding: 0; line-height: .8; color: inherit; cursor: pointer; opacity: .55; transition: opacity .12s, transform .12s; }
+  .qb-handle button:hover:not(:disabled) { opacity: 1; transform: scale(1.18); }
+  .qb-handle button:disabled { opacity: .18; cursor: default; }
+  .qb-num { font-family: var(--font-mono, ui-monospace, monospace); font-size: .72rem; color: var(--text-muted,#9aa0a6); width: 1.4em; text-align: right; }
+
+  .qb-body { flex: 1; min-width: 0; }
+  .qb-qtext { font-weight: 600; }
+  .qb-meta { display: flex; align-items: center; gap: 8px; margin-top: 3px; flex-wrap: wrap; }
+  .qb-type {
+    font-family: var(--font-mono, ui-monospace, monospace); font-size: .66rem;
+    letter-spacing: .06em; text-transform: uppercase; padding: 2px 8px; border-radius: 999px;
+    background: var(--surface-2, rgba(0,0,0,.05)); color: var(--text-muted,#6b7177);
+  }
+  .qb-req { font-size: .7rem; color: var(--bs-danger); }
+  .qb-chips { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 6px; }
+  .qb-chip { font-size: .72rem; padding: 2px 9px; border-radius: 999px; border: 1px solid var(--border-color, rgba(0,0,0,.1)); color: var(--text-muted,#6b7177); }
+
+  .qb-actions { display: flex; gap: 4px; opacity: 0; transition: opacity .15s; }
+  .qb-card:hover .qb-actions, .qb-card:focus-within .qb-actions { opacity: 1; }
+
+  .qb-edit { display: none; padding: 16px; border-top: 1px solid var(--border-color, rgba(0,0,0,.06)); }
+  .qb-card.qb-editing .qb-view { display: none; }
+  .qb-card.qb-editing .qb-edit { display: block; animation: qbExpand .22s ease; }
+  @keyframes qbExpand { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
+
+  .qb-opt-row { display: flex; align-items: center; gap: 8px; margin-bottom: 7px; }
+  .qb-opt-row .qb-drag { color: var(--text-muted,#bbb); }
+  .qb-options-wrap { margin-top: 12px; padding-top: 12px; border-top: 1px dashed var(--border-color, rgba(0,0,0,.1)); }
+  .qb-errors { color: var(--bs-danger); font-size: .82rem; margin-top: 8px; }
+  .qb-errors:empty { display: none; }
+
+  .qb-add { width: 100%; border: 1.5px dashed var(--border-strong, rgba(0,0,0,.18)); background: none; border-radius: 14px;
+            padding: 14px; color: var(--text-muted,#6b7177); font-weight: 500; transition: all .15s; }
+  .qb-add:hover { border-color: var(--bs-primary); color: var(--bs-primary); }
+
+  /* Live preview column */
+  .qb-preview-col { position: sticky; top: 20px; }
+  .qb-preview-bar { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+  .qb-preview-label { font-size: .72rem; letter-spacing: .08em; text-transform: uppercase; color: var(--text-muted,#6b7177); display: flex; align-items: center; gap: 6px; }
+  .qb-preview-label .qb-live-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--bs-success); box-shadow: 0 0 0 0 rgba(var(--bs-success-rgb,25,135,84),.5); animation: qbLive 1.8s ease-out infinite; }
+  @keyframes qbLive { 0% { box-shadow: 0 0 0 0 rgba(var(--bs-success-rgb,25,135,84),.5);} 70%{ box-shadow: 0 0 0 7px rgba(var(--bs-success-rgb,25,135,84),0);} 100%{ box-shadow:0 0 0 0 rgba(var(--bs-success-rgb,25,135,84),0);} }
+  .qb-preview-stage { display: flex; justify-content: center; }
+  .qb-device { width: 100%; border: 1px solid var(--border-color, rgba(0,0,0,.12)); border-radius: 16px; overflow: hidden; background: #0F0E0D; transition: width .28s cubic-bezier(.2,.7,.3,1), border-radius .28s ease, padding .28s ease; }
+  .qb-preview-stage.is-phone .qb-device { width: 390px; max-width: 100%; border-radius: 34px; padding: 10px; border-width: 8px; border-color: #1c1b1a; box-shadow: 0 18px 50px -20px rgba(0,0,0,.55); }
+  .qb-preview-stage.is-phone .qb-device iframe { border-radius: 26px; }
+  #qb-preview { width: 100%; height: 660px; border: 0; display: block; background: #0F0E0D; }
+  @media (max-width: 991.98px) {
+    .qb-preview-col { position: static; margin-top: 24px; }
+    #qb-preview { height: 560px; }
+  }
+</style>
+{% endblock %}
+
+{% block content %}
+<nav aria-label="breadcrumb" class="mb-3">
+  <ol class="breadcrumb" style="font-size: 13px;">
+    <li class="breadcrumb-item"><a href="{% url 'tickets:survey_hub' %}">Surveys</a></li>
+    <li class="breadcrumb-item active">{% if event %}{{ event.name }}{% else %}Default survey{% endif %}</li>
+  </ol>
+</nav>
+
+<div class="page-header">
+  <h1>{% if event %}Event survey{% else %}Default survey{% endif %}</h1>
+  <p class="text-muted mb-0">
+    {% if event %}Sent to attendees of {{ event.name }} after the event.
+    {% else %}The questions every event uses unless it's customized.{% endif %}
+  </p>
+</div>
+
+{% if locked %}
+<div class="alert alert-secondary d-flex align-items-center gap-2">
+  <i class="bi bi-lock-fill"></i>
+  <div>This survey has been sent, so its questions are locked to keep responses consistent.
+    Edit the <a href="{% url 'tickets:survey_builder' %}">default survey</a> to change future events.</div>
+</div>
+{% endif %}
+
+<div class="row g-4">
+<div class="col-lg-7">
+{% if event and not questions %}
+{# Event uses the org default — offer to customize, preview read-only. #}
+<div class="card mb-3">
+  <div class="card-body d-flex flex-wrap align-items-center justify-content-between gap-2">
+    <div>
+      <strong>This event uses the default survey.</strong>
+      <div class="text-muted small">Customize to add or change questions just for this event.</div>
+    </div>
+    <form method="post" action="{% url 'tickets:event_survey_customize' event.id %}">
+      {% csrf_token %}
+      <button type="submit" class="btn btn-outline-primary btn-sm">Customize for this event</button>
+    </form>
+  </div>
+</div>
+<div class="card">
+  <div class="card-header"><h5 class="mb-0">Default questions</h5></div>
+  <div class="card-body p-0">
+    <table class="table mb-0">
+      <tbody>
+        {% for q in effective_preview %}
+        <tr>
+          <td class="text-muted" style="width:40px;">{{ forloop.counter }}</td>
+          <td>{{ q.question_text }}{% if q.is_required %} <span class="text-danger">*</span>{% endif %}</td>
+          <td class="text-muted">{{ q.get_question_type_display }}</td>
+        </tr>
+        {% empty %}
+        <tr><td class="text-muted p-4 text-center">No questions configured.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+{% else %}
+
+{# ---- Inline builder (org template, or customized/locked event) ---- #}
+<div id="qb-list"
+     data-create-url="{{ create_save_url }}"
+     data-reorder-url="{{ reorder_url }}"
+     data-preview-url="{{ preview_url }}"
+     data-locked="{{ locked|yesno:'1,0' }}"
+     data-choice-types="{{ choice_types|join:',' }}">
+  {% for q in questions %}
+  <div class="qb-card" data-id="{{ q.id }}" data-save-url="{{ q.save_url }}" data-delete-url="{{ q.delete_url }}"
+       style="animation-delay: {{ forloop.counter0 }}0ms;">
+    <div class="qb-view">
+      {% if not locked %}
+      <div class="qb-handle">
+        <button type="button" class="qb-up" title="Move up"{% if forloop.first %} disabled{% endif %}><i class="bi bi-caret-up-fill"></i></button>
+        <button type="button" class="qb-down" title="Move down"{% if forloop.last %} disabled{% endif %}><i class="bi bi-caret-down-fill"></i></button>
+      </div>
+      {% endif %}
+      <span class="qb-num">{{ forloop.counter }}</span>
+      <div class="qb-body">
+        <div class="qb-qtext">{{ q.question_text }}</div>
+        <div class="qb-meta">
+          <span class="qb-type">{{ q.get_question_type_display }}</span>
+          <span class="qb-req"{% if not q.is_required %} style="display:none;"{% endif %}><i class="bi bi-asterisk"></i> required</span>
+        </div>
+        <div class="qb-chips">{% for o in q.options.all %}<span class="qb-chip">{{ o.label }}</span>{% endfor %}</div>
+      </div>
+      {% if not locked %}
+      <div class="qb-actions">
+        <button type="button" class="btn btn-sm btn-light qb-edit-btn" title="Edit"><i class="bi bi-pencil"></i></button>
+        <button type="button" class="btn btn-sm btn-light text-danger qb-del-btn" title="Delete"><i class="bi bi-trash"></i></button>
+      </div>
+      {% endif %}
+    </div>
+
+    {% if not locked %}
+    <div class="qb-edit">
+      <div class="mb-2">
+        <label class="form-label small fw-medium mb-1">Question</label>
+        <input type="text" class="form-control qb-f-text" maxlength="500" placeholder="e.g. How was the sound?">
+      </div>
+      <div class="row g-2 align-items-end">
+        <div class="col-sm">
+          <label class="form-label small fw-medium mb-1">Type</label>
+          <select class="form-select qb-f-type">
+            {% for value, label in question_types %}<option value="{{ value }}">{{ label }}</option>{% endfor %}
+          </select>
+        </div>
+        <div class="col-sm-auto">
+          <div class="form-check mt-2">
+            <input class="form-check-input qb-f-required" type="checkbox" id="req-{{ q.id }}">
+            <label class="form-check-label small" for="req-{{ q.id }}">Required</label>
+          </div>
+        </div>
+      </div>
+      <div class="qb-options-wrap" style="display:none;">
+        <label class="form-label small fw-medium mb-1">Choices</label>
+        <div class="qb-options"></div>
+        <button type="button" class="btn btn-sm btn-link text-decoration-none px-0 qb-add-opt"><i class="bi bi-plus-lg"></i> Add choice</button>
+      </div>
+      <div class="qb-errors" role="alert"></div>
+      <div class="d-flex gap-2 mt-3">
+        <button type="button" class="btn btn-primary btn-sm qb-save-btn">Save question</button>
+        <button type="button" class="btn btn-outline-secondary btn-sm qb-cancel-btn">Cancel</button>
+      </div>
+    </div>
+    {% endif %}
+  </div>
+  {% endfor %}
+</div>
+
+{% if not locked %}
+<button type="button" id="qb-add" class="qb-add"><i class="bi bi-plus-lg"></i> Add question</button>
+{% endif %}
+
+{% if questions|length == 0 and not locked %}
+<div class="text-center text-muted mt-3 small">
+  No questions yet.{% if system_defaults_available and is_org_template %} Events use Cue's default questions until you add your own.{% endif %}
+</div>
+{% endif %}
+
+{% if event and not locked %}
+<div class="mt-3">
+  <form method="post" action="{% url 'tickets:event_survey_reset' event.id %}"
+        onsubmit="return confirm('Revert to the organization default survey? This event customization will be removed.');">
+    {% csrf_token %}
+    <button type="submit" class="btn btn-link text-danger text-decoration-none p-0">Reset to default survey</button>
+  </form>
+</div>
+{% endif %}
+
+{# ---- Templates cloned by JS ---- #}
+<template id="qb-card-tpl">
+  <div class="qb-card qb-editing qb-new" data-save-url="">
+    <div class="qb-view">
+      <div class="qb-handle">
+        <button type="button" class="qb-up" disabled><i class="bi bi-caret-up-fill"></i></button>
+        <button type="button" class="qb-down" disabled><i class="bi bi-caret-down-fill"></i></button>
+      </div>
+      <span class="qb-num"></span>
+      <div class="qb-body">
+        <div class="qb-qtext"></div>
+        <div class="qb-meta"><span class="qb-type"></span><span class="qb-req"><i class="bi bi-asterisk"></i> required</span></div>
+        <div class="qb-chips"></div>
+      </div>
+      <div class="qb-actions">
+        <button type="button" class="btn btn-sm btn-light qb-edit-btn" title="Edit"><i class="bi bi-pencil"></i></button>
+        <button type="button" class="btn btn-sm btn-light text-danger qb-del-btn" title="Delete"><i class="bi bi-trash"></i></button>
+      </div>
+    </div>
+    <div class="qb-edit">
+      <div class="mb-2">
+        <label class="form-label small fw-medium mb-1">Question</label>
+        <input type="text" class="form-control qb-f-text" maxlength="500" placeholder="e.g. How was the sound?">
+      </div>
+      <div class="row g-2 align-items-end">
+        <div class="col-sm">
+          <label class="form-label small fw-medium mb-1">Type</label>
+          <select class="form-select qb-f-type">
+            {% for value, label in question_types %}<option value="{{ value }}">{{ label }}</option>{% endfor %}
+          </select>
+        </div>
+        <div class="col-sm-auto">
+          <div class="form-check mt-2">
+            <input class="form-check-input qb-f-required" type="checkbox">
+            <label class="form-check-label small">Required</label>
+          </div>
+        </div>
+      </div>
+      <div class="qb-options-wrap" style="display:none;">
+        <label class="form-label small fw-medium mb-1">Choices</label>
+        <div class="qb-options"></div>
+        <button type="button" class="btn btn-sm btn-link text-decoration-none px-0 qb-add-opt"><i class="bi bi-plus-lg"></i> Add choice</button>
+      </div>
+      <div class="qb-errors" role="alert"></div>
+      <div class="d-flex gap-2 mt-3">
+        <button type="button" class="btn btn-primary btn-sm qb-save-btn">Save question</button>
+        <button type="button" class="btn btn-outline-secondary btn-sm qb-cancel-btn">Cancel</button>
+      </div>
+    </div>
+  </div>
+</template>
+
+<template id="qb-opt-tpl">
+  <div class="qb-opt-row">
+    <i class="bi bi-grip-vertical qb-drag"></i>
+    <input type="text" class="form-control form-control-sm qb-opt-input" maxlength="255" placeholder="Option label">
+    <button type="button" class="btn btn-sm btn-light text-danger qb-opt-del" title="Remove"><i class="bi bi-x-lg"></i></button>
+  </div>
+</template>
+
+{# Server-rendered data for existing questions (text/type/required/options) #}
+{{ questions_json|json_script:"qb-data" }}
+{% endif %}
+</div>{# /col-lg-7 #}
+
+<div class="col-lg-5">
+  <div class="qb-preview-col">
+    <div class="qb-preview-bar">
+      <span class="qb-preview-label"><span class="qb-live-dot"></span> Live preview</span>
+      <div class="btn-group btn-group-sm" role="group" id="qb-vp-toggle" aria-label="Preview viewport">
+        <button type="button" class="btn btn-outline-secondary active" data-vp="desktop"><i class="bi bi-display"></i> Desktop</button>
+        <button type="button" class="btn btn-outline-secondary" data-vp="phone"><i class="bi bi-phone"></i> Phone</button>
+      </div>
+    </div>
+    <div class="qb-preview-stage" id="qb-preview-stage">
+      <div class="qb-device">
+        <iframe id="qb-preview" src="{{ preview_url }}" title="Survey preview"></iframe>
+      </div>
+    </div>
+    <p class="text-muted small mt-2 mb-0">Exactly what attendees see. Updates as you edit.</p>
+  </div>
+</div>
+</div>{# /row #}
+{% endblock %}
+
+{% block extra_js %}
+<script>
+  // Desktop / Phone viewport toggle (runs regardless of lock state).
+  (function () {
+    var stage = document.getElementById('qb-preview-stage');
+    var grp = document.getElementById('qb-vp-toggle');
+    if (!stage || !grp) return;
+    grp.addEventListener('click', function (e) {
+      var b = e.target.closest('button[data-vp]');
+      if (!b) return;
+      grp.querySelectorAll('button').forEach(function (x) { x.classList.remove('active'); });
+      b.classList.add('active');
+      stage.classList.toggle('is-phone', b.dataset.vp === 'phone');
+    });
+  })();
+</script>
+{% if not locked %}
+<script>
+(function () {
+  var list = document.getElementById('qb-list');
+  if (!list) return;
+  var CHOICE_TYPES = (list.dataset.choiceTypes || '').split(',').filter(Boolean);
+  var CREATE_URL = list.dataset.createUrl;
+  var REORDER_URL = list.dataset.reorderUrl;
+  var PREVIEW_URL = list.dataset.previewUrl;
+  var previewFrame = document.getElementById('qb-preview');
+  var previewTimer = null;
+  var cardTpl = document.getElementById('qb-card-tpl');
+  var optTpl = document.getElementById('qb-opt-tpl');
+  var initial = JSON.parse(document.getElementById('qb-data').textContent || '[]');
+
+  function csrf() {
+    var m = document.cookie.match(/(?:^|;\s*)csrftoken=([^;]+)/);
+    return m ? m[1] : '';
+  }
+  function post(url, body) {
+    return fetch(url, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json', 'X-CSRFToken': csrf(), 'X-Requested-With': 'XMLHttpRequest'},
+      body: JSON.stringify(body),
+    }).then(function (r) { return r.json().then(function (d) { return {status: r.status, data: d}; }); });
+  }
+  function isChoice(t) { return CHOICE_TYPES.indexOf(t) !== -1; }
+
+  function addOptionRow(card, value) {
+    var row = optTpl.content.firstElementChild.cloneNode(true);
+    row.querySelector('.qb-opt-input').value = value || '';
+    row.querySelector('.qb-opt-del').addEventListener('click', function () { row.remove(); });
+    card.querySelector('.qb-options').appendChild(row);
+    return row;
+  }
+
+  function syncOptionsVisibility(card) {
+    var type = card.querySelector('.qb-f-type').value;
+    var wrap = card.querySelector('.qb-options-wrap');
+    wrap.style.display = isChoice(type) ? '' : 'none';
+    if (isChoice(type) && !card.querySelector('.qb-options').children.length) {
+      addOptionRow(card); addOptionRow(card);
+    }
+  }
+
+  function renderView(card, q) {
+    card.querySelector('.qb-qtext').textContent = q.text;
+    card.querySelector('.qb-type').textContent = q.type_display;
+    card.querySelector('.qb-req').style.display = q.required ? '' : 'none';
+    var chips = card.querySelector('.qb-chips');
+    chips.innerHTML = '';
+    (q.options || []).forEach(function (o) {
+      var c = document.createElement('span'); c.className = 'qb-chip'; c.textContent = o.label; chips.appendChild(c);
+    });
+  }
+
+  function fillEdit(card, q) {
+    card.querySelector('.qb-f-text').value = q.text || '';
+    card.querySelector('.qb-f-type').value = q.type || 'star_rating';
+    card.querySelector('.qb-f-required').checked = !!q.required;
+    var opts = card.querySelector('.qb-options'); opts.innerHTML = '';
+    (q.options || []).forEach(function (o) { addOptionRow(card, o.label); });
+    syncOptionsVisibility(card);
+  }
+
+  function enterEdit(card) {
+    // snapshot for cancel
+    card._snapshot = collect(card);
+    card.classList.add('qb-editing');
+    card.querySelector('.qb-f-text').focus();
+  }
+  function exitEdit(card) { card.classList.remove('qb-editing'); card.querySelector('.qb-errors').textContent = ''; }
+
+  function collect(card) {
+    var opts = [].map.call(card.querySelectorAll('.qb-opt-input'), function (i) { return {label: i.value.trim()}; })
+                 .filter(function (o) { return o.label; });
+    return {
+      question_text: card.querySelector('.qb-f-text').value.trim(),
+      question_type: card.querySelector('.qb-f-type').value,
+      is_required: card.querySelector('.qb-f-required').checked,
+      options: opts,
+    };
+  }
+
+  function renumber() {
+    var cards = list.querySelectorAll('.qb-card');
+    cards.forEach(function (c, i) {
+      var n = c.querySelector('.qb-num'); if (n) n.textContent = i + 1;
+      var up = c.querySelector('.qb-up'), down = c.querySelector('.qb-down');
+      if (up) up.disabled = (i === 0);
+      if (down) down.disabled = (i === cards.length - 1);
+    });
+  }
+
+  // Live preview: collect every card's current draft (DOM order, blanks skipped),
+  // POST to the preview endpoint, and pipe the rendered survey HTML into the iframe.
+  function collectAll() {
+    return [].map.call(list.querySelectorAll('.qb-card'), collect)
+             .filter(function (q) { return q.question_text; });
+  }
+  function refreshPreview() {
+    if (!previewFrame || !PREVIEW_URL) return;
+    fetch(PREVIEW_URL, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json', 'X-CSRFToken': csrf()},
+      body: JSON.stringify({questions: collectAll()}),
+    }).then(function (r) { return r.text(); })
+      .then(function (html) { previewFrame.srcdoc = html; })
+      .catch(function () {});
+  }
+  function schedulePreview() { clearTimeout(previewTimer); previewTimer = setTimeout(refreshPreview, 280); }
+
+  function wireCard(card) {
+    var editBtn = card.querySelector('.qb-edit-btn');
+    if (editBtn) editBtn.addEventListener('click', function () { enterEdit(card); });
+
+    card.querySelector('.qb-f-type').addEventListener('change', function () { syncOptionsVisibility(card); });
+    card.querySelector('.qb-add-opt').addEventListener('click', function () {
+      addOptionRow(card).querySelector('.qb-opt-input').focus();
+    });
+    card.querySelector('.qb-cancel-btn').addEventListener('click', function () {
+      if (card.classList.contains('qb-new')) { card.remove(); renumber(); return; }
+      fillEdit(card, card._snapshot ? snapToQ(card._snapshot) : {});
+      exitEdit(card);
+    });
+    card.querySelector('.qb-save-btn').addEventListener('click', function () { save(card); });
+
+    var del = card.querySelector('.qb-del-btn');
+    if (del) del.addEventListener('click', function () {
+      if (!card.dataset.id) { card.remove(); renumber(); return; }
+      if (!confirm('Remove this question?')) return;
+      post(card.dataset.deleteUrl, {}).then(function (res) {
+        if (res.data.ok) { card.style.opacity = 0; setTimeout(function () { card.remove(); renumber(); schedulePreview(); }, 150); }
+        else alert((res.data.errors || ['Could not delete.'])[0]);
+      });
+    });
+
+    var up = card.querySelector('.qb-up'), down = card.querySelector('.qb-down');
+    if (up) up.addEventListener('click', function () { move(card, 'up'); });
+    if (down) down.addEventListener('click', function () { move(card, 'down'); });
+  }
+
+  function snapToQ(s) { return {text: s.question_text, type: s.question_type, required: s.is_required, options: s.options}; }
+
+  function save(card) {
+    var payload = collect(card);
+    var url = card.dataset.id ? card.dataset.saveUrl : CREATE_URL;
+    var errBox = card.querySelector('.qb-errors'); errBox.textContent = '';
+    var btn = card.querySelector('.qb-save-btn'); btn.disabled = true;
+    post(url, payload).then(function (res) {
+      btn.disabled = false;
+      if (res.data.ok) {
+        var q = res.data.question;
+        card.dataset.id = q.id;
+        card.dataset.saveUrl = q.save_url;
+        card.dataset.deleteUrl = q.delete_url;
+        card.classList.remove('qb-new');
+        renderView(card, q);
+        exitEdit(card);
+        card.classList.add('qb-saved');
+        setTimeout(function () { card.classList.remove('qb-saved'); }, 900);
+        renumber();
+        schedulePreview();
+      } else {
+        errBox.textContent = (res.data.errors || ['Could not save.']).join(' ');
+      }
+    }).catch(function () { btn.disabled = false; errBox.textContent = 'Network error — try again.'; });
+  }
+
+  function move(card, dir) {
+    if (!card.dataset.id) return;
+    post(REORDER_URL, {question_id: card.dataset.id, direction: dir}).then(function (res) {
+      if (!res.data.ok) return;
+      if (dir === 'up' && card.previousElementSibling) list.insertBefore(card, card.previousElementSibling);
+      if (dir === 'down' && card.nextElementSibling) list.insertBefore(card.nextElementSibling, card);
+      renumber();
+      schedulePreview();
+    });
+  }
+
+  // Hydrate existing cards from JSON, wire them.
+  var byId = {};
+  initial.forEach(function (q) { byId[q.id] = q; });
+  [].forEach.call(list.querySelectorAll('.qb-card'), function (card) {
+    var q = byId[card.dataset.id];
+    if (q) { renderView(card, q); fillEdit(card, q); }
+    wireCard(card);
+  });
+
+  // Live-refresh the preview as the user edits.
+  list.addEventListener('input', schedulePreview);
+  list.addEventListener('change', schedulePreview);
+  refreshPreview();
+
+  // Add question → clone template in edit mode.
+  var addBtn = document.getElementById('qb-add');
+  if (addBtn) addBtn.addEventListener('click', function () {
+    var card = cardTpl.content.firstElementChild.cloneNode(true);
+    list.appendChild(card);
+    wireCard(card);
+    syncOptionsVisibility(card);
+    renumber();
+    card.scrollIntoView({behavior: 'smooth', block: 'nearest'});
+    card.querySelector('.qb-f-text').focus();
+  });
+})();
+</script>
+{% endif %}
+{% endblock %}

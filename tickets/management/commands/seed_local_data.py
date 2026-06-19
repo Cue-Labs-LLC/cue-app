@@ -75,6 +75,79 @@ OWNER_PASSWORD = "password123"
 # nothing sold). Skipped by _create_orders_and_tickets so it stays empty.
 LIVE_EVENT_WITHOUT_ORDERS = "Familiar Faces — Just Announced"
 
+# A minimal fixture for exercising the survey-send flow: an ENDED direct event
+# with exactly one ticket sold to one attendee, so "Send survey" has someone to
+# email and the survey can be filled out end-to-end.
+SURVEY_TEST_EVENT_NAME = "Survey Test Night — 1 sale, ended"
+# Attendee is the owner's own address so the survey-send test actually lands in
+# a real inbox the developer controls.
+SURVEY_TEST_CUSTOMER_EMAIL = OWNER_EMAIL
+
+
+def build_survey_test_event(org, venue, owner, *, when=None):
+    """Idempotently create an ENDED direct-ticketing event with exactly one
+    ticket sold. Returns the Event. Safe to call repeatedly (keyed on org+name).
+
+    Used by the seed command and runnable standalone to drop the fixture into an
+    already-populated dev database.
+    """
+    now = when or timezone.now()
+    event, created = Event.objects.get_or_create(
+        organization=org,
+        name=SURVEY_TEST_EVENT_NAME,
+        defaults=dict(
+            summary="Tiny fixture: one attendee, event over — ready to send a survey.",
+            venue=venue,
+            start_date=(now - timedelta(days=3)).date(),
+            end_date=(now - timedelta(days=3)).date(),
+            start_time=now.time().replace(microsecond=0),
+            capacity=50,
+            max_tickets_per_customer=4,
+            ticketing_type=TICKETING_TYPE_DIRECT,
+            status=EVENT_STATUS_ENDED,
+            timezone="America/Los_Angeles",
+            created_by=owner,
+        ),
+    )
+    if not created:
+        return event
+
+    ticket_type = SaleableTicketType.objects.create(
+        event=event,
+        name="General Admission",
+        price=_decimal(25),
+        quantity_limit=50,
+        max_per_customer=4,
+        quantity_sold=1,
+        order=1,
+        sale_start=now - timedelta(days=21),
+        sale_end=now - timedelta(days=3),
+        description="Standing room. First come, first served.",
+    )
+
+    customer, _ = Customer.objects.get_or_create(
+        organization=org,
+        email=SURVEY_TEST_CUSTOMER_EMAIL,
+        defaults=dict(name="Owen Barton"),
+    )
+
+    order = TicketOrder.objects.create(
+        customer=customer,
+        event=event,
+        order_number=f"ORD-SURVEYTEST-{OrderCounter.next():06d}",
+        order_date=now - timedelta(days=4),
+        total_amount=ticket_type.price,
+        is_in_person=False,
+        created_by=owner,
+    )
+    Ticket.objects.create(
+        ticket_order=order,
+        ticket_type=ticket_type.name,
+        price=ticket_type.price,
+    )
+    customer.update_lifetime_value()
+    return event
+
 FIRST_NAMES = [
     "Maya", "Jordan", "Avery", "Quinn", "Reese", "Logan", "Skyler", "Rowan",
     "Hayden", "Marlowe", "Ezra", "Kai", "Sasha", "Indigo", "Wren", "Soren",
@@ -154,6 +227,10 @@ class Command(BaseCommand):
             self._create_surveys(org, events, customers, owner, rng)
             self._create_external_survey_responses(org, events, owner, rng)
             self._create_sms_broadcasts(org, events, customers, owner, now, rng)
+
+            # Minimal fixture for exercising the survey-send flow end-to-end.
+            survey_test_event = build_survey_test_event(org, venues[0], owner, when=now)
+            self.stdout.write(self.style.SUCCESS(f"Survey test event: {survey_test_event.name}"))
 
             for customer in Customer.objects.filter(organization=org):
                 customer.update_lifetime_value()
