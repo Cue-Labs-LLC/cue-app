@@ -148,6 +148,26 @@ urlpatterns = [
     path('survey/<uuid:token>/', views.survey_form, name='survey_form'),
     path('survey/thank-you/', views.survey_thank_you, name='survey_thank_you'),
 
+    # Survey builder — hub + org-default template (singular /survey/ to avoid
+    # the plural /events/<id>/surveys/ external-survey endpoints). Questions are
+    # configured inline on the builder page via these JSON endpoints.
+    path('surveys/', views.survey_hub, name='survey_hub'),
+    path('surveys/builder/', views.survey_builder, name='survey_builder'),
+    path('surveys/builder/preview/', views.survey_preview, name='survey_preview'),
+    path('surveys/builder/save/', views.survey_question_save, name='survey_question_save'),
+    path('surveys/builder/<uuid:question_id>/save/', views.survey_question_save, name='survey_question_save'),
+    path('surveys/builder/<uuid:question_id>/delete/', views.survey_question_delete, name='survey_question_delete'),
+    path('surveys/builder/reorder/', views.survey_reorder, name='survey_reorder'),
+    # Survey builder — per-event (same views, event scope)
+    path('events/<uuid:event_id>/survey/builder/', views.survey_builder, name='event_survey_builder'),
+    path('events/<uuid:event_id>/survey/builder/preview/', views.survey_preview, name='event_survey_preview'),
+    path('events/<uuid:event_id>/survey/customize/', views.event_survey_customize, name='event_survey_customize'),
+    path('events/<uuid:event_id>/survey/reset/', views.event_survey_reset, name='event_survey_reset'),
+    path('events/<uuid:event_id>/survey/save/', views.survey_question_save, name='event_survey_question_save'),
+    path('events/<uuid:event_id>/survey/<uuid:question_id>/save/', views.survey_question_save, name='event_survey_question_save'),
+    path('events/<uuid:event_id>/survey/<uuid:question_id>/delete/', views.survey_question_delete, name='event_survey_question_delete'),
+    path('events/<uuid:event_id>/survey/reorder/', views.survey_reorder, name='event_survey_reorder'),
+
     # Events
     path('events/', views.event_list, name='event_list'),
     path('events/calendar/', views.event_calendar, name='event_calendar'),

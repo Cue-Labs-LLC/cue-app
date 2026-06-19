@@ -2730,7 +2730,12 @@ class SurveyQuestion(BaseModel):
         ('star_rating', 'Star Rating (1-5)'),
         ('nps', 'NPS Score (0-10)'),
         ('text', 'Free Text'),
+        ('single_select', 'Single Choice'),
+        ('multi_select', 'Multiple Choice'),
     ]
+    # Question types whose answers are stored as selected options rather than
+    # a scalar column on SurveyAnswer.
+    CHOICE_TYPES = ('single_select', 'multi_select')
 
     event = models.ForeignKey(
         Event,
@@ -2768,6 +2773,34 @@ class SurveyQuestion(BaseModel):
         elif self.organization_id:
             scope = f"Org: {self.organization_id}"
         return f"[{scope}] {self.question_text[:60]}"
+
+
+class SurveyQuestionOption(BaseModel):
+    """A selectable option for a single_select / multi_select SurveyQuestion."""
+    question = models.ForeignKey(
+        SurveyQuestion,
+        on_delete=models.CASCADE,
+        related_name='options',
+    )
+    label = models.CharField(max_length=255)
+    position = models.PositiveSmallIntegerField(default=0)
+
+    class Meta:
+        ordering = ['position', 'created_at']
+        indexes = [
+            models.Index(fields=['question', 'position']),
+        ]
+        constraints = [
+            # Composite-FK target: lets SurveyAnswerOption enforce that a chosen
+            # option belongs to the same question the answer is for.
+            models.UniqueConstraint(
+                fields=['id', 'question'],
+                name='surveyoption_id_question_uniq',
+            ),
+        ]
+
+    def __str__(self):
+        return self.label
 
 
 class SurveyInvitation(BaseModel):
@@ -2859,13 +2892,100 @@ class SurveyAnswer(BaseModel):
         help_text="0-10 NPS score",
     )
     text_answer = models.TextField(blank=True)
+    selected_options = models.ManyToManyField(
+        SurveyQuestionOption,
+        through='SurveyAnswerOption',
+        blank=True,
+        related_name='answers',
+        help_text="Chosen option(s) for single_select / multi_select questions",
+    )
 
     class Meta:
         unique_together = [['response', 'question']]
         ordering = ['question__position']
+        constraints = [
+            # Composite-FK target so SurveyAnswerOption can pin a selection to
+            # the same question this answer is for (see migration 0155 RunSQL).
+            models.UniqueConstraint(
+                fields=['id', 'question'],
+                name='surveyanswer_id_question_uniq',
+            ),
+        ]
+
+    def clean(self):
+        """Enforce that only the field family matching question_type is populated.
+
+        Defends every app code path (admin, fixtures, scripts), not just the
+        public form parser. Option-membership is additionally enforced at the
+        SurveyAnswerOption level + a DB composite FK.
+        """
+        super().clean()
+        from django.core.exceptions import ValidationError
+        qt = self.question.question_type
+        if qt == 'star_rating':
+            if self.nps_score is not None or self.text_answer:
+                raise ValidationError("A star_rating answer must only set star_rating.")
+            if self.star_rating is not None and not (1 <= self.star_rating <= 5):
+                raise ValidationError("star_rating must be between 1 and 5.")
+        elif qt == 'nps':
+            if self.star_rating is not None or self.text_answer:
+                raise ValidationError("An nps answer must only set nps_score.")
+            if self.nps_score is not None and not (0 <= self.nps_score <= 10):
+                raise ValidationError("nps_score must be between 0 and 10.")
+        elif qt == 'text':
+            if self.star_rating is not None or self.nps_score is not None:
+                raise ValidationError("A text answer must only set text_answer.")
+        elif qt in SurveyQuestion.CHOICE_TYPES:
+            if self.star_rating is not None or self.nps_score is not None or self.text_answer:
+                raise ValidationError("A choice answer must not set scalar fields.")
 
     def __str__(self):
         return f"Answer to '{self.question.question_text[:40]}' by {self.response.customer}"
+
+
+class SurveyAnswerOption(BaseModel):
+    """Through-model linking a SurveyAnswer to a chosen SurveyQuestionOption.
+
+    `question` is denormalized so the migration can add composite foreign keys
+    ((answer_id, question_id) -> SurveyAnswer(id, question); (option_id,
+    question_id) -> SurveyQuestionOption(id, question)). The shared question_id
+    forces the chosen option to belong to the answer's question at the DB layer
+    (Postgres/prod); SurveyAnswerOption.clean() mirrors it for dev/SQLite.
+    """
+    answer = models.ForeignKey(
+        SurveyAnswer,
+        on_delete=models.CASCADE,
+        related_name='answer_options',
+    )
+    option = models.ForeignKey(
+        SurveyQuestionOption,
+        on_delete=models.PROTECT,
+        related_name='answer_options',
+    )
+    question = models.ForeignKey(
+        SurveyQuestion,
+        on_delete=models.CASCADE,
+        related_name='+',
+    )
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=['answer', 'option'],
+                name='surveyansweroption_answer_option_uniq',
+            ),
+        ]
+
+    def clean(self):
+        super().clean()
+        from django.core.exceptions import ValidationError
+        if self.option.question_id != self.answer.question_id:
+            raise ValidationError("Selected option does not belong to the answer's question.")
+        if self.question_id != self.answer.question_id:
+            raise ValidationError("SurveyAnswerOption.question must match the answer's question.")
+
+    def __str__(self):
+        return f"{self.answer_id} -> {self.option_id}"
 
 
 # ---------------------------------------------------------------------------

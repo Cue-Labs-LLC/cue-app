@@ -9,8 +9,8 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link rel="preload" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" as="style" onload="this.rel='stylesheet'">
     <noscript><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css"></noscript>
-    <link rel="preload" href="https://fonts.googleapis.com/css2?family=Syne:wght@700;800&family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;1,9..40,300&display=swap" as="style" onload="this.rel='stylesheet'">
-    <noscript><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Syne:wght@700;800&family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;1,9..40,300&display=swap"></noscript>
+    <link rel="preload" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@700;900&family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;1,9..40,300&display=swap" as="style" onload="this.rel='stylesheet'">
+    <noscript><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@700;900&family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;1,9..40,300&display=swap"></noscript>
     <style>
         :root {
             --bg:            #0F0E0D;
@@ -18,16 +18,16 @@
             --surface-2:     #232220;
             --surface-3:     #2D2C2A;
             --cta:           #EDE8E3;
-            --text:          #EDE8E3;
-            --text-2:        #7A7672;
-            --text-3:        #4A4846;
+            --text:          #FFFFFF;
+            --text-2:        #E8E6E3;
+            --text-3:        #C8C5C1;
             --danger:        #D97060;
             --success:       #6A9E7F;
             --warning:       #C49A3C;
             --border:        rgba(255,255,255,0.07);
             --border-mid:    rgba(255,255,255,0.11);
             --border-strong: rgba(255,255,255,0.16);
-            --font-display:  'Syne', system-ui, sans-serif;
+            --font-display:  'DM Sans', system-ui, sans-serif;
             --font-body:     'DM Sans', system-ui, sans-serif;
             --font-mono:     'DM Sans', system-ui, sans-serif;
             --radius:        3px;
@@ -36,7 +36,7 @@
         body { background: var(--bg); color: var(--text); font-family: var(--font-body); font-weight: 300; -webkit-font-smoothing: antialiased; }
         .survey-container { max-width: 600px; margin: 0 auto; padding: 48px 20px 80px; }
         .survey-header { text-align: center; margin-bottom: 36px; animation: fadeUp 0.35s ease both; }
-        .survey-header h1 { font-family: var(--font-display); font-weight: 800; font-size: 1.75rem; letter-spacing: -0.03em; margin-bottom: 8px; }
+        .survey-header h1 { font-family: var(--font-display); font-weight: 800; font-size: 1.75rem; letter-spacing: -0.02em; margin-bottom: 8px; }
         .survey-header p { color: var(--text-2); font-size: 0.9rem; line-height: 1.5; }
         .survey-header .feedback-note { font-family: var(--font-mono); font-size: 0.7rem; letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-3); margin-top: 10px; }
         .question-card {
@@ -64,24 +64,49 @@
         /* Star rating */
         .star-rating { display: flex; flex-direction: row-reverse; justify-content: flex-end; gap: 6px; }
         .star-rating input { display: none; }
-        .star-rating label { cursor: pointer; font-size: 2rem; color: var(--text-3); transition: color 0.12s; }
+        .star-rating label { cursor: pointer; font-size: 2rem; color: #4A4846; transition: color 0.12s; }
         .star-rating input:checked ~ label,
         .star-rating label:hover,
         .star-rating label:hover ~ label { color: var(--warning); }
 
         /* NPS buttons */
-        .nps-group { display: flex; gap: 4px; flex-wrap: wrap; }
+        /* Centered, wrapping row: 11 per row on wider screens (single row); on
+           phones each button is sized to fit 6 per row, so all 11 options sit on
+           exactly 2 centered lines (6 + 5) rather than left-aligned. */
+        .nps-group { display: flex; flex-wrap: wrap; justify-content: center; gap: 5px; }
         .nps-group input { display: none; }
         .nps-group label {
+            flex: 0 0 calc((100% - 50px) / 11);
             display: flex; align-items: center; justify-content: center;
-            width: 40px; height: 40px; border-radius: var(--radius);
+            height: 40px; border-radius: var(--radius);
             border: 1px solid var(--border-mid); cursor: pointer;
             font-family: var(--font-mono); font-size: 0.8rem; font-weight: 500;
             color: var(--text-2); transition: all 0.12s;
         }
         .nps-group input:checked + label { background: var(--cta); color: var(--bg); border-color: var(--cta); }
         .nps-group label:hover { border-color: rgba(255,255,255,0.22); color: var(--text); }
-        .nps-labels { display: flex; justify-content: space-between; font-family: var(--font-mono); font-size: 0.68rem; letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-3); margin-top: 8px; }
+        @media (max-width: 480px) { .nps-group label { flex-basis: calc((100% - 25px) / 6); } }
+        .nps-labels { display: flex; justify-content: space-between; gap: 10px; font-family: var(--font-mono); font-size: 0.68rem; letter-spacing: 0.04em; text-transform: uppercase; color: var(--text-3); margin-top: 8px; }
+        .nps-labels span { white-space: nowrap; }
+        @media (max-width: 480px) { .nps-labels { font-size: 0.56rem; letter-spacing: 0.02em; } }
+
+        /* Choice (single/multi select) */
+        .choice-group { display: flex; flex-direction: column; gap: 8px; }
+        .choice-group input { position: absolute; opacity: 0; pointer-events: none; }
+        .choice-group label {
+            display: flex; align-items: center; gap: 11px;
+            background: var(--surface-2); border: 1px solid var(--border-mid);
+            border-radius: var(--radius); padding: 12px 14px; cursor: pointer;
+            font-size: 0.9rem; color: var(--text-2); transition: all 0.12s;
+        }
+        .choice-group label::before {
+            content: ''; flex: 0 0 auto; width: 16px; height: 16px;
+            border: 1px solid var(--border-strong); transition: all 0.12s;
+        }
+        .choice-group .choice-single label::before { border-radius: 50%; }
+        .choice-group label:hover { border-color: rgba(255,255,255,0.22); color: var(--text); }
+        .choice-group input:checked + label { border-color: var(--cta); color: var(--text); }
+        .choice-group input:checked + label::before { background: var(--cta); border-color: var(--cta); box-shadow: inset 0 0 0 3px var(--surface-2); }
 
         .error-text { font-family: var(--font-mono); color: var(--danger); font-size: 0.75rem; margin-top: 8px; }
 
@@ -97,9 +122,12 @@
 
         @keyframes fadeUp { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: none; } }
     </style>
-    <script async defer src="https://tools.luckyorange.com/core/lo.js?site-id=b8f766b4"></script>
+    {% if not preview %}<script async defer src="https://tools.luckyorange.com/core/lo.js?site-id=b8f766b4"></script>{% endif %}
 </head>
 <body>
+    {% if preview %}
+    <div style="position:fixed; top:12px; right:12px; z-index:50; font-family:var(--font-mono); font-size:.6rem; letter-spacing:.12em; text-transform:uppercase; color:var(--bg); background:var(--warning); padding:4px 10px; border-radius:999px;">Preview</div>
+    {% endif %}
     <div class="survey-container">
         <div class="survey-header">
             <h1>{{ invitation.event.name }}</h1>
@@ -107,7 +135,7 @@
             <p class="feedback-note">Share your feedback</p>
         </div>
 
-        <form method="post">
+        <form method="post"{% if preview %} onsubmit="return false;"{% endif %}>
             {% csrf_token %}
 
             {% for question in questions %}
@@ -131,8 +159,28 @@
                     {% endfor %}
                 </div>
                 <div class="nps-labels">
-                    <span>Not at all likely</span>
-                    <span>Extremely likely</span>
+                    <span>0 - Not likely at all</span>
+                    <span>10 - Extremely likely</span>
+                </div>
+
+                {% elif question.question_type == 'single_select' %}
+                <div class="choice-group">
+                    {% for opt in question.options.all %}
+                    <div class="choice-single">
+                        <input type="radio" name="question_{{ question.id }}" id="opt_{{ opt.id }}" value="{{ opt.id }}">
+                        <label for="opt_{{ opt.id }}">{{ opt.label }}</label>
+                    </div>
+                    {% endfor %}
+                </div>
+
+                {% elif question.question_type == 'multi_select' %}
+                <div class="choice-group">
+                    {% for opt in question.options.all %}
+                    <div class="choice-multi">
+                        <input type="checkbox" name="question_{{ question.id }}" id="opt_{{ opt.id }}" value="{{ opt.id }}">
+                        <label for="opt_{{ opt.id }}">{{ opt.label }}</label>
+                    </div>
+                    {% endfor %}
                 </div>
 
                 {% elif question.question_type == 'text' %}
@@ -147,7 +195,7 @@
             </div>
             {% endfor %}
 
-            <button type="submit" class="btn-submit">Submit Feedback</button>
+            <button type="submit" class="btn-submit"{% if preview %} disabled style="opacity:.5; cursor:default;"{% endif %}>Submit Feedback</button>
             <p class="submit-note">Your responses are anonymous and help us improve future events.</p>
         </form>
     </div>

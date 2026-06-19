@@ -20,6 +20,7 @@ from .models import (
     EventExpense,
     SaleableTicketType, SaleableTicketTypeTier, StripeCheckoutSession, FeatureFlagSettings,
     SurveyInvitation, SurveyResponse, SurveyAnswer, SurveyQuestion, Payout,
+    SurveyQuestionOption, SurveyAnswerOption,
     ExternalSurveyUpload, ExternalSurveyResponse, EventDailyPageView,
     LoyaltyProgram, LoyaltyTier, LoyaltyPointsTransaction,
     TICKETING_TYPE_DIRECT,
@@ -14054,4 +14055,5 @@ class MarketTrendCalculatorTests(TestCase):
         self.assertEqual(sea['trend'], 'growing')
         self.assertIn(sea['dominant_driver'], ('promoters', 'detractors'))
         self.assertEqual(sea['recommended_action']['url_name'], 'tickets:survey_analytics')
+
 

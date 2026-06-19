@@ -1795,6 +1795,17 @@ document.addEventListener('DOMContentLoaded', function() {
 <!-- ===== TAB 5: Surveys ===== -->
 <div class="tab-pane fade" id="tab-surveys" role="tabpanel">
 
+<div class="d-flex justify-content-end gap-2 mb-3">
+    <a href="{% url 'tickets:event_survey_builder' event.id %}" class="btn btn-sm btn-outline-secondary">
+        <i class="bi bi-pencil-square"></i> Build survey
+    </a>
+    <form method="post" action="{% url 'tickets:send_survey' event.id %}"
+          onsubmit="return confirm('Send the survey to attendees who haven\'t received it yet?');">
+        {% csrf_token %}
+        <button type="submit" class="btn btn-sm btn-primary"><i class="bi bi-send"></i> Send survey</button>
+    </form>
+</div>
+
 {% if survey_results %}
 {# --- STAT CARDS --- #}
 <div class="row g-3 mb-4">
@@ -1959,6 +1970,29 @@ document.addEventListener('DOMContentLoaded', function() {
         </li>
         {% endfor %}
     </ul>
+</div>
+{% endif %}
+
+{# --- CHOICE QUESTION BREAKDOWNS (single/multi-select) --- #}
+{% if survey_results.choice_breakdowns %}
+<div class="card mb-4">
+    <div class="card-header"><strong>Choice questions</strong></div>
+    <div class="card-body">
+        {% for q in survey_results.choice_breakdowns %}
+        <div class="{% if not forloop.last %}mb-4{% endif %}">
+            <div class="fw-semibold mb-2">{{ q.question }}</div>
+            {% for opt in q.options %}
+            <div class="d-flex align-items-center gap-2 mb-1">
+                <div class="text-truncate" style="width: 180px;" title="{{ opt.label }}">{{ opt.label }}</div>
+                <div class="flex-grow-1 bg-light rounded" style="height: 8px;">
+                    <div class="bg-primary rounded" style="height: 8px; width: {% widthratio opt.count survey_results.internal_response_count 100 %}%;"></div>
+                </div>
+                <div class="text-muted small" style="width: 40px;">{{ opt.count }}</div>
+            </div>
+            {% endfor %}
+        </div>
+        {% endfor %}
+    </div>
 </div>
 {% endif %}
 

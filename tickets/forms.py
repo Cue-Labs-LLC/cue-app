@@ -7,7 +7,7 @@ from crispy_forms.helper import FormHelper
 from crispy_forms.layout import Layout, Row, Column, Submit, Field
 from django.forms import inlineformset_factory
 from django.utils import timezone
-from .models import Organization, CSVFormat, Venue, Event, EventTalent, EventExpense, CustomField, CustomFieldOption, IncomeSource, EventIncome, SaleableTicketType, SaleableTicketTypeTier, UserProfile, PromoCode, OrganizerWaitlist, CustomerTag, SMSCampaign, LoyaltyProgram, LoyaltyTier
+from .models import Organization, CSVFormat, Venue, Event, EventTalent, EventExpense, CustomField, CustomFieldOption, IncomeSource, EventIncome, SaleableTicketType, SaleableTicketTypeTier, UserProfile, PromoCode, OrganizerWaitlist, CustomerTag, SMSCampaign, LoyaltyProgram, LoyaltyTier, SurveyQuestion, SurveyQuestionOption
 
 
 def _default_csv_format_for(organization):
@@ -1770,6 +1770,40 @@ CustomFieldOptionFormSet = inlineformset_factory(
     widgets={
         'label': forms.TextInput(attrs={'class': 'form-control', 'placeholder': 'Option label'}),
         'order': forms.NumberInput(attrs={'class': 'form-control', 'min': 0, 'style': 'width:80px'}),
+    },
+)
+
+
+class SurveyQuestionForm(forms.ModelForm):
+    """Create/edit a survey question (org-template or event-scoped)."""
+    class Meta:
+        model = SurveyQuestion
+        fields = ['question_text', 'question_type', 'is_required']
+        widgets = {
+            'question_text': forms.TextInput(attrs={'class': 'form-control', 'placeholder': 'e.g. How was the sound?'}),
+            'question_type': forms.Select(attrs={'class': 'form-select'}),
+        }
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.helper = FormHelper()
+        self.helper.form_tag = False
+        self.helper.layout = Layout(
+            Field('question_text'),
+            Field('question_type'),
+            Field('is_required'),
+        )
+
+
+SurveyQuestionOptionFormSet = inlineformset_factory(
+    SurveyQuestion,
+    SurveyQuestionOption,
+    fields=['label', 'position'],
+    extra=3,
+    can_delete=True,
+    widgets={
+        'label': forms.TextInput(attrs={'class': 'form-control', 'placeholder': 'Option label'}),
+        'position': forms.NumberInput(attrs={'class': 'form-control', 'min': 0, 'style': 'width:80px'}),
     },
 )
 

@@ -116,8 +116,13 @@
                         </a>
                     </li>
                     <li>
-                        <a href="{% url 'tickets:analytics_overview' %}" class="sidebar-link{% if '/analytics/' in request.path or '/forecast/' in request.path or '/customers/ltv-by-market/' in request.path %} active{% endif %}">
+                        <a href="{% url 'tickets:analytics_overview' %}" class="sidebar-link{% if '/analytics/' in request.path and '/analytics/surveys/' not in request.path or '/forecast/' in request.path or '/customers/ltv-by-market/' in request.path %} active{% endif %}">
                             <i class="bi bi-bar-chart-line"></i> Analytics
+                        </a>
+                    </li>
+                    <li>
+                        <a href="{% url 'tickets:survey_hub' %}" class="sidebar-link{% if '/surveys/' in request.path or '/analytics/surveys/' in request.path or '/survey/builder/' in request.path %} active{% endif %}">
+                            <i class="bi bi-clipboard-check"></i> Surveys
                         </a>
                     </li>
                     {% if loyalty_feature_enabled %}
