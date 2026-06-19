@@ -42,7 +42,7 @@ def drop_composite_fks(apps, schema_editor):
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('tickets', '0154_backfill_ticket_scanned_at'),
+        ('tickets', '0155_eventsmscampaign_cue_attributed_orders_and_more'),
     ]
 
     operations = [
