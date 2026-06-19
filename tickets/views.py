@@ -1291,13 +1291,30 @@ def resend_otp_view(request):
 
 
 def health_check(request):
-    """Health check endpoint for Render monitoring.
+    """Liveness probe — wired to Render's healthCheckPath.
 
-    DB failure → 503 (liveness signal, triggers Render restart).
-    Redis failure → 200 with error in body (informational — Redis flakiness
-    should not restart the service).
+    Returns 200 unconditionally if the Python process can respond. Intentionally
+    does NOT touch the database or cache: a saturated DB pool must not cause the
+    load balancer to kill otherwise-healthy pods (which compounds the outage).
+    For downstream-dependency checks, use /ready/.
 
-    Add ?fmt=json to get machine-readable output.
+    Add ?fmt=json for machine-readable output.
+    """
+    if request.GET.get('fmt') == 'json':
+        return JsonResponse({'status': 'ok'})
+    return HttpResponse('status: ok', content_type='text/plain')
+
+
+def readiness_check(request):
+    """Readiness probe — checks downstream dependencies (DB, cache).
+
+    DB failure → 503. Redis failure → 200 with error in body (informational —
+    Redis flakiness should not signal not-ready).
+
+    NOT wired to Render's healthCheckPath. Use for ops dashboards / uptime
+    monitors that want a richer signal than the bare liveness check.
+
+    Add ?fmt=json for machine-readable output.
     """
     import time
     import uuid
@@ -1306,7 +1323,6 @@ def health_check(request):
 
     status = {}
 
-    # DB check — sole liveness signal
     try:
         with connection.cursor() as cursor:
             cursor.execute("SELECT 1")
@@ -1314,12 +1330,11 @@ def health_check(request):
     except Exception as e:
         status['db'] = f'ERROR: {e}'
 
-    # Redis / cache check — informational only
     cache_url = getattr(settings, 'CACHES', {}).get('default', {}).get('LOCATION', 'n/a')
     status['cache_url'] = cache_url
     t0 = time.monotonic()
     try:
-        probe_key = f'_health_probe_{uuid.uuid4().hex}'
+        probe_key = f'_ready_probe_{uuid.uuid4().hex}'
         probe_val = probe_key
         django_cache.set(probe_key, probe_val, timeout=10)
         val = django_cache.get(probe_key)

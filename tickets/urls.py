@@ -42,8 +42,10 @@ urlpatterns = [
     path('password-reset-confirm/<uidb64>/<token>/', views.password_reset_confirm, name='password_reset_confirm'),
     path('password-reset-complete/', views.password_reset_complete, name='password_reset_complete'),
     
-    # Health check endpoint
+    # Health check endpoints. /health/ is liveness (no DB) and is wired to
+    # Render's healthCheckPath. /ready/ is readiness (DB + cache) for ops use.
     path('health/', views.health_check, name='health_check'),
+    path('ready/', views.readiness_check, name='readiness_check'),
 
     # Public explore (no login)
     path('explore/', views.explore, name='explore'),
