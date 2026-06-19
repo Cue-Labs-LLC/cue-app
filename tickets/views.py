@@ -4407,12 +4407,22 @@ def _get_adjacent_event(org, event, direction):
 
 
 def _recompute_utm_attribution_for_event(org, event):
-    """Best-effort local recompute of Cue-tracked campaign attribution. Never raises."""
+    """Best-effort local recompute of Cue-tracked campaign attribution. Never raises.
+
+    Covers both channels that attribute via first-party UTMs captured on ticket
+    orders: Meta Ads (utm_id/utm_campaign -> EventExpense) and SlickText SMS
+    broadcasts (utm_id/utm_campaign + utm_source=SlickText -> EventSMSCampaign).
+    """
     try:
         from tickets.services.marketing.utm_attribution import UTMAttributionCalculator
         UTMAttributionCalculator(org).recompute_event(event)
     except Exception:
         logger.exception("UTM attribution recompute failed for org=%s event=%s", org.id, event.id)
+    try:
+        from tickets.services.marketing.sms_attribution import SMSAttributionCalculator
+        SMSAttributionCalculator(org).recompute_event(event)
+    except Exception:
+        logger.exception("SMS attribution recompute failed for org=%s event=%s", org.id, event.id)
 
 
 # How long to skip re-hitting Meta for an event's linked-campaign spend after a refresh.
@@ -8179,6 +8189,9 @@ def event_slicktext_apply(request, event_id):
             updated_titles.append(sms_campaign.name)
 
     succeeded = len(added_titles) + len(updated_titles)
+    if succeeded:
+        # Newly linked broadcasts have fresh external_ids to match orders against.
+        _recompute_utm_attribution_for_event(org, event)
     if succeeded == 1:
         only_title = (added_titles + updated_titles)[0]
         verb = 'added' if added_titles else 'updated'

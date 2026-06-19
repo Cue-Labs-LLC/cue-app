@@ -1398,6 +1398,11 @@ class EventSMSCampaign(AuditBaseModel):
     manual_unsubscribes = models.PositiveIntegerField(null=True, blank=True)
     manual_orders = models.PositiveIntegerField(null=True, blank=True)
     manual_revenue = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    # Cue-tracked attribution computed from first-party UTMs captured on ticket
+    # orders (see services/marketing/sms_attribution.py). None = not computed, so
+    # effective_* falls through to SlickText's own (usually empty) numbers.
+    cue_attributed_orders = models.PositiveIntegerField(null=True, blank=True)
+    cue_attributed_revenue = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
     confirmed_at = models.DateTimeField(null=True, blank=True, db_index=True)
     confirmed_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
@@ -1438,12 +1443,31 @@ class EventSMSCampaign(AuditBaseModel):
         return self.manual_unsubscribes if self.manual_unsubscribes is not None else self.unsubscribes
 
     @property
+    def attribution_source(self):
+        """Which input populates effective_orders/revenue (manual → cue → slicktext → none)."""
+        if self.manual_orders is not None or self.manual_revenue is not None:
+            return 'manual'
+        if self.cue_attributed_orders is not None or self.cue_attributed_revenue is not None:
+            return 'cue'
+        if self.orders or self.revenue:
+            return 'slicktext'
+        return 'none'
+
+    @property
     def effective_orders(self):
-        return self.manual_orders if self.manual_orders is not None else self.orders
+        if self.manual_orders is not None:
+            return self.manual_orders
+        if self.cue_attributed_orders is not None:
+            return self.cue_attributed_orders
+        return self.orders
 
     @property
     def effective_revenue(self):
-        return self.manual_revenue if self.manual_revenue is not None else self.revenue
+        if self.manual_revenue is not None:
+            return self.manual_revenue
+        if self.cue_attributed_revenue is not None:
+            return self.cue_attributed_revenue
+        return self.revenue
 
     @property
     def is_confirmed(self):
