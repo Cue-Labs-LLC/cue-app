@@ -25,7 +25,7 @@ from django.db.models.functions import Coalesce, Greatest, TruncDate, Cast, Trun
 from django.db import models
 from django.core.paginator import Paginator
 from django.core.files.uploadedfile import InMemoryUploadedFile
-from django.http import JsonResponse, Http404, HttpResponse, HttpResponseBadRequest
+from django.http import JsonResponse, Http404, HttpResponse, HttpResponseBadRequest, FileResponse
 from django.views.decorators.cache import never_cache
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
@@ -2366,6 +2366,24 @@ def reprocess_csv_file(request, file_id):
         'uploaded_file': uploaded_file,
         'order_count': order_count,
     })
+
+
+@login_required
+@require_org
+@require_host
+def download_csv_file(request, file_id):
+    """Download the original CSV that was uploaded for this import."""
+    org = get_organization(request)
+    uploaded_file = get_object_or_404(UploadedFile.objects.filter(organization=org), id=file_id)
+    if not uploaded_file.csv_file:
+        messages.error(request, "No stored file available to download.")
+        return redirect('tickets:upload_results', file_id=uploaded_file.id)
+    return FileResponse(
+        uploaded_file.csv_file.open('rb'),
+        as_attachment=True,
+        filename=uploaded_file.filename,
+        content_type='text/csv',
+    )
 
 
 @login_required
