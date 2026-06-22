@@ -4033,6 +4033,20 @@ def _compute_event_stats(event):
         }
         for row in tickets_by_date
     ]
+    # Backfill days with no sales so the chart's x-axis is continuous from the
+    # first to the last day of activity (the ORM aggregation above omits empty days).
+    if sales_over_time:
+        by_date = {row['date']: row for row in sales_over_time}
+        start_date = sales_over_time[0]['date']
+        end_date = sales_over_time[-1]['date']
+        filled = []
+        current = start_date
+        while current <= end_date:
+            filled.append(
+                by_date.get(current, {'date': current, 'count': 0, 'revenue': 0})
+            )
+            current += timedelta(days=1)
+        sales_over_time = filled
     page_views_over_time = list(
         EventDailyPageView.objects.filter(event=event)
         .order_by('date')
