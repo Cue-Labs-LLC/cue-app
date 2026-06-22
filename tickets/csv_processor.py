@@ -204,8 +204,12 @@ class CSVProcessor:
 
     def validate_ticket_order_data(self, row: Dict) -> Tuple[bool, Optional[str]]:
         """Validate individual ticket order row."""
-        # In-person rows (processed_in_person=true) only require order_date and ticket_type
-        if row.get('processed_in_person'):
+        # In-person rows (processed_in_person=true) only require order_date and ticket_type.
+        # Formats that opt into placeholder handling (by mapping processed_in_person) also
+        # relax the email/name requirement for online rows: a row with no contact info is
+        # routed to a no-contact placeholder customer rather than dropped (which would
+        # silently lose its revenue). See _process_chunk customer assignment.
+        if row.get('processed_in_person') or 'processed_in_person' in self.column_mapping:
             required_fields = ['order_date', 'ticket_type']
         else:
             required_fields = ['order_date', 'customer_email', 'customer_name', 'ticket_type']
@@ -484,8 +488,11 @@ class CSVProcessor:
             customer_filter = customer_filter.filter(organization=org)
         existing_customers = {c.email: c for c in customer_filter}
 
-        # Placeholder customer for in-person (no-email) rows; get-or-create when format supports it
+        # Placeholder customers for rows with no contact info; get-or-create when the format
+        # supports it. Two buckets: door/walk-up sales (in-person) and online orders that
+        # arrived without an email/name. Both let the order — and its revenue — import.
         placeholder_customer = None
+        no_contact_customer = None
         if org is not None and 'processed_in_person' in self.column_mapping:
             placeholder_email = f"in-person-{org.id}@placeholder.local"
             placeholder_customer, _ = Customer.objects.get_or_create(
@@ -494,6 +501,14 @@ class CSVProcessor:
                 defaults={'name': 'In-Person Sales'},
             )
             existing_customers[placeholder_email] = placeholder_customer
+
+            no_contact_email = f"no-contact-{org.id}@placeholder.local"
+            no_contact_customer, _ = Customer.objects.get_or_create(
+                organization=org,
+                email=no_contact_email,
+                defaults={'name': 'Guest (No Contact Info)'},
+            )
+            existing_customers[no_contact_email] = no_contact_customer
 
         existing_events = {}
 
@@ -612,8 +627,17 @@ class CSVProcessor:
                         results['errors'].append("Row validation error: In-person row but no organization context.")
                         continue
                     customer_email = mapped_row.get('customer_email', '').lower().strip()
-                    customer = existing_customers.get(customer_email)
-                    if not customer:
+                    if not customer_email and no_contact_customer is not None:
+                        # Online order with no contact info — bucket it so its revenue counts.
+                        customer = no_contact_customer
+                    elif not customer_email:
+                        # No placeholder available (no org / format doesn't opt in): reject.
+                        results['error_count'] += 1
+                        results['errors'].append("Row validation error: Missing required fields: customer_email, customer_name")
+                        continue
+                    else:
+                        customer = existing_customers.get(customer_email)
+                    if customer is None:
                         # Check database directly before creating (org-scoped)
                         db_filter = Customer.objects.filter(email=customer_email)
                         if org is not None:
