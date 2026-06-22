@@ -3432,7 +3432,7 @@ def market_trends(request):
     result = MarketTrendCalculator(org, period=period, metric=metric, window=window).calculate()
     markets = result['markets']
 
-    return render(request, 'tickets/market_trends.html', {
+    context = {
         'markets': markets,
         'markets_json': json.dumps(markets, default=str),
         'summary': result['summary'],
@@ -3441,7 +3441,12 @@ def market_trends(request):
         'window': window,
         'change_unit': 'pts' if metric == 'nps' else '%',
         'sms_marketing_enabled': org.sms_marketing_enabled,
-    })
+    }
+    # AJAX selector switches request only the dynamic region so the page (and the
+    # currently selected market) is preserved without a full reload.
+    if request.GET.get('fragment'):
+        return render(request, 'tickets/_market_trends_content.html', context)
+    return render(request, 'tickets/market_trends.html', context)
 
 
 @login_required

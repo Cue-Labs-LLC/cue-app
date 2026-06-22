@@ -13879,6 +13879,19 @@ class MarketTrendCalculatorTests(TestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp.context['period'], 'month')
 
+    def test_fragment_returns_partial_without_chrome(self):
+        """?fragment=1 renders only the dynamic region for AJAX selector swaps."""
+        self._build_market('Austin', [40, 30, 20, 10])
+        self.client.login(username='trend_owner@example.com', password='pw')
+        self.client.get(reverse('tickets:home'))  # prime session org / host routing
+        resp = self.client.get(reverse('tickets:market_trends'), {'fragment': '1'})
+        self.assertEqual(resp.status_code, 200)
+        self.assertTemplateUsed(resp, 'tickets/_market_trends_content.html')
+        self.assertContains(resp, 'Austin')
+        self.assertContains(resp, 'id="mt-config"')
+        # No base-template chrome — this is a swap-in fragment, not a full page.
+        self.assertNotContains(resp, '<html')
+
     def test_window_default_is_two_years(self):
         from tickets.services.market_trends import MarketTrendCalculator
         self._build_market('Austin', [40, 30, 20, 10])

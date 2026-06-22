@@ -8,388 +8,306 @@
 {% endblock %}
 
 {% block content %}
-<div class="page-header">
-    <div>
-        <h1>Market Trends</h1>
-        <p class="page-header-subtitle">Spot markets where {% if metric == 'tickets' %}turnout{% elif metric == 'nps' %}NPS{% elif metric == 'profitability' %}profitability{% else %}revenue{% endif %} is slipping and diagnose why. Measured {% if metric == 'nps' %}as net promoter score from survey responses (−100 to 100){% else %}per event as {% if metric == 'revenue' %}gross revenue{% elif metric == 'profitability' %}net profit (revenue + other income − expenses − fees){% else %}tickets sold{% endif %}{% endif %}.</p>
-    </div>
-</div>
-
-<div class="d-flex align-items-center justify-content-between flex-wrap gap-2 mb-3">
-    <div class="chart-control-group">
-        <a href="?metric=revenue&period={{ period }}&window={{ window }}" class="chart-control-btn{% if metric == 'revenue' %} active{% endif %}">Revenue</a>
-        <a href="?metric=profitability&period={{ period }}&window={{ window }}" class="chart-control-btn{% if metric == 'profitability' %} active{% endif %}">Profitability</a>
-        <a href="?metric=tickets&period={{ period }}&window={{ window }}" class="chart-control-btn{% if metric == 'tickets' %} active{% endif %}">Tickets sold</a>
-        <a href="?metric=nps&period={{ period }}&window={{ window }}" class="chart-control-btn{% if metric == 'nps' %} active{% endif %}">NPS</a>
-    </div>
-    <div class="d-flex flex-wrap gap-2">
-        <div class="chart-control-group">
-            <a href="?metric={{ metric }}&period=quarter&window={{ window }}" class="chart-control-btn{% if period == 'quarter' %} active{% endif %}">Quarterly</a>
-            <a href="?metric={{ metric }}&period=month&window={{ window }}" class="chart-control-btn{% if period == 'month' %} active{% endif %}">Monthly</a>
-        </div>
-        <div class="chart-control-group">
-            <a href="?metric={{ metric }}&period={{ period }}&window=1y" class="chart-control-btn{% if window == '1y' %} active{% endif %}">1Y</a>
-            <a href="?metric={{ metric }}&period={{ period }}&window=2y" class="chart-control-btn{% if window == '2y' %} active{% endif %}">2Y</a>
-            <a href="?metric={{ metric }}&period={{ period }}&window=3y" class="chart-control-btn{% if window == '3y' %} active{% endif %}">3Y</a>
-            <a href="?metric={{ metric }}&period={{ period }}&window=all" class="chart-control-btn{% if window == 'all' %} active{% endif %}">All</a>
-        </div>
-    </div>
-</div>
-
-{% if markets %}
-<script type="application/json" id="markets-data">{{ markets_json|safe }}</script>
-
-{# Resolved hrefs for data-driven recommended-action buttons. #}
-<script type="application/json" id="action-urls">{
-    "tickets:churn_overview": "{% url 'tickets:churn_overview' %}",
-    "tickets:customer_segments": "{% url 'tickets:customer_segments' %}",
-    "tickets:forecast_tool": "{% url 'tickets:forecast_tool' %}",
-    "tickets:expense_analytics": "{% url 'tickets:expense_analytics' %}",
-    "tickets:survey_analytics": "{% url 'tickets:survey_analytics' %}"{% if sms_marketing_enabled %},
-    "tickets:sms_campaign_create": "{% url 'tickets:sms_campaign_create' %}"{% endif %}
-}</script>
-
-<div class="row mb-4 g-3">
-    <div class="col-md-4">
-        <div class="stat-card stat-card--accent">
-            <div class="stat-label">Markets Tracked</div>
-            <div class="stat-value">{{ summary.markets_count|intcomma }}</div>
-        </div>
-    </div>
-    <div class="col-md-4">
-        <div class="stat-card" style="border-left:4px solid var(--bs-danger,#dc3545);">
-            <div class="stat-label">Declining</div>
-            <div class="stat-value">{{ summary.declining_count }}</div>
-        </div>
-    </div>
-    <div class="col-md-4">
-        <div class="stat-card stat-card--success">
-            <div class="stat-label">Growing</div>
-            <div class="stat-value">{{ summary.growing_count }}</div>
-        </div>
-    </div>
-</div>
-
-<div class="card mb-4" id="detail-card" style="display:none;">
-    <div class="card-header">
-        <h5 class="mb-0" id="detail-title">Market detail</h5>
-    </div>
-    <div class="card-body">
-        <div class="row g-4">
-            <div class="col-lg-7">
-                <div class="chart-container" style="height: 320px;">
-                    <canvas id="detailChart"></canvas>
-                </div>
-            </div>
-            <div class="col-lg-5">
-                <div id="diagnosis-panel">
-                    <p class="text-muted">Select a market to see its diagnosis.</p>
-                </div>
-            </div>
-        </div>
-    </div>
-</div>
-
-<div class="card mb-4">
-    <div class="card-header">
-        <h5 class="mb-0">Markets by trend</h5>
-        <span class="text-muted small">Highest to lowest by {% if metric == 'revenue' %}revenue{% elif metric == 'profitability' %}profit{% elif metric == 'nps' %}NPS{% else %}tickets sold{% endif %}. Select a market for the full diagnosis.</span>
-    </div>
-    <div class="card-body p-0">
-        <div class="table-responsive">
-            <table class="table table-hover mb-0 align-middle">
-                <thead>
-                    <tr>
-                        <th>Market</th>
-                        <th>Trend</th>
-                        <th class="text-end" style="cursor:help;" data-bs-toggle="tooltip" title="{% if metric == 'nps' %}Average per-{{ period }} change in NPS (points), taken from the fitted trend line.{% else %}Average per-{{ period }} change in {% if metric == 'revenue' %}revenue{% elif metric == 'profitability' %}profit{% else %}tickets sold{% endif %} per event, taken from the fitted trend line.{% endif %} Negative = declining, positive = growing.">Change / period</th>
-                        <th class="d-none d-md-table-cell">Confidence</th>
-                        <th class="d-none d-sm-table-cell text-end">{% if metric == 'revenue' %}Revenue{% elif metric == 'profitability' %}Profit{% elif metric == 'nps' %}NPS{% else %}Tickets sold{% endif %}</th>
-                        <th>Direction</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {% for m in markets %}
-                    <tr class="market-row" data-city="{{ m.city }}" style="cursor:pointer;">
-                        <td class="fw-semibold">{{ m.city }}</td>
-                        <td>
-                            {% if m.trend == 'declining' %}<span class="badge bg-danger">Declining</span>
-                            {% elif m.trend == 'growing' %}<span class="badge bg-success">Growing</span>
-                            {% elif m.trend == 'stable' %}<span class="badge bg-secondary">Stable</span>
-                            {% else %}<span class="badge bg-light text-muted">Insufficient data</span>{% endif %}
-                        </td>
-                        <td class="text-end">
-                            {% if m.trend == 'insufficient_data' %}<span class="text-muted">—</span>
-                            {% elif m.norm_slope_pct > 0 %}<span class="text-success">+{{ m.norm_slope_pct }}{{ change_unit }}</span>
-                            {% elif m.norm_slope_pct < 0 %}<span class="text-danger">{{ m.norm_slope_pct }}{{ change_unit }}</span>
-                            {% else %}0{{ change_unit }}{% endif %}
-                        </td>
-                        <td class="d-none d-md-table-cell">
-                            {% if m.confidence == 'high' %}<span class="text-muted small">High</span>
-                            {% elif m.confidence == 'low' %}<span class="text-muted small">Low (volatile)</span>
-                            {% else %}<span class="text-muted small">—</span>{% endif %}
-                        </td>
-                        <td class="d-none d-sm-table-cell text-end">{% if metric == 'revenue' %}${{ m.total_revenue|currency }}{% elif metric == 'profitability' %}${{ m.total_profit|currency }}{% elif metric == 'nps' %}{{ m.total_nps }}{% else %}{{ m.total_sold|intcomma }}{% endif %}</td>
-                        <td style="width:120px;">
-                            <canvas class="sparkline" data-city="{{ m.city }}" width="100" height="28"></canvas>
-                        </td>
-                    </tr>
-                    {% endfor %}
-                </tbody>
-            </table>
-        </div>
-    </div>
-</div>
+{# Dynamic region swapped in place on selector changes — see initMarketTrends below. #}
+<div id="market-trends-content">{% include 'tickets/_market_trends_content.html' %}</div>
 
 <script>
-document.addEventListener('DOMContentLoaded', function() {
-    var isDark = document.documentElement.getAttribute('data-theme') === 'dark';
-    var gridColor = isDark ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.1)';
-    var textColor = isDark ? '#adb5bd' : '#666';
-    var DANGER = '#dc3545', SUCCESS = '#198754', PRIMARY = '#0d6efd', MUTED = '#adb5bd';
+(function() {
+    var contentEl = document.getElementById('market-trends-content');
+    var detailChart = null;     // persists across fragment swaps
+    var selectedCity = null;    // remembered so the open market survives a swap
+    var reqSeq = 0;             // guards against out-of-order fragment responses
 
-    var METRIC = "{{ metric }}";                 // 'revenue' | 'tickets' | 'profitability' | 'nps'
-    var IS_NPS = METRIC === 'nps';
-    var IS_CURRENCY = METRIC === 'revenue' || METRIC === 'profitability';  // dollars
-    var CHANGE_UNIT = "{{ change_unit }}";       // 'pts' for NPS, '%' otherwise
-    var METRIC_NOUN = { revenue: 'Revenue', profitability: 'Profit', tickets: 'Turnout', nps: 'NPS' }[METRIC];
-    var SERIES_FIELD = {
-        revenue: 'avg_revenue_per_event',
-        profitability: 'avg_profit_per_event',
-        tickets: 'avg_sold_per_event',
-        nps: 'nps'
-    }[METRIC];
-
-    var DETAIL_SUFFIX = { revenue: ' — revenue per event', profitability: ' — profit per event', tickets: ' — tickets sold per event', nps: ' — NPS by period' }[METRIC];
-    var SERIES_LABEL = { revenue: 'Avg revenue / event', profitability: 'Avg profit / event', tickets: 'Avg tickets sold / event', nps: 'NPS' }[METRIC];
-    var Y_TITLE = { revenue: 'Avg revenue / event ($)', profitability: 'Avg profit / event ($)', tickets: 'Avg tickets / event', nps: 'NPS' }[METRIC];
-
-    function money(v) { return '$' + Number(v).toLocaleString('en-US', { maximumFractionDigits: 0 }); }
-    function fmtValue(v) { return IS_CURRENCY ? money(v) : Number(v).toLocaleString('en-US'); }
-
-    var markets = JSON.parse(document.getElementById('markets-data').textContent);
-    var actionUrls = JSON.parse(document.getElementById('action-urls').textContent);
-    var byCity = {};
-    markets.forEach(function(m) { byCity[m.city] = m; });
-
-    function trendColor(trend) {
-        if (trend === 'declining') return DANGER;
-        if (trend === 'growing') return SUCCESS;
-        return MUTED;
-    }
-
-    // Row sparklines (avg tickets sold per event).
-    document.querySelectorAll('canvas.sparkline').forEach(function(cv) {
-        var m = byCity[cv.getAttribute('data-city')];
-        if (!m || !m.sparkline.length) return;
-        new Chart(cv.getContext('2d'), {
-            type: 'line',
-            data: {
-                labels: m.sparkline.map(function(_, i) { return i; }),
-                datasets: [{
-                    data: m.sparkline,
-                    borderColor: trendColor(m.trend),
-                    borderWidth: 2,
-                    pointRadius: 0,
-                    tension: 0.3,
-                    fill: false,
-                }]
-            },
-            options: {
-                responsive: false,
-                animation: false,
-                plugins: { legend: { display: false }, tooltip: { enabled: false } },
-                scales: { x: { display: false }, y: { display: false } },
-                elements: { line: { borderCapStyle: 'round' } }
-            }
-        });
-    });
-
-    // Detail chart + diagnosis.
-    var detailChart = null;
-
-    function fractionLabel(d) {
-        var sign = d.change_pct > 0 ? '+' : '';
-        return sign + d.change_pct + '%';
-    }
-
-    // Plain-language help for each diagnostic-detail metric (shown on hover).
-    var DRIVER_HELP = {
-        events: 'Average number of events held per period in this market.',
-        demand: 'Average tickets sold per event.',
-        price: 'Average ticket price (revenue ÷ tickets sold).',
-        costs: 'Average cost per event (expenses + fees − other income).',
-        acquisition: 'First-time buyers (never purchased before) per period.',
-        retention: 'Share of buyers who had purchased before — the repeat mix.',
-        promoters: 'Share of survey respondents scoring 9–10.',
-        detractors: 'Share of survey respondents scoring 0–6.'
-    };
-
-    function fmtDriverRange(d) {
-        // Shows the first-third vs last-third averages behind the % change.
-        if (d.key === 'price' || d.key === 'costs') return '$' + d.first + ' → $' + d.last;
-        if (d.key === 'retention' || d.key === 'promoters' || d.key === 'detractors') return d.first + '% → ' + d.last + '%';
-        return d.first + ' → ' + d.last;
-    }
-
-    // A driver drags the metric down when its value moves the "hurting"
-    // direction: down for most, up for costs.
-    function driverHurts(d) {
-        return d.hurts_when === 'up' ? d.change_pct > 0 : d.change_pct < 0;
-    }
-
-    function initPanelTooltips() {
+    function initTooltips(root) {
         if (!(window.bootstrap && bootstrap.Tooltip)) return;
-        document.querySelectorAll('#diagnosis-panel [data-bs-toggle="tooltip"]').forEach(function(el) {
+        root.querySelectorAll('[data-bs-toggle="tooltip"]').forEach(function(el) {
             var existing = bootstrap.Tooltip.getInstance(el);
             if (existing) existing.dispose();
             new bootstrap.Tooltip(el);
         });
     }
 
-    function buildDiagnosis(m) {
-        if (m.trend === 'insufficient_data') {
-            var need = IS_NPS ? 'periods with survey responses' : 'periods with events';
-            return '<p class="text-muted">Not enough history yet — at least 3 ' + need + ' are needed to read a trend.</p>';
-        }
-        // The lead metric is the drag for declining markets and the booster for
-        // growing ones; stable markets have no single lead.
-        // Same label both ways — the badge color signals whether the lead driver
-        // is dragging the metric down (red) or pushing it up (green).
-        var leadBadge = m.trend === 'declining'
-            ? '<span class="badge bg-danger ms-1">main driver</span>'
-            : '<span class="badge bg-success ms-1">main driver</span>';
-        var html = '<p>' + m.diagnosis_text + '</p>';
-        if (m.driver_contributions && m.driver_contributions.length) {
-            html += '<div class="mb-3">';
-            m.driver_contributions.forEach(function(d) {
-                var isLead = d.key === m.dominant_driver;
-                var hurts = driverHurts(d);
-                var barColor = hurts ? DANGER : SUCCESS;
-                var width = Math.min(100, Math.abs(d.change_pct));
-                var tip = (DRIVER_HELP[d.key] || '') + ' (' + fmtDriverRange(d) + ')';
-                var labelCls = 'mt-metric' + (isLead ? ' fw-semibold' : '');
-                html += '<div class="d-flex align-items-center justify-content-between small mb-1">'
-                    + '<span><span class="' + labelCls + '" data-bs-toggle="tooltip" title="' + tip
-                    + '" style="cursor:help;border-bottom:1px dotted currentColor;">' + d.label + '</span>'
-                    + (isLead ? leadBadge : '') + '</span>'
-                    + '<span class="' + (hurts ? 'text-danger' : 'text-success') + '">' + fractionLabel(d) + '</span></div>';
-                html += '<div style="height:6px;background:' + gridColor + ';border-radius:3px;margin-bottom:8px;">'
-                    + '<div style="height:6px;width:' + width + '%;background:' + barColor + ';border-radius:3px;"></div></div>';
-            });
-            html += '</div>';
-        }
-        html += renderAction(m);
-        return html;
-    }
+    // (Re)build all charts, handlers, and the open-market detail for the current
+    // fragment. Safe to call repeatedly after swapping #market-trends-content.
+    function initMarketTrends() {
+        var isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+        var gridColor = isDark ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.1)';
+        var textColor = isDark ? '#adb5bd' : '#666';
+        var DANGER = '#dc3545', SUCCESS = '#198754', PRIMARY = '#0d6efd', MUTED = '#adb5bd';
 
-    function renderAction(m) {
-        var a = m.recommended_action;
-        if (!a) return '';
-        var html = '<div class="mt-3 pt-3 border-top">';
-        html += '<div class="text-muted small mb-2">Recommended next step</div>';
-        if (a.label && a.url_name && actionUrls[a.url_name]) {
-            html += '<a href="' + actionUrls[a.url_name] + '" class="btn btn-sm btn-primary">'
-                + '<i class="bi ' + a.icon + '"></i> ' + a.label + '</a>';
-        }
-        if (a.note) {
-            html += '<p class="text-muted small mb-0">' + a.note + '</p>';
-        }
-        // Audience-erosion markets can also kick off an SMS re-engagement.
-        if ((a.key === 'retention' || a.key === 'acquisition') && actionUrls['tickets:sms_campaign_create']) {
-            html += ' <a href="' + actionUrls['tickets:sms_campaign_create'] + '" class="btn btn-sm btn-outline-primary">'
-                + '<i class="bi bi-chat-dots"></i> Send an SMS campaign</a>';
-        }
-        return html + '</div>';
-    }
+        var cfg = JSON.parse(document.getElementById('mt-config').textContent);
+        var METRIC = cfg.metric;                     // 'revenue' | 'tickets' | 'profitability' | 'nps'
+        var IS_NPS = METRIC === 'nps';
+        var IS_CURRENCY = METRIC === 'revenue' || METRIC === 'profitability';  // dollars
+        var CHANGE_UNIT = cfg.change_unit;           // 'pts' for NPS, '%' otherwise
+        var METRIC_NOUN = { revenue: 'Revenue', profitability: 'Profit', tickets: 'Turnout', nps: 'NPS' }[METRIC];
+        var SERIES_FIELD = {
+            revenue: 'avg_revenue_per_event',
+            profitability: 'avg_profit_per_event',
+            tickets: 'avg_sold_per_event',
+            nps: 'nps'
+        }[METRIC];
 
-    function showDetail(city) {
-        var m = byCity[city];
-        if (!m) return;
-        document.getElementById('detail-card').style.display = '';
-        document.getElementById('detail-title').textContent = city + DETAIL_SUFFIX;
-        document.getElementById('diagnosis-panel').innerHTML = buildDiagnosis(m);
-        initPanelTooltips();
+        var DETAIL_SUFFIX = { revenue: ' — revenue per event', profitability: ' — profit per event', tickets: ' — tickets sold per event', nps: ' — NPS by period' }[METRIC];
+        var SERIES_LABEL = { revenue: 'Avg revenue / event', profitability: 'Avg profit / event', tickets: 'Avg tickets sold / event', nps: 'NPS' }[METRIC];
+        var Y_TITLE = { revenue: 'Avg revenue / event ($)', profitability: 'Avg profit / event ($)', tickets: 'Avg tickets / event', nps: 'NPS' }[METRIC];
 
-        // Plot only periods that carry signal, matching the server's trend fit so
-        // the trend line aligns: survey responses for NPS, events otherwise.
-        var observeField = IS_NPS ? 'nps_responses' : 'events_held';
-        var observed = m.periods.filter(function(p) { return p[observeField] > 0; });
-        var labels = observed.map(function(p) { return p.period_label; });
-        var series = observed.map(function(p) { return p[SERIES_FIELD]; });
+        function money(v) { return '$' + Number(v).toLocaleString('en-US', { maximumFractionDigits: 0 }); }
+        function fmtValue(v) { return IS_CURRENCY ? money(v) : Number(v).toLocaleString('en-US'); }
 
-        var datasets = [{
-            label: SERIES_LABEL,
-            data: series,
-            borderColor: trendColor(m.trend),
-            backgroundColor: 'transparent',
-            borderWidth: 2,
-            tension: 0.3,
-            pointRadius: 3,
-        }];
-        if (m.trend_line && m.trend_line.length === series.length) {
-            datasets.push({
-                label: 'Trend',
-                data: m.trend_line,
-                borderColor: textColor,
-                borderDash: [6, 4],
-                borderWidth: 1.5,
-                pointRadius: 0,
-                tension: 0,
-            });
+        // Header tooltips ("Change / period") live in the swapped fragment.
+        initTooltips(contentEl);
+
+        var dataEl = document.getElementById('markets-data');
+        if (detailChart) { detailChart.destroy(); detailChart = null; }
+        if (!dataEl) return;   // empty state — nothing to chart
+
+        var markets = JSON.parse(dataEl.textContent);
+        var actionUrls = JSON.parse(document.getElementById('action-urls').textContent);
+        var byCity = {};
+        markets.forEach(function(m) { byCity[m.city] = m; });
+
+        function trendColor(trend) {
+            if (trend === 'declining') return DANGER;
+            if (trend === 'growing') return SUCCESS;
+            return MUTED;
         }
 
-        if (detailChart) detailChart.destroy();
-        detailChart = new Chart(document.getElementById('detailChart').getContext('2d'), {
-            type: 'line',
-            data: { labels: labels, datasets: datasets },
-            options: {
-                responsive: true,
-                maintainAspectRatio: false,
-                plugins: {
-                    legend: { labels: { color: textColor } },
-                    tooltip: { callbacks: { label: function(c) {
-                        return c.dataset.label + ': ' + fmtValue(c.parsed.y);
-                    } } }
+        // Row sparklines (avg tickets sold per event).
+        document.querySelectorAll('canvas.sparkline').forEach(function(cv) {
+            var m = byCity[cv.getAttribute('data-city')];
+            if (!m || !m.sparkline.length) return;
+            new Chart(cv.getContext('2d'), {
+                type: 'line',
+                data: {
+                    labels: m.sparkline.map(function(_, i) { return i; }),
+                    datasets: [{
+                        data: m.sparkline,
+                        borderColor: trendColor(m.trend),
+                        borderWidth: 2,
+                        pointRadius: 0,
+                        tension: 0.3,
+                        fill: false,
+                    }]
                 },
-                scales: {
-                    x: { ticks: { color: textColor, maxRotation: 45 }, grid: { color: gridColor } },
-                    y: {
-                        beginAtZero: METRIC === 'revenue' || METRIC === 'tickets',
-                        min: IS_NPS ? -100 : undefined,   // NPS is a fixed -100..100 scale
-                        max: IS_NPS ? 100 : undefined,
-                        title: { display: true, text: Y_TITLE, color: textColor },
-                        ticks: {
-                            color: textColor,
-                            callback: function(v) { return IS_CURRENCY ? money(v) : v; }
-                        },
-                        grid: { color: gridColor }
+                options: {
+                    responsive: false,
+                    animation: false,
+                    plugins: { legend: { display: false }, tooltip: { enabled: false } },
+                    scales: { x: { display: false }, y: { display: false } },
+                    elements: { line: { borderCapStyle: 'round' } }
+                }
+            });
+        });
+
+        function fractionLabel(d) {
+            var sign = d.change_pct > 0 ? '+' : '';
+            return sign + d.change_pct + '%';
+        }
+
+        // Plain-language help for each diagnostic-detail metric (shown on hover).
+        var DRIVER_HELP = {
+            events: 'Average number of events held per period in this market.',
+            demand: 'Average tickets sold per event.',
+            price: 'Average ticket price (revenue ÷ tickets sold).',
+            costs: 'Average cost per event (expenses + fees − other income).',
+            acquisition: 'First-time buyers (never purchased before) per period.',
+            retention: 'Share of buyers who had purchased before — the repeat mix.',
+            promoters: 'Share of survey respondents scoring 9–10.',
+            detractors: 'Share of survey respondents scoring 0–6.'
+        };
+
+        function fmtDriverRange(d) {
+            // Shows the first-third vs last-third averages behind the % change.
+            if (d.key === 'price' || d.key === 'costs') return '$' + d.first + ' → $' + d.last;
+            if (d.key === 'retention' || d.key === 'promoters' || d.key === 'detractors') return d.first + '% → ' + d.last + '%';
+            return d.first + ' → ' + d.last;
+        }
+
+        // A driver drags the metric down when its value moves the "hurting"
+        // direction: down for most, up for costs.
+        function driverHurts(d) {
+            return d.hurts_when === 'up' ? d.change_pct > 0 : d.change_pct < 0;
+        }
+
+        function buildDiagnosis(m) {
+            if (m.trend === 'insufficient_data') {
+                var need = IS_NPS ? 'periods with survey responses' : 'periods with events';
+                return '<p class="text-muted">Not enough history yet — at least 3 ' + need + ' are needed to read a trend.</p>';
+            }
+            // The lead metric is the drag for declining markets and the booster for
+            // growing ones; stable markets have no single lead.
+            // Same label both ways — the badge color signals whether the lead driver
+            // is dragging the metric down (red) or pushing it up (green).
+            var leadBadge = m.trend === 'declining'
+                ? '<span class="badge bg-danger ms-1">main driver</span>'
+                : '<span class="badge bg-success ms-1">main driver</span>';
+            var html = '<p>' + m.diagnosis_text + '</p>';
+            if (m.driver_contributions && m.driver_contributions.length) {
+                html += '<div class="mb-3">';
+                m.driver_contributions.forEach(function(d) {
+                    var isLead = d.key === m.dominant_driver;
+                    var hurts = driverHurts(d);
+                    var barColor = hurts ? DANGER : SUCCESS;
+                    var width = Math.min(100, Math.abs(d.change_pct));
+                    var tip = (DRIVER_HELP[d.key] || '') + ' (' + fmtDriverRange(d) + ')';
+                    var labelCls = 'mt-metric' + (isLead ? ' fw-semibold' : '');
+                    html += '<div class="d-flex align-items-center justify-content-between small mb-1">'
+                        + '<span><span class="' + labelCls + '" data-bs-toggle="tooltip" title="' + tip
+                        + '" style="cursor:help;border-bottom:1px dotted currentColor;">' + d.label + '</span>'
+                        + (isLead ? leadBadge : '') + '</span>'
+                        + '<span class="' + (hurts ? 'text-danger' : 'text-success') + '">' + fractionLabel(d) + '</span></div>';
+                    html += '<div style="height:6px;background:' + gridColor + ';border-radius:3px;margin-bottom:8px;">'
+                        + '<div style="height:6px;width:' + width + '%;background:' + barColor + ';border-radius:3px;"></div></div>';
+                });
+                html += '</div>';
+            }
+            html += renderAction(m);
+            return html;
+        }
+
+        function renderAction(m) {
+            var a = m.recommended_action;
+            if (!a) return '';
+            var html = '<div class="mt-3 pt-3 border-top">';
+            html += '<div class="text-muted small mb-2">Recommended next step</div>';
+            if (a.label && a.url_name && actionUrls[a.url_name]) {
+                html += '<a href="' + actionUrls[a.url_name] + '" class="btn btn-sm btn-primary">'
+                    + '<i class="bi ' + a.icon + '"></i> ' + a.label + '</a>';
+            }
+            if (a.note) {
+                html += '<p class="text-muted small mb-0">' + a.note + '</p>';
+            }
+            // Audience-erosion markets can also kick off an SMS re-engagement.
+            if ((a.key === 'retention' || a.key === 'acquisition') && actionUrls['tickets:sms_campaign_create']) {
+                html += ' <a href="' + actionUrls['tickets:sms_campaign_create'] + '" class="btn btn-sm btn-outline-primary">'
+                    + '<i class="bi bi-chat-dots"></i> Send an SMS campaign</a>';
+            }
+            return html + '</div>';
+        }
+
+        function showDetail(city) {
+            var m = byCity[city];
+            if (!m) return;
+            selectedCity = city;
+            document.getElementById('detail-card').style.display = '';
+            document.getElementById('detail-title').textContent = city + DETAIL_SUFFIX;
+            document.getElementById('diagnosis-panel').innerHTML = buildDiagnosis(m);
+            initTooltips(document.getElementById('diagnosis-panel'));
+
+            // Plot only periods that carry signal, matching the server's trend fit so
+            // the trend line aligns: survey responses for NPS, events otherwise.
+            var observeField = IS_NPS ? 'nps_responses' : 'events_held';
+            var observed = m.periods.filter(function(p) { return p[observeField] > 0; });
+            var labels = observed.map(function(p) { return p.period_label; });
+            var series = observed.map(function(p) { return p[SERIES_FIELD]; });
+
+            var datasets = [{
+                label: SERIES_LABEL,
+                data: series,
+                borderColor: trendColor(m.trend),
+                backgroundColor: 'transparent',
+                borderWidth: 2,
+                tension: 0.3,
+                pointRadius: 3,
+            }];
+            if (m.trend_line && m.trend_line.length === series.length) {
+                datasets.push({
+                    label: 'Trend',
+                    data: m.trend_line,
+                    borderColor: textColor,
+                    borderDash: [6, 4],
+                    borderWidth: 1.5,
+                    pointRadius: 0,
+                    tension: 0,
+                });
+            }
+
+            if (detailChart) detailChart.destroy();
+            detailChart = new Chart(document.getElementById('detailChart').getContext('2d'), {
+                type: 'line',
+                data: { labels: labels, datasets: datasets },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: { labels: { color: textColor } },
+                        tooltip: { callbacks: { label: function(c) {
+                            return c.dataset.label + ': ' + fmtValue(c.parsed.y);
+                        } } }
+                    },
+                    scales: {
+                        x: { ticks: { color: textColor, maxRotation: 45 }, grid: { color: gridColor } },
+                        y: {
+                            beginAtZero: METRIC === 'revenue' || METRIC === 'tickets',
+                            min: IS_NPS ? -100 : undefined,   // NPS is a fixed -100..100 scale
+                            max: IS_NPS ? 100 : undefined,
+                            title: { display: true, text: Y_TITLE, color: textColor },
+                            ticks: {
+                                color: textColor,
+                                callback: function(v) { return IS_CURRENCY ? money(v) : v; }
+                            },
+                            grid: { color: gridColor }
+                        }
                     }
                 }
-            }
+            });
+        }
+
+        document.querySelectorAll('tr.market-row').forEach(function(row) {
+            row.addEventListener('click', function() { showDetail(row.getAttribute('data-city')); });
         });
-        document.getElementById('detail-card').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+
+        // Re-open the previously selected market if it's still present (it may have
+        // re-sorted after a metric change); otherwise open the first/largest.
+        var openCity = (selectedCity && byCity[selectedCity]) ? selectedCity : null;
+        if (!openCity) {
+            var firstRow = document.querySelector('tr.market-row');
+            if (firstRow) openCity = firstRow.getAttribute('data-city');
+        }
+        if (openCity) {
+            showDetail(openCity);
+            document.getElementById('detail-card').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        }
     }
 
-    document.querySelectorAll('tr.market-row').forEach(function(row) {
-        row.addEventListener('click', function() { showDetail(row.getAttribute('data-city')); });
+    // Fetch the dynamic region for a new metric/period/window and swap it in,
+    // keeping the rest of the page (and the open market) intact.
+    function loadFragment(url, push) {
+        var sep = url.indexOf('?') === -1 ? '?' : '&';
+        var seq = ++reqSeq;
+        contentEl.style.opacity = '0.5';
+        fetch(url + sep + 'fragment=1', { headers: { 'X-Requested-With': 'XMLHttpRequest' } })
+            .then(function(r) { return r.text(); })
+            .then(function(html) {
+                if (seq !== reqSeq) return;   // a newer click superseded this one
+                contentEl.innerHTML = html;
+                contentEl.style.opacity = '';
+                if (push) history.pushState({}, '', url);
+                initMarketTrends();
+            })
+            .catch(function() { window.location.href = url; });   // fall back to full nav
+    }
+
+    // Intercept selector clicks (delegated so it survives fragment swaps).
+    document.addEventListener('click', function(e) {
+        var btn = e.target.closest('.chart-control-btn');
+        if (!btn || !contentEl.contains(btn)) return;
+        e.preventDefault();
+        if (btn.classList.contains('active')) return;
+        loadFragment(btn.getAttribute('href'), true);
     });
 
-    // Open the first (largest) market by default.
-    var firstRow = document.querySelector('tr.market-row');
-    if (firstRow) showDetail(firstRow.getAttribute('data-city'));
-});
-</script>
+    // Keep browser back/forward in sync with the swapped state.
+    window.addEventListener('popstate', function() {
+        loadFragment(window.location.pathname + window.location.search, false);
+    });
 
-{% else %}
-<div class="card">
-    <div class="card-body">
-        <div class="empty-state">
-            <i class="bi bi-graph-down-arrow d-block"></i>
-            <p>No past events with market data yet. Upload ticket orders with venues to track turnout trends across markets.</p>
-            <a href="{% url 'tickets:event_list' %}" class="btn btn-primary"><i class="bi bi-calendar-event"></i> View Events</a>
-        </div>
-    </div>
-</div>
-{% endif %}
+    if (window.Chart) {
+        initMarketTrends();
+    } else {
+        document.addEventListener('DOMContentLoaded', initMarketTrends);
+    }
+})();
+</script>
 {% endblock %}
