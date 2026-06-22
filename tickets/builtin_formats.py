@@ -37,6 +37,10 @@ BUILTIN_CSV_FORMATS = [
             # relative to what POSH reports as the event's Total Revenue.
             "total_amount": ["Order Subtotal"],
             "scan_details": ["Ticket Scan Details"],
+            # Door/walk-up sales have no attendee contact info. Mapping this
+            # activates the in-person placeholder path so those rows import
+            # (and their revenue counts) instead of failing email/name validation.
+            "processed_in_person": ["Was Processed In Person"],
         },
     },
 ]

@@ -2261,6 +2261,77 @@ class PoshRevenueSubtotalTest(TestCase):
         self.assertNotEqual(revenue, self.TOTAL_SUM)
 
 
+class PoshContactlessImportTest(TestCase):
+    """POSH rows with no email/name must import (counting revenue), not be rejected:
+    in-person/door sales bucket under 'In-Person Sales'; online no-contact orders under
+    'Guest (No Contact Info)'. Regression guard for the 'Missing required fields' drop."""
+
+    # Three rows: a normal online order, an in-person door sale (blank contact,
+    # Was Processed In Person=true), and an online order with no contact info.
+    CSV_ROWS = (
+        '"Order Number","Order Date/Time","First Name","Last Name","Email",'
+        '"Phone Number","Tickets Purchased","# of Tickets","Order Subtotal",'
+        '"Processing Fee","Order Total","Ticket Scan Details","Was Processed In Person"\n'
+        '"2001","06-01-2026 4:00:00 pm","Alice","Smith","alice@example.com",'
+        '"+15551110001","GA","1","10.00","2.00","12.00","","false"\n'
+        '"2002","06-02-2026 5:00:00 pm","","","",'
+        '"","GA","1","20.00","0.00","20.00","","true"\n'
+        '"2003","06-03-2026 6:00:00 pm","","","",'
+        '"","GA","1","5.00","1.00","6.00","","false"\n'
+    )
+
+    def setUp(self):
+        self.org = Organization.objects.create(name='Posh Contact Org', slug='posh-contact-org')
+        self.venue = Venue.objects.create(organization=self.org, name='Venue', city='City')
+        self.event = Event.objects.create(
+            organization=self.org, name='Posh Contact Event', venue=self.venue,
+            start_date=date(2026, 6, 15),
+        )
+        self.csv_format = CSVFormat.objects.get(name='POSH', is_system=True)
+        self.upload = UploadedFile.objects.create(
+            organization=self.org, csv_format=self.csv_format,
+            filename='posh.csv', status='pending',
+            metadata={'event_id': str(self.event.id), 'event_name': self.event.name,
+                      'event_start_date': '2026-06-15'},
+        )
+
+    def _import(self):
+        import io
+        from tickets.csv_processor import CSVProcessor
+        return CSVProcessor(self.upload, self.csv_format).process_and_save(
+            io.BytesIO(self.CSV_ROWS.encode('utf-8'))
+        )
+
+    def test_contactless_rows_import_without_errors(self):
+        results = self._import()
+        self.assertEqual(results['error_count'], 0, results['errors'])
+
+        orders = TicketOrder.objects.filter(event=self.event)
+        self.assertEqual(orders.count(), 3)
+
+        # Revenue = sum of Order Subtotals; nothing dropped.
+        from django.db.models import Sum
+        revenue = orders.aggregate(r=Sum('total_amount'))['r']
+        self.assertEqual(revenue, Decimal('35.00'))
+
+    def test_in_person_and_no_contact_buckets(self):
+        self._import()
+
+        in_person = TicketOrder.objects.get(event=self.event, external_order_number='2002')
+        self.assertTrue(in_person.is_in_person)
+        self.assertEqual(in_person.customer.name, 'In-Person Sales')
+        self.assertEqual(in_person.total_amount, Decimal('20.00'))
+
+        no_contact = TicketOrder.objects.get(event=self.event, external_order_number='2003')
+        self.assertFalse(no_contact.is_in_person)
+        self.assertEqual(no_contact.customer.name, 'Guest (No Contact Info)')
+        self.assertEqual(no_contact.total_amount, Decimal('5.00'))
+
+        # The normal online order still maps to its real customer.
+        normal = TicketOrder.objects.get(event=self.event, external_order_number='2001')
+        self.assertEqual(normal.customer.email, 'alice@example.com')
+
+
 class PhoneValidationTest(TestCase):
     """Tests for phone number normalization and form validation."""
 
