@@ -1796,6 +1796,12 @@ document.addEventListener('DOMContentLoaded', function() {
 <div class="tab-pane fade" id="tab-surveys" role="tabpanel">
 
 <div class="d-flex justify-content-end gap-2 mb-3">
+    {% if typeform_subscriptions and survey_results %}
+    <button type="button" class="btn btn-sm btn-outline-primary"
+            data-bs-toggle="modal" data-bs-target="#surveyMatchModal">
+        <i class="bi bi-arrow-clockwise"></i> Check for new responses
+    </button>
+    {% endif %}
     <a href="{% url 'tickets:event_survey_builder' event.id %}" class="btn btn-sm btn-outline-secondary">
         <i class="bi bi-pencil-square"></i> Build survey
     </a>
@@ -1961,11 +1967,6 @@ document.addEventListener('DOMContentLoaded', function() {
                 <a href="{% url 'tickets:typeform_form_mapping' sub_id=sub.id %}"
                    class="btn btn-sm btn-outline-warning">Configure</a>
                 {% endif %}
-                <button type="button"
-                        class="btn btn-sm btn-link p-0 text-decoration-none text-body-secondary survey-refresh-btn"
-                        data-sub-id="{{ sub.id }}">
-                    <i class="bi bi-arrow-clockwise me-1"></i>Refresh
-                </button>
             </div>
         </li>
         {% endfor %}
@@ -2098,53 +2099,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 <i class="bi bi-magic me-1"></i>Find matches
             </button>
         </div>
-        <div class="matcher-loading d-none text-center" style="padding: 48px 0;">
-            <div class="spinner-border text-primary" role="status">
-                <span class="visually-hidden">Searching Typeform…</span>
-            </div>
-            <p class="text-muted small mt-3 mb-0">
-                Querying Typeform and ranking candidates…
-            </p>
-        </div>
-        <div class="matcher-empty empty-state d-none" style="padding: 48px 0;">
-            <i class="bi bi-search fs-2 text-muted"></i>
-            <p class="text-muted mt-2 mb-1">No matching responses found.</p>
-            <p class="text-muted small mb-3">
-                We couldn't find any unlinked Typeform responses that look like a match for this event.
-            </p>
-            <button type="button" class="btn btn-outline-secondary btn-sm matcher-find-btn">
-                <i class="bi bi-arrow-clockwise me-1"></i>Try again
-            </button>
-        </div>
-        <div class="matcher-error empty-state d-none" style="padding: 48px 0;">
-            <i class="bi bi-exclamation-triangle fs-2 text-warning"></i>
-            <p class="text-muted mt-2 mb-1">Couldn't load suggestions.</p>
-            <p class="text-muted small mb-3 matcher-error-detail">Try again in a moment.</p>
-            <button type="button" class="btn btn-outline-secondary btn-sm matcher-find-btn">
-                <i class="bi bi-arrow-clockwise me-1"></i>Try again
-            </button>
-        </div>
-        <div class="matcher-results card d-none">
-            <div class="card-header d-flex justify-content-between align-items-center">
-                <strong>Suggested matches</strong>
-                <button type="button" class="btn btn-sm btn-link p-0 text-decoration-none text-body-secondary matcher-find-btn">
-                    <i class="bi bi-arrow-clockwise me-1"></i>Refresh
-                </button>
-            </div>
-            <div class="table-responsive">
-                <table class="table table-hover align-middle mb-0">
-                    <thead>
-                        <tr>
-                            <th style="width: 110px;">Date</th>
-                            <th style="width: 90px;">Match</th>
-                            <th>Preview</th>
-                            <th class="text-end" style="width: 90px;">Action</th>
-                        </tr>
-                    </thead>
-                    <tbody class="matcher-tbody"></tbody>
-                </table>
-            </div>
-        </div>
+        {% include 'tickets/_survey_matcher_panels.html' %}
     </div>
     {% else %}
     <div class="empty-state" style="padding: 48px 0;">
@@ -2627,6 +2582,32 @@ document.addEventListener('DOMContentLoaded', function() {
                     <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Close</button>
                 </div>
             </form>
+        </div>
+    </div>
+</div>
+{% endif %}
+
+{% if typeform_subscriptions and survey_results %}
+<div class="modal fade" id="surveyMatchModal" tabindex="-1" aria-labelledby="surveyMatchModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-lg modal-dialog-scrollable">
+        <div class="modal-content">
+            <div class="modal-header">
+                <div>
+                    <h5 class="modal-title" id="surveyMatchModalLabel">Check for new survey responses</h5>
+                    <div class="text-body-secondary small">{{ event.name }}</div>
+                </div>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <div class="event-survey-matcher"
+                     data-match-url="{% url 'tickets:event_survey_match' event.id %}?format=json"
+                     data-apply-url="{% url 'tickets:event_survey_apply' event.id %}">
+                    {% include 'tickets/_survey_matcher_panels.html' %}
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Close</button>
+            </div>
         </div>
     </div>
 </div>
@@ -5312,13 +5293,11 @@ document.addEventListener('DOMContentLoaded', function () {
 {% endif %}
 
 <script>
-// Surveys tab: empty-state AI matcher. Wires the "Find matching responses"
-// button to the existing event_survey_match endpoint, renders candidates with
-// a single-row Link button that POSTs to event_survey_apply.
-(function () {
-    var container = document.querySelector('.event-survey-matcher');
-    if (!container) return;
-
+// Surveys tab AI matcher. Wires "Find matches" / "Check for new responses" to the
+// event_survey_match endpoint, renders candidates with a single-row Link button that
+// POSTs to event_survey_apply. Runs for every .event-survey-matcher container: the
+// inline empty-state one and the "Check for new responses" modal.
+function setupSurveyMatcher(container) {
     var introEl     = container.querySelector('.matcher-intro');
     var loadingEl   = container.querySelector('.matcher-loading');
     var emptyEl     = container.querySelector('.matcher-empty');
@@ -5465,7 +5444,17 @@ document.addEventListener('DOMContentLoaded', function () {
                 });
         }
     });
-})();
+
+    // When the matcher lives inside a modal (populated-state "Check for new
+    // responses"), re-fetch fresh candidates from Typeform every time it opens.
+    var modalEl = container.closest('.modal');
+    if (modalEl) {
+        modalEl.addEventListener('shown.bs.modal', function () {
+            loadCandidates();
+        });
+    }
+}
+document.querySelectorAll('.event-survey-matcher').forEach(setupSurveyMatcher);
 </script>
 
 {% if weather_forecast %}
