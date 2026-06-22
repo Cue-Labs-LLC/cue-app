@@ -1,0 +1,147 @@
+{% load humanize tickets_extras %}
+{# Dynamic region of Market Trends; rendered standalone when ?fragment=1 for JS swap. #}
+<script type="application/json" id="mt-config">{"metric":"{{ metric }}","change_unit":"{{ change_unit }}","period":"{{ period }}","window":"{{ window }}"}</script>
+
+<div class="page-header">
+    <div>
+        <h1>Market Trends</h1>
+        <p class="page-header-subtitle">Spot markets where {% if metric == 'tickets' %}turnout{% elif metric == 'nps' %}NPS{% elif metric == 'profitability' %}profitability{% else %}revenue{% endif %} is slipping and diagnose why. Measured {% if metric == 'nps' %}as net promoter score from survey responses (−100 to 100){% else %}per event as {% if metric == 'revenue' %}gross revenue{% elif metric == 'profitability' %}net profit (revenue + other income − expenses − fees){% else %}tickets sold{% endif %}{% endif %}.</p>
+    </div>
+</div>
+
+<div class="d-flex align-items-center justify-content-between flex-wrap gap-2 mb-3">
+    <div class="chart-control-group">
+        <a href="?metric=revenue&period={{ period }}&window={{ window }}" class="chart-control-btn{% if metric == 'revenue' %} active{% endif %}">Revenue</a>
+        <a href="?metric=profitability&period={{ period }}&window={{ window }}" class="chart-control-btn{% if metric == 'profitability' %} active{% endif %}">Profitability</a>
+        <a href="?metric=tickets&period={{ period }}&window={{ window }}" class="chart-control-btn{% if metric == 'tickets' %} active{% endif %}">Tickets sold</a>
+        <a href="?metric=nps&period={{ period }}&window={{ window }}" class="chart-control-btn{% if metric == 'nps' %} active{% endif %}">NPS</a>
+    </div>
+    <div class="d-flex flex-wrap gap-2">
+        <div class="chart-control-group">
+            <a href="?metric={{ metric }}&period=quarter&window={{ window }}" class="chart-control-btn{% if period == 'quarter' %} active{% endif %}">Quarterly</a>
+            <a href="?metric={{ metric }}&period=month&window={{ window }}" class="chart-control-btn{% if period == 'month' %} active{% endif %}">Monthly</a>
+        </div>
+        <div class="chart-control-group">
+            <a href="?metric={{ metric }}&period={{ period }}&window=1y" class="chart-control-btn{% if window == '1y' %} active{% endif %}">1Y</a>
+            <a href="?metric={{ metric }}&period={{ period }}&window=2y" class="chart-control-btn{% if window == '2y' %} active{% endif %}">2Y</a>
+            <a href="?metric={{ metric }}&period={{ period }}&window=3y" class="chart-control-btn{% if window == '3y' %} active{% endif %}">3Y</a>
+            <a href="?metric={{ metric }}&period={{ period }}&window=all" class="chart-control-btn{% if window == 'all' %} active{% endif %}">All</a>
+        </div>
+    </div>
+</div>
+
+{% if markets %}
+<script type="application/json" id="markets-data">{{ markets_json|safe }}</script>
+
+{# Resolved hrefs for data-driven recommended-action buttons. #}
+<script type="application/json" id="action-urls">{
+    "tickets:churn_overview": "{% url 'tickets:churn_overview' %}",
+    "tickets:customer_segments": "{% url 'tickets:customer_segments' %}",
+    "tickets:forecast_tool": "{% url 'tickets:forecast_tool' %}",
+    "tickets:expense_analytics": "{% url 'tickets:expense_analytics' %}",
+    "tickets:survey_analytics": "{% url 'tickets:survey_analytics' %}"{% if sms_marketing_enabled %},
+    "tickets:sms_campaign_create": "{% url 'tickets:sms_campaign_create' %}"{% endif %}
+}</script>
+
+<div class="row mb-4 g-3">
+    <div class="col-md-4">
+        <div class="stat-card stat-card--accent">
+            <div class="stat-label">Markets Tracked</div>
+            <div class="stat-value">{{ summary.markets_count|intcomma }}</div>
+        </div>
+    </div>
+    <div class="col-md-4">
+        <div class="stat-card" style="border-left:4px solid var(--bs-danger,#dc3545);">
+            <div class="stat-label">Declining</div>
+            <div class="stat-value">{{ summary.declining_count }}</div>
+        </div>
+    </div>
+    <div class="col-md-4">
+        <div class="stat-card stat-card--success">
+            <div class="stat-label">Growing</div>
+            <div class="stat-value">{{ summary.growing_count }}</div>
+        </div>
+    </div>
+</div>
+
+<div class="card mb-4" id="detail-card" style="display:none;">
+    <div class="card-header">
+        <h5 class="mb-0" id="detail-title">Market detail</h5>
+    </div>
+    <div class="card-body">
+        <div class="row g-4">
+            <div class="col-lg-7">
+                <div class="chart-container" style="height: 320px;">
+                    <canvas id="detailChart"></canvas>
+                </div>
+            </div>
+            <div class="col-lg-5">
+                <div id="diagnosis-panel">
+                    <p class="text-muted">Select a market to see its diagnosis.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="card mb-4">
+    <div class="card-header">
+        <h5 class="mb-0">Markets by trend</h5>
+        <span class="text-muted small">Highest to lowest by {% if metric == 'revenue' %}revenue{% elif metric == 'profitability' %}profit{% elif metric == 'nps' %}NPS{% else %}tickets sold{% endif %}. Select a market for the full diagnosis.</span>
+    </div>
+    <div class="card-body p-0">
+        <div class="table-responsive">
+            <table class="table table-hover mb-0 align-middle">
+                <thead>
+                    <tr>
+                        <th>Market</th>
+                        <th>Trend</th>
+                        <th class="text-end" style="cursor:help;" data-bs-toggle="tooltip" title="{% if metric == 'nps' %}Average per-{{ period }} change in NPS (points), taken from the fitted trend line.{% else %}Average per-{{ period }} change in {% if metric == 'revenue' %}revenue{% elif metric == 'profitability' %}profit{% else %}tickets sold{% endif %} per event, taken from the fitted trend line.{% endif %} Negative = declining, positive = growing.">Change / period</th>
+                        <th class="d-none d-md-table-cell">Confidence</th>
+                        <th class="d-none d-sm-table-cell text-end">{% if metric == 'revenue' %}Revenue{% elif metric == 'profitability' %}Profit{% elif metric == 'nps' %}NPS{% else %}Tickets sold{% endif %}</th>
+                        <th>Direction</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for m in markets %}
+                    <tr class="market-row" data-city="{{ m.city }}" style="cursor:pointer;">
+                        <td class="fw-semibold">{{ m.city }}</td>
+                        <td>
+                            {% if m.trend == 'declining' %}<span class="badge bg-danger">Declining</span>
+                            {% elif m.trend == 'growing' %}<span class="badge bg-success">Growing</span>
+                            {% elif m.trend == 'stable' %}<span class="badge bg-secondary">Stable</span>
+                            {% else %}<span class="badge bg-light text-muted">Insufficient data</span>{% endif %}
+                        </td>
+                        <td class="text-end">
+                            {% if m.trend == 'insufficient_data' %}<span class="text-muted">—</span>
+                            {% elif m.norm_slope_pct > 0 %}<span class="text-success">+{{ m.norm_slope_pct }}{{ change_unit }}</span>
+                            {% elif m.norm_slope_pct < 0 %}<span class="text-danger">{{ m.norm_slope_pct }}{{ change_unit }}</span>
+                            {% else %}0{{ change_unit }}{% endif %}
+                        </td>
+                        <td class="d-none d-md-table-cell">
+                            {% if m.confidence == 'high' %}<span class="text-muted small">High</span>
+                            {% elif m.confidence == 'low' %}<span class="text-muted small">Low (volatile)</span>
+                            {% else %}<span class="text-muted small">—</span>{% endif %}
+                        </td>
+                        <td class="d-none d-sm-table-cell text-end">{% if metric == 'revenue' %}${{ m.total_revenue|currency }}{% elif metric == 'profitability' %}${{ m.total_profit|currency }}{% elif metric == 'nps' %}{{ m.total_nps }}{% else %}{{ m.total_sold|intcomma }}{% endif %}</td>
+                        <td style="width:120px;">
+                            <canvas class="sparkline" data-city="{{ m.city }}" width="100" height="28"></canvas>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+{% else %}
+<div class="card">
+    <div class="card-body">
+        <div class="empty-state">
+            <i class="bi bi-graph-down-arrow d-block"></i>
+            <p>No past events with market data yet. Upload ticket orders with venues to track turnout trends across markets.</p>
+            <a href="{% url 'tickets:event_list' %}" class="btn btn-primary"><i class="bi bi-calendar-event"></i> View Events</a>
+        </div>
+    </div>
+</div>
+{% endif %}
