@@ -32,7 +32,10 @@ BUILTIN_CSV_FORMATS = [
             "ticket_type": ["Tickets Purchased"],
             "quantity": ["# of Tickets"],
             "price": ["Order Subtotal"],
-            "total_amount": ["Order Total"],
+            # Revenue = net to organizer (Order Subtotal). POSH's "Order Total"
+            # adds the buyer-paid processing fee on top, which inflates revenue
+            # relative to what POSH reports as the event's Total Revenue.
+            "total_amount": ["Order Subtotal"],
             "scan_details": ["Ticket Scan Details"],
         },
     },

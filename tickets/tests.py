@@ -2206,6 +2206,61 @@ class CSVProcessorChunkRollbackTest(TestCase):
         )
 
 
+class PoshRevenueSubtotalTest(TestCase):
+    """The POSH built-in format records revenue as net Order Subtotal, not the
+    fee-inclusive Order Total. Regression guard for the Cue/POSH revenue mismatch."""
+
+    # Two POSH rows. Order Total = Order Subtotal + Processing Fee (buyer pays the
+    # fee on top), so summing Order Total would over-report revenue.
+    CSV_ROWS = (
+        '"Order Number","Order Date/Time","First Name","Last Name","Email",'
+        '"Phone Number","Tickets Purchased","# of Tickets","Order Subtotal",'
+        '"Processing Fee","Order Total","Ticket Scan Details"\n'
+        '"1001","06-01-2026 4:00:00 pm","Alice","Smith","alice@example.com",'
+        '"+15551110001","GA, GA","2","12.74","3.25","15.99",""\n'
+        '"1002","06-02-2026 5:00:00 pm","Bob","Jones","bob@example.com",'
+        '"+15551110002","GA","1","6.37","1.63","8.00",""\n'
+    )
+
+    SUBTOTAL_SUM = Decimal('19.11')   # 12.74 + 6.37 (what POSH reports as revenue)
+    TOTAL_SUM = Decimal('23.99')      # 15.99 + 8.00 (fee-inclusive — must NOT be used)
+
+    def setUp(self):
+        self.org = Organization.objects.create(name='Posh Org', slug='posh-org')
+        self.venue = Venue.objects.create(organization=self.org, name='Venue', city='City')
+        self.event = Event.objects.create(
+            organization=self.org, name='Posh Event', venue=self.venue,
+            start_date=date(2026, 6, 15),
+        )
+        # The POSH built-in format is seeded by migration (organization=None, is_system).
+        self.csv_format = CSVFormat.objects.get(name='POSH', is_system=True)
+        self.upload = UploadedFile.objects.create(
+            organization=self.org, csv_format=self.csv_format,
+            filename='posh.csv', status='pending',
+            metadata={'event_id': str(self.event.id), 'event_name': self.event.name,
+                      'event_start_date': '2026-06-15'},
+        )
+
+    def test_total_amount_uses_subtotal_not_order_total(self):
+        import io
+        from tickets.csv_processor import CSVProcessor
+        CSVProcessor(self.upload, self.csv_format).process_and_save(
+            io.BytesIO(self.CSV_ROWS.encode('utf-8'))
+        )
+
+        orders = TicketOrder.objects.filter(event=self.event).order_by('external_order_number')
+        self.assertEqual(orders.count(), 2)
+        self.assertEqual(orders[0].total_amount, Decimal('12.74'))
+        self.assertEqual(orders[1].total_amount, Decimal('6.37'))
+
+        # Event revenue (Sum of total_amount, as _compute_event_stats does) must equal
+        # the net subtotal, not the fee-inclusive Order Total.
+        from django.db.models import Sum
+        revenue = self.event.ticket_orders.aggregate(r=Sum('total_amount'))['r']
+        self.assertEqual(revenue, self.SUBTOTAL_SUM)
+        self.assertNotEqual(revenue, self.TOTAL_SUM)
+
+
 class PhoneValidationTest(TestCase):
     """Tests for phone number normalization and form validation."""
 
