@@ -56,13 +56,32 @@ def normalize_phone(raw: str) -> str:
 _OPT_OUT_RE = re.compile(r'\b(?:reply|text|send)\s+["“]?STOP\b', re.IGNORECASE)
 
 
-def with_stop_footer(body: str) -> str:
-    """Append the required opt-out footer unless the body already carries explicit
-    opt-out phrasing. Shared by the send tasks and the credit cost estimator so
-    all three agree on exactly what text (and therefore how many segments) goes out."""
+def apply_stop_footer(body: str, *, include: bool = True):
+    """Return ``(final_body, disclosure_present)``.
+
+    If the body already carries explicit opt-out phrasing it is left untouched and
+    ``disclosure_present`` is True (the copy itself discloses — never double-append).
+    Otherwise the footer is appended only when ``include`` is True;
+    ``disclosure_present`` mirrors whether the outgoing text carries a disclosure.
+
+    Conditional inclusion drives the disclosure cadence: include the footer on the
+    first message to a phone and periodically after (see SMS_FOOTER_DISCLOSURE_DAYS),
+    not on every message. Twilio's Messaging Service enforces STOP regardless of this
+    text, so omitting it for an already-disclosed recipient does not break opt-out."""
     if _OPT_OUT_RE.search(body or ''):
-        return body
-    return f"{body}\n\nReply STOP to opt out"
+        return body, True
+    if include:
+        return f"{body}\n\nReply STOP to opt out", True
+    return body, False
+
+
+def with_stop_footer(body: str) -> str:
+    """Always-append wrapper around :func:`apply_stop_footer` (worst-case display).
+
+    Used by the cost estimators and the server-rendered composer meter, which show
+    the maximum a message could cost. The send path uses ``apply_stop_footer``
+    directly with a per-recipient ``include`` decision."""
+    return apply_stop_footer(body, include=True)[0]
 
 
 def sms_segment_info(body: str):

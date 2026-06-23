@@ -268,6 +268,12 @@ SMS_CAMPAIGN_MAX_RECIPIENTS = int(os.environ.get('SMS_CAMPAIGN_MAX_RECIPIENTS', 
 # e.g. "3" = 3¢/segment). Each recipient costs segments × this; debited from the
 # org's prepaid SMS credit wallet at send time.
 SMS_PRICE_PER_SEGMENT_CENTS = Decimal(os.environ.get('SMS_PRICE_PER_SEGMENT_CENTS', '3'))
+# Days between required STOP-footer disclosures to the same phone. The footer is
+# included on the first message to a phone and again once a prior disclosure is older
+# than this window; in between it's omitted (fewer segments, lower cost) while Twilio's
+# Messaging Service still enforces STOP. Confirm against your registered 10DLC/toll-free
+# campaign terms before lowering.
+SMS_FOOTER_DISCLOSURE_DAYS = int(os.environ.get('SMS_FOOTER_DISCLOSURE_DAYS', '30'))
 E2E_TEST_MODE = os.environ.get('E2E_TEST_MODE', 'False') == 'True'
 
 # Absolute URL for building links in emails (survey invitations, etc.)

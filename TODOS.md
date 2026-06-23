@@ -242,3 +242,19 @@
 **Context:** Shipped with the clickable-ticket-name drill-down (plan: clickable ticket names → orders). Name-based filtering was accepted as the v1 to avoid a migration. The in-person sell path (`api_views.py` ~1627) and the Stripe webhook purchase path both create `Ticket` rows from `SaleableTicketType`; both have the `tt_id`/snapshot available to populate the FK.
 
 **Depends on:** Clickable ticket-name drill-down shipped.
+
+## SMS: Lock charged/scheduled campaign fields in admin
+
+**What:** Add `get_readonly_fields` to the SMS campaign admin so that once a campaign leaves DRAFT (scheduled/charged/sending/sent), `body`, `link_url`, `scheduled_at`, and `filter_criteria` become read-only.
+
+**Why:** Campaigns are charged and have their audience + per-recipient disclosure decisions frozen at schedule time (`sms_views.py:sms_campaign_create`). The Django admin still allows editing a SCHEDULED campaign's `body`/`link_url`/`scheduled_at` (`admin.py:1226`). One admin edit after charge desyncs the segment math (pre-existing) and, after the conditional-STOP-footer change, also desyncs the persisted `stop_disclosed`/`segments` decision and moves the 30-day disclosure anchor out from under the charge.
+
+**Pros:** Closes a real desync footgun for both billing and compliance with ~10 lines. No data migration.
+
+**Cons:** Admins occasionally fix typos in scheduled bodies; locking removes that. Could scope the lock to only the billing-relevant fields and leave `name` editable.
+
+**Context:** Surfaced by Codex outside-voice review during the conditional-STOP-footer plan (plan: serene-church). Pre-existing (not introduced by that change) but widened by it. Trusted/internal admin, so deferred rather than blocking. Start in `tickets/admin.py` `SMSCampaignAdmin` with `get_readonly_fields(self, request, obj)` returning the locked set when `obj and obj.status != SMSCampaign.Status.DRAFT`.
+
+**Depends on:** Nothing. Independent of the conditional-footer PR.
+
+---
