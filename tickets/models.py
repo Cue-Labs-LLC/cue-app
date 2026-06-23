@@ -1763,15 +1763,54 @@ class SMSMessageRecipient(BaseModel):
     first_clicked_at = models.DateTimeField(null=True, blank=True)
     # Set when an inbound STOP is attributed to this recipient's campaign.
     opted_out_at = models.DateTimeField(null=True, blank=True)
+    # Did an opt-out disclosure reach this recipient — via the appended "Reply STOP"
+    # footer OR explicit opt-out copy already in the body? Decided + persisted at
+    # schedule time (charge), honored at send. Drives the disclosure-cadence lookup
+    # (recently_disclosed_phones). default=True: historical rows all carried the
+    # footer under the old always-append behavior, so they count as disclosures and
+    # the cadence works immediately on deploy.
+    stop_disclosed = models.BooleanField(default=True)
+    # Charged segment count for this recipient (schedule-time, computed on campaign.body).
+    # Auditability; the actual sent count can differ for tracked-link bodies.
+    segments = models.PositiveSmallIntegerField(default=0)
 
     class Meta:
         indexes = [
             models.Index(fields=['campaign', 'status']),
             models.Index(fields=['twilio_sid']),
+            # Serves recently_disclosed_phones (phone__in + sent_at range) and the
+            # inbound-webhook per-phone most-recent-send lookup.
+            models.Index(fields=['phone', 'sent_at']),
         ]
 
     def __str__(self):
         return f"{self.phone} [{self.status}]"
+
+    @classmethod
+    def recently_disclosed_phones(cls, organization, phones, as_of):
+        """Subset of ``phones`` that received a STOP disclosure within
+        SMS_FOOTER_DISCLOSURE_DAYS before ``as_of``, scoped to this org.
+
+        The org filter is mandatory, not an optimization: two different orgs can
+        text the same phone number, and one org's disclosure must never suppress
+        another's footer. Only SENT/DELIVERED count — an UNDELIVERED/FAILED message
+        never reached the handset, so it disclosed nothing.
+        """
+        if not phones:
+            return set()
+        from datetime import timedelta
+        cutoff = as_of - timedelta(
+            days=getattr(settings, 'SMS_FOOTER_DISCLOSURE_DAYS', 30)
+        )
+        return set(
+            cls.objects.filter(
+                campaign__organization=organization,
+                phone__in=phones,
+                stop_disclosed=True,
+                sent_at__gte=cutoff,
+                status__in=[cls.Status.SENT, cls.Status.DELIVERED],
+            ).values_list('phone', flat=True)
+        )
 
 
 class SMSCreditTransaction(BaseModel):

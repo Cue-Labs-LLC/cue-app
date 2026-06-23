@@ -401,16 +401,22 @@ def sms_campaign_create(request):
                 form.add_error(None, 'This audience has no contactable recipients.')
             else:
                 from .services.sms_credits import (
-                    estimate_campaign_cost_cents, estimate_campaign_cost_tokens,
-                    charge, InsufficientCreditsError,
+                    plan_campaign_footers, charge, InsufficientCreditsError,
                 )
-                confirm_cost_cents = estimate_campaign_cost_cents(
-                    confirm_count, form.cleaned_data['body'],
+                # Anchor the per-recipient footer/disclosure decision (and therefore the
+                # cost) on the actual send time: a far-future scheduled send must re-disclose
+                # phones that will have aged out of the window by then. Computed once here
+                # and reused for both the displayed cost and the charge → displayed == charged.
+                scheduled = form.cleaned_data.get('send_mode') == SMSCampaignForm.SEND_SCHEDULE
+                send_at = form.cleaned_data['scheduled_at'] if scheduled else timezone.now()
+                confirm_cost_cents, footer_plan = plan_campaign_footers(
+                    org, form.cleaned_data['body'],
+                    [r['phone'] for r in recipients], as_of=send_at,
                 )
-                # Displayed cost = exact segment count (1 token = 1 segment); the
-                # charged cents may round up at sub-cent prices, the token count doesn't.
-                confirm_cost_tokens = estimate_campaign_cost_tokens(
-                    confirm_count, form.cleaned_data['body'],
+                # Displayed tokens (1 token = 1 segment) = the charged segments, summed per
+                # recipient so a shared phone counted twice in the audience is shown twice.
+                confirm_cost_tokens = sum(
+                    footer_plan[r['phone']][1] for r in recipients
                 )
                 insufficient_credits = confirm_cost_cents > org.sms_credit_balance_cents
 
@@ -428,11 +434,10 @@ def sms_campaign_create(request):
                     if existing:
                         return redirect('tickets:sms_campaign_detail', pk=existing.id)
 
-                    scheduled = form.cleaned_data.get('send_mode') == SMSCampaignForm.SEND_SCHEDULE
                     # Always persist as SCHEDULED (send-now → scheduled for now). The
                     # */5 cron is then a safety net: if the immediate dispatch is
                     # dropped, the campaign is still picked up and sent (no lost money).
-                    send_at = form.cleaned_data['scheduled_at'] if scheduled else timezone.now()
+                    # `scheduled` / `send_at` were resolved above (they anchor the cost).
                     try:
                         with transaction.atomic():
                             campaign = form.save(commit=False)
@@ -455,6 +460,8 @@ def sms_campaign_create(request):
                             SMSMessageRecipient.objects.bulk_create([
                                 SMSMessageRecipient(
                                     campaign=campaign, customer_id=r['customer_id'], phone=r['phone'],
+                                    stop_disclosed=footer_plan[r['phone']][0],
+                                    segments=footer_plan[r['phone']][1],
                                 ) for r in recipients
                             ], batch_size=500)
                             # Charge inside the same transaction — campaign + snapshot +
@@ -527,6 +534,7 @@ def sms_campaign_create(request):
         'balance_cents': org.sms_credit_balance_cents,
         'insufficient_credits': insufficient_credits,
         'idempotency_key': idem_key,
+        'footer_disclosure_days': getattr(settings, 'SMS_FOOTER_DISCLOSURE_DAYS', 30),
     })
 
 

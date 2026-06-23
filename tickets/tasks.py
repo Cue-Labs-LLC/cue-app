@@ -831,7 +831,7 @@ def match_survey_response_to_event_task(self, response_id):
 #                                                 finalize_sms_campaign_task
 # ---------------------------------------------------------------------------
 
-from tickets.sms import with_stop_footer as _with_stop_footer  # noqa: E402  (shared helper)
+from tickets.sms import apply_stop_footer as _apply_stop_footer  # noqa: E402  (shared helper)
 
 
 @shared_task(bind=True, max_retries=2, default_retry_delay=30)
@@ -936,13 +936,22 @@ def send_sms_chunk_task(self, campaign_id, recipient_ids):
             status_cb = None
 
     # Rewrite the campaign's link to a per-recipient tracked link when we have a
-    # public URL to point at. Untracked sends reuse one shared body.
+    # public URL to point at.
     track_links = bool(campaign.link_url) and is_public
-    shared_body = _with_stop_footer(campaign.body)
 
-    for r in SMSMessageRecipient.objects.filter(
+    # The STOP-footer decision was made + persisted (stop_disclosed) and billed at
+    # schedule time; honor it here so charged == sent. Safeguard: if a planned-omit
+    # recipient's disclosure has aged out by the time we actually dispatch (a badly
+    # delayed send), re-include the footer for compliance — rare, may cost one
+    # unbilled segment, and only ever errs toward disclosing.
+    queued = list(SMSMessageRecipient.objects.filter(
         id__in=recipient_ids, status=SMSMessageRecipient.Status.QUEUED
-    ):
+    ))
+    disclosed_now = SMSMessageRecipient.recently_disclosed_phones(
+        campaign.organization, [r.phone for r in queued], as_of=tz.now()
+    )
+
+    for r in queued:
         # Opted out since the audience was frozen → do not send.
         if r.phone in suppressed:
             r.status = SMSMessageRecipient.Status.FAILED
@@ -950,14 +959,22 @@ def send_sms_chunk_task(self, campaign_id, recipient_ids):
             r.save(update_fields=['status', 'error_message', 'updated_at'])
             continue
 
-        body = shared_body
+        include_footer = r.stop_disclosed
+        if not include_footer and r.phone not in disclosed_now:
+            logger.info(
+                "STOP disclosure for %s aged out before send; re-including footer", r.phone
+            )
+            include_footer = True
+
+        base_body = campaign.body
         update_fields = ['status', 'twilio_sid', 'sent_at', 'error_code', 'error_message', 'updated_at']
         if track_links:
             token = secrets.token_urlsafe(8)
             tracked = f"{site_url}{reverse('tickets:sms_click_redirect', kwargs={'token': token})}"
-            body = _with_stop_footer(campaign.body.replace(campaign.link_url, tracked, 1))
+            base_body = campaign.body.replace(campaign.link_url, tracked, 1)
             r.click_token = token
             update_fields.append('click_token')
+        body, _ = _apply_stop_footer(base_body, include=include_footer)
 
         ok, sid = send_sms(r.phone, body, status_callback=status_cb)
         if ok:

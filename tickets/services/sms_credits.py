@@ -48,6 +48,35 @@ def estimate_campaign_cost_cents(recipient_count: int, body: str) -> int:
     return int(total.to_integral_value(rounding=ROUND_CEILING))
 
 
+def plan_campaign_footers(organization, body, phones, *, as_of):
+    """Plan the per-recipient STOP-footer decision and the exact campaign cost.
+
+    Returns ``(cost_cents, plan)`` where ``plan = {phone: (stop_disclosed, segments)}``.
+    A phone may omit the footer iff it was disclosed within SMS_FOOTER_DISCLOSURE_DAYS
+    of ``as_of`` (``recently_disclosed_phones``); first-ever phones always include it.
+
+    Used by both the confirm preview and the charge so the displayed cost equals the
+    debit, and the persisted decision is what the send task honors (charged == sent
+    for the footer dimension). ``phones`` is iterated as given — duplicates are charged
+    per occurrence because each is a separate send. Segments are computed on ``body``
+    (not per-recipient tracked-link rewrites), matching existing billing.
+    """
+    from tickets.models import SMSMessageRecipient
+    from tickets.sms import apply_stop_footer, sms_segment_info
+
+    disclosed = SMSMessageRecipient.recently_disclosed_phones(organization, phones, as_of)
+    plan = {}
+    total_segments = 0
+    for phone in phones:
+        text, present = apply_stop_footer(body or '', include=phone not in disclosed)
+        _, seg = sms_segment_info(text)
+        plan[phone] = (present, seg)
+        total_segments += seg
+    cents = (Decimal(total_segments) * price_per_segment_cents()
+             ).to_integral_value(rounding=ROUND_CEILING)
+    return int(cents), plan
+
+
 def estimate_campaign_cost_tokens(recipient_count: int, body: str) -> int:
     """Cost in tokens (1 token = 1 SMS segment) to send ``body`` to recipients.
 

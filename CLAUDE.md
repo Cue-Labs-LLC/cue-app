@@ -218,6 +218,7 @@ Event.objects.all()
 | `TWILIO_VALIDATE_WEBHOOKS` | Optional | Validate inbound Twilio webhook signatures (default `True`; disable in local dev without a tunnel) |
 | `SMS_CAMPAIGN_MAX_RECIPIENTS` | Optional | Hard cap on recipients per marketing-SMS campaign (default 5000) |
 | `SMS_PRICE_PER_SEGMENT_CENTS` | Optional | Price charged to an org per SMS segment, in cents (Decimal, default 3). Debited from the prepaid credit wallet at send time |
+| `SMS_FOOTER_DISCLOSURE_DAYS` | Optional | Days between required "Reply STOP" footer disclosures to the same phone (default 30). Footer is included on the first message + once a prior disclosure ages past this window; omitted in between. Twilio Advanced Opt-Out still enforces STOP regardless |
 
 ---
 
