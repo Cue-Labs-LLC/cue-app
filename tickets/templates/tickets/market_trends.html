@@ -9,11 +9,18 @@
 
 {% block content %}
 {# Dynamic region swapped in place on selector changes — see initMarketTrends below. #}
-<div id="market-trends-content">{% include 'tickets/_market_trends_content.html' %}</div>
+<div id="market-trends-region" class="mt-region">
+    <div id="market-trends-content">{% include 'tickets/_market_trends_content.html' %}</div>
+    <div id="market-trends-loading" class="mt-loading-overlay" hidden>
+        <div class="spinner-border" role="status"><span class="visually-hidden">Loading…</span></div>
+        <span class="mt-loading-label">Updating trends…</span>
+    </div>
+</div>
 
 <script>
 (function() {
     var contentEl = document.getElementById('market-trends-content');
+    var loadingEl = document.getElementById('market-trends-loading');
     var detailChart = null;     // persists across fragment swaps
     var selectedCity = null;    // remembered so the open market survives a swap
     var reqSeq = 0;             // guards against out-of-order fragment responses
@@ -277,12 +284,14 @@
         var sep = url.indexOf('?') === -1 ? '?' : '&';
         var seq = ++reqSeq;
         contentEl.style.opacity = '0.5';
+        loadingEl.hidden = false;
         fetch(url + sep + 'fragment=1', { headers: { 'X-Requested-With': 'XMLHttpRequest' } })
             .then(function(r) { return r.text(); })
             .then(function(html) {
                 if (seq !== reqSeq) return;   // a newer click superseded this one
                 contentEl.innerHTML = html;
                 contentEl.style.opacity = '';
+                loadingEl.hidden = true;
                 if (push) history.pushState({}, '', url);
                 initMarketTrends();
             })
@@ -295,6 +304,15 @@
         if (!btn || !contentEl.contains(btn)) return;
         e.preventDefault();
         if (btn.classList.contains('active')) return;
+        // Respond on the click frame: mark the pending selection active within its
+        // own control group (the swapped-in fragment re-renders the real state).
+        var group = btn.closest('.chart-control-group');
+        if (group) {
+            group.querySelectorAll('.chart-control-btn.active').forEach(function(el) {
+                el.classList.remove('active');
+            });
+        }
+        btn.classList.add('active');
         loadFragment(btn.getAttribute('href'), true);
     });
 

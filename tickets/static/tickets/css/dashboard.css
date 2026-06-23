@@ -2511,6 +2511,34 @@ gmp-place-autocomplete#venue-address-autocomplete {
     box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
 }
 
+/* -- Market Trends loading overlay -------------- */
+.mt-region {
+    position: relative;
+}
+
+.mt-loading-overlay {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    z-index: 5;
+    background: color-mix(in srgb, var(--bg-page) 55%, transparent);
+    backdrop-filter: blur(1px);
+    border-radius: var(--radius);
+}
+
+.mt-loading-overlay[hidden] {
+    display: none;
+}
+
+.mt-loading-label {
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--text-secondary);
+}
+
 /* =============================================
    ORGANIZER LIGHT THEME
    Overrides the dark defaults for all dashboard
