@@ -3033,6 +3033,8 @@ class SMSCampaignLinkEventTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, 'linkEventModal')
         self.assertContains(response, 'Link to event')
+        # Each picker option shows the event date to disambiguate same-named events.
+        self.assertContains(response, 'Jun 01, 2026')
         # The partial's leading comment must not leak into the rendered page.
         self.assertNotContains(response, 'Requires `link_events`')
 

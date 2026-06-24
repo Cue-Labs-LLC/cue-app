@@ -31,6 +31,7 @@ and carry: data-campaign-pk, data-campaign-name, data-current-event, data-next.
             <button type="button" class="le-option" data-le-event="{{ ev.id }}" data-le-name="{{ ev.name|lower }}">
               <i class="bi bi-ticket-perforated"></i>
               <span class="le-option-name">{{ ev.name }}</span>
+              {% if ev.start_date %}<span class="le-option-date">{{ ev.start_date|date:"M d, Y" }}</span>{% endif %}
               <i class="bi bi-check-lg le-option-check"></i>
             </button>
             {% endfor %}
@@ -50,6 +51,7 @@ and carry: data-campaign-pk, data-campaign-name, data-current-event, data-next.
   #linkEventModal .le-option { display: flex; align-items: center; gap: .5rem; width: 100%; text-align: left; background: transparent; border: 0; border-radius: .375rem; padding: .5rem .6rem; color: inherit; cursor: pointer; }
   #linkEventModal .le-option:hover { background: var(--bs-tertiary-bg, rgba(0,0,0,.05)); }
   #linkEventModal .le-option .le-option-name { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #linkEventModal .le-option .le-option-date { flex: 0 0 auto; font-size: .8125rem; color: var(--bs-secondary-color, #6c757d); white-space: nowrap; }
   #linkEventModal .le-option .le-option-check { display: none; color: var(--bs-success, #198754); }
   #linkEventModal .le-option.is-current { background: var(--bs-tertiary-bg, rgba(0,0,0,.05)); font-weight: 600; }
   #linkEventModal .le-option.is-current .le-option-check { display: inline; }
