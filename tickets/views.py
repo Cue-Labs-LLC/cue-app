@@ -25,7 +25,7 @@ from django.db.models.functions import Coalesce, Greatest, TruncDate, Cast, Trun
 from django.db import models
 from django.core.paginator import Paginator
 from django.core.files.uploadedfile import InMemoryUploadedFile
-from django.http import JsonResponse, Http404, HttpResponse, HttpResponseBadRequest
+from django.http import JsonResponse, Http404, HttpResponse, HttpResponseBadRequest, FileResponse
 from django.views.decorators.cache import never_cache
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
@@ -40,7 +40,7 @@ from .models import (
     AIRecommendation,
     CSVFormat, UploadedFile, Customer, CustomerTag, Event, EventExpense, EventEmailCampaign, EventSMSCampaign, EventTalent, TicketOrder, Ticket, Venue,
     CustomField, CustomFieldOption, EventCustomFieldValue, IncomeSource, EventIncome,
-    SurveyQuestion, SurveyInvitation, SurveyResponse, SurveyAnswer,
+    SurveyQuestion, SurveyQuestionOption, SurveyInvitation, SurveyResponse, SurveyAnswer, SurveyAnswerOption,
     PipedreamCalendarConnection, OrganizationAPIKey,
     SaleableTicketType, SaleableTicketTypeTier, StripeCheckoutSession, Payout, PromoCode,
     ExternalSurveyUpload, ExternalSurveyResponse, TypeformFormSubscription, EventDailyPageView,
@@ -60,6 +60,7 @@ from .forms import (
     SaleableTicketTypeForm, SaleableTicketTypeTierFormSet, PublicTicketPurchaseForm,
     DirectEventForm, DirectTicketTypeFormSet,
     PromoCodeForm, SurveyUploadForm, UserProfileForm, OrgProfileForm,
+    OrgDisplayPreferencesForm,
     WaitlistJoinForm, OrganizerWaitlistForm,
     LoyaltyProgramForm, LoyaltyTierFormSet,
 )
@@ -353,6 +354,7 @@ EVENT_STATS_REQUIRED_KEYS = frozenset({
     'survey_total_response_count',
     'survey_results',
     'attendee_segments',
+    'audience',
 })
 
 
@@ -2368,6 +2370,24 @@ def reprocess_csv_file(request, file_id):
 
 @login_required
 @require_org
+@require_host
+def download_csv_file(request, file_id):
+    """Download the original CSV that was uploaded for this import."""
+    org = get_organization(request)
+    uploaded_file = get_object_or_404(UploadedFile.objects.filter(organization=org), id=file_id)
+    if not uploaded_file.csv_file:
+        messages.error(request, "No stored file available to download.")
+        return redirect('tickets:upload_results', file_id=uploaded_file.id)
+    return FileResponse(
+        uploaded_file.csv_file.open('rb'),
+        as_attachment=True,
+        filename=uploaded_file.filename,
+        content_type='text/csv',
+    )
+
+
+@login_required
+@require_org
 def upload_status_api(request, file_id):
     """JSON endpoint returning current processing status for a given upload."""
     org = get_organization(request)
@@ -3183,16 +3203,46 @@ def loyalty_tier_members(request, program_id, tier_id):
     org = get_organization(request)
     program = get_object_or_404(_active_loyalty_programs(org), id=program_id)
     tier = get_object_or_404(LoyaltyTier.objects.filter(program=program), id=tier_id)
-    members = (
-        Customer.objects.filter(organization=org, loyalty_tier=tier)
-        .order_by('-lifetime_value', 'name')
-    )
+    members = Customer.objects.filter(organization=org, loyalty_tier=tier)
+
+    # Search by name or email (kept inline rather than via filter_customers, which
+    # would drop placeholder-email CSV members from the tier list).
+    search_query = request.GET.get('search', '').strip()
+    if search_query:
+        members = members.filter(
+            Q(name__icontains=search_query) | Q(email__icontains=search_query)
+        )
+
+    # Sorting — validate against an allowlist, default to highest lifetime value.
+    allowed_sorts = {
+        'name', '-name', 'email', '-email',
+        'lifetime_value', '-lifetime_value',
+        'last_order_date', '-last_order_date',
+    }
+    sort_by = request.GET.get('sort', '-lifetime_value')
+    if sort_by not in allowed_sorts:
+        sort_by = '-lifetime_value'
+
+    if sort_by in ('last_order_date', '-last_order_date'):
+        last = F('last_order_date')
+        ordering = [
+            last.desc(nulls_last=True) if sort_by.startswith('-') else last.asc(nulls_last=True),
+            'name',
+        ]
+    elif sort_by in ('lifetime_value', '-lifetime_value'):
+        ordering = [sort_by, 'name']  # preserve the name tiebreak this page had
+    else:
+        ordering = [sort_by]
+    members = members.order_by(*ordering)
+
     paginator = Paginator(members, 50)
     page_obj = paginator.get_page(request.GET.get('page'))
     return render(request, 'tickets/loyalty/tier_members.html', {
         'program': program,
         'tier': tier,
         'page_obj': page_obj,
+        'search_query': search_query,
+        'sort_by': sort_by,
     })
 
 
@@ -3365,6 +3415,43 @@ def repeat_customers(request):
 @login_required
 @require_org
 @require_host
+def market_trends(request):
+    """Analytics page: per-market turnout trend, decline diagnosis, and next-step CTA."""
+    org = get_organization(request)
+    period = request.GET.get('period', 'quarter')
+    if period not in ('month', 'quarter'):
+        period = 'quarter'
+    metric = request.GET.get('metric', 'revenue')
+    if metric not in ('revenue', 'tickets', 'profitability', 'nps'):
+        metric = 'revenue'
+    window = request.GET.get('window', '2y')
+    if window not in ('1y', '2y', '3y', 'all'):
+        window = '2y'
+
+    from tickets.services.market_trends import MarketTrendCalculator
+    result = MarketTrendCalculator(org, period=period, metric=metric, window=window).calculate()
+    markets = result['markets']
+
+    context = {
+        'markets': markets,
+        'markets_json': json.dumps(markets, default=str),
+        'summary': result['summary'],
+        'period': period,
+        'metric': metric,
+        'window': window,
+        'change_unit': 'pts' if metric == 'nps' else '%',
+        'sms_marketing_enabled': org.sms_marketing_enabled,
+    }
+    # AJAX selector switches request only the dynamic region so the page (and the
+    # currently selected market) is preserved without a full reload.
+    if request.GET.get('fragment'):
+        return render(request, 'tickets/_market_trends_content.html', context)
+    return render(request, 'tickets/market_trends.html', context)
+
+
+@login_required
+@require_org
+@require_host
 def cohort_retention(request):
     """Analytics page: monthly cohort retention heatmap and line chart."""
     org = get_organization(request)
@@ -3432,20 +3519,18 @@ def customer_detail(request, customer_id):
     order_stats = customer.ticket_orders.annotate(net_amount=_net_amount).aggregate(
         total_orders=Count('id'),
         avg_order_value=Coalesce(Avg('net_amount'), Decimal('0.00')),
+        first_order_date=Min('order_date'),
         last_order_date=Max('order_date'),
     )
     total_orders = order_stats['total_orders']
     avg_order_value = order_stats['avg_order_value']
+    first_order_date = order_stats['first_order_date']
     last_order_date = order_stats['last_order_date']
     total_tickets = Ticket.objects.filter(ticket_order__customer=customer).count()
 
-    # Event attendance - select_related to avoid N+1 on venue in template
-    events_attended = Event.objects.filter(
-        ticket_orders__customer=customer
-    ).select_related('venue').distinct()
-
-    # Paginate orders — annotate net_amount so the template shows post-fee totals
-    orders = customer.ticket_orders.select_related('event').annotate(
+    # Paginate orders — annotate net_amount so the template shows post-fee totals.
+    # select_related event__venue so the Venue column doesn't trigger an N+1.
+    orders = customer.ticket_orders.select_related('event', 'event__venue').annotate(
         tickets_count=Count('tickets'),
         net_amount=_net_amount,
     ).order_by('-order_date')
@@ -3476,6 +3561,11 @@ def customer_detail(request, customer_id):
     if loyalty_tier and loyalty_tier.program.organization_id != org.id:
         loyalty_tier = None
 
+    # Points: surface the balance when the org's active program awards points.
+    loyalty_points_enabled = _active_loyalty_programs(org).filter(
+        is_active=True, points_enabled=True
+    ).exists()
+
     # Marketing (native SMS) activity — one row per message sent to this customer.
     # Org-scoped already since `customer` is org-scoped. select_related avoids an
     # N+1 on campaign.name in the template. SMS has no "opened" event, so the
@@ -3498,11 +3588,12 @@ def customer_detail(request, customer_id):
     context = {
         'customer': customer,
         'loyalty_tier': loyalty_tier,
+        'loyalty_points_enabled': loyalty_points_enabled,
         'total_orders': total_orders,
         'total_tickets': total_tickets,
         'avg_order_value': avg_order_value,
+        'first_order_date': first_order_date,
         'last_order_date': last_order_date,
-        'events_attended': events_attended,
         'page_obj': page_obj,
         'segment_badge_color': segment_badge_color,
         'behavior_profile_badge_color': behavior_profile_badge_color,
@@ -3911,6 +4002,7 @@ def _compute_event_stats(event):
             remaining = None if is_unlimited else max(allocated - sold, 0)
             percent_sold = None if is_unlimited or allocated == 0 else round(min(sold / allocated * 100, 100))
             ticket_type_allocation_charts.append({
+                'tt_id': str(tt.id),
                 'label': tt.name,
                 'sold': sold,
                 'allocated': allocated,
@@ -3964,6 +4056,20 @@ def _compute_event_stats(event):
         }
         for row in tickets_by_date
     ]
+    # Backfill days with no sales so the chart's x-axis is continuous from the
+    # first to the last day of activity (the ORM aggregation above omits empty days).
+    if sales_over_time:
+        by_date = {row['date']: row for row in sales_over_time}
+        start_date = sales_over_time[0]['date']
+        end_date = sales_over_time[-1]['date']
+        filled = []
+        current = start_date
+        while current <= end_date:
+            filled.append(
+                by_date.get(current, {'date': current, 'count': 0, 'revenue': 0})
+            )
+            current += timedelta(days=1)
+        sales_over_time = filled
     page_views_over_time = list(
         EventDailyPageView.objects.filter(event=event)
         .order_by('date')
@@ -3977,6 +4083,7 @@ def _compute_event_stats(event):
     star_avg = None
     int_nps_total = int_promoters = int_passives = int_detractors = 0
     internal_comments = []
+    choice_breakdowns = []
 
     if survey_responses_count > 0:
         star_avg = SurveyAnswer.objects.filter(
@@ -4014,12 +4121,37 @@ def _compute_event_stats(event):
             )[:5]
         ]
 
+        # Choice-question tallies — one annotated query over the option table,
+        # grouped into per-question breakdowns (no N+1).
+        choice_q_ids = list(
+            SurveyAnswer.objects.filter(
+                response__event=event,
+                question__question_type__in=SurveyQuestion.CHOICE_TYPES,
+            ).values_list('question_id', flat=True).distinct()
+        )
+        if choice_q_ids:
+            option_rows = (
+                SurveyQuestionOption.objects.filter(question_id__in=choice_q_ids)
+                .annotate(n=Count('answers', filter=Q(answers__response__event=event)))
+                .order_by('question__position', 'position')
+                .values('question_id', 'question__question_text', 'label', 'n')
+            )
+            grouped = {}
+            for row in option_rows:
+                bucket = grouped.setdefault(
+                    row['question_id'],
+                    {'question': row['question__question_text'], 'options': []},
+                )
+                bucket['options'].append({'label': row['label'], 'count': row['n']})
+            choice_breakdowns = list(grouped.values())
+
     # Survey results — external (ExternalSurveyResponse from CSV uploads)
     ext_qs = ExternalSurveyResponse.objects.filter(event=event)
     ext_count = ext_qs.count()
     ext_nps_total = ext_promoters = ext_passives = ext_detractors = 0
     ext_comments = []
     ext_rating_breakdown = []
+    ext_structured = {}
 
     if ext_count > 0:
         # Single aggregate instead of 4 separate .count() calls
@@ -4054,6 +4186,37 @@ def _compute_event_stats(event):
             .annotate(count=Count('id'))
             .order_by('-count')
         )
+
+        # Structured multi-select answers (JSON lists) — count value frequency.
+        from collections import Counter
+        enjoyed_c, genres_c, improvements_c = Counter(), Counter(), Counter()
+        for r in ext_qs.values('enjoyed', 'genres', 'improvements'):
+            enjoyed_c.update(v for v in (r['enjoyed'] or []) if v)
+            genres_c.update(v for v in (r['genres'] or []) if v)
+            improvements_c.update(v for v in (r['improvements'] or []) if v)
+
+        def _top(counter):
+            return [{'label': label, 'count': count} for label, count in counter.most_common(5)]
+
+        # Single-select answers (CharFields) — same breakdown pattern as overall_rating.
+        def _char_breakdown(field):
+            return [
+                {'label': row[field], 'count': row['count']}
+                for row in ext_qs.exclude(**{field: ''})
+                .values(field)
+                .annotate(count=Count('id'))
+                .order_by('-count')[:5]
+            ]
+
+        ext_structured = {
+            'enjoyed': _top(enjoyed_c),
+            'genres': _top(genres_c),
+            'improvements': _top(improvements_c),
+            'crowd_vibe': _char_breakdown('crowd_vibe'),
+            'venue_feel': _char_breakdown('venue_feel'),
+            'pre_event_info': _char_breakdown('pre_event_info'),
+            'found_out_how': _char_breakdown('found_out_how'),
+        }
 
     # Merge both sources
     survey_results = None
@@ -4093,6 +4256,8 @@ def _compute_event_stats(event):
             'internal_response_count': survey_responses_count,
             'ext_response_count': ext_count,
             'overall_rating_breakdown': ext_rating_breakdown,
+            'ext_structured': ext_structured,
+            'choice_breakdowns': choice_breakdowns,
         }
 
     # Customer segment breakdown for attendees of this event.
@@ -4114,6 +4279,23 @@ def _compute_event_stats(event):
         }
         for r in segment_rows
     ]
+
+    ci_show, ci_total, ci_checked, ci_by_type = _compute_event_checkin_stats(event)
+    checkin = {
+        'show': ci_show,
+        'total_tickets': ci_total,
+        'checked_in': ci_checked,
+        'percent': round(ci_checked / ci_total * 100) if ci_total else 0,
+        'by_type': ci_by_type,
+    }
+
+    # Audience analytics — only when the event has attendance data to show
+    # (direct events past start, or external events with imported scan data).
+    if ci_show:
+        from tickets.services.audience import EventAudienceCalculator
+        audience = EventAudienceCalculator(event).calculate()
+    else:
+        audience = {'show': False}
 
     result = {
         'total_orders': total_orders,
@@ -4143,6 +4325,8 @@ def _compute_event_stats(event):
         'survey_total_response_count': survey_total_response_count,
         'survey_results': survey_results,
         'attendee_segments': attendee_segments,
+        'checkin': checkin,
+        'audience': audience,
     }
     safe_cache_set(cache_key, result, timeout=300)
     return result
@@ -4202,15 +4386,16 @@ def _compute_marketing_events(event):
 def _compute_event_checkin_stats(event):
     """Return (should_show, total_tickets, checked_in_tickets, by_type).
 
-    should_show is True when the event is direct ticketing AND its local start
-    datetime has passed. Tickets are counted at the ticket level (a TicketOrder
-    can hold multiple tickets, and a single check-in admits the whole order).
-    by_type is a list of {label, total, checked_in, percent} dicts grouped by
+    Check-ins are counted at the individual ticket level via Ticket.scanned_at,
+    which is the single source of truth: live check-ins stamp every ticket in the
+    admitted order, and CSV imports stamp each scanned ticket (so partially-scanned
+    multi-ticket orders are counted accurately).
+
+    should_show is True when the event's local start datetime has passed AND it is
+    either a direct-ticketing event or an external event that has imported scan
+    data. by_type is a list of {label, total, checked_in, percent} dicts grouped by
     Ticket.ticket_type, sorted by total desc.
     """
-    if event.ticketing_type != 'direct':
-        return False, 0, 0, []
-
     tz_name = event.timezone or 'America/Los_Angeles'
     try:
         tz = ZoneInfo(tz_name)
@@ -4225,15 +4410,20 @@ def _compute_event_checkin_stats(event):
 
     agg = event.ticket_orders.aggregate(
         total=Count('tickets'),
-        checked_in=Count('tickets', filter=Q(checked_in_at__isnull=False)),
+        checked_in=Count('tickets', filter=Q(tickets__scanned_at__isnull=False)),
     )
+
+    # Direct events always show (even at 0%); external events only once they have
+    # imported scan data, so untouched external events don't show an empty chart.
+    if event.ticketing_type != 'direct' and not (agg['checked_in'] or 0):
+        return False, 0, 0, []
 
     by_type_qs = (
         Ticket.objects.filter(ticket_order__event=event)
         .values('ticket_type')
         .annotate(
             total=Count('id'),
-            checked_in=Count('id', filter=Q(ticket_order__checked_in_at__isnull=False)),
+            checked_in=Count('id', filter=Q(scanned_at__isnull=False)),
         )
         .order_by('-total')
     )
@@ -4280,12 +4470,22 @@ def _get_adjacent_event(org, event, direction):
 
 
 def _recompute_utm_attribution_for_event(org, event):
-    """Best-effort local recompute of Cue-tracked campaign attribution. Never raises."""
+    """Best-effort local recompute of Cue-tracked campaign attribution. Never raises.
+
+    Covers both channels that attribute via first-party UTMs captured on ticket
+    orders: Meta Ads (utm_id/utm_campaign -> EventExpense) and SlickText SMS
+    broadcasts (utm_id/utm_campaign + utm_source=SlickText -> EventSMSCampaign).
+    """
     try:
         from tickets.services.marketing.utm_attribution import UTMAttributionCalculator
         UTMAttributionCalculator(org).recompute_event(event)
     except Exception:
         logger.exception("UTM attribution recompute failed for org=%s event=%s", org.id, event.id)
+    try:
+        from tickets.services.marketing.sms_attribution import SMSAttributionCalculator
+        SMSAttributionCalculator(org).recompute_event(event)
+    except Exception:
+        logger.exception("SMS attribution recompute failed for org=%s event=%s", org.id, event.id)
 
 
 # How long to skip re-hitting Meta for an event's linked-campaign spend after a refresh.
@@ -4851,6 +5051,15 @@ def event_detail(request, event_id):
     show_checkin_chart, checkin_total_tickets, checkin_count, checkin_by_type = _compute_event_checkin_stats(event)
     checkin_percent = round(checkin_count / checkin_total_tickets * 100) if checkin_total_tickets else 0
 
+    audience = stats.get('audience') or {'show': False}
+    notable_attendees_page = None
+    if audience.get('show'):
+        from tickets.services.audience import EventAudienceCalculator
+        from tickets.services.segmentation.segment_definitions import SEGMENT_BADGE_COLORS
+        notable_qs = EventAudienceCalculator(event).notable_attendees_queryset()
+        notable_paginator = Paginator(notable_qs, 10)
+        notable_attendees_page = notable_paginator.get_page(request.GET.get('audience_page'))
+
     prev_event = _get_adjacent_event(org, event, 'prev')
     next_event = _get_adjacent_event(org, event, 'next')
 
@@ -4949,6 +5158,10 @@ def event_detail(request, event_id):
         'checkin_count': checkin_count,
         'checkin_percent': checkin_percent,
         'checkin_by_type': checkin_by_type,
+        'audience': audience,
+        'show_audience_tab': audience.get('show'),
+        'notable_attendees_page': notable_attendees_page,
+        'segment_badge_colors': SEGMENT_BADGE_COLORS if audience.get('show') else {},
         'prev_event_id': prev_event.id if prev_event else None,
         'next_event_id': next_event.id if next_event else None,
         'prev_event_name': prev_event.name if prev_event else None,
@@ -5129,6 +5342,55 @@ def event_uploads_summary(request, event_id):
         'event': event,
         'upload_stats': upload_stats,
     })
+
+
+@login_required
+@require_org
+@require_organizer
+@require_http_methods(["POST"])
+def event_summary_stream(request, event_id):
+    """SSE endpoint - streams an LLM-generated event summary."""
+    from django.http import StreamingHttpResponse
+    from django.core.cache import cache as django_cache
+
+    from .services.event_summary import EventSummaryService
+
+    org = get_organization(request)
+
+    # Respect the org's display preference — endpoint is unavailable when hidden
+    if not org.ai_event_summary_enabled:
+        raise Http404()
+
+    # Rate limit: 30 *successful* generations per org per hour. We only check the
+    # ceiling here; the counter is incremented by the service after a summary is
+    # actually produced, so failed attempts (e.g. a missing OpenAI key) don't burn
+    # the budget or mask the real error behind a misleading "rate limit" message.
+    rate_key = f"summary_ratelimit:{org.id}"
+    try:
+        if (django_cache.get(rate_key, 0) or 0) >= 30:
+            return JsonResponse(
+                {'error': 'Rate limit exceeded. Please try again later.'},
+                status=429,
+            )
+    except Exception:
+        # Redis unavailable — skip rate limiting rather than blocking the request
+        pass
+
+    event = get_object_or_404(
+        Event.objects.filter(organization=org).select_related('venue'),
+        id=event_id,
+    )
+
+    event_data = _compute_event_stats(event)
+
+    service = EventSummaryService(org, user=request.user)
+    response = StreamingHttpResponse(
+        service.stream_summary(event, event_data, rate_limit_key=rate_key),
+        content_type='text/event-stream',
+    )
+    response['Cache-Control'] = 'no-cache'
+    response['X-Accel-Buffering'] = 'no'
+    return response
 
 
 @login_required
@@ -5495,6 +5757,11 @@ def order_detail(request, order_id):
         and order.refunded_at is None
         and remaining_refundable > 0
     )
+    can_resend = (
+        order.event.ticketing_type == TICKETING_TYPE_DIRECT
+        and stripe_session is not None
+        and bool(order.customer.email)
+    )
 
     context = {
         'order': order,
@@ -5503,6 +5770,7 @@ def order_detail(request, order_id):
         'ticket_types': ticket_types,
         'stripe_session': stripe_session,
         'can_refund': can_refund,
+        'can_resend': can_resend,
         'remaining_refundable': remaining_refundable,
     }
     return render(request, 'tickets/order_detail.html', context)
@@ -5639,15 +5907,42 @@ def refund_order(request, order_id):
     return redirect('tickets:order_detail', order_id=order_id)
 
 
+@login_required
+@require_org
+@require_host
+@require_http_methods(["POST"])
+def resend_order_confirmation(request, order_id):
+    """Re-send the order confirmation email for a direct-purchase order."""
+    org = get_organization(request)
+    order = get_object_or_404(
+        TicketOrder.objects.filter(event__organization=org).select_related(
+            'customer', 'event', 'stripe_checkout_session',
+        ),
+        id=order_id
+    )
+    stripe_session = getattr(order, 'stripe_checkout_session', None)
+    if order.event.ticketing_type != TICKETING_TYPE_DIRECT or stripe_session is None:
+        messages.error(request, 'Confirmation emails can only be resent for direct-purchase orders.')
+        return redirect('tickets:order_detail', order_id=order_id)
+    if not order.customer.email:
+        messages.error(request, 'This order has no customer email on file.')
+        return redirect('tickets:order_detail', order_id=order_id)
+
+    from .tasks import send_order_confirmation_email_task
+    send_order_confirmation_email_task.delay(str(order.id))
+    messages.success(request, f'Confirmation email queued to {order.customer.email}.')
+    return redirect('tickets:order_detail', order_id=order_id)
+
+
 # Format Management Views
 
 @login_required
 @require_org
 @require_host
 def format_list(request):
-    """List all CSV formats."""
+    """List all CSV formats available to the org (its own + global built-ins)."""
     org = get_organization(request)
-    formats = CSVFormat.objects.filter(organization=org)
+    formats = CSVFormat.available_for(org)
     context = {
         'formats': formats,
     }
@@ -5751,6 +6046,41 @@ def format_set_default(request, format_id):
     
     messages.success(request, f"'{format_obj.name}' is now the default CSV format.")
     return redirect('tickets:format_list')
+
+
+@login_required
+@require_org
+@require_host
+def format_duplicate(request, format_id):
+    """Copy a visible format (incl. a global built-in) into an editable org copy."""
+    org = get_organization(request)
+    # Source can be one of the org's own formats or a global built-in.
+    source = get_object_or_404(CSVFormat.available_for(org), id=format_id)
+
+    # Build a unique name within the global-unique constraint.
+    base_name = f"{source.name} (Custom)"
+    new_name = base_name
+    suffix = 2
+    while CSVFormat.objects.filter(name=new_name).exists():
+        new_name = f"{base_name} {suffix}"
+        suffix += 1
+
+    copy = CSVFormat(
+        organization=org,
+        name=new_name,
+        description=source.description,
+        is_default=False,
+        is_system=False,
+        requires_manual_pricing=source.requires_manual_pricing,
+        uses_tiers=source.uses_tiers,
+        column_mapping=source.column_mapping,
+    )
+    copy.save()
+    messages.success(
+        request,
+        f"Created an editable copy '{copy.name}'. Customize it below.",
+    )
+    return redirect('tickets:format_edit', format_id=copy.id)
 
 
 # Venue Management Views
@@ -6774,6 +7104,23 @@ def org_profile(request):
     else:
         form = OrgProfileForm(instance=org)
     return render(request, 'tickets/settings_org_profile.html', {'form': form, 'org': org})
+
+
+@login_required
+@require_org
+@require_admin
+def settings_display_preferences(request):
+    """Toggle which optional cards appear on event pages (e.g. AI Event Summary)."""
+    org = get_organization(request)
+    if request.method == 'POST':
+        form = OrgDisplayPreferencesForm(request.POST, instance=org)
+        if form.is_valid():
+            form.save()
+            messages.success(request, 'Display preferences updated.')
+            return redirect('tickets:settings_display_preferences')
+    else:
+        form = OrgDisplayPreferencesForm(instance=org)
+    return render(request, 'tickets/settings_display_preferences.html', {'form': form, 'org': org})
 
 
 # Forecast Tool Views
@@ -8103,6 +8450,9 @@ def event_slicktext_apply(request, event_id):
             updated_titles.append(sms_campaign.name)
 
     succeeded = len(added_titles) + len(updated_titles)
+    if succeeded:
+        # Newly linked broadcasts have fresh external_ids to match orders against.
+        _recompute_utm_attribution_for_event(org, event)
     if succeeded == 1:
         only_title = (added_titles + updated_titles)[0]
         verb = 'added' if added_titles else 'updated'
@@ -8925,21 +9275,126 @@ def _get_survey_questions_for_event(event):
     # 1. Event-specific questions
     event_questions = SurveyQuestion.objects.filter(
         event=event, is_active=True
-    ).order_by('position')
+    ).order_by('position').prefetch_related('options')
     if event_questions.exists():
         return event_questions
 
     # 2. Organization defaults
     org_questions = SurveyQuestion.objects.filter(
         organization=event.organization, event__isnull=True, is_active=True
-    ).order_by('position')
+    ).order_by('position').prefetch_related('options')
     if org_questions.exists():
         return org_questions
 
     # 3. System defaults (no event, no org)
     return SurveyQuestion.objects.filter(
         event__isnull=True, organization__isnull=True, is_active=True
-    ).order_by('position')
+    ).order_by('position').prefetch_related('options')
+
+
+# _resolve_effective_questions is an alias for the public resolver, named for the
+# builder/freeze code paths where "effective survey" reads more clearly.
+_resolve_effective_questions = _get_survey_questions_for_event
+
+
+def _copy_question(src, **overrides):
+    """Deep-copy a SurveyQuestion (and its options) into a new row.
+
+    Reused by: clone-system-defaults-to-org, customize-for-event, and the
+    send-time freeze. Pass overrides like event=..., organization=... to set the
+    new scope.
+    """
+    fields = {
+        'question_text': src.question_text,
+        'question_type': src.question_type,
+        'position': src.position,
+        'is_required': src.is_required,
+        'is_active': src.is_active,
+        'event': src.event,
+        'organization': src.organization,
+    }
+    fields.update(overrides)
+    new_q = SurveyQuestion.objects.create(**fields)
+    options = [
+        SurveyQuestionOption(question=new_q, label=o.label, position=o.position)
+        for o in src.options.all()
+    ]
+    if options:
+        SurveyQuestionOption.objects.bulk_create(options)
+    return new_q
+
+
+def _clone_effective_to_event(event):
+    """Freeze the effective survey into immutable event-scoped rows.
+
+    Clones the FULL resolved set (event > org > system) into event scope so the
+    event owns a stable snapshot. No-op if the event already has its own active
+    questions. Returns True if anything was cloned.
+    """
+    if SurveyQuestion.objects.filter(event=event, is_active=True).exists():
+        return False
+    source = list(_resolve_effective_questions(event))
+    with transaction.atomic():
+        for src in source:
+            _copy_question(src, event=event, organization=event.organization)
+    return bool(source)
+
+
+def _survey_locked(event):
+    """An event's survey is locked once any invitation has been created for it."""
+    return SurveyInvitation.objects.filter(event=event).exists()
+
+
+def _parse_survey_answer(question, post_data):
+    """Parse + validate one submitted answer for `question` from POST data.
+
+    Returns (answer_data, error). answer_data is a dict with the scalar fields
+    and (for choice questions) 'selected_option_ids'. error is a message string
+    or None. Pure and unit-testable; the public form loop calls this per question.
+    """
+    field_name = f"question_{question.id}"
+
+    if question.question_type in SurveyQuestion.CHOICE_TYPES:
+        valid_ids = {str(o.id) for o in question.options.all()}
+        if question.question_type == 'single_select':
+            raw = (post_data.get(field_name) or '').strip()
+            selected = [raw] if raw else []
+        else:
+            selected = [v for v in post_data.getlist(field_name) if v]
+        if question.is_required and not selected:
+            return None, "This field is required."
+        if any(v not in valid_ids for v in selected):
+            return None, "Invalid selection."
+        return {
+            'question': question, 'star_rating': None, 'nps_score': None,
+            'text_answer': '', 'selected_option_ids': selected,
+        }, None
+
+    value = (post_data.get(field_name) or '').strip()
+    if question.is_required and not value:
+        return None, "This field is required."
+    if not value:
+        return {'question': question, 'star_rating': None, 'nps_score': None, 'text_answer': ''}, None
+
+    if question.question_type == 'star_rating':
+        try:
+            rating = int(value)
+            if not (1 <= rating <= 5):
+                raise ValueError
+        except (ValueError, TypeError):
+            return None, "Please select a rating between 1 and 5."
+        return {'question': question, 'star_rating': rating, 'nps_score': None, 'text_answer': ''}, None
+
+    if question.question_type == 'nps':
+        try:
+            score = int(value)
+            if not (0 <= score <= 10):
+                raise ValueError
+        except (ValueError, TypeError):
+            return None, "Please select a score between 0 and 10."
+        return {'question': question, 'star_rating': None, 'nps_score': score, 'text_answer': ''}, None
+
+    return {'question': question, 'star_rating': None, 'nps_score': None, 'text_answer': value}, None
 
 
 @login_required
@@ -8965,6 +9420,11 @@ def send_survey(request, event_id):
     if not attendees.exists():
         messages.info(request, "All attendees have already been sent a survey for this event.")
         return redirect('tickets:event_detail', event_id=event_id)
+
+    # Freeze the survey: clone the effective question set into immutable
+    # event-scoped rows so answers reference a stable snapshot. No-op if the
+    # event already owns questions (e.g. it was customized or already sent).
+    _clone_effective_to_event(event)
 
     # Create invitations
     invitations = []
@@ -9006,38 +9466,14 @@ def survey_form(request, token):
     if request.method == 'POST':
         errors = {}
 
-        # Validate answers
+        # Validate answers (per-question parse helper handles every type)
         answers_data = []
         for question in questions:
-            field_name = f"question_{question.id}"
-            value = request.POST.get(field_name, '').strip()
-
-            if question.is_required and not value:
-                errors[field_name] = "This field is required."
-                continue
-
-            if not value:
-                answers_data.append({'question': question, 'star_rating': None, 'nps_score': None, 'text_answer': ''})
-                continue
-
-            if question.question_type == 'star_rating':
-                try:
-                    rating = int(value)
-                    if not (1 <= rating <= 5):
-                        raise ValueError
-                    answers_data.append({'question': question, 'star_rating': rating, 'nps_score': None, 'text_answer': ''})
-                except (ValueError, TypeError):
-                    errors[field_name] = "Please select a rating between 1 and 5."
-            elif question.question_type == 'nps':
-                try:
-                    score = int(value)
-                    if not (0 <= score <= 10):
-                        raise ValueError
-                    answers_data.append({'question': question, 'star_rating': None, 'nps_score': score, 'text_answer': ''})
-                except (ValueError, TypeError):
-                    errors[field_name] = "Please select a score between 0 and 10."
+            data, error = _parse_survey_answer(question, request.POST)
+            if error:
+                errors[f"question_{question.id}"] = error
             else:
-                answers_data.append({'question': question, 'star_rating': None, 'nps_score': None, 'text_answer': value})
+                answers_data.append(data)
 
         if not errors:
             with transaction.atomic():
@@ -9047,16 +9483,28 @@ def survey_form(request, token):
                     customer=invitation.customer,
                     organization=invitation.organization,
                 )
-                answer_objects = []
+                # Choice answers carry an M2M (through-model), so create each
+                # answer individually + full_clean() rather than bulk_create.
                 for data in answers_data:
-                    answer_objects.append(SurveyAnswer(
+                    answer = SurveyAnswer(
                         response=response,
                         question=data['question'],
                         star_rating=data['star_rating'],
                         nps_score=data['nps_score'],
                         text_answer=data['text_answer'],
-                    ))
-                SurveyAnswer.objects.bulk_create(answer_objects)
+                    )
+                    answer.full_clean(exclude=['selected_options'])
+                    answer.save()
+                    option_ids = data.get('selected_option_ids') or []
+                    if option_ids:
+                        SurveyAnswerOption.objects.bulk_create([
+                            SurveyAnswerOption(
+                                answer=answer,
+                                option_id=oid,
+                                question=data['question'],
+                            )
+                            for oid in option_ids
+                        ])
 
                 invitation.completed_at = django_tz.now()
                 invitation.save(update_fields=['completed_at'])
@@ -9079,6 +9527,397 @@ def survey_form(request, token):
 def survey_thank_you(request):
     """Public thank-you page after survey submission."""
     return render(request, 'tickets/survey/survey_thank_you.html')
+
+
+# ---------------------------------------------------------------------------
+# Survey builder (organizer-facing)
+# ---------------------------------------------------------------------------
+
+def _survey_scope(request, event_id):
+    """Resolve (org, event_or_None). Event is org-scoped → 404 cross-org."""
+    org = get_organization(request)
+    event = None
+    if event_id:
+        event = get_object_or_404(Event.objects.filter(organization=org), id=event_id)
+    return org, event
+
+
+def _scope_base_qs(org, event):
+    """Unfiltered question queryset for the scope (org template vs event)."""
+    if event:
+        return SurveyQuestion.objects.filter(event=event)
+    return SurveyQuestion.objects.filter(organization=org, event__isnull=True)
+
+
+def _builder_redirect(event):
+    if event:
+        return redirect('tickets:event_survey_builder', event_id=event.id)
+    return redirect('tickets:survey_builder')
+
+
+def _builder_url_names(event):
+    """URL names + base args for the active scope (org template vs event)."""
+    if event:
+        return ('tickets:event_survey_question_save', 'tickets:event_survey_question_delete',
+                'tickets:event_survey_reorder', [event.id])
+    return ('tickets:survey_question_save', 'tickets:survey_question_delete',
+            'tickets:survey_reorder', [])
+
+
+def _decorate_builder_urls(questions, event):
+    """Attach per-question save/delete (AJAX) URLs for the inline builder."""
+    save_name, del_name, _reorder, args = _builder_url_names(event)
+    for q in questions:
+        q.save_url = reverse(save_name, args=args + [q.id])
+        q.delete_url = reverse(del_name, args=args + [q.id])
+    return questions
+
+
+def _question_dict(q, event):
+    """JSON representation of a saved question for the inline builder."""
+    save_name, del_name, _reorder, args = _builder_url_names(event)
+    return {
+        'id': str(q.id),
+        'text': q.question_text,
+        'type': q.question_type,
+        'type_display': q.get_question_type_display(),
+        'required': q.is_required,
+        'position': q.position,
+        'options': [{'id': str(o.id), 'label': o.label} for o in q.options.all()],
+        'save_url': reverse(save_name, args=args + [q.id]),
+        'delete_url': reverse(del_name, args=args + [q.id]),
+    }
+
+
+def _validate_choice_options(qtype, option_labels):
+    """Choice questions require ≥1 option. Returns error str or None."""
+    if qtype in SurveyQuestion.CHOICE_TYPES and not option_labels:
+        return "Choice questions need at least one option."
+    return None
+
+
+def _validate_single_metric(base_qs, qtype, exclude_id=None):
+    """Enforce ≤ 1 active NPS and ≤ 1 active star question per survey."""
+    if qtype in ('nps', 'star_rating'):
+        existing = base_qs.filter(question_type=qtype, is_active=True)
+        if exclude_id:
+            existing = existing.exclude(id=exclude_id)
+        if existing.exists():
+            label = 'NPS' if qtype == 'nps' else 'star rating'
+            return f"A survey can only have one {label} question."
+    return None
+
+
+@login_required
+@require_org
+@require_host
+def survey_builder(request, event_id=None):
+    """List + inline-manage survey questions for the org template or one event."""
+    org, event = _survey_scope(request, event_id)
+    locked = bool(event) and _survey_locked(event)
+
+    questions = list(
+        _scope_base_qs(org, event)
+        .filter(is_active=True)
+        .order_by('position')
+        .prefetch_related('options')
+    )
+    _decorate_builder_urls(questions, event)
+
+    save_name, _del, reorder_name, args = _builder_url_names(event)
+    context = {
+        'event': event,
+        'questions': questions,
+        'questions_json': [_question_dict(q, event) for q in questions],
+        'locked': locked,
+        'is_org_template': event is None,
+        'question_types': SurveyQuestion.QUESTION_TYPE_CHOICES,
+        'choice_types': list(SurveyQuestion.CHOICE_TYPES),
+        'create_save_url': reverse(save_name, args=args),
+        'reorder_url': reverse(reorder_name, args=args),
+        'preview_url': reverse('tickets:event_survey_preview', args=args) if event
+                       else reverse('tickets:survey_preview'),
+    }
+    if event and not questions:
+        context['effective_preview'] = list(_resolve_effective_questions(event))
+    if event is None and not questions:
+        context['system_defaults_available'] = SurveyQuestion.objects.filter(
+            event__isnull=True, organization__isnull=True, is_active=True
+        ).exists()
+    return render(request, 'tickets/survey/builder.html', context)
+
+
+@login_required
+@require_org
+@require_host
+def survey_question_save(request, event_id=None, question_id=None):
+    """JSON create-or-update of a survey question + its options (inline builder)."""
+    from django.db.models import Max
+    if request.method != 'POST':
+        return JsonResponse({'ok': False, 'errors': ['POST required.']}, status=405)
+    org, event = _survey_scope(request, event_id)
+    if event and _survey_locked(event):
+        return JsonResponse({'ok': False, 'errors': ['This survey has been sent and is locked.']}, status=403)
+
+    try:
+        data = json.loads(request.body or '{}')
+    except (json.JSONDecodeError, ValueError):
+        return JsonResponse({'ok': False, 'errors': ['Invalid request.']}, status=400)
+
+    text = (data.get('question_text') or '').strip()
+    qtype = data.get('question_type')
+    required = bool(data.get('is_required'))
+    labels = []
+    for o in (data.get('options') or []):
+        label = (o.get('label') if isinstance(o, dict) else o) or ''
+        label = str(label).strip()
+        if label:
+            labels.append(label)
+
+    base_qs = _scope_base_qs(org, event)
+    question = get_object_or_404(base_qs, id=question_id) if question_id else None
+
+    errors = []
+    if not text:
+        errors.append('Question text is required.')
+    if qtype not in {c[0] for c in SurveyQuestion.QUESTION_TYPE_CHOICES}:
+        errors.append('Choose a question type.')
+    if not errors:
+        err = (_validate_choice_options(qtype, labels)
+               or _validate_single_metric(base_qs, qtype, exclude_id=question.id if question else None))
+        if err:
+            errors.append(err)
+    if errors:
+        return JsonResponse({'ok': False, 'errors': errors}, status=422)
+
+    with transaction.atomic():
+        if question is None:
+            question = SurveyQuestion(
+                event=event, organization=org,
+                position=(base_qs.aggregate(m=Max('position'))['m'] or 0) + 1,
+            )
+        question.question_text = text
+        question.question_type = qtype
+        question.is_required = required
+        question.save()
+        # Replace options wholesale (editable questions never have answers).
+        question.options.all().delete()
+        if qtype in SurveyQuestion.CHOICE_TYPES:
+            SurveyQuestionOption.objects.bulk_create([
+                SurveyQuestionOption(question=question, label=label, position=i)
+                for i, label in enumerate(labels)
+            ])
+
+    question = base_qs.prefetch_related('options').get(id=question.id)
+    return JsonResponse({'ok': True, 'question': _question_dict(question, event)})
+
+
+@login_required
+@require_org
+@require_host
+def survey_question_delete(request, question_id, event_id=None):
+    """JSON delete. Soft-deactivate if it somehow has answers; block if locked."""
+    org, event = _survey_scope(request, event_id)
+    if request.method != 'POST':
+        return JsonResponse({'ok': False, 'errors': ['POST required.']}, status=405)
+    if event and _survey_locked(event):
+        return JsonResponse({'ok': False, 'errors': ['This survey is locked.']}, status=403)
+    question = get_object_or_404(_scope_base_qs(org, event), id=question_id)
+    if SurveyAnswer.objects.filter(question=question).exists():
+        question.is_active = False
+        question.save(update_fields=['is_active'])
+    else:
+        question.delete()
+    return JsonResponse({'ok': True})
+
+
+@login_required
+@require_org
+@require_host
+def survey_reorder(request, event_id=None):
+    """JSON up/down: swap a question's position with its neighbour."""
+    org, event = _survey_scope(request, event_id)
+    if request.method != 'POST':
+        return JsonResponse({'ok': False, 'errors': ['POST required.']}, status=405)
+    if event and _survey_locked(event):
+        return JsonResponse({'ok': False, 'errors': ['This survey is locked.']}, status=403)
+    try:
+        data = json.loads(request.body or '{}')
+    except (json.JSONDecodeError, ValueError):
+        return JsonResponse({'ok': False, 'errors': ['Invalid request.']}, status=400)
+
+    base_qs = list(_scope_base_qs(org, event).filter(is_active=True).order_by('position'))
+    qid = data.get('question_id')
+    direction = data.get('direction')
+    idx = next((i for i, q in enumerate(base_qs) if str(q.id) == str(qid)), None)
+    if idx is not None:
+        swap = idx - 1 if direction == 'up' else idx + 1 if direction == 'down' else None
+        if swap is not None and 0 <= swap < len(base_qs):
+            a, b = base_qs[idx], base_qs[swap]
+            a.position, b.position = b.position, a.position
+            SurveyQuestion.objects.bulk_update([a, b], ['position'])
+    return JsonResponse({'ok': True})
+
+
+class _PreviewOption:
+    """Stand-in mimicking SurveyQuestionOption for rendering survey_form.html."""
+    def __init__(self, idx, label):
+        self.id = f"opt{idx}"
+        self.label = label
+
+
+class _PreviewOptionManager:
+    def __init__(self, options):
+        self._options = options
+
+    def all(self):
+        return self._options
+
+
+class _PreviewQuestion:
+    """Stand-in mimicking SurveyQuestion for rendering the survey preview."""
+    def __init__(self, idx, text, qtype, required, labels):
+        self.id = f"q{idx}"
+        self.question_text = text
+        self.question_type = qtype
+        self.is_required = required
+        self.options = _PreviewOptionManager(
+            [_PreviewOption(j, lbl) for j, lbl in enumerate(labels)]
+        )
+
+
+def _preview_questions_from_drafts(drafts):
+    """Build preview question stand-ins from draft dicts (live edit) — skips blanks."""
+    out = []
+    for i, d in enumerate(drafts or []):
+        text = (d.get('question_text') or '').strip()
+        if not text:
+            continue
+        labels = []
+        for o in (d.get('options') or []):
+            label = (o.get('label') if isinstance(o, dict) else o) or ''
+            label = str(label).strip()
+            if label:
+                labels.append(label)
+        out.append(_PreviewQuestion(i, text, d.get('question_type') or 'text', bool(d.get('is_required')), labels))
+    return out
+
+
+def _preview_questions_from_saved(questions):
+    """Build preview question stand-ins from saved SurveyQuestion rows."""
+    return [
+        _PreviewQuestion(
+            i, q.question_text, q.question_type, q.is_required,
+            [o.label for o in q.options.all()],
+        )
+        for i, q in enumerate(questions)
+    ]
+
+
+def _preview_invitation(event):
+    """A fake invitation object so survey_form.html renders its header."""
+    from types import SimpleNamespace
+    if event:
+        return SimpleNamespace(event=event)
+    return SimpleNamespace(event=SimpleNamespace(
+        name="Your event",
+        start_date=django_tz.now().date(),
+        venue=SimpleNamespace(name="Your venue", city="Your city"),
+    ))
+
+
+@login_required
+@require_org
+@require_host
+def survey_preview(request, event_id=None):
+    """Render the exact public survey page for the builder's live preview.
+
+    GET → from the scope's saved questions (iframe default src, also no-JS path).
+    POST (JSON draft) → from the in-progress edits (iframe srcdoc).
+    """
+    org, event = _survey_scope(request, event_id)
+
+    if request.method == 'POST':
+        try:
+            data = json.loads(request.body or '{}')
+        except (json.JSONDecodeError, ValueError):
+            return JsonResponse({'error': 'Invalid request.'}, status=400)
+        questions = _preview_questions_from_drafts(data.get('questions'))
+    else:
+        if event:
+            saved = list(
+                _scope_base_qs(org, event).filter(is_active=True)
+                .order_by('position').prefetch_related('options')
+            ) or list(_resolve_effective_questions(event))
+        else:
+            saved = list(
+                _scope_base_qs(org, None).filter(is_active=True)
+                .order_by('position').prefetch_related('options')
+            )
+        questions = _preview_questions_from_saved(saved)
+
+    return render(request, 'tickets/survey/survey_form.html', {
+        'invitation': _preview_invitation(event),
+        'questions': questions,
+        'errors': {},
+        'preview': True,
+    })
+
+
+@login_required
+@require_org
+@require_host
+def event_survey_customize(request, event_id):
+    """Clone the effective survey into editable event-scoped rows. POST only."""
+    org, event = _survey_scope(request, event_id)
+    if request.method != 'POST':
+        return _builder_redirect(event)
+    if _survey_locked(event):
+        messages.error(request, "This survey has been sent and can no longer be customized.")
+        return _builder_redirect(event)
+    if _clone_effective_to_event(event):
+        messages.success(request, "You can now customize this event's survey.")
+    return _builder_redirect(event)
+
+
+@login_required
+@require_org
+@require_host
+def event_survey_reset(request, event_id):
+    """Remove event-scoped questions so the event falls back to the org default. POST only."""
+    org, event = _survey_scope(request, event_id)
+    if request.method != 'POST':
+        return _builder_redirect(event)
+    if _survey_locked(event):
+        messages.error(request, "This survey has been sent and can no longer be reset.")
+        return _builder_redirect(event)
+    SurveyQuestion.objects.filter(event=event).delete()
+    messages.success(request, "Reverted to the organization's default survey.")
+    return _builder_redirect(event)
+
+
+@login_required
+@require_org
+@require_host
+def survey_hub(request):
+    """Top-level Surveys landing: events with survey activity + links to builders."""
+    org = get_organization(request)
+    events = (
+        Event.objects.filter(organization=org)
+        .select_related('venue')
+        .annotate(
+            response_count=Count('survey_responses', distinct=True),
+            invitation_count=Count('survey_invitations', distinct=True),
+        )
+        .order_by('-start_date', '-start_time')[:50]
+    )
+    org_question_count = SurveyQuestion.objects.filter(
+        organization=org, event__isnull=True, is_active=True
+    ).count()
+    return render(request, 'tickets/survey/hub.html', {
+        'events': events,
+        'org_question_count': org_question_count,
+    })
 
 
 # ---------------------------------------------------------------------------
@@ -9331,6 +10170,55 @@ def saleable_ticket_type_data(request, event_id, ticket_type_id):
         'password': tt.password or '',
         'unlocks_after_id': str(tt.unlocks_after_id) if tt.unlocks_after_id else '',
         'waitlist_enabled': tt.waitlist_enabled,
+    })
+
+
+@login_required
+@require_org
+@require_organizer
+def saleable_ticket_type_orders(request, event_id, ticket_type_id):
+    """List the orders that contain a given direct-ticketing ticket type.
+
+    Reached from the Ticket Allocation card on event_detail. Orders are matched
+    by ticket-type *name* (Ticket.ticket_type is the denormalized name string,
+    not a FK), so two ticket types sharing a name on one event collapse together
+    — tracked in TODOS.md for a future key-based filter.
+    """
+    org = get_organization(request)
+    event = get_object_or_404(Event.objects.filter(organization=org), id=event_id)
+    ticket_type = get_object_or_404(
+        SaleableTicketType.objects.filter(event=event), id=ticket_type_id
+    )
+
+    # Mirror the orders annotation pattern used by event_detail so the table
+    # renders identically (customer, status, gross total, ticket counts).
+    _platform_fee_subq = Subquery(
+        StripeCheckoutSession.objects.filter(ticket_order=OuterRef('pk')).values('platform_fee_cents')[:1],
+        output_field=DecimalField(max_digits=10, decimal_places=2),
+    )
+    orders_qs = event.ticket_orders.filter(
+        tickets__ticket_type=ticket_type.name
+    ).select_related(
+        'customer', 'uploaded_file'
+    ).annotate(
+        tickets_count=Count('tickets'),
+        type_count=Count('tickets', filter=Q(tickets__ticket_type=ticket_type.name)),
+        gross_total=ExpressionWrapper(
+            F('total_amount') - Cast(
+                Coalesce(_platform_fee_subq, 0),
+                output_field=DecimalField(max_digits=10, decimal_places=2),
+            ) * Decimal('0.01'),
+            output_field=DecimalField(max_digits=10, decimal_places=2),
+        ),
+    ).distinct().order_by('-order_date')
+
+    paginator = Paginator(orders_qs, 100)
+    page_obj = paginator.get_page(request.GET.get('page'))
+
+    return render(request, 'tickets/saleable_ticket_type_orders.html', {
+        'event': event,
+        'ticket_type': ticket_type,
+        'page_obj': page_obj,
     })
 
 
@@ -13748,7 +14636,7 @@ def event_survey_response_detail(request, event_id, kind, response_id):
             SurveyResponse.objects
             .filter(event=event, organization=org)
             .select_related('customer')
-            .prefetch_related('answers__question'),
+            .prefetch_related('answers__question', 'answers__selected_options'),
             id=response_id,
         )
         meta['source'] = 'Cue survey'
@@ -13758,7 +14646,10 @@ def event_survey_response_detail(request, event_id, kind, response_id):
             meta['respondent'] = resp.customer.email or resp.customer.name or ''
         for ans in resp.answers.all():
             q = ans.question
-            if ans.star_rating is not None:
+            if q and q.question_type in SurveyQuestion.CHOICE_TYPES:
+                value = ', '.join(o.label for o in ans.selected_options.all())
+                atype = q.question_type
+            elif ans.star_rating is not None:
                 value, atype = f"{ans.star_rating} / 5 stars", 'star_rating'
             elif ans.nps_score is not None:
                 value, atype = f"{ans.nps_score} / 10", 'nps'

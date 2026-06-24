@@ -7,7 +7,19 @@ from crispy_forms.helper import FormHelper
 from crispy_forms.layout import Layout, Row, Column, Submit, Field
 from django.forms import inlineformset_factory
 from django.utils import timezone
-from .models import Organization, CSVFormat, Venue, Event, EventTalent, EventExpense, CustomField, CustomFieldOption, IncomeSource, EventIncome, SaleableTicketType, SaleableTicketTypeTier, UserProfile, PromoCode, OrganizerWaitlist, CustomerTag, SMSCampaign, LoyaltyProgram, LoyaltyTier
+from .models import Organization, CSVFormat, Venue, Event, EventTalent, EventExpense, CustomField, CustomFieldOption, IncomeSource, EventIncome, SaleableTicketType, SaleableTicketTypeTier, UserProfile, PromoCode, OrganizerWaitlist, CustomerTag, SMSCampaign, LoyaltyProgram, LoyaltyTier, SurveyQuestion, SurveyQuestionOption
+
+
+def _default_csv_format_for(organization):
+    """Format to preselect on upload: the org's default, else a global built-in."""
+    default_format = CSVFormat.objects.filter(
+        organization=organization, is_default=True
+    ).first()
+    if default_format:
+        return default_format
+    return CSVFormat.objects.filter(
+        organization__isnull=True, is_system=True
+    ).order_by('name').first()
 
 
 def _normalize_phone(raw: str) -> str:
@@ -60,6 +72,24 @@ class OrgProfileForm(forms.ModelForm):
             'description',
             'website',
         )
+
+
+class OrgDisplayPreferencesForm(forms.ModelForm):
+    """Form for org-level display preferences (which optional cards appear)."""
+
+    class Meta:
+        model = Organization
+        fields = ['ai_event_summary_enabled']
+        widgets = {
+            'ai_event_summary_enabled': forms.CheckboxInput(
+                attrs={'class': 'form-check-input', 'role': 'switch'}
+            ),
+        }
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.helper = FormHelper()
+        self.helper.form_tag = False
 
 
 class MemberInviteForm(forms.Form):
@@ -465,9 +495,7 @@ class CSVUploadForm(forms.Form):
         organization = kwargs.pop('organization', None)
         super().__init__(*args, **kwargs)
         if organization is not None:
-            self.fields['csv_format'].queryset = CSVFormat.objects.filter(
-                organization=organization
-            ).order_by('-is_default', 'name')
+            self.fields['csv_format'].queryset = CSVFormat.available_for(organization)
             self.fields['venue'].queryset = Venue.objects.filter(
                 organization=organization
             ).order_by('name', 'city')
@@ -487,13 +515,9 @@ class CSVUploadForm(forms.Form):
             Submit('submit', 'Upload CSV', css_class='btn btn-primary')
         )
 
-        # Auto-select default format if available (org-scoped)
+        # Auto-select default format (org default, else a global built-in)
         if organization is not None:
-            default_format = CSVFormat.objects.filter(
-                organization=organization, is_default=True
-            ).first()
-            if default_format:
-                self.fields['csv_format'].initial = default_format
+            self.fields['csv_format'].initial = _default_csv_format_for(organization)
 
     def clean(self):
         """Validate form data."""
@@ -543,9 +567,7 @@ class EventCSVUploadForm(forms.Form):
         organization = kwargs.pop('organization', None)
         super().__init__(*args, **kwargs)
         if organization is not None:
-            self.fields['csv_format'].queryset = CSVFormat.objects.filter(
-                organization=organization
-            ).order_by('-is_default', 'name')
+            self.fields['csv_format'].queryset = CSVFormat.available_for(organization)
         self.helper = FormHelper()
         self.helper.layout = Layout(
             Field('csv_file'),
@@ -555,11 +577,7 @@ class EventCSVUploadForm(forms.Form):
         )
 
         if organization is not None:
-            default_format = CSVFormat.objects.filter(
-                organization=organization, is_default=True
-            ).first()
-            if default_format:
-                self.fields['csv_format'].initial = default_format
+            self.fields['csv_format'].initial = _default_csv_format_for(organization)
 
     def clean_csv_file(self):
         file = self.cleaned_data.get('csv_file')
@@ -1322,7 +1340,7 @@ LoyaltyTierFormSet = inlineformset_factory(
     LoyaltyTier,
     form=LoyaltyTierForm,
     formset=BaseLoyaltyTierFormSet,
-    extra=1,
+    extra=0,
     can_delete=True,
 )
 
@@ -1752,6 +1770,40 @@ CustomFieldOptionFormSet = inlineformset_factory(
     widgets={
         'label': forms.TextInput(attrs={'class': 'form-control', 'placeholder': 'Option label'}),
         'order': forms.NumberInput(attrs={'class': 'form-control', 'min': 0, 'style': 'width:80px'}),
+    },
+)
+
+
+class SurveyQuestionForm(forms.ModelForm):
+    """Create/edit a survey question (org-template or event-scoped)."""
+    class Meta:
+        model = SurveyQuestion
+        fields = ['question_text', 'question_type', 'is_required']
+        widgets = {
+            'question_text': forms.TextInput(attrs={'class': 'form-control', 'placeholder': 'e.g. How was the sound?'}),
+            'question_type': forms.Select(attrs={'class': 'form-select'}),
+        }
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.helper = FormHelper()
+        self.helper.form_tag = False
+        self.helper.layout = Layout(
+            Field('question_text'),
+            Field('question_type'),
+            Field('is_required'),
+        )
+
+
+SurveyQuestionOptionFormSet = inlineformset_factory(
+    SurveyQuestion,
+    SurveyQuestionOption,
+    fields=['label', 'position'],
+    extra=3,
+    can_delete=True,
+    widgets={
+        'label': forms.TextInput(attrs={'class': 'form-control', 'placeholder': 'Option label'}),
+        'position': forms.NumberInput(attrs={'class': 'form-control', 'min': 0, 'style': 'width:80px'}),
     },
 )
 

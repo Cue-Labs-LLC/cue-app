@@ -189,17 +189,242 @@ class SMSCampaignSendTests(TestCase):
         self.assertEqual(SMSMessageRecipient.objects.filter(campaign=c, status='sent').count(), 2)
 
     def test_stop_footer_appended(self):
-        from .tasks import _with_stop_footer
-        self.assertIn('Reply STOP to opt out', _with_stop_footer('Hello'))
-        self.assertEqual(_with_stop_footer('Text STOP anytime'), 'Text STOP anytime')
-        self.assertEqual(_with_stop_footer('Reply STOP to cancel'), 'Reply STOP to cancel')
+        from .sms import with_stop_footer
+        self.assertIn('Reply STOP to opt out', with_stop_footer('Hello'))
+        self.assertEqual(with_stop_footer('Text STOP anytime'), 'Text STOP anytime')
+        self.assertEqual(with_stop_footer('Reply STOP to cancel'), 'Reply STOP to cancel')
 
     def test_stop_footer_not_suppressed_by_casual_stop(self):
         # Only explicit opt-out phrasing suppresses the footer — a casual "stop"
         # must not strip the compliance disclosure.
-        from .tasks import _with_stop_footer
-        self.assertIn('Reply STOP to opt out', _with_stop_footer('stop by the bar after the show'))
-        self.assertIn('Reply STOP to opt out', _with_stop_footer('Non-stop hits all night'))
+        from .sms import with_stop_footer
+        self.assertIn('Reply STOP to opt out', with_stop_footer('stop by the bar after the show'))
+        self.assertIn('Reply STOP to opt out', with_stop_footer('Non-stop hits all night'))
+
+
+@override_settings(E2E_TEST_MODE=True, SMS_FOOTER_DISCLOSURE_DAYS=30,
+                   SMS_PRICE_PER_SEGMENT_CENTS=Decimal('3'))
+class SMSConditionalFooterTests(TestCase):
+    """Conditional STOP-footer disclosure: included on the first message to a phone
+    and once every SMS_FOOTER_DISCLOSURE_DAYS, omitted in between. Decided + billed at
+    schedule, honored at send. Covers apply_stop_footer, recently_disclosed_phones,
+    plan_campaign_footers, and the send-task honor + safeguard paths."""
+
+    def setUp(self):
+        self.org = Organization.objects.create(name='Org', slug='org-footer', sms_marketing_enabled=True)
+
+    def _disclosed(self, phone, *, days_ago=1, status=None, stop_disclosed=True, org=None):
+        """Create a prior SENT recipient (a past disclosure) for a phone."""
+        org = org or self.org
+        c = SMSCampaign.objects.create(
+            organization=org, filter_criteria={'min_ltv': '0'}, name='Past', body='Hi',
+            status=SMSCampaign.Status.SENT,
+        )
+        return SMSMessageRecipient.objects.create(
+            campaign=c, phone=phone,
+            status=status or SMSMessageRecipient.Status.SENT,
+            stop_disclosed=stop_disclosed,
+            sent_at=timezone.now() - timedelta(days=days_ago),
+        )
+
+    def _scheduled_campaign(self, body='Hello'):
+        return SMSCampaign.objects.create(
+            organization=self.org, filter_criteria={'min_ltv': '0'}, name='C', body=body,
+            status=SMSCampaign.Status.SCHEDULED, scheduled_at=timezone.now() - timedelta(minutes=1),
+        )
+
+    def _run_send(self, campaign):
+        sent = {}
+
+        def fake(to, body, status_callback=None):
+            sent[to] = body
+            return True, 'SM' + to[-4:]
+
+        from .tasks import send_sms_campaign_task
+        with patch('tickets.sms.send_sms', side_effect=fake):
+            send_sms_campaign_task.delay(str(campaign.id))
+        return sent
+
+    # --- apply_stop_footer (pure) ---
+    def test_apply_stop_footer_branches(self):
+        from .sms import apply_stop_footer
+        self.assertEqual(apply_stop_footer('Hello', include=True), ('Hello\n\nReply STOP to opt out', True))
+        self.assertEqual(apply_stop_footer('Hello', include=False), ('Hello', False))
+        # Explicit opt-out copy already in body: never appended, always a disclosure —
+        # including when include=False (the key branch that makes stop_disclosed honest).
+        self.assertEqual(apply_stop_footer('Reply STOP to cancel', include=True), ('Reply STOP to cancel', True))
+        self.assertEqual(apply_stop_footer('Reply STOP to cancel', include=False), ('Reply STOP to cancel', True))
+        self.assertEqual(apply_stop_footer('', include=False), ('', False))
+
+    # --- recently_disclosed_phones ---
+    def test_recently_disclosed_includes_sent_and_delivered(self):
+        self._disclosed('+13105550001', status=SMSMessageRecipient.Status.SENT)
+        self._disclosed('+13105550002', status=SMSMessageRecipient.Status.DELIVERED)
+        got = SMSMessageRecipient.recently_disclosed_phones(
+            self.org, ['+13105550001', '+13105550002'], timezone.now())
+        self.assertEqual(got, {'+13105550001', '+13105550002'})
+
+    def test_recently_disclosed_excludes_undelivered_failed_queued(self):
+        self._disclosed('+13105550003', status=SMSMessageRecipient.Status.UNDELIVERED)
+        self._disclosed('+13105550004', status=SMSMessageRecipient.Status.FAILED)
+        self._disclosed('+13105550005', status=SMSMessageRecipient.Status.QUEUED)
+        got = SMSMessageRecipient.recently_disclosed_phones(
+            self.org, ['+13105550003', '+13105550004', '+13105550005'], timezone.now())
+        self.assertEqual(got, set())
+
+    def test_recently_disclosed_excludes_non_disclosed_rows(self):
+        self._disclosed('+13105550006', stop_disclosed=False)
+        got = SMSMessageRecipient.recently_disclosed_phones(self.org, ['+13105550006'], timezone.now())
+        self.assertEqual(got, set())
+
+    def test_recently_disclosed_excludes_outside_window(self):
+        self._disclosed('+13105550007', days_ago=31)
+        got = SMSMessageRecipient.recently_disclosed_phones(self.org, ['+13105550007'], timezone.now())
+        self.assertEqual(got, set())
+
+    def test_recently_disclosed_is_org_scoped(self):
+        # Multi-tenancy: another org's disclosure to the same number must not count.
+        other = Organization.objects.create(name='Other', slug='org-other', sms_marketing_enabled=True)
+        self._disclosed('+13105550008', org=other)
+        got = SMSMessageRecipient.recently_disclosed_phones(self.org, ['+13105550008'], timezone.now())
+        self.assertEqual(got, set())
+
+    def test_recently_disclosed_empty_phones(self):
+        self.assertEqual(
+            SMSMessageRecipient.recently_disclosed_phones(self.org, [], timezone.now()), set())
+
+    # --- plan_campaign_footers ---
+    def test_plan_first_ever_includes_footer(self):
+        from .services.sms_credits import plan_campaign_footers
+        cents, plan = plan_campaign_footers(self.org, 'Hello', ['+13105550010'], as_of=timezone.now())
+        present, seg = plan['+13105550010']
+        self.assertTrue(present)
+        self.assertEqual(seg, 1)
+        self.assertEqual(cents, 3)
+
+    def test_plan_recently_disclosed_omits_footer(self):
+        from .services.sms_credits import plan_campaign_footers
+        self._disclosed('+13105550011', days_ago=5)
+        cents, plan = plan_campaign_footers(self.org, 'Hello', ['+13105550011'], as_of=timezone.now())
+        self.assertFalse(plan['+13105550011'][0])
+
+    def test_plan_aged_out_reincludes_footer(self):
+        from .services.sms_credits import plan_campaign_footers
+        self._disclosed('+13105550012', days_ago=31)
+        cents, plan = plan_campaign_footers(self.org, 'Hello', ['+13105550012'], as_of=timezone.now())
+        self.assertTrue(plan['+13105550012'][0])
+
+    def test_plan_cost_is_sum_of_segments(self):
+        from .services.sms_credits import plan_campaign_footers
+        # Two first-ever phones, 1 segment each -> 2 x 3c = 6c.
+        cents, _ = plan_campaign_footers(
+            self.org, 'Hello', ['+13105550013', '+13105550014'], as_of=timezone.now())
+        self.assertEqual(cents, 6)
+
+    def test_plan_duplicate_phone_charged_per_send(self):
+        from .services.sms_credits import plan_campaign_footers
+        # Dict dedups, but cost counts both sends: 2 segments x 3c = 6c.
+        cents, plan = plan_campaign_footers(
+            self.org, 'Hello', ['+13105550015', '+13105550015'], as_of=timezone.now())
+        self.assertEqual(cents, 6)
+        self.assertEqual(len(plan), 1)
+
+    def test_plan_empty_phones(self):
+        from .services.sms_credits import plan_campaign_footers
+        self.assertEqual(
+            plan_campaign_footers(self.org, 'Hello', [], as_of=timezone.now()), (0, {}))
+
+    # --- send task: honor persisted decision + safeguard ---
+    def test_send_honors_omit_when_recently_disclosed(self):
+        self._disclosed('+13105559200', days_ago=5)  # real recent disclosure
+        c = self._scheduled_campaign()
+        SMSMessageRecipient.objects.create(campaign=c, phone='+13105559200', stop_disclosed=False, segments=1)
+        sent = self._run_send(c)
+        self.assertNotIn('Reply STOP', sent['+13105559200'])
+
+    def test_send_includes_when_disclosed_true(self):
+        c = self._scheduled_campaign()
+        SMSMessageRecipient.objects.create(campaign=c, phone='+13105559201', stop_disclosed=True, segments=1)
+        sent = self._run_send(c)
+        self.assertIn('Reply STOP to opt out', sent['+13105559201'])
+
+    def test_send_safeguard_reincludes_when_disclosure_aged_out(self):
+        # Planned omit (stop_disclosed=False) but the prior disclosure aged out of the
+        # window before this delayed send -> safeguard re-adds the footer (compliance).
+        self._disclosed('+13105559202', days_ago=31)
+        c = self._scheduled_campaign()
+        SMSMessageRecipient.objects.create(campaign=c, phone='+13105559202', stop_disclosed=False, segments=1)
+        sent = self._run_send(c)
+        self.assertIn('Reply STOP to opt out', sent['+13105559202'])
+
+
+@override_settings(E2E_TEST_MODE=True, SMS_CAMPAIGN_MAX_RECIPIENTS=5000,
+                   SMS_PRICE_PER_SEGMENT_CENTS=Decimal('3'), SMS_FOOTER_DISCLOSURE_DAYS=30)
+class SMSConditionalFooterFlowTests(TestCase):
+    """End-to-end through the compose/confirm view: the footer decision is billed at
+    schedule, displayed == charged, and a repeat send to the same phones omits it."""
+
+    def setUp(self):
+        self.client = Client()
+        self.org = Organization.objects.create(name='Org', slug='org-cf', sms_marketing_enabled=True)
+        self.user = User.objects.create_user('u', 'u@test.com', 'pw')
+        UserProfile.objects.create(user=self.user, organization=self.org, org_role=UserProfile.OrgRole.OWNER)
+        self.client.login(username='u@test.com', password='pw')
+        self.client.get(reverse('tickets:home'))
+        for i in range(2):
+            make_customer(self.org, f'c{i}@x.com', f'+1310555910{i}')
+        self.org.sms_credit_balance_cents = 1000
+        self.org.save(update_fields=['sms_credit_balance_cents'])
+
+    def _send(self, body):
+        with self.captureOnCommitCallbacks(execute=True):
+            return self.client.post(reverse('tickets:sms_campaign_create'), {
+                'name': 'Promo', 'rfm_segment': 'VIP', 'body': body,
+                'send_mode': 'now', 'confirm': '1',
+            })
+
+    def test_preview_matches_charge(self):
+        # 150-char body: 1 segment without the footer, 2 with (footer is 23 chars).
+        body = 'x' * 150
+        resp = self.client.post(reverse('tickets:sms_campaign_create'), {
+            'name': 'Promo', 'rfm_segment': 'VIP', 'body': body, 'send_mode': 'now',
+        })
+        self.assertEqual(resp.context['confirm_cost_cents'], 12)   # 2 recip x 2 seg x 3c
+        self.assertEqual(resp.context['confirm_cost_tokens'], 4)   # 2 recip x 2 seg
+
+    def test_review_token_cost_reflects_mixed_audience(self):
+        # One phone was disclosed recently (footer omitted -> 1 seg), the other is
+        # first-ever (footer -> 2 seg). The review panel's token cost must show the
+        # mix (3), not the worst-case-for-all (4).
+        past = SMSCampaign.objects.create(
+            organization=self.org, filter_criteria={'min_ltv': '0'}, name='Past', body='Hi',
+            status=SMSCampaign.Status.SENT,
+        )
+        SMSMessageRecipient.objects.create(
+            campaign=past, phone='+13105559100',
+            status=SMSMessageRecipient.Status.SENT, stop_disclosed=True,
+            sent_at=timezone.now() - timedelta(days=5),
+        )
+        body = 'x' * 150
+        resp = self.client.post(reverse('tickets:sms_campaign_create'), {
+            'name': 'Promo', 'rfm_segment': 'VIP', 'body': body, 'send_mode': 'now',
+        })
+        self.assertEqual(resp.context['confirm_cost_tokens'], 3)   # 1 (disclosed) + 2 (first-ever)
+        self.assertEqual(resp.context['confirm_cost_cents'], 9)    # 3 seg x 3c
+
+    def test_first_send_discloses_second_omits_and_charges_less(self):
+        body = 'x' * 150  # footer pushes 1 segment -> 2
+        self._send(body)
+        self.org.refresh_from_db()
+        self.assertEqual(self.org.sms_credit_balance_cents, 988)   # 1000 - 2x2x3
+        first = SMSCampaign.objects.latest('created_at')
+        self.assertTrue(all(r.stop_disclosed and r.segments == 2 for r in first.recipients.all()))
+
+        self._send(body)  # same phones, within 30d -> footer omitted
+        self.org.refresh_from_db()
+        self.assertEqual(self.org.sms_credit_balance_cents, 982)   # - 2x1x3
+        second = SMSCampaign.objects.exclude(id=first.id).latest('created_at')
+        self.assertTrue(all((not r.stop_disclosed) and r.segments == 1 for r in second.recipients.all()))
 
 
 @override_settings(E2E_TEST_MODE=True)

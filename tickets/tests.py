@@ -20,8 +20,10 @@ from .models import (
     EventExpense,
     SaleableTicketType, SaleableTicketTypeTier, StripeCheckoutSession, FeatureFlagSettings,
     SurveyInvitation, SurveyResponse, SurveyAnswer, SurveyQuestion, Payout,
+    SurveyQuestionOption, SurveyAnswerOption,
     ExternalSurveyUpload, ExternalSurveyResponse, EventDailyPageView,
     LoyaltyProgram, LoyaltyTier, LoyaltyPointsTransaction,
+    TICKETING_TYPE_DIRECT,
 )
 from .utils import extract_fee_from_display_cents
 
@@ -2204,6 +2206,132 @@ class CSVProcessorChunkRollbackTest(TestCase):
         )
 
 
+class PoshRevenueSubtotalTest(TestCase):
+    """The POSH built-in format records revenue as net Order Subtotal, not the
+    fee-inclusive Order Total. Regression guard for the Cue/POSH revenue mismatch."""
+
+    # Two POSH rows. Order Total = Order Subtotal + Processing Fee (buyer pays the
+    # fee on top), so summing Order Total would over-report revenue.
+    CSV_ROWS = (
+        '"Order Number","Order Date/Time","First Name","Last Name","Email",'
+        '"Phone Number","Tickets Purchased","# of Tickets","Order Subtotal",'
+        '"Processing Fee","Order Total","Ticket Scan Details"\n'
+        '"1001","06-01-2026 4:00:00 pm","Alice","Smith","alice@example.com",'
+        '"+15551110001","GA, GA","2","12.74","3.25","15.99",""\n'
+        '"1002","06-02-2026 5:00:00 pm","Bob","Jones","bob@example.com",'
+        '"+15551110002","GA","1","6.37","1.63","8.00",""\n'
+    )
+
+    SUBTOTAL_SUM = Decimal('19.11')   # 12.74 + 6.37 (what POSH reports as revenue)
+    TOTAL_SUM = Decimal('23.99')      # 15.99 + 8.00 (fee-inclusive — must NOT be used)
+
+    def setUp(self):
+        self.org = Organization.objects.create(name='Posh Org', slug='posh-org')
+        self.venue = Venue.objects.create(organization=self.org, name='Venue', city='City')
+        self.event = Event.objects.create(
+            organization=self.org, name='Posh Event', venue=self.venue,
+            start_date=date(2026, 6, 15),
+        )
+        # The POSH built-in format is seeded by migration (organization=None, is_system).
+        self.csv_format = CSVFormat.objects.get(name='POSH', is_system=True)
+        self.upload = UploadedFile.objects.create(
+            organization=self.org, csv_format=self.csv_format,
+            filename='posh.csv', status='pending',
+            metadata={'event_id': str(self.event.id), 'event_name': self.event.name,
+                      'event_start_date': '2026-06-15'},
+        )
+
+    def test_total_amount_uses_subtotal_not_order_total(self):
+        import io
+        from tickets.csv_processor import CSVProcessor
+        CSVProcessor(self.upload, self.csv_format).process_and_save(
+            io.BytesIO(self.CSV_ROWS.encode('utf-8'))
+        )
+
+        orders = TicketOrder.objects.filter(event=self.event).order_by('external_order_number')
+        self.assertEqual(orders.count(), 2)
+        self.assertEqual(orders[0].total_amount, Decimal('12.74'))
+        self.assertEqual(orders[1].total_amount, Decimal('6.37'))
+
+        # Event revenue (Sum of total_amount, as _compute_event_stats does) must equal
+        # the net subtotal, not the fee-inclusive Order Total.
+        from django.db.models import Sum
+        revenue = self.event.ticket_orders.aggregate(r=Sum('total_amount'))['r']
+        self.assertEqual(revenue, self.SUBTOTAL_SUM)
+        self.assertNotEqual(revenue, self.TOTAL_SUM)
+
+
+class PoshContactlessImportTest(TestCase):
+    """POSH rows with no email/name must import (counting revenue), not be rejected:
+    in-person/door sales bucket under 'In-Person Sales'; online no-contact orders under
+    'Guest (No Contact Info)'. Regression guard for the 'Missing required fields' drop."""
+
+    # Three rows: a normal online order, an in-person door sale (blank contact,
+    # Was Processed In Person=true), and an online order with no contact info.
+    CSV_ROWS = (
+        '"Order Number","Order Date/Time","First Name","Last Name","Email",'
+        '"Phone Number","Tickets Purchased","# of Tickets","Order Subtotal",'
+        '"Processing Fee","Order Total","Ticket Scan Details","Was Processed In Person"\n'
+        '"2001","06-01-2026 4:00:00 pm","Alice","Smith","alice@example.com",'
+        '"+15551110001","GA","1","10.00","2.00","12.00","","false"\n'
+        '"2002","06-02-2026 5:00:00 pm","","","",'
+        '"","GA","1","20.00","0.00","20.00","","true"\n'
+        '"2003","06-03-2026 6:00:00 pm","","","",'
+        '"","GA","1","5.00","1.00","6.00","","false"\n'
+    )
+
+    def setUp(self):
+        self.org = Organization.objects.create(name='Posh Contact Org', slug='posh-contact-org')
+        self.venue = Venue.objects.create(organization=self.org, name='Venue', city='City')
+        self.event = Event.objects.create(
+            organization=self.org, name='Posh Contact Event', venue=self.venue,
+            start_date=date(2026, 6, 15),
+        )
+        self.csv_format = CSVFormat.objects.get(name='POSH', is_system=True)
+        self.upload = UploadedFile.objects.create(
+            organization=self.org, csv_format=self.csv_format,
+            filename='posh.csv', status='pending',
+            metadata={'event_id': str(self.event.id), 'event_name': self.event.name,
+                      'event_start_date': '2026-06-15'},
+        )
+
+    def _import(self):
+        import io
+        from tickets.csv_processor import CSVProcessor
+        return CSVProcessor(self.upload, self.csv_format).process_and_save(
+            io.BytesIO(self.CSV_ROWS.encode('utf-8'))
+        )
+
+    def test_contactless_rows_import_without_errors(self):
+        results = self._import()
+        self.assertEqual(results['error_count'], 0, results['errors'])
+
+        orders = TicketOrder.objects.filter(event=self.event)
+        self.assertEqual(orders.count(), 3)
+
+        # Revenue = sum of Order Subtotals; nothing dropped.
+        from django.db.models import Sum
+        revenue = orders.aggregate(r=Sum('total_amount'))['r']
+        self.assertEqual(revenue, Decimal('35.00'))
+
+    def test_in_person_and_no_contact_buckets(self):
+        self._import()
+
+        in_person = TicketOrder.objects.get(event=self.event, external_order_number='2002')
+        self.assertTrue(in_person.is_in_person)
+        self.assertEqual(in_person.customer.name, 'In-Person Sales')
+        self.assertEqual(in_person.total_amount, Decimal('20.00'))
+
+        no_contact = TicketOrder.objects.get(event=self.event, external_order_number='2003')
+        self.assertFalse(no_contact.is_in_person)
+        self.assertEqual(no_contact.customer.name, 'Guest (No Contact Info)')
+        self.assertEqual(no_contact.total_amount, Decimal('5.00'))
+
+        # The normal online order still maps to its real customer.
+        normal = TicketOrder.objects.get(event=self.event, external_order_number='2001')
+        self.assertEqual(normal.customer.email, 'alice@example.com')
+
+
 class PhoneValidationTest(TestCase):
     """Tests for phone number normalization and form validation."""
 
@@ -2793,6 +2921,154 @@ class CustomerDetailMarketingTabTests(TestCase):
         self.assertNotContains(response, 'Marketing Activity')
 
 
+class SMSBroadcastAudienceTests(TestCase):
+    """The SMS tab's broadcast-audience chart + by-market breakdown combine native
+    SMS campaigns and external SlickText broadcasts, grouped by the linked event's
+    venue city (the 'market')."""
+
+    def setUp(self):
+        from .models import SMSCampaign, EventSMSCampaign
+        self.client = Client()
+        self.org = Organization.objects.create(
+            name='SMS Aud Org', slug='sms-aud-org', sms_marketing_enabled=True,
+        )
+        self.user = User.objects.create_user(
+            username='audhost', email='aud@test.com', password='testpass123',
+        )
+        UserProfile.objects.create(
+            user=self.user, organization=self.org, org_role=UserProfile.OrgRole.OWNER,
+        )
+        self.client.login(username='aud@test.com', password='testpass123')
+        self.client.get(reverse('tickets:home'))  # warm org cache
+
+        self.venue = Venue.objects.create(organization=self.org, name='Echo', city='Austin')
+        self.event = Event.objects.create(
+            organization=self.org, name='Austin Show', venue=self.venue,
+            start_date=date(2026, 6, 1), start_time=time(20, 0, 0),
+        )
+        # Native SMS campaign (sent), event-scoped -> Austin market.
+        SMSCampaign.objects.create(
+            organization=self.org, name='Native Blast', body='Tickets!',
+            event=self.event, status=SMSCampaign.Status.SENT,
+            sent_at=timezone.now() - timedelta(days=3), audience_size=120,
+        )
+        # External SlickText broadcast (confirmed) on the same event -> Austin market.
+        EventSMSCampaign.objects.create(
+            event=self.event, source='slicktext', external_id='st-1',
+            name='SlickText Blast', send_time=timezone.now() - timedelta(days=5),
+            audience_size=80, confirmed_at=timezone.now(),
+        )
+        self.url = reverse('tickets:sms_campaign_list')
+
+    def test_breakdown_sums_audience_across_sources(self):
+        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, 200)
+        breakdown = {r['market']: r for r in response.context['market_breakdown']}
+        self.assertIn('Austin', breakdown)
+        self.assertEqual(breakdown['Austin']['broadcasts'], 2)
+        self.assertEqual(breakdown['Austin']['total_audience'], 200)
+        self.assertEqual(breakdown['Austin']['avg_audience'], 100)
+        self.assertIn('Austin', response.context['market_choices'])
+
+    def test_market_filter_scopes_chart_points(self):
+        response = self.client.get(self.url, {'market': 'Austin'})
+        self.assertEqual(response.status_code, 200)
+        points = json.loads(response.context['audience_points_json'])
+        self.assertEqual(len(points['native']), 1)
+        self.assertEqual(len(points['slicktext']), 1)
+        self.assertEqual(points['native'][0]['market'], 'Austin')
+        self.assertEqual(points['native'][0]['y'], 120)
+        self.assertEqual(response.context['selected_market'], 'Austin')
+
+    def test_unknown_market_falls_back_to_all(self):
+        response = self.client.get(self.url, {'market': 'Nowhere'})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context['selected_market'], '')
+
+
+class SMSCampaignLinkEventTests(TestCase):
+    """Linking an already-sent SMS campaign to an event (and clearing it)."""
+
+    def setUp(self):
+        from .models import SMSCampaign
+        self.client = Client()
+        self.org = Organization.objects.create(
+            name='Link Org', slug='link-org', sms_marketing_enabled=True,
+        )
+        self.user = User.objects.create_user(
+            username='linkhost', email='link@test.com', password='testpass123',
+        )
+        UserProfile.objects.create(
+            user=self.user, organization=self.org, org_role=UserProfile.OrgRole.OWNER,
+        )
+        self.client.login(username='link@test.com', password='testpass123')
+        self.client.get(reverse('tickets:home'))  # warm org cache
+
+        self.venue = Venue.objects.create(organization=self.org, name='Echo', city='Austin')
+        self.event = Event.objects.create(
+            organization=self.org, name='Linkable Show', venue=self.venue,
+            start_date=date(2026, 6, 1),
+        )
+        self.campaign = SMSCampaign.objects.create(
+            organization=self.org, name='Sent Blast', body='Tickets!',
+            status=SMSCampaign.Status.SENT, sent_at=timezone.now() - timedelta(days=1),
+        )
+        self.url = reverse('tickets:sms_campaign_link_event', args=[self.campaign.id])
+
+    def test_links_campaign_to_event(self):
+        response = self.client.post(self.url, {'event': str(self.event.id)})
+        self.assertEqual(response.status_code, 302)
+        self.campaign.refresh_from_db()
+        self.assertEqual(self.campaign.event_id, self.event.id)
+        # Detail page (with the picker modal) renders and shows the linked event.
+        detail = self.client.get(
+            reverse('tickets:sms_campaign_detail', args=[self.campaign.id])
+        )
+        self.assertEqual(detail.status_code, 200)
+        self.assertContains(detail, 'Linkable Show')
+        self.assertContains(detail, 'linkEventModal')
+
+    def test_list_page_renders_picker(self):
+        response = self.client.get(reverse('tickets:sms_campaign_list'))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'linkEventModal')
+        self.assertContains(response, 'Link to event')
+        # The partial's leading comment must not leak into the rendered page.
+        self.assertNotContains(response, 'Requires `link_events`')
+
+    def test_unlinks_when_event_blank(self):
+        self.campaign.event = self.event
+        self.campaign.save(update_fields=['event'])
+
+        response = self.client.post(self.url, {'event': ''})
+        self.assertEqual(response.status_code, 302)
+        self.campaign.refresh_from_db()
+        self.assertIsNone(self.campaign.event_id)
+
+    def test_honors_safe_next_redirect(self):
+        detail = reverse('tickets:sms_campaign_detail', args=[self.campaign.id])
+        response = self.client.post(self.url, {'event': str(self.event.id), 'next': detail})
+        self.assertRedirects(response, detail, fetch_redirect_response=False)
+
+    def test_cannot_link_event_from_another_org(self):
+        other_org = Organization.objects.create(name='Other Org', slug='other-org')
+        other_venue = Venue.objects.create(organization=other_org, name='Far', city='Reno')
+        other_event = Event.objects.create(
+            organization=other_org, name='Foreign Show', venue=other_venue,
+            start_date=date(2026, 7, 1),
+        )
+        response = self.client.post(self.url, {'event': str(other_event.id)})
+        self.assertEqual(response.status_code, 404)
+        self.campaign.refresh_from_db()
+        self.assertIsNone(self.campaign.event_id)
+
+    def test_feature_gate_blocks_disabled_org(self):
+        self.org.sms_marketing_enabled = False
+        self.org.save(update_fields=['sms_marketing_enabled'])
+        response = self.client.post(self.url, {'event': str(self.event.id)})
+        self.assertEqual(response.status_code, 404)
+
+
 class EventCachedStatsTest(TestCase):
     """Tests for Event cached stat fields and net_revenue calculation."""
 
@@ -3236,14 +3512,14 @@ class EventDetailAllocationChartTest(TestCase):
     def test_compute_event_stats_returns_direct_allocation_chart_data(self):
         from tickets.views import _compute_event_stats
 
-        SaleableTicketType.objects.create(
+        ga = SaleableTicketType.objects.create(
             event=self.event,
             name='General Admission',
             price=Decimal('25.00'),
             quantity_limit=100,
             quantity_sold=25,
         )
-        SaleableTicketType.objects.create(
+        vip = SaleableTicketType.objects.create(
             event=self.event,
             name='VIP',
             price=Decimal('75.00'),
@@ -3257,6 +3533,7 @@ class EventDetailAllocationChartTest(TestCase):
             stats['ticket_type_allocation_charts'],
             [
                 {
+                    'tt_id': str(ga.id),
                     'label': 'General Admission',
                     'sold': 25,
                     'allocated': 100,
@@ -3265,6 +3542,7 @@ class EventDetailAllocationChartTest(TestCase):
                     'is_unlimited': False,
                 },
                 {
+                    'tt_id': str(vip.id),
                     'label': 'VIP',
                     'sold': 3,
                     'allocated': None,
@@ -3336,6 +3614,115 @@ class EventDetailAllocationChartTest(TestCase):
         self.assertContains(response, 'Ticket Breakdown')
         self.assertContains(response, 'id="ticketBreakdownChart"')
         self.assertNotContains(response, 'Ticket Allocation')
+
+    def _make_order_with_types(self, type_names, *, name='Buyer'):
+        """Create an order with one Ticket per name in type_names."""
+        customer = Customer.objects.create(
+            organization=self.org,
+            email=f'{name.lower()}@example.com',
+            name=name,
+        )
+        order = TicketOrder.objects.create(
+            event=self.event,
+            customer=customer,
+            order_number=str(uuid.uuid4())[:12],
+            total_amount=Decimal('25.00'),
+            order_date=timezone.now(),
+        )
+        for tn in type_names:
+            Ticket.objects.create(ticket_order=order, ticket_type=tn, price=Decimal('25.00'))
+        return order
+
+    def test_ticket_type_orders_lists_only_orders_with_that_type(self):
+        ga = SaleableTicketType.objects.create(
+            event=self.event, name='General Admission',
+            price=Decimal('25.00'), quantity_limit=100, quantity_sold=2,
+        )
+        SaleableTicketType.objects.create(
+            event=self.event, name='VIP',
+            price=Decimal('75.00'), quantity_limit=50, quantity_sold=1,
+        )
+        ga_order = self._make_order_with_types(['General Admission'], name='GaBuyer')
+        vip_order = self._make_order_with_types(['VIP'], name='VipBuyer')
+        self._login()
+
+        response = self.client.get(
+            reverse('tickets:saleable_ticket_type_orders', args=[self.event.pk, ga.pk])
+        )
+
+        self.assertEqual(response.status_code, 200)
+        order_ids = {o.id for o in response.context['page_obj']}
+        self.assertIn(ga_order.id, order_ids)
+        self.assertNotIn(vip_order.id, order_ids)
+
+    def test_ticket_type_orders_dedupes_multi_ticket_order_and_counts_type(self):
+        ga = SaleableTicketType.objects.create(
+            event=self.event, name='General Admission',
+            price=Decimal('25.00'), quantity_limit=100, quantity_sold=3,
+        )
+        # One order with 2 GA + 1 VIP — should appear once, type_count == 2.
+        order = self._make_order_with_types(
+            ['General Admission', 'General Admission', 'VIP'], name='MixBuyer'
+        )
+        self._login()
+
+        response = self.client.get(
+            reverse('tickets:saleable_ticket_type_orders', args=[self.event.pk, ga.pk])
+        )
+
+        page = list(response.context['page_obj'])
+        self.assertEqual([o.id for o in page], [order.id])
+        self.assertEqual(page[0].type_count, 2)
+
+    def test_ticket_type_orders_is_paginated(self):
+        ga = SaleableTicketType.objects.create(
+            event=self.event, name='General Admission',
+            price=Decimal('25.00'), quantity_limit=None, quantity_sold=130,
+        )
+        for i in range(130):
+            self._make_order_with_types(['General Admission'], name=f'Buyer{i}')
+        self._login()
+
+        # Page 1 caps at the page size (100) and exposes a second page.
+        page1 = self.client.get(
+            reverse('tickets:saleable_ticket_type_orders', args=[self.event.pk, ga.pk])
+        )
+        self.assertEqual(page1.status_code, 200)
+        po = page1.context['page_obj']
+        self.assertEqual(po.paginator.count, 130)
+        self.assertEqual(po.paginator.num_pages, 2)
+        self.assertEqual(len(po.object_list), 100)
+        self.assertTrue(po.has_other_pages())
+        self.assertContains(page1, 'pagination')
+
+        # Page 2 holds the remaining orders.
+        page2 = self.client.get(
+            reverse('tickets:saleable_ticket_type_orders', args=[self.event.pk, ga.pk]) + '?page=2'
+        )
+        self.assertEqual(page2.status_code, 200)
+        self.assertEqual(len(page2.context['page_obj'].object_list), 30)
+
+    def test_ticket_type_orders_scoped_to_org(self):
+        other_org = Organization.objects.create(name='Other Org', slug='other-org')
+        other_venue = Venue.objects.create(
+            organization=other_org, name='Other Venue', city='Los Angeles',
+        )
+        other_event = Event.objects.create(
+            organization=other_org, name='Other Event', venue=other_venue,
+            start_date=date.today() + timedelta(days=7),
+            ticketing_type='direct', status='live',
+        )
+        other_tt = SaleableTicketType.objects.create(
+            event=other_event, name='General Admission',
+            price=Decimal('25.00'), quantity_limit=100,
+        )
+        self._login()
+
+        response = self.client.get(
+            reverse('tickets:saleable_ticket_type_orders', args=[other_event.pk, other_tt.pk])
+        )
+
+        self.assertEqual(response.status_code, 404)
 
 
 class EventDailyPageViewTest(TestCase):
@@ -12448,6 +12835,1448 @@ class MetaAdsErrorHandlingTests(TestCase):
         data = resp.json()
         self.assertFalse(data['ok'])
         self.assertIn('code 1', data['error'])
+
+
+class ResendOrderConfirmationTests(TestCase):
+    """Resend confirmation email endpoint on the order detail page."""
+
+    def setUp(self):
+        self.client = Client()
+        self.org = Organization.objects.create(name='Resend Org', slug='resend-org')
+        self.user = User.objects.create_user(
+            username='resend-host', email='host@example.com', password='testpass123',
+        )
+        UserProfile.objects.create(
+            user=self.user, organization=self.org, org_role=UserProfile.OrgRole.HOST,
+        )
+        OrganizationMembership.objects.create(
+            user=self.user, organization=self.org, org_role=UserProfile.OrgRole.HOST,
+        )
+        self.client.login(username='host@example.com', password='testpass123')
+        self.client.get(reverse('tickets:home'))
+
+        self.venue = Venue.objects.create(organization=self.org, name='Venue', city='City')
+        self.event = Event.objects.create(
+            organization=self.org, name='Direct Event', venue=self.venue,
+            start_date=date(2025, 6, 15), start_time=time(19, 0),
+            ticketing_type=TICKETING_TYPE_DIRECT,
+        )
+        self.customer = Customer.objects.create(
+            organization=self.org, email='buyer@example.com', name='Buyer',
+        )
+        self.order = TicketOrder.objects.create(
+            customer=self.customer, event=self.event,
+            order_number='ORD-RS-1', order_date='2025-06-01 10:00:00',
+            total_amount=Decimal('50.00'),
+        )
+        self.session = StripeCheckoutSession.objects.create(
+            event=self.event, organization=self.org,
+            stripe_session_id='pi_resend_1', stripe_payment_intent_id='pi_resend_1',
+            buyer_email='buyer@example.com', buyer_name='Buyer',
+            status=StripeCheckoutSession.Status.COMPLETED,
+            line_items_snapshot=[], amount_total_cents=5000,
+            ticket_order=self.order,
+        )
+        self.url = reverse('tickets:resend_order_confirmation', args=[self.order.id])
+
+    @patch('tickets.tasks.send_order_confirmation_email_task.delay')
+    def test_resend_queues_task_for_direct_order(self, mock_delay):
+        response = self.client.post(self.url)
+        self.assertRedirects(
+            response, reverse('tickets:order_detail', args=[self.order.id])
+        )
+        mock_delay.assert_called_once_with(str(self.order.id))
+
+    @patch('tickets.tasks.send_order_confirmation_email_task.delay')
+    def test_resend_rejects_non_direct_order(self, mock_delay):
+        self.session.delete()
+        self.event.ticketing_type = 'csv'
+        self.event.save(update_fields=['ticketing_type'])
+        response = self.client.post(self.url)
+        self.assertRedirects(
+            response, reverse('tickets:order_detail', args=[self.order.id])
+        )
+        mock_delay.assert_not_called()
+
+    @patch('tickets.tasks.send_order_confirmation_email_task.delay')
+    def test_resend_rejects_get(self, mock_delay):
+        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, 405)
+        mock_delay.assert_not_called()
+
+
+class EventSummaryStreamTests(TestCase):
+    """Test cases for the AI event debrief streaming endpoint."""
+
+    def setUp(self):
+        self.client = Client()
+        self.org = Organization.objects.create(name='Summary Test Org', slug='summary-test-org')
+        self.user = User.objects.create_user(
+            username='summaryuser',
+            email='summary@test.com',
+            password='testpass123',
+        )
+        UserProfile.objects.create(
+            user=self.user, organization=self.org,
+            org_role=UserProfile.OrgRole.OWNER,
+        )
+        self.client.login(username='summary@test.com', password='testpass123')
+        self.client.get(reverse('tickets:home'))
+
+        self.venue = Venue.objects.create(
+            organization=self.org, name='Summary Venue', city='Summary City',
+        )
+        self.event = Event.objects.create(
+            organization=self.org, name='Summary Event',
+            venue=self.venue, start_date=date(2024, 9, 15),
+        )
+        self.url = reverse('tickets:event_summary_stream', args=[self.event.id])
+
+    def test_unauthenticated_redirects(self):
+        """Unauthenticated user is redirected to login."""
+        self.client.logout()
+        response = self.client.post(self.url)
+        self.assertEqual(response.status_code, 302)
+
+    def test_get_not_allowed(self):
+        """GET method is not allowed — POST only."""
+        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, 405)
+
+    def test_wrong_org_returns_404(self):
+        """Event belonging to a different org returns 404."""
+        other_org = Organization.objects.create(name='Other Org', slug='other-org')
+        other_venue = Venue.objects.create(
+            organization=other_org, name='Other Venue', city='Other City',
+        )
+        other_event = Event.objects.create(
+            organization=other_org, name='Other Event',
+            venue=other_venue, start_date=date(2024, 9, 15),
+        )
+        url = reverse('tickets:event_summary_stream', args=[other_event.id])
+        response = self.client.post(url)
+        self.assertEqual(response.status_code, 404)
+
+    @patch('langchain_openai.ChatOpenAI')
+    def test_stream_returns_sse_content_type(self, mock_llm_cls):
+        """Successful request returns text/event-stream content type."""
+        mock_instance = MagicMock()
+        mock_chunk = MagicMock()
+        mock_chunk.content = 'Test debrief'
+        mock_instance.stream.return_value = [mock_chunk]
+        mock_llm_cls.return_value = mock_instance
+
+        response = self.client.post(self.url)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response['Content-Type'], 'text/event-stream')
+
+    @patch('langchain_openai.ChatOpenAI')
+    def test_stream_persists_summary(self, mock_llm_cls):
+        """After streaming, the summary is saved to the event."""
+        mock_instance = MagicMock()
+        mock_chunk = MagicMock()
+        mock_chunk.content = 'Generated debrief text'
+        mock_chunk.usage_metadata = None
+        mock_instance.stream.return_value = [mock_chunk]
+        mock_llm_cls.return_value = mock_instance
+
+        response = self.client.post(self.url)
+        # Consume the streaming response to trigger the generator
+        list(response.streaming_content)
+
+        self.event.refresh_from_db()
+        self.assertEqual(self.event.ai_summary, 'Generated debrief text')
+        self.assertIsNotNone(self.event.ai_summary_generated_at)
+
+    @patch('langchain_openai.ChatOpenAI')
+    def test_stream_records_token_usage(self, mock_llm_cls):
+        """A successful generation records a billable AITokenUsage row."""
+        mock_instance = MagicMock()
+        mock_chunk = MagicMock()
+        mock_chunk.content = 'Debrief with usage'
+        mock_chunk.usage_metadata = {
+            'input_tokens': 1200,
+            'output_tokens': 300,
+            'total_tokens': 1500,
+        }
+        mock_instance.stream.return_value = [mock_chunk]
+        mock_llm_cls.return_value = mock_instance
+
+        response = self.client.post(self.url)
+        list(response.streaming_content)
+
+        usage = AITokenUsage.objects.filter(
+            organization=self.org,
+            feature=AITokenUsage.FEATURE_EVENT_SUMMARY,
+        )
+        self.assertEqual(usage.count(), 1)
+        record = usage.first()
+        self.assertEqual(record.total_tokens, 1500)
+        self.assertEqual(record.user, self.user)
+        self.assertEqual(record.metadata.get('event_id'), str(self.event.id))
+
+    @patch('langchain_openai.ChatOpenAI')
+    def test_stream_handles_llm_error(self, mock_llm_cls):
+        """LLM API error yields an error SSE event, not a 500."""
+        mock_instance = MagicMock()
+        mock_instance.stream.side_effect = Exception('API key invalid')
+        mock_llm_cls.return_value = mock_instance
+
+        response = self.client.post(self.url)
+        self.assertEqual(response.status_code, 200)
+        content = b''.join(response.streaming_content).decode()
+        self.assertIn('"type": "error"', content)
+        self.assertIn('"type": "done"', content)
+
+    def test_ai_summary_field_persistence(self):
+        """ai_summary field saves and loads correctly."""
+        self.event.ai_summary = 'Test stored debrief'
+        self.event.ai_summary_generated_at = timezone.now()
+        self.event.save(update_fields=['ai_summary', 'ai_summary_generated_at'])
+
+        self.event.refresh_from_db()
+        self.assertEqual(self.event.ai_summary, 'Test stored debrief')
+        self.assertIsNotNone(self.event.ai_summary_generated_at)
+
+    @patch('langchain_openai.ChatOpenAI')
+    def test_rate_limit_returns_429(self, mock_llm_cls):
+        """Once the hourly ceiling is reached, the endpoint returns 429."""
+        mock_instance = MagicMock()
+        mock_chunk = MagicMock()
+        mock_chunk.content = 'Debrief'
+        mock_instance.stream.return_value = [mock_chunk]
+        mock_llm_cls.return_value = mock_instance
+
+        from django.core.cache import cache as django_cache
+        rate_key = f"summary_ratelimit:{self.org.id}"
+        django_cache.set(rate_key, 30, timeout=3600)
+
+        response = self.client.post(self.url)
+        self.assertEqual(response.status_code, 429)
+
+        django_cache.delete(rate_key)
+
+    @patch('langchain_openai.ChatOpenAI')
+    def test_failed_generation_does_not_consume_rate_limit(self, mock_llm_cls):
+        """A failed generation must not burn the hourly budget (regression)."""
+        from django.core.cache import cache as django_cache
+        rate_key = f"summary_ratelimit:{self.org.id}"
+        django_cache.delete(rate_key)
+
+        mock_instance = MagicMock()
+        mock_instance.stream.side_effect = Exception('API key invalid')
+        mock_llm_cls.return_value = mock_instance
+
+        response = self.client.post(self.url)
+        b''.join(response.streaming_content)  # drive the generator to completion
+
+        self.assertEqual(django_cache.get(rate_key, 0), 0)
+        django_cache.delete(rate_key)
+
+    @patch('langchain_openai.ChatOpenAI')
+    def test_successful_generation_increments_rate_limit(self, mock_llm_cls):
+        """A successful generation counts once against the hourly budget."""
+        from django.core.cache import cache as django_cache
+        rate_key = f"summary_ratelimit:{self.org.id}"
+        django_cache.delete(rate_key)
+
+        mock_instance = MagicMock()
+        mock_chunk = MagicMock()
+        mock_chunk.content = 'Generated summary text'
+        mock_chunk.usage_metadata = None
+        mock_instance.stream.return_value = [mock_chunk]
+        mock_llm_cls.return_value = mock_instance
+
+        response = self.client.post(self.url)
+        b''.join(response.streaming_content)
+
+        self.assertEqual(django_cache.get(rate_key, 0), 1)
+        django_cache.delete(rate_key)
+
+    def test_event_detail_still_works(self):
+        """Regression: event_detail view still renders after stats extraction."""
+        url = reverse('tickets:event_detail', args=[self.event.id])
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'Summary Event')
+
+    def test_build_prompt_structure(self):
+        """_build_prompt returns the forward-looking debrief sections and event name."""
+        from tickets.services.event_summary import EventSummaryService
+        from tickets.views import _compute_event_stats
+
+        service = EventSummaryService(self.org, user=self.user)
+        event_data = _compute_event_stats(self.event)
+        prompt = service._build_prompt(self.event, event_data)
+
+        self.assertIn('What worked', prompt)
+        self.assertIn('What underperformed', prompt)
+        self.assertIn('Recommended next steps', prompt)
+        self.assertIn('Summary Event', prompt)
+
+    def test_build_prompt_unifies_survey_responses(self):
+        """Survey block uses combined totals and drops internal/external/invitation framing."""
+        from tickets.services.event_summary import EventSummaryService
+        from tickets.views import _compute_event_stats
+
+        service = EventSummaryService(self.org, user=self.user)
+        event_data = _compute_event_stats(self.event)
+        prompt = service._build_prompt(self.event, event_data)
+
+        self.assertIn('Total Responses', prompt)
+        self.assertNotIn('Invitations Sent', prompt)
+        self.assertNotIn('External Survey Responses', prompt)
+        self.assertNotIn('Responses Received', prompt)
+
+    def _make_direct_checked_in_event(self):
+        """A past direct-ticketing event with one fully checked-in GA ticket."""
+        event = Event.objects.create(
+            organization=self.org, name='Direct Event',
+            venue=self.venue, start_date=date(2024, 9, 15),
+            ticketing_type=TICKETING_TYPE_DIRECT,
+        )
+        customer = Customer.objects.create(
+            organization=self.org, email='attendee@test.com', name='Attendee',
+        )
+        now = timezone.now()
+        order = TicketOrder.objects.create(
+            customer=customer, event=event, order_number='DIR-001',
+            order_date='2024-09-10 10:00:00', total_amount=Decimal('50.00'),
+            checked_in_at=now,
+        )
+        # An admitted order stamps each of its tickets (the scan source of truth).
+        Ticket.objects.create(
+            ticket_order=order, ticket_type='GA', price=Decimal('50.00'), scanned_at=now,
+        )
+        return event
+
+    def test_build_prompt_includes_checkin_for_direct_event(self):
+        """Direct events past start surface a Check-In section with percentages."""
+        from tickets.services.event_summary import EventSummaryService
+        from tickets.views import _compute_event_stats
+
+        event = self._make_direct_checked_in_event()
+        service = EventSummaryService(self.org, user=self.user)
+        event_data = _compute_event_stats(event)
+        prompt = service._build_prompt(event, event_data)
+
+        self.assertIn('Check-In (door attendance)', prompt)
+        self.assertIn('1 of 1 (100%)', prompt)
+        self.assertIn('GA: 1/1 (100%)', prompt)
+
+    def test_build_prompt_omits_checkin_for_non_direct_event(self):
+        """Non-direct (external) events have no Check-In section."""
+        from tickets.services.event_summary import EventSummaryService
+        from tickets.views import _compute_event_stats
+
+        service = EventSummaryService(self.org, user=self.user)
+        event_data = _compute_event_stats(self.event)  # default (external) ticketing
+        prompt = service._build_prompt(self.event, event_data)
+
+        self.assertNotIn('Check-In (door attendance)', prompt)
+
+    def test_build_prompt_excludes_allocation_for_external_event(self):
+        """External-upload events must not invite sell-through/allocation conclusions."""
+        from tickets.services.event_summary import EventSummaryService
+        from tickets.views import _compute_event_stats
+
+        self.event.capacity = 100
+        self.event.save(update_fields=['capacity'])
+        service = EventSummaryService(self.org, user=self.user)
+        event_data = _compute_event_stats(self.event)  # default (external) ticketing
+        prompt = service._build_prompt(self.event, event_data)
+
+        self.assertIn('Do NOT draw any conclusion about sell-through', prompt)
+        self.assertIn("uploaded events don't include ticket allocation totals", prompt)
+        self.assertIn('allocation totals not available', prompt)
+        # No computed utilization percentage even though capacity is set.
+        self.assertNotIn('Capacity Utilization: 0.0%', prompt)
+
+    def test_build_prompt_keeps_allocation_for_direct_event(self):
+        """Direct events keep real capacity utilization and no allocation caveat."""
+        from tickets.services.event_summary import EventSummaryService
+        from tickets.views import _compute_event_stats
+
+        event = self._make_direct_checked_in_event()
+        event.capacity = 4
+        event.save(update_fields=['capacity'])
+        service = EventSummaryService(self.org, user=self.user)
+        event_data = _compute_event_stats(event)
+        prompt = service._build_prompt(event, event_data)
+
+        # Direct branch computes a numeric utilization (not the external note).
+        self.assertRegex(prompt, r'Capacity Utilization: \d+\.\d%')
+        self.assertNotIn("uploaded events don't include ticket allocation totals", prompt)
+        self.assertIn('Ticket Type Breakdown:', prompt)
+        self.assertNotIn('Do NOT draw any conclusion about sell-through', prompt)
+
+    def _add_external_responses(self, event):
+        """Create external survey responses with structured (Typeform-style) answers."""
+        upload = ExternalSurveyUpload.objects.create(
+            organization=self.org, filename='typeform.csv',
+            status=ExternalSurveyUpload.Status.COMPLETED,
+        )
+        rows = [
+            dict(enjoyed=['DJ set', 'Lighting'], genres=['House'],
+                 improvements=['Better sound'], crowd_vibe='Energetic',
+                 venue_feel='Intimate', found_out_how='Instagram'),
+            dict(enjoyed=['DJ set'], genres=['House', 'Techno'],
+                 improvements=[], crowd_vibe='Energetic',
+                 venue_feel='Intimate', found_out_how='Instagram'),
+            dict(enjoyed=['Venue'], genres=['Techno'],
+                 improvements=['Better sound'], crowd_vibe='Chill',
+                 venue_feel='Spacious', found_out_how='Word of mouth'),
+        ]
+        for i, row in enumerate(rows):
+            ExternalSurveyResponse.objects.create(
+                organization=self.org, upload=upload, event=event,
+                responded_at=timezone.now(), email=f'guest{i}@example.com',
+                nps_score=9, **row,
+            )
+
+    def test_build_prompt_includes_external_structured_answers(self):
+        """Structured Typeform answers are aggregated (with counts) into the prompt."""
+        from tickets.services.event_summary import EventSummaryService
+        from tickets.views import _compute_event_stats
+
+        event = Event.objects.create(
+            organization=self.org, name='Typeform Event',
+            venue=self.venue, start_date=date(2024, 9, 15),
+        )
+        self._add_external_responses(event)
+        service = EventSummaryService(self.org, user=self.user)
+        prompt = service._build_prompt(event, _compute_event_stats(event))
+
+        self.assertIn('Top things enjoyed: DJ set (2)', prompt)
+        self.assertIn('Most requested improvements: Better sound (2)', prompt)
+        self.assertIn('Crowd vibe: Energetic (2)', prompt)
+        self.assertIn('How attendees discovered the event: Instagram (2)', prompt)
+        # Most common value ranks first.
+        self.assertLess(prompt.index('DJ set'), prompt.index('Lighting'))
+
+    def test_build_prompt_omits_structured_when_no_external_data(self):
+        """Events without external structured answers get no structured lines."""
+        from tickets.services.event_summary import EventSummaryService
+        from tickets.views import _compute_event_stats
+
+        service = EventSummaryService(self.org, user=self.user)
+        prompt = service._build_prompt(self.event, _compute_event_stats(self.event))
+
+        self.assertNotIn('Top things enjoyed', prompt)
+        self.assertNotIn('How attendees discovered the event', prompt)
+
+
+class DisplayPreferencesTests(TestCase):
+    """Org admins can toggle the AI Event Summary card from /settings/display/."""
+
+    def setUp(self):
+        self.client = Client()
+        self.org = Organization.objects.create(name='Prefs Org', slug='prefs-org')
+
+        self.admin_user = User.objects.create_user(
+            username='prefsadmin', email='prefsadmin@test.com', password='testpass123',
+        )
+        UserProfile.objects.create(
+            user=self.admin_user, organization=self.org, org_role=UserProfile.OrgRole.OWNER,
+        )
+        OrganizationMembership.objects.create(
+            user=self.admin_user, organization=self.org, org_role=UserProfile.OrgRole.OWNER,
+        )
+
+        self.member_user = User.objects.create_user(
+            username='prefshost', email='prefshost@test.com', password='testpass123',
+        )
+        UserProfile.objects.create(
+            user=self.member_user, organization=self.org, org_role=UserProfile.OrgRole.HOST,
+        )
+        OrganizationMembership.objects.create(
+            user=self.member_user, organization=self.org, org_role=UserProfile.OrgRole.HOST,
+        )
+
+        self.venue = Venue.objects.create(
+            organization=self.org, name='Prefs Venue', city='Prefs City',
+        )
+        # Past event so the AI summary card is eligible to render
+        self.event = Event.objects.create(
+            organization=self.org, name='Prefs Event',
+            venue=self.venue, start_date=date(2024, 9, 15),
+        )
+        self.url = reverse('tickets:settings_display_preferences')
+
+    def _login(self, email):
+        self.client.login(username=email, password='testpass123')
+        self.client.get(reverse('tickets:home'))
+
+    def test_admin_can_view_preferences(self):
+        """Admin sees the preferences page with the toggle."""
+        self._login('prefsadmin@test.com')
+        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'ai_event_summary_enabled')
+
+    def test_non_admin_forbidden(self):
+        """A non-admin member is denied access."""
+        self._login('prefshost@test.com')
+        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, 403)
+
+    def test_post_disables_flag(self):
+        """Posting with the box unchecked turns the flag off."""
+        self._login('prefsadmin@test.com')
+        response = self.client.post(self.url, {})
+        self.assertEqual(response.status_code, 302)
+        self.org.refresh_from_db()
+        self.assertFalse(self.org.ai_event_summary_enabled)
+
+    def test_post_enables_flag(self):
+        """Posting with the box checked turns the flag on."""
+        self.org.ai_event_summary_enabled = False
+        self.org.save(update_fields=['ai_event_summary_enabled'])
+        self._login('prefsadmin@test.com')
+        response = self.client.post(self.url, {'ai_event_summary_enabled': 'on'})
+        self.assertEqual(response.status_code, 302)
+        self.org.refresh_from_db()
+        self.assertTrue(self.org.ai_event_summary_enabled)
+
+    def test_card_shown_when_enabled(self):
+        """Default (enabled) renders the AI summary card on event detail."""
+        self._login('prefsadmin@test.com')
+        response = self.client.get(reverse('tickets:event_detail', args=[self.event.id]))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'id="ai-summary-card"')
+
+    def test_card_hidden_when_disabled(self):
+        """When disabled, the AI summary card is not rendered."""
+        self.org.ai_event_summary_enabled = False
+        self.org.save(update_fields=['ai_event_summary_enabled'])
+        self._login('prefsadmin@test.com')
+        response = self.client.get(reverse('tickets:event_detail', args=[self.event.id]))
+        self.assertEqual(response.status_code, 200)
+        self.assertNotContains(response, 'id="ai-summary-card"')
+
+    def test_stream_404_when_disabled(self):
+        """The streaming endpoint is unavailable while the card is hidden."""
+        self.org.ai_event_summary_enabled = False
+        self.org.save(update_fields=['ai_event_summary_enabled'])
+        self._login('prefsadmin@test.com')
+        url = reverse('tickets:event_summary_stream', args=[self.event.id])
+        response = self.client.post(url)
+        self.assertEqual(response.status_code, 404)
+
+
+class POSHScanImportAndBuiltinFormatTests(TestCase):
+    """Per-ticket scan import (POSH) + global built-in CSV format behavior."""
+
+    def setUp(self):
+        self.client = Client()
+        self.org = Organization.objects.create(name='Scan Org', slug='scan-org')
+        self.user = User.objects.create_user(
+            username='scanhost', email='scanhost@example.com', password='pw12345',
+        )
+        UserProfile.objects.create(
+            user=self.user, organization=self.org, org_role=UserProfile.OrgRole.OWNER,
+        )
+        OrganizationMembership.objects.create(
+            user=self.user, organization=self.org, org_role=UserProfile.OrgRole.OWNER,
+        )
+        self.venue = Venue.objects.create(organization=self.org, name='Venue', city='City')
+        # External (CSV) event whose start has passed.
+        self.event = Event.objects.create(
+            organization=self.org, name='Scan Night', venue=self.venue,
+            start_date=date(2026, 1, 1), start_time=time(20, 0, 0),
+            ticketing_type='external',
+        )
+
+    # --- parse_scan_details unit coverage -------------------------------------
+    def _processor(self):
+        from tickets.csv_processor import CSVProcessor
+        return CSVProcessor.__new__(CSVProcessor)
+
+    def test_parse_scan_details_variants(self):
+        p = self._processor()
+        self.assertEqual(p.parse_scan_details(''), [])
+        self.assertEqual(
+            p.parse_scan_details('ga - Not Scanned (N/A), ga - Not Scanned (N/A)'),
+            [None, None],
+        )
+        one = p.parse_scan_details('ga - Scanned (06-14-2026 7:40:36 pm)')
+        self.assertEqual(len(one), 1)
+        self.assertIsNotNone(one[0])
+        mixed = p.parse_scan_details(
+            'early bird - Scanned (06-14-2026 7:07:28 pm), ga - Not Scanned (N/A)'
+        )
+        self.assertIsNotNone(mixed[0])
+        self.assertIsNone(mixed[1])
+
+    # --- end-to-end import ----------------------------------------------------
+    def _import(self, csv_body):
+        import io
+        posh = CSVFormat.objects.get(name='POSH')
+        upload = UploadedFile.objects.create(
+            organization=self.org, csv_format=posh, filename='posh.csv', status='pending',
+            metadata={'event_id': str(self.event.id), 'event_name': self.event.name,
+                      'event_start_date': '2026-01-01'},
+        )
+        from tickets.csv_processor import CSVProcessor
+        processor = CSVProcessor(upload, posh)
+        return processor.process_and_save(io.BytesIO(csv_body.encode('utf-8')))
+
+    def test_import_sets_per_ticket_scanned_and_order_checkin(self):
+        header = (
+            '"Order Number","Order Date/Time","Order Subtotal","Order Total",'
+            '"# of Tickets","First Name","Last Name","Email","Phone Number",'
+            '"Tickets Purchased","Ticket Scan Details"\n'
+        )
+        rows = (
+            # Fully scanned single ticket
+            '"A1","05-12-2026 1:40:11 pm","21.00","21.00","1","Amy","R","a@x.com","+17025550000",'
+            '"general admission","general admission - Scanned (06-14-2026 7:40:36 pm)"\n'
+            # Partially scanned 2-ticket order (1 of 2)
+            '"A2","05-12-2026 1:42:50 pm","0.00","0.00","2","Bo","J","b@x.com","+17025550001",'
+            '"free rsvp, free rsvp","free rsvp - Scanned (06-14-2026 5:35:26 pm), free rsvp - Not Scanned (N/A)"\n'
+            # Not scanned at all
+            '"A3","05-12-2026 1:50:00 pm","0.00","0.00","1","Cy","K","c@x.com","+17025550002",'
+            '"free rsvp","free rsvp - Not Scanned (N/A)"\n'
+        )
+        results = self._import(header + rows)
+        self.assertEqual(results['success_count'], 3)
+
+        o1 = TicketOrder.objects.get(external_order_number='A1')
+        o2 = TicketOrder.objects.get(external_order_number='A2')
+        o3 = TicketOrder.objects.get(external_order_number='A3')
+
+        # Per-ticket scanned_at
+        self.assertEqual(o1.tickets.filter(scanned_at__isnull=False).count(), 1)
+        self.assertEqual(o2.tickets.count(), 2)
+        self.assertEqual(o2.tickets.filter(scanned_at__isnull=False).count(), 1)
+        self.assertEqual(o3.tickets.filter(scanned_at__isnull=False).count(), 0)
+
+        # Order-level marker: set when ANY ticket scanned, NULL when none.
+        self.assertIsNotNone(o1.checked_in_at)
+        self.assertIsNotNone(o2.checked_in_at)
+        self.assertIsNone(o3.checked_in_at)
+
+    def test_checkin_stats_count_tickets_and_surface_external_event(self):
+        from tickets.views import _compute_event_checkin_stats
+        header = (
+            '"Order Number","Order Date/Time","Order Subtotal","Order Total",'
+            '"# of Tickets","First Name","Last Name","Email","Phone Number",'
+            '"Tickets Purchased","Ticket Scan Details"\n'
+        )
+        rows = (
+            '"A2","05-12-2026 1:42:50 pm","0.00","0.00","2","Bo","J","b@x.com","+17025550001",'
+            '"free rsvp, free rsvp","free rsvp - Scanned (06-14-2026 5:35:26 pm), free rsvp - Not Scanned (N/A)"\n'
+        )
+        self._import(header + rows)
+        show, total, checked, by_type = _compute_event_checkin_stats(self.event)
+        # External event surfaces because it has imported scan data.
+        self.assertTrue(show)
+        self.assertEqual(total, 2)
+        # Only 1 of 2 tickets scanned -> no order-level overcount.
+        self.assertEqual(checked, 1)
+
+    def test_external_event_without_scan_data_is_hidden(self):
+        from tickets.views import _compute_event_checkin_stats
+        # An order with no scan data.
+        cust = Customer.objects.create(organization=self.org, email='n@x.com', name='N')
+        order = TicketOrder.objects.create(
+            customer=cust, event=self.event, order_number='NOSCAN',
+            order_date=timezone.now(), total_amount=Decimal('10.00'),
+        )
+        Ticket.objects.create(ticket_order=order, ticket_type='GA', price=Decimal('10.00'))
+        show, total, checked, by_type = _compute_event_checkin_stats(self.event)
+        self.assertFalse(show)
+
+    # --- built-in format read-only + duplicate --------------------------------
+    def _login(self):
+        self.client.login(username='scanhost@example.com', password='pw12345')
+        self.client.get(reverse('tickets:home'))  # prime org session cache
+
+    def test_posh_builtin_is_global_and_visible(self):
+        posh = CSVFormat.objects.get(name='POSH')
+        self.assertIsNone(posh.organization_id)
+        self.assertTrue(posh.is_system)
+        self.assertIn('POSH', list(
+            CSVFormat.available_for(self.org).values_list('name', flat=True)
+        ))
+
+    def test_builtin_format_not_editable_or_deletable(self):
+        self._login()
+        posh = CSVFormat.objects.get(name='POSH')
+        # Org-scoped views 404 on a global built-in.
+        self.assertEqual(
+            self.client.get(reverse('tickets:format_edit', args=[posh.id])).status_code, 404
+        )
+        self.assertEqual(
+            self.client.post(reverse('tickets:format_delete', args=[posh.id])).status_code, 404
+        )
+
+    def test_duplicate_builtin_creates_editable_org_copy(self):
+        self._login()
+        posh = CSVFormat.objects.get(name='POSH')
+        resp = self.client.get(reverse('tickets:format_duplicate', args=[posh.id]))
+        self.assertEqual(resp.status_code, 302)
+        copy = CSVFormat.objects.get(organization=self.org, name='POSH (Custom)')
+        self.assertFalse(copy.is_system)
+        self.assertEqual(copy.column_mapping, posh.column_mapping)
+        # The copy is editable (org-scoped view resolves it).
+        self.assertEqual(
+            self.client.get(reverse('tickets:format_edit', args=[copy.id])).status_code, 200
+        )
+
+
+class EventAudienceTests(TestCase):
+    """EventAudienceCalculator metrics + Audience tab visibility."""
+
+    def setUp(self):
+        self.client = Client()
+        self.org = Organization.objects.create(name='Aud Org', slug='aud-org')
+        self.user = User.objects.create_user(
+            username='audhost', email='audhost@example.com', password='pw12345',
+        )
+        UserProfile.objects.create(
+            user=self.user, organization=self.org, org_role=UserProfile.OrgRole.OWNER,
+        )
+        OrganizationMembership.objects.create(
+            user=self.user, organization=self.org, org_role=UserProfile.OrgRole.OWNER,
+        )
+        self.venue = Venue.objects.create(organization=self.org, name='V', city='C')
+        # Past external event (so check-in/audience can surface once scans exist).
+        self.event = Event.objects.create(
+            organization=self.org, name='Aud Night', venue=self.venue,
+            start_date=date(2026, 1, 1), start_time=time(20, 0, 0),
+            ticketing_type='external',
+        )
+        self.prior_event = Event.objects.create(
+            organization=self.org, name='Prior', venue=self.venue,
+            start_date=date(2025, 6, 1), ticketing_type='external',
+        )
+
+    def _customer(self, email, **kwargs):
+        return Customer.objects.create(
+            organization=self.org, email=email, name=email.split('@')[0], **kwargs
+        )
+
+    def _order(self, customer, event, number, scanned=False, tickets=1):
+        order = TicketOrder.objects.create(
+            customer=customer, event=event, order_number=number,
+            order_date=timezone.now(), total_amount=Decimal('20.00'),
+        )
+        now = timezone.now()
+        for i in range(tickets):
+            Ticket.objects.create(
+                ticket_order=order, ticket_type='GA', price=Decimal('20.00'),
+                scanned_at=now if scanned else None,
+            )
+        return order
+
+    def test_calculator_metrics(self):
+        from tickets.services.audience import EventAudienceCalculator
+
+        # New customer, checked in (first-time attendee).
+        new_att = self._customer('new_att@x.com')
+        self._order(new_att, self.event, 'N1', scanned=True)
+
+        # Returning customer (has an order at a prior event), checked in.
+        ret = self._customer('ret@x.com')
+        self._order(ret, self.prior_event, 'R0', scanned=False)
+        self._order(ret, self.event, 'R1', scanned=True)
+
+        # High-value (VIP) customer, new, checked in.
+        vip = self._customer('vip@x.com', rfm_segment='VIP', rfm_monetary_score=5,
+                             lifetime_value=Decimal('900.00'))
+        self._order(vip, self.event, 'V1', scanned=True)
+
+        # Bought but did NOT check in (no scan).
+        noshow = self._customer('noshow@x.com')
+        self._order(noshow, self.event, 'X1', scanned=False)
+
+        result = EventAudienceCalculator(self.event).calculate()
+
+        self.assertTrue(result['show'])
+        self.assertEqual(result['total_buyers'], 4)
+        # Attendees = customers with >=1 scanned ticket: new_att, ret, vip
+        self.assertEqual(result['attendees'], 3)
+        self.assertEqual(result['attendees_returning'], 1)  # ret
+        self.assertEqual(result['attendees_new'], 2)        # new_att, vip
+        self.assertEqual(result['first_time_attendees'], 2)
+        # High value = VIP/Big Spender or monetary>=4; only vip qualifies and attended.
+        self.assertEqual(result['high_value_total'], 1)
+        self.assertEqual(result['high_value_attended'], 1)
+        self.assertEqual(result['high_value_attendees'], 1)
+        # Notable attendees (queryset): VIP (high-value) and the returning customer
+        # qualifies as a frequent buyer (2 distinct events). new_att (1 event, not
+        # high-value) is excluded.
+        notable = list(EventAudienceCalculator(self.event).notable_attendees_queryset())
+        emails = {c.email for c in notable}
+        self.assertEqual(emails, {'vip@x.com', 'ret@x.com'})
+        self.assertNotIn('new_att@x.com', emails)
+        # ret has events_count == 2 (frequent), vip has 1 -> ret ranks first.
+        by_email = {c.email: c for c in notable}
+        self.assertEqual(by_email['ret@x.com'].events_count, 2)
+        self.assertEqual(by_email['vip@x.com'].events_count, 1)
+        self.assertEqual(notable[0].email, 'ret@x.com')
+
+    def test_high_value_via_monetary_score_without_named_segment(self):
+        from tickets.services.audience import EventAudienceCalculator
+        # Top-spend signal alone (no VIP/Big Spender label) still counts as high value.
+        spender = self._customer('spender@x.com', rfm_segment='Loyal',
+                                 rfm_monetary_score=4, lifetime_value=Decimal('500.00'))
+        self._order(spender, self.event, 'S1', scanned=True)
+        result = EventAudienceCalculator(self.event).calculate()
+        self.assertEqual(result['high_value_attended'], 1)
+
+    def test_frequent_buyer_not_high_value_is_notable(self):
+        from tickets.services.audience import EventAudienceCalculator
+        # No VIP/top-spend signal, but purchased at 2 events -> notable as a frequent buyer.
+        freq = self._customer('freq@x.com')
+        self._order(freq, self.prior_event, 'F0', scanned=False)
+        self._order(freq, self.event, 'F1', scanned=True)
+        # A plain first-timer who is not high-value is NOT notable.
+        plain = self._customer('plain@x.com')
+        self._order(plain, self.event, 'P1', scanned=True)
+        notable = list(EventAudienceCalculator(self.event).notable_attendees_queryset())
+        emails = {c.email for c in notable}
+        self.assertIn('freq@x.com', emails)
+        self.assertNotIn('plain@x.com', emails)
+
+    def test_notable_attendees_paginated_ten_per_page(self):
+        # 12 frequent buyers -> 10 on page 1, 2 on page 2.
+        for i in range(12):
+            c = self._customer('freq%02d@x.com' % i)
+            self._order(c, self.prior_event, 'PR%02d' % i, scanned=False)
+            self._order(c, self.event, 'EV%02d' % i, scanned=True)
+        self._login()
+        resp = self.client.get(reverse('tickets:event_detail', args=[self.event.id]))
+        page = resp.context['notable_attendees_page']
+        self.assertEqual(page.paginator.count, 12)
+        self.assertEqual(page.paginator.per_page, 10)
+        self.assertEqual(len(page.object_list), 10)
+        resp2 = self.client.get(
+            reverse('tickets:event_detail', args=[self.event.id]),
+            {'tab': 'audience', 'audience_page': 2},
+        )
+        self.assertEqual(len(resp2.context['notable_attendees_page'].object_list), 2)
+
+    def _login(self):
+        self.client.login(username='audhost@example.com', password='pw12345')
+        self.client.get(reverse('tickets:home'))
+
+    def test_audience_tab_shown_for_external_event_with_scans(self):
+        self._login()
+        c = self._customer('a@x.com')
+        self._order(c, self.event, 'A1', scanned=True)
+        resp = self.client.get(reverse('tickets:event_detail', args=[self.event.id]))
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, 'id="tab-audience"')
+        self.assertContains(resp, 'audienceDonut')
+        # The tab button shows no count.
+        self.assertContains(resp, 'role="tab">Audience</button>')
+
+    def test_audience_tab_hidden_for_external_event_without_scans(self):
+        self._login()
+        c = self._customer('b@x.com')
+        self._order(c, self.event, 'B1', scanned=False)  # bought, never scanned
+        resp = self.client.get(reverse('tickets:event_detail', args=[self.event.id]))
+        self.assertEqual(resp.status_code, 200)
+        self.assertNotContains(resp, 'id="tab-audience"')
+
+
+class OLSHelperTests(TestCase):
+    """Unit tests for the OLS fit used by market trend classification."""
+
+    def test_linear_series_exact_fit(self):
+        from tickets.services.market_trends.market_trend_calculator import _ols
+        slope, intercept, mean_y, r2 = _ols([10, 20, 30])
+        self.assertAlmostEqual(slope, 10.0)
+        self.assertAlmostEqual(intercept, 10.0)
+        self.assertAlmostEqual(mean_y, 20.0)
+        self.assertAlmostEqual(r2, 1.0)
+
+    def test_flat_series_zero_slope(self):
+        from tickets.services.market_trends.market_trend_calculator import _ols
+        slope, intercept, mean_y, r2 = _ols([5, 5, 5, 5])
+        self.assertEqual(slope, 0.0)
+        self.assertEqual(mean_y, 5.0)
+        self.assertEqual(r2, 1.0)  # a flat fit explains a flat series exactly
+
+
+class MarketTrendCalculatorTests(TestCase):
+    """Tests for per-market turnout trend detection and diagnosis."""
+
+    def setUp(self):
+        self.org = Organization.objects.create(name='Trend Org', slug='trend-org')
+        self.user = User.objects.create_user(
+            username='trend_owner', email='trend_owner@example.com', password='pw',
+        )
+        UserProfile.objects.create(
+            user=self.user, organization=self.org, org_role=UserProfile.OrgRole.OWNER,
+        )
+        OrganizationMembership.objects.create(
+            user=self.user, organization=self.org, org_role=UserProfile.OrgRole.OWNER,
+        )
+        # Four consecutive recent quarters, all strictly in the past and inside the
+        # calculator's default 2-year trailing window. Anchored relative to today
+        # (not fixed at 2023) so the default window doesn't filter the seed data out.
+        today = date.today()
+        abs_q = today.year * 4 + (today.month - 1) // 3  # current quarter, absolute index
+        self.quarters = []
+        for back in (5, 4, 3, 2):  # latest anchor = 2 quarters ago => safely past
+            y, q = divmod(abs_q - back, 4)
+            self.quarters.append(date(y, q * 3 + 1, 15))
+
+    def _venue(self, city):
+        return Venue.objects.create(organization=self.org, name=city + ' Hall', city=city)
+
+    def _event(self, venue, start_date, name):
+        return Event.objects.create(
+            organization=self.org, name=name, venue=venue, start_date=start_date,
+        )
+
+    def _order_with_tickets(self, event, n_tickets, customer_prefix, seq):
+        """Create one order at `event` with `n_tickets` tickets, each a unique customer."""
+        customer = Customer.objects.create(
+            organization=self.org,
+            email='{}-{}@example.com'.format(customer_prefix, seq),
+            name='{} {}'.format(customer_prefix, seq),
+        )
+        order = TicketOrder.objects.create(
+            customer=customer, event=event,
+            order_number='ORD-{}-{}'.format(customer_prefix, seq),
+            order_date=timezone.make_aware(datetime.combine(event.start_date, time(10, 0))),
+            total_amount=Decimal('10.00'),
+        )
+        for t in range(n_tickets):
+            Ticket.objects.create(ticket_order=order, ticket_type='GA', price=Decimal('10.00'))
+        return order
+
+    def _build_market(self, city, counts):
+        """One event per quarter; `counts[i]` = tickets sold that quarter (all new buyers)."""
+        venue = self._venue(city)
+        for i, n in enumerate(counts):
+            event = self._event(venue, self.quarters[i], '{} Q{}'.format(city, i + 1))
+            for s in range(n):
+                self._order_with_tickets(event, 1, '{}q{}'.format(city.lower(), i), s)
+
+    def _build_priced_market(self, city, specs):
+        """One event per quarter; specs[i] = (tickets, price) for that quarter (all new buyers).
+
+        Each ticket is a 1-ticket order at the quarter's price, so tickets-per-event
+        and revenue-per-event can be controlled independently."""
+        venue = self._venue(city)
+        for i, (n, price) in enumerate(specs):
+            event = self._event(venue, self.quarters[i], '{} Q{}'.format(city, i + 1))
+            for s in range(n):
+                customer = Customer.objects.create(
+                    organization=self.org,
+                    email='{}-{}-{}@example.com'.format(city.lower(), i, s),
+                    name='{} {} {}'.format(city, i, s),
+                )
+                order = TicketOrder.objects.create(
+                    customer=customer, event=event,
+                    order_number='ORDP-{}-{}-{}'.format(city.lower(), i, s),
+                    order_date=timezone.make_aware(datetime.combine(event.start_date, time(10, 0))),
+                    total_amount=Decimal(str(price)),
+                )
+                Ticket.objects.create(ticket_order=order, ticket_type='GA', price=Decimal(str(price)))
+
+    def _build_cost_market(self, city, specs):
+        """specs[i] = (tickets, price, cost_per_event) per quarter (all new buyers).
+
+        One event per quarter with `tickets` 1-ticket orders at `price`, plus a
+        single EventExpense of `cost_per_event` — lets profit-per-event move
+        independently of revenue/tickets."""
+        venue = self._venue(city)
+        for i, (n, price, cost) in enumerate(specs):
+            event = self._event(venue, self.quarters[i], '{} Q{}'.format(city, i + 1))
+            for s in range(n):
+                customer = Customer.objects.create(
+                    organization=self.org,
+                    email='{}-c{}-{}@example.com'.format(city.lower(), i, s),
+                    name='{} {} {}'.format(city, i, s),
+                )
+                order = TicketOrder.objects.create(
+                    customer=customer, event=event,
+                    order_number='ORDC-{}-{}-{}'.format(city.lower(), i, s),
+                    order_date=timezone.make_aware(datetime.combine(event.start_date, time(10, 0))),
+                    total_amount=Decimal(str(price)),
+                )
+                Ticket.objects.create(ticket_order=order, ticket_type='GA', price=Decimal(str(price)))
+            EventExpense.objects.create(
+                event=event, category='production', description='cost',
+                amount=Decimal(str(cost)), expense_date=event.start_date,
+                created_by=self.user,
+            )
+
+    def _build_nps_market(self, city, specs):
+        """specs[i] = (promoters, passives, detractors) survey responses for quarter i.
+
+        One event per quarter; each response's `responded_at` sits in that quarter
+        so the NPS series (bucketed by responded_at) has one point per quarter."""
+        from tickets.models import ExternalSurveyUpload, ExternalSurveyResponse
+        venue = self._venue(city)
+        upload = ExternalSurveyUpload.objects.create(
+            organization=self.org, filename='nps.csv',
+            status=ExternalSurveyUpload.Status.COMPLETED, created_by=self.user,
+        )
+        seq = 0
+        for i, (promoters, passives, detractors) in enumerate(specs):
+            event = self._event(venue, self.quarters[i], '{} Q{}'.format(city, i + 1))
+            responded = timezone.make_aware(datetime.combine(self.quarters[i], time(12, 0)))
+            for score, count in ((10, promoters), (8, passives), (3, detractors)):
+                for _ in range(count):
+                    ExternalSurveyResponse.objects.create(
+                        organization=self.org, upload=upload, event=event,
+                        responded_at=responded, email='{}-{}@example.com'.format(city.lower(), seq),
+                        nps_score=score, city=city,
+                    )
+                    seq += 1
+
+    def _build_returning_revenue_market(self, city, specs):
+        """specs[i] = (new_count, returning_count, price) for quarter i.
+
+        One event per quarter; `returning_count` buyers are reused from earlier
+        quarters (so they count as returning), the rest are brand new. Lets the
+        returning-buyer share swing while demand (= buyers/event) and price are
+        controlled independently."""
+        venue = self._venue(city)
+        seen = []
+        seq = 0
+        for i, (new_count, returning_count, price) in enumerate(specs):
+            event = self._event(venue, self.quarters[i], '{} Q{}'.format(city, i + 1))
+            order_dt = timezone.make_aware(datetime.combine(self.quarters[i], time(10, 0)))
+            buyers = []
+            for r in (seen[:returning_count] if returning_count else []):
+                buyers.append(r)
+            for _ in range(new_count):
+                c = Customer.objects.create(
+                    organization=self.org,
+                    email='{}-r{}-{}@example.com'.format(city.lower(), i, seq),
+                    name='{} {}'.format(city, seq),
+                )
+                seq += 1
+                buyers.append(c)
+                seen.append(c)
+            for c in buyers:
+                o = TicketOrder.objects.create(
+                    customer=c, event=event, order_number='ORDR-{}-{}'.format(city.lower(), seq),
+                    order_date=order_dt, total_amount=Decimal(str(price)),
+                )
+                seq += 1
+                Ticket.objects.create(ticket_order=o, ticket_type='GA', price=Decimal(str(price)))
+
+    def test_revenue_top_driver_is_demand_not_returning_share(self):
+        """Returning-buyer share swings hard, but demand/price move the dollars —
+        so the revenue badge goes to demand (contribution), not retention."""
+        from tickets.services.market_trends import MarketTrendCalculator
+        # (new, returning, price): demand 20->38 and price 30->36 both climb,
+        # while returning share jumps 0% -> ~63%.
+        self._build_returning_revenue_market('Boston', [
+            (20, 0, 30), (18, 6, 32), (16, 14, 34), (14, 24, 36),
+        ])
+        result = MarketTrendCalculator(self.org, period='quarter', metric='revenue').calculate()
+        m = next(x for x in result['markets'] if x['city'] == 'Boston')
+        self.assertEqual(m['trend'], 'growing')
+        self.assertIn(m['dominant_driver'], ('demand', 'price'))
+        # Retention still shows as a context bar, just never the badged lead.
+        keys = {d['key'] for d in m['driver_contributions']}
+        self.assertIn('retention', keys)
+
+    def test_declining_demand_market(self):
+        from tickets.services.market_trends import MarketTrendCalculator
+        self._build_market('Austin', [40, 30, 20, 10])
+        result = MarketTrendCalculator(self.org, period='quarter', metric='tickets').calculate()
+        austin = next(m for m in result['markets'] if m['city'] == 'Austin')
+        self.assertEqual(austin['trend'], 'declining')
+        self.assertLess(austin['norm_slope_pct'], 0)
+        # All buyers are new each quarter, so the falling ticket volume is
+        # attributed to fewer new buyers (contribution by buyer count, not the
+        # tautological demand series).
+        self.assertEqual(austin['dominant_driver'], 'acquisition')
+        self.assertIn('Austin', austin['diagnosis_text'])
+        self.assertIsNotNone(austin['recommended_action'])
+
+    def test_stable_market(self):
+        from tickets.services.market_trends import MarketTrendCalculator
+        self._build_market('Denver', [25, 25, 25, 25])
+        result = MarketTrendCalculator(self.org, period='quarter', metric='tickets').calculate()
+        denver = next(m for m in result['markets'] if m['city'] == 'Denver')
+        self.assertEqual(denver['trend'], 'stable')
+        self.assertEqual(denver['dominant_driver'], None)
+
+    def test_growing_market(self):
+        from tickets.services.market_trends import MarketTrendCalculator
+        self._build_market('Miami', [10, 20, 30, 40])
+        result = MarketTrendCalculator(self.org, period='quarter', metric='tickets').calculate()
+        miami = next(m for m in result['markets'] if m['city'] == 'Miami')
+        self.assertEqual(miami['trend'], 'growing')
+        self.assertGreater(miami['norm_slope_pct'], 0)
+
+    def test_insufficient_data_market(self):
+        from tickets.services.market_trends import MarketTrendCalculator
+        self._build_market('Boise', [30, 20])  # only 2 periods
+        result = MarketTrendCalculator(self.org, period='quarter', metric='tickets').calculate()
+        boise = next(m for m in result['markets'] if m['city'] == 'Boise')
+        self.assertEqual(boise['trend'], 'insufficient_data')
+        self.assertEqual(boise['dominant_driver'], None)
+
+    def test_sold_totals_match_ticket_count_no_inflation(self):
+        from tickets.services.market_trends import MarketTrendCalculator
+        self._build_market('Reno', [12, 8, 6, 4])
+        result = MarketTrendCalculator(self.org, period='quarter').calculate()
+        reno = next(m for m in result['markets'] if m['city'] == 'Reno')
+        direct = Ticket.objects.filter(
+            ticket_order__event__organization=self.org,
+            ticket_order__event__venue__city='Reno',
+        ).count()
+        self.assertEqual(reno['total_sold'], direct)
+        self.assertEqual(reno['total_sold'], 30)
+
+    def test_sorted_highest_to_lowest_by_metric(self):
+        from tickets.services.market_trends import MarketTrendCalculator
+        self._build_market('Boston', [50, 40, 30, 20])   # total 140, declining
+        self._build_market('Dallas', [10, 20, 30, 40])   # total 100, growing
+        result = MarketTrendCalculator(self.org, period='quarter', metric='tickets').calculate()
+        # Largest market by tickets sold leads, regardless of trend direction.
+        self.assertEqual([m['city'] for m in result['markets']], ['Boston', 'Dallas'])
+        self.assertEqual(result['summary']['declining_count'], 1)
+        self.assertEqual(result['summary']['growing_count'], 1)
+
+    def test_view_smoke(self):
+        self._build_market('Austin', [40, 30, 20, 10])
+        self.client.login(username='trend_owner@example.com', password='pw')
+        self.client.get(reverse('tickets:home'))  # prime session org / host routing
+        resp = self.client.get(reverse('tickets:market_trends'))
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn('markets', resp.context)
+        self.assertEqual(resp.context['metric'], 'revenue')  # revenue is the default
+        self.assertContains(resp, 'Austin')
+        # Embedded JSON parses.
+        json.loads(resp.context['markets_json'])
+
+    def test_view_period_toggle(self):
+        self._build_market('Austin', [40, 30, 20, 10])
+        self.client.login(username='trend_owner@example.com', password='pw')
+        self.client.get(reverse('tickets:home'))  # prime session org / host routing
+        resp = self.client.get(reverse('tickets:market_trends'), {'period': 'month'})
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.context['period'], 'month')
+
+    def test_fragment_returns_partial_without_chrome(self):
+        """?fragment=1 renders only the dynamic region for AJAX selector swaps."""
+        self._build_market('Austin', [40, 30, 20, 10])
+        self.client.login(username='trend_owner@example.com', password='pw')
+        self.client.get(reverse('tickets:home'))  # prime session org / host routing
+        resp = self.client.get(reverse('tickets:market_trends'), {'fragment': '1'})
+        self.assertEqual(resp.status_code, 200)
+        self.assertTemplateUsed(resp, 'tickets/_market_trends_content.html')
+        self.assertContains(resp, 'Austin')
+        self.assertContains(resp, 'id="mt-config"')
+        # No base-template chrome — this is a swap-in fragment, not a full page.
+        self.assertNotContains(resp, '<html')
+
+    def test_window_default_is_two_years(self):
+        from tickets.services.market_trends import MarketTrendCalculator
+        self._build_market('Austin', [40, 30, 20, 10])
+        result = MarketTrendCalculator(self.org).calculate()
+        self.assertEqual(result['window'], '2y')
+
+    def test_invalid_window_falls_back_to_two_years(self):
+        from tickets.services.market_trends import MarketTrendCalculator
+        self._build_market('Austin', [40, 30, 20, 10])
+        result = MarketTrendCalculator(self.org, window='bogus').calculate()
+        self.assertEqual(result['window'], '2y')
+
+    def test_narrow_window_excludes_older_periods(self):
+        """An event older than the trailing window drops out of the series."""
+        from tickets.services.market_trends import MarketTrendCalculator
+        venue = self._venue('Austin')
+        today = date.today()
+
+        def _months_back(d, m):
+            total = d.year * 12 + (d.month - 1) - m
+            y, mo = divmod(total, 12)
+            return date(y, mo + 1, min(d.day, 28))
+
+        # One old event (~18 months back) and one recent event (~2 months back).
+        old_date = _months_back(today, 18)
+        recent_date = _months_back(today, 2)
+        self._event(venue, old_date, 'Austin old')
+        self._event(venue, recent_date, 'Austin recent')
+        for e_date, n in ((old_date, 5), (recent_date, 3)):
+            ev = Event.objects.get(organization=self.org, start_date=e_date)
+            for s in range(n):
+                self._order_with_tickets(ev, 1, 'austin-{}'.format(e_date.isoformat()), s)
+
+        all_result = MarketTrendCalculator(self.org, period='month', window='all').calculate()
+        all_m = next(x for x in all_result['markets'] if x['city'] == 'Austin')
+        narrow_result = MarketTrendCalculator(self.org, period='month', window='1y').calculate()
+        narrow_m = next(x for x in narrow_result['markets'] if x['city'] == 'Austin')
+
+        # 'all' sees both events; the 1-year window only sees the recent one.
+        self.assertEqual(all_m['total_events'], 2)
+        self.assertEqual(narrow_m['total_events'], 1)
+        self.assertLessEqual(len(narrow_m['periods']), len(all_m['periods']))
+
+    def test_view_window_toggle(self):
+        self._build_market('Austin', [40, 30, 20, 10])
+        self.client.login(username='trend_owner@example.com', password='pw')
+        self.client.get(reverse('tickets:home'))  # prime session org / host routing
+        for w in ('1y', '2y', '3y', 'all'):
+            resp = self.client.get(reverse('tickets:market_trends'), {'window': w})
+            self.assertEqual(resp.status_code, 200)
+            self.assertEqual(resp.context['window'], w)
+        # Invalid window falls back to the 2y default in the view too.
+        resp = self.client.get(reverse('tickets:market_trends'), {'window': 'bogus'})
+        self.assertEqual(resp.context['window'], '2y')
+
+    def test_returning_buyer_classified_new_then_returning(self):
+        """A buyer is 'new' in their first period and 'returning' afterward —
+        regardless of DB row order (guards the order-independent classification)."""
+        from tickets.services.market_trends import MarketTrendCalculator
+        venue = self._venue('Tahoe')
+        e1 = self._event(venue, self.quarters[0], 'Tahoe Q1')
+        e2 = self._event(venue, self.quarters[1], 'Tahoe Q2')
+        e3 = self._event(venue, self.quarters[2], 'Tahoe Q3')
+        loyal = Customer.objects.create(
+            organization=self.org, email='loyal@example.com', name='Loyal Fan',
+        )
+
+        def _order(event, customer, num):
+            o = TicketOrder.objects.create(
+                customer=customer, event=event, order_number='O-{}'.format(num),
+                order_date=timezone.make_aware(datetime.combine(event.start_date, time(10, 0))),
+                total_amount=Decimal('10.00'),
+            )
+            Ticket.objects.create(ticket_order=o, ticket_type='GA', price=Decimal('10.00'))
+
+        # Loyal fan buys in all three quarters; a fresh buyer joins each quarter.
+        for i, ev in enumerate((e1, e2, e3)):
+            _order(ev, loyal, 'loyal{}'.format(i))
+            fresh = Customer.objects.create(
+                organization=self.org, email='fresh{}@example.com'.format(i), name='Fresh {}'.format(i),
+            )
+            _order(ev, fresh, 'fresh{}'.format(i))
+
+        result = MarketTrendCalculator(self.org, period='quarter').calculate()
+        tahoe = next(m for m in result['markets'] if m['city'] == 'Tahoe')
+        periods = tahoe['periods']
+        # Q1: both buyers brand new.
+        self.assertEqual(periods[0]['new_count'], 2)
+        self.assertEqual(periods[0]['returning_count'], 0)
+        # Q2 & Q3: loyal fan is returning, the fresh buyer is new.
+        self.assertEqual(periods[1]['new_count'], 1)
+        self.assertEqual(periods[1]['returning_count'], 1)
+        self.assertEqual(periods[2]['new_count'], 1)
+        self.assertEqual(periods[2]['returning_count'], 1)
+
+    def test_revenue_is_default_metric(self):
+        from tickets.services.market_trends import MarketTrendCalculator
+        self._build_market('Austin', [40, 30, 20, 10])
+        result = MarketTrendCalculator(self.org).calculate()  # no metric arg
+        austin = next(m for m in result['markets'] if m['city'] == 'Austin')
+        self.assertEqual(austin['metric'], 'revenue')
+        # total_revenue is exposed; total_sold still computed.
+        self.assertEqual(austin['total_sold'], 100)
+        self.assertEqual(austin['total_revenue'], 1000.0)  # 100 tickets x $10
+
+    def test_revenue_declining_via_price_erosion(self):
+        """Flat ticket volume but falling price: stable by tickets, declining by
+        revenue with price as the dominant driver."""
+        from tickets.services.market_trends import MarketTrendCalculator
+        # 20 tickets/quarter (flat), price falls 40 -> 36 -> 30 -> 24.
+        specs = [(20, 40), (20, 36), (20, 30), (20, 24)]
+        self._build_priced_market('Reno', specs)
+
+        tickets_view = MarketTrendCalculator(self.org, metric='tickets').calculate()
+        reno_t = next(m for m in tickets_view['markets'] if m['city'] == 'Reno')
+        self.assertEqual(reno_t['trend'], 'stable')
+
+        revenue_view = MarketTrendCalculator(self.org, metric='revenue').calculate()
+        reno_r = next(m for m in revenue_view['markets'] if m['city'] == 'Reno')
+        self.assertEqual(reno_r['trend'], 'declining')
+        self.assertEqual(reno_r['dominant_driver'], 'price')
+        self.assertIn('Revenue in Reno', reno_r['diagnosis_text'])
+
+    def test_view_metric_toggle(self):
+        self._build_market('Austin', [40, 30, 20, 10])
+        self.client.login(username='trend_owner@example.com', password='pw')
+        self.client.get(reverse('tickets:home'))  # prime session org / host routing
+        resp = self.client.get(reverse('tickets:market_trends'), {'metric': 'tickets'})
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.context['metric'], 'tickets')
+        # Invalid metric falls back to revenue.
+        resp2 = self.client.get(reverse('tickets:market_trends'), {'metric': 'bogus'})
+        self.assertEqual(resp2.context['metric'], 'revenue')
+
+    def test_profit_is_revenue_minus_costs(self):
+        from tickets.services.market_trends import MarketTrendCalculator
+        # 20 tickets x $30 = $600 revenue/quarter; expenses 200+300+400+500 = 1400.
+        specs = [(20, 30, 200), (20, 30, 300), (20, 30, 400), (20, 30, 500)]
+        self._build_cost_market('Tucson', specs)
+        result = MarketTrendCalculator(self.org, metric='profitability').calculate()
+        tuc = next(m for m in result['markets'] if m['city'] == 'Tucson')
+        self.assertEqual(tuc['total_revenue'], 2400.0)
+        self.assertEqual(tuc['total_profit'], 1000.0)  # 2400 - 1400
+
+    def test_profitability_declining_via_rising_costs(self):
+        """Flat volume and price, rising cost: stable by tickets & revenue, but
+        declining by profit with costs as the dominant driver."""
+        from tickets.services.market_trends import MarketTrendCalculator
+        specs = [(20, 30, 200), (20, 30, 300), (20, 30, 400), (20, 30, 500)]
+        self._build_cost_market('Tucson', specs)
+
+        tickets_view = MarketTrendCalculator(self.org, metric='tickets').calculate()
+        self.assertEqual(next(m for m in tickets_view['markets'] if m['city'] == 'Tucson')['trend'], 'stable')
+        revenue_view = MarketTrendCalculator(self.org, metric='revenue').calculate()
+        self.assertEqual(next(m for m in revenue_view['markets'] if m['city'] == 'Tucson')['trend'], 'stable')
+
+        profit_view = MarketTrendCalculator(self.org, metric='profitability').calculate()
+        tuc = next(m for m in profit_view['markets'] if m['city'] == 'Tucson')
+        self.assertEqual(tuc['trend'], 'declining')
+        self.assertEqual(tuc['dominant_driver'], 'costs')
+        self.assertTrue(tuc['diagnosis_text'].startswith('Profit in Tucson'))
+        # The costs driver is flagged as a rising drag.
+        costs = next(d for d in tuc['driver_contributions'] if d['key'] == 'costs')
+        self.assertEqual(costs['hurts_when'], 'up')
+        self.assertGreater(costs['change_pct'], 0)
+
+    def test_view_profitability_metric(self):
+        self._build_market('Austin', [40, 30, 20, 10])
+        self.client.login(username='trend_owner@example.com', password='pw')
+        self.client.get(reverse('tickets:home'))  # prime session org / host routing
+        resp = self.client.get(reverse('tickets:market_trends'), {'metric': 'profitability'})
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.context['metric'], 'profitability')
+
+    def test_in_person_revenue_included_in_profit(self):
+        """Regression: in-person (door/cash) ticket revenue must count toward a
+        market's profit, the same way the event-detail page and
+        profitability_overview do. Otherwise expenses are charged in full while
+        the door-sale revenue that paid for them is dropped, flipping a real
+        profit into a large fake loss.
+
+        Mirrors the reported case: one Seattle event, $6,131.99 in tickets
+        ($4,126.00 online + $2,005.99 in-person) + $892.00 other income, against
+        $7,018.00 of expenses, nets exactly $5.99."""
+        from tickets.models import EventIncome, IncomeSource
+        from tickets.services.market_trends import MarketTrendCalculator
+        from tickets.views import _compute_event_stats
+
+        venue = self._venue('Seattle')
+        event = self._event(venue, self.quarters[0], 'Familiar Faces: Seattle')
+
+        # Online order ($4,126.00) — has customer identity.
+        online_customer = Customer.objects.create(
+            organization=self.org, email='online@example.com', name='Online Buyer',
+        )
+        TicketOrder.objects.create(
+            customer=online_customer, event=event, order_number='ORD-ONLINE',
+            order_date=timezone.make_aware(datetime.combine(event.start_date, time(10, 0))),
+            total_amount=Decimal('4126.00'), is_in_person=False,
+        )
+        # In-person / door order ($2,005.99) — no identity, but real revenue.
+        door_customer = Customer.objects.create(
+            organization=self.org, email='door@example.com', name='Door Buyer',
+        )
+        TicketOrder.objects.create(
+            customer=door_customer, event=event, order_number='ORD-DOOR',
+            order_date=timezone.make_aware(datetime.combine(event.start_date, time(10, 0))),
+            total_amount=Decimal('2005.99'), is_in_person=True,
+        )
+        # Other income ($892.00) and expenses ($7,018.00).
+        income_source = IncomeSource.objects.create(
+            organization=self.org, name='Bar', order=1,
+        )
+        EventIncome.objects.create(
+            event=event, income_source=income_source, amount=Decimal('892.00'),
+        )
+        EventExpense.objects.create(
+            event=event, category='production', description='show costs',
+            amount=Decimal('7018.00'), expense_date=event.start_date,
+            created_by=self.user,
+        )
+
+        # The event-detail P&L nets $5.99 (external ticketing -> no Stripe fees).
+        stats = _compute_event_stats(event)
+        self.assertEqual(stats['profit'], Decimal('5.99'))
+
+        # Market Trends must reconcile to that same figure, not exclude the
+        # in-person revenue while keeping the full expense.
+        result = MarketTrendCalculator(self.org, metric='profitability').calculate()
+        seattle = next(m for m in result['markets'] if m['city'] == 'Seattle')
+        self.assertAlmostEqual(seattle['total_profit'], 5.99, places=2)
+        # Revenue series is ticket revenue (online + in-person); other income
+        # feeds profit, not this figure.
+        self.assertAlmostEqual(seattle['total_revenue'], 6131.99, places=2)
+        # Single event in the market -> avg profit / event equals the net profit.
+        self.assertAlmostEqual(
+            seattle['periods'][0]['avg_profit_per_event'], 5.99, places=2,
+        )
+
+    def test_nps_total_score(self):
+        from tickets.services.market_trends import MarketTrendCalculator
+        # All promoters every quarter -> overall NPS = 100.
+        self._build_nps_market('Reno', [(10, 0, 0), (10, 0, 0), (10, 0, 0), (10, 0, 0)])
+        result = MarketTrendCalculator(self.org, metric='nps').calculate()
+        reno = next(m for m in result['markets'] if m['city'] == 'Reno')
+        self.assertEqual(reno['total_nps'], 100)
+        self.assertEqual(reno['change_unit'], 'pts')
+
+    def test_nps_declining_via_detractors(self):
+        from tickets.services.market_trends import MarketTrendCalculator
+        # Promoter share falls and detractor share climbs -> NPS slides; the
+        # detractor rise is the larger driver.
+        self._build_nps_market('Nashville', [(12, 6, 2), (9, 6, 5), (6, 6, 8), (4, 6, 10)])
+        result = MarketTrendCalculator(self.org, metric='nps').calculate()
+        nash = next(m for m in result['markets'] if m['city'] == 'Nashville')
+        self.assertEqual(nash['trend'], 'declining')
+        self.assertEqual(nash['dominant_driver'], 'detractors')
+        self.assertTrue(nash['diagnosis_text'].startswith('NPS in Nashville'))
+        self.assertEqual(nash['change_unit'], 'pts')
+
+    def test_view_nps_metric(self):
+        self._build_nps_market('Nashville', [(12, 6, 2), (9, 6, 5), (6, 6, 8), (4, 6, 10)])
+        self.client.login(username='trend_owner@example.com', password='pw')
+        self.client.get(reverse('tickets:home'))  # prime session org / host routing
+        resp = self.client.get(reverse('tickets:market_trends'), {'metric': 'nps'})
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.context['metric'], 'nps')
+        self.assertEqual(resp.context['change_unit'], 'pts')
+
+    def test_growing_market_has_metrics_and_next_step(self):
+        from tickets.services.market_trends import MarketTrendCalculator
+        self._build_market('Miami', [10, 20, 30, 40])  # growing
+        result = MarketTrendCalculator(self.org, period='quarter', metric='tickets').calculate()
+        miami = next(m for m in result['markets'] if m['city'] == 'Miami')
+        self.assertEqual(miami['trend'], 'growing')
+        # Driver metrics and a "keep improving" step are present for growth too.
+        self.assertTrue(miami['driver_contributions'])
+        self.assertIsNotNone(miami['recommended_action'])
+        self.assertIn(miami['dominant_driver'], ('demand', 'acquisition'))
+        self.assertIn('is up', miami['diagnosis_text'])
+        self.assertIn('led by', miami['diagnosis_text'])
+
+    def test_stable_market_has_metrics_and_next_step(self):
+        from tickets.services.market_trends import MarketTrendCalculator
+        self._build_market('Reno', [25, 25, 25, 25])  # stable
+        result = MarketTrendCalculator(self.org, period='quarter', metric='tickets').calculate()
+        reno = next(m for m in result['markets'] if m['city'] == 'Reno')
+        self.assertEqual(reno['trend'], 'stable')
+        self.assertIsNone(reno['dominant_driver'])  # no single lead when flat
+        self.assertTrue(reno['driver_contributions'])
+        self.assertIsNotNone(reno['recommended_action'])
+        self.assertIn('holding steady', reno['diagnosis_text'])
+
+    def test_nps_growing_recommends_survey_feedback(self):
+        from tickets.services.market_trends import MarketTrendCalculator
+        # Promoters climb, detractors fall -> NPS grows.
+        self._build_nps_market('Seattle', [(4, 6, 10), (6, 6, 8), (9, 6, 5), (12, 6, 2)])
+        result = MarketTrendCalculator(self.org, metric='nps').calculate()
+        sea = next(m for m in result['markets'] if m['city'] == 'Seattle')
+        self.assertEqual(sea['trend'], 'growing')
+        self.assertIn(sea['dominant_driver'], ('promoters', 'detractors'))
+        self.assertEqual(sea['recommended_action']['url_name'], 'tickets:survey_analytics')
 
 
 class EventDuplicateViewTests(TestCase):

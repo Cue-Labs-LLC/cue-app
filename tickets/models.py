@@ -181,6 +181,10 @@ class Organization(BaseModel):
         default=False,
         help_text='Enable the waitlist feature for this organization.',
     )
+    ai_event_summary_enabled = models.BooleanField(
+        default=True,
+        help_text='Show the AI Event Summary card on event detail pages.',
+    )
     photo = models.ImageField(
         upload_to='org_photos/',
         storage=_get_media_storage,
@@ -640,10 +644,17 @@ class CSVFormat(AuditBaseModel):
         Organization,
         on_delete=models.CASCADE,
         related_name='csv_formats',
+        null=True,
+        blank=True,
+        help_text="Owning organization, or NULL for a global built-in format.",
     )
     name = models.CharField(max_length=200, unique=True)
     description = models.TextField(blank=True)
     is_default = models.BooleanField(default=False)
+    is_system = models.BooleanField(
+        default=False,
+        help_text="Built-in format maintained by Cue; read-only for organizations.",
+    )
     requires_manual_pricing = models.BooleanField(
         default=False,
         help_text="If True, CSV lacks price/total columns and requires manual price entry"
@@ -693,6 +704,14 @@ class CSVFormat(AuditBaseModel):
                 organization=self.organization_id, is_default=True
             ).exclude(id=self.id).update(is_default=False)
         super().save(*args, **kwargs)
+
+    @classmethod
+    def available_for(cls, organization):
+        """Formats an organization can select: its own plus global built-ins."""
+        return cls.objects.filter(
+            models.Q(organization=organization)
+            | models.Q(organization__isnull=True, is_system=True)
+        ).order_by('-is_default', 'name')
 
 
 class UploadedFile(AuditBaseModel):
@@ -982,6 +1001,8 @@ class Event(AuditBaseModel):
     )
     name = models.CharField(max_length=200, db_index=True)
     summary = models.CharField(max_length=500, blank=True)
+    ai_summary = models.TextField(blank=True, default='')
+    ai_summary_generated_at = models.DateTimeField(blank=True, null=True)
     venue = models.ForeignKey(
         'Venue',
         on_delete=models.PROTECT,
@@ -1377,6 +1398,11 @@ class EventSMSCampaign(AuditBaseModel):
     manual_unsubscribes = models.PositiveIntegerField(null=True, blank=True)
     manual_orders = models.PositiveIntegerField(null=True, blank=True)
     manual_revenue = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    # Cue-tracked attribution computed from first-party UTMs captured on ticket
+    # orders (see services/marketing/sms_attribution.py). None = not computed, so
+    # effective_* falls through to SlickText's own (usually empty) numbers.
+    cue_attributed_orders = models.PositiveIntegerField(null=True, blank=True)
+    cue_attributed_revenue = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
     confirmed_at = models.DateTimeField(null=True, blank=True, db_index=True)
     confirmed_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
@@ -1417,12 +1443,31 @@ class EventSMSCampaign(AuditBaseModel):
         return self.manual_unsubscribes if self.manual_unsubscribes is not None else self.unsubscribes
 
     @property
+    def attribution_source(self):
+        """Which input populates effective_orders/revenue (manual → cue → slicktext → none)."""
+        if self.manual_orders is not None or self.manual_revenue is not None:
+            return 'manual'
+        if self.cue_attributed_orders is not None or self.cue_attributed_revenue is not None:
+            return 'cue'
+        if self.orders or self.revenue:
+            return 'slicktext'
+        return 'none'
+
+    @property
     def effective_orders(self):
-        return self.manual_orders if self.manual_orders is not None else self.orders
+        if self.manual_orders is not None:
+            return self.manual_orders
+        if self.cue_attributed_orders is not None:
+            return self.cue_attributed_orders
+        return self.orders
 
     @property
     def effective_revenue(self):
-        return self.manual_revenue if self.manual_revenue is not None else self.revenue
+        if self.manual_revenue is not None:
+            return self.manual_revenue
+        if self.cue_attributed_revenue is not None:
+            return self.cue_attributed_revenue
+        return self.revenue
 
     @property
     def is_confirmed(self):
@@ -1718,15 +1763,54 @@ class SMSMessageRecipient(BaseModel):
     first_clicked_at = models.DateTimeField(null=True, blank=True)
     # Set when an inbound STOP is attributed to this recipient's campaign.
     opted_out_at = models.DateTimeField(null=True, blank=True)
+    # Did an opt-out disclosure reach this recipient — via the appended "Reply STOP"
+    # footer OR explicit opt-out copy already in the body? Decided + persisted at
+    # schedule time (charge), honored at send. Drives the disclosure-cadence lookup
+    # (recently_disclosed_phones). default=True: historical rows all carried the
+    # footer under the old always-append behavior, so they count as disclosures and
+    # the cadence works immediately on deploy.
+    stop_disclosed = models.BooleanField(default=True)
+    # Charged segment count for this recipient (schedule-time, computed on campaign.body).
+    # Auditability; the actual sent count can differ for tracked-link bodies.
+    segments = models.PositiveSmallIntegerField(default=0)
 
     class Meta:
         indexes = [
             models.Index(fields=['campaign', 'status']),
             models.Index(fields=['twilio_sid']),
+            # Serves recently_disclosed_phones (phone__in + sent_at range) and the
+            # inbound-webhook per-phone most-recent-send lookup.
+            models.Index(fields=['phone', 'sent_at']),
         ]
 
     def __str__(self):
         return f"{self.phone} [{self.status}]"
+
+    @classmethod
+    def recently_disclosed_phones(cls, organization, phones, as_of):
+        """Subset of ``phones`` that received a STOP disclosure within
+        SMS_FOOTER_DISCLOSURE_DAYS before ``as_of``, scoped to this org.
+
+        The org filter is mandatory, not an optimization: two different orgs can
+        text the same phone number, and one org's disclosure must never suppress
+        another's footer. Only SENT/DELIVERED count — an UNDELIVERED/FAILED message
+        never reached the handset, so it disclosed nothing.
+        """
+        if not phones:
+            return set()
+        from datetime import timedelta
+        cutoff = as_of - timedelta(
+            days=getattr(settings, 'SMS_FOOTER_DISCLOSURE_DAYS', 30)
+        )
+        return set(
+            cls.objects.filter(
+                campaign__organization=organization,
+                phone__in=phones,
+                stop_disclosed=True,
+                sent_at__gte=cutoff,
+                status__in=[cls.Status.SENT, cls.Status.DELIVERED],
+            ).values_list('phone', flat=True)
+        )
 
 
 class SMSCreditTransaction(BaseModel):
@@ -2052,6 +2136,12 @@ class Ticket(BaseModel):
         blank=True,
         help_text="Denormalized tier name for display/querying"
     )
+    scanned_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        db_index=True,
+        help_text="When this individual ticket was scanned in (import or live check-in).",
+    )
 
     class Meta:
         ordering = ['ticket_order', 'ticket_type']
@@ -2207,6 +2297,7 @@ class AITokenUsage(BaseModel):
     FEATURE_SLICKTEXT_CAMPAIGN_MATCH = 'slicktext_campaign_match'
     FEATURE_MARKETING_NARRATIVE = 'marketing_narrative'
     FEATURE_TYPEFORM_EVENT_MATCH = 'typeform_event_match'
+    FEATURE_EVENT_SUMMARY = 'event_summary'
 
     FEATURE_CHOICES = [
         (FEATURE_CHAT_AGENT, 'Chat agent'),
@@ -2215,6 +2306,7 @@ class AITokenUsage(BaseModel):
         (FEATURE_SLICKTEXT_CAMPAIGN_MATCH, 'SlickText campaign match'),
         (FEATURE_MARKETING_NARRATIVE, 'Marketing narrative'),
         (FEATURE_TYPEFORM_EVENT_MATCH, 'Typeform event match'),
+        (FEATURE_EVENT_SUMMARY, 'Event summary'),
     ]
 
     organization = models.ForeignKey(
@@ -2677,7 +2769,12 @@ class SurveyQuestion(BaseModel):
         ('star_rating', 'Star Rating (1-5)'),
         ('nps', 'NPS Score (0-10)'),
         ('text', 'Free Text'),
+        ('single_select', 'Single Choice'),
+        ('multi_select', 'Multiple Choice'),
     ]
+    # Question types whose answers are stored as selected options rather than
+    # a scalar column on SurveyAnswer.
+    CHOICE_TYPES = ('single_select', 'multi_select')
 
     event = models.ForeignKey(
         Event,
@@ -2715,6 +2812,34 @@ class SurveyQuestion(BaseModel):
         elif self.organization_id:
             scope = f"Org: {self.organization_id}"
         return f"[{scope}] {self.question_text[:60]}"
+
+
+class SurveyQuestionOption(BaseModel):
+    """A selectable option for a single_select / multi_select SurveyQuestion."""
+    question = models.ForeignKey(
+        SurveyQuestion,
+        on_delete=models.CASCADE,
+        related_name='options',
+    )
+    label = models.CharField(max_length=255)
+    position = models.PositiveSmallIntegerField(default=0)
+
+    class Meta:
+        ordering = ['position', 'created_at']
+        indexes = [
+            models.Index(fields=['question', 'position']),
+        ]
+        constraints = [
+            # Composite-FK target: lets SurveyAnswerOption enforce that a chosen
+            # option belongs to the same question the answer is for.
+            models.UniqueConstraint(
+                fields=['id', 'question'],
+                name='surveyoption_id_question_uniq',
+            ),
+        ]
+
+    def __str__(self):
+        return self.label
 
 
 class SurveyInvitation(BaseModel):
@@ -2806,13 +2931,100 @@ class SurveyAnswer(BaseModel):
         help_text="0-10 NPS score",
     )
     text_answer = models.TextField(blank=True)
+    selected_options = models.ManyToManyField(
+        SurveyQuestionOption,
+        through='SurveyAnswerOption',
+        blank=True,
+        related_name='answers',
+        help_text="Chosen option(s) for single_select / multi_select questions",
+    )
 
     class Meta:
         unique_together = [['response', 'question']]
         ordering = ['question__position']
+        constraints = [
+            # Composite-FK target so SurveyAnswerOption can pin a selection to
+            # the same question this answer is for (see migration 0155 RunSQL).
+            models.UniqueConstraint(
+                fields=['id', 'question'],
+                name='surveyanswer_id_question_uniq',
+            ),
+        ]
+
+    def clean(self):
+        """Enforce that only the field family matching question_type is populated.
+
+        Defends every app code path (admin, fixtures, scripts), not just the
+        public form parser. Option-membership is additionally enforced at the
+        SurveyAnswerOption level + a DB composite FK.
+        """
+        super().clean()
+        from django.core.exceptions import ValidationError
+        qt = self.question.question_type
+        if qt == 'star_rating':
+            if self.nps_score is not None or self.text_answer:
+                raise ValidationError("A star_rating answer must only set star_rating.")
+            if self.star_rating is not None and not (1 <= self.star_rating <= 5):
+                raise ValidationError("star_rating must be between 1 and 5.")
+        elif qt == 'nps':
+            if self.star_rating is not None or self.text_answer:
+                raise ValidationError("An nps answer must only set nps_score.")
+            if self.nps_score is not None and not (0 <= self.nps_score <= 10):
+                raise ValidationError("nps_score must be between 0 and 10.")
+        elif qt == 'text':
+            if self.star_rating is not None or self.nps_score is not None:
+                raise ValidationError("A text answer must only set text_answer.")
+        elif qt in SurveyQuestion.CHOICE_TYPES:
+            if self.star_rating is not None or self.nps_score is not None or self.text_answer:
+                raise ValidationError("A choice answer must not set scalar fields.")
 
     def __str__(self):
         return f"Answer to '{self.question.question_text[:40]}' by {self.response.customer}"
+
+
+class SurveyAnswerOption(BaseModel):
+    """Through-model linking a SurveyAnswer to a chosen SurveyQuestionOption.
+
+    `question` is denormalized so the migration can add composite foreign keys
+    ((answer_id, question_id) -> SurveyAnswer(id, question); (option_id,
+    question_id) -> SurveyQuestionOption(id, question)). The shared question_id
+    forces the chosen option to belong to the answer's question at the DB layer
+    (Postgres/prod); SurveyAnswerOption.clean() mirrors it for dev/SQLite.
+    """
+    answer = models.ForeignKey(
+        SurveyAnswer,
+        on_delete=models.CASCADE,
+        related_name='answer_options',
+    )
+    option = models.ForeignKey(
+        SurveyQuestionOption,
+        on_delete=models.PROTECT,
+        related_name='answer_options',
+    )
+    question = models.ForeignKey(
+        SurveyQuestion,
+        on_delete=models.CASCADE,
+        related_name='+',
+    )
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=['answer', 'option'],
+                name='surveyansweroption_answer_option_uniq',
+            ),
+        ]
+
+    def clean(self):
+        super().clean()
+        from django.core.exceptions import ValidationError
+        if self.option.question_id != self.answer.question_id:
+            raise ValidationError("Selected option does not belong to the answer's question.")
+        if self.question_id != self.answer.question_id:
+            raise ValidationError("SurveyAnswerOption.question must match the answer's question.")
+
+    def __str__(self):
+        return f"{self.answer_id} -> {self.option_id}"
 
 
 # ---------------------------------------------------------------------------

@@ -1254,9 +1254,12 @@ def organizer_checkin(request):
                 'checked_in_count': checked_in_count,
             }, status=200)
 
-        order.checked_in_at = timezone.now()
+        now = timezone.now()
+        order.checked_in_at = now
         order.checked_in_by = request.user
         order.save(update_fields=['checked_in_at', 'checked_in_by'])
+        # Keep per-ticket scan data consistent: a whole-order admit scans all tickets.
+        order.tickets.update(scanned_at=now)
 
     checked_in_count = TicketOrder.objects.filter(
         event_id=event_id,
@@ -1850,9 +1853,12 @@ def scanner_checkin(request):
                 'ticket_types': [t.ticket_type for t in order.tickets.all()],
                 'checked_in_count': checked_in_count,
             })
-        order.checked_in_at = timezone.now()
+        now = timezone.now()
+        order.checked_in_at = now
         order.checked_in_by = None  # no Cue account for scanner guests
         order.save(update_fields=['checked_in_at', 'checked_in_by'])
+        # Keep per-ticket scan data consistent: a whole-order admit scans all tickets.
+        order.tickets.update(scanned_at=now)
 
     checked_in_count = TicketOrder.objects.filter(
         event=event, customer__organization=org, checked_in_at__isnull=False

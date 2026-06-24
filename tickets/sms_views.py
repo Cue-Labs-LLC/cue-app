@@ -21,7 +21,7 @@ from django.http import JsonResponse, HttpResponse, Http404
 from django.shortcuts import render, redirect, get_object_or_404
 from django.urls import reverse
 from django.utils import timezone
-from django.utils.http import urlencode
+from django.utils.http import urlencode, url_has_allowed_host_and_scheme
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_POST, require_http_methods
 
@@ -255,6 +255,17 @@ def customers_bulk_sms_status(request):
 # Campaigns
 # ---------------------------------------------------------------------------
 
+def _org_events_for_picker(org):
+    """Lightweight (id, name) list of the org's events, newest first — embedded in
+    the "link to event" picker for client-side typeahead. Mirrors the
+    ticket_link_events approach in sms_campaign_create."""
+    return [
+        {'id': str(e.id), 'name': e.name}
+        for e in Event.objects.filter(organization=org, deleted_at__isnull=True)
+                              .order_by('-start_date').values_list('id', 'name', named=True)
+    ]
+
+
 @login_required
 @require_org
 @require_host
@@ -266,6 +277,7 @@ def sms_campaign_list(request):
     org = get_organization(request)
     campaigns = _annotate_counts(
         SMSCampaign.objects.filter(organization=org, deleted_at__isnull=True)
+        .select_related('event')
     ).order_by('-created_at')
     paginator = Paginator(campaigns, 25)
     page_obj = paginator.get_page(request.GET.get('page'))
@@ -279,6 +291,38 @@ def sms_campaign_list(request):
         'sms_clicks': [row['sms_clicks'] for row in metrics['engagement_trends']],
     }
 
+    # Broadcast audience over time + by market. The cached series is
+    # market-independent; the market filter is applied here in Python.
+    series = metrics['broadcast_audience']
+    selected_market = request.GET.get('market', '')
+    # Only list cities that actually have broadcasts; 'No market' sorts last.
+    market_choices = sorted(
+        {row['market'] for row in series},
+        key=lambda m: (m == 'No market', m.lower()),
+    )
+    if selected_market and selected_market not in market_choices:
+        selected_market = ''
+
+    visible = [r for r in series if not selected_market or r['market'] == selected_market]
+    audience_points = {'native': [], 'slicktext': []}
+    for r in visible:
+        audience_points[r['channel']].append({
+            'x': r['sent_ms'], 'y': r['audience'], 'name': r['name'], 'market': r['market'],
+        })
+
+    # By-market breakdown spans ALL markets (always-on comparison), independent of
+    # the chart's market filter.
+    breakdown = {}
+    for r in series:
+        agg = breakdown.setdefault(
+            r['market'], {'market': r['market'], 'broadcasts': 0, 'total_audience': 0},
+        )
+        agg['broadcasts'] += 1
+        agg['total_audience'] += r['audience']
+    market_breakdown = sorted(breakdown.values(), key=lambda a: a['total_audience'], reverse=True)
+    for agg in market_breakdown:
+        agg['avg_audience'] = round(agg['total_audience'] / agg['broadcasts']) if agg['broadcasts'] else 0
+
     return render(request, 'tickets/marketing/sms/campaign_list.html', {
         'page_obj': page_obj,
         'balance_cents': org.sms_credit_balance_cents,
@@ -291,6 +335,11 @@ def sms_campaign_list(request):
         'sms_channel': metrics['channels']['sms'],
         'top_sms_campaigns': metrics['top_sms_campaigns'],
         'engagement_chart_json': json.dumps(engagement_chart),
+        'selected_market': selected_market,
+        'market_choices': market_choices,
+        'market_breakdown': market_breakdown,
+        'audience_points_json': json.dumps(audience_points),
+        'link_events': _org_events_for_picker(org),
     })
 
 
@@ -365,16 +414,22 @@ def sms_campaign_create(request):
                 form.add_error(None, 'This audience has no contactable recipients.')
             else:
                 from .services.sms_credits import (
-                    estimate_campaign_cost_cents, estimate_campaign_cost_tokens,
-                    charge, InsufficientCreditsError,
+                    plan_campaign_footers, charge, InsufficientCreditsError,
                 )
-                confirm_cost_cents = estimate_campaign_cost_cents(
-                    confirm_count, form.cleaned_data['body'],
+                # Anchor the per-recipient footer/disclosure decision (and therefore the
+                # cost) on the actual send time: a far-future scheduled send must re-disclose
+                # phones that will have aged out of the window by then. Computed once here
+                # and reused for both the displayed cost and the charge → displayed == charged.
+                scheduled = form.cleaned_data.get('send_mode') == SMSCampaignForm.SEND_SCHEDULE
+                send_at = form.cleaned_data['scheduled_at'] if scheduled else timezone.now()
+                confirm_cost_cents, footer_plan = plan_campaign_footers(
+                    org, form.cleaned_data['body'],
+                    [r['phone'] for r in recipients], as_of=send_at,
                 )
-                # Displayed cost = exact segment count (1 token = 1 segment); the
-                # charged cents may round up at sub-cent prices, the token count doesn't.
-                confirm_cost_tokens = estimate_campaign_cost_tokens(
-                    confirm_count, form.cleaned_data['body'],
+                # Displayed tokens (1 token = 1 segment) = the charged segments, summed per
+                # recipient so a shared phone counted twice in the audience is shown twice.
+                confirm_cost_tokens = sum(
+                    footer_plan[r['phone']][1] for r in recipients
                 )
                 insufficient_credits = confirm_cost_cents > org.sms_credit_balance_cents
 
@@ -392,11 +447,10 @@ def sms_campaign_create(request):
                     if existing:
                         return redirect('tickets:sms_campaign_detail', pk=existing.id)
 
-                    scheduled = form.cleaned_data.get('send_mode') == SMSCampaignForm.SEND_SCHEDULE
                     # Always persist as SCHEDULED (send-now → scheduled for now). The
                     # */5 cron is then a safety net: if the immediate dispatch is
                     # dropped, the campaign is still picked up and sent (no lost money).
-                    send_at = form.cleaned_data['scheduled_at'] if scheduled else timezone.now()
+                    # `scheduled` / `send_at` were resolved above (they anchor the cost).
                     try:
                         with transaction.atomic():
                             campaign = form.save(commit=False)
@@ -419,6 +473,8 @@ def sms_campaign_create(request):
                             SMSMessageRecipient.objects.bulk_create([
                                 SMSMessageRecipient(
                                     campaign=campaign, customer_id=r['customer_id'], phone=r['phone'],
+                                    stop_disclosed=footer_plan[r['phone']][0],
+                                    segments=footer_plan[r['phone']][1],
                                 ) for r in recipients
                             ], batch_size=500)
                             # Charge inside the same transaction — campaign + snapshot +
@@ -491,6 +547,7 @@ def sms_campaign_create(request):
         'balance_cents': org.sms_credit_balance_cents,
         'insufficient_credits': insufficient_credits,
         'idempotency_key': idem_key,
+        'footer_disclosure_days': getattr(settings, 'SMS_FOOTER_DISCLOSURE_DAYS', 30),
     })
 
 
@@ -609,6 +666,7 @@ def sms_campaign_detail(request, pk):
         'audience_summary': campaign.audience_summary(org),
         'buy_stats': _sms_buy_stats(org, campaign),
         'page_obj': page_obj,
+        'link_events': _org_events_for_picker(org),
     })
 
 
@@ -638,6 +696,46 @@ def sms_campaign_cancel(request, pk):
     else:
         messages.error(request, 'That campaign can no longer be canceled.')
     return redirect('tickets:sms_campaign_detail', pk=pk)
+
+
+@login_required
+@require_org
+@require_host
+@require_sms_feature
+@require_POST
+def sms_campaign_link_event(request, pk):
+    """Associate a campaign with an event (or clear it). Works for any status —
+    organizers commonly link an already-sent campaign after the fact so the
+    attribution shows up on both the campaign and the event."""
+    org = get_organization(request)
+    campaign = get_object_or_404(
+        SMSCampaign.objects.filter(organization=org, deleted_at__isnull=True), id=pk,
+    )
+    event_id = (request.POST.get('event') or '').strip()
+    if event_id:
+        event = get_object_or_404(
+            Event.objects.filter(organization=org, deleted_at__isnull=True), id=event_id,
+        )
+        campaign.event = event
+        msg = f'Linked "{campaign.name}" to {event.name}.'
+    else:
+        campaign.event = None
+        msg = f'Unlinked "{campaign.name}" from its event.'
+    campaign.updated_by = request.user
+    campaign.save(update_fields=['event', 'updated_by', 'updated_at'])
+
+    # Event/overview rollups read this linkage, so bust their caches.
+    from .views import _invalidate_marketing_cache
+    _invalidate_marketing_cache(org)
+
+    messages.success(request, msg)
+
+    next_url = request.POST.get('next')
+    if next_url and url_has_allowed_host_and_scheme(
+        next_url, allowed_hosts={request.get_host()},
+    ):
+        return redirect(next_url)
+    return redirect('tickets:sms_campaign_list')
 
 
 # ---------------------------------------------------------------------------

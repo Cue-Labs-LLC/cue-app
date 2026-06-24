@@ -7,6 +7,7 @@
 {% if ticket_type_breakdown or total_orders or event.ticketing_type == 'direct' or survey_results %}
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js" defer></script>
 {% endif %}
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js" defer></script>
 {% if event.ticketing_type != 'direct' %}
 <link rel="stylesheet" href="https://releases.transloadit.com/uppy/v3.27.3/uppy.min.css">
 <script src="https://releases.transloadit.com/uppy/v3.27.3/uppy.min.js" defer></script>
@@ -116,12 +117,17 @@
 .ta-summary__stat-value--accent { color: var(--accent); }
 
 /* Shared row: dot + name + bar + count */
-.ta-list { display: flex; flex-direction: column; }
+.ta-list {
+    display: grid;
+    grid-template-columns: minmax(0, 1.1fr) minmax(0, 2.2fr) auto;
+    column-gap: 16px;
+}
 .ta-row {
     display: grid;
-    grid-template-columns: 8px minmax(0, 1.1fr) minmax(0, 2.2fr) auto;
+    grid-column: 1 / -1;
+    grid-template-columns: subgrid;
     align-items: center;
-    gap: 16px;
+    column-gap: 16px;
     padding: 14px 20px;
     border-bottom: 1px solid var(--border-light);
     transition: background 0.12s;
@@ -129,6 +135,7 @@
 .ta-row:last-child { border-bottom: none; }
 .ta-row:hover { background: rgba(255, 255, 255, 0.02); }
 .ta-dot {
+    flex: none;
     width: 8px;
     height: 8px;
     border-radius: 50%;
@@ -154,6 +161,14 @@
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+}
+.ta-name__link {
+    color: inherit;
+    text-decoration: none;
+}
+.ta-name__link:hover {
+    color: var(--accent);
+    text-decoration: underline;
 }
 .ta-bar-wrap {
     height: 14px;
@@ -235,7 +250,7 @@
     .checkin-hero__readout { align-items: center; }
     .ta-summary { grid-template-columns: 1fr 1fr; gap: 16px; }
     .ta-row {
-        grid-template-columns: 8px 1fr auto;
+        grid-template-columns: 1fr auto;
         row-gap: 10px;
     }
     .ta-row .ta-bar-wrap { grid-column: 1 / -1; }
@@ -506,6 +521,9 @@ button.detail-meta-weather--severe:focus-visible {
     <button class="nav-link" id="tab-orders-btn" data-bs-toggle="tab" data-bs-target="#tab-orders" type="button" role="tab">Orders{% if total_orders %} ({{ total_orders }}){% endif %}</button>
     <button class="nav-link" id="tab-finance-btn" data-bs-toggle="tab" data-bs-target="#tab-finance" type="button" role="tab">Finance</button>
     <button class="nav-link" id="tab-marketing-btn" data-bs-toggle="tab" data-bs-target="#tab-marketing" type="button" role="tab">Marketing</button>
+    {% if show_audience_tab %}
+    <button class="nav-link" id="tab-audience-btn" data-bs-toggle="tab" data-bs-target="#tab-audience" type="button" role="tab">Audience</button>
+    {% endif %}
     {% if org.sms_marketing_enabled and is_org_host %}
     <button class="nav-link" id="tab-customers-btn" data-bs-toggle="tab" data-bs-target="#tab-customers" type="button" role="tab">Customers{% if total_customers %} ({{ total_customers }}){% endif %}</button>
     {% endif %}
@@ -580,6 +598,137 @@ button.detail-meta-weather--severe:focus-visible {
     </div>
 </div>
 </div>
+
+{% if org.ai_event_summary_enabled %}
+{% with event_end=event.end_date|default:event.start_date %}
+{% if event.ticketing_type != 'direct' or event_end < today %}
+<div class="card mb-4" id="ai-summary-card">
+    <div class="card-header d-flex justify-content-between align-items-center">
+        <h5 class="mb-0"><i class="bi bi-stars"></i> AI Event Summary</h5>
+        <div class="d-flex align-items-center gap-2">
+            {% if event.ai_summary_generated_at %}
+            <span class="text-muted" style="font-size: 0.8rem;" id="ai-summary-timestamp">
+                Generated {{ event.ai_summary_generated_at|timesince }} ago
+            </span>
+            {% endif %}
+            {% if event_end < today %}
+            <button class="btn btn-sm btn-outline-primary" id="btn-generate-summary" type="button">
+                <i class="bi bi-arrow-repeat"></i>
+                {% if event.ai_summary %}Regenerate{% else %}Generate Summary{% endif %}
+            </button>
+            {% else %}
+            <button class="btn btn-sm btn-outline-secondary" id="btn-generate-summary" type="button" disabled title="Available after the event ends">
+                <i class="bi bi-arrow-repeat"></i>
+                {% if event.ai_summary %}Regenerate{% else %}Generate Summary{% endif %}
+            </button>
+            {% endif %}
+        </div>
+    </div>
+    <div class="card-body" id="ai-summary-body">
+        {% if event_end >= today %}
+        <div class="text-muted" style="padding: 8px 0;">
+            <i class="bi bi-clock me-1"></i> AI summaries are available once the event has ended.
+        </div>
+        {% elif event.ai_summary %}
+        <div id="ai-summary-content">{{ event.ai_summary }}</div>
+        {% else %}
+        <div class="text-muted" style="padding: 8px 0;" id="ai-summary-empty">
+            Click "Generate Summary" for an AI analysis that connects this event's sales, attendee segments, feedback, and finances into what worked, what didn't, and what to do next time.
+        </div>
+        {% endif %}
+    </div>
+</div>
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    var btn = document.getElementById('btn-generate-summary');
+    if (!btn) return;
+
+    // Render cached summary on load if present
+    var contentEl = document.getElementById('ai-summary-content');
+    if (contentEl && contentEl.textContent.trim() && typeof marked !== 'undefined') {
+        contentEl.innerHTML = marked.parse(contentEl.textContent);
+    }
+
+    btn.addEventListener('click', async function() {
+        var body = document.getElementById('ai-summary-body');
+        var emptyEl = document.getElementById('ai-summary-empty');
+        var tsEl = document.getElementById('ai-summary-timestamp');
+
+        btn.disabled = true;
+        btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Generating...';
+
+        // Clear existing content
+        if (emptyEl) emptyEl.remove();
+        body.innerHTML = '<div id="ai-summary-content"></div>';
+        var content = document.getElementById('ai-summary-content');
+        var fullText = '';
+
+        try {
+            var response = await fetch("{% url 'tickets:event_summary_stream' event.id %}", {
+                method: 'POST',
+                headers: {
+                    'X-CSRFToken': '{{ csrf_token }}',
+                },
+            });
+
+            if (response.status === 429) {
+                content.innerHTML = '<div class="text-warning"><i class="bi bi-exclamation-triangle"></i> Rate limit reached. Please try again later.</div>';
+                btn.disabled = false;
+                btn.innerHTML = '<i class="bi bi-arrow-repeat"></i> Regenerate';
+                return;
+            }
+
+            var reader = response.body.getReader();
+            var decoder = new TextDecoder();
+            var buffer = '';
+
+            while (true) {
+                var result = await reader.read();
+                if (result.done) break;
+                buffer += decoder.decode(result.value, { stream: true });
+                var lines = buffer.split('\n');
+                buffer = lines.pop();
+                for (var i = 0; i < lines.length; i++) {
+                    var line = lines[i];
+                    if (line.startsWith('data: ')) {
+                        try {
+                            var data = JSON.parse(line.slice(6));
+                            if (data.type === 'token') {
+                                fullText += data.content;
+                                if (typeof marked !== 'undefined') {
+                                    content.innerHTML = marked.parse(fullText);
+                                } else {
+                                    content.textContent = fullText;
+                                }
+                            } else if (data.type === 'error') {
+                                content.innerHTML = '<div class="text-danger"><i class="bi bi-exclamation-triangle"></i> ' + data.content + '</div>';
+                            } else if (data.type === 'done') {
+                                // Final render
+                                if (fullText && typeof marked !== 'undefined') {
+                                    content.innerHTML = marked.parse(fullText);
+                                }
+                            }
+                        } catch (e) {
+                            // Skip malformed SSE lines
+                        }
+                    }
+                }
+            }
+        } catch (e) {
+            content.innerHTML = '<div class="text-danger"><i class="bi bi-exclamation-triangle"></i> Failed to connect to the summary service. Please try again.</div>';
+        }
+
+        btn.disabled = false;
+        btn.innerHTML = '<i class="bi bi-arrow-repeat"></i> Regenerate';
+        if (tsEl) {
+            tsEl.textContent = 'Generated just now';
+        }
+    });
+});
+</script>
+{% endif %}
+{% endwith %}
+{% endif %}
 
 {% if total_orders or event.ticketing_type == 'direct' %}
 <script type="application/json" id="sales-over-time-data">{{ sales_over_time_json|safe }}</script>
@@ -684,8 +833,10 @@ button.detail-meta-weather--severe:focus-visible {
         <div class="ta-list" style="margin: 20px -20px -20px; border-top: 1px solid var(--border-light);">
             {% for row in checkin_by_type %}
             <div class="ta-row">
-                <span class="ta-dot{% if row.percent < 50 %} ta-dot--low{% elif row.percent < 75 %} ta-dot--mid{% endif %}"></span>
-                <span class="ta-name"><span class="ta-name__text">{{ row.label }}</span></span>
+                <span class="ta-name">
+                    <span class="ta-dot{% if row.percent < 50 %} ta-dot--low{% elif row.percent < 75 %} ta-dot--mid{% endif %}"></span>
+                    <span class="ta-name__text">{{ row.label }}</span>
+                </span>
                 <div class="ta-bar-wrap">
                     <div class="ta-bar-fill" style="width:{{ row.percent }}%"></div>
                 </div>
@@ -727,9 +878,9 @@ button.detail-meta-weather--severe:focus-visible {
             {% for chart in ticket_type_allocation_charts %}
             {% if chart.is_unlimited %}
             <div class="ta-row">
-                <span class="ta-dot"></span>
                 <span class="ta-name">
-                    <span class="ta-name__text">{{ chart.label }}</span>
+                    <span class="ta-dot"></span>
+                    <a href="{% url 'tickets:saleable_ticket_type_orders' event.id chart.tt_id %}" class="ta-name__text ta-name__link">{{ chart.label }}</a>
                     <span class="ta-chip">Unlimited</span>
                 </span>
                 <div class="ta-bar-wrap">
@@ -743,9 +894,9 @@ button.detail-meta-weather--severe:focus-visible {
             {% else %}
             {% widthratio chart.sold chart.allocated 100 as pct %}
             <div class="ta-row{% if chart.remaining == 0 %} ta-row--soldout{% endif %}">
-                <span class="ta-dot{% if chart.remaining == 0 %} ta-dot--pulse{% elif chart.percent_sold >= 90 %} ta-dot--pulse{% elif chart.percent_sold < 50 %} ta-dot--low{% elif chart.percent_sold < 75 %} ta-dot--mid{% endif %}"></span>
                 <span class="ta-name">
-                    <span class="ta-name__text">{{ chart.label }}</span>
+                    <span class="ta-dot{% if chart.remaining == 0 %} ta-dot--pulse{% elif chart.percent_sold >= 90 %} ta-dot--pulse{% elif chart.percent_sold < 50 %} ta-dot--low{% elif chart.percent_sold < 75 %} ta-dot--mid{% endif %}"></span>
+                    <a href="{% url 'tickets:saleable_ticket_type_orders' event.id chart.tt_id %}" class="ta-name__text ta-name__link">{{ chart.label }}</a>
                     {% if chart.remaining == 0 %}
                         <span class="ta-chip ta-chip--soldout">Sold out</span>
                     {% elif chart.remaining <= 10 %}
@@ -1347,13 +1498,16 @@ button.detail-meta-weather--severe:focus-visible {
                                 <div class="text-body-secondary small">{{ sms_campaign.message|truncatechars:120 }}</div>
                                 {% endif %}
                                 <div class="text-body-secondary small">{{ sms_campaign.external_id }}</div>
+                                <div class="text-body-secondary small" data-field="attribution_source" title="Source of the attributed orders/revenue shown">
+                                    {% if sms_campaign.attribution_source == 'manual' %}Attribution: manual entry{% elif sms_campaign.attribution_source == 'cue' %}Attribution: Cue-tracked (UTM){% elif sms_campaign.attribution_source == 'slicktext' %}Attribution: SlickText{% else %}Attribution: no data{% endif %}
+                                </div>
                             </td>
                             <td>{{ sms_campaign.send_time_display|default:"Unknown" }}</td>
                             <td data-field="effective_audience" data-editable="true" data-field-name="manual_audience" data-input-type="number" data-step="1" data-min="0" data-numeric-value="{% if sms_campaign.manual_audience is not None %}{{ sms_campaign.manual_audience }}{% else %}{{ sms_campaign.audience_size }}{% endif %}" data-edit-url="{% url 'tickets:event_slicktext_metrics_edit' event.id sms_campaign.id %}" data-row-id="{{ sms_campaign.id }}" data-channel="sms" title="Click to edit">{{ sms_campaign.effective_audience }}</td>
                             <td data-field="effective_clicks" data-editable="true" data-field-name="manual_clicks" data-input-type="number" data-step="1" data-min="0" data-numeric-value="{% if sms_campaign.manual_clicks is not None %}{{ sms_campaign.manual_clicks }}{% else %}{{ sms_campaign.unique_clicks }}{% endif %}" data-edit-url="{% url 'tickets:event_slicktext_metrics_edit' event.id sms_campaign.id %}" data-row-id="{{ sms_campaign.id }}" data-channel="sms" title="Click to edit">{{ sms_campaign.effective_clicks }}</td>
                             <td data-field="effective_unsubscribes" data-editable="true" data-field-name="manual_unsubscribes" data-input-type="number" data-step="1" data-min="0" data-numeric-value="{% if sms_campaign.manual_unsubscribes is not None %}{{ sms_campaign.manual_unsubscribes }}{% else %}{{ sms_campaign.unsubscribes }}{% endif %}" data-edit-url="{% url 'tickets:event_slicktext_metrics_edit' event.id sms_campaign.id %}" data-row-id="{{ sms_campaign.id }}" data-channel="sms" title="Click to edit">{{ sms_campaign.effective_unsubscribes }}</td>
-                            <td data-field="effective_orders" data-editable="true" data-field-name="manual_orders" data-input-type="number" data-step="1" data-min="0" data-numeric-value="{% if sms_campaign.manual_orders is not None %}{{ sms_campaign.manual_orders }}{% else %}{{ sms_campaign.orders }}{% endif %}" data-edit-url="{% url 'tickets:event_slicktext_metrics_edit' event.id sms_campaign.id %}" data-row-id="{{ sms_campaign.id }}" data-channel="sms" title="Click to edit">{{ sms_campaign.effective_orders }}</td>
-                            <td data-field="effective_revenue" data-editable="true" data-field-name="manual_revenue" data-input-type="number" data-step="0.01" data-min="0" data-numeric-value="{% if sms_campaign.manual_revenue is not None %}{{ sms_campaign.manual_revenue }}{% else %}{{ sms_campaign.revenue }}{% endif %}" data-edit-url="{% url 'tickets:event_slicktext_metrics_edit' event.id sms_campaign.id %}" data-row-id="{{ sms_campaign.id }}" data-channel="sms" title="Click to edit">${{ sms_campaign.effective_revenue|currency }}</td>
+                            <td data-field="effective_orders" data-editable="true" data-field-name="manual_orders" data-input-type="number" data-step="1" data-min="0" data-numeric-value="{% if sms_campaign.manual_orders is not None %}{{ sms_campaign.manual_orders }}{% else %}{{ sms_campaign.effective_orders }}{% endif %}" data-edit-url="{% url 'tickets:event_slicktext_metrics_edit' event.id sms_campaign.id %}" data-row-id="{{ sms_campaign.id }}" data-channel="sms" title="Click to edit">{{ sms_campaign.effective_orders }}</td>
+                            <td data-field="effective_revenue" data-editable="true" data-field-name="manual_revenue" data-input-type="number" data-step="0.01" data-min="0" data-numeric-value="{% if sms_campaign.manual_revenue is not None %}{{ sms_campaign.manual_revenue }}{% else %}{{ sms_campaign.effective_revenue }}{% endif %}" data-edit-url="{% url 'tickets:event_slicktext_metrics_edit' event.id sms_campaign.id %}" data-row-id="{{ sms_campaign.id }}" data-channel="sms" title="Click to edit">${{ sms_campaign.effective_revenue|currency }}</td>
                             <td data-field="status">
                                 <span class="badge {% if sms_campaign.needs_review %}bg-warning text-dark{% elif sms_campaign.is_confirmed %}bg-success{% else %}bg-secondary{% endif %}">{% if sms_campaign.needs_review %}Re-review{% elif sms_campaign.is_confirmed %}Confirmed{% else %}Pending{% endif %}</span>
                             </td>
@@ -1422,6 +1576,123 @@ button.detail-meta-weather--severe:focus-visible {
 </div><!-- /Linked campaigns view -->
 
 </div><!-- /tab-marketing -->
+
+{% if show_audience_tab %}
+<!-- ===== TAB: Audience ===== -->
+<div class="tab-pane fade" id="tab-audience" role="tabpanel">
+
+<div class="stats-grid">
+    <div class="stat-card stat-card--info">
+        <div class="stat-label">Attendees</div>
+        <div class="stat-value">{{ audience.attendees|intcomma }}</div>
+        <div class="stat-detail" style="font-size: 0.75rem; margin-top: 4px;">of {{ audience.total_buyers|intcomma }} buyer{{ audience.total_buyers|pluralize }} checked in</div>
+    </div>
+    <div class="stat-card stat-card--accent">
+        <div class="stat-label">First-time attendees</div>
+        <div class="stat-value">{{ audience.first_time_attendees|intcomma }}</div>
+        <div class="stat-detail" style="font-size: 0.75rem; margin-top: 4px;">first event with {{ org_name }}</div>
+    </div>
+    <div class="stat-card stat-card--success">
+        <div class="stat-label">Returning attendees</div>
+        <div class="stat-value">{{ audience.attendees_returning|intcomma }}</div>
+        <div class="stat-detail" style="font-size: 0.75rem; margin-top: 4px;">attended a prior event</div>
+    </div>
+    <div class="stat-card stat-card--danger">
+        <div class="stat-label">High-value attendees</div>
+        <div class="stat-value">{{ audience.high_value_attendees|intcomma }}</div>
+        <div class="stat-detail" style="font-size: 0.75rem; margin-top: 4px;">VIPs &amp; top spenders</div>
+    </div>
+    <div class="stat-card stat-card--warning">
+        <div class="stat-label">High-value turnout</div>
+        <div class="stat-value">{{ audience.high_value_attended|intcomma }} / {{ audience.high_value_total|intcomma }}</div>
+        <div class="stat-detail" style="font-size: 0.75rem; margin-top: 4px;">high-value buyers who showed</div>
+    </div>
+</div>
+
+<div class="card mb-4">
+    <div class="card-header"><h5 class="mb-0">New vs returning attendees</h5></div>
+    <div class="card-body">
+        <div class="checkin-hero">
+            <div class="checkin-hero__donut">
+                <canvas id="audienceDonut"
+                        data-new="{{ audience.first_time_attendees }}"
+                        data-returning="{{ audience.attendees_returning }}"></canvas>
+            </div>
+            <div class="checkin-hero__readout">
+                <span class="checkin-hero__sub">First-time</span>
+                <span class="checkin-hero__big">{% if audience.attendees %}{% widthratio audience.first_time_attendees audience.attendees 100 %}{% else %}0{% endif %}<span class="checkin-hero__big-unit">%</span></span>
+                <span class="checkin-hero__count">
+                    {{ audience.first_time_attendees|intcomma }} first-time &middot; {{ audience.attendees_returning|intcomma }} returning
+                </span>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="card mb-4">
+    <div class="card-header d-flex justify-content-between align-items-center">
+        <h5 class="mb-0">Notable attendees</h5>
+        {% if notable_attendees_page and notable_attendees_page.paginator.count %}
+        <span class="text-body-secondary small">High-value &amp; frequent buyers</span>
+        {% endif %}
+    </div>
+    <div class="card-body p-0">
+        {% if notable_attendees_page and notable_attendees_page.paginator.count %}
+        <div class="table-responsive">
+            <table class="table table-hover mb-0 align-middle">
+                <thead>
+                    <tr>
+                        <th>Name</th>
+                        <th class="d-none d-md-table-cell">Email</th>
+                        <th class="d-none d-sm-table-cell">Segment</th>
+                        <th class="text-end">Events</th>
+                        <th class="text-end">Lifetime value</th>
+                        <th class="d-none d-md-table-cell">Checked in</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for a in notable_attendees_page %}
+                    <tr>
+                        <td>
+                            <a href="{% url 'tickets:customer_detail' a.id %}">{{ a.name|default:'—' }}</a>
+                            {% if a.events_count >= 2 %}<span class="badge bg-primary ms-1" title="Frequent buyer">Regular</span>{% endif %}
+                        </td>
+                        <td class="d-none d-md-table-cell">{{ a.email }}</td>
+                        <td class="d-none d-sm-table-cell">{% if a.rfm_segment %}<span class="badge bg-{{ segment_badge_colors|get_item:a.rfm_segment }}">{{ a.rfm_segment }}</span>{% else %}<span class="text-body-secondary">—</span>{% endif %}</td>
+                        <td class="text-end{% if a.events_count >= 2 %} fw-semibold{% endif %}">{{ a.events_count }}</td>
+                        <td class="text-end"><span class="revenue">${{ a.lifetime_value|currency }}</span></td>
+                        <td class="d-none d-md-table-cell">{% if a.event_checked_in_at %}{{ a.event_checked_in_at|date:"M j, g:i a" }}{% else %}—{% endif %}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% if notable_attendees_page.paginator.num_pages > 1 %}
+        <div class="d-flex justify-content-center py-3 border-top">
+            <nav>
+                <ul class="pagination mb-0">
+                    {% if notable_attendees_page.has_previous %}
+                    <li class="page-item"><a class="page-link" href="?tab=audience&audience_page={{ notable_attendees_page.previous_page_number }}">Previous</a></li>
+                    {% endif %}
+                    <li class="page-item active"><span class="page-link">{{ notable_attendees_page.number }} / {{ notable_attendees_page.paginator.num_pages }}</span></li>
+                    {% if notable_attendees_page.has_next %}
+                    <li class="page-item"><a class="page-link" href="?tab=audience&audience_page={{ notable_attendees_page.next_page_number }}">Next</a></li>
+                    {% endif %}
+                </ul>
+            </nav>
+        </div>
+        {% endif %}
+        {% else %}
+        <div class="empty-state">
+            <i class="bi bi-stars"></i>
+            <p class="mb-0">No high-value or frequent buyers have checked in yet.</p>
+        </div>
+        {% endif %}
+    </div>
+</div>
+
+</div><!-- /tab-audience -->
+{% endif %}
 
 {% if org.sms_marketing_enabled and is_org_host %}
 <!-- ===== TAB: Customers ===== -->
@@ -1523,6 +1794,23 @@ button.detail-meta-weather--severe:focus-visible {
 
 <!-- ===== TAB 5: Surveys ===== -->
 <div class="tab-pane fade" id="tab-surveys" role="tabpanel">
+
+<div class="d-flex justify-content-end gap-2 mb-3">
+    {% if typeform_subscriptions and survey_results %}
+    <button type="button" class="btn btn-sm btn-outline-primary"
+            data-bs-toggle="modal" data-bs-target="#surveyMatchModal">
+        <i class="bi bi-arrow-clockwise"></i> Check for new responses
+    </button>
+    {% endif %}
+    <a href="{% url 'tickets:event_survey_builder' event.id %}" class="btn btn-sm btn-outline-secondary">
+        <i class="bi bi-pencil-square"></i> Build survey
+    </a>
+    <form method="post" action="{% url 'tickets:send_survey' event.id %}"
+          onsubmit="return confirm('Send the survey to attendees who haven\'t received it yet?');">
+        {% csrf_token %}
+        <button type="submit" class="btn btn-sm btn-primary"><i class="bi bi-send"></i> Send survey</button>
+    </form>
+</div>
 
 {% if survey_results %}
 {# --- STAT CARDS --- #}
@@ -1679,15 +1967,33 @@ button.detail-meta-weather--severe:focus-visible {
                 <a href="{% url 'tickets:typeform_form_mapping' sub_id=sub.id %}"
                    class="btn btn-sm btn-outline-warning">Configure</a>
                 {% endif %}
-                <button type="button"
-                        class="btn btn-sm btn-link p-0 text-decoration-none text-body-secondary survey-refresh-btn"
-                        data-sub-id="{{ sub.id }}">
-                    <i class="bi bi-arrow-clockwise me-1"></i>Refresh
-                </button>
             </div>
         </li>
         {% endfor %}
     </ul>
+</div>
+{% endif %}
+
+{# --- CHOICE QUESTION BREAKDOWNS (single/multi-select) --- #}
+{% if survey_results.choice_breakdowns %}
+<div class="card mb-4">
+    <div class="card-header"><strong>Choice questions</strong></div>
+    <div class="card-body">
+        {% for q in survey_results.choice_breakdowns %}
+        <div class="{% if not forloop.last %}mb-4{% endif %}">
+            <div class="fw-semibold mb-2">{{ q.question }}</div>
+            {% for opt in q.options %}
+            <div class="d-flex align-items-center gap-2 mb-1">
+                <div class="text-truncate" style="width: 180px;" title="{{ opt.label }}">{{ opt.label }}</div>
+                <div class="flex-grow-1 bg-light rounded" style="height: 8px;">
+                    <div class="bg-primary rounded" style="height: 8px; width: {% widthratio opt.count survey_results.internal_response_count 100 %}%;"></div>
+                </div>
+                <div class="text-muted small" style="width: 40px;">{{ opt.count }}</div>
+            </div>
+            {% endfor %}
+        </div>
+        {% endfor %}
+    </div>
 </div>
 {% endif %}
 
@@ -1793,53 +2099,7 @@ button.detail-meta-weather--severe:focus-visible {
                 <i class="bi bi-magic me-1"></i>Find matches
             </button>
         </div>
-        <div class="matcher-loading d-none text-center" style="padding: 48px 0;">
-            <div class="spinner-border text-primary" role="status">
-                <span class="visually-hidden">Searching Typeform…</span>
-            </div>
-            <p class="text-muted small mt-3 mb-0">
-                Querying Typeform and ranking candidates…
-            </p>
-        </div>
-        <div class="matcher-empty empty-state d-none" style="padding: 48px 0;">
-            <i class="bi bi-search fs-2 text-muted"></i>
-            <p class="text-muted mt-2 mb-1">No matching responses found.</p>
-            <p class="text-muted small mb-3">
-                We couldn't find any unlinked Typeform responses that look like a match for this event.
-            </p>
-            <button type="button" class="btn btn-outline-secondary btn-sm matcher-find-btn">
-                <i class="bi bi-arrow-clockwise me-1"></i>Try again
-            </button>
-        </div>
-        <div class="matcher-error empty-state d-none" style="padding: 48px 0;">
-            <i class="bi bi-exclamation-triangle fs-2 text-warning"></i>
-            <p class="text-muted mt-2 mb-1">Couldn't load suggestions.</p>
-            <p class="text-muted small mb-3 matcher-error-detail">Try again in a moment.</p>
-            <button type="button" class="btn btn-outline-secondary btn-sm matcher-find-btn">
-                <i class="bi bi-arrow-clockwise me-1"></i>Try again
-            </button>
-        </div>
-        <div class="matcher-results card d-none">
-            <div class="card-header d-flex justify-content-between align-items-center">
-                <strong>Suggested matches</strong>
-                <button type="button" class="btn btn-sm btn-link p-0 text-decoration-none text-body-secondary matcher-find-btn">
-                    <i class="bi bi-arrow-clockwise me-1"></i>Refresh
-                </button>
-            </div>
-            <div class="table-responsive">
-                <table class="table table-hover align-middle mb-0">
-                    <thead>
-                        <tr>
-                            <th style="width: 110px;">Date</th>
-                            <th style="width: 90px;">Match</th>
-                            <th>Preview</th>
-                            <th class="text-end" style="width: 90px;">Action</th>
-                        </tr>
-                    </thead>
-                    <tbody class="matcher-tbody"></tbody>
-                </table>
-            </div>
-        </div>
+        {% include 'tickets/_survey_matcher_panels.html' %}
     </div>
     {% else %}
     <div class="empty-state" style="padding: 48px 0;">
@@ -2322,6 +2582,32 @@ button.detail-meta-weather--severe:focus-visible {
                     <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Close</button>
                 </div>
             </form>
+        </div>
+    </div>
+</div>
+{% endif %}
+
+{% if typeform_subscriptions and survey_results %}
+<div class="modal fade" id="surveyMatchModal" tabindex="-1" aria-labelledby="surveyMatchModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-lg modal-dialog-scrollable">
+        <div class="modal-content">
+            <div class="modal-header">
+                <div>
+                    <h5 class="modal-title" id="surveyMatchModalLabel">Check for new survey responses</h5>
+                    <div class="text-body-secondary small">{{ event.name }}</div>
+                </div>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <div class="event-survey-matcher"
+                     data-match-url="{% url 'tickets:event_survey_match' event.id %}?format=json"
+                     data-apply-url="{% url 'tickets:event_survey_apply' event.id %}">
+                    {% include 'tickets/_survey_matcher_panels.html' %}
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Close</button>
+            </div>
         </div>
     </div>
 </div>
@@ -4318,7 +4604,8 @@ document.addEventListener('DOMContentLoaded', function () {
     var remaining = Math.max(total - checkedIn, 0);
     var rootStyle = getComputedStyle(document.documentElement);
     var accentColor = (rootStyle.getPropertyValue('--accent') || '').trim() || '#00FF87';
-    var trackColor = 'rgba(255, 255, 255, 0.06)';
+    var isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+    var trackColor = isDark ? 'rgba(255, 255, 255, 0.10)' : 'rgba(15, 23, 42, 0.12)';
     var hasData = total > 0;
     new Chart(canvas, {
         type: 'doughnut',
@@ -4330,8 +4617,8 @@ document.addEventListener('DOMContentLoaded', function () {
                     ? [accentColor, trackColor]
                     : [trackColor, trackColor],
                 borderWidth: 0,
-                borderRadius: hasData ? [6, 0] : 0,
-                spacing: hasData && remaining > 0 ? 2 : 0,
+                borderRadius: hasData && checkedIn > 0 && remaining > 0 ? [6, 0] : 0,
+                spacing: hasData && checkedIn > 0 && remaining > 0 ? 2 : 0,
             }]
         },
         options: {
@@ -4343,6 +4630,52 @@ document.addEventListener('DOMContentLoaded', function () {
                 duration: 900,
                 easing: 'easeOutCubic'
             },
+            plugins: {
+                legend: { display: false },
+                tooltip: {
+                    enabled: hasData,
+                    callbacks: {
+                        label: function (ctx) {
+                            var n = ctx.parsed;
+                            var pct = total ? Math.round(n / total * 100) : 0;
+                            return ' ' + ctx.label + ': ' + n + ' (' + pct + '%)';
+                        }
+                    }
+                }
+            }
+        }
+    });
+});
+</script>
+<script>
+document.addEventListener('DOMContentLoaded', function () {
+    var canvas = document.getElementById('audienceDonut');
+    if (!canvas) return;
+    var newCount = parseInt(canvas.dataset.new || '0', 10);
+    var returningCount = parseInt(canvas.dataset.returning || '0', 10);
+    var total = newCount + returningCount;
+    var rootStyle = getComputedStyle(document.documentElement);
+    var accentColor = (rootStyle.getPropertyValue('--accent') || '').trim() || '#00FF87';
+    var returningColor = (rootStyle.getPropertyValue('--success') || '').trim() || '#6A9E7F';
+    var trackColor = 'rgba(255, 255, 255, 0.06)';
+    var hasData = total > 0;
+    new Chart(canvas, {
+        type: 'doughnut',
+        data: {
+            labels: ['First-time', 'Returning'],
+            datasets: [{
+                data: hasData ? [newCount, returningCount] : [0, 1],
+                backgroundColor: hasData ? [accentColor, returningColor] : [trackColor, trackColor],
+                borderWidth: 0,
+                borderRadius: hasData ? [6, 6] : 0,
+                spacing: hasData && newCount > 0 && returningCount > 0 ? 2 : 0,
+            }]
+        },
+        options: {
+            cutout: '78%',
+            responsive: true,
+            maintainAspectRatio: false,
+            animation: { animateRotate: true, duration: 900, easing: 'easeOutCubic' },
             plugins: {
                 legend: { display: false },
                 tooltip: {
@@ -4960,13 +5293,11 @@ document.addEventListener('DOMContentLoaded', function () {
 {% endif %}
 
 <script>
-// Surveys tab: empty-state AI matcher. Wires the "Find matching responses"
-// button to the existing event_survey_match endpoint, renders candidates with
-// a single-row Link button that POSTs to event_survey_apply.
-(function () {
-    var container = document.querySelector('.event-survey-matcher');
-    if (!container) return;
-
+// Surveys tab AI matcher. Wires "Find matches" / "Check for new responses" to the
+// event_survey_match endpoint, renders candidates with a single-row Link button that
+// POSTs to event_survey_apply. Runs for every .event-survey-matcher container: the
+// inline empty-state one and the "Check for new responses" modal.
+function setupSurveyMatcher(container) {
     var introEl     = container.querySelector('.matcher-intro');
     var loadingEl   = container.querySelector('.matcher-loading');
     var emptyEl     = container.querySelector('.matcher-empty');
@@ -5113,7 +5444,17 @@ document.addEventListener('DOMContentLoaded', function () {
                 });
         }
     });
-})();
+
+    // When the matcher lives inside a modal (populated-state "Check for new
+    // responses"), re-fetch fresh candidates from Typeform every time it opens.
+    var modalEl = container.closest('.modal');
+    if (modalEl) {
+        modalEl.addEventListener('shown.bs.modal', function () {
+            loadCandidates();
+        });
+    }
+}
+document.querySelectorAll('.event-survey-matcher').forEach(setupSurveyMatcher);
 </script>
 
 {% if weather_forecast %}

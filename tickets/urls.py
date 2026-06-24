@@ -93,6 +93,7 @@ urlpatterns = [
     path('upload/results/<uuid:file_id>/', views.upload_results, name='upload_results'),
     path('upload/<uuid:file_id>/delete/', views.upload_delete, name='upload_delete'),
     path('upload/<uuid:file_id>/reprocess/', views.reprocess_csv_file, name='reprocess_csv_file'),
+    path('upload/<uuid:file_id>/download/', views.download_csv_file, name='download_csv_file'),
     path('upload/<uuid:file_id>/status/', views.upload_status_api, name='upload_status_api'),
 
     # Customers
@@ -114,6 +115,7 @@ urlpatterns = [
     path('analytics/churn/bulk-tag/', views.churn_bulk_tag, name='churn_bulk_tag'),
     path('analytics/repeat-customers/', views.repeat_customers, name='repeat_customers'),
     path('analytics/cohort-retention/', views.cohort_retention, name='cohort_retention'),
+    path('analytics/market-trends/', views.market_trends, name='market_trends'),
     path('analytics/profitability/', views.profitability_overview, name='profitability_overview'),
     path('analytics/expenses/', views.expense_analytics, name='expense_analytics'),
     # Loyalty programs
@@ -147,12 +149,33 @@ urlpatterns = [
     path('survey/<uuid:token>/', views.survey_form, name='survey_form'),
     path('survey/thank-you/', views.survey_thank_you, name='survey_thank_you'),
 
+    # Survey builder — hub + org-default template (singular /survey/ to avoid
+    # the plural /events/<id>/surveys/ external-survey endpoints). Questions are
+    # configured inline on the builder page via these JSON endpoints.
+    path('surveys/', views.survey_hub, name='survey_hub'),
+    path('surveys/builder/', views.survey_builder, name='survey_builder'),
+    path('surveys/builder/preview/', views.survey_preview, name='survey_preview'),
+    path('surveys/builder/save/', views.survey_question_save, name='survey_question_save'),
+    path('surveys/builder/<uuid:question_id>/save/', views.survey_question_save, name='survey_question_save'),
+    path('surveys/builder/<uuid:question_id>/delete/', views.survey_question_delete, name='survey_question_delete'),
+    path('surveys/builder/reorder/', views.survey_reorder, name='survey_reorder'),
+    # Survey builder — per-event (same views, event scope)
+    path('events/<uuid:event_id>/survey/builder/', views.survey_builder, name='event_survey_builder'),
+    path('events/<uuid:event_id>/survey/builder/preview/', views.survey_preview, name='event_survey_preview'),
+    path('events/<uuid:event_id>/survey/customize/', views.event_survey_customize, name='event_survey_customize'),
+    path('events/<uuid:event_id>/survey/reset/', views.event_survey_reset, name='event_survey_reset'),
+    path('events/<uuid:event_id>/survey/save/', views.survey_question_save, name='event_survey_question_save'),
+    path('events/<uuid:event_id>/survey/<uuid:question_id>/save/', views.survey_question_save, name='event_survey_question_save'),
+    path('events/<uuid:event_id>/survey/<uuid:question_id>/delete/', views.survey_question_delete, name='event_survey_question_delete'),
+    path('events/<uuid:event_id>/survey/reorder/', views.survey_reorder, name='event_survey_reorder'),
+
     # Events
     path('events/', views.event_list, name='event_list'),
     path('events/calendar/', views.event_calendar, name='event_calendar'),
     path('events/create/', views.event_type_select, name='event_type_select'),
     path('events/create/<str:ticketing_type>/', views.event_create, name='event_create'),
     path('events/<uuid:event_id>/', views.event_detail, name='event_detail'),
+    path('events/<uuid:event_id>/summary/stream/', views.event_summary_stream, name='event_summary_stream'),
     path('events/<uuid:event_id>/weather/hourly/', views.event_weather_hourly, name='event_weather_hourly'),
     path('events/<uuid:event_id>/surveys/match/',  views.event_survey_match,  name='event_survey_match'),
     path('events/<uuid:event_id>/surveys/apply/',  views.event_survey_apply,  name='event_survey_apply'),
@@ -222,6 +245,7 @@ urlpatterns = [
     path('marketing/sms/new/', sms_views.sms_campaign_create, name='sms_campaign_create'),
     path('marketing/sms/<uuid:pk>/', sms_views.sms_campaign_detail, name='sms_campaign_detail'),
     path('marketing/sms/<uuid:pk>/cancel/', sms_views.sms_campaign_cancel, name='sms_campaign_cancel'),
+    path('marketing/sms/<uuid:pk>/link-event/', sms_views.sms_campaign_link_event, name='sms_campaign_link_event'),
     # Marketing SMS — prepaid credit wallet
     path('marketing/sms/credits/', sms_views.sms_credits, name='sms_credits'),
     path('marketing/sms/credits/checkout/', sms_views.sms_credits_checkout, name='sms_credits_checkout'),
@@ -239,6 +263,7 @@ urlpatterns = [
     # Orders
     path('orders/<uuid:order_id>/', views.order_detail, name='order_detail'),
     path('orders/<uuid:order_id>/refund/', views.refund_order, name='refund_order'),
+    path('orders/<uuid:order_id>/resend-confirmation/', views.resend_order_confirmation, name='resend_order_confirmation'),
     
     # CSV Formats
     path('formats/', views.format_list, name='format_list'),
@@ -246,10 +271,12 @@ urlpatterns = [
     path('formats/<uuid:format_id>/edit/', views.format_edit, name='format_edit'),
     path('formats/<uuid:format_id>/delete/', views.format_delete, name='format_delete'),
     path('formats/<uuid:format_id>/set-default/', views.format_set_default, name='format_set_default'),
-    
+    path('formats/<uuid:format_id>/duplicate/', views.format_duplicate, name='format_duplicate'),
+
     # Settings
     path('settings/google-calendar/', views.settings_google_calendar, name='settings_google_calendar'),
     path('settings/', views.settings_overview, name='settings_overview'),
+    path('settings/display/', views.settings_display_preferences, name='settings_display_preferences'),
     path('settings/google-calendar/disconnect/', views.settings_google_calendar_disconnect, name='settings_google_calendar_disconnect'),
     path('settings/meta-ads/', views.meta_ads_settings, name='meta_ads_settings'),
     path('settings/meta-ads/connect/', views.meta_ads_connect, name='meta_ads_connect'),
@@ -289,6 +316,7 @@ urlpatterns = [
     path('events/<uuid:event_id>/ticket-types/reorder/', views.saleable_ticket_type_reorder, name='saleable_ticket_type_reorder'),
     path('events/<uuid:event_id>/ticket-types/<uuid:ticket_type_id>/edit/', views.saleable_ticket_type_edit, name='saleable_ticket_type_edit'),
     path('events/<uuid:event_id>/ticket-types/<uuid:ticket_type_id>/data/', views.saleable_ticket_type_data, name='saleable_ticket_type_data'),
+    path('events/<uuid:event_id>/ticket-types/<uuid:ticket_type_id>/orders/', views.saleable_ticket_type_orders, name='saleable_ticket_type_orders'),
     path('events/<uuid:event_id>/ticket-types/<uuid:ticket_type_id>/toggle/', views.saleable_ticket_type_toggle, name='saleable_ticket_type_toggle'),
     path('events/<uuid:event_id>/ticket-types/<uuid:ticket_type_id>/delete/', views.saleable_ticket_type_delete, name='saleable_ticket_type_delete'),
 

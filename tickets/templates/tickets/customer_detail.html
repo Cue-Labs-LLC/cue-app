@@ -1,5 +1,6 @@
 {% extends 'tickets/base.html' %}
 {% load tickets_extras %}
+{% load humanize %}
 
 {% block title %}{{ customer.name }} - Customer Details{% endblock %}
 
@@ -10,9 +11,11 @@
 
     /* Masthead -------------------------------------------------------- */
     .cd-masthead {
-        padding-bottom: 28px;
+        background: var(--bg-surface);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        padding: 24px 28px;
         margin-bottom: 24px;
-        border-bottom: 1px solid var(--border);
     }
     .cd-identity {
         display: flex;
@@ -185,11 +188,19 @@
         border-bottom: 1px solid var(--border-light);
     }
     .cd-panel {
+        background: var(--bg-surface);
         border: 1px solid var(--border);
         border-radius: var(--radius);
         overflow: hidden;
     }
-    .cd-events { list-style: none; margin: 0; padding: 0; }
+    .cd-events {
+        list-style: none;
+        margin: 0;
+        background: var(--bg-surface);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        padding: 4px 20px;
+    }
     .cd-events li {
         padding: 11px 0;
         border-top: 1px solid var(--border-light);
@@ -256,7 +267,7 @@
                 <div class="cd-meta">
                     <span>{{ customer.email }}</span>
                     {% if customer.phone %}<span class="cd-dot">&middot;</span><span>{{ customer.phone }}</span>{% endif %}
-                    <span class="cd-dot">&middot;</span><span>Customer since {{ customer.created_at|date:"M d, Y" }}</span>
+                    <span class="cd-dot">&middot;</span><span>Customer since {% if first_order_date %}{{ first_order_date|date:"M d, Y" }}{% else %}{{ customer.created_at|date:"M d, Y" }}{% endif %}</span>
                 </div>
             </div>
         </div>
@@ -288,6 +299,16 @@
                 <span class="badge {{ loyalty_tier.color|badge_class }} fs-6">{{ loyalty_tier.name }}</span>
                 <span class="cd-muted">{{ loyalty_tier.program.name }}</span>
                 {% if loyalty_tier.perks %}<span class="cd-muted">{{ loyalty_tier.perks }}</span>{% endif %}
+            </div>
+        </div>
+        {% endif %}
+
+        {% if loyalty_points_enabled and loyalty_feature_enabled %}
+        <div class="cd-attr-row">
+            <div class="cd-attr-label">Points</div>
+            <div class="cd-attr-value">
+                <span class="badge bg-success fs-6">{{ customer.points_balance|intcomma }} pts</span>
+                <span class="cd-muted">{{ customer.lifetime_points|intcomma }} lifetime earned</span>
             </div>
         </div>
         {% endif %}
@@ -362,12 +383,12 @@
 
 <!-- ===== Tabs ===== -->
 <div class="cd-reveal cd-reveal-2">
+{% if sms_marketing_enabled %}
 <nav class="nav nav-tabs" id="customerDetailTabs" role="tablist">
     <button class="nav-link active" id="tab-overview-btn" data-bs-toggle="tab" data-bs-target="#tab-overview" type="button" role="tab">Overview</button>
-    {% if sms_marketing_enabled %}
     <button class="nav-link" id="tab-marketing-btn" data-bs-toggle="tab" data-bs-target="#tab-marketing" type="button" role="tab">Marketing Activity{% if sms_stats.total %} ({{ sms_stats.total }}){% endif %}</button>
-    {% endif %}
 </nav>
+{% endif %}
 <div class="tab-content">
 
 <!-- ===== TAB: Overview ===== -->
@@ -384,6 +405,7 @@
                             <th>Order Number</th>
                             <th>Date</th>
                             <th>Event</th>
+                            <th>Venue</th>
                             <th>Total Amount</th>
                             <th>Tickets</th>
                         </tr>
@@ -394,6 +416,7 @@
                             <td><strong>{{ order.display_order_number }}</strong></td>
                             <td>{{ order.order_date|date:"M d, Y H:i" }}</td>
                             <td>{{ order.event.name }}</td>
+                            <td>{{ order.event.venue.name }}</td>
                             <td><strong>${{ order.net_amount|currency }}</strong></td>
                             <td>{{ order.tickets_count }}</td>
                         </tr>
@@ -423,19 +446,6 @@
         {% endif %}
     </div>
 
-    {% if events_attended %}
-    <div class="cd-section">
-        <h2 class="cd-section-title">Events Attended</h2>
-        <ul class="cd-events">
-            {% for event in events_attended %}
-            <li>
-                <strong>{{ event.name }}</strong> &mdash; {{ event.venue.name }}, {{ event.venue.city }}
-                <span class="cd-muted">({{ event.start_date|date:"M d, Y" }})</span>
-            </li>
-            {% endfor %}
-        </ul>
-    </div>
-    {% endif %}
 
 </div><!-- /tab-overview -->
 

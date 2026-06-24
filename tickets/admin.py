@@ -785,7 +785,7 @@ class OrganizationAdmin(admin.ModelAdmin):
     inlines = [OrganizationMembershipInline]
     fieldsets = (
         ('Basic', {'fields': ('name', 'slug', 'rfm_recalc_in_progress')}),
-        ('Feature Flags', {'fields': ('waitlist_feature_enabled', 'sms_marketing_enabled', 'loyalty_feature_enabled')}),
+        ('Feature Flags', {'fields': ('waitlist_feature_enabled', 'sms_marketing_enabled', 'loyalty_feature_enabled', 'ai_event_summary_enabled')}),
         ('SMS Credits', {'fields': ('sms_credit_balance_cents',), 'description': 'Prepaid wallet balance in cents. For audited changes prefer creating an SMS credit transaction.'}),
         ('Stripe Connect', {'fields': ('stripe_account_id', 'stripe_onboarding_complete')}),
         ('Meta Ads', {
@@ -970,6 +970,23 @@ class SurveyQuestionAdmin(admin.ModelAdmin):
     readonly_fields = ['id', 'created_at', 'updated_at']
     autocomplete_fields = ['event', 'organization']
     ordering = ['position']
+
+    @staticmethod
+    def _has_answers(obj):
+        return bool(obj) and obj.pk and obj.answers.exists()
+
+    def get_readonly_fields(self, request, obj=None):
+        """Lock structural fields once a question has answers (versioning is
+        enforced by the builder; admin must not silently corrupt history)."""
+        ro = list(super().get_readonly_fields(request, obj))
+        if self._has_answers(obj):
+            ro += ['question_type', 'event', 'organization']
+        return ro
+
+    def has_delete_permission(self, request, obj=None):
+        if self._has_answers(obj):
+            return False
+        return super().has_delete_permission(request, obj)
 
     def get_queryset(self, request):
         qs = super().get_queryset(request)

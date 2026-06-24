@@ -109,6 +109,59 @@
 </div>
 {% endif %}
 
+{# ── Broadcast audience over time + by market (native + SlickText) ───── #}
+<div class="chart-card">
+    <div class="sms-section-head">
+        <h2>Broadcast audience over time</h2>
+        <div class="window-selector">
+            <div class="dropdown">
+                <button class="window-selector-btn dropdown-toggle" type="button" data-bs-toggle="dropdown" aria-expanded="false">
+                    <i class="bi bi-geo-alt"></i> {% if selected_market %}{{ selected_market }}{% else %}All markets{% endif %}
+                </button>
+                <ul class="dropdown-menu dropdown-menu-end">
+                    <li><a class="dropdown-item{% if not selected_market %} active{% endif %}" href="?window={{ window_key }}">All markets</a></li>
+                    {% for m in market_choices %}
+                    <li><a class="dropdown-item{% if m == selected_market %} active{% endif %}" href="?window={{ window_key }}&market={{ m|urlencode }}">{{ m }}</a></li>
+                    {% endfor %}
+                </ul>
+            </div>
+        </div>
+    </div>
+    <div class="chart-canvas-wrap"><canvas id="sms-audience-chart"></canvas></div>
+</div>
+
+<div class="sms-section-head"><h2>Audience by market</h2></div>
+<div class="card">
+    <div class="card-body p-0">
+        {% if market_breakdown %}
+        <div class="table-responsive">
+            <table class="table table-hover align-middle mb-0">
+                <thead>
+                    <tr>
+                        <th>Market</th>
+                        <th class="text-end">Broadcasts</th>
+                        <th class="text-end">Total audience</th>
+                        <th class="text-end">Avg audience</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for row in market_breakdown %}
+                    <tr>
+                        <td><span class="fw-semibold">{{ row.market }}</span></td>
+                        <td class="text-end">{{ row.broadcasts }}</td>
+                        <td class="text-end">{{ row.total_audience }}</td>
+                        <td class="text-end">{{ row.avg_audience }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% else %}
+        <div class="empty-state"><p>No broadcasts with an audience in this window.</p></div>
+        {% endif %}
+    </div>
+</div>
+
 <div class="chart-card">
     <h2>Top SlickText broadcasts</h2>
     {% with sms_rows=top_sms_campaigns %}
@@ -160,6 +213,7 @@
                     <tr>
                         <th>Campaign</th>
                         <th>Status</th>
+                        <th>Event</th>
                         <th class="text-end">Audience</th>
                         <th class="text-end">Sent</th>
                         <th class="text-end">Delivered</th>
@@ -180,6 +234,21 @@
                             {% elif c.status == 'canceled' %}<span class="badge bg-secondary">Canceled</span>
                             {% elif c.status == 'failed' %}<span class="badge bg-danger">Failed</span>
                             {% else %}<span class="badge bg-light text-dark">Draft</span>{% endif %}
+                        </td>
+                        <td>
+                            {% if c.event %}
+                            <a href="{% url 'tickets:event_detail' c.event.id %}"><i class="bi bi-ticket-perforated"></i> {{ c.event.name }}</a>
+                            <button type="button" class="btn btn-link btn-sm p-0 ms-1 align-baseline"
+                                    data-bs-toggle="modal" data-bs-target="#linkEventModal"
+                                    data-campaign-pk="{{ c.id }}" data-campaign-name="{{ c.name }}"
+                                    data-current-event="{{ c.event.id }}" data-next="{{ request.get_full_path }}">Change</button>
+                            {% else %}
+                            <button type="button" class="btn btn-outline-secondary btn-sm"
+                                    data-bs-toggle="modal" data-bs-target="#linkEventModal"
+                                    data-campaign-pk="{{ c.id }}" data-campaign-name="{{ c.name }}"
+                                    data-current-event="" data-next="{{ request.get_full_path }}">
+                                <i class="bi bi-link-45deg"></i> Link to event</button>
+                            {% endif %}
                         </td>
                         <td class="text-end">{{ c.audience_size }}</td>
                         <td class="text-end">{{ c.sent_count }}</td>
@@ -214,6 +283,8 @@
     {% if page_obj.has_next %}<li class="page-item"><a class="page-link" href="?page={{ page_obj.next_page_number }}&window={{ window_key }}">Next</a></li>{% endif %}
 </ul></nav>
 {% endif %}
+
+{% include 'tickets/marketing/sms/_link_event_modal.html' %}
 {% endif %}
 {% endblock %}
 
@@ -244,6 +315,67 @@
                     y: { beginAtZero: true, grid: { color: grid }, ticks: { color: tick } }
                 },
                 plugins: { legend: { labels: { color: tick } } }
+            }
+        });
+    });
+})();
+</script>
+
+<script type="application/json" id="sms-audience-data">{{ audience_points_json|safe }}</script>
+<script>
+(function () {
+    document.addEventListener('DOMContentLoaded', function () {
+        if (typeof Chart === 'undefined') { return; }
+        var el = document.getElementById('sms-audience-chart');
+        if (!el) { return; }
+        var isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+        var grid = isDark ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.06)';
+        var tick = isDark ? 'rgba(255,255,255,0.7)' : 'rgba(0,0,0,0.65)';
+        var points = JSON.parse(document.getElementById('sms-audience-data').textContent);
+        // No points (no broadcasts, or the selected market has none): show an empty
+        // state instead of an empty linear axis, which would render epoch-0 ("Dec 31, 1969") ticks.
+        if (!points.native.length && !points.slicktext.length) {
+            var wrap = el.parentNode;
+            wrap.innerHTML = '<div class="empty-state"><p>No broadcasts with an audience in this window.</p></div>';
+            return;
+        }
+        var fmtDate = function (ms) {
+            return new Date(ms).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+        };
+        new Chart(el, {
+            type: 'scatter',
+            data: {
+                datasets: [
+                    { label: 'Native', data: points.native, backgroundColor: '#4f7cff', borderColor: '#4f7cff', pointRadius: 5, pointHoverRadius: 7 },
+                    { label: 'SlickText', data: points.slicktext, backgroundColor: '#33c481', borderColor: '#33c481', pointRadius: 5, pointHoverRadius: 7 }
+                ]
+            },
+            options: {
+                responsive: true, maintainAspectRatio: false,
+                scales: {
+                    x: {
+                        type: 'linear',
+                        grid: { color: grid },
+                        ticks: { color: tick, maxRotation: 0, autoSkip: true, callback: function (v) { return fmtDate(v); } }
+                    },
+                    y: {
+                        beginAtZero: true,
+                        title: { display: true, text: 'Audience', color: tick },
+                        grid: { color: grid }, ticks: { color: tick }
+                    }
+                },
+                plugins: {
+                    legend: { labels: { color: tick } },
+                    tooltip: {
+                        callbacks: {
+                            title: function (items) { return items.length ? fmtDate(items[0].parsed.x) : ''; },
+                            label: function (ctx) {
+                                var p = ctx.raw || {};
+                                return (p.name || '') + ' — ' + (p.market || '') + ' — ' + p.y + ' audience';
+                            }
+                        }
+                    }
+                }
             }
         });
     });

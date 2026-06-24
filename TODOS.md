@@ -226,3 +226,35 @@
 **Context:** From the destination-charges eng review (decision D18). Direct sessions now exist with `charge_flow='direct'`, PI id in `stripe_session_id`, and `platform_fee_cents` from `application_fee_amount`. The `_sync_charge_refund` reversal block no-ops for direct charges (no transfer), so only the Refund.create call site needs the `stripe_account` parameter. Do NOT pass `refund_application_fee` — keeping the fee is the documented policy.
 
 **Depends on:** Destination-charges PR merged; D14 fee policy stays as documented.
+
+---
+
+## Ticket Allocation: Filter drill-down by ticket-type key, not name
+
+**What:** The "ticket name → orders of that type" drill-down (`saleable_ticket_type_orders` in views.py, reached from the Ticket Allocation card on event_detail) filters orders by ticket-type **name** (`tickets__ticket_type=tt.name`). Give `Ticket` a real key to its `SaleableTicketType` and filter by that key instead.
+
+**Why:** `Ticket.ticket_type` is a denormalized `CharField` (the name string), and `SaleableTicketType.name` is not unique per event. If an organizer has two ticket types sharing a name on one event, clicking either name returns the **union** of both types' orders — while the allocation card's per-type `quantity_sold` counts stay independent. So the counts and the drill-down can disagree in that edge case.
+
+**Pros:** Truly independent drill-down per ticket type; counts and order lists always agree. Also unlocks accurate per-type analytics elsewhere.
+
+**Cons:** Requires a schema change: add a nullable `saleable_ticket_type` FK on `Ticket`, a data migration to backfill existing rows by name (best-effort, ambiguous for same-named types), and populating it at purchase time. Direct purchases already know the `tt_id` at creation (`api_views.py:1630`, where `ticket_type=item['name']` is set and `item['tt_id']` is in scope), so new rows are cheap to populate; CSV-imported (external) events have no `SaleableTicketType` so the FK stays null there.
+
+**Context:** Shipped with the clickable-ticket-name drill-down (plan: clickable ticket names → orders). Name-based filtering was accepted as the v1 to avoid a migration. The in-person sell path (`api_views.py` ~1627) and the Stripe webhook purchase path both create `Ticket` rows from `SaleableTicketType`; both have the `tt_id`/snapshot available to populate the FK.
+
+**Depends on:** Clickable ticket-name drill-down shipped.
+
+## SMS: Lock charged/scheduled campaign fields in admin
+
+**What:** Add `get_readonly_fields` to the SMS campaign admin so that once a campaign leaves DRAFT (scheduled/charged/sending/sent), `body`, `link_url`, `scheduled_at`, and `filter_criteria` become read-only.
+
+**Why:** Campaigns are charged and have their audience + per-recipient disclosure decisions frozen at schedule time (`sms_views.py:sms_campaign_create`). The Django admin still allows editing a SCHEDULED campaign's `body`/`link_url`/`scheduled_at` (`admin.py:1226`). One admin edit after charge desyncs the segment math (pre-existing) and, after the conditional-STOP-footer change, also desyncs the persisted `stop_disclosed`/`segments` decision and moves the 30-day disclosure anchor out from under the charge.
+
+**Pros:** Closes a real desync footgun for both billing and compliance with ~10 lines. No data migration.
+
+**Cons:** Admins occasionally fix typos in scheduled bodies; locking removes that. Could scope the lock to only the billing-relevant fields and leave `name` editable.
+
+**Context:** Surfaced by Codex outside-voice review during the conditional-STOP-footer plan (plan: serene-church). Pre-existing (not introduced by that change) but widened by it. Trusted/internal admin, so deferred rather than blocking. Start in `tickets/admin.py` `SMSCampaignAdmin` with `get_readonly_fields(self, request, obj)` returning the locked set when `obj and obj.status != SMSCampaign.Status.DRAFT`.
+
+**Depends on:** Nothing. Independent of the conditional-footer PR.
+
+---
