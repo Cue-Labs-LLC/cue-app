@@ -1805,11 +1805,10 @@ document.addEventListener('DOMContentLoaded', function() {
     <a href="{% url 'tickets:event_survey_builder' event.id %}" class="btn btn-sm btn-outline-secondary">
         <i class="bi bi-pencil-square"></i> Build survey
     </a>
-    <form method="post" action="{% url 'tickets:send_survey' event.id %}"
-          onsubmit="return confirm('Send the survey to attendees who haven\'t received it yet?');">
-        {% csrf_token %}
-        <button type="submit" class="btn btn-sm btn-primary"><i class="bi bi-send"></i> Send survey</button>
-    </form>
+    <button type="button" class="btn btn-sm btn-primary"
+            data-bs-toggle="modal" data-bs-target="#sendSurveyModal">
+        <i class="bi bi-send"></i> Send survey
+    </button>
 </div>
 
 {% if survey_results %}
@@ -2613,6 +2612,43 @@ document.addEventListener('DOMContentLoaded', function() {
 </div>
 {% endif %}
 
+<!-- Send-survey confirmation modal: shows how many attendees will receive the survey -->
+<div class="modal fade" id="sendSurveyModal" tabindex="-1" aria-labelledby="sendSurveyModalLabel" aria-hidden="true">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="sendSurveyModalLabel"><i class="bi bi-send"></i> Send survey</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body">
+        <div id="sendSurveyLoading" class="text-center py-3">
+          <span class="spinner-border spinner-border-sm"></span> Counting attendees&hellip;
+        </div>
+        <div id="sendSurveyError" class="alert alert-warning d-none mb-0">
+          Couldn't load the recipient count. You can still send.
+        </div>
+        <div id="sendSurveyContent" class="d-none">
+          <p class="mb-0">This will email the survey to
+            <strong id="sendSurveyCount">0</strong> attendee(s)
+            who haven't received it yet.</p>
+        </div>
+        <div id="sendSurveyEmpty" class="d-none alert alert-info mb-0">
+          All attendees have already been sent this survey.
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+        <form method="post" action="{% url 'tickets:send_survey' event.id %}" class="d-inline">
+          {% csrf_token %}
+          <button type="submit" id="sendSurveyConfirmBtn" class="btn btn-primary" disabled>
+            <i class="bi bi-send"></i> Send survey
+          </button>
+        </form>
+      </div>
+    </div>
+  </div>
+</div>
+
 {% endblock %}
 
 {% block extra_js %}
@@ -2684,6 +2720,43 @@ if (document.readyState === 'loading') {
 } else {
     initSurveyResponseModal();
 }
+
+// Send-survey modal: fetch the recipient count fresh each time it opens so the
+// number the host sees matches exactly what the POST would send.
+(function() {
+    var ssModal = document.getElementById('sendSurveyModal');
+    if (!ssModal) return;
+    ssModal.addEventListener('show.bs.modal', function () {
+        var loading = document.getElementById('sendSurveyLoading');
+        var content = document.getElementById('sendSurveyContent');
+        var empty   = document.getElementById('sendSurveyEmpty');
+        var error   = document.getElementById('sendSurveyError');
+        var btn     = document.getElementById('sendSurveyConfirmBtn');
+        loading.classList.remove('d-none');
+        content.classList.add('d-none');
+        empty.classList.add('d-none');
+        error.classList.add('d-none');
+        btn.disabled = true;
+        fetch("{% url 'tickets:survey_recipient_count' event.id %}",
+              { headers: { 'X-Requested-With': 'XMLHttpRequest' } })
+            .then(function (r) { return r.json(); })
+            .then(function (d) {
+                loading.classList.add('d-none');
+                if (d.count > 0) {
+                    document.getElementById('sendSurveyCount').textContent = d.count;
+                    content.classList.remove('d-none');
+                    btn.disabled = false;
+                } else {
+                    empty.classList.remove('d-none');   // btn stays disabled
+                }
+            })
+            .catch(function () {
+                loading.classList.add('d-none');
+                error.classList.remove('d-none');
+                btn.disabled = false;                  // allow send; server re-checks
+            });
+    });
+})();
 </script>
 <script>
 // Marketing tab sub-view toggle: SMS vs Linked campaigns. Hidden sections stay in

@@ -196,6 +196,7 @@ urlpatterns = [
     path('events/<uuid:event_id>/end-sales/', views.event_end_sales, name='event_end_sales'),
     path('events/<uuid:event_id>/cancel/', views.event_cancel, name='event_cancel'),
     path('events/<uuid:event_id>/send-survey/', views.send_survey, name='send_survey'),
+    path('events/<uuid:event_id>/survey-recipient-count/', views.survey_recipient_count, name='survey_recipient_count'),
     path('events/<uuid:event_id>/meta-ads/match/', views.event_meta_ads_match, name='event_meta_ads_match'),
     path('events/<uuid:event_id>/meta-ads/apply/', views.event_meta_ads_apply, name='event_meta_ads_apply'),
     path('events/<uuid:event_id>/meta-ads/<uuid:expense_id>/refresh/', views.event_meta_ads_refresh, name='event_meta_ads_refresh'),
