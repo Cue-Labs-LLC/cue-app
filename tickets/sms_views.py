@@ -521,7 +521,7 @@ def sms_campaign_create(request):
     # composer's "Add a ticket link" dropdown. effective_status is a property, so
     # filter the (small) set of live direct events in Python.
     ticket_link_events = [
-        {'id': str(ev.id), 'name': ev.name}
+        {'id': str(ev.id), 'name': ev.name, 'start_date': ev.start_date}
         for ev in Event.objects.filter(
             organization=org, deleted_at__isnull=True,
             ticketing_type=TICKETING_TYPE_DIRECT, status=EVENT_STATUS_LIVE,

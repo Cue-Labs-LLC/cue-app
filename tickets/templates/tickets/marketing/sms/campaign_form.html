@@ -277,7 +277,9 @@
 
     /* Single-select "action" options (ticket-link inserter) */
     .sms-option--action { width: 100%; text-align: left; background: none; border: none; }
-    .sms-option-add { margin-left: auto; font-size: 12px; color: var(--text-tertiary); }
+    .sms-option--action .sms-option-name { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .sms-option-date { flex: none; font-size: 12px; color: var(--text-tertiary); white-space: nowrap; }
+    .sms-option-add { flex: none; font-size: 12px; color: var(--text-tertiary); }
     .sms-option--action:hover .sms-option-add { color: var(--accent); }
     .sms-dot-live { background: #4caf7d; box-shadow: 0 0 0 3px rgba(76,175,125,0.18); }
 
@@ -540,6 +542,7 @@
                                     <button type="button" class="sms-option sms-option--action" data-tl-event="{{ ev.id }}" data-tl-name="{{ ev.name|lower }}">
                                         <span class="sms-chip-dot sms-dot-live"></span>
                                         <span class="sms-option-name">{{ ev.name }}</span>
+                                        {% if ev.start_date %}<span class="sms-option-date">{{ ev.start_date|date:"M d, Y" }}</span>{% endif %}
                                         <i class="bi bi-plus-lg sms-option-add"></i>
                                     </button>
                                     {% endfor %}
