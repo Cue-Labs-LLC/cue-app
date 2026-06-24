@@ -213,6 +213,7 @@
                     <tr>
                         <th>Campaign</th>
                         <th>Status</th>
+                        <th>Event</th>
                         <th class="text-end">Audience</th>
                         <th class="text-end">Sent</th>
                         <th class="text-end">Delivered</th>
@@ -233,6 +234,21 @@
                             {% elif c.status == 'canceled' %}<span class="badge bg-secondary">Canceled</span>
                             {% elif c.status == 'failed' %}<span class="badge bg-danger">Failed</span>
                             {% else %}<span class="badge bg-light text-dark">Draft</span>{% endif %}
+                        </td>
+                        <td>
+                            {% if c.event %}
+                            <a href="{% url 'tickets:event_detail' c.event.id %}"><i class="bi bi-ticket-perforated"></i> {{ c.event.name }}</a>
+                            <button type="button" class="btn btn-link btn-sm p-0 ms-1 align-baseline"
+                                    data-bs-toggle="modal" data-bs-target="#linkEventModal"
+                                    data-campaign-pk="{{ c.id }}" data-campaign-name="{{ c.name }}"
+                                    data-current-event="{{ c.event.id }}" data-next="{{ request.get_full_path }}">Change</button>
+                            {% else %}
+                            <button type="button" class="btn btn-outline-secondary btn-sm"
+                                    data-bs-toggle="modal" data-bs-target="#linkEventModal"
+                                    data-campaign-pk="{{ c.id }}" data-campaign-name="{{ c.name }}"
+                                    data-current-event="" data-next="{{ request.get_full_path }}">
+                                <i class="bi bi-link-45deg"></i> Link to event</button>
+                            {% endif %}
                         </td>
                         <td class="text-end">{{ c.audience_size }}</td>
                         <td class="text-end">{{ c.sent_count }}</td>
@@ -267,6 +283,8 @@
     {% if page_obj.has_next %}<li class="page-item"><a class="page-link" href="?page={{ page_obj.next_page_number }}&window={{ window_key }}">Next</a></li>{% endif %}
 </ul></nav>
 {% endif %}
+
+{% include 'tickets/marketing/sms/_link_event_modal.html' %}
 {% endif %}
 {% endblock %}
 

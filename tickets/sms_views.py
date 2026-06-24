@@ -21,7 +21,7 @@ from django.http import JsonResponse, HttpResponse, Http404
 from django.shortcuts import render, redirect, get_object_or_404
 from django.urls import reverse
 from django.utils import timezone
-from django.utils.http import urlencode
+from django.utils.http import urlencode, url_has_allowed_host_and_scheme
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_POST, require_http_methods
 
@@ -255,6 +255,17 @@ def customers_bulk_sms_status(request):
 # Campaigns
 # ---------------------------------------------------------------------------
 
+def _org_events_for_picker(org):
+    """Lightweight (id, name) list of the org's events, newest first — embedded in
+    the "link to event" picker for client-side typeahead. Mirrors the
+    ticket_link_events approach in sms_campaign_create."""
+    return [
+        {'id': str(e.id), 'name': e.name}
+        for e in Event.objects.filter(organization=org, deleted_at__isnull=True)
+                              .order_by('-start_date').values_list('id', 'name', named=True)
+    ]
+
+
 @login_required
 @require_org
 @require_host
@@ -266,6 +277,7 @@ def sms_campaign_list(request):
     org = get_organization(request)
     campaigns = _annotate_counts(
         SMSCampaign.objects.filter(organization=org, deleted_at__isnull=True)
+        .select_related('event')
     ).order_by('-created_at')
     paginator = Paginator(campaigns, 25)
     page_obj = paginator.get_page(request.GET.get('page'))
@@ -327,6 +339,7 @@ def sms_campaign_list(request):
         'market_choices': market_choices,
         'market_breakdown': market_breakdown,
         'audience_points_json': json.dumps(audience_points),
+        'link_events': _org_events_for_picker(org),
     })
 
 
@@ -653,6 +666,7 @@ def sms_campaign_detail(request, pk):
         'audience_summary': campaign.audience_summary(org),
         'buy_stats': _sms_buy_stats(org, campaign),
         'page_obj': page_obj,
+        'link_events': _org_events_for_picker(org),
     })
 
 
@@ -682,6 +696,46 @@ def sms_campaign_cancel(request, pk):
     else:
         messages.error(request, 'That campaign can no longer be canceled.')
     return redirect('tickets:sms_campaign_detail', pk=pk)
+
+
+@login_required
+@require_org
+@require_host
+@require_sms_feature
+@require_POST
+def sms_campaign_link_event(request, pk):
+    """Associate a campaign with an event (or clear it). Works for any status —
+    organizers commonly link an already-sent campaign after the fact so the
+    attribution shows up on both the campaign and the event."""
+    org = get_organization(request)
+    campaign = get_object_or_404(
+        SMSCampaign.objects.filter(organization=org, deleted_at__isnull=True), id=pk,
+    )
+    event_id = (request.POST.get('event') or '').strip()
+    if event_id:
+        event = get_object_or_404(
+            Event.objects.filter(organization=org, deleted_at__isnull=True), id=event_id,
+        )
+        campaign.event = event
+        msg = f'Linked "{campaign.name}" to {event.name}.'
+    else:
+        campaign.event = None
+        msg = f'Unlinked "{campaign.name}" from its event.'
+    campaign.updated_by = request.user
+    campaign.save(update_fields=['event', 'updated_by', 'updated_at'])
+
+    # Event/overview rollups read this linkage, so bust their caches.
+    from .views import _invalidate_marketing_cache
+    _invalidate_marketing_cache(org)
+
+    messages.success(request, msg)
+
+    next_url = request.POST.get('next')
+    if next_url and url_has_allowed_host_and_scheme(
+        next_url, allowed_hosts={request.get_host()},
+    ):
+        return redirect(next_url)
+    return redirect('tickets:sms_campaign_list')
 
 
 # ---------------------------------------------------------------------------

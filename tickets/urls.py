@@ -244,6 +244,7 @@ urlpatterns = [
     path('marketing/sms/new/', sms_views.sms_campaign_create, name='sms_campaign_create'),
     path('marketing/sms/<uuid:pk>/', sms_views.sms_campaign_detail, name='sms_campaign_detail'),
     path('marketing/sms/<uuid:pk>/cancel/', sms_views.sms_campaign_cancel, name='sms_campaign_cancel'),
+    path('marketing/sms/<uuid:pk>/link-event/', sms_views.sms_campaign_link_event, name='sms_campaign_link_event'),
     # Marketing SMS — prepaid credit wallet
     path('marketing/sms/credits/', sms_views.sms_credits, name='sms_credits'),
     path('marketing/sms/credits/checkout/', sms_views.sms_credits_checkout, name='sms_credits_checkout'),
