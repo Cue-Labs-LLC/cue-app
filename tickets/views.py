@@ -9199,6 +9199,27 @@ def _parse_survey_answer(question, post_data):
     return {'question': question, 'star_rating': None, 'nps_score': None, 'text_answer': value}, None
 
 
+def _survey_recipients(event, org):
+    """Attendees with a ticket order for `event` who have NOT yet been sent a
+    survey invitation. Single source of truth for the count modal and send_survey."""
+    existing_customer_ids = SurveyInvitation.objects.filter(
+        event=event
+    ).values_list('customer_id', flat=True)
+    return Customer.objects.filter(
+        ticket_orders__event=event, organization=org
+    ).distinct().exclude(id__in=existing_customer_ids)
+
+
+@login_required
+@require_org
+@require_host
+def survey_recipient_count(request, event_id):
+    """Count of attendees who would receive the survey if sent now. GET, JSON."""
+    org = get_organization(request)
+    event = get_object_or_404(Event.objects.filter(organization=org), id=event_id)
+    return JsonResponse({'count': _survey_recipients(event, org).count()})
+
+
 @login_required
 @require_org
 @require_host
@@ -9211,13 +9232,7 @@ def send_survey(request, event_id):
     event = get_object_or_404(Event.objects.filter(organization=org), id=event_id)
 
     # Get attendees who don't already have an invitation for this event
-    existing_customer_ids = SurveyInvitation.objects.filter(
-        event=event
-    ).values_list('customer_id', flat=True)
-
-    attendees = Customer.objects.filter(
-        ticket_orders__event=event, organization=org
-    ).distinct().exclude(id__in=existing_customer_ids)
+    attendees = _survey_recipients(event, org)
 
     if not attendees.exists():
         messages.info(request, "All attendees have already been sent a survey for this event.")
