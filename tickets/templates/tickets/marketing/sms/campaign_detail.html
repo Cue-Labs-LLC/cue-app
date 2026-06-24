@@ -49,7 +49,17 @@
     <div class="card-body">
         <div class="text-muted small mb-1">
             Message &middot; to {{ audience_summary }}
-            {% if campaign.event %}&middot; <a href="{% url 'tickets:event_detail' campaign.event.id %}"><i class="bi bi-ticket-perforated"></i> {{ campaign.event.name }}</a>{% endif %}
+            {% if campaign.event %}&middot; <a href="{% url 'tickets:event_detail' campaign.event.id %}"><i class="bi bi-ticket-perforated"></i> {{ campaign.event.name }}</a>
+            <button type="button" class="btn btn-link btn-sm p-0 ms-1 align-baseline"
+                    data-bs-toggle="modal" data-bs-target="#linkEventModal"
+                    data-campaign-pk="{{ campaign.id }}" data-campaign-name="{{ campaign.name }}"
+                    data-current-event="{{ campaign.event.id }}" data-next="{{ request.get_full_path }}">Change</button>
+            {% else %}&middot;
+            <button type="button" class="btn btn-link btn-sm p-0 align-baseline"
+                    data-bs-toggle="modal" data-bs-target="#linkEventModal"
+                    data-campaign-pk="{{ campaign.id }}" data-campaign-name="{{ campaign.name }}"
+                    data-current-event="" data-next="{{ request.get_full_path }}"><i class="bi bi-link-45deg"></i> Link to event</button>
+            {% endif %}
         </div>
         <div>{{ campaign.body|linebreaksbr }}</div>
         {% if campaign.link_url %}<div class="mt-2 small"><i class="bi bi-link-45deg"></i> {{ campaign.link_url }}</div>{% endif %}
@@ -95,4 +105,6 @@
     {% if page_obj.has_next %}<li class="page-item"><a class="page-link" href="?page={{ page_obj.next_page_number }}">Next</a></li>{% endif %}
 </ul></nav>
 {% endif %}
+
+{% include 'tickets/marketing/sms/_link_event_modal.html' %}
 {% endblock %}

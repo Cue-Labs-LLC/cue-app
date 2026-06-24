@@ -2986,6 +2986,89 @@ class SMSBroadcastAudienceTests(TestCase):
         self.assertEqual(response.context['selected_market'], '')
 
 
+class SMSCampaignLinkEventTests(TestCase):
+    """Linking an already-sent SMS campaign to an event (and clearing it)."""
+
+    def setUp(self):
+        from .models import SMSCampaign
+        self.client = Client()
+        self.org = Organization.objects.create(
+            name='Link Org', slug='link-org', sms_marketing_enabled=True,
+        )
+        self.user = User.objects.create_user(
+            username='linkhost', email='link@test.com', password='testpass123',
+        )
+        UserProfile.objects.create(
+            user=self.user, organization=self.org, org_role=UserProfile.OrgRole.OWNER,
+        )
+        self.client.login(username='link@test.com', password='testpass123')
+        self.client.get(reverse('tickets:home'))  # warm org cache
+
+        self.venue = Venue.objects.create(organization=self.org, name='Echo', city='Austin')
+        self.event = Event.objects.create(
+            organization=self.org, name='Linkable Show', venue=self.venue,
+            start_date=date(2026, 6, 1),
+        )
+        self.campaign = SMSCampaign.objects.create(
+            organization=self.org, name='Sent Blast', body='Tickets!',
+            status=SMSCampaign.Status.SENT, sent_at=timezone.now() - timedelta(days=1),
+        )
+        self.url = reverse('tickets:sms_campaign_link_event', args=[self.campaign.id])
+
+    def test_links_campaign_to_event(self):
+        response = self.client.post(self.url, {'event': str(self.event.id)})
+        self.assertEqual(response.status_code, 302)
+        self.campaign.refresh_from_db()
+        self.assertEqual(self.campaign.event_id, self.event.id)
+        # Detail page (with the picker modal) renders and shows the linked event.
+        detail = self.client.get(
+            reverse('tickets:sms_campaign_detail', args=[self.campaign.id])
+        )
+        self.assertEqual(detail.status_code, 200)
+        self.assertContains(detail, 'Linkable Show')
+        self.assertContains(detail, 'linkEventModal')
+
+    def test_list_page_renders_picker(self):
+        response = self.client.get(reverse('tickets:sms_campaign_list'))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'linkEventModal')
+        self.assertContains(response, 'Link to event')
+        # The partial's leading comment must not leak into the rendered page.
+        self.assertNotContains(response, 'Requires `link_events`')
+
+    def test_unlinks_when_event_blank(self):
+        self.campaign.event = self.event
+        self.campaign.save(update_fields=['event'])
+
+        response = self.client.post(self.url, {'event': ''})
+        self.assertEqual(response.status_code, 302)
+        self.campaign.refresh_from_db()
+        self.assertIsNone(self.campaign.event_id)
+
+    def test_honors_safe_next_redirect(self):
+        detail = reverse('tickets:sms_campaign_detail', args=[self.campaign.id])
+        response = self.client.post(self.url, {'event': str(self.event.id), 'next': detail})
+        self.assertRedirects(response, detail, fetch_redirect_response=False)
+
+    def test_cannot_link_event_from_another_org(self):
+        other_org = Organization.objects.create(name='Other Org', slug='other-org')
+        other_venue = Venue.objects.create(organization=other_org, name='Far', city='Reno')
+        other_event = Event.objects.create(
+            organization=other_org, name='Foreign Show', venue=other_venue,
+            start_date=date(2026, 7, 1),
+        )
+        response = self.client.post(self.url, {'event': str(other_event.id)})
+        self.assertEqual(response.status_code, 404)
+        self.campaign.refresh_from_db()
+        self.assertIsNone(self.campaign.event_id)
+
+    def test_feature_gate_blocks_disabled_org(self):
+        self.org.sms_marketing_enabled = False
+        self.org.save(update_fields=['sms_marketing_enabled'])
+        response = self.client.post(self.url, {'event': str(self.event.id)})
+        self.assertEqual(response.status_code, 404)
+
+
 class EventCachedStatsTest(TestCase):
     """Tests for Event cached stat fields and net_revenue calculation."""
 
