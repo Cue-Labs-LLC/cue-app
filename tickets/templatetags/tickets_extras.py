@@ -13,6 +13,16 @@ def get_item(d, key):
     return d.get(key, "secondary")
 
 
+@register.filter
+def getlist(querydict, key):
+    """Return querydict.getlist(key) ([] if absent / not a QueryDict).
+    Used to re-check survey inputs from request.POST on a re-rendered form."""
+    try:
+        return querydict.getlist(key)
+    except AttributeError:
+        return []
+
+
 # Single source of truth for the CustomerTag / LoyaltyTier color -> Bootstrap
 # badge class mapping (the two share the same 6-color choice set).
 _BADGE_CLASSES = {
