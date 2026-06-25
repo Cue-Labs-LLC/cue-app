@@ -9791,8 +9791,8 @@ def survey_reorder(request, event_id=None):
 
 class _PreviewOption:
     """Stand-in mimicking SurveyQuestionOption for rendering survey_form.html."""
-    def __init__(self, idx, label):
-        self.id = f"opt{idx}"
+    def __init__(self, q_idx, opt_idx, label):
+        self.id = f"q{q_idx}o{opt_idx}"
         self.label = label
 
 
@@ -9812,7 +9812,7 @@ class _PreviewQuestion:
         self.question_type = qtype
         self.is_required = required
         self.options = _PreviewOptionManager(
-            [_PreviewOption(j, lbl) for j, lbl in enumerate(labels)]
+            [_PreviewOption(idx, j, lbl) for j, lbl in enumerate(labels)]
         )
 
 
