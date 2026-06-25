@@ -160,6 +160,7 @@ urlpatterns = [
     path('surveys/builder/<uuid:question_id>/delete/', views.survey_question_delete, name='survey_question_delete'),
     path('surveys/builder/reorder/', views.survey_reorder, name='survey_reorder'),
     path('surveys/builder/email-subject/', views.survey_email_subject_save, name='survey_email_subject_save'),
+    path('surveys/builder/send-schedule/', views.survey_schedule_save, name='survey_schedule_save'),
     path('surveys/builder/send-test/', views.survey_send_test_email, name='survey_send_test_email'),
     # Survey builder — per-event (same views, event scope)
     path('events/<uuid:event_id>/survey/builder/', views.survey_builder, name='event_survey_builder'),
@@ -171,6 +172,7 @@ urlpatterns = [
     path('events/<uuid:event_id>/survey/<uuid:question_id>/delete/', views.survey_question_delete, name='event_survey_question_delete'),
     path('events/<uuid:event_id>/survey/reorder/', views.survey_reorder, name='event_survey_reorder'),
     path('events/<uuid:event_id>/survey/email-subject/', views.survey_email_subject_save, name='event_survey_email_subject_save'),
+    path('events/<uuid:event_id>/survey/send-schedule/', views.survey_schedule_save, name='event_survey_schedule_save'),
     path('events/<uuid:event_id>/survey/send-test/', views.survey_send_test_email, name='event_survey_send_test_email'),
 
     # Events
@@ -200,7 +202,9 @@ urlpatterns = [
     path('events/<uuid:event_id>/end-sales/', views.event_end_sales, name='event_end_sales'),
     path('events/<uuid:event_id>/cancel/', views.event_cancel, name='event_cancel'),
     path('events/<uuid:event_id>/send-survey/', views.send_survey, name='send_survey'),
+    path('events/<uuid:event_id>/cancel-scheduled-survey/', views.cancel_scheduled_survey, name='cancel_scheduled_survey'),
     path('events/<uuid:event_id>/survey-recipient-count/', views.survey_recipient_count, name='survey_recipient_count'),
+    path('events/<uuid:event_id>/survey-schedule-preview/', views.survey_schedule_preview, name='survey_schedule_preview'),
     path('events/<uuid:event_id>/meta-ads/match/', views.event_meta_ads_match, name='event_meta_ads_match'),
     path('events/<uuid:event_id>/meta-ads/apply/', views.event_meta_ads_apply, name='event_meta_ads_apply'),
     path('events/<uuid:event_id>/meta-ads/<uuid:expense_id>/refresh/', views.event_meta_ads_refresh, name='event_meta_ads_refresh'),

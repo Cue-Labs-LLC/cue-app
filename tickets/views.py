@@ -31,7 +31,7 @@ from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
 from django.db import connection, IntegrityError, transaction
 from django.utils import timezone as django_tz
-from django.utils.dateparse import parse_date, parse_datetime
+from django.utils.dateparse import parse_date, parse_datetime, parse_time
 from django.utils.http import url_has_allowed_host_and_scheme
 from django.utils.text import slugify
 
@@ -41,7 +41,7 @@ from .models import (
     CSVFormat, UploadedFile, Customer, CustomerTag, Event, EventExpense, EventEmailCampaign, EventSMSCampaign, EventTalent, TicketOrder, Ticket, Venue,
     CustomField, CustomFieldOption, EventCustomFieldValue, IncomeSource, EventIncome,
     SurveyQuestion, SurveyQuestionOption, SurveyInvitation, SurveyResponse, SurveyAnswer, SurveyAnswerOption,
-    DEFAULT_SURVEY_SUBJECT,
+    DEFAULT_SURVEY_SUBJECT, SURVEY_SEND_OFFSET_CHOICES,
     PipedreamCalendarConnection, OrganizationAPIKey,
     SaleableTicketType, SaleableTicketTypeTier, StripeCheckoutSession, Payout, PromoCode,
     ExternalSurveyUpload, ExternalSurveyResponse, TypeformFormSubscription, EventDailyPageView,
@@ -4080,6 +4080,10 @@ def _compute_event_stats(event):
     # Survey results — internal (SurveyResponse/SurveyAnswer)
     survey_invitations_count = SurveyInvitation.objects.filter(event=event).count()
     survey_responses_count = SurveyResponse.objects.filter(event=event).count()
+    # Earliest pending scheduled send (None if nothing is scheduled / all sent).
+    survey_scheduled_send_at = SurveyInvitation.objects.filter(
+        event=event, sent_at__isnull=True, scheduled_send_at__isnull=False,
+    ).aggregate(earliest=Min('scheduled_send_at'))['earliest']
 
     star_avg = None
     int_nps_total = int_promoters = int_passives = int_detractors = 0
@@ -4322,6 +4326,7 @@ def _compute_event_stats(event):
         'page_views_over_time': page_views_over_time,
         'survey_invitations_count': survey_invitations_count,
         'survey_responses_count': survey_responses_count,
+        'survey_scheduled_send_at': survey_scheduled_send_at,
         'external_survey_responses_count': ext_count,
         'survey_total_response_count': survey_total_response_count,
         'survey_results': survey_results,
@@ -4944,6 +4949,35 @@ def event_detail(request, event_id):
     saleable_ticket_types_list = stats['saleable_ticket_types_list']
     survey_invitations_count = stats['survey_invitations_count']
     survey_responses_count = stats['survey_responses_count']
+    survey_scheduled_send_at = stats['survey_scheduled_send_at']
+    survey_scheduled_send_display = (
+        _format_survey_send_time(event, survey_scheduled_send_at)
+        if survey_scheduled_send_at else None
+    )
+    # Resolved send schedule (event override → org default) shown read-only in the
+    # Send-survey dialog and as the surveys-tab "Auto-send" summary. The schedule
+    # itself is configured in the survey builder, not here.
+    _resolved_schedule = event.resolved_survey_schedule()
+    _schedule_send_at_display = None
+    _schedule_is_past = False
+    if _resolved_schedule:
+        try:
+            _schedule_dt = _compute_survey_send_at(
+                event, _resolved_schedule['offset_type'], _resolved_schedule['offset_value'],
+                _resolved_schedule['time_of_day'], _resolved_schedule.get('anchor', 'end'),
+            )
+            _schedule_is_past = _schedule_dt <= django_tz.now()
+            _schedule_send_at_display = _format_survey_send_time(event, _schedule_dt)
+        except ValueError:
+            pass
+    survey_schedule_resolved = {
+        'has_schedule': _resolved_schedule is not None,
+        'description': _describe_survey_schedule(_resolved_schedule),
+        'send_at_display': _schedule_send_at_display,
+        'is_past': _schedule_is_past,
+        # Schedule can actually be used only if it computes to a future time.
+        'can_schedule': bool(_schedule_send_at_display) and not _schedule_is_past,
+    }
     external_survey_responses_count = stats['external_survey_responses_count']
     survey_total_response_count = stats['survey_total_response_count']
     survey_results = stats['survey_results']
@@ -5137,6 +5171,9 @@ def event_detail(request, event_id):
         'org_has_custom_fields': bool(org_custom_fields),
         'survey_invitations_count': survey_invitations_count,
         'survey_responses_count': survey_responses_count,
+        'survey_scheduled_send_at': survey_scheduled_send_at,
+        'survey_scheduled_send_display': survey_scheduled_send_display,
+        'survey_schedule_resolved': survey_schedule_resolved,
         'external_survey_responses_count': external_survey_responses_count,
         'survey_total_response_count': survey_total_response_count,
         'survey_results': survey_results,
@@ -9211,6 +9248,52 @@ def _survey_recipients(event, org):
     ).distinct().exclude(id__in=existing_customer_ids)
 
 
+def _event_tz(event):
+    """ZoneInfo for the event's timezone, falling back to Pacific on bad data."""
+    try:
+        return ZoneInfo(event.timezone)
+    except (ZoneInfoNotFoundError, ValueError):
+        return ZoneInfo('America/Los_Angeles')
+
+
+def _compute_survey_send_at(event, offset_type, offset_value, time_of_day, anchor='end'):
+    """Absolute UTC datetime to send the survey, from an offset relative to the
+    event's start or end. Raises ValueError with a user-facing message on bad input.
+
+    anchor 'end' (default) -> measured from event end; 'start' -> from event start
+    offset_type 'hours' -> anchor + N hours
+    offset_type 'days'  -> N days after the anchor date, at time_of_day (event tz)
+    """
+    try:
+        value = int(offset_value)
+    except (TypeError, ValueError):
+        raise ValueError("Enter a whole number for the offset.")
+    if value < 0:
+        raise ValueError("The offset can't be negative.")
+
+    anchor_dt = (event.start_datetime() if anchor == 'start'
+                 else event.end_datetime())  # aware, in the event's timezone
+
+    if offset_type == 'hours':
+        send_local = anchor_dt + timedelta(hours=value)
+    elif offset_type == 'days':
+        if not isinstance(time_of_day, time):
+            raise ValueError("Pick a time of day to send.")
+        send_local = datetime.combine(
+            anchor_dt.date() + timedelta(days=value), time_of_day, tzinfo=anchor_dt.tzinfo,
+        )
+    else:
+        raise ValueError("Choose how to schedule the survey.")
+
+    return send_local.astimezone(ZoneInfo('UTC'))
+
+
+def _format_survey_send_time(event, dt_utc):
+    """Human-readable send time in the event's timezone, e.g. 'Jun 27, 2026 at 6:00 PM PDT'."""
+    local = dt_utc.astimezone(_event_tz(event))
+    return local.strftime('%b %d, %Y at %-I:%M %p %Z')
+
+
 @login_required
 @require_org
 @require_host
@@ -9224,6 +9307,38 @@ def survey_recipient_count(request, event_id):
 @login_required
 @require_org
 @require_host
+def survey_schedule_preview(request, event_id):
+    """Preview the absolute send time for a relative survey-send offset. GET, JSON.
+
+    Powers the live "Survey will send: …" line in the send modal so the host sees
+    exactly what the scheduled POST would compute.
+    """
+    org = get_organization(request)
+    event = get_object_or_404(Event.objects.filter(organization=org), id=event_id)
+
+    time_of_day = parse_time(request.GET.get('time_of_day') or '')
+    try:
+        send_at = _compute_survey_send_at(
+            event,
+            request.GET.get('offset_type'),
+            request.GET.get('offset_value'),
+            time_of_day,
+            request.GET.get('anchor') or 'end',
+        )
+    except ValueError as exc:
+        return JsonResponse({'valid': False, 'error': str(exc)})
+
+    if send_at <= django_tz.now():
+        return JsonResponse({
+            'valid': False,
+            'error': 'That works out to a time in the past — pick a larger offset.',
+        })
+    return JsonResponse({'valid': True, 'display': _format_survey_send_time(event, send_at)})
+
+
+@login_required
+@require_org
+@require_host
 def send_survey(request, event_id):
     """Create survey invitations and dispatch email task. POST only."""
     if request.method != 'POST':
@@ -9231,6 +9346,33 @@ def send_survey(request, event_id):
 
     org = get_organization(request)
     event = get_object_or_404(Event.objects.filter(organization=org), id=event_id)
+
+    # Resolve the send time. send_mode 'schedule' uses the event's resolved
+    # schedule (configured in the survey builder); anything else sends now.
+    scheduled_send_at = None
+    if request.POST.get('send_mode') == 'schedule':
+        schedule = event.resolved_survey_schedule()
+        if not schedule:
+            messages.error(
+                request,
+                "No automatic send time is set for this event. Choose Send now, or "
+                "set a schedule in the survey builder.",
+            )
+            return redirect('tickets:event_detail', event_id=event_id)
+        try:
+            scheduled_send_at = _compute_survey_send_at(
+                event, schedule['offset_type'], schedule['offset_value'],
+                schedule['time_of_day'], schedule.get('anchor', 'end'),
+            )
+        except ValueError as exc:
+            messages.error(request, str(exc))
+            return redirect('tickets:event_detail', event_id=event_id)
+        if scheduled_send_at <= django_tz.now():
+            messages.error(
+                request,
+                "That schedule works out to a time in the past — pick a larger offset.",
+            )
+            return redirect('tickets:event_detail', event_id=event_id)
 
     # Get attendees who don't already have an invitation for this event
     attendees = _survey_recipients(event, org)
@@ -9252,20 +9394,59 @@ def send_survey(request, event_id):
             customer=customer,
             organization=org,
             email=customer.email,
+            scheduled_send_at=scheduled_send_at,
         ))
     SurveyInvitation.objects.bulk_create(invitations)
     # bulk_create bypasses post_save signals — invalidate manually
     django_cache.delete(_event_stats_cache_key(event.id))
     _invalidate_event_upload_stats_cache(event.id)
 
-    # Dispatch Celery task
-    from .tasks import send_survey_emails_task
-    send_survey_emails_task.delay(str(event_id), str(org.id))
+    if scheduled_send_at is not None:
+        # Scheduled: the send_due_survey_invitations cron picks these up when due.
+        messages.success(
+            request,
+            f"Survey scheduled for {len(invitations)} attendee(s) — sending "
+            f"{_format_survey_send_time(event, scheduled_send_at)}."
+        )
+    else:
+        # Send now: dispatch the Celery task immediately.
+        from .tasks import send_survey_emails_task
+        send_survey_emails_task.delay(str(event_id), str(org.id))
+        messages.success(
+            request,
+            f"Survey invitations created for {len(invitations)} attendee(s). Emails are being sent."
+        )
+    return redirect('tickets:event_detail', event_id=event_id)
 
-    messages.success(
-        request,
-        f"Survey invitations created for {len(invitations)} attendee(s). Emails are being sent."
-    )
+
+@login_required
+@require_org
+@require_host
+def cancel_scheduled_survey(request, event_id):
+    """Cancel a scheduled (not-yet-sent) survey send. POST only.
+
+    Deletes the pending scheduled invitations, which also unlocks the survey
+    builder and restores the recipient pool so the host can reschedule or edit.
+    """
+    if request.method != 'POST':
+        return redirect('tickets:event_detail', event_id=event_id)
+
+    org = get_organization(request)
+    event = get_object_or_404(Event.objects.filter(organization=org), id=event_id)
+
+    deleted, _ = SurveyInvitation.objects.filter(
+        event=event,
+        organization=org,
+        sent_at__isnull=True,
+        scheduled_send_at__isnull=False,
+    ).delete()
+    django_cache.delete(_event_stats_cache_key(event.id))
+    _invalidate_event_upload_stats_cache(event.id)
+
+    if deleted:
+        messages.success(request, "Scheduled survey send canceled.")
+    else:
+        messages.info(request, "There was no scheduled survey send to cancel.")
     return redirect('tickets:event_detail', event_id=event_id)
 
 
@@ -9467,6 +9648,24 @@ def survey_builder(request, event_id=None):
         'survey_send_test_url': (
             reverse('tickets:event_survey_send_test_email', args=[event.id]) if event
             else reverse('tickets:survey_send_test_email')
+        ),
+        # Default send schedule (org default / per-event override), mirroring subject.
+        'survey_send_offset_type': (event if event else org).survey_send_offset_type,
+        'survey_send_offset_value': (event if event else org).survey_send_offset_value,
+        'survey_send_time_of_day': (event if event else org).survey_send_time_of_day,
+        'survey_send_anchor': (event if event else org).survey_send_anchor or 'end',
+        'survey_send_offset_choices': SURVEY_SEND_OFFSET_CHOICES,
+        # Event scope: whether this event has its own schedule (vs inheriting the default).
+        'survey_schedule_overridden': bool(event and event.survey_send_offset_type),
+        'survey_schedule_inherited': _describe_survey_schedule(
+            {'offset_type': org.survey_send_offset_type,
+             'offset_value': org.survey_send_offset_value,
+             'time_of_day': org.survey_send_time_of_day,
+             'anchor': org.survey_send_anchor or 'end'} if event else None
+        ),
+        'survey_schedule_save_url': (
+            reverse('tickets:event_survey_schedule_save', args=[event.id]) if event
+            else reverse('tickets:survey_schedule_save')
         ),
     }
     if event and not questions:
@@ -9730,6 +9929,87 @@ def survey_email_subject_save(request, event_id=None):
         org.survey_email_subject = subject
         org.save(update_fields=['survey_email_subject'])
     messages.success(request, "Survey email subject saved.")
+    return _builder_redirect(event)
+
+
+def _describe_survey_schedule(schedule):
+    """Human-readable description of a resolved survey schedule dict (or None).
+
+    e.g. "2 days after the event ends at 9:00 AM", "3 hours after the event ends",
+    or "Send manually" when no automatic schedule is configured.
+    """
+    if not schedule or not (schedule.get('offset_type') or '').strip():
+        return "Send manually"
+    value = schedule.get('offset_value')
+    if value is None:
+        return "Send manually"
+    anchor_word = 'starts' if schedule.get('anchor') == 'start' else 'ends'
+    if schedule['offset_type'] == 'hours':
+        unit = 'hour' if value == 1 else 'hours'
+        return f"{value} {unit} after the event {anchor_word}"
+    unit = 'day' if value == 1 else 'days'
+    tod = schedule.get('time_of_day')
+    when = tod.strftime('%-I:%M %p') if tod else '9:00 AM'
+    return f"{value} {unit} after the event {anchor_word} at {when}"
+
+
+@login_required
+@require_org
+@require_host
+def survey_schedule_save(request, event_id=None):
+    """Save the default survey send schedule for the org template or one event.
+
+    Mirrors survey_email_subject_save: an org-level default with a per-event
+    override. A blank offset_type clears the schedule (= inherit / send now).
+    POST only.
+    """
+    org, event = _survey_scope(request, event_id)
+    if request.method != 'POST':
+        return _builder_redirect(event)
+    if event and _survey_locked(event):
+        messages.error(request, "This survey has been sent and can no longer be edited.")
+        return _builder_redirect(event)
+
+    offset_type = (request.POST.get('offset_type') or '').strip()
+    target = event if event else org
+
+    schedule_fields = [
+        'survey_send_offset_type', 'survey_send_offset_value',
+        'survey_send_time_of_day', 'survey_send_anchor',
+    ]
+
+    if offset_type not in ('hours', 'days'):
+        # Clear the schedule -> send immediately (event) / no org default.
+        target.survey_send_offset_type = ''
+        target.survey_send_offset_value = None
+        target.survey_send_time_of_day = None
+        target.survey_send_anchor = ''
+        target.save(update_fields=schedule_fields)
+        messages.success(request, "Survey send time saved.")
+        return _builder_redirect(event)
+
+    try:
+        value = int(request.POST.get('offset_value'))
+        if value < 0:
+            raise ValueError
+    except (TypeError, ValueError):
+        messages.error(request, "Enter a whole number for the send-time offset.")
+        return _builder_redirect(event)
+
+    time_of_day = None
+    if offset_type == 'days':
+        time_of_day = parse_time(request.POST.get('time_of_day') or '')
+        if time_of_day is None:
+            messages.error(request, "Pick a time of day to send.")
+            return _builder_redirect(event)
+
+    anchor = 'start' if request.POST.get('anchor') == 'start' else 'end'
+    target.survey_send_offset_type = offset_type
+    target.survey_send_offset_value = value
+    target.survey_send_time_of_day = time_of_day
+    target.survey_send_anchor = anchor
+    target.save(update_fields=schedule_fields)
+    messages.success(request, "Survey send time saved.")
     return _builder_redirect(event)
 
 

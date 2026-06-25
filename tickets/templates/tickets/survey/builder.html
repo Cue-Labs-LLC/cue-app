@@ -143,6 +143,123 @@
   </div>
 </div>
 
+{% comment %}
+  Send time. Org scope: the org-wide DEFAULT (Send manually / Schedule
+  automatically). Event scope: this event either USES THE DEFAULT or sets a
+  CUSTOM schedule.
+{% endcomment %}
+<div class="card mb-3 sched-card">
+  <div class="card-body">
+    <form method="post" action="{{ survey_schedule_save_url }}" id="survey-schedule-form">
+      {% csrf_token %}
+      {% if event %}
+        <label class="form-label small fw-medium mb-1">Send time for this event</label>
+        <div class="form-text mb-2">When this event's survey goes out automatically.</div>
+        <div class="btn-group btn-group-sm w-100 mb-3" role="group" aria-label="Send time">
+          <input type="radio" class="btn-check" name="sched_mode" id="sched-default" value="default"
+                 {% if not survey_schedule_overridden %}checked{% endif %} {% if locked %}disabled{% endif %}>
+          <label class="btn btn-outline-primary" for="sched-default">Use the default</label>
+          <input type="radio" class="btn-check" name="sched_mode" id="sched-custom" value="custom"
+                 {% if survey_schedule_overridden %}checked{% endif %} {% if locked %}disabled{% endif %}>
+          <label class="btn btn-outline-primary" for="sched-custom">Custom for this event</label>
+        </div>
+        <div id="sched-default-note" class="d-flex align-items-center gap-2 mb-2 text-body-secondary small">
+          <i class="bi bi-arrow-down-left-circle"></i>
+          <span>Default: <strong>{{ survey_schedule_inherited }}</strong>.
+            <a href="{% url 'tickets:survey_builder' %}">Change the default</a>.</span>
+        </div>
+      {% else %}
+        <label class="form-label small fw-medium mb-1">Default send time</label>
+        <div class="form-text mb-2">
+          When surveys go out automatically. Applies to every event unless the event
+          sets its own. Hosts can always send now from an event.
+        </div>
+        <div class="btn-group btn-group-sm w-100 mb-3" role="group" aria-label="Default send time">
+          <input type="radio" class="btn-check" name="sched_mode" id="sched-manual" value="manual"
+                 {% if not survey_send_offset_type %}checked{% endif %} {% if locked %}disabled{% endif %}>
+          <label class="btn btn-outline-primary" for="sched-manual">Send manually</label>
+          <input type="radio" class="btn-check" name="sched_mode" id="sched-auto" value="auto"
+                 {% if survey_send_offset_type %}checked{% endif %} {% if locked %}disabled{% endif %}>
+          <label class="btn btn-outline-primary" for="sched-auto">Schedule automatically</label>
+        </div>
+      {% endif %}
+
+      {# Shared schedule fields — shown only in 'custom' (event) / 'auto' (org) mode. #}
+      <div id="sched-fields">
+        <div class="row g-2 align-items-end">
+          <div class="col-sm-3">
+            <label class="form-label small mb-1" for="survey-offset-value">Amount</label>
+            <input type="number" min="0" step="1" class="form-control" name="offset_value"
+                   id="survey-offset-value" value="{{ survey_send_offset_value|default:'1' }}"
+                   {% if locked %}disabled{% endif %}>
+          </div>
+          <div class="col-sm-3">
+            <label class="form-label small mb-1" for="survey-offset-type-unit">Unit</label>
+            <select class="form-select" name="offset_type" id="survey-offset-type-unit" {% if locked %}disabled{% endif %}>
+              {% for value, label in survey_send_offset_choices %}
+              <option value="{{ value }}"
+                {% if survey_send_offset_type == value or not survey_send_offset_type and value == 'days' %}selected{% endif %}>{{ label }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div class="col-sm-6" id="survey-anchor-wrap">
+            <label class="form-label small mb-1" for="survey-anchor">Relative to</label>
+            <select class="form-select" name="anchor" id="survey-anchor" {% if locked %}disabled{% endif %}>
+              <option value="end" {% if survey_send_anchor != 'start' %}selected{% endif %}>the event end</option>
+              <option value="start" {% if survey_send_anchor == 'start' %}selected{% endif %}>the event start</option>
+            </select>
+          </div>
+          <div class="col-sm-4" id="survey-time-of-day-wrap">
+            <label class="form-label small mb-1" for="survey-time-of-day">Time of day</label>
+            <input type="time" class="form-control" name="time_of_day" id="survey-time-of-day"
+                   value="{{ survey_send_time_of_day|time:'H:i'|default:'09:00' }}"
+                   {% if locked %}disabled{% endif %}>
+          </div>
+        </div>
+      </div>
+      {% if not locked %}
+      <button type="submit" class="btn btn-outline-primary btn-sm mt-3">Save send time</button>
+      {% endif %}
+    </form>
+  </div>
+</div>
+<script>
+// Send-time card: reveal the schedule fields only in the active mode, and the
+// time-of-day input only for "days". When the host picks "Use the default" /
+// "Send manually", clear the unit so the POST stores a blank offset_type.
+(function() {
+  var form = document.getElementById('survey-schedule-form');
+  if (!form) return;
+  var modes = form.querySelectorAll('input[name="sched_mode"]');
+  var fields = document.getElementById('sched-fields');
+  var defaultNote = document.getElementById('sched-default-note');
+  var unit = document.getElementById('survey-offset-type-unit');
+  var todWrap = document.getElementById('survey-time-of-day-wrap');
+  // Modes that reveal the schedule fields.
+  var ACTIVE = {custom: true, auto: true};
+
+  function selectedMode() {
+    var m = form.querySelector('input[name="sched_mode"]:checked');
+    return m ? m.value : '';
+  }
+  function syncUnit() {
+    todWrap.style.display = (unit.value === 'days') ? '' : 'none';
+  }
+  function sync() {
+    var active = ACTIVE[selectedMode()];
+    fields.style.display = active ? '' : 'none';
+    if (defaultNote) defaultNote.style.display = active ? 'none' : '';
+    // In default/manual mode the schedule is cleared on save: drop the unit so
+    // the form posts a blank offset_type (= inherit / send manually).
+    unit.disabled = !active;
+    if (active) syncUnit();
+  }
+  modes.forEach(function(el){ el.addEventListener('change', sync); });
+  unit.addEventListener('change', syncUnit);
+  sync();
+})();
+</script>
+
 {% if event and not questions %}
 {# Event uses the org default — offer to customize, preview read-only. #}
 <div class="card mb-3">
