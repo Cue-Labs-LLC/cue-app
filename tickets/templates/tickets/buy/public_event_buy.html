@@ -1100,7 +1100,7 @@
     {% endwith %}
     {% endif %}
 
-    {% if not available_pairs and not locked_pairs and not coming_soon_types and not all_sold_out and not waitlisted_sold_out_types %}
+    {% if not available_pairs and not locked_pairs and not coming_soon_types and not all_sold_out and not waitlisted_sold_out_types and not sales_ended %}
     <div class="empty-state">
         <div style="font-size:2rem;margin-bottom:14px;opacity:0.2;">&#9711;</div>
         No tickets available
@@ -1109,9 +1109,11 @@
 
 </div>
 
-{% if available_pairs or locked_pairs or coming_soon_types or all_sold_out or waitlisted_sold_out_types %}
+{% if available_pairs or locked_pairs or coming_soon_types or all_sold_out or waitlisted_sold_out_types or sales_ended %}
 <div class="sticky-buy-bar">
-    {% if all_sold_out and not waitlisted_sold_out_types %}
+    {% if sales_ended %}
+    <button type="button" class="btn-buy" disabled>Sales Ended</button>
+    {% elif all_sold_out and not waitlisted_sold_out_types %}
     <button type="button" class="btn-buy" disabled>Sold Out</button>
     {% elif all_sold_out and waitlisted_sold_out_types and waitlist_feature_enabled %}
     <button type="button" class="btn-buy js-buy-trigger">
@@ -1124,6 +1126,7 @@
     {% endif %}
 </div>
 
+{% if not sales_ended %}
 <div class="modal fade" id="buyModal" tabindex="-1" aria-labelledby="buyModalLabel" aria-hidden="true">
   <div class="modal-dialog modal-dialog-scrollable" style="max-width:520px;max-height:min(720px, 85vh);">
     <div class="modal-content">
@@ -1331,6 +1334,7 @@
     </div>
   </div>
 </div>
+{% endif %}{# not sales_ended #}
 {% endif %}
 
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js" defer></script>

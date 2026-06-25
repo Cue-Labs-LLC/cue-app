@@ -10508,6 +10508,42 @@ def _extract_utm_params(request):
     return params
 
 
+def _event_social_proof(event):
+    """Build the public-page social proof: up to 6 distinct confirmed attendees + total count."""
+    _preview_orders = (
+        TicketOrder.objects
+        .filter(event=event, refunded_at__isnull=True, is_in_person=False)
+        .select_related('customer')
+        .order_by('-order_date')
+    )
+    _seen = set()
+    attendee_preview = []
+    for _order in _preview_orders[:50]:
+        if _order.customer_id not in _seen:
+            _seen.add(_order.customer_id)
+            _name = _order.customer.name or ''
+            _parts = _name.split()
+            if len(_parts) >= 2:
+                _initials = (_parts[0][0] + _parts[-1][0]).upper()
+            elif _parts:
+                _initials = _parts[0][:2].upper()
+            else:
+                _initials = '?'
+            attendee_preview.append({
+                'initials': _initials,
+                'first_name': _parts[0] if _parts else '',
+            })
+            if len(attendee_preview) >= 6:
+                break
+
+    attendee_count = Ticket.objects.filter(
+        ticket_order__event=event,
+        ticket_order__refunded_at__isnull=True,
+        ticket_order__is_in_person=False,
+    ).count()
+    return attendee_preview, attendee_count
+
+
 def public_event_buy(request, public_id):
     """Public ticket selector page. POST stores cart in session and redirects to checkout."""
     event = get_object_or_404(
@@ -10519,14 +10555,26 @@ def public_event_buy(request, public_id):
     if eff == EVENT_STATUS_DRAFT:
         raise Http404()
     if eff == EVENT_STATUS_ENDED:
-        return render(
-            request,
-            'tickets/buy/sales_ended.html',
-            {
-                'event': event,
-                **_build_public_event_preview_context(event, suffix='Ticket Sales Ended'),
-            },
-        )
+        attendee_preview, attendee_count = _event_social_proof(event)
+        return render(request, 'tickets/buy/public_event_buy.html', {
+            'event': event,
+            'sales_ended': True,
+            'form': None,
+            'available_pairs': [],
+            'locked_pairs': [],
+            'coming_soon_types': [],
+            'waitlisted_sold_out_types': [],
+            'waitlist_join_forms': {},
+            'already_on_waitlist': set(),
+            'all_sold_out': False,
+            'min_ticket_price': None,
+            'view_event_id': '',
+            'attendee_preview': attendee_preview,
+            'attendee_count': attendee_count,
+            'wl_held_tt_id': None,
+            'user_is_authenticated': request.user.is_authenticated,
+            **_build_public_event_preview_context(event, suffix='Ticket Sales Ended'),
+        })
     if eff == EVENT_STATUS_CANCELLED:
         return render(
             request,
@@ -10663,37 +10711,7 @@ def public_event_buy(request, public_id):
     min_ticket_price = min((tt.effective_price for tt in all_types), default=None)
 
     # Social proof: up to 6 distinct confirmed attendees + total ticket count
-    _preview_orders = (
-        TicketOrder.objects
-        .filter(event=event, refunded_at__isnull=True, is_in_person=False)
-        .select_related('customer')
-        .order_by('-order_date')
-    )
-    _seen = set()
-    attendee_preview = []
-    for _order in _preview_orders[:50]:
-        if _order.customer_id not in _seen:
-            _seen.add(_order.customer_id)
-            _name = _order.customer.name or ''
-            _parts = _name.split()
-            if len(_parts) >= 2:
-                _initials = (_parts[0][0] + _parts[-1][0]).upper()
-            elif _parts:
-                _initials = _parts[0][:2].upper()
-            else:
-                _initials = '?'
-            attendee_preview.append({
-                'initials': _initials,
-                'first_name': _parts[0] if _parts else '',
-            })
-            if len(attendee_preview) >= 6:
-                break
-
-    attendee_count = Ticket.objects.filter(
-        ticket_order__event=event,
-        ticket_order__refunded_at__isnull=True,
-        ticket_order__is_in_person=False,
-    ).count()
+    attendee_preview, attendee_count = _event_social_proof(event)
 
     # Sold-out ticket types that have waitlist enabled (for the "sold out" section)
     if wl_feature_on:
