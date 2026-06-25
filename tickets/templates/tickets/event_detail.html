@@ -2861,11 +2861,18 @@ if (document.readyState === 'loading') {
 })();
 </script>
 <script>
-(function() {
+// Activate the tab named by ?tab=<name> (or a legacy #tab-<name> hash) on load,
+// and keep the URL in sync as tabs change. Deferred to DOMContentLoaded so the
+// (defer-loaded) Bootstrap bundle has run and `bootstrap.Tab` is defined.
+function initEventDetailTabs() {
     var tabs = document.getElementById('eventDetailTabs');
-    if (!tabs) return;
+    if (!tabs || typeof bootstrap === 'undefined') return;
     var params = new URLSearchParams(window.location.search);
     var activeTab = params.get('tab');
+    // Fall back to a legacy #tab-<name> hash link (e.g. from older bookmarks).
+    if (!activeTab && window.location.hash.indexOf('#tab-') === 0) {
+        activeTab = window.location.hash.slice('#tab-'.length);
+    }
     if (activeTab) {
         var btn = tabs.querySelector('[data-bs-target="#tab-' + activeTab + '"]');
         if (btn) { new bootstrap.Tab(btn).show(); }
@@ -2879,7 +2886,12 @@ if (document.readyState === 'loading') {
         else { url.searchParams.set('tab', tabName); }
         history.replaceState(null, '', url.toString());
     });
-})();
+}
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', initEventDetailTabs);
+} else {
+    initEventDetailTabs();
+}
 </script>
 <script>
 // Customers tab: bulk-select buyers and tag them.

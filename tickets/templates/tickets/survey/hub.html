@@ -56,7 +56,7 @@
                         </td>
                         <td class="text-end">
                             <a href="{% url 'tickets:event_survey_builder' event.id %}" class="btn btn-sm btn-link text-decoration-none">Build</a>
-                            <a href="{% url 'tickets:event_detail' event.id %}#tab-surveys" class="btn btn-sm btn-link text-decoration-none">Results</a>
+                            <a href="{% url 'tickets:event_detail' event.id %}?tab=surveys" class="btn btn-sm btn-link text-decoration-none">Results</a>
                         </td>
                     </tr>
                     {% endfor %}

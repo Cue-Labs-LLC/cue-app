@@ -14763,3 +14763,72 @@ class DefaultSurveyScheduleTests(TestCase):
         )
 
 
+class SurveyHubTests(TestCase):
+    """Surveys hub: response counts (internal + external) and the Results link."""
+
+    def setUp(self):
+        self.client = Client()
+        self.org = Organization.objects.create(name='Hub Org', slug='hub-org')
+        self.user = User.objects.create_user(
+            username='hubuser', email='hub@test.com', password='testpass123',
+        )
+        UserProfile.objects.create(user=self.user, organization=self.org,
+                                   org_role=UserProfile.OrgRole.OWNER)
+        self.client.login(username='hub@test.com', password='testpass123')
+        self.client.get(reverse('tickets:home'))  # seed _org_id
+        self.venue = Venue.objects.create(organization=self.org, name='Venue', city='City')
+
+    def _event(self, name):
+        return Event.objects.create(
+            organization=self.org, name=name, venue=self.venue, start_date=date(2025, 8, 1),
+        )
+
+    def _hub_event(self, event_id):
+        resp = self.client.get(reverse('tickets:survey_hub'))
+        self.assertEqual(resp.status_code, 200)
+        return next(e for e in resp.context['events'] if e.id == event_id)
+
+    def _add_external(self, event, email):
+        upload = ExternalSurveyUpload.objects.create(
+            organization=self.org, filename='typeform.csv',
+            status=ExternalSurveyUpload.Status.COMPLETED,
+        )
+        ExternalSurveyResponse.objects.create(
+            organization=self.org, upload=upload, event=event,
+            responded_at=timezone.now(), email=email,
+            typeform_response_id='tf-' + email, raw_answers=[],
+        )
+
+    def _add_internal(self, event, email):
+        customer = Customer.objects.create(organization=self.org, email=email, name=email)
+        invitation = SurveyInvitation.objects.create(
+            organization=self.org, event=event, customer=customer, email=email,
+        )
+        SurveyResponse.objects.create(
+            organization=self.org, event=event, customer=customer, invitation=invitation,
+        )
+
+    def test_external_only_responses_are_counted(self):
+        event = self._event('External Only')
+        self._add_external(event, 'a@example.com')
+        self._add_external(event, 'b@example.com')
+        self.assertEqual(self._hub_event(event.id).response_count, 2)
+
+    def test_internal_and_external_are_summed(self):
+        event = self._event('Mixed')
+        self._add_internal(event, 'i@example.com')
+        self._add_external(event, 'e@example.com')
+        self.assertEqual(self._hub_event(event.id).response_count, 2)
+
+    def test_no_responses_counts_zero(self):
+        event = self._event('Empty')
+        self.assertEqual(self._hub_event(event.id).response_count, 0)
+
+    def test_results_link_uses_tab_query_param(self):
+        event = self._event('Linky')
+        self._add_external(event, 'x@example.com')
+        html = self.client.get(reverse('tickets:survey_hub')).content.decode()
+        self.assertIn('?tab=surveys', html)
+        self.assertNotIn('#tab-surveys', html)
+
+
