@@ -10080,12 +10080,23 @@ def event_survey_reset(request, event_id):
 def survey_hub(request):
     """Top-level Surveys landing: events with survey activity + links to builders."""
     org = get_organization(request)
+
+    def _per_event_count(model):
+        # Isolated per-row subquery (avoids join inflation across the multiple
+        # related tables we count here). See CLAUDE.md / event_list pattern.
+        return Coalesce(Subquery(
+            model.objects.filter(event=OuterRef('pk')).values('event')
+            .annotate(c=Count('id')).values('c')[:1],
+            output_field=models.IntegerField(),
+        ), 0)
+
     events = (
         Event.objects.filter(organization=org)
         .select_related('venue')
         .annotate(
-            response_count=Count('survey_responses', distinct=True),
-            invitation_count=Count('survey_invitations', distinct=True),
+            # Total responses = internal (SurveyResponse) + external (Typeform CSV).
+            response_count=_per_event_count(SurveyResponse) + _per_event_count(ExternalSurveyResponse),
+            invitation_count=_per_event_count(SurveyInvitation),
         )
         .order_by('-start_date', '-start_time')[:50]
     )
@@ -14790,7 +14801,7 @@ def event_survey_apply(request, event_id):
 
     if linked_count:
         messages.success(request, f'Linked {linked_count} survey response(s).')
-    return redirect(reverse('tickets:event_detail', args=[event.id]) + '#tab-surveys')
+    return redirect(reverse('tickets:event_detail', args=[event.id]) + '?tab=surveys')
 
 
 @login_required
@@ -14809,7 +14820,7 @@ def event_survey_unlink(request, event_id):
             django_cache.delete(_event_stats_cache_key(str(event.id)))
             _invalidate_event_upload_stats_cache(str(event.id))
             messages.success(request, 'Survey response unlinked.')
-    return redirect(reverse('tickets:event_detail', args=[event.id]) + '#tab-surveys')
+    return redirect(reverse('tickets:event_detail', args=[event.id]) + '?tab=surveys')
 
 
 @login_required
