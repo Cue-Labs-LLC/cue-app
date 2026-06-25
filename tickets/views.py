@@ -41,7 +41,7 @@ from .models import (
     CSVFormat, UploadedFile, Customer, CustomerTag, Event, EventExpense, EventEmailCampaign, EventSMSCampaign, EventTalent, TicketOrder, Ticket, Venue,
     CustomField, CustomFieldOption, EventCustomFieldValue, IncomeSource, EventIncome,
     SurveyQuestion, SurveyQuestionOption, SurveyInvitation, SurveyResponse, SurveyAnswer, SurveyAnswerOption,
-    DEFAULT_SURVEY_SUBJECT,
+    DEFAULT_SURVEY_SUBJECT, SURVEY_SEND_OFFSET_CHOICES,
     PipedreamCalendarConnection, OrganizationAPIKey,
     SaleableTicketType, SaleableTicketTypeTier, StripeCheckoutSession, Payout, PromoCode,
     ExternalSurveyUpload, ExternalSurveyResponse, TypeformFormSubscription, EventDailyPageView,
@@ -4954,6 +4954,16 @@ def event_detail(request, event_id):
         _format_survey_send_time(event, survey_scheduled_send_at)
         if survey_scheduled_send_at else None
     )
+    # Resolved default schedule (event override → org default) to pre-fill the
+    # Send-survey modal. Falls back to sane defaults when nothing is configured.
+    _resolved_schedule = event.resolved_survey_schedule()
+    survey_send_default = {
+        'has_default': _resolved_schedule is not None,
+        'offset_type': (_resolved_schedule or {}).get('offset_type') or 'days',
+        'offset_value': (_resolved_schedule or {}).get('offset_value') or 2,
+        'time_of_day': ((_resolved_schedule or {}).get('time_of_day').strftime('%H:%M')
+                        if (_resolved_schedule or {}).get('time_of_day') else '09:00'),
+    }
     external_survey_responses_count = stats['external_survey_responses_count']
     survey_total_response_count = stats['survey_total_response_count']
     survey_results = stats['survey_results']
@@ -5149,6 +5159,7 @@ def event_detail(request, event_id):
         'survey_responses_count': survey_responses_count,
         'survey_scheduled_send_at': survey_scheduled_send_at,
         'survey_scheduled_send_display': survey_scheduled_send_display,
+        'survey_send_default': survey_send_default,
         'external_survey_responses_count': external_survey_responses_count,
         'survey_total_response_count': survey_total_response_count,
         'survey_results': survey_results,
@@ -9323,12 +9334,17 @@ def send_survey(request, event_id):
     # an offset relative to the event end; anything else sends immediately.
     scheduled_send_at = None
     if request.POST.get('send_mode') == 'schedule':
+        # Use the posted offset, falling back to the event's resolved default
+        # schedule when the form omits a field.
+        default = event.resolved_survey_schedule() or {}
+        offset_type = request.POST.get('offset_type') or default.get('offset_type')
+        offset_value = request.POST.get('offset_value')
+        if offset_value in (None, ''):
+            offset_value = default.get('offset_value')
+        time_of_day = parse_time(request.POST.get('time_of_day') or '') or default.get('time_of_day')
         try:
             scheduled_send_at = _compute_survey_send_at(
-                event,
-                request.POST.get('offset_type'),
-                request.POST.get('offset_value'),
-                parse_time(request.POST.get('time_of_day') or ''),
+                event, offset_type, offset_value, time_of_day,
             )
         except ValueError as exc:
             messages.error(request, str(exc))
@@ -9615,6 +9631,20 @@ def survey_builder(request, event_id=None):
             reverse('tickets:event_survey_send_test_email', args=[event.id]) if event
             else reverse('tickets:survey_send_test_email')
         ),
+        # Default send schedule (org default / per-event override), mirroring subject.
+        'survey_send_offset_type': (event if event else org).survey_send_offset_type,
+        'survey_send_offset_value': (event if event else org).survey_send_offset_value,
+        'survey_send_time_of_day': (event if event else org).survey_send_time_of_day,
+        'survey_send_offset_choices': SURVEY_SEND_OFFSET_CHOICES,
+        'survey_schedule_inherited': _describe_survey_schedule(
+            {'offset_type': org.survey_send_offset_type,
+             'offset_value': org.survey_send_offset_value,
+             'time_of_day': org.survey_send_time_of_day} if event else None
+        ),
+        'survey_schedule_save_url': (
+            reverse('tickets:event_survey_schedule_save', args=[event.id]) if event
+            else reverse('tickets:survey_schedule_save')
+        ),
     }
     if event and not questions:
         context['effective_preview'] = list(_resolve_effective_questions(event))
@@ -9877,6 +9907,82 @@ def survey_email_subject_save(request, event_id=None):
         org.survey_email_subject = subject
         org.save(update_fields=['survey_email_subject'])
     messages.success(request, "Survey email subject saved.")
+    return _builder_redirect(event)
+
+
+def _describe_survey_schedule(schedule):
+    """Human-readable description of a resolved survey schedule dict (or None).
+
+    e.g. "2 days after the event ends at 9:00 AM", "3 hours after the event ends",
+    or "Send immediately" when no schedule is configured.
+    """
+    if not schedule or not (schedule.get('offset_type') or '').strip():
+        return "Send immediately"
+    value = schedule.get('offset_value')
+    if value is None:
+        return "Send immediately"
+    if schedule['offset_type'] == 'hours':
+        unit = 'hour' if value == 1 else 'hours'
+        return f"{value} {unit} after the event ends"
+    unit = 'day' if value == 1 else 'days'
+    tod = schedule.get('time_of_day')
+    when = tod.strftime('%-I:%M %p') if tod else '9:00 AM'
+    return f"{value} {unit} after the event ends at {when}"
+
+
+@login_required
+@require_org
+@require_host
+def survey_schedule_save(request, event_id=None):
+    """Save the default survey send schedule for the org template or one event.
+
+    Mirrors survey_email_subject_save: an org-level default with a per-event
+    override. A blank offset_type clears the schedule (= inherit / send now).
+    POST only.
+    """
+    org, event = _survey_scope(request, event_id)
+    if request.method != 'POST':
+        return _builder_redirect(event)
+    if event and _survey_locked(event):
+        messages.error(request, "This survey has been sent and can no longer be edited.")
+        return _builder_redirect(event)
+
+    offset_type = (request.POST.get('offset_type') or '').strip()
+    target = event if event else org
+
+    if offset_type not in ('hours', 'days'):
+        # Clear the schedule -> send immediately (event) / no org default.
+        target.survey_send_offset_type = ''
+        target.survey_send_offset_value = None
+        target.survey_send_time_of_day = None
+        target.save(update_fields=[
+            'survey_send_offset_type', 'survey_send_offset_value', 'survey_send_time_of_day',
+        ])
+        messages.success(request, "Survey send time saved.")
+        return _builder_redirect(event)
+
+    try:
+        value = int(request.POST.get('offset_value'))
+        if value < 0:
+            raise ValueError
+    except (TypeError, ValueError):
+        messages.error(request, "Enter a whole number for the send-time offset.")
+        return _builder_redirect(event)
+
+    time_of_day = None
+    if offset_type == 'days':
+        time_of_day = parse_time(request.POST.get('time_of_day') or '')
+        if time_of_day is None:
+            messages.error(request, "Pick a time of day to send.")
+            return _builder_redirect(event)
+
+    target.survey_send_offset_type = offset_type
+    target.survey_send_offset_value = value
+    target.survey_send_time_of_day = time_of_day
+    target.save(update_fields=[
+        'survey_send_offset_type', 'survey_send_offset_value', 'survey_send_time_of_day',
+    ])
+    messages.success(request, "Survey send time saved.")
     return _builder_redirect(event)
 
 

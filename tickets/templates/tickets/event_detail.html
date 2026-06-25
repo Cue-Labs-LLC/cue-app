@@ -2662,14 +2662,14 @@ document.addEventListener('DOMContentLoaded', function() {
               <div class="row g-2 align-items-end">
                 <div class="col-4">
                   <label for="ssOffsetValue" class="form-label small mb-1">Amount</label>
-                  <input type="number" min="0" step="1" value="2"
+                  <input type="number" min="0" step="1" value="{{ survey_send_default.offset_value }}"
                          class="form-control form-control-sm" name="offset_value" id="ssOffsetValue">
                 </div>
                 <div class="col-8">
                   <label for="ssOffsetType" class="form-label small mb-1">After the event ends</label>
                   <select class="form-select form-select-sm" name="offset_type" id="ssOffsetType">
-                    <option value="days" selected>days later, at a set time</option>
-                    <option value="hours">hours later</option>
+                    <option value="days" {% if survey_send_default.offset_type == 'days' %}selected{% endif %}>days later, at a set time</option>
+                    <option value="hours" {% if survey_send_default.offset_type == 'hours' %}selected{% endif %}>hours later</option>
                   </select>
                 </div>
               </div>
@@ -2677,7 +2677,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 <label for="ssTimeOfDay" class="form-label small mb-1">
                   Time of day ({{ event.get_timezone_display }})
                 </label>
-                <input type="time" value="09:00"
+                <input type="time" value="{{ survey_send_default.time_of_day }}"
                        class="form-control form-control-sm" name="time_of_day" id="ssTimeOfDay">
               </div>
               <div id="ssPreview" class="small mt-2 text-body-secondary">

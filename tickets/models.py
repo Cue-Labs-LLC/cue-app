@@ -80,6 +80,11 @@ class AuditBaseModel(BaseModel):
         super().delete(using=using, keep_parents=keep_parents)
 
 
+# Offset types for the default post-event survey send schedule. An empty
+# offset_type means "send immediately" (no scheduled offset configured).
+SURVEY_SEND_OFFSET_CHOICES = [('hours', 'hours'), ('days', 'days')]
+
+
 class Organization(BaseModel):
     """Organization that owns venues, events, uploads, customers, and custom fields."""
     name = models.CharField(max_length=200)
@@ -89,6 +94,18 @@ class Organization(BaseModel):
         max_length=255, blank=True, default='',
         help_text="Org-wide default subject for survey invitation emails. "
                   "Use {event} for the event name. Blank = built-in default.",
+    )
+    # Org-wide default schedule for sending the post-event survey, expressed as
+    # an offset from the event end. Blank offset_type = send immediately.
+    survey_send_offset_type = models.CharField(
+        max_length=10, blank=True, default='', choices=SURVEY_SEND_OFFSET_CHOICES,
+        help_text="Default survey send timing: 'hours' or 'days' after the event "
+                  "ends. Blank = send immediately.",
+    )
+    survey_send_offset_value = models.PositiveSmallIntegerField(null=True, blank=True)
+    survey_send_time_of_day = models.TimeField(
+        null=True, blank=True,
+        help_text="Time of day to send when offset_type is 'days' (event timezone).",
     )
     sms_marketing_enabled = models.BooleanField(
         default=False,
@@ -1084,6 +1101,14 @@ class Event(AuditBaseModel):
         help_text="Per-event override for the survey email subject. "
                   "Use {event} for the event name. Blank = org default.",
     )
+    # Per-event override for the survey send schedule. Blank offset_type =
+    # inherit the org default (see Event.resolved_survey_schedule()).
+    survey_send_offset_type = models.CharField(
+        max_length=10, blank=True, default='', choices=SURVEY_SEND_OFFSET_CHOICES,
+        help_text="Per-event override for survey send timing. Blank = org default.",
+    )
+    survey_send_offset_value = models.PositiveSmallIntegerField(null=True, blank=True)
+    survey_send_time_of_day = models.TimeField(null=True, blank=True)
     scanner_pin = models.CharField(
         max_length=8, null=True, blank=True, unique=True, db_index=True,
         help_text="6-digit PIN for guest scanner access (no Cue account required).",
@@ -1156,6 +1181,24 @@ class Event(AuditBaseModel):
             or DEFAULT_SURVEY_SUBJECT
         )
         return template.replace('{event}', self.name)
+
+    def resolved_survey_schedule(self):
+        """Effective survey send schedule: event override → org default → None.
+
+        Returns a dict {'offset_type', 'offset_value', 'time_of_day'} or None when
+        neither the event nor the org configures a schedule (= send immediately).
+        """
+        if (self.survey_send_offset_type or '').strip():
+            src = self
+        elif (self.organization.survey_send_offset_type or '').strip():
+            src = self.organization
+        else:
+            return None
+        return {
+            'offset_type': src.survey_send_offset_type,
+            'offset_value': src.survey_send_offset_value,
+            'time_of_day': src.survey_send_time_of_day,
+        }
 
     def end_datetime(self):
         """Timezone-aware datetime for when the event ends, in the event's own

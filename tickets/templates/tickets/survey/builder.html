@@ -143,6 +143,64 @@
   </div>
 </div>
 
+{# ---- Default send time (org default / per-event override) ---- #}
+<div class="card mb-3">
+  <div class="card-body">
+    <form method="post" action="{{ survey_schedule_save_url }}" id="survey-schedule-form">
+      {% csrf_token %}
+      <label class="form-label small fw-medium mb-1">Default send time</label>
+      <div class="form-text mb-2">
+        When invitations go out automatically after an event ends. Hosts can still
+        send now or override this when sending from an event.
+        {% if event %}Leave on "Send immediately" to use the default survey's setting:
+        <em>{{ survey_schedule_inherited }}</em>.{% endif %}
+      </div>
+      <div class="row g-2 align-items-end">
+        <div class="col-sm-5">
+          <label class="form-label small mb-1" for="survey-offset-type">Timing</label>
+          <select class="form-select" name="offset_type" id="survey-offset-type" {% if locked %}disabled{% endif %}>
+            <option value="" {% if not survey_send_offset_type %}selected{% endif %}>Send immediately</option>
+            {% for value, label in survey_send_offset_choices %}
+            <option value="{{ value }}" {% if survey_send_offset_type == value %}selected{% endif %}>{{ label }} after event ends</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div class="col-sm-3" id="survey-offset-value-wrap">
+          <label class="form-label small mb-1" for="survey-offset-value">Amount</label>
+          <input type="number" min="0" step="1" class="form-control" name="offset_value"
+                 id="survey-offset-value" value="{{ survey_send_offset_value|default:'1' }}"
+                 {% if locked %}disabled{% endif %}>
+        </div>
+        <div class="col-sm-4" id="survey-time-of-day-wrap">
+          <label class="form-label small mb-1" for="survey-time-of-day">Time of day</label>
+          <input type="time" class="form-control" name="time_of_day" id="survey-time-of-day"
+                 value="{{ survey_send_time_of_day|time:'H:i'|default:'09:00' }}"
+                 {% if locked %}disabled{% endif %}>
+        </div>
+      </div>
+      {% if not locked %}
+      <button type="submit" class="btn btn-outline-primary btn-sm mt-2">Save send time</button>
+      {% endif %}
+    </form>
+  </div>
+</div>
+<script>
+// Toggle the amount/time inputs based on the selected timing.
+(function() {
+  var sel = document.getElementById('survey-offset-type');
+  if (!sel) return;
+  var valWrap = document.getElementById('survey-offset-value-wrap');
+  var todWrap = document.getElementById('survey-time-of-day-wrap');
+  function sync() {
+    var mode = sel.value;
+    valWrap.style.display = mode ? '' : 'none';
+    todWrap.style.display = (mode === 'days') ? '' : 'none';
+  }
+  sel.addEventListener('change', sync);
+  sync();
+})();
+</script>
+
 {% if event and not questions %}
 {# Event uses the org default — offer to customize, preview read-only. #}
 <div class="card mb-3">

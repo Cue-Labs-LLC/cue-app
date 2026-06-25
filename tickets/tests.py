@@ -14491,3 +14491,139 @@ class ScheduledSurveySendTests(TestCase):
         self.assertIn('error', data)
 
 
+class DefaultSurveyScheduleTests(TestCase):
+    """Configuring the survey send schedule as an org default with per-event override."""
+
+    def setUp(self):
+        self.client = Client()
+        self.org = Organization.objects.create(name='Default Sched Org', slug='default-sched-org')
+        self.user = User.objects.create_user(
+            username='defsched', email='def@test.com', password='testpass123',
+        )
+        UserProfile.objects.create(user=self.user, organization=self.org,
+                                   org_role=UserProfile.OrgRole.OWNER)
+        self.client.login(username='def@test.com', password='testpass123')
+        self.client.get(reverse('tickets:home'))  # seed _org_id
+
+        self.venue = Venue.objects.create(organization=self.org, name='Venue', city='City')
+        self.event = Event.objects.create(
+            organization=self.org, name='Future Show', venue=self.venue,
+            start_date=date(2099, 1, 1), start_time=time(20, 0),
+            end_date=date(2099, 1, 1), end_time=time(22, 0),
+            timezone='America/New_York',
+        )
+
+    # ---- resolver -------------------------------------------------------------
+
+    def test_resolved_schedule_none_when_unset(self):
+        self.assertIsNone(self.event.resolved_survey_schedule())
+
+    def test_resolved_schedule_falls_back_to_org_default(self):
+        self.org.survey_send_offset_type = 'days'
+        self.org.survey_send_offset_value = 1
+        self.org.survey_send_time_of_day = time(9, 0)
+        self.org.save()
+        self.event.refresh_from_db()
+        sched = self.event.resolved_survey_schedule()
+        self.assertEqual(sched['offset_type'], 'days')
+        self.assertEqual(sched['offset_value'], 1)
+        self.assertEqual(sched['time_of_day'], time(9, 0))
+
+    def test_event_override_wins_over_org_default(self):
+        self.org.survey_send_offset_type = 'days'
+        self.org.survey_send_offset_value = 1
+        self.org.survey_send_time_of_day = time(9, 0)
+        self.org.save()
+        self.event.survey_send_offset_type = 'hours'
+        self.event.survey_send_offset_value = 3
+        self.event.save()
+        self.event.refresh_from_db()
+        sched = self.event.resolved_survey_schedule()
+        self.assertEqual(sched['offset_type'], 'hours')
+        self.assertEqual(sched['offset_value'], 3)
+
+    # ---- save endpoint --------------------------------------------------------
+
+    def test_org_scope_save_writes_org_fields(self):
+        resp = self.client.post(
+            reverse('tickets:survey_schedule_save'),
+            {'offset_type': 'days', 'offset_value': '2', 'time_of_day': '18:00'},
+        )
+        self.assertEqual(resp.status_code, 302)
+        self.org.refresh_from_db()
+        self.assertEqual(self.org.survey_send_offset_type, 'days')
+        self.assertEqual(self.org.survey_send_offset_value, 2)
+        self.assertEqual(self.org.survey_send_time_of_day, time(18, 0))
+
+    def test_event_scope_save_writes_event_fields(self):
+        resp = self.client.post(
+            reverse('tickets:event_survey_schedule_save', args=[self.event.id]),
+            {'offset_type': 'hours', 'offset_value': '5'},
+        )
+        self.assertEqual(resp.status_code, 302)
+        self.event.refresh_from_db()
+        self.assertEqual(self.event.survey_send_offset_type, 'hours')
+        self.assertEqual(self.event.survey_send_offset_value, 5)
+
+    def test_blank_offset_clears_schedule(self):
+        self.org.survey_send_offset_type = 'days'
+        self.org.survey_send_offset_value = 2
+        self.org.survey_send_time_of_day = time(9, 0)
+        self.org.save()
+        self.client.post(reverse('tickets:survey_schedule_save'), {'offset_type': ''})
+        self.org.refresh_from_db()
+        self.assertEqual(self.org.survey_send_offset_type, '')
+        self.assertIsNone(self.org.survey_send_offset_value)
+        self.assertIsNone(self.org.survey_send_time_of_day)
+
+    def test_days_without_time_is_rejected(self):
+        self.client.post(
+            reverse('tickets:survey_schedule_save'),
+            {'offset_type': 'days', 'offset_value': '2'},  # no time_of_day
+        )
+        self.org.refresh_from_db()
+        self.assertEqual(self.org.survey_send_offset_type, '')  # unchanged
+
+    def test_save_rejected_when_survey_locked(self):
+        SurveyInvitation.objects.create(
+            organization=self.org, event=self.event,
+            customer=Customer.objects.create(organization=self.org, email='a@b.com', name='A'),
+            email='a@b.com',
+        )
+        self.client.post(
+            reverse('tickets:event_survey_schedule_save', args=[self.event.id]),
+            {'offset_type': 'hours', 'offset_value': '5'},
+        )
+        self.event.refresh_from_db()
+        self.assertEqual(self.event.survey_send_offset_type, '')  # locked, unchanged
+
+    # ---- modal pre-fill context ----------------------------------------------
+
+    def test_event_detail_prefills_modal_from_org_default(self):
+        self.org.survey_send_offset_type = 'days'
+        self.org.survey_send_offset_value = 3
+        self.org.survey_send_time_of_day = time(10, 30)
+        self.org.save()
+        resp = self.client.get(reverse('tickets:event_detail', args=[self.event.id]))
+        default = resp.context['survey_send_default']
+        self.assertTrue(default['has_default'])
+        self.assertEqual(default['offset_type'], 'days')
+        self.assertEqual(default['offset_value'], 3)
+        self.assertEqual(default['time_of_day'], '10:30')
+
+    def test_event_detail_default_when_unset(self):
+        resp = self.client.get(reverse('tickets:event_detail', args=[self.event.id]))
+        default = resp.context['survey_send_default']
+        self.assertFalse(default['has_default'])
+        self.assertEqual(default['offset_value'], 2)
+        self.assertEqual(default['time_of_day'], '09:00')
+
+    # ---- builder context ------------------------------------------------------
+
+    def test_builder_exposes_schedule_context(self):
+        resp = self.client.get(reverse('tickets:survey_builder'))
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn('survey_schedule_save_url', resp.context)
+        self.assertIn('survey_send_offset_choices', resp.context)
+
+
