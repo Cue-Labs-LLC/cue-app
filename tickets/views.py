@@ -4954,16 +4954,29 @@ def event_detail(request, event_id):
         _format_survey_send_time(event, survey_scheduled_send_at)
         if survey_scheduled_send_at else None
     )
-    # Resolved default schedule (event override → org default) to pre-fill the
-    # Send-survey modal. Falls back to sane defaults when nothing is configured.
+    # Resolved send schedule (event override → org default) shown read-only in the
+    # Send-survey dialog and as the surveys-tab "Auto-send" summary. The schedule
+    # itself is configured in the survey builder, not here.
     _resolved_schedule = event.resolved_survey_schedule()
-    survey_send_default = {
-        'has_default': _resolved_schedule is not None,
-        'offset_type': (_resolved_schedule or {}).get('offset_type') or 'days',
-        'offset_value': (_resolved_schedule or {}).get('offset_value') or 2,
-        'time_of_day': ((_resolved_schedule or {}).get('time_of_day').strftime('%H:%M')
-                        if (_resolved_schedule or {}).get('time_of_day') else '09:00'),
-        'anchor': (_resolved_schedule or {}).get('anchor') or 'end',
+    _schedule_send_at_display = None
+    _schedule_is_past = False
+    if _resolved_schedule:
+        try:
+            _schedule_dt = _compute_survey_send_at(
+                event, _resolved_schedule['offset_type'], _resolved_schedule['offset_value'],
+                _resolved_schedule['time_of_day'], _resolved_schedule.get('anchor', 'end'),
+            )
+            _schedule_is_past = _schedule_dt <= django_tz.now()
+            _schedule_send_at_display = _format_survey_send_time(event, _schedule_dt)
+        except ValueError:
+            pass
+    survey_schedule_resolved = {
+        'has_schedule': _resolved_schedule is not None,
+        'description': _describe_survey_schedule(_resolved_schedule),
+        'send_at_display': _schedule_send_at_display,
+        'is_past': _schedule_is_past,
+        # Schedule can actually be used only if it computes to a future time.
+        'can_schedule': bool(_schedule_send_at_display) and not _schedule_is_past,
     }
     external_survey_responses_count = stats['external_survey_responses_count']
     survey_total_response_count = stats['survey_total_response_count']
@@ -5160,7 +5173,7 @@ def event_detail(request, event_id):
         'survey_responses_count': survey_responses_count,
         'survey_scheduled_send_at': survey_scheduled_send_at,
         'survey_scheduled_send_display': survey_scheduled_send_display,
-        'survey_send_default': survey_send_default,
+        'survey_schedule_resolved': survey_schedule_resolved,
         'external_survey_responses_count': external_survey_responses_count,
         'survey_total_response_count': survey_total_response_count,
         'survey_results': survey_results,
@@ -9334,22 +9347,22 @@ def send_survey(request, event_id):
     org = get_organization(request)
     event = get_object_or_404(Event.objects.filter(organization=org), id=event_id)
 
-    # Resolve the send time. send_mode 'schedule' computes an absolute time from
-    # an offset relative to the event end; anything else sends immediately.
+    # Resolve the send time. send_mode 'schedule' uses the event's resolved
+    # schedule (configured in the survey builder); anything else sends now.
     scheduled_send_at = None
     if request.POST.get('send_mode') == 'schedule':
-        # Use the posted offset, falling back to the event's resolved default
-        # schedule when the form omits a field.
-        default = event.resolved_survey_schedule() or {}
-        offset_type = request.POST.get('offset_type') or default.get('offset_type')
-        offset_value = request.POST.get('offset_value')
-        if offset_value in (None, ''):
-            offset_value = default.get('offset_value')
-        time_of_day = parse_time(request.POST.get('time_of_day') or '') or default.get('time_of_day')
-        anchor = request.POST.get('anchor') or default.get('anchor') or 'end'
+        schedule = event.resolved_survey_schedule()
+        if not schedule:
+            messages.error(
+                request,
+                "No automatic send time is set for this event. Choose Send now, or "
+                "set a schedule in the survey builder.",
+            )
+            return redirect('tickets:event_detail', event_id=event_id)
         try:
             scheduled_send_at = _compute_survey_send_at(
-                event, offset_type, offset_value, time_of_day, anchor,
+                event, schedule['offset_type'], schedule['offset_value'],
+                schedule['time_of_day'], schedule.get('anchor', 'end'),
             )
         except ValueError as exc:
             messages.error(request, str(exc))
@@ -9642,6 +9655,8 @@ def survey_builder(request, event_id=None):
         'survey_send_time_of_day': (event if event else org).survey_send_time_of_day,
         'survey_send_anchor': (event if event else org).survey_send_anchor or 'end',
         'survey_send_offset_choices': SURVEY_SEND_OFFSET_CHOICES,
+        # Event scope: whether this event has its own schedule (vs inheriting the default).
+        'survey_schedule_overridden': bool(event and event.survey_send_offset_type),
         'survey_schedule_inherited': _describe_survey_schedule(
             {'offset_type': org.survey_send_offset_type,
              'offset_value': org.survey_send_offset_value,
@@ -9921,13 +9936,13 @@ def _describe_survey_schedule(schedule):
     """Human-readable description of a resolved survey schedule dict (or None).
 
     e.g. "2 days after the event ends at 9:00 AM", "3 hours after the event ends",
-    or "Send immediately" when no schedule is configured.
+    or "Send manually" when no automatic schedule is configured.
     """
     if not schedule or not (schedule.get('offset_type') or '').strip():
-        return "Send immediately"
+        return "Send manually"
     value = schedule.get('offset_value')
     if value is None:
-        return "Send immediately"
+        return "Send manually"
     anchor_word = 'starts' if schedule.get('anchor') == 'start' else 'ends'
     if schedule['offset_type'] == 'hours':
         unit = 'hour' if value == 1 else 'hours'

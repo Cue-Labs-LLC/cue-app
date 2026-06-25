@@ -14369,10 +14369,14 @@ class ScheduledSurveySendTests(TestCase):
 
     def test_schedule_creates_pending_invitations_without_sending(self):
         from django.core import mail
+        # Schedule comes from the event's configured send time (set in the builder).
+        self.event.survey_send_offset_type = 'days'
+        self.event.survey_send_offset_value = 2
+        self.event.survey_send_time_of_day = time(9, 0)
+        self.event.save()
         resp = self.client.post(
             reverse('tickets:send_survey', args=[self.event.id]),
-            {'send_mode': 'schedule', 'offset_type': 'days',
-             'offset_value': '2', 'time_of_day': '09:00'},
+            {'send_mode': 'schedule'},
         )
         self.assertEqual(resp.status_code, 302)
         inv = SurveyInvitation.objects.get(event=self.event, customer=self.customer)
@@ -14397,6 +14401,7 @@ class ScheduledSurveySendTests(TestCase):
         past_event = Event.objects.create(
             organization=self.org, name='Past Show', venue=self.venue, start_date=date(2000, 1, 1),
             end_date=date(2000, 1, 1), end_time=time(22, 0), timezone='America/New_York',
+            survey_send_offset_type='hours', survey_send_offset_value=1,
         )
         TicketOrder.objects.create(
             customer=self.customer, event=past_event,
@@ -14405,7 +14410,7 @@ class ScheduledSurveySendTests(TestCase):
         )
         resp = self.client.post(
             reverse('tickets:send_survey', args=[past_event.id]),
-            {'send_mode': 'schedule', 'offset_type': 'hours', 'offset_value': '1'},
+            {'send_mode': 'schedule'},
         )
         self.assertEqual(resp.status_code, 302)
         self.assertFalse(SurveyInvitation.objects.filter(event=past_event).exists())
@@ -14597,26 +14602,26 @@ class DefaultSurveyScheduleTests(TestCase):
         self.event.refresh_from_db()
         self.assertEqual(self.event.survey_send_offset_type, '')  # locked, unchanged
 
-    # ---- modal pre-fill context ----------------------------------------------
+    # ---- resolved schedule context (surveys tab + send dialog) ----------------
 
-    def test_event_detail_prefills_modal_from_org_default(self):
+    def test_event_detail_resolves_schedule_from_org_default(self):
         self.org.survey_send_offset_type = 'days'
         self.org.survey_send_offset_value = 3
         self.org.survey_send_time_of_day = time(10, 30)
         self.org.save()
         resp = self.client.get(reverse('tickets:event_detail', args=[self.event.id]))
-        default = resp.context['survey_send_default']
-        self.assertTrue(default['has_default'])
-        self.assertEqual(default['offset_type'], 'days')
-        self.assertEqual(default['offset_value'], 3)
-        self.assertEqual(default['time_of_day'], '10:30')
+        resolved = resp.context['survey_schedule_resolved']
+        self.assertTrue(resolved['has_schedule'])
+        self.assertEqual(resolved['description'], "3 days after the event ends at 10:30 AM")
+        self.assertTrue(resolved['send_at_display'])      # future event -> computable
+        self.assertTrue(resolved['can_schedule'])
 
-    def test_event_detail_default_when_unset(self):
+    def test_event_detail_resolved_when_unset(self):
         resp = self.client.get(reverse('tickets:event_detail', args=[self.event.id]))
-        default = resp.context['survey_send_default']
-        self.assertFalse(default['has_default'])
-        self.assertEqual(default['offset_value'], 2)
-        self.assertEqual(default['time_of_day'], '09:00')
+        resolved = resp.context['survey_schedule_resolved']
+        self.assertFalse(resolved['has_schedule'])
+        self.assertEqual(resolved['description'], "Send manually")
+        self.assertFalse(resolved['can_schedule'])
 
     # ---- builder context ------------------------------------------------------
 
@@ -14625,6 +14630,52 @@ class DefaultSurveyScheduleTests(TestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertIn('survey_schedule_save_url', resp.context)
         self.assertIn('survey_send_offset_choices', resp.context)
+
+    def test_builder_reports_override_state(self):
+        # Inheriting -> not overridden.
+        url = reverse('tickets:event_survey_builder', args=[self.event.id])
+        self.assertFalse(self.client.get(url).context['survey_schedule_overridden'])
+        # With an event-level schedule -> overridden.
+        self.event.survey_send_offset_type = 'hours'
+        self.event.survey_send_offset_value = 4
+        self.event.save()
+        self.assertTrue(self.client.get(url).context['survey_schedule_overridden'])
+
+    # ---- simplified send dialog (send_mode only) ------------------------------
+
+    def test_send_schedule_uses_resolved_schedule(self):
+        from django.core import mail
+        self.org.survey_send_offset_type = 'days'
+        self.org.survey_send_offset_value = 2
+        self.org.survey_send_time_of_day = time(9, 0)
+        self.org.save()
+        c = Customer.objects.create(organization=self.org, email='g@example.com', name='G')
+        TicketOrder.objects.create(
+            customer=c, event=self.event, order_number='RS-1',
+            order_date='2098-12-01 10:00:00', total_amount=Decimal('10.00'),
+        )
+        resp = self.client.post(
+            reverse('tickets:send_survey', args=[self.event.id]),
+            {'send_mode': 'schedule'},  # no offset fields -> uses resolved schedule
+        )
+        self.assertEqual(resp.status_code, 302)
+        inv = SurveyInvitation.objects.get(event=self.event, customer=c)
+        self.assertIsNotNone(inv.scheduled_send_at)
+        self.assertIsNone(inv.sent_at)
+        self.assertEqual(len(mail.outbox), 0)
+
+    def test_send_schedule_without_configured_schedule_errors(self):
+        c = Customer.objects.create(organization=self.org, email='h@example.com', name='H')
+        TicketOrder.objects.create(
+            customer=c, event=self.event, order_number='RS-2',
+            order_date='2098-12-01 10:00:00', total_amount=Decimal('10.00'),
+        )
+        resp = self.client.post(
+            reverse('tickets:send_survey', args=[self.event.id]),
+            {'send_mode': 'schedule'},  # nothing configured
+        )
+        self.assertEqual(resp.status_code, 302)
+        self.assertFalse(SurveyInvitation.objects.filter(event=self.event).exists())
 
     # ---- anchor (event start vs end) -----------------------------------------
 
@@ -14675,12 +14726,15 @@ class DefaultSurveyScheduleTests(TestCase):
             "3 hours after the event ends",
         )
 
-    def test_event_detail_prefills_anchor(self):
+    def test_event_detail_resolved_respects_start_anchor(self):
         self.org.survey_send_offset_type = 'hours'
         self.org.survey_send_offset_value = 2
         self.org.survey_send_anchor = 'start'
         self.org.save()
         resp = self.client.get(reverse('tickets:event_detail', args=[self.event.id]))
-        self.assertEqual(resp.context['survey_send_default']['anchor'], 'start')
+        self.assertEqual(
+            resp.context['survey_schedule_resolved']['description'],
+            "2 hours after the event starts",
+        )
 
 
