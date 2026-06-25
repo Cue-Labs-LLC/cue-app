@@ -11,6 +11,7 @@ https://docs.djangoproject.com/en/5.2/ref/settings/
 """
 
 import os
+import sys
 from decimal import Decimal
 from pathlib import Path
 import dj_database_url
@@ -148,6 +149,13 @@ AUTH_PASSWORD_VALIDATORS = [
         'NAME': 'django.contrib.auth.password_validation.NumericPasswordValidator',
     },
 ]
+
+# Under the test runner, swap PBKDF2 for MD5 hashing. The suite creates a user in
+# most setUp() methods; PBKDF2 dominates their cost. Test-only — production hashing
+# (Django's default) is untouched. Gated on 'test' in argv, so the `migrations` CI
+# job (which runs `migrate` / `makemigrations`) is unaffected.
+if 'test' in sys.argv:
+    PASSWORD_HASHERS = ['django.contrib.auth.hashers.MD5PasswordHasher']
 
 
 # Internationalization

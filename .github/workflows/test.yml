@@ -27,7 +27,7 @@ jobs:
           DEBUG: "True"
           # Omitting DATABASE_URL → uses SQLite
           # Omitting CELERY_BROKER_URL → Celery runs in eager mode (no Redis needed)
-        run: python manage.py test tickets --verbosity=2
+        run: python manage.py test tickets --parallel auto --verbosity=1
 
   browser-test:
     runs-on: ubuntu-latest
