@@ -664,46 +664,52 @@ class VenueAddressFieldsTests(TestCase):
 
 
 class ChatTestMixin:
-    """Shared setup for chat tests: creates org, user, profile, venue, event, customer, order."""
+    """Shared setup for chat tests: creates org, user, profile, venue, event, customer, order.
 
-    def setUp(self):
-        self.client = Client()
-        self.org = Organization.objects.create(name='Test Org', slug='test-org')
-        self.user = User.objects.create_user(
+    The read-only fixture graph is built once per class in setUpTestData; only the
+    per-test HTTP client/session and a fresh conversation_id live in setUp.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.org = Organization.objects.create(name='Test Org', slug='test-org')
+        cls.user = User.objects.create_user(
             username='chatuser', email='chat@test.com', password='testpass123'
         )
-        UserProfile.objects.create(user=self.user, organization=self.org, org_role=UserProfile.OrgRole.OWNER)
-        self.client.login(username='chat@test.com', password='testpass123')
-        # Hit any org-required view to seed the session with _org_id
-        self.client.get(reverse('tickets:home'))
-
-        self.venue = Venue.objects.create(
-            organization=self.org, name='Test Venue', city='Test City'
+        UserProfile.objects.create(user=cls.user, organization=cls.org, org_role=UserProfile.OrgRole.OWNER)
+        cls.venue = Venue.objects.create(
+            organization=cls.org, name='Test Venue', city='Test City'
         )
-        self.event = Event.objects.create(
-            organization=self.org, name='Summer Fest',
-            venue=self.venue, start_date=date(2025, 7, 15)
+        cls.event = Event.objects.create(
+            organization=cls.org, name='Summer Fest',
+            venue=cls.venue, start_date=date(2025, 7, 15)
         )
-        self.customer = Customer.objects.create(
-            organization=self.org, email='alice@example.com',
+        cls.customer = Customer.objects.create(
+            organization=cls.org, email='alice@example.com',
             name='Alice Smith', lifetime_value=Decimal('500.00'),
             rfm_segment='VIP',
         )
-        self.csv_format = CSVFormat.objects.create(
-            organization=self.org, name='Chat Test Format',
+        cls.csv_format = CSVFormat.objects.create(
+            organization=cls.org, name='Chat Test Format',
             column_mapping={'order_number': 'Order ID'},
         )
-        self.upload = UploadedFile.objects.create(
-            organization=self.org, csv_format=self.csv_format,
+        cls.upload = UploadedFile.objects.create(
+            organization=cls.org, csv_format=cls.csv_format,
             filename='test.csv', status='completed',
         )
-        self.order = TicketOrder.objects.create(
-            customer=self.customer, event=self.event,
-            uploaded_file=self.upload,
+        cls.order = TicketOrder.objects.create(
+            customer=cls.customer, event=cls.event,
+            uploaded_file=cls.upload,
             order_number='CHAT-001',
             order_date='2025-07-10 10:00:00',
             total_amount=Decimal('500.00'),
         )
+
+    def setUp(self):
+        self.client = Client()
+        self.client.login(username='chat@test.com', password='testpass123')
+        # Hit any org-required view to seed the session with _org_id
+        self.client.get(reverse('tickets:home'))
         self.conversation_id = uuid.uuid4()
 
 
@@ -1167,53 +1173,56 @@ class MemberInviteTests(TestCase):
 class MobileAPITests(TestCase):
     """Test cases for the mobile API endpoints."""
 
-    def setUp(self):
-        self.client = Client()
-        self.org = Organization.objects.create(
+    @classmethod
+    def setUpTestData(cls):
+        cls.org = Organization.objects.create(
             name='API Test Org', slug='api-test-org',
             stripe_account_id='acct_test_api',
             stripe_onboarding_complete=True,
         )
-        self.user = User.objects.create_user(
+        cls.user = User.objects.create_user(
             username='apiuser',
             email='api@example.com',
             password='apipass123',
         )
         UserProfile.objects.create(
-            user=self.user,
-            organization=self.org,
+            user=cls.user,
+            organization=cls.org,
             org_role=UserProfile.OrgRole.OWNER,
             role=UserProfile.Role.ORGANIZER,
         )
-        self.token = Token.objects.create(user=self.user)
-        self.auth_header = {'HTTP_AUTHORIZATION': f'Token {self.token.key}'}
+        cls.token = Token.objects.create(user=cls.user)
+        cls.auth_header = {'HTTP_AUTHORIZATION': f'Token {cls.token.key}'}
 
-        self.venue = Venue.objects.create(
-            organization=self.org, name='Test Venue', city='Portland'
+        cls.venue = Venue.objects.create(
+            organization=cls.org, name='Test Venue', city='Portland'
         )
-        self.event = Event.objects.create(
-            organization=self.org,
+        cls.event = Event.objects.create(
+            organization=cls.org,
             name='Test Event',
-            venue=self.venue,
+            venue=cls.venue,
             start_date=date.today() + timedelta(days=7),
         )
-        self.customer = Customer.objects.create(
-            organization=self.org,
+        cls.customer = Customer.objects.create(
+            organization=cls.org,
             email='buyer@example.com',
             name='Test Buyer',
         )
-        self.order = TicketOrder.objects.create(
-            customer=self.customer,
-            event=self.event,
+        cls.order = TicketOrder.objects.create(
+            customer=cls.customer,
+            event=cls.event,
             order_number='TEST-001',
             order_date=timezone.now(),
             total_amount=Decimal('25.00'),
         )
         Ticket.objects.create(
-            ticket_order=self.order,
+            ticket_order=cls.order,
             ticket_type='General Admission',
             price=Decimal('25.00'),
         )
+
+    def setUp(self):
+        self.client = Client()
 
     def test_login_success(self):
         response = self.client.post(
@@ -1617,24 +1626,32 @@ class StripeWebhookTests(TestCase):
 class FinancePayoutTests(TestCase):
     """Tests for organizer payout requests and connected-account payout webhooks."""
 
-    def setUp(self):
-        self.client = Client()
-        self.org = Organization.objects.create(
+    @classmethod
+    def setUpTestData(cls):
+        cls.org = Organization.objects.create(
             name='Finance Test Org',
             slug='finance-test-org',
             stripe_account_id='acct_123',
             stripe_onboarding_complete=True,
         )
-        self.user = User.objects.create_user(
+        cls.user = User.objects.create_user(
             username='finance-owner',
             email='owner@example.com',
             password='testpass123',
         )
         UserProfile.objects.create(
-            user=self.user,
-            organization=self.org,
+            user=cls.user,
+            organization=cls.org,
             org_role=UserProfile.OrgRole.OWNER,
         )
+
+    def setUp(self):
+        # The org id is now stable across tests (setUpTestData), so the per-org
+        # connected-balance cache would leak a prior test's figure into later
+        # finance_overview assertions. Clear it before each test.
+        from django.core.cache import cache as django_cache
+        django_cache.clear()
+        self.client = Client()
         self.client.login(username='owner@example.com', password='testpass123')
         self.client.get(reverse('tickets:home'))
         self.payout_url = reverse('tickets:initiate_payout')
@@ -2111,17 +2128,18 @@ class CSVProcessorChunkRollbackTest(TestCase):
         "2024-06-01,carol@example.com,Carol Lee,GA\n"
     )
 
-    def setUp(self):
-        self.org = Organization.objects.create(name='Chunk Test Org', slug='chunk-test-org')
-        self.venue = Venue.objects.create(organization=self.org, name='Venue', city='City')
-        self.event = Event.objects.create(
-            organization=self.org,
+    @classmethod
+    def setUpTestData(cls):
+        cls.org = Organization.objects.create(name='Chunk Test Org', slug='chunk-test-org')
+        cls.venue = Venue.objects.create(organization=cls.org, name='Venue', city='City')
+        cls.event = Event.objects.create(
+            organization=cls.org,
             name='Chunk Test Event',
-            venue=self.venue,
+            venue=cls.venue,
             start_date=date(2024, 6, 15),
         )
-        self.csv_format = CSVFormat.objects.create(
-            organization=self.org,
+        cls.csv_format = CSVFormat.objects.create(
+            organization=cls.org,
             name='Chunk Test Format',
             column_mapping={
                 'order_date': ['order_date'],
@@ -2130,12 +2148,12 @@ class CSVProcessorChunkRollbackTest(TestCase):
                 'ticket_type': ['ticket_type'],
             },
         )
-        self.upload = UploadedFile.objects.create(
-            organization=self.org,
-            csv_format=self.csv_format,
+        cls.upload = UploadedFile.objects.create(
+            organization=cls.org,
+            csv_format=cls.csv_format,
             filename='chunk_test.csv',
             status='pending',
-            metadata={'event_id': str(self.event.id), 'event_name': self.event.name,
+            metadata={'event_id': str(cls.event.id), 'event_name': cls.event.name,
                       'event_start_date': '2024-06-15'},
         )
 
@@ -2225,19 +2243,20 @@ class PoshRevenueSubtotalTest(TestCase):
     SUBTOTAL_SUM = Decimal('19.11')   # 12.74 + 6.37 (what POSH reports as revenue)
     TOTAL_SUM = Decimal('23.99')      # 15.99 + 8.00 (fee-inclusive — must NOT be used)
 
-    def setUp(self):
-        self.org = Organization.objects.create(name='Posh Org', slug='posh-org')
-        self.venue = Venue.objects.create(organization=self.org, name='Venue', city='City')
-        self.event = Event.objects.create(
-            organization=self.org, name='Posh Event', venue=self.venue,
+    @classmethod
+    def setUpTestData(cls):
+        cls.org = Organization.objects.create(name='Posh Org', slug='posh-org')
+        cls.venue = Venue.objects.create(organization=cls.org, name='Venue', city='City')
+        cls.event = Event.objects.create(
+            organization=cls.org, name='Posh Event', venue=cls.venue,
             start_date=date(2026, 6, 15),
         )
         # The POSH built-in format is seeded by migration (organization=None, is_system).
-        self.csv_format = CSVFormat.objects.get(name='POSH', is_system=True)
-        self.upload = UploadedFile.objects.create(
-            organization=self.org, csv_format=self.csv_format,
+        cls.csv_format = CSVFormat.objects.get(name='POSH', is_system=True)
+        cls.upload = UploadedFile.objects.create(
+            organization=cls.org, csv_format=cls.csv_format,
             filename='posh.csv', status='pending',
-            metadata={'event_id': str(self.event.id), 'event_name': self.event.name,
+            metadata={'event_id': str(cls.event.id), 'event_name': cls.event.name,
                       'event_start_date': '2026-06-15'},
         )
 
@@ -2509,19 +2528,19 @@ class EmailCompleteProfileViewTest(TestCase):
 class TestRFMCalculator(TestCase):
     """Tests for RFMCalculator.calculate_all()."""
 
-    def setUp(self):
-        from datetime import date
-        self.org = Organization.objects.create(name='RFM Test Org', slug='rfm-test-org')
-        self.venue = Venue.objects.create(organization=self.org, name='Venue', city='City')
-        self.event = Event.objects.create(
-            organization=self.org, name='Event', venue=self.venue,
+    @classmethod
+    def setUpTestData(cls):
+        cls.org = Organization.objects.create(name='RFM Test Org', slug='rfm-test-org')
+        cls.venue = Venue.objects.create(organization=cls.org, name='Venue', city='City')
+        cls.event = Event.objects.create(
+            organization=cls.org, name='Event', venue=cls.venue,
             start_date=date(2025, 1, 1),
         )
-        self.csv_format = CSVFormat.objects.create(
-            organization=self.org, name='Fmt', column_mapping={'order_number': 'Order ID'},
+        cls.csv_format = CSVFormat.objects.create(
+            organization=cls.org, name='Fmt', column_mapping={'order_number': 'Order ID'},
         )
-        self.upload = UploadedFile.objects.create(
-            organization=self.org, csv_format=self.csv_format,
+        cls.upload = UploadedFile.objects.create(
+            organization=cls.org, csv_format=cls.csv_format,
             filename='test.csv', status='completed',
         )
 
@@ -2622,20 +2641,21 @@ class TestRFMCalculator(TestCase):
 class TestCustomerBehaviorProfiler(TestCase):
     """Tests for layered customer behavior profiling."""
 
-    def setUp(self):
-        self.org = Organization.objects.create(name='Behavior Org', slug='behavior-org')
-        self.venue = Venue.objects.create(organization=self.org, name='Venue', city='City')
-        self.event = Event.objects.create(
-            organization=self.org,
+    @classmethod
+    def setUpTestData(cls):
+        cls.org = Organization.objects.create(name='Behavior Org', slug='behavior-org')
+        cls.venue = Venue.objects.create(organization=cls.org, name='Venue', city='City')
+        cls.event = Event.objects.create(
+            organization=cls.org,
             name='Event',
-            venue=self.venue,
+            venue=cls.venue,
             start_date=date(2025, 1, 1),
         )
-        self.csv_format = CSVFormat.objects.create(
-            organization=self.org, name='Fmt', column_mapping={'order_number': 'Order ID'},
+        cls.csv_format = CSVFormat.objects.create(
+            organization=cls.org, name='Fmt', column_mapping={'order_number': 'Order ID'},
         )
-        self.upload = UploadedFile.objects.create(
-            organization=self.org, csv_format=self.csv_format, filename='test.csv', status='completed',
+        cls.upload = UploadedFile.objects.create(
+            organization=cls.org, csv_format=cls.csv_format, filename='test.csv', status='completed',
         )
 
     def _make_customer(self, email, lifetime_value=Decimal('0.00'), last_order_date=None):
@@ -3223,22 +3243,27 @@ class HealthCheckTest(TestCase):
 class EventDetailCacheTest(TestCase):
     """Tests for _compute_event_stats() caching and cache invalidation."""
 
-    def setUp(self):
-        from django.core.cache import cache as django_cache
-        self.org = Organization.objects.create(name='Cache Test Org', slug='cache-test-org')
-        self.venue = Venue.objects.create(organization=self.org, name='Venue', city='City')
-        self.event = Event.objects.create(
-            organization=self.org, name='Cache Test Event', venue=self.venue,
+    @classmethod
+    def setUpTestData(cls):
+        cls.org = Organization.objects.create(name='Cache Test Org', slug='cache-test-org')
+        cls.venue = Venue.objects.create(organization=cls.org, name='Venue', city='City')
+        cls.event = Event.objects.create(
+            organization=cls.org, name='Cache Test Event', venue=cls.venue,
             start_date=date(2025, 8, 1),
         )
-        self.customer = Customer.objects.create(
-            organization=self.org, email='cachebuyer@example.com', name='Cache Buyer',
+        cls.customer = Customer.objects.create(
+            organization=cls.org, email='cachebuyer@example.com', name='Cache Buyer',
         )
-        self.csv_format = CSVFormat.objects.create(
-            organization=self.org,
+        cls.csv_format = CSVFormat.objects.create(
+            organization=cls.org,
             name='Cache Format',
             column_mapping={'order_number': 'Order ID'},
         )
+
+    def setUp(self):
+        # Cache state is per-test, not a fixture: clear before each test so the
+        # now-stable event id from setUpTestData can't leak cached stats across tests.
+        from django.core.cache import cache as django_cache
         django_cache.clear()
 
     def tearDown(self):
