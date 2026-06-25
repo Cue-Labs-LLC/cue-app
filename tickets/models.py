@@ -1157,6 +1157,24 @@ class Event(AuditBaseModel):
         )
         return template.replace('{event}', self.name)
 
+    def end_datetime(self):
+        """Timezone-aware datetime for when the event ends, in the event's own
+        timezone. Used to anchor relative survey-send scheduling.
+
+        Falls back gracefully: end_date → start_date; end_time → start_time →
+        end of day (23:59). Returns an aware datetime.
+        """
+        from datetime import datetime, time as dt_time
+        from zoneinfo import ZoneInfo
+
+        end_date = self.end_date or self.start_date
+        end_time = self.end_time or self.start_time or dt_time(23, 59)
+        try:
+            tz = ZoneInfo(self.timezone)
+        except Exception:
+            tz = ZoneInfo('America/Los_Angeles')
+        return datetime.combine(end_date, end_time, tzinfo=tz)
+
 
 def generate_unique_scanner_pin():
     """Return a unique 6-digit numeric PIN not already used by any Event."""
@@ -2887,6 +2905,12 @@ class SurveyInvitation(BaseModel):
     )
     token = models.UUIDField(default=uuid.uuid4, unique=True, db_index=True)
     email = models.EmailField(help_text="Denormalized from customer at send time")
+    scheduled_send_at = models.DateTimeField(
+        null=True, blank=True, db_index=True,
+        help_text="Absolute UTC time this invitation may be sent. NULL = send "
+                  "immediately. The bulk send task only dispatches rows whose "
+                  "scheduled time is in the past (or NULL).",
+    )
     sent_at = models.DateTimeField(null=True, blank=True)
     completed_at = models.DateTimeField(null=True, blank=True)
 

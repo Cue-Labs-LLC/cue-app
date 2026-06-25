@@ -1805,10 +1805,23 @@ document.addEventListener('DOMContentLoaded', function() {
     <a href="{% url 'tickets:event_survey_builder' event.id %}" class="btn btn-sm btn-outline-secondary">
         <i class="bi bi-pencil-square"></i> Build survey
     </a>
+    {% if survey_scheduled_send_display %}
+    <span class="badge bg-info-subtle text-info-emphasis d-inline-flex align-items-center px-3 py-2">
+        <i class="bi bi-clock me-1"></i> Survey scheduled &middot; {{ survey_scheduled_send_display }}
+    </span>
+    <form method="post" action="{% url 'tickets:cancel_scheduled_survey' event.id %}" class="d-inline"
+          onsubmit="return confirm('Cancel the scheduled survey send? Invitations will be removed and the survey unlocked.');">
+        {% csrf_token %}
+        <button type="submit" class="btn btn-sm btn-outline-danger">
+            <i class="bi bi-x-circle"></i> Cancel
+        </button>
+    </form>
+    {% else %}
     <button type="button" class="btn btn-sm btn-primary"
             data-bs-toggle="modal" data-bs-target="#sendSurveyModal">
         <i class="bi bi-send"></i> Send survey
     </button>
+    {% endif %}
 </div>
 
 {% if survey_results %}
@@ -2620,31 +2633,66 @@ document.addEventListener('DOMContentLoaded', function() {
         <h5 class="modal-title" id="sendSurveyModalLabel"><i class="bi bi-send"></i> Send survey</h5>
         <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
       </div>
-      <div class="modal-body">
-        <div id="sendSurveyLoading" class="text-center py-3">
-          <span class="spinner-border spinner-border-sm"></span> Counting attendees&hellip;
+      <form method="post" action="{% url 'tickets:send_survey' event.id %}">
+        {% csrf_token %}
+        <div class="modal-body">
+          <div id="sendSurveyLoading" class="text-center py-3">
+            <span class="spinner-border spinner-border-sm"></span> Counting attendees&hellip;
+          </div>
+          <div id="sendSurveyError" class="alert alert-warning d-none mb-0">
+            Couldn't load the recipient count. You can still send.
+          </div>
+          <div id="sendSurveyEmpty" class="d-none alert alert-info mb-0">
+            All attendees have already been sent this survey.
+          </div>
+          <div id="sendSurveyContent" class="d-none">
+            <p>This will email the survey to
+              <strong id="sendSurveyCount">0</strong> attendee(s)
+              who haven't received it yet.</p>
+
+            <div class="fw-medium mb-2">When to send</div>
+            <div class="btn-group btn-group-sm w-100 mb-3" role="group" aria-label="When to send">
+              <input type="radio" class="btn-check" name="send_mode" id="ssModeNow" value="now" checked>
+              <label class="btn btn-outline-primary" for="ssModeNow">Send now</label>
+              <input type="radio" class="btn-check" name="send_mode" id="ssModeSchedule" value="schedule">
+              <label class="btn btn-outline-primary" for="ssModeSchedule">Schedule after event</label>
+            </div>
+
+            <div id="ssScheduleFields" class="d-none">
+              <div class="row g-2 align-items-end">
+                <div class="col-4">
+                  <label for="ssOffsetValue" class="form-label small mb-1">Amount</label>
+                  <input type="number" min="0" step="1" value="2"
+                         class="form-control form-control-sm" name="offset_value" id="ssOffsetValue">
+                </div>
+                <div class="col-8">
+                  <label for="ssOffsetType" class="form-label small mb-1">After the event ends</label>
+                  <select class="form-select form-select-sm" name="offset_type" id="ssOffsetType">
+                    <option value="days" selected>days later, at a set time</option>
+                    <option value="hours">hours later</option>
+                  </select>
+                </div>
+              </div>
+              <div id="ssTimeOfDayWrap" class="mt-2">
+                <label for="ssTimeOfDay" class="form-label small mb-1">
+                  Time of day ({{ event.get_timezone_display }})
+                </label>
+                <input type="time" value="09:00"
+                       class="form-control form-control-sm" name="time_of_day" id="ssTimeOfDay">
+              </div>
+              <div id="ssPreview" class="small mt-2 text-body-secondary">
+                Choose an offset to preview the exact send time.
+              </div>
+            </div>
+          </div>
         </div>
-        <div id="sendSurveyError" class="alert alert-warning d-none mb-0">
-          Couldn't load the recipient count. You can still send.
-        </div>
-        <div id="sendSurveyContent" class="d-none">
-          <p class="mb-0">This will email the survey to
-            <strong id="sendSurveyCount">0</strong> attendee(s)
-            who haven't received it yet.</p>
-        </div>
-        <div id="sendSurveyEmpty" class="d-none alert alert-info mb-0">
-          All attendees have already been sent this survey.
-        </div>
-      </div>
-      <div class="modal-footer">
-        <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
-        <form method="post" action="{% url 'tickets:send_survey' event.id %}" class="d-inline">
-          {% csrf_token %}
+        <div class="modal-footer">
+          <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
           <button type="submit" id="sendSurveyConfirmBtn" class="btn btn-primary" disabled>
-            <i class="bi bi-send"></i> Send survey
+            <i class="bi bi-send"></i> <span id="sendSurveyConfirmLabel">Send survey</span>
           </button>
-        </form>
-      </div>
+        </div>
+      </form>
     </div>
   </div>
 </div>
@@ -2722,21 +2770,110 @@ if (document.readyState === 'loading') {
 }
 
 // Send-survey modal: fetch the recipient count fresh each time it opens so the
-// number the host sees matches exactly what the POST would send.
+// number the host sees matches exactly what the POST would send. Also wires the
+// "Send now / Schedule after event" controls and a live send-time preview.
 (function() {
     var ssModal = document.getElementById('sendSurveyModal');
     if (!ssModal) return;
+
+    var loading = document.getElementById('sendSurveyLoading');
+    var content = document.getElementById('sendSurveyContent');
+    var empty   = document.getElementById('sendSurveyEmpty');
+    var error   = document.getElementById('sendSurveyError');
+    var btn     = document.getElementById('sendSurveyConfirmBtn');
+    var btnLabel = document.getElementById('sendSurveyConfirmLabel');
+    var schedFields = document.getElementById('ssScheduleFields');
+    var todWrap  = document.getElementById('ssTimeOfDayWrap');
+    var offsetType = document.getElementById('ssOffsetType');
+    var offsetValue = document.getElementById('ssOffsetValue');
+    var timeOfDay = document.getElementById('ssTimeOfDay');
+    var preview  = document.getElementById('ssPreview');
+
+    var recipientsAvailable = false;   // count > 0 (or unknown after an error)
+    var previewValid = false;          // last schedule preview was valid
+    var previewTimer = null;
+
+    function scheduleMode() {
+        var checked = document.querySelector('input[name="send_mode"]:checked');
+        return checked && checked.value === 'schedule';
+    }
+
+    function syncConfirm() {
+        var sched = scheduleMode();
+        btnLabel.textContent = sched ? 'Schedule survey' : 'Send survey';
+        if (!recipientsAvailable) { btn.disabled = true; return; }
+        btn.disabled = sched ? !previewValid : false;
+    }
+
+    function refreshPreview() {
+        if (!scheduleMode()) return;
+        preview.classList.remove('text-danger');
+        preview.classList.add('text-body-secondary');
+        preview.textContent = 'Calculating send time…';
+        previewValid = false;
+        syncConfirm();
+        var params = new URLSearchParams({
+            offset_type: offsetType.value,
+            offset_value: offsetValue.value,
+            time_of_day: timeOfDay.value,
+        });
+        fetch("{% url 'tickets:survey_schedule_preview' event.id %}?" + params.toString(),
+              { headers: { 'X-Requested-With': 'XMLHttpRequest' } })
+            .then(function (r) { return r.json(); })
+            .then(function (d) {
+                if (d.valid) {
+                    previewValid = true;
+                    preview.classList.remove('text-danger');
+                    preview.classList.add('text-body-secondary');
+                    preview.textContent = 'Survey will send ' + d.display + '.';
+                } else {
+                    previewValid = false;
+                    preview.classList.remove('text-body-secondary');
+                    preview.classList.add('text-danger');
+                    preview.textContent = d.error || 'Pick a valid send time.';
+                }
+                syncConfirm();
+            })
+            .catch(function () {
+                previewValid = false;
+                preview.classList.remove('text-body-secondary');
+                preview.classList.add('text-danger');
+                preview.textContent = "Couldn't calculate the send time.";
+                syncConfirm();
+            });
+    }
+
+    function debouncedPreview() {
+        clearTimeout(previewTimer);
+        previewTimer = setTimeout(refreshPreview, 250);
+    }
+
+    function syncMode() {
+        var sched = scheduleMode();
+        schedFields.classList.toggle('d-none', !sched);
+        // Time-of-day only applies to the "days later, at a set time" option.
+        todWrap.classList.toggle('d-none', offsetType.value !== 'days');
+        if (sched) refreshPreview();
+        syncConfirm();
+    }
+
+    document.querySelectorAll('input[name="send_mode"]').forEach(function (el) {
+        el.addEventListener('change', syncMode);
+    });
+    offsetType.addEventListener('change', function () {
+        todWrap.classList.toggle('d-none', offsetType.value !== 'days');
+        debouncedPreview();
+    });
+    offsetValue.addEventListener('input', debouncedPreview);
+    timeOfDay.addEventListener('input', debouncedPreview);
+
     ssModal.addEventListener('show.bs.modal', function () {
-        var loading = document.getElementById('sendSurveyLoading');
-        var content = document.getElementById('sendSurveyContent');
-        var empty   = document.getElementById('sendSurveyEmpty');
-        var error   = document.getElementById('sendSurveyError');
-        var btn     = document.getElementById('sendSurveyConfirmBtn');
         loading.classList.remove('d-none');
         content.classList.add('d-none');
         empty.classList.add('d-none');
         error.classList.add('d-none');
         btn.disabled = true;
+        recipientsAvailable = false;
         fetch("{% url 'tickets:survey_recipient_count' event.id %}",
               { headers: { 'X-Requested-With': 'XMLHttpRequest' } })
             .then(function (r) { return r.json(); })
@@ -2745,7 +2882,8 @@ if (document.readyState === 'loading') {
                 if (d.count > 0) {
                     document.getElementById('sendSurveyCount').textContent = d.count;
                     content.classList.remove('d-none');
-                    btn.disabled = false;
+                    recipientsAvailable = true;
+                    syncMode();
                 } else {
                     empty.classList.remove('d-none');   // btn stays disabled
                 }
@@ -2753,7 +2891,9 @@ if (document.readyState === 'loading') {
             .catch(function () {
                 loading.classList.add('d-none');
                 error.classList.remove('d-none');
-                btn.disabled = false;                  // allow send; server re-checks
+                content.classList.remove('d-none');
+                recipientsAvailable = true;             // allow send; server re-checks
+                syncMode();
             });
     });
 })();

@@ -173,9 +173,16 @@ def build_survey_email(event, survey_url):
 
 @shared_task(bind=True, max_retries=2, default_retry_delay=30)
 def send_survey_emails_task(self, event_id, organization_id):
-    """Send survey emails to all unsent invitations for an event."""
+    """Send survey emails for an event's due, unsent invitations.
+
+    Only sends rows whose scheduled_send_at is NULL (send-now) or already in the
+    past, so scheduled invitations sit untouched until the send_due_survey_invitations
+    cron dispatches them once due.
+    """
     from django.core.mail import send_mail
     from django.conf import settings
+    from django.db.models import Q
+    from django.utils import timezone
     from tickets.models import SurveyInvitation, Event
 
     try:
@@ -188,6 +195,8 @@ def send_survey_emails_task(self, event_id, organization_id):
         event_id=event_id,
         organization_id=organization_id,
         sent_at__isnull=True,
+    ).filter(
+        Q(scheduled_send_at__isnull=True) | Q(scheduled_send_at__lte=timezone.now())
     )
 
     site_url = settings.SITE_URL.rstrip('/')
@@ -205,7 +214,6 @@ def send_survey_emails_task(self, event_id, organization_id):
                 recipient_list=[invitation.email],
                 html_message=html_body,
             )
-            from django.utils import timezone
             invitation.sent_at = timezone.now()
             invitation.save(update_fields=['sent_at'])
             sent_count += 1
