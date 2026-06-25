@@ -159,16 +159,27 @@ def send_otp_email_task(self, otp_id):
 
 
 
+def build_survey_email(event, survey_url):
+    """Render the survey invitation email as (subject, text_body, html_body).
+    Shared by the bulk send task and the builder's test-send."""
+    from django.template.loader import render_to_string
+    context = {'event': event, 'survey_url': survey_url}
+    return (
+        event.resolved_survey_subject(),
+        render_to_string('tickets/survey/survey_email.txt', context),
+        render_to_string('tickets/survey/survey_email.html', context),
+    )
+
+
 @shared_task(bind=True, max_retries=2, default_retry_delay=30)
 def send_survey_emails_task(self, event_id, organization_id):
     """Send survey emails to all unsent invitations for an event."""
     from django.core.mail import send_mail
-    from django.template.loader import render_to_string
     from django.conf import settings
     from tickets.models import SurveyInvitation, Event
 
     try:
-        event = Event.objects.select_related('venue').get(id=event_id)
+        event = Event.objects.select_related('venue', 'organization').get(id=event_id)
     except Event.DoesNotExist:
         logger.warning("Event %s not found, skipping survey emails", event_id)
         return
@@ -184,16 +195,11 @@ def send_survey_emails_task(self, event_id, organization_id):
 
     for invitation in invitations:
         survey_url = f"{site_url}/survey/{invitation.token}/"
-        context = {
-            'event': event,
-            'survey_url': survey_url,
-        }
-        html_body = render_to_string('tickets/survey/survey_email.html', context)
-        text_body = render_to_string('tickets/survey/survey_email.txt', context)
+        subject, text_body, html_body = build_survey_email(event, survey_url)
 
         try:
             send_mail(
-                subject=f"How was {event.name}? Share your feedback",
+                subject=subject,
                 message=text_body,
                 from_email=settings.DEFAULT_FROM_EMAIL,
                 recipient_list=[invitation.email],

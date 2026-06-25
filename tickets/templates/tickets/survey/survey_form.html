@@ -118,7 +118,6 @@
             cursor: pointer; margin-top: 6px; transition: opacity 0.15s;
         }
         .btn-submit:hover { opacity: 0.88; }
-        .submit-note { text-align: center; font-family: var(--font-mono); font-size: 0.68rem; letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-3); margin-top: 14px; }
 
         @keyframes fadeUp { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: none; } }
     </style>
@@ -196,7 +195,6 @@
             {% endfor %}
 
             <button type="submit" class="btn-submit"{% if preview %} disabled style="opacity:.5; cursor:default;"{% endif %}>Submit Feedback</button>
-            <p class="submit-note">Your responses are anonymous and help us improve future events.</p>
         </form>
     </div>
 </body>
