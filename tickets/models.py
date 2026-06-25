@@ -98,6 +98,11 @@ class Organization(BaseModel):
         help_text="Org-wide default subject for survey invitation emails. "
                   "Use {event} for the event name. Blank = built-in default.",
     )
+    survey_reply_to_email = models.EmailField(
+        blank=True, default='',
+        help_text="Replies to survey invitations go here, and the org name appears "
+                  "on the From line. Blank = send as Cue with no reply-to.",
+    )
     # Org-wide default schedule for sending the post-event survey, expressed as
     # an offset from the event start or end. Blank offset_type = send immediately.
     survey_send_offset_type = models.CharField(

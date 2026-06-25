@@ -127,6 +127,22 @@
       {% endif %}
     </form>
 
+    {% if not event %}
+    {# ---- Reply-to / sender identity (org-wide only) ---- #}
+    <hr class="my-3">
+    <form method="post" action="{% url 'tickets:survey_reply_to_save' %}">
+      {% csrf_token %}
+      <label class="form-label small fw-medium mb-1" for="survey-reply-to">Reply-to email</label>
+      <input type="email" name="reply_to_email" id="survey-reply-to" class="form-control"
+             value="{{ survey_reply_to_email }}" placeholder="events@yourdomain.com">
+      <div class="form-text">
+        When set, your organization's name appears on the From line and replies go
+        to this address. Leave blank to send as Cue with no reply-to.
+      </div>
+      <button type="submit" class="btn btn-outline-primary btn-sm mt-2">Save reply-to</button>
+    </form>
+    {% endif %}
+
     <hr class="my-3">
     <form method="post" action="{{ survey_send_test_url }}" class="row g-2 align-items-end">
       {% csrf_token %}

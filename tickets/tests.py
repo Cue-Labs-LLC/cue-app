@@ -14521,6 +14521,106 @@ class ScheduledSurveySendTests(TestCase):
         self.assertIn('error', data)
 
 
+class SurveyReplyToSenderTests(TestCase):
+    """Survey emails send with the organizer's name + reply-to when opted in."""
+
+    def setUp(self):
+        self.client = Client()
+        self.org = Organization.objects.create(name='Acme Events', slug='acme-events')
+        self.user = User.objects.create_user(
+            username='replytohost', email='host@acme.com', password='testpass123',
+        )
+        UserProfile.objects.create(user=self.user, organization=self.org,
+                                   org_role=UserProfile.OrgRole.OWNER)
+        self.client.login(username='host@acme.com', password='testpass123')
+        self.client.get(reverse('tickets:home'))  # seed _org_id in session
+
+        self.venue = Venue.objects.create(organization=self.org, name='Venue', city='City')
+        self.event = Event.objects.create(
+            organization=self.org, name='Acme Fest', venue=self.venue,
+            start_date=date(2099, 1, 1), end_date=date(2099, 1, 1), end_time=time(22, 0),
+            timezone='America/New_York',
+        )
+        self.customer = Customer.objects.create(
+            organization=self.org, email='fan@example.com', name='Fan',
+        )
+
+    # ---- survey_sender_fields helper -----------------------------------------
+
+    def test_sender_fields_default_when_no_reply_to(self):
+        from tickets.tasks import survey_sender_fields
+        from django.conf import settings
+        from_email, reply_to = survey_sender_fields(self.org)
+        self.assertEqual(from_email, settings.DEFAULT_FROM_EMAIL)
+        self.assertIsNone(reply_to)
+
+    def test_sender_fields_uses_org_name_and_reply_to_when_set(self):
+        from tickets.tasks import survey_sender_fields
+        self.org.survey_reply_to_email = 'events@acme.com'
+        self.org.save()
+        from_email, reply_to = survey_sender_fields(self.org)
+        # Org name on the From line, keeping Cue's verified sending address.
+        self.assertTrue(from_email.startswith('Acme Events <'))
+        self.assertIn('@', from_email)
+        self.assertEqual(reply_to, ['events@acme.com'])
+
+    # ---- send task ------------------------------------------------------------
+
+    def test_send_task_sets_reply_to_and_from_for_opted_in_org(self):
+        from django.core import mail
+        from tickets.tasks import send_survey_emails_task
+        self.org.survey_reply_to_email = 'events@acme.com'
+        self.org.save()
+        SurveyInvitation.objects.create(
+            organization=self.org, event=self.event, customer=self.customer,
+            email='fan@example.com',
+        )
+        send_survey_emails_task(str(self.event.id), str(self.org.id))
+        self.assertEqual(len(mail.outbox), 1)
+        msg = mail.outbox[0]
+        self.assertEqual(msg.reply_to, ['events@acme.com'])
+        self.assertTrue(msg.from_email.startswith('Acme Events <'))
+        # Body masthead reflects the organizer, and the HTML alternative is present.
+        self.assertIn('Acme Events', msg.body)
+        self.assertEqual(msg.alternatives[0][1], 'text/html')
+
+    def test_send_task_keeps_cue_default_when_not_opted_in(self):
+        from django.core import mail
+        from django.conf import settings
+        from tickets.tasks import send_survey_emails_task
+        SurveyInvitation.objects.create(
+            organization=self.org, event=self.event, customer=self.customer,
+            email='fan@example.com',
+        )
+        send_survey_emails_task(str(self.event.id), str(self.org.id))
+        self.assertEqual(len(mail.outbox), 1)
+        msg = mail.outbox[0]
+        self.assertEqual(msg.from_email, settings.DEFAULT_FROM_EMAIL)
+        self.assertEqual(msg.reply_to, [])
+
+    # ---- save view ------------------------------------------------------------
+
+    def test_reply_to_save_persists_and_clears(self):
+        resp = self.client.post(
+            reverse('tickets:survey_reply_to_save'), {'reply_to_email': 'events@acme.com'},
+        )
+        self.assertEqual(resp.status_code, 302)
+        self.org.refresh_from_db()
+        self.assertEqual(self.org.survey_reply_to_email, 'events@acme.com')
+        # Blank clears the override.
+        self.client.post(reverse('tickets:survey_reply_to_save'), {'reply_to_email': ''})
+        self.org.refresh_from_db()
+        self.assertEqual(self.org.survey_reply_to_email, '')
+
+    def test_reply_to_save_rejects_invalid_email(self):
+        resp = self.client.post(
+            reverse('tickets:survey_reply_to_save'), {'reply_to_email': 'not-an-email'},
+        )
+        self.assertEqual(resp.status_code, 302)
+        self.org.refresh_from_db()
+        self.assertEqual(self.org.survey_reply_to_email, '')
+
+
 class DefaultSurveyScheduleTests(TestCase):
     """Configuring the survey send schedule as an org default with per-event override."""
 

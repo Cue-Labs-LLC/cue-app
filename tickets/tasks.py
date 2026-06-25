@@ -163,12 +163,32 @@ def build_survey_email(event, survey_url):
     """Render the survey invitation email as (subject, text_body, html_body).
     Shared by the bulk send task and the builder's test-send."""
     from django.template.loader import render_to_string
-    context = {'event': event, 'survey_url': survey_url}
+    # Masthead/sender name mirrors the From-line opt-in: when the org sets a
+    # reply-to, the email presents as the organizer; otherwise it's "Cue".
+    org = event.organization
+    sender_name = org.name if (org.survey_reply_to_email or '').strip() else 'Cue'
+    context = {'event': event, 'survey_url': survey_url, 'sender_name': sender_name}
     return (
         event.resolved_survey_subject(),
         render_to_string('tickets/survey/survey_email.txt', context),
         render_to_string('tickets/survey/survey_email.html', context),
     )
+
+
+def survey_sender_fields(organization):
+    """(from_email, reply_to) for an org's survey mail.
+
+    Opt-in: when survey_reply_to_email is set, show the org name on the From line
+    (keeping Cue's verified sending address so SPF/DKIM/DMARC still pass) and route
+    replies to the organizer. Blank = today's behavior: Cue default sender, no
+    reply-to. Shared by the bulk send task and the builder's test-send."""
+    from django.conf import settings
+    from email.utils import parseaddr, formataddr
+    reply_to = (organization.survey_reply_to_email or '').strip()
+    if not reply_to:
+        return settings.DEFAULT_FROM_EMAIL, None
+    _, address = parseaddr(settings.DEFAULT_FROM_EMAIL)  # e.g. noreply@cueup.co
+    return formataddr((organization.name, address)), [reply_to]
 
 
 @shared_task(bind=True, max_retries=2, default_retry_delay=30)
@@ -179,7 +199,7 @@ def send_survey_emails_task(self, event_id, organization_id):
     past, so scheduled invitations sit untouched until the send_due_survey_invitations
     cron dispatches them once due.
     """
-    from django.core.mail import send_mail
+    from django.core.mail import EmailMultiAlternatives
     from django.conf import settings
     from django.db.models import Q
     from django.utils import timezone
@@ -200,6 +220,7 @@ def send_survey_emails_task(self, event_id, organization_id):
     )
 
     site_url = settings.SITE_URL.rstrip('/')
+    from_email, reply_to = survey_sender_fields(event.organization)
     sent_count = 0
 
     for invitation in invitations:
@@ -207,13 +228,15 @@ def send_survey_emails_task(self, event_id, organization_id):
         subject, text_body, html_body = build_survey_email(event, survey_url)
 
         try:
-            send_mail(
+            msg = EmailMultiAlternatives(
                 subject=subject,
-                message=text_body,
-                from_email=settings.DEFAULT_FROM_EMAIL,
-                recipient_list=[invitation.email],
-                html_message=html_body,
+                body=text_body,
+                from_email=from_email,
+                to=[invitation.email],
+                reply_to=reply_to,
             )
+            msg.attach_alternative(html_body, "text/html")
+            msg.send()
             invitation.sent_at = timezone.now()
             invitation.save(update_fields=['sent_at'])
             sent_count += 1

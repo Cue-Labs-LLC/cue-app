@@ -160,6 +160,7 @@ urlpatterns = [
     path('surveys/builder/<uuid:question_id>/delete/', views.survey_question_delete, name='survey_question_delete'),
     path('surveys/builder/reorder/', views.survey_reorder, name='survey_reorder'),
     path('surveys/builder/email-subject/', views.survey_email_subject_save, name='survey_email_subject_save'),
+    path('surveys/builder/reply-to/', views.survey_reply_to_save, name='survey_reply_to_save'),
     path('surveys/builder/send-schedule/', views.survey_schedule_save, name='survey_schedule_save'),
     path('surveys/builder/send-test/', views.survey_send_test_email, name='survey_send_test_email'),
     # Survey builder — per-event (same views, event scope)
