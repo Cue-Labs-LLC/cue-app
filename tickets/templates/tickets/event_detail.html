@@ -2666,12 +2666,19 @@ document.addEventListener('DOMContentLoaded', function() {
                          class="form-control form-control-sm" name="offset_value" id="ssOffsetValue">
                 </div>
                 <div class="col-8">
-                  <label for="ssOffsetType" class="form-label small mb-1">After the event ends</label>
+                  <label for="ssOffsetType" class="form-label small mb-1">Unit</label>
                   <select class="form-select form-select-sm" name="offset_type" id="ssOffsetType">
                     <option value="days" {% if survey_send_default.offset_type == 'days' %}selected{% endif %}>days later, at a set time</option>
                     <option value="hours" {% if survey_send_default.offset_type == 'hours' %}selected{% endif %}>hours later</option>
                   </select>
                 </div>
+              </div>
+              <div class="mt-2">
+                <label for="ssAnchor" class="form-label small mb-1">Relative to</label>
+                <select class="form-select form-select-sm" name="anchor" id="ssAnchor">
+                  <option value="end" {% if survey_send_default.anchor != 'start' %}selected{% endif %}>the event end</option>
+                  <option value="start" {% if survey_send_default.anchor == 'start' %}selected{% endif %}>the event start</option>
+                </select>
               </div>
               <div id="ssTimeOfDayWrap" class="mt-2">
                 <label for="ssTimeOfDay" class="form-label small mb-1">
@@ -2787,6 +2794,7 @@ if (document.readyState === 'loading') {
     var offsetType = document.getElementById('ssOffsetType');
     var offsetValue = document.getElementById('ssOffsetValue');
     var timeOfDay = document.getElementById('ssTimeOfDay');
+    var anchor   = document.getElementById('ssAnchor');
     var preview  = document.getElementById('ssPreview');
 
     var recipientsAvailable = false;   // count > 0 (or unknown after an error)
@@ -2816,6 +2824,7 @@ if (document.readyState === 'loading') {
             offset_type: offsetType.value,
             offset_value: offsetValue.value,
             time_of_day: timeOfDay.value,
+            anchor: anchor.value,
         });
         fetch("{% url 'tickets:survey_schedule_preview' event.id %}?" + params.toString(),
               { headers: { 'X-Requested-With': 'XMLHttpRequest' } })
@@ -2866,6 +2875,7 @@ if (document.readyState === 'loading') {
     });
     offsetValue.addEventListener('input', debouncedPreview);
     timeOfDay.addEventListener('input', debouncedPreview);
+    anchor.addEventListener('change', debouncedPreview);
 
     ssModal.addEventListener('show.bs.modal', function () {
         loading.classList.remove('d-none');

@@ -14626,4 +14626,61 @@ class DefaultSurveyScheduleTests(TestCase):
         self.assertIn('survey_schedule_save_url', resp.context)
         self.assertIn('survey_send_offset_choices', resp.context)
 
+    # ---- anchor (event start vs end) -----------------------------------------
+
+    def test_resolved_schedule_defaults_anchor_to_end(self):
+        self.org.survey_send_offset_type = 'hours'
+        self.org.survey_send_offset_value = 2
+        self.org.save()
+        self.event.refresh_from_db()
+        self.assertEqual(self.event.resolved_survey_schedule()['anchor'], 'end')
+
+    def test_save_persists_start_anchor(self):
+        self.client.post(
+            reverse('tickets:survey_schedule_save'),
+            {'offset_type': 'hours', 'offset_value': '2', 'anchor': 'start'},
+        )
+        self.org.refresh_from_db()
+        self.assertEqual(self.org.survey_send_anchor, 'start')
+
+    def test_compute_from_start_anchor(self):
+        from tickets.views import _compute_survey_send_at
+        from zoneinfo import ZoneInfo
+        # Start 2099-01-01 20:00 EST (UTC-5) + 2h -> 2099-01-01 22:00 EST = 03:00 UTC next day
+        result = _compute_survey_send_at(self.event, 'hours', 2, None, 'start')
+        self.assertEqual(result, datetime(2099, 1, 2, 3, 0, tzinfo=ZoneInfo('UTC')))
+
+    def test_compute_from_end_anchor_unchanged(self):
+        from tickets.views import _compute_survey_send_at
+        from zoneinfo import ZoneInfo
+        # End 2099-01-01 22:00 EST + 2h -> 2099-01-02 05:00 UTC (default anchor)
+        result = _compute_survey_send_at(self.event, 'hours', 2, None)
+        self.assertEqual(result, datetime(2099, 1, 2, 5, 0, tzinfo=ZoneInfo('UTC')))
+
+    def test_preview_respects_start_anchor(self):
+        resp = self.client.get(
+            reverse('tickets:survey_schedule_preview', args=[self.event.id]),
+            {'offset_type': 'hours', 'offset_value': '2', 'anchor': 'start'},
+        )
+        self.assertTrue(resp.json()['valid'])
+
+    def test_describe_includes_anchor_word(self):
+        from tickets.views import _describe_survey_schedule
+        self.assertEqual(
+            _describe_survey_schedule({'offset_type': 'hours', 'offset_value': 3, 'anchor': 'start'}),
+            "3 hours after the event starts",
+        )
+        self.assertEqual(
+            _describe_survey_schedule({'offset_type': 'hours', 'offset_value': 3, 'anchor': 'end'}),
+            "3 hours after the event ends",
+        )
+
+    def test_event_detail_prefills_anchor(self):
+        self.org.survey_send_offset_type = 'hours'
+        self.org.survey_send_offset_value = 2
+        self.org.survey_send_anchor = 'start'
+        self.org.save()
+        resp = self.client.get(reverse('tickets:event_detail', args=[self.event.id]))
+        self.assertEqual(resp.context['survey_send_default']['anchor'], 'start')
+
 

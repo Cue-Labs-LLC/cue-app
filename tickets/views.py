@@ -4963,6 +4963,7 @@ def event_detail(request, event_id):
         'offset_value': (_resolved_schedule or {}).get('offset_value') or 2,
         'time_of_day': ((_resolved_schedule or {}).get('time_of_day').strftime('%H:%M')
                         if (_resolved_schedule or {}).get('time_of_day') else '09:00'),
+        'anchor': (_resolved_schedule or {}).get('anchor') or 'end',
     }
     external_survey_responses_count = stats['external_survey_responses_count']
     survey_total_response_count = stats['survey_total_response_count']
@@ -9242,12 +9243,13 @@ def _event_tz(event):
         return ZoneInfo('America/Los_Angeles')
 
 
-def _compute_survey_send_at(event, offset_type, offset_value, time_of_day):
+def _compute_survey_send_at(event, offset_type, offset_value, time_of_day, anchor='end'):
     """Absolute UTC datetime to send the survey, from an offset relative to the
-    event's end. Raises ValueError with a user-facing message on bad input.
+    event's start or end. Raises ValueError with a user-facing message on bad input.
 
-    offset_type 'hours' -> event_end + N hours
-    offset_type 'days'  -> N days after the event-end date, at time_of_day (event tz)
+    anchor 'end' (default) -> measured from event end; 'start' -> from event start
+    offset_type 'hours' -> anchor + N hours
+    offset_type 'days'  -> N days after the anchor date, at time_of_day (event tz)
     """
     try:
         value = int(offset_value)
@@ -9256,15 +9258,16 @@ def _compute_survey_send_at(event, offset_type, offset_value, time_of_day):
     if value < 0:
         raise ValueError("The offset can't be negative.")
 
-    end_dt = event.end_datetime()  # aware, in the event's timezone
+    anchor_dt = (event.start_datetime() if anchor == 'start'
+                 else event.end_datetime())  # aware, in the event's timezone
 
     if offset_type == 'hours':
-        send_local = end_dt + timedelta(hours=value)
+        send_local = anchor_dt + timedelta(hours=value)
     elif offset_type == 'days':
         if not isinstance(time_of_day, time):
             raise ValueError("Pick a time of day to send.")
         send_local = datetime.combine(
-            end_dt.date() + timedelta(days=value), time_of_day, tzinfo=end_dt.tzinfo,
+            anchor_dt.date() + timedelta(days=value), time_of_day, tzinfo=anchor_dt.tzinfo,
         )
     else:
         raise ValueError("Choose how to schedule the survey.")
@@ -9307,6 +9310,7 @@ def survey_schedule_preview(request, event_id):
             request.GET.get('offset_type'),
             request.GET.get('offset_value'),
             time_of_day,
+            request.GET.get('anchor') or 'end',
         )
     except ValueError as exc:
         return JsonResponse({'valid': False, 'error': str(exc)})
@@ -9342,9 +9346,10 @@ def send_survey(request, event_id):
         if offset_value in (None, ''):
             offset_value = default.get('offset_value')
         time_of_day = parse_time(request.POST.get('time_of_day') or '') or default.get('time_of_day')
+        anchor = request.POST.get('anchor') or default.get('anchor') or 'end'
         try:
             scheduled_send_at = _compute_survey_send_at(
-                event, offset_type, offset_value, time_of_day,
+                event, offset_type, offset_value, time_of_day, anchor,
             )
         except ValueError as exc:
             messages.error(request, str(exc))
@@ -9635,11 +9640,13 @@ def survey_builder(request, event_id=None):
         'survey_send_offset_type': (event if event else org).survey_send_offset_type,
         'survey_send_offset_value': (event if event else org).survey_send_offset_value,
         'survey_send_time_of_day': (event if event else org).survey_send_time_of_day,
+        'survey_send_anchor': (event if event else org).survey_send_anchor or 'end',
         'survey_send_offset_choices': SURVEY_SEND_OFFSET_CHOICES,
         'survey_schedule_inherited': _describe_survey_schedule(
             {'offset_type': org.survey_send_offset_type,
              'offset_value': org.survey_send_offset_value,
-             'time_of_day': org.survey_send_time_of_day} if event else None
+             'time_of_day': org.survey_send_time_of_day,
+             'anchor': org.survey_send_anchor or 'end'} if event else None
         ),
         'survey_schedule_save_url': (
             reverse('tickets:event_survey_schedule_save', args=[event.id]) if event
@@ -9921,13 +9928,14 @@ def _describe_survey_schedule(schedule):
     value = schedule.get('offset_value')
     if value is None:
         return "Send immediately"
+    anchor_word = 'starts' if schedule.get('anchor') == 'start' else 'ends'
     if schedule['offset_type'] == 'hours':
         unit = 'hour' if value == 1 else 'hours'
-        return f"{value} {unit} after the event ends"
+        return f"{value} {unit} after the event {anchor_word}"
     unit = 'day' if value == 1 else 'days'
     tod = schedule.get('time_of_day')
     when = tod.strftime('%-I:%M %p') if tod else '9:00 AM'
-    return f"{value} {unit} after the event ends at {when}"
+    return f"{value} {unit} after the event {anchor_word} at {when}"
 
 
 @login_required
@@ -9950,14 +9958,18 @@ def survey_schedule_save(request, event_id=None):
     offset_type = (request.POST.get('offset_type') or '').strip()
     target = event if event else org
 
+    schedule_fields = [
+        'survey_send_offset_type', 'survey_send_offset_value',
+        'survey_send_time_of_day', 'survey_send_anchor',
+    ]
+
     if offset_type not in ('hours', 'days'):
         # Clear the schedule -> send immediately (event) / no org default.
         target.survey_send_offset_type = ''
         target.survey_send_offset_value = None
         target.survey_send_time_of_day = None
-        target.save(update_fields=[
-            'survey_send_offset_type', 'survey_send_offset_value', 'survey_send_time_of_day',
-        ])
+        target.survey_send_anchor = ''
+        target.save(update_fields=schedule_fields)
         messages.success(request, "Survey send time saved.")
         return _builder_redirect(event)
 
@@ -9976,12 +9988,12 @@ def survey_schedule_save(request, event_id=None):
             messages.error(request, "Pick a time of day to send.")
             return _builder_redirect(event)
 
+    anchor = 'start' if request.POST.get('anchor') == 'start' else 'end'
     target.survey_send_offset_type = offset_type
     target.survey_send_offset_value = value
     target.survey_send_time_of_day = time_of_day
-    target.save(update_fields=[
-        'survey_send_offset_type', 'survey_send_offset_value', 'survey_send_time_of_day',
-    ])
+    target.survey_send_anchor = anchor
+    target.save(update_fields=schedule_fields)
     messages.success(request, "Survey send time saved.")
     return _builder_redirect(event)
 

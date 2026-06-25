@@ -84,6 +84,9 @@ class AuditBaseModel(BaseModel):
 # offset_type means "send immediately" (no scheduled offset configured).
 SURVEY_SEND_OFFSET_CHOICES = [('hours', 'hours'), ('days', 'days')]
 
+# Whether the survey send offset is measured from the event start or end.
+SURVEY_SEND_ANCHOR_CHOICES = [('end', 'end'), ('start', 'start')]
+
 
 class Organization(BaseModel):
     """Organization that owns venues, events, uploads, customers, and custom fields."""
@@ -96,16 +99,21 @@ class Organization(BaseModel):
                   "Use {event} for the event name. Blank = built-in default.",
     )
     # Org-wide default schedule for sending the post-event survey, expressed as
-    # an offset from the event end. Blank offset_type = send immediately.
+    # an offset from the event start or end. Blank offset_type = send immediately.
     survey_send_offset_type = models.CharField(
         max_length=10, blank=True, default='', choices=SURVEY_SEND_OFFSET_CHOICES,
-        help_text="Default survey send timing: 'hours' or 'days' after the event "
-                  "ends. Blank = send immediately.",
+        help_text="Default survey send timing: 'hours' or 'days' relative to the "
+                  "event. Blank = send immediately.",
     )
     survey_send_offset_value = models.PositiveSmallIntegerField(null=True, blank=True)
     survey_send_time_of_day = models.TimeField(
         null=True, blank=True,
         help_text="Time of day to send when offset_type is 'days' (event timezone).",
+    )
+    survey_send_anchor = models.CharField(
+        max_length=10, blank=True, default='', choices=SURVEY_SEND_ANCHOR_CHOICES,
+        help_text="Whether the offset is measured from the event 'start' or 'end'. "
+                  "Blank = end.",
     )
     sms_marketing_enabled = models.BooleanField(
         default=False,
@@ -1109,6 +1117,11 @@ class Event(AuditBaseModel):
     )
     survey_send_offset_value = models.PositiveSmallIntegerField(null=True, blank=True)
     survey_send_time_of_day = models.TimeField(null=True, blank=True)
+    survey_send_anchor = models.CharField(
+        max_length=10, blank=True, default='', choices=SURVEY_SEND_ANCHOR_CHOICES,
+        help_text="Per-event override: measure the offset from the event 'start' "
+                  "or 'end'. Blank = end.",
+    )
     scanner_pin = models.CharField(
         max_length=8, null=True, blank=True, unique=True, db_index=True,
         help_text="6-digit PIN for guest scanner access (no Cue account required).",
@@ -1198,7 +1211,24 @@ class Event(AuditBaseModel):
             'offset_type': src.survey_send_offset_type,
             'offset_value': src.survey_send_offset_value,
             'time_of_day': src.survey_send_time_of_day,
+            'anchor': src.survey_send_anchor or 'end',
         }
+
+    def start_datetime(self):
+        """Timezone-aware datetime for when the event starts, in the event's own
+        timezone. Used to anchor survey-send scheduling to the event start.
+
+        Falls back to midnight when start_time is unset. Returns an aware datetime.
+        """
+        from datetime import datetime, time as dt_time
+        from zoneinfo import ZoneInfo
+
+        start_time = self.start_time or dt_time(0, 0)
+        try:
+            tz = ZoneInfo(self.timezone)
+        except Exception:
+            tz = ZoneInfo('America/Los_Angeles')
+        return datetime.combine(self.start_date, start_time, tzinfo=tz)
 
     def end_datetime(self):
         """Timezone-aware datetime for when the event ends, in the event's own

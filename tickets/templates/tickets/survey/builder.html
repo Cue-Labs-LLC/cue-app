@@ -156,12 +156,12 @@
         <em>{{ survey_schedule_inherited }}</em>.{% endif %}
       </div>
       <div class="row g-2 align-items-end">
-        <div class="col-sm-5">
+        <div class="col-sm-12">
           <label class="form-label small mb-1" for="survey-offset-type">Timing</label>
           <select class="form-select" name="offset_type" id="survey-offset-type" {% if locked %}disabled{% endif %}>
             <option value="" {% if not survey_send_offset_type %}selected{% endif %}>Send immediately</option>
             {% for value, label in survey_send_offset_choices %}
-            <option value="{{ value }}" {% if survey_send_offset_type == value %}selected{% endif %}>{{ label }} after event ends</option>
+            <option value="{{ value }}" {% if survey_send_offset_type == value %}selected{% endif %}>{{ label }} after the event</option>
             {% endfor %}
           </select>
         </div>
@@ -170,6 +170,13 @@
           <input type="number" min="0" step="1" class="form-control" name="offset_value"
                  id="survey-offset-value" value="{{ survey_send_offset_value|default:'1' }}"
                  {% if locked %}disabled{% endif %}>
+        </div>
+        <div class="col-sm-5" id="survey-anchor-wrap">
+          <label class="form-label small mb-1" for="survey-anchor">Relative to</label>
+          <select class="form-select" name="anchor" id="survey-anchor" {% if locked %}disabled{% endif %}>
+            <option value="end" {% if survey_send_anchor != 'start' %}selected{% endif %}>the event end</option>
+            <option value="start" {% if survey_send_anchor == 'start' %}selected{% endif %}>the event start</option>
+          </select>
         </div>
         <div class="col-sm-4" id="survey-time-of-day-wrap">
           <label class="form-label small mb-1" for="survey-time-of-day">Time of day</label>
@@ -191,9 +198,11 @@
   if (!sel) return;
   var valWrap = document.getElementById('survey-offset-value-wrap');
   var todWrap = document.getElementById('survey-time-of-day-wrap');
+  var anchorWrap = document.getElementById('survey-anchor-wrap');
   function sync() {
     var mode = sel.value;
     valWrap.style.display = mode ? '' : 'none';
+    anchorWrap.style.display = mode ? '' : 'none';
     todWrap.style.display = (mode === 'days') ? '' : 'none';
   }
   sel.addEventListener('change', sync);
