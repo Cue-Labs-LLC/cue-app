@@ -41,6 +41,7 @@ from .models import (
     CSVFormat, UploadedFile, Customer, CustomerTag, Event, EventExpense, EventEmailCampaign, EventSMSCampaign, EventTalent, TicketOrder, Ticket, Venue,
     CustomField, CustomFieldOption, EventCustomFieldValue, IncomeSource, EventIncome,
     SurveyQuestion, SurveyQuestionOption, SurveyInvitation, SurveyResponse, SurveyAnswer, SurveyAnswerOption,
+    DEFAULT_SURVEY_SUBJECT,
     PipedreamCalendarConnection, OrganizationAPIKey,
     SaleableTicketType, SaleableTicketTypeTier, StripeCheckoutSession, Payout, PromoCode,
     ExternalSurveyUpload, ExternalSurveyResponse, TypeformFormSubscription, EventDailyPageView,
@@ -9454,6 +9455,19 @@ def survey_builder(request, event_id=None):
         'reorder_url': reverse(reorder_name, args=args),
         'preview_url': reverse('tickets:event_survey_preview', args=args) if event
                        else reverse('tickets:survey_preview'),
+        'survey_email_subject': event.survey_email_subject if event else org.survey_email_subject,
+        'survey_subject_inherited': (
+            ((org.survey_email_subject or '').strip() or DEFAULT_SURVEY_SUBJECT)
+            if event else DEFAULT_SURVEY_SUBJECT
+        ),
+        'survey_subject_save_url': (
+            reverse('tickets:event_survey_email_subject_save', args=[event.id]) if event
+            else reverse('tickets:survey_email_subject_save')
+        ),
+        'survey_send_test_url': (
+            reverse('tickets:event_survey_send_test_email', args=[event.id]) if event
+            else reverse('tickets:survey_send_test_email')
+        ),
     }
     if event and not questions:
         context['effective_preview'] = list(_resolve_effective_questions(event))
@@ -9694,6 +9708,73 @@ def event_survey_customize(request, event_id):
         return _builder_redirect(event)
     if _clone_effective_to_event(event):
         messages.success(request, "You can now customize this event's survey.")
+    return _builder_redirect(event)
+
+
+@login_required
+@require_org
+@require_host
+def survey_email_subject_save(request, event_id=None):
+    """Save the survey email subject for the org template or one event. POST only."""
+    org, event = _survey_scope(request, event_id)
+    if request.method != 'POST':
+        return _builder_redirect(event)
+    if event and _survey_locked(event):
+        messages.error(request, "This survey has been sent and can no longer be edited.")
+        return _builder_redirect(event)
+    subject = (request.POST.get('email_subject') or '').strip()[:255]
+    if event:
+        event.survey_email_subject = subject
+        event.save(update_fields=['survey_email_subject'])
+    else:
+        org.survey_email_subject = subject
+        org.save(update_fields=['survey_email_subject'])
+    messages.success(request, "Survey email subject saved.")
+    return _builder_redirect(event)
+
+
+@login_required
+@require_org
+@require_host
+def survey_send_test_email(request, event_id=None):
+    """Send a one-off test survey email to a chosen address. POST only."""
+    org, event = _survey_scope(request, event_id)
+    if request.method != 'POST':
+        return _builder_redirect(event)
+
+    recipient = (request.POST.get('test_email') or '').strip()
+    from django.core.validators import validate_email
+    from django.core.exceptions import ValidationError
+    try:
+        validate_email(recipient)
+    except ValidationError:
+        messages.error(request, "Enter a valid email address to send a test to.")
+        return _builder_redirect(event)
+
+    # Org-scope test has no event — render against a throwaway sample.
+    target = event or Event(
+        organization=org, name='Your Event', start_date=django_tz.now().date()
+    )
+    site_url = settings.SITE_URL.rstrip('/')
+    # Test has no invitation; point the button at the organizer survey preview
+    # (same page the builder's live preview uses) instead of a dead token URL.
+    preview_path = (reverse('tickets:event_survey_preview', args=[event.id]) if event
+                    else reverse('tickets:survey_preview'))
+    survey_url = f"{site_url}{preview_path}"
+
+    from .tasks import build_survey_email
+    from django.core.mail import send_mail
+    subject, text_body, html_body = build_survey_email(target, survey_url)
+    try:
+        send_mail(
+            subject=subject, message=text_body,
+            from_email=settings.DEFAULT_FROM_EMAIL,
+            recipient_list=[recipient], html_message=html_body,
+        )
+        messages.success(request, f"Test survey email sent to {recipient}.")
+    except Exception:
+        logger.exception("Failed to send test survey email to %s", recipient)
+        messages.error(request, "Couldn't send the test email. Check email settings and try again.")
     return _builder_redirect(event)
 
 

@@ -106,6 +106,43 @@
 
 <div class="row g-4">
 <div class="col-lg-7">
+
+{# ---- Survey email subject (org default / per-event override) ---- #}
+<div class="card mb-3">
+  <div class="card-body">
+    <form method="post" action="{{ survey_subject_save_url }}">
+      {% csrf_token %}
+      <label class="form-label small fw-medium mb-1" for="survey-email-subject">Survey email subject</label>
+      <input type="text" name="email_subject" id="survey-email-subject" maxlength="255" class="form-control"
+             value="{{ survey_email_subject }}"
+             placeholder="{{ survey_subject_inherited }}"
+             {% if locked %}disabled{% endif %}>
+      <div class="form-text">
+        Use <code>{event}</code> for the event name. Leave blank to use
+        {% if event %}the default survey's subject{% else %}the built-in default{% endif %}:
+        <em>{{ survey_subject_inherited }}</em>
+      </div>
+      {% if not locked %}
+      <button type="submit" class="btn btn-outline-primary btn-sm mt-2">Save subject</button>
+      {% endif %}
+    </form>
+
+    <hr class="my-3">
+    <form method="post" action="{{ survey_send_test_url }}" class="row g-2 align-items-end">
+      {% csrf_token %}
+      <div class="col-sm">
+        <label class="form-label small fw-medium mb-1" for="survey-test-email">Send a test email</label>
+        <input type="email" name="test_email" id="survey-test-email" class="form-control"
+               value="{{ request.user.email }}" placeholder="you@example.com" required>
+      </div>
+      <div class="col-sm-auto">
+        <button type="submit" class="btn btn-outline-secondary btn-sm">Send test</button>
+      </div>
+    </form>
+    <div class="form-text mt-1">Sends the current survey email (with the resolved subject) so you can preview it.</div>
+  </div>
+</div>
+
 {% if event and not questions %}
 {# Event uses the org default — offer to customize, preview read-only. #}
 <div class="card mb-3">

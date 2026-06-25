@@ -85,6 +85,11 @@ class Organization(BaseModel):
     name = models.CharField(max_length=200)
     slug = models.SlugField(max_length=100, unique=True)
     rfm_recalc_in_progress = models.BooleanField(default=False)
+    survey_email_subject = models.CharField(
+        max_length=255, blank=True, default='',
+        help_text="Org-wide default subject for survey invitation emails. "
+                  "Use {event} for the event name. Blank = built-in default.",
+    )
     sms_marketing_enabled = models.BooleanField(
         default=False,
         help_text=(
@@ -1074,6 +1079,11 @@ class Event(AuditBaseModel):
         default=0,
         help_text="Number of times the public ticket page (/e/<id>/) was loaded.",
     )
+    survey_email_subject = models.CharField(
+        max_length=255, blank=True, default='',
+        help_text="Per-event override for the survey email subject. "
+                  "Use {event} for the event name. Blank = org default.",
+    )
     scanner_pin = models.CharField(
         max_length=8, null=True, blank=True, unique=True, db_index=True,
         help_text="6-digit PIN for guest scanner access (no Cue account required).",
@@ -1136,6 +1146,16 @@ class Event(AuditBaseModel):
     def get_upload_count(self):
         """Get count of distinct uploads associated with this event."""
         return self.get_associated_uploads().count()
+
+    def resolved_survey_subject(self):
+        """Effective survey email subject: event override → org default →
+        built-in default, with {event} expanded to the event name."""
+        template = (
+            (self.survey_email_subject or '').strip()
+            or (self.organization.survey_email_subject or '').strip()
+            or DEFAULT_SURVEY_SUBJECT
+        )
+        return template.replace('{event}', self.name)
 
 
 def generate_unique_scanner_pin():
@@ -2761,6 +2781,12 @@ class StripeCheckoutSession(BaseModel):
 
     def __str__(self):
         return f"Stripe session {self.stripe_session_id} ({self.status})"
+
+
+# Built-in fallback subject for survey invitation emails. Use {event} for the
+# event name. Overridden per-org (Organization.survey_email_subject) and
+# per-event (Event.survey_email_subject); see Event.resolved_survey_subject().
+DEFAULT_SURVEY_SUBJECT = "How was {event}? Share your feedback"
 
 
 class SurveyQuestion(BaseModel):

@@ -159,6 +159,8 @@ urlpatterns = [
     path('surveys/builder/<uuid:question_id>/save/', views.survey_question_save, name='survey_question_save'),
     path('surveys/builder/<uuid:question_id>/delete/', views.survey_question_delete, name='survey_question_delete'),
     path('surveys/builder/reorder/', views.survey_reorder, name='survey_reorder'),
+    path('surveys/builder/email-subject/', views.survey_email_subject_save, name='survey_email_subject_save'),
+    path('surveys/builder/send-test/', views.survey_send_test_email, name='survey_send_test_email'),
     # Survey builder — per-event (same views, event scope)
     path('events/<uuid:event_id>/survey/builder/', views.survey_builder, name='event_survey_builder'),
     path('events/<uuid:event_id>/survey/builder/preview/', views.survey_preview, name='event_survey_preview'),
@@ -168,6 +170,8 @@ urlpatterns = [
     path('events/<uuid:event_id>/survey/<uuid:question_id>/save/', views.survey_question_save, name='event_survey_question_save'),
     path('events/<uuid:event_id>/survey/<uuid:question_id>/delete/', views.survey_question_delete, name='event_survey_question_delete'),
     path('events/<uuid:event_id>/survey/reorder/', views.survey_reorder, name='event_survey_reorder'),
+    path('events/<uuid:event_id>/survey/email-subject/', views.survey_email_subject_save, name='event_survey_email_subject_save'),
+    path('events/<uuid:event_id>/survey/send-test/', views.survey_send_test_email, name='event_survey_send_test_email'),
 
     # Events
     path('events/', views.event_list, name='event_list'),
