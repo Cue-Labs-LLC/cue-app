@@ -1,4 +1,4 @@
-Cue
+{{ sender_name|default:"Cue" }}
 
 How was {{ event.name }}?
 {{ event.start_date|date:"F j, Y" }}{% if event.venue %} at {{ event.venue.name }}, {{ event.venue.city }}{% endif %}

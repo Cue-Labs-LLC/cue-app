@@ -9645,6 +9645,8 @@ def survey_builder(request, event_id=None):
             reverse('tickets:event_survey_email_subject_save', args=[event.id]) if event
             else reverse('tickets:survey_email_subject_save')
         ),
+        # Org-wide reply-to (sender identity). Org scope only; no per-event override.
+        'survey_reply_to_email': org.survey_reply_to_email,
         'survey_send_test_url': (
             reverse('tickets:event_survey_send_test_email', args=[event.id]) if event
             else reverse('tickets:survey_send_test_email')
@@ -9932,6 +9934,31 @@ def survey_email_subject_save(request, event_id=None):
     return _builder_redirect(event)
 
 
+@login_required
+@require_org
+@require_host
+def survey_reply_to_save(request):
+    """Save the org-wide survey reply-to email. Org scope only, POST only.
+
+    Blank clears the override (surveys then send as Cue with no reply-to)."""
+    org = get_organization(request)
+    if request.method != 'POST':
+        return _builder_redirect(None)
+    reply_to = (request.POST.get('reply_to_email') or '').strip()
+    if reply_to:
+        from django.core.validators import validate_email
+        from django.core.exceptions import ValidationError
+        try:
+            validate_email(reply_to)
+        except ValidationError:
+            messages.error(request, "Enter a valid reply-to email address.")
+            return _builder_redirect(None)
+    org.survey_reply_to_email = reply_to
+    org.save(update_fields=['survey_reply_to_email'])
+    messages.success(request, "Survey reply-to address saved.")
+    return _builder_redirect(None)
+
+
 def _describe_survey_schedule(schedule):
     """Human-readable description of a resolved survey schedule dict (or None).
 
@@ -10042,15 +10069,17 @@ def survey_send_test_email(request, event_id=None):
                     else reverse('tickets:survey_preview'))
     survey_url = f"{site_url}{preview_path}"
 
-    from .tasks import build_survey_email
-    from django.core.mail import send_mail
+    from .tasks import build_survey_email, survey_sender_fields
+    from django.core.mail import EmailMultiAlternatives
     subject, text_body, html_body = build_survey_email(target, survey_url)
+    from_email, reply_to = survey_sender_fields(org)
     try:
-        send_mail(
-            subject=subject, message=text_body,
-            from_email=settings.DEFAULT_FROM_EMAIL,
-            recipient_list=[recipient], html_message=html_body,
+        msg = EmailMultiAlternatives(
+            subject=subject, body=text_body, from_email=from_email,
+            to=[recipient], reply_to=reply_to,
         )
+        msg.attach_alternative(html_body, "text/html")
+        msg.send()
         messages.success(request, f"Test survey email sent to {recipient}.")
     except Exception:
         logger.exception("Failed to send test survey email to %s", recipient)
