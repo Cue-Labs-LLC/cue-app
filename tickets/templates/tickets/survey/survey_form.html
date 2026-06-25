@@ -118,6 +118,7 @@
             cursor: pointer; margin-top: 6px; transition: opacity 0.15s;
         }
         .btn-submit:hover { opacity: 0.88; }
+        .btn-submit:disabled { opacity: 0.5; cursor: not-allowed; }
 
         @keyframes fadeUp { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: none; } }
     </style>
@@ -138,14 +139,16 @@
             {% csrf_token %}
 
             {% for question in questions %}
-            <div class="question-card">
+            {% with qid=question.id|stringformat:"s" %}
+            {% with field_key="question_"|add:qid %}
+            {% with posted=request.POST|getlist:field_key %}
+            <div class="question-card"{% if question.is_required %} data-required{% endif %}>
                 <h3>{{ question.question_text }}{% if question.is_required %} <span class="required">*</span>{% endif %}</h3>
 
                 {% if question.question_type == 'star_rating' %}
                 <div class="star-rating">
                     {% for i in "54321" %}
-                    <input type="radio" name="question_{{ question.id }}" id="star_{{ question.id }}_{{ i }}" value="{{ i }}"
-                        {% if request.POST %}{% with field_name="question_"|add:question.id|stringformat:"s" %}{% endwith %}{% endif %}>
+                    <input type="radio" name="question_{{ question.id }}" id="star_{{ question.id }}_{{ i }}" value="{{ i }}"{% if i in posted %} checked{% endif %}>
                     <label for="star_{{ question.id }}_{{ i }}"><i class="bi bi-star-fill"></i></label>
                     {% endfor %}
                 </div>
@@ -153,7 +156,7 @@
                 {% elif question.question_type == 'nps' %}
                 <div class="nps-group">
                     {% for i in 11|make_range %}
-                    <input type="radio" name="question_{{ question.id }}" id="nps_{{ question.id }}_{{ i }}" value="{{ i }}">
+                    <input type="radio" name="question_{{ question.id }}" id="nps_{{ question.id }}_{{ i }}" value="{{ i }}"{% if i|stringformat:"s" in posted %} checked{% endif %}>
                     <label for="nps_{{ question.id }}_{{ i }}">{{ i }}</label>
                     {% endfor %}
                 </div>
@@ -166,7 +169,7 @@
                 <div class="choice-group">
                     {% for opt in question.options.all %}
                     <div class="choice-single">
-                        <input type="radio" name="question_{{ question.id }}" id="opt_{{ opt.id }}" value="{{ opt.id }}">
+                        <input type="radio" name="question_{{ question.id }}" id="opt_{{ opt.id }}" value="{{ opt.id }}"{% if opt.id|stringformat:"s" in posted %} checked{% endif %}>
                         <label for="opt_{{ opt.id }}">{{ opt.label }}</label>
                     </div>
                     {% endfor %}
@@ -176,26 +179,51 @@
                 <div class="choice-group">
                     {% for opt in question.options.all %}
                     <div class="choice-multi">
-                        <input type="checkbox" name="question_{{ question.id }}" id="opt_{{ opt.id }}" value="{{ opt.id }}">
+                        <input type="checkbox" name="question_{{ question.id }}" id="opt_{{ opt.id }}" value="{{ opt.id }}"{% if opt.id|stringformat:"s" in posted %} checked{% endif %}>
                         <label for="opt_{{ opt.id }}">{{ opt.label }}</label>
                     </div>
                     {% endfor %}
                 </div>
 
                 {% elif question.question_type == 'text' %}
-                <textarea name="question_{{ question.id }}" class="form-control" rows="3" placeholder="Your answer..."></textarea>
+                <textarea name="question_{{ question.id }}" class="form-control" rows="3" placeholder="Your answer...">{{ posted.0|default:"" }}</textarea>
                 {% endif %}
 
-                {% with field_key="question_"|add:question.id|stringformat:"s" %}
                 {% if errors and field_key in errors %}
                 <div class="error-text">{{ errors|get_item:field_key }}</div>
                 {% endif %}
-                {% endwith %}
             </div>
+            {% endwith %}
+            {% endwith %}
+            {% endwith %}
             {% endfor %}
 
             <button type="submit" class="btn-submit"{% if preview %} disabled style="opacity:.5; cursor:default;"{% endif %}>Submit Feedback</button>
         </form>
     </div>
+    {% if not preview %}
+    <script>
+    (function () {
+        var form = document.querySelector('.survey-container form');
+        if (!form) return;
+        var btn = form.querySelector('.btn-submit');
+        var required = Array.prototype.slice.call(
+            form.querySelectorAll('.question-card[data-required]')
+        );
+        if (!btn || !required.length) return;  // nothing required -> leave enabled
+        function answered(card) {
+            if (card.querySelector('input[type=radio]:checked, input[type=checkbox]:checked')) return true;
+            var ta = card.querySelector('textarea');
+            return !!(ta && ta.value.trim());
+        }
+        function refresh() {
+            btn.disabled = !required.every(answered);
+        }
+        form.addEventListener('change', refresh);
+        form.addEventListener('input', refresh);
+        refresh();
+    })();
+    </script>
+    {% endif %}
 </body>
 </html>
