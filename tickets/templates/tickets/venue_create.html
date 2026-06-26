@@ -1,5 +1,6 @@
 {% extends 'tickets/base.html' %}
 {% load crispy_forms_tags %}
+{% load static %}
 
 {% block title %}Create Venue{% endblock %}
 
@@ -49,152 +50,57 @@
 
 {% block extra_js %}
 {% if google_maps_api_key %}
+<script src="{% static 'tickets/js/address_autocomplete.js' %}" defer></script>
 <script>
-window.initVenuePlacesAutocomplete = async function() {
+document.addEventListener('DOMContentLoaded', function () {
     var streetInput = document.getElementById('id_street_address');
-    if (!streetInput || !window.google || !google.maps || !google.maps.importLibrary) {
-        return;
-    }
+    if (!streetInput || !window.CueAddressAutocomplete) return;
 
-    try {
-        var capacityInput = document.getElementById('id_capacity');
-        var capacityGroup = capacityInput ? (capacityInput.closest('.mb-3') || capacityInput.parentNode) : null;
-        if (!capacityGroup || !capacityGroup.parentNode) {
-            return;
-        }
+    var capacityInput = document.getElementById('id_capacity');
+    var capacityGroup = capacityInput ? (capacityInput.closest('.mb-3') || capacityInput.parentNode) : null;
+    if (!capacityGroup || !capacityGroup.parentNode) return;
 
-        var wrapper = document.createElement('div');
-        wrapper.className = 'venue-address-autocomplete-wrapper mb-3';
+    var wrapper = document.createElement('div');
+    wrapper.className = 'venue-address-autocomplete-wrapper mb-3';
 
-        var label = document.createElement('label');
-        label.className = 'form-label venue-address-autocomplete-label';
-        label.textContent = 'Address';
-        wrapper.appendChild(label);
+    var label = document.createElement('label');
+    label.className = 'form-label venue-address-autocomplete-label';
+    label.textContent = 'Address';
+    wrapper.appendChild(label);
 
-        var placesLib = await google.maps.importLibrary('places');
-        var placeAutocomplete = new placesLib.PlaceAutocompleteElement({
-            types: ['address'],
-        });
+    var field = document.createElement('div');
+    field.className = 'cue-autocomplete-field';
+    var input = document.createElement('input');
+    input.type = 'text';
+    input.className = 'form-control';
+    input.placeholder = 'Start typing an address';
+    input.autocomplete = 'off';
+    var dropdown = document.createElement('div');
+    field.appendChild(input);
+    field.appendChild(dropdown);
+    wrapper.appendChild(field);
 
-        placeAutocomplete.id = 'venue-address-autocomplete';
-        placeAutocomplete.className = 'form-control';
+    var addressDisplay = document.createElement('div');
+    addressDisplay.className = 'venue-address-selected-display';
+    wrapper.appendChild(addressDisplay);
 
-        wrapper.appendChild(placeAutocomplete);
+    capacityGroup.parentNode.insertBefore(wrapper, capacityGroup);
 
-        var addressDisplay = document.createElement('div');
-        addressDisplay.id = 'venue-address-selected-display';
-        addressDisplay.className = 'venue-address-selected-display';
-        wrapper.appendChild(addressDisplay);
-
-        capacityGroup.parentNode.insertBefore(wrapper, capacityGroup);
-
-        placeAutocomplete.addEventListener('focus', function() {
-            var display = document.getElementById('venue-address-selected-display');
-            if (display && display.textContent.trim() !== '') {
-                display.textContent = '';
-                if (streetInput) streetInput.value = '';
-                var cityField = document.getElementById('id_city');
-                var stateField = document.getElementById('id_state');
-                var postalField = document.getElementById('id_postal_code');
-                var countryField = document.getElementById('id_country');
-                if (cityField) cityField.value = '';
-                if (stateField) stateField.value = '';
-                if (postalField) postalField.value = '';
-                if (countryField) countryField.value = '';
-            }
-        });
-
-        placeAutocomplete.addEventListener('gmp-select', async function(event) {
-            var place = event.place;
-            if (!place && event.placePrediction && typeof event.placePrediction.toPlace === 'function') {
-                place = event.placePrediction.toPlace();
-            }
-            if (!place || !place.fetchFields) {
-                return;
-            }
-
-            await place.fetchFields({
-                fields: ['addressComponents', 'formattedAddress'],
-            });
-
-            var components = place.addressComponents || [];
-            var streetNumber = '';
-            var route = '';
-            var city = '';
-            var state = '';
-            var postalCode = '';
-            var country = '';
-
-            for (var i = 0; i < components.length; i++) {
-                var component = components[i];
-                var types = component.types || [];
-
-                if (types.indexOf('street_number') !== -1) {
-                    streetNumber = component.longText || '';
-                } else if (types.indexOf('route') !== -1) {
-                    route = component.longText || '';
-                } else if (types.indexOf('locality') !== -1) {
-                    city = component.longText || '';
-                } else if (types.indexOf('administrative_area_level_1') !== -1) {
-                    state = component.shortText || '';
-                } else if (types.indexOf('postal_code') !== -1) {
-                    postalCode = component.longText || '';
-                } else if (types.indexOf('country') !== -1) {
-                    country = component.longText || '';
-                }
-            }
-
-            var street = '';
-            if (streetNumber && route) {
-                street = streetNumber + ' ' + route;
-            } else if (route) {
-                street = route;
-            } else if (streetNumber) {
-                street = streetNumber;
-            }
-            if (!street && place.formattedAddress) {
-                var firstComma = place.formattedAddress.indexOf(',');
-                street = firstComma !== -1
-                    ? place.formattedAddress.slice(0, firstComma).trim()
-                    : place.formattedAddress.trim();
-            }
-            if (street) {
-                streetInput.value = street;
-            }
-
-            var cityField = document.getElementById('id_city');
-            var stateField = document.getElementById('id_state');
-            var postalField = document.getElementById('id_postal_code');
-            var countryField = document.getElementById('id_country');
-
-            if (cityField && city) cityField.value = city;
-            if (stateField && state) stateField.value = state;
-            if (postalField && postalCode) postalField.value = postalCode;
-            if (countryField && country) countryField.value = country;
-
-            var display = document.getElementById('venue-address-selected-display');
-            if (display) {
-                display.textContent = place.formattedAddress || '-';
-            }
-        });
-    } catch (e) {
-        console && console.error && console.error('Error initializing PlaceAutocompleteElement', e);
-    }
-};
-(function() {
-    var key = '{{ google_maps_api_key|escapejs }}';
-    if (!key) return;
-    var s = document.createElement('script');
-    s.src = 'https://maps.googleapis.com/maps/api/js?key=' + key + '&libraries=places';
-    s.async = true;
-    s.defer = true;
-    s.onload = function() {
-        if (window.initVenuePlacesAutocomplete) {
-            window.initVenuePlacesAutocomplete();
-        }
-    };
-    document.head.appendChild(s);
-})();
+    CueAddressAutocomplete.attach({
+        inputEl: input,
+        dropdownEl: dropdown,
+        apiKey: '{{ google_maps_api_key|escapejs }}',
+        fields: {
+            street: streetInput,
+            city: document.getElementById('id_city'),
+            state: document.getElementById('id_state'),
+            postal: document.getElementById('id_postal_code'),
+            country: document.getElementById('id_country'),
+        },
+        onSelect: function (formatted) { addressDisplay.textContent = formatted || '-'; },
+        onClear: function () { addressDisplay.textContent = ''; },
+    });
+});
 </script>
 {% endif %}
 {% endblock %}
