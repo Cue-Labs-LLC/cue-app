@@ -1776,7 +1776,7 @@ def _onboarding_state(org):
             'key': 'setup_payouts',
             'label': 'Set up payouts so you can get paid',
             'description': 'Connect a Stripe account to receive ticket revenue.',
-            'url': reverse('tickets:stripe_connect_onboard'),
+            'url': reverse('tickets:finance_overview'),
             'cta': 'Set up payouts',
             'complete': payouts_ready,
         },
