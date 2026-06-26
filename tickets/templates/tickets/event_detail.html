@@ -1298,11 +1298,9 @@ document.addEventListener('DOMContentLoaded', function() {
         <p id="metaAdsHelpText" class="mb-0 text-body-secondary{% if not meta_ads_expenses and is_org_admin %} d-none{% endif %}">
             Use campaign matching to find Meta campaigns for this event, pull lifetime campaign spend and attributed purchases from Meta, and save it as a marketing expense. Click an attribution cell to override the value. Use "Copy tracked URL" to set each ad's destination — orders from that link are attributed to the campaign (Cue-tracked), which is more accurate than Meta's cross-event estimate.
         </p>
+        {% include 'tickets/_integration_cta.html' with connected=True label='Meta Ads' icon='bi-megaphone' url_name='tickets:meta_ads_settings' %}
         {% else %}
-        <div class="empty-state" style="padding: 24px;">
-            <i class="bi bi-megaphone"></i>
-            <p class="mb-0">Connect Meta Ads to match campaigns and pull campaign spend into this event.</p>
-        </div>
+        {% include 'tickets/_integration_cta.html' with connected=False label='Meta Ads' icon='bi-megaphone' url_name='tickets:meta_ads_settings' blurb='Connect Meta Ads to match campaigns and pull campaign spend into this event.' %}
         {% endif %}
     </div>
 </div>
@@ -1430,11 +1428,9 @@ document.addEventListener('DOMContentLoaded', function() {
         <p id="mailchimpHelpText" class="mb-0 text-body-secondary{% if not mailchimp_campaigns and is_org_admin %} d-none{% endif %}">
             Use campaign matching to find Mailchimp email campaigns for this event and save opens, clicks, bounces, unsubscribes, and reported revenue.
         </p>
+        {% include 'tickets/_integration_cta.html' with connected=True label='Mailchimp' icon='bi-envelope-paper' url_name='tickets:mailchimp_settings' %}
         {% else %}
-        <div class="empty-state" style="padding: 24px;">
-            <i class="bi bi-envelope-paper"></i>
-            <p class="mb-0">Connect Mailchimp to match email campaigns and attach campaign results to this event.</p>
-        </div>
+        {% include 'tickets/_integration_cta.html' with connected=False label='Mailchimp' icon='bi-envelope-paper' url_name='tickets:mailchimp_settings' blurb='Connect Mailchimp to match email campaigns and attach campaign results to this event.' %}
         {% endif %}
     </div>
 </div>
@@ -1565,11 +1561,9 @@ document.addEventListener('DOMContentLoaded', function() {
         <p id="slicktextHelpText" class="mb-0 text-body-secondary{% if not slicktext_campaigns and is_org_admin %} d-none{% endif %}">
             Use campaign matching to find SlickText broadcasts for this event and save audience size, clicks, unsubscribes, and attributed revenue.
         </p>
+        {% include 'tickets/_integration_cta.html' with connected=True label='SlickText' icon='bi-chat-dots' url_name='tickets:slicktext_settings' %}
         {% else %}
-        <div class="empty-state" style="padding: 24px;">
-            <i class="bi bi-chat-dots"></i>
-            <p class="mb-0">Connect SlickText to match SMS broadcasts and attach campaign results to this event.</p>
-        </div>
+        {% include 'tickets/_integration_cta.html' with connected=False label='SlickText' icon='bi-chat-dots' url_name='tickets:slicktext_settings' blurb='Connect SlickText to match SMS broadcasts and attach campaign results to this event.' %}
         {% endif %}
     </div>
 </div>
@@ -2126,14 +2120,7 @@ document.addEventListener('DOMContentLoaded', function() {
         {% include 'tickets/_survey_matcher_panels.html' %}
     </div>
     {% else %}
-    <div class="empty-state" style="padding: 48px 0;">
-        <i class="bi bi-clipboard2-data fs-2 text-muted"></i>
-        <p class="text-muted mt-2 mb-1">No Typeform forms are syncing to this organization yet.</p>
-        <p class="text-muted small">
-            <a href="{% url 'tickets:typeform_settings' %}">Sync a Typeform form</a>
-            to start collecting responses for your events.
-        </p>
-    </div>
+    {% include 'tickets/_integration_cta.html' with connected=False label='Typeform' icon='bi-clipboard2-data' url_name='tickets:typeform_settings' blurb='Connect Typeform to stream survey responses into Cue and match them to your events.' %}
     {% endif %}
 {% endif %}
 

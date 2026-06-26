@@ -27,6 +27,13 @@
                 <p class="text-muted small mb-2">Import survey responses collected elsewhere (e.g. Typeform CSV).</p>
                 <a href="{% url 'tickets:survey_upload_list' %}" class="btn btn-sm btn-outline-secondary">Uploads</a>
                 <a href="{% url 'tickets:survey_analytics' %}" class="btn btn-sm btn-outline-secondary">Analytics</a>
+                <div class="mt-2 small">
+                    {% if org.typeform_access_token %}
+                    <span class="text-body-secondary"><i class="bi bi-check-circle-fill" style="color: var(--success);"></i> Typeform connected · <a href="{% url 'tickets:typeform_settings' %}">Manage in Integrations</a></span>
+                    {% else %}
+                    <a href="{% url 'tickets:typeform_settings' %}"><i class="bi bi-plug"></i> Connect Typeform in Integrations</a> to stream responses automatically.
+                    {% endif %}
+                </div>
             </div>
         </div>
     </div>
