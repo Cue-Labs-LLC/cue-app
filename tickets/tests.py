@@ -14932,7 +14932,6 @@ class SurveyHubTests(TestCase):
         self.assertNotIn('#tab-surveys', html)
 
 
-
 class OnboardingChecklistTests(TestCase):
     """Dashboard 'Getting started' checklist for new organizers."""
 
@@ -15010,3 +15009,59 @@ class OnboardingChecklistTests(TestCase):
     def test_dismiss_requires_post(self):
         resp = self.client.get(reverse('tickets:dismiss_onboarding'))
         self.assertEqual(resp.status_code, 405)
+
+
+class VenueCreateInlineTests(TestCase):
+    """Tests for the inline venue creation AJAX endpoint."""
+
+    def setUp(self):
+        self.client = Client()
+        self.org = Organization.objects.create(name='Inline Org', slug='inline-org')
+        self.user = User.objects.create_user(
+            username='inlinehost', email='inline@test.com', password='testpass123'
+        )
+        UserProfile.objects.create(
+            user=self.user, organization=self.org, org_role=UserProfile.OrgRole.OWNER
+        )
+        self.client.login(username='inline@test.com', password='testpass123')
+        # Seed the session with _org_id so @require_org passes.
+        self.client.get(reverse('tickets:home'))
+        self.url = reverse('tickets:venue_create_inline')
+
+    def test_creates_venue_and_returns_json(self):
+        resp = self.client.post(self.url, {'name': 'The Fillmore', 'city': 'San Francisco', 'capacity': '1200'})
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertTrue(data['success'])
+        venue = Venue.objects.get(name='The Fillmore')
+        self.assertEqual(venue.organization, self.org)
+        self.assertEqual(venue.capacity, 1200)
+        self.assertEqual(data['venue']['id'], str(venue.id))
+        self.assertEqual(data['venue']['capacity'], 1200)
+        self.assertIn('The Fillmore', data['venue']['label'])
+
+    def test_missing_name_returns_error(self):
+        resp = self.client.post(self.url, {'city': 'San Francisco'})
+        self.assertEqual(resp.status_code, 400)
+        data = resp.json()
+        self.assertFalse(data['success'])
+        self.assertIn('name', data['errors'])
+        self.assertFalse(Venue.objects.exists())
+
+    def test_duplicate_name_city_returns_error(self):
+        Venue.objects.create(organization=self.org, name='Dup Venue', city='Oakland')
+        resp = self.client.post(self.url, {'name': 'Dup Venue', 'city': 'Oakland'})
+        self.assertEqual(resp.status_code, 400)
+        data = resp.json()
+        self.assertFalse(data['success'])
+        self.assertEqual(Venue.objects.filter(name='Dup Venue').count(), 1)
+
+    def test_get_not_allowed(self):
+        resp = self.client.get(self.url)
+        self.assertEqual(resp.status_code, 405)
+
+    def test_requires_login(self):
+        self.client.logout()
+        resp = self.client.post(self.url, {'name': 'No Auth Venue'})
+        self.assertEqual(resp.status_code, 302)
+        self.assertFalse(Venue.objects.filter(name='No Auth Venue').exists())

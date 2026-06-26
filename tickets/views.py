@@ -53,7 +53,7 @@ from .models import (
 )
 from .forms import (
     EventCSVUploadForm, EventExpenseForm, TicketPriceEntryForm, CSVFormatForm,
-    VenueForm, EventForm, EventTalentFormSet, LoginForm,
+    VenueForm, VenueChoiceField, EventForm, EventTalentFormSet, LoginForm,
     CustomFieldForm, CustomFieldOptionFormSet,
     IncomeSourceForm, EventIncomeForm,
     OTPVerificationForm, MemberInviteForm, AttendeePhoneForm,
@@ -6047,6 +6047,48 @@ def venue_create(request):
 @login_required
 @require_org
 @require_host
+@require_http_methods(["POST"])
+def venue_create_inline(request):
+    """Create a venue via AJAX (from the create/edit event page) and return JSON.
+
+    Returns the new venue's id, dropdown label (matching VenueChoiceField), and
+    capacity so the event form's venue <select> can be updated without a reload.
+    """
+    org = get_organization(request)
+    form = VenueForm(request.POST)
+    if form.is_valid():
+        venue = form.save(commit=False)
+        venue.organization = org
+        # unique_together includes `organization`, which isn't a form field, so the
+        # form can't validate it — guard the IntegrityError and report it inline.
+        # Normalize first so the check matches the city casing applied on save().
+        from .address_utils import normalize_venue_address_fields
+        normalize_venue_address_fields(venue)
+        if Venue.objects.filter(
+            organization=org, name=venue.name, city=venue.city
+        ).exists():
+            return JsonResponse(
+                {'success': False, 'errors': {
+                    'name': ['A venue with this name and city already exists.']
+                }},
+                status=400,
+            )
+        venue.save()
+        label = VenueChoiceField(queryset=Venue.objects.none()).label_from_instance(venue)
+        return JsonResponse({
+            'success': True,
+            'venue': {
+                'id': str(venue.id),
+                'label': label,
+                'capacity': venue.capacity,
+            },
+        })
+    return JsonResponse({'success': False, 'errors': form.errors}, status=400)
+
+
+@login_required
+@require_org
+@require_host
 def venue_edit(request, venue_id):
     """Edit an existing venue."""
     org = get_organization(request)
@@ -6082,6 +6124,7 @@ def event_type_select(request):
 def event_create(request, ticketing_type):
     """Create new event (ticketing_type comes from URL, chosen on type-select page)."""
     from .models import TICKETING_TYPE_DIRECT, TICKETING_TYPE_EXTERNAL
+    from django.conf import settings as django_settings
     if ticketing_type not in (TICKETING_TYPE_DIRECT, TICKETING_TYPE_EXTERNAL):
         return redirect('tickets:event_type_select')
     org = get_organization(request)
@@ -6157,6 +6200,7 @@ def event_create(request, ticketing_type):
             'ticketing_type': ticketing_type,
             'no_venues': no_venues,
             'venue_capacities_json': json.dumps(venue_capacities),
+            'google_maps_api_key': django_settings.GOOGLE_MAPS_API_KEY,
         }
         return render(request, 'tickets/event_create.html', context)
 
@@ -6218,6 +6262,7 @@ def event_create(request, ticketing_type):
         'talent_formset': talent_formset,
         'venue_capacities_json': json.dumps(venue_capacities),
         'ticketing_type': ticketing_type,
+        'google_maps_api_key': django_settings.GOOGLE_MAPS_API_KEY,
     }
     return render(request, 'tickets/event_create.html', context)
 
@@ -6228,6 +6273,7 @@ def event_create(request, ticketing_type):
 def event_edit(request, event_id):
     """Edit an existing event."""
     from .models import TICKETING_TYPE_DIRECT
+    from django.conf import settings as django_settings
     org = get_organization(request)
     event = get_object_or_404(Event.objects.filter(organization=org), id=event_id)
 
@@ -6273,6 +6319,7 @@ def event_edit(request, event_id):
                 for v in Venue.objects.filter(organization=org)
                 if v.capacity
             }),
+            'google_maps_api_key': django_settings.GOOGLE_MAPS_API_KEY,
         }
         return render(request, 'tickets/event_edit.html', context)
 
@@ -6322,6 +6369,7 @@ def event_edit(request, event_id):
         'talent_formset': talent_formset,
         'event': event,
         'ticketing_type': event.ticketing_type,
+        'google_maps_api_key': django_settings.GOOGLE_MAPS_API_KEY,
     }
     return render(request, 'tickets/event_edit.html', context)
 
