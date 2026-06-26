@@ -313,6 +313,7 @@ urlpatterns = [
     # Venues
     path('venues/', views.venue_list, name='venue_list'),
     path('venues/create/', views.venue_create, name='venue_create'),
+    path('venues/create-inline/', views.venue_create_inline, name='venue_create_inline'),
     path('venues/<uuid:venue_id>/edit/', views.venue_edit, name='venue_edit'),
 
     # Chat Agent

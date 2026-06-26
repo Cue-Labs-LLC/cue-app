@@ -44,11 +44,11 @@
     <div class="col-12">
         {% if ticketing_type == 'direct' %}
         {% if no_venues %}
-        <div class="alert alert-warning">
-            You need to create a venue before creating an event.
-            <a href="{% url 'tickets:venue_create' %}" class="alert-link">Create a venue</a>
+        <div class="alert alert-info d-flex align-items-center">
+            <i class="bi bi-info-circle me-2"></i>
+            <div>No venues yet &mdash; use <strong>New venue</strong> below the venue field to add your first one.</div>
         </div>
-        {% else %}
+        {% endif %}
         {# Flyer drag-and-drop card (outside form — upload happens on submit) #}
         <div class="card mb-4" id="event-flyer-card">
             <div class="card-header"><h5 class="mb-0">Event Flyer</h5></div>
@@ -149,7 +149,6 @@
                 <button type="submit" class="btn btn-primary">Create Event</button>
             </div>
         </form>
-        {% endif %}
         {% else %}
         <form method="post">
             {% csrf_token %}
@@ -627,6 +626,7 @@ document.addEventListener('DOMContentLoaded', function () {
 {% endblock %}
 
 {% block modals %}
+{% include 'tickets/_inline_venue_modal.html' %}
 {% if ticketing_type == 'direct' %}
 <div class="modal fade" id="addTicketTypeModal" tabindex="-1" aria-labelledby="add-tt-modal-title" aria-hidden="true">
   <div class="modal-dialog modal-lg modal-dialog-scrollable">

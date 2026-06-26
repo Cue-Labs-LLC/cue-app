@@ -1099,6 +1099,7 @@ document.addEventListener('DOMContentLoaded', function () {
 {% endblock %}
 
 {% block modals %}
+{% include 'tickets/_inline_venue_modal.html' %}
 {% if ticketing_type == 'direct' %}
 {# Add Ticket Type Modal #}
 <div class="modal fade" id="addTicketTypeModal" tabindex="-1" aria-labelledby="addTicketTypeModalLabel" aria-hidden="true">
