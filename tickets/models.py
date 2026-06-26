@@ -236,6 +236,10 @@ class Organization(BaseModel):
         blank=True,
         default='',
     )
+    # Set when the organizer dismisses the dashboard "Getting started" checklist.
+    # The checklist's step completion is derived from existing data (events, Stripe
+    # onboarding); this only records that the card should stay hidden.
+    onboarding_dismissed_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         ordering = ['name']

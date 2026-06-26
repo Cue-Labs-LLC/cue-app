@@ -14932,3 +14932,81 @@ class SurveyHubTests(TestCase):
         self.assertNotIn('#tab-surveys', html)
 
 
+
+class OnboardingChecklistTests(TestCase):
+    """Dashboard 'Getting started' checklist for new organizers."""
+
+    def setUp(self):
+        from .models import EVENT_STATUS_LIVE, EVENT_STATUS_DRAFT
+        self.EVENT_STATUS_LIVE = EVENT_STATUS_LIVE
+        self.EVENT_STATUS_DRAFT = EVENT_STATUS_DRAFT
+        self.client = Client()
+        self.org = Organization.objects.create(name='Onboarding Org', slug='onboarding-org')
+        self.user = User.objects.create_user(
+            username='organizer', email='org@test.com', password='pass12345',
+        )
+        UserProfile.objects.create(
+            user=self.user, organization=self.org,
+            role=UserProfile.Role.ORGANIZER, org_role=UserProfile.OrgRole.OWNER,
+        )
+        OrganizationMembership.objects.create(
+            user=self.user, organization=self.org, org_role=UserProfile.OrgRole.OWNER,
+        )
+        self.client.login(username='org@test.com', password='pass12345')
+
+    def _onboarding(self):
+        return self.client.get(reverse('tickets:home')).context['onboarding']
+
+    def _make_event(self, status=None):
+        venue = Venue.objects.create(organization=self.org, name='Venue', city='City')
+        return Event.objects.create(
+            organization=self.org, name='Event', venue=venue,
+            start_date=date(2026, 6, 15), start_time=time(19, 0, 0),
+            ticketing_type=TICKETING_TYPE_DIRECT,
+            status=status or self.EVENT_STATUS_DRAFT,
+        )
+
+    def test_new_org_shows_checklist_with_incomplete_steps(self):
+        onboarding = self._onboarding()
+        self.assertTrue(onboarding['show'])
+        self.assertEqual(onboarding['complete_count'], 0)
+        self.assertEqual(onboarding['total'], 3)
+        steps = {s['key']: s for s in onboarding['steps']}
+        self.assertFalse(steps['create_event']['complete'])
+
+    def test_create_event_step_completes(self):
+        self._make_event()
+        steps = {s['key']: s for s in self._onboarding()['steps']}
+        self.assertTrue(steps['create_event']['complete'])
+        self.assertFalse(steps['go_live']['complete'])
+
+    def test_go_live_step_completes_when_event_live(self):
+        self._make_event(status=self.EVENT_STATUS_LIVE)
+        steps = {s['key']: s for s in self._onboarding()['steps']}
+        self.assertTrue(steps['create_event']['complete'])
+        self.assertTrue(steps['go_live']['complete'])
+
+    def test_payouts_step_completes(self):
+        self.org.stripe_onboarding_complete = True
+        self.org.save(update_fields=['stripe_onboarding_complete'])
+        steps = {s['key']: s for s in self._onboarding()['steps']}
+        self.assertTrue(steps['setup_payouts']['complete'])
+
+    def test_all_complete_hides_card_without_dismissal(self):
+        self._make_event(status=self.EVENT_STATUS_LIVE)
+        self.org.stripe_onboarding_complete = True
+        self.org.save(update_fields=['stripe_onboarding_complete'])
+        onboarding = self._onboarding()
+        self.assertTrue(onboarding['all_complete'])
+        self.assertFalse(onboarding['show'])
+
+    def test_dismiss_hides_card(self):
+        resp = self.client.post(reverse('tickets:dismiss_onboarding'))
+        self.assertRedirects(resp, reverse('tickets:home'))
+        self.org.refresh_from_db()
+        self.assertIsNotNone(self.org.onboarding_dismissed_at)
+        self.assertFalse(self._onboarding()['show'])
+
+    def test_dismiss_requires_post(self):
+        resp = self.client.get(reverse('tickets:dismiss_onboarding'))
+        self.assertEqual(resp.status_code, 405)

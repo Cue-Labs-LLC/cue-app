@@ -1484,7 +1484,11 @@ def create_organization(request):
                 profile.save(update_fields=['organization', 'role', 'org_role'])
             clear_org_cache(request)
             request.session['_org_id'] = str(org.pk)
-            messages.success(request, f"Organization '{org.name}' created. You can now use the app.")
+            messages.success(
+                request,
+                f"Welcome to Cue! '{org.name}' is ready — follow the Getting started "
+                "steps below to launch your first event.",
+            )
             return redirect('tickets:home')
     else:
         form = OrganizationForm()
@@ -1744,6 +1748,71 @@ def invite_revoke(request, token):
     return redirect('tickets:member_list')
 
 
+def _onboarding_state(org):
+    """Build the dashboard "Getting started" checklist for a new organizer.
+
+    Step completion is derived from existing data (no per-step flags). The card
+    hides once every step is complete or the org dismisses it.
+    """
+    if org is None:
+        # Only superusers can reach the dashboard without an org; nothing to onboard.
+        return {'show': False, 'steps': [], 'complete_count': 0, 'total': 0, 'all_complete': False}
+
+    org_events = Event.objects.filter(organization=org)
+    has_event = org_events.exists()
+    has_live_event = org_events.filter(status=EVENT_STATUS_LIVE).exists()
+    payouts_ready = bool(org.stripe_onboarding_complete)
+
+    steps = [
+        {
+            'key': 'create_event',
+            'label': 'Create your first event',
+            'description': 'Set up an event and add ticket types to start selling on Cue.',
+            'url': reverse('tickets:event_create', args=[TICKETING_TYPE_DIRECT]),
+            'cta': 'Create event',
+            'complete': has_event,
+        },
+        {
+            'key': 'setup_payouts',
+            'label': 'Set up payouts so you can get paid',
+            'description': 'Connect a Stripe account to receive ticket revenue.',
+            'url': reverse('tickets:stripe_connect_onboard'),
+            'cta': 'Set up payouts',
+            'complete': payouts_ready,
+        },
+        {
+            'key': 'go_live',
+            'label': 'Publish your event',
+            'description': 'Take your event live so fans can find it and buy tickets.',
+            'url': reverse('tickets:event_list'),
+            'cta': 'Go to events',
+            'complete': has_live_event,
+        },
+    ]
+
+    complete_count = sum(1 for step in steps if step['complete'])
+    all_complete = complete_count == len(steps)
+    return {
+        'show': not org.onboarding_dismissed_at and not all_complete,
+        'steps': steps,
+        'complete_count': complete_count,
+        'total': len(steps),
+        'all_complete': all_complete,
+    }
+
+
+@login_required
+@require_org
+@require_organizer
+@require_http_methods(["POST"])
+def dismiss_onboarding(request):
+    """Hide the dashboard "Getting started" checklist for the current org."""
+    org = get_organization(request)
+    org.onboarding_dismissed_at = django_tz.now()
+    org.save(update_fields=['onboarding_dismissed_at'])
+    return redirect('tickets:home')
+
+
 @login_required
 @require_org
 @require_organizer
@@ -1841,6 +1910,7 @@ def home(request):
         'total_revenue': total_revenue,
         'total_tickets': total_tickets,
         'ai_recommendations': ai_recommendations,
+        'onboarding': _onboarding_state(org),
     }
     return render(request, 'tickets/home.html', context)
 
