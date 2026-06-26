@@ -765,8 +765,8 @@ class OrganizationMembershipAdmin(admin.ModelAdmin):
 
 @admin.register(Organization)
 class OrganizationAdmin(admin.ModelAdmin):
-    list_display = ['name', 'slug', 'sms_marketing_enabled', 'stripe_onboarding_complete', 'meta_ads_account_name', 'created_at']
-    list_editable = ['sms_marketing_enabled']
+    list_display = ['name', 'slug', 'external_events_enabled', 'sms_marketing_enabled', 'stripe_onboarding_complete', 'meta_ads_account_name', 'created_at']
+    list_editable = ['external_events_enabled', 'sms_marketing_enabled']
     search_fields = ['name', 'slug']
     readonly_fields = [
         'id',
@@ -785,7 +785,7 @@ class OrganizationAdmin(admin.ModelAdmin):
     inlines = [OrganizationMembershipInline]
     fieldsets = (
         ('Basic', {'fields': ('name', 'slug', 'rfm_recalc_in_progress')}),
-        ('Feature Flags', {'fields': ('waitlist_feature_enabled', 'sms_marketing_enabled', 'loyalty_feature_enabled', 'ai_event_summary_enabled')}),
+        ('Feature Flags', {'fields': ('external_events_enabled', 'waitlist_feature_enabled', 'sms_marketing_enabled', 'loyalty_feature_enabled', 'ai_event_summary_enabled')}),
         ('SMS Credits', {'fields': ('sms_credit_balance_cents',), 'description': 'Prepaid wallet balance in cents. For audited changes prefer creating an SMS credit transaction.'}),
         ('Stripe Connect', {'fields': ('stripe_account_id', 'stripe_onboarding_complete')}),
         ('Meta Ads', {

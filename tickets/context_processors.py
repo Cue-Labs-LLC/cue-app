@@ -4,6 +4,7 @@ from .feature_flags import (
     waitlist_enabled as wl_enabled,
     browse_events_enabled as browse_events_enabled_flag,
     loyalty_enabled as loyalty_enabled_flag,
+    external_events_enabled as external_events_enabled_flag,
 )
 
 
@@ -94,4 +95,5 @@ def feature_flags_context(request):
         'waitlist_feature_enabled': wl_enabled(org),
         'browse_events_enabled': browse_events_enabled_flag(),
         'loyalty_feature_enabled': loyalty_enabled_flag(org),
+        'external_events_enabled': external_events_enabled_flag(org),
     }
