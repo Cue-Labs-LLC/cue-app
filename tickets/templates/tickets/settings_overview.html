@@ -56,25 +56,10 @@
         <span class="hub-link-title">Income Sources</span>
         <p class="hub-link-copy">Define non-ticket revenue sources for event finance tracking.</p>
     </a>
-    <a href="{% url 'tickets:meta_ads_settings' %}" class="hub-link">
-        <span class="hub-link-icon"><i class="bi bi-megaphone"></i></span>
-        <span class="hub-link-title">Meta Ads</span>
-        <p class="hub-link-copy">Connect ad spend for event-level marketing performance.</p>
-    </a>
-    <a href="{% url 'tickets:mailchimp_settings' %}" class="hub-link">
-        <span class="hub-link-icon"><i class="bi bi-envelope-paper"></i></span>
-        <span class="hub-link-title">Mailchimp</span>
-        <p class="hub-link-copy">Connect campaign reporting for event marketing analysis.</p>
-    </a>
-    <a href="{% url 'tickets:slicktext_settings' %}" class="hub-link">
-        <span class="hub-link-icon"><i class="bi bi-chat-dots"></i></span>
-        <span class="hub-link-title">SlickText</span>
-        <p class="hub-link-copy">Link SMS broadcasts to events and track audience response.</p>
-    </a>
-    <a href="{% url 'tickets:typeform_settings' %}" class="hub-link">
-        <span class="hub-link-icon"><i class="bi bi-clipboard2-data"></i></span>
-        <span class="hub-link-title">Typeform</span>
-        <p class="hub-link-copy">Stream Typeform survey responses into Cue and auto-suggest events.</p>
+    <a href="{% url 'tickets:integrations_overview' %}" class="hub-link">
+        <span class="hub-link-icon"><i class="bi bi-plug"></i></span>
+        <span class="hub-link-title">Integrations</span>
+        <p class="hub-link-copy">Connect Mailchimp, Typeform, SlickText, Meta Ads, and your calendar.</p>
     </a>
     <a href="{% url 'tickets:settings_api_keys' %}" class="hub-link">
         <span class="hub-link-icon"><i class="bi bi-key"></i></span>
@@ -86,13 +71,6 @@
         <span class="hub-link-title">AI Token Usage</span>
         <p class="hub-link-copy">Review monthly token usage for billable AI features.</p>
     </a>
-    {% if request.user.is_superuser %}
-    <a href="{% url 'tickets:settings_google_calendar' %}" class="hub-link">
-        <span class="hub-link-icon"><i class="bi bi-calendar-check"></i></span>
-        <span class="hub-link-title">Google Calendar</span>
-        <p class="hub-link-copy">Configure the calendar webhook used for new events.</p>
-    </a>
-    {% endif %}
 </div>
 {% endif %}
 {% endblock %}

@@ -3,6 +3,14 @@ from django.views.generic import RedirectView
 from . import views
 from . import oauth_views
 from . import sms_views
+from .integrations import (
+    mailchimp as mailchimp_views,
+    slicktext as slicktext_views,
+    meta_ads as meta_ads_views,
+    typeform as typeform_views,
+    google_calendar as google_calendar_views,
+    hub as integrations_hub,
+)
 
 app_name = 'tickets'
 
@@ -136,15 +144,17 @@ urlpatterns = [
     path('analytics/surveys/<uuid:upload_id>/delete/', views.survey_upload_delete, name='survey_upload_delete'),
     path('analytics/surveys/<uuid:upload_id>/link-events/', views.survey_event_link, name='survey_event_link'),
 
-    # Typeform integration (organizer settings)
-    path('settings/typeform/', views.typeform_settings, name='typeform_settings'),
-    path('settings/typeform/connect/', views.typeform_connect, name='typeform_connect'),
-    path('settings/typeform/disconnect/', views.typeform_disconnect, name='typeform_disconnect'),
-    path('settings/typeform/forms/', views.typeform_form_picker, name='typeform_form_picker'),
-    path('settings/typeform/forms/<uuid:sub_id>/mapping/', views.typeform_form_mapping, name='typeform_form_mapping'),
-    path('settings/typeform/forms/<uuid:sub_id>/sync/', views.typeform_form_sync, name='typeform_form_sync'),
-    path('settings/typeform/forms/<uuid:sub_id>/delete/', views.typeform_form_unsubscribe, name='typeform_form_unsubscribe'),
-    path('webhooks/typeform/<uuid:sub_id>/', views.typeform_webhook, name='typeform_webhook'),
+    # Typeform integration (organizer settings) — see the Integrations block for the
+    # full set of integration connection pages. The webhook path stays unchanged because
+    # it is registered with Typeform per active subscription.
+    path('settings/integrations/typeform/', typeform_views.typeform_settings, name='typeform_settings'),
+    path('settings/integrations/typeform/connect/', typeform_views.typeform_connect, name='typeform_connect'),
+    path('settings/integrations/typeform/disconnect/', typeform_views.typeform_disconnect, name='typeform_disconnect'),
+    path('settings/integrations/typeform/forms/', typeform_views.typeform_form_picker, name='typeform_form_picker'),
+    path('settings/integrations/typeform/forms/<uuid:sub_id>/mapping/', typeform_views.typeform_form_mapping, name='typeform_form_mapping'),
+    path('settings/integrations/typeform/forms/<uuid:sub_id>/sync/', typeform_views.typeform_form_sync, name='typeform_form_sync'),
+    path('settings/integrations/typeform/forms/<uuid:sub_id>/delete/', typeform_views.typeform_form_unsubscribe, name='typeform_form_unsubscribe'),
+    path('webhooks/typeform/<uuid:sub_id>/', typeform_views.typeform_webhook, name='typeform_webhook'),
 
     # Surveys (public - no login required)
     path('survey/<uuid:token>/', views.survey_form, name='survey_form'),
@@ -207,32 +217,35 @@ urlpatterns = [
     path('events/<uuid:event_id>/cancel-scheduled-survey/', views.cancel_scheduled_survey, name='cancel_scheduled_survey'),
     path('events/<uuid:event_id>/survey-recipient-count/', views.survey_recipient_count, name='survey_recipient_count'),
     path('events/<uuid:event_id>/survey-schedule-preview/', views.survey_schedule_preview, name='survey_schedule_preview'),
-    path('events/<uuid:event_id>/meta-ads/match/', views.event_meta_ads_match, name='event_meta_ads_match'),
-    path('events/<uuid:event_id>/meta-ads/apply/', views.event_meta_ads_apply, name='event_meta_ads_apply'),
-    path('events/<uuid:event_id>/meta-ads/<uuid:expense_id>/refresh/', views.event_meta_ads_refresh, name='event_meta_ads_refresh'),
-    path('events/<uuid:event_id>/meta-ads/<uuid:expense_id>/remove/', views.event_meta_ads_remove, name='event_meta_ads_remove'),
-    path('events/<uuid:event_id>/meta-ads/<uuid:expense_id>/metrics/', views.event_meta_ads_metrics_edit, name='event_meta_ads_metrics_edit'),
-    path('events/<uuid:event_id>/meta-ads/<uuid:expense_id>/confirm/', views.event_meta_ads_confirm, name='event_meta_ads_confirm'),
-    path('events/<uuid:event_id>/meta-ads/<uuid:expense_id>/unconfirm/', views.event_meta_ads_unconfirm, name='event_meta_ads_unconfirm'),
-    path('events/<uuid:event_id>/mailchimp/confirm-all/', views.event_mailchimp_confirm_all, name='event_mailchimp_confirm_all'),
-    path('events/<uuid:event_id>/slicktext/confirm-all/', views.event_slicktext_confirm_all, name='event_slicktext_confirm_all'),
-    path('events/<uuid:event_id>/meta-ads/confirm-all/', views.event_meta_ads_confirm_all, name='event_meta_ads_confirm_all'),
-    path('events/<uuid:event_id>/mailchimp/match/', views.event_mailchimp_match, name='event_mailchimp_match'),
-    path('events/<uuid:event_id>/mailchimp/apply/', views.event_mailchimp_apply, name='event_mailchimp_apply'),
-    path('events/<uuid:event_id>/mailchimp/refresh/', views.event_mailchimp_refresh_all, name='event_mailchimp_refresh_all'),
-    path('events/<uuid:event_id>/mailchimp/<uuid:email_campaign_id>/refresh/', views.event_mailchimp_refresh, name='event_mailchimp_refresh'),
-    path('events/<uuid:event_id>/mailchimp/<uuid:email_campaign_id>/remove/', views.event_mailchimp_remove, name='event_mailchimp_remove'),
-    path('events/<uuid:event_id>/mailchimp/<uuid:email_campaign_id>/metrics/', views.event_mailchimp_metrics_edit, name='event_mailchimp_metrics_edit'),
-    path('events/<uuid:event_id>/mailchimp/<uuid:email_campaign_id>/confirm/', views.event_mailchimp_confirm, name='event_mailchimp_confirm'),
-    path('events/<uuid:event_id>/mailchimp/<uuid:email_campaign_id>/unconfirm/', views.event_mailchimp_unconfirm, name='event_mailchimp_unconfirm'),
-    path('events/<uuid:event_id>/slicktext/match/', views.event_slicktext_match, name='event_slicktext_match'),
-    path('events/<uuid:event_id>/slicktext/apply/', views.event_slicktext_apply, name='event_slicktext_apply'),
-    path('events/<uuid:event_id>/slicktext/refresh/', views.event_slicktext_refresh_all, name='event_slicktext_refresh_all'),
-    path('events/<uuid:event_id>/slicktext/<uuid:sms_campaign_id>/refresh/', views.event_slicktext_refresh, name='event_slicktext_refresh'),
-    path('events/<uuid:event_id>/slicktext/<uuid:sms_campaign_id>/remove/', views.event_slicktext_remove, name='event_slicktext_remove'),
-    path('events/<uuid:event_id>/slicktext/<uuid:sms_campaign_id>/metrics/', views.event_slicktext_metrics_edit, name='event_slicktext_metrics_edit'),
-    path('events/<uuid:event_id>/slicktext/<uuid:sms_campaign_id>/confirm/', views.event_slicktext_confirm, name='event_slicktext_confirm'),
-    path('events/<uuid:event_id>/slicktext/<uuid:sms_campaign_id>/unconfirm/', views.event_slicktext_unconfirm, name='event_slicktext_unconfirm'),
+    # Integrations — per-event campaign actions (paths stay under the event; handlers
+    # live in tickets/integrations/). See the "Integrations" block lower down for the
+    # connection/settings pages.
+    path('events/<uuid:event_id>/meta-ads/match/', meta_ads_views.event_meta_ads_match, name='event_meta_ads_match'),
+    path('events/<uuid:event_id>/meta-ads/apply/', meta_ads_views.event_meta_ads_apply, name='event_meta_ads_apply'),
+    path('events/<uuid:event_id>/meta-ads/<uuid:expense_id>/refresh/', meta_ads_views.event_meta_ads_refresh, name='event_meta_ads_refresh'),
+    path('events/<uuid:event_id>/meta-ads/<uuid:expense_id>/remove/', meta_ads_views.event_meta_ads_remove, name='event_meta_ads_remove'),
+    path('events/<uuid:event_id>/meta-ads/<uuid:expense_id>/metrics/', meta_ads_views.event_meta_ads_metrics_edit, name='event_meta_ads_metrics_edit'),
+    path('events/<uuid:event_id>/meta-ads/<uuid:expense_id>/confirm/', meta_ads_views.event_meta_ads_confirm, name='event_meta_ads_confirm'),
+    path('events/<uuid:event_id>/meta-ads/<uuid:expense_id>/unconfirm/', meta_ads_views.event_meta_ads_unconfirm, name='event_meta_ads_unconfirm'),
+    path('events/<uuid:event_id>/mailchimp/confirm-all/', mailchimp_views.event_mailchimp_confirm_all, name='event_mailchimp_confirm_all'),
+    path('events/<uuid:event_id>/slicktext/confirm-all/', slicktext_views.event_slicktext_confirm_all, name='event_slicktext_confirm_all'),
+    path('events/<uuid:event_id>/meta-ads/confirm-all/', meta_ads_views.event_meta_ads_confirm_all, name='event_meta_ads_confirm_all'),
+    path('events/<uuid:event_id>/mailchimp/match/', mailchimp_views.event_mailchimp_match, name='event_mailchimp_match'),
+    path('events/<uuid:event_id>/mailchimp/apply/', mailchimp_views.event_mailchimp_apply, name='event_mailchimp_apply'),
+    path('events/<uuid:event_id>/mailchimp/refresh/', mailchimp_views.event_mailchimp_refresh_all, name='event_mailchimp_refresh_all'),
+    path('events/<uuid:event_id>/mailchimp/<uuid:email_campaign_id>/refresh/', mailchimp_views.event_mailchimp_refresh, name='event_mailchimp_refresh'),
+    path('events/<uuid:event_id>/mailchimp/<uuid:email_campaign_id>/remove/', mailchimp_views.event_mailchimp_remove, name='event_mailchimp_remove'),
+    path('events/<uuid:event_id>/mailchimp/<uuid:email_campaign_id>/metrics/', mailchimp_views.event_mailchimp_metrics_edit, name='event_mailchimp_metrics_edit'),
+    path('events/<uuid:event_id>/mailchimp/<uuid:email_campaign_id>/confirm/', mailchimp_views.event_mailchimp_confirm, name='event_mailchimp_confirm'),
+    path('events/<uuid:event_id>/mailchimp/<uuid:email_campaign_id>/unconfirm/', mailchimp_views.event_mailchimp_unconfirm, name='event_mailchimp_unconfirm'),
+    path('events/<uuid:event_id>/slicktext/match/', slicktext_views.event_slicktext_match, name='event_slicktext_match'),
+    path('events/<uuid:event_id>/slicktext/apply/', slicktext_views.event_slicktext_apply, name='event_slicktext_apply'),
+    path('events/<uuid:event_id>/slicktext/refresh/', slicktext_views.event_slicktext_refresh_all, name='event_slicktext_refresh_all'),
+    path('events/<uuid:event_id>/slicktext/<uuid:sms_campaign_id>/refresh/', slicktext_views.event_slicktext_refresh, name='event_slicktext_refresh'),
+    path('events/<uuid:event_id>/slicktext/<uuid:sms_campaign_id>/remove/', slicktext_views.event_slicktext_remove, name='event_slicktext_remove'),
+    path('events/<uuid:event_id>/slicktext/<uuid:sms_campaign_id>/metrics/', slicktext_views.event_slicktext_metrics_edit, name='event_slicktext_metrics_edit'),
+    path('events/<uuid:event_id>/slicktext/<uuid:sms_campaign_id>/confirm/', slicktext_views.event_slicktext_confirm, name='event_slicktext_confirm'),
+    path('events/<uuid:event_id>/slicktext/<uuid:sms_campaign_id>/unconfirm/', slicktext_views.event_slicktext_unconfirm, name='event_slicktext_unconfirm'),
     path('events/<uuid:event_id>/expenses/add/', views.expense_create, name='expense_create'),
     path('events/<uuid:event_id>/expenses/<uuid:expense_id>/edit/', views.expense_edit, name='expense_edit'),
     path('events/<uuid:event_id>/expenses/<uuid:expense_id>/delete/', views.expense_delete, name='expense_delete'),
@@ -284,23 +297,35 @@ urlpatterns = [
     path('formats/<uuid:format_id>/duplicate/', views.format_duplicate, name='format_duplicate'),
 
     # Settings
-    path('settings/google-calendar/', views.settings_google_calendar, name='settings_google_calendar'),
     path('settings/', views.settings_overview, name='settings_overview'),
     path('settings/display/', views.settings_display_preferences, name='settings_display_preferences'),
-    path('settings/google-calendar/disconnect/', views.settings_google_calendar_disconnect, name='settings_google_calendar_disconnect'),
-    path('settings/meta-ads/', views.meta_ads_settings, name='meta_ads_settings'),
-    path('settings/meta-ads/connect/', views.meta_ads_connect, name='meta_ads_connect'),
-    path('settings/meta-ads/callback/', views.meta_ads_callback, name='meta_ads_callback'),
-    path('settings/meta-ads/select-account/', views.meta_ads_select_account, name='meta_ads_select_account'),
-    path('settings/meta-ads/disconnect/', views.meta_ads_disconnect, name='meta_ads_disconnect'),
-    path('settings/mailchimp/', views.mailchimp_settings, name='mailchimp_settings'),
-    path('settings/mailchimp/connect/', views.mailchimp_connect, name='mailchimp_connect'),
-    path('settings/mailchimp/callback/', views.mailchimp_callback, name='mailchimp_callback'),
-    path('settings/mailchimp/disconnect/', views.mailchimp_disconnect, name='mailchimp_disconnect'),
-    path('settings/mailchimp/hints/', views.mailchimp_save_hints, name='mailchimp_save_hints'),
-    path('settings/slicktext/', views.slicktext_settings, name='slicktext_settings'),
-    path('settings/slicktext/save/', views.slicktext_save, name='slicktext_save'),
-    path('settings/slicktext/disconnect/', views.slicktext_disconnect, name='slicktext_disconnect'),
+
+    # === Integrations ===
+    # One place that frames Mailchimp, Typeform, SlickText, Meta Ads, and Google
+    # Calendar as optional, pluggable integrations. Connection/settings pages live
+    # under settings/integrations/; handlers live in tickets/integrations/.
+    # NOTE: OAuth callback paths (meta-ads/mailchimp) are intentionally left at their
+    # original URLs because they are registered as redirect URIs in the provider apps.
+    path('settings/integrations/', integrations_hub.integrations_overview, name='integrations_overview'),
+
+    path('settings/integrations/meta-ads/', meta_ads_views.meta_ads_settings, name='meta_ads_settings'),
+    path('settings/integrations/meta-ads/connect/', meta_ads_views.meta_ads_connect, name='meta_ads_connect'),
+    path('settings/meta-ads/callback/', meta_ads_views.meta_ads_callback, name='meta_ads_callback'),
+    path('settings/integrations/meta-ads/select-account/', meta_ads_views.meta_ads_select_account, name='meta_ads_select_account'),
+    path('settings/integrations/meta-ads/disconnect/', meta_ads_views.meta_ads_disconnect, name='meta_ads_disconnect'),
+
+    path('settings/integrations/mailchimp/', mailchimp_views.mailchimp_settings, name='mailchimp_settings'),
+    path('settings/integrations/mailchimp/connect/', mailchimp_views.mailchimp_connect, name='mailchimp_connect'),
+    path('settings/mailchimp/callback/', mailchimp_views.mailchimp_callback, name='mailchimp_callback'),
+    path('settings/integrations/mailchimp/disconnect/', mailchimp_views.mailchimp_disconnect, name='mailchimp_disconnect'),
+    path('settings/integrations/mailchimp/hints/', mailchimp_views.mailchimp_save_hints, name='mailchimp_save_hints'),
+
+    path('settings/integrations/slicktext/', slicktext_views.slicktext_settings, name='slicktext_settings'),
+    path('settings/integrations/slicktext/save/', slicktext_views.slicktext_save, name='slicktext_save'),
+    path('settings/integrations/slicktext/disconnect/', slicktext_views.slicktext_disconnect, name='slicktext_disconnect'),
+
+    path('settings/integrations/google-calendar/', google_calendar_views.settings_google_calendar, name='settings_google_calendar'),
+    path('settings/integrations/google-calendar/disconnect/', google_calendar_views.settings_google_calendar_disconnect, name='settings_google_calendar_disconnect'),
     path('settings/profile/', views.org_profile, name='org_profile'),
     path('settings/api-keys/', views.settings_api_keys, name='settings_api_keys'),
     path('settings/ai-token-usage/', views.ai_token_usage_dashboard, name='ai_token_usage'),

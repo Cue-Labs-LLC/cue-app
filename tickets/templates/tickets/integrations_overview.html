@@ -1,0 +1,69 @@
+{% extends 'tickets/base.html' %}
+
+{% block title %}Integrations{% endblock %}
+
+{% block extra_css %}
+<style>
+    .integration-card-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+    }
+    .integration-status {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        font-family: var(--font-mono);
+        font-size: 10px;
+        font-weight: 500;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        padding: 3px 8px;
+        border-radius: 999px;
+        border: 1px solid var(--border);
+        color: var(--text-tertiary);
+        white-space: nowrap;
+    }
+    .integration-status .dot {
+        width: 6px;
+        height: 6px;
+        border-radius: 50%;
+        background: var(--text-tertiary);
+    }
+    .integration-status.is-connected {
+        color: var(--success);
+        border-color: var(--success);
+        background: var(--success-muted);
+    }
+    .integration-status.is-connected .dot { background: var(--success); }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1>Integrations</h1>
+        <p class="page-header-subtitle">Connect the marketing, survey, and calendar tools you already use. Once connected, their data is referenced across events, surveys, and finance.</p>
+    </div>
+</div>
+
+{% regroup integrations by category as integration_groups %}
+{% for group in integration_groups %}
+<h2 class="hub-section-title">{{ group.grouper }}</h2>
+<div class="hub-grid">
+    {% for integration in group.list %}
+    <a href="{% url integration.settings_url %}" class="hub-link">
+        <div class="integration-card-head">
+            <span class="hub-link-icon"><i class="bi {{ integration.icon }}"></i></span>
+            <span class="integration-status{% if integration.connected %} is-connected{% endif %}">
+                <span class="dot"></span>{% if integration.connected %}Connected{% else %}Not connected{% endif %}
+            </span>
+        </div>
+        <span class="hub-link-title">{{ integration.label }}</span>
+        <p class="hub-link-copy">{{ integration.description }}</p>
+    </a>
+    {% endfor %}
+</div>
+{% endfor %}
+{% endblock %}
