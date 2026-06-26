@@ -2281,7 +2281,7 @@ document.addEventListener('DOMContentLoaded', function() {
 </div>
 {% endif %}
 
-{% if event.ticketing_type != 'direct' %}
+{% if event.ticketing_type != 'direct' and external_events_enabled %}
 <div id="event-uploads-card" data-url="{% url 'tickets:event_uploads_summary' event.id %}">
     <div class="card">
         <div class="card-header">
@@ -2375,7 +2375,7 @@ document.addEventListener('DOMContentLoaded', function() {
 </div>
 
 <!-- Upload CSV Modal -->
-{% if event.ticketing_type != 'direct' %}
+{% if event.ticketing_type != 'direct' and external_events_enabled %}
 <div class="modal fade" id="uploadCsvModal" tabindex="-1" aria-labelledby="uploadCsvModalLabel" aria-hidden="true">
     <div class="modal-dialog modal-lg">
         <div class="modal-content">

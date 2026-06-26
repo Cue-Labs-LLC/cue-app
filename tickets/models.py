@@ -220,6 +220,13 @@ class Organization(BaseModel):
         default=True,
         help_text='Show the AI Event Summary card on event detail pages.',
     )
+    external_events_enabled = models.BooleanField(
+        default=False,
+        help_text=(
+            'Allow this org to create external (CSV-imported) events. Off by '
+            'default; direct ticketing only.'
+        ),
+    )
     photo = models.ImageField(
         upload_to='org_photos/',
         storage=_get_media_storage,

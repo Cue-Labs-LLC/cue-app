@@ -31,6 +31,7 @@
             </div>
         </a>
     </div>
+    {% if external_events_enabled %}
     <div class="col-md-6">
         <a href="{% url 'tickets:event_create' 'external' %}" class="text-decoration-none">
             <div class="card h-100 card-hover">
@@ -51,6 +52,7 @@
             </div>
         </a>
     </div>
+    {% endif %}
 </div>
 
 <div class="mt-4">

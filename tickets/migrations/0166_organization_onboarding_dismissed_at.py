@@ -6,7 +6,7 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('tickets', '0164_organization_survey_reply_to_email'),
+        ('tickets', '0165_organization_external_events_enabled'),
     ]
 
     operations = [
