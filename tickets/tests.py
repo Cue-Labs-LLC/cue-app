@@ -14988,3 +14988,88 @@ class VenueCreateInlineTests(TestCase):
         self.assertFalse(Venue.objects.filter(name='No Auth Venue').exists())
 
 
+class ExternalEventsFeatureFlagTests(TestCase):
+    """Gate external-event creation (manual + CSV) behind external_events_enabled."""
+
+    def setUp(self):
+        self.client = Client()
+        self.org = Organization.objects.create(name='Flag Org', slug='flag-org')
+        self.user = User.objects.create_user(
+            username='flaguser', email='flag@test.com', password='pass12345'
+        )
+        UserProfile.objects.create(
+            user=self.user, organization=self.org, org_role=UserProfile.OrgRole.OWNER
+        )
+        OrganizationMembership.objects.create(
+            user=self.user, organization=self.org, org_role=UserProfile.OrgRole.OWNER
+        )
+        self.client.login(username='flag@test.com', password='pass12345')
+        self.client.get(reverse('tickets:home'))  # seed _org_id in session
+
+        self.csv_format = CSVFormat.objects.create(
+            organization=self.org, name='Fmt', column_mapping={'order_number': 'Order ID'}
+        )
+        self.venue = Venue.objects.create(organization=self.org, name='V', city='C')
+        self.event = Event.objects.create(
+            organization=self.org, name='Ext Event', venue=self.venue,
+            start_date=date(2024, 6, 15), start_time=time(19, 0, 0),
+        )
+        self.upload = UploadedFile.objects.create(
+            organization=self.org, csv_format=self.csv_format, filename='u.csv',
+            status='completed',
+        )
+
+    def _enable(self):
+        self.org.external_events_enabled = True
+        self.org.save(update_fields=['external_events_enabled'])
+
+    def test_default_flag_off(self):
+        self.assertFalse(self.org.external_events_enabled)
+
+    def test_type_select_redirects_to_direct_when_off(self):
+        resp = self.client.get(reverse('tickets:event_type_select'))
+        self.assertRedirects(
+            resp, reverse('tickets:event_create', kwargs={'ticketing_type': 'direct'})
+        )
+
+    def test_type_select_shows_chooser_when_on(self):
+        self._enable()
+        resp = self.client.get(reverse('tickets:event_type_select'))
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, 'External Ticketing')
+
+    def test_external_create_blocked_when_off(self):
+        resp = self.client.get(
+            reverse('tickets:event_create', kwargs={'ticketing_type': 'external'})
+        )
+        self.assertRedirects(
+            resp, reverse('tickets:event_create', kwargs={'ticketing_type': 'direct'})
+        )
+
+    def test_external_create_allowed_when_on(self):
+        self._enable()
+        resp = self.client.get(
+            reverse('tickets:event_create', kwargs={'ticketing_type': 'external'})
+        )
+        self.assertEqual(resp.status_code, 200)
+
+    def test_csv_upload_404_when_off(self):
+        resp = self.client.get(
+            reverse('tickets:event_upload_csv', kwargs={'event_id': self.event.id})
+        )
+        self.assertEqual(resp.status_code, 404)
+
+    def test_csv_upload_reachable_when_on(self):
+        self._enable()
+        resp = self.client.get(
+            reverse('tickets:event_upload_csv', kwargs={'event_id': self.event.id})
+        )
+        self.assertEqual(resp.status_code, 200)
+
+    def test_reprocess_404_when_off(self):
+        resp = self.client.get(
+            reverse('tickets:reprocess_csv_file', kwargs={'file_id': self.upload.id})
+        )
+        self.assertEqual(resp.status_code, 404)
+
+

@@ -2095,9 +2095,27 @@ def ai_recommendation_unconfirmed_matches(request, recommendation_id):
     return JsonResponse(payload)
 
 
+def require_external_events(view):
+    """Gate a view behind the org's external_events_enabled flag.
+
+    External (CSV-imported) events are off by default; orgs are direct-ticketing
+    only until this per-org flag is enabled. Mirrors require_loyalty_feature.
+    """
+    from functools import wraps
+
+    @wraps(view)
+    def wrapped(request, *args, **kwargs):
+        org = get_organization(request)
+        if not org or not org.external_events_enabled:
+            raise Http404('External events are not enabled for this organization.')
+        return view(request, *args, **kwargs)
+    return wrapped
+
+
 @login_required
 @require_org
 @require_host
+@require_external_events
 @require_http_methods(["GET", "POST"])
 def price_entry(request, file_id):
     """Display form for manually entering ticket prices or tiers."""
@@ -2329,6 +2347,7 @@ def process_csv_file(request, uploaded_file, manual_prices=None, tier_definition
 @login_required
 @require_org
 @require_host
+@require_external_events
 @require_http_methods(["GET", "POST"])
 def reprocess_csv_file(request, file_id):
     """Delete all orders from an upload and re-run the CSV processor with current format settings."""
@@ -6044,7 +6063,14 @@ def venue_edit(request, venue_id):
 @require_org
 @require_host
 def event_type_select(request):
-    """Landing page to choose Direct or External ticketing before creating an event."""
+    """Landing page to choose Direct or External ticketing before creating an event.
+
+    When external events are disabled for the org (the default), skip the chooser
+    and go straight to the direct-ticketing create form.
+    """
+    org = get_organization(request)
+    if not (org and org.external_events_enabled):
+        return redirect('tickets:event_create', ticketing_type='direct')
     return render(request, 'tickets/event_type_select.html', {})
 
 
@@ -6058,6 +6084,8 @@ def event_create(request, ticketing_type):
     if ticketing_type not in (TICKETING_TYPE_DIRECT, TICKETING_TYPE_EXTERNAL):
         return redirect('tickets:event_type_select')
     org = get_organization(request)
+    if ticketing_type == TICKETING_TYPE_EXTERNAL and not org.external_events_enabled:
+        return redirect('tickets:event_create', ticketing_type=TICKETING_TYPE_DIRECT)
 
     if ticketing_type == TICKETING_TYPE_DIRECT:
         if request.method == 'POST':
@@ -6307,6 +6335,7 @@ def event_edit(request, event_id):
 @login_required
 @require_org
 @require_host
+@require_external_events
 @require_http_methods(["GET", "POST"])
 def event_upload_csv(request, event_id):
     """Upload a CSV directly for an existing event."""
