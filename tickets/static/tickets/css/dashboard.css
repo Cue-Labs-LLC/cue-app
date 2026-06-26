@@ -3499,3 +3499,15 @@ input.manage-copy__text {
         padding: 16px;
     }
 }
+
+/* Onboarding "Getting started" checklist (dashboard) */
+.onboarding-step-icon {
+    font-size: 1.25rem;
+    line-height: 1;
+}
+.onboarding-progress {
+    min-width: 160px;
+}
+.onboarding-progress .progress {
+    height: 8px;
+}
