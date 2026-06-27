@@ -1032,10 +1032,27 @@
         <span class="event-hero__location">{{ event.venue.city }}{% if event.venue.name %} &middot; {{ event.venue.name }}{% endif %}</span>
         <h1 class="event-hero__title">{{ event.name }}</h1>
         <div class="event-hero__meta">
+            {% if event.spans_extra_days %}
             <div class="event-hero__meta-row">
                 <i class="bi bi-calendar3"></i>
                 {{ event.start_date|date:"F j, Y" }}{% if event.start_time %}&nbsp;&mdash;&nbsp;{{ event.start_time|time:"g:i A" }}{% endif %}
             </div>
+            <div class="event-hero__meta-row">
+                <i class="bi bi-arrow-right"></i>
+                {{ event.end_date|date:"F j, Y" }}{% if event.end_time %}&nbsp;&mdash;&nbsp;{{ event.end_time|time:"g:i A" }}{% endif %}
+            </div>
+            {% else %}
+            <div class="event-hero__meta-row">
+                <i class="bi bi-calendar3"></i>
+                {{ event.start_date|date:"F j, Y" }}
+            </div>
+            {% if event.start_time or event.end_time %}
+            <div class="event-hero__meta-row">
+                <i class="bi bi-clock"></i>
+                {% if event.start_time %}{{ event.start_time|time:"g:i A" }}{% endif %}{% if event.start_time and event.end_time %}&nbsp;&ndash;&nbsp;{% endif %}{% if event.end_time %}{{ event.end_time|time:"g:i A" }}{% endif %}
+            </div>
+            {% endif %}
+            {% endif %}
             <div class="event-hero__meta-row">
                 <i class="bi bi-geo-alt"></i>
                 {{ event.venue.name }}, {{ event.venue.city }}
