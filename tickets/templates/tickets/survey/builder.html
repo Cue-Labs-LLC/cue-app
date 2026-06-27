@@ -77,6 +77,26 @@
     .qb-preview-col { position: static; margin-top: 24px; }
     #qb-preview { height: 560px; }
   }
+
+  /* Config-field status — make "is this set?" obvious at a glance, so a real
+     value never reads like an empty placeholder. */
+  .cfg-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 6px; }
+  .cfg-head .form-label { margin: 0; }
+  .cfg-status {
+    display: inline-flex; align-items: center; gap: 5px;
+    font-size: .7rem; font-weight: 600; letter-spacing: .01em; white-space: nowrap;
+    padding: 3px 9px; border-radius: 999px;
+  }
+  .cfg-status i { font-size: .8rem; line-height: 1; }
+  .cfg-status--set { color: var(--bs-success); background: rgba(var(--bs-success-rgb,25,135,84), .12); }
+  .cfg-status--unset { color: var(--text-muted, #6b7177); background: var(--surface-2, rgba(0,0,0,.06)); }
+  /* Success left-accent reinforces "this field holds a real value." */
+  .cfg-input--set { border-left: 3px solid var(--bs-success); }
+  /* Resolved readout: shows the inherited value that will actually be used
+     when the field is left blank. */
+  .cfg-resolved { display: flex; align-items: baseline; gap: 7px; margin-top: 8px; font-size: .8rem; }
+  .cfg-resolved-label { color: var(--text-muted,#6b7177); text-transform: uppercase; letter-spacing: .06em; font-size: .64rem; font-weight: 700; }
+  .cfg-resolved-val { font-weight: 600; }
 </style>
 {% endblock %}
 
@@ -112,16 +132,29 @@
   <div class="card-body">
     <form method="post" action="{{ survey_subject_save_url }}">
       {% csrf_token %}
-      <label class="form-label small fw-medium mb-1" for="survey-email-subject">Survey email subject</label>
-      <input type="text" name="email_subject" id="survey-email-subject" maxlength="255" class="form-control"
+      <div class="cfg-head">
+        <label class="form-label small fw-medium" for="survey-email-subject">Survey email subject</label>
+        {% if survey_email_subject %}
+        <span class="cfg-status cfg-status--set"><i class="bi bi-check-circle-fill"></i> Custom subject set</span>
+        {% else %}
+        <span class="cfg-status cfg-status--unset"><i class="bi bi-dash-circle"></i> Using default</span>
+        {% endif %}
+      </div>
+      <input type="text" name="email_subject" id="survey-email-subject" maxlength="255"
+             class="form-control{% if survey_email_subject %} cfg-input--set{% endif %}"
              value="{{ survey_email_subject }}"
              placeholder="{{ survey_subject_inherited }}"
              {% if locked %}disabled{% endif %}>
       <div class="form-text">
         Use <code>{event}</code> for the event name. Leave blank to use
-        {% if event %}the default survey's subject{% else %}the built-in default{% endif %}:
-        <em>{{ survey_subject_inherited }}</em>
+        {% if event %}the default survey's subject{% else %}the built-in default{% endif %}.
       </div>
+      {% if not survey_email_subject %}
+      <div class="cfg-resolved">
+        <span class="cfg-resolved-label">Will send as</span>
+        <span class="cfg-resolved-val">{{ survey_subject_inherited }}</span>
+      </div>
+      {% endif %}
       {% if not locked %}
       <button type="submit" class="btn btn-outline-primary btn-sm mt-2">Save subject</button>
       {% endif %}
@@ -132,12 +165,25 @@
     <hr class="my-3">
     <form method="post" action="{% url 'tickets:survey_reply_to_save' %}">
       {% csrf_token %}
-      <label class="form-label small fw-medium mb-1" for="survey-reply-to">Reply-to email</label>
-      <input type="email" name="reply_to_email" id="survey-reply-to" class="form-control"
+      <div class="cfg-head">
+        <label class="form-label small fw-medium" for="survey-reply-to">Reply-to email</label>
+        {% if survey_reply_to_email %}
+        <span class="cfg-status cfg-status--set"><i class="bi bi-check-circle-fill"></i> Active</span>
+        {% else %}
+        <span class="cfg-status cfg-status--unset"><i class="bi bi-dash-circle"></i> Not set</span>
+        {% endif %}
+      </div>
+      <input type="email" name="reply_to_email" id="survey-reply-to"
+             class="form-control{% if survey_reply_to_email %} cfg-input--set{% endif %}"
              value="{{ survey_reply_to_email }}" placeholder="events@yourdomain.com">
       <div class="form-text">
+        {% if survey_reply_to_email %}
+        Replies go to <strong>{{ survey_reply_to_email }}</strong> and your organization's
+        name appears on the From line.
+        {% else %}
         When set, your organization's name appears on the From line and replies go
         to this address. Leave blank to send as Cue with no reply-to.
+        {% endif %}
       </div>
       <button type="submit" class="btn btn-outline-primary btn-sm mt-2">Save reply-to</button>
     </form>
