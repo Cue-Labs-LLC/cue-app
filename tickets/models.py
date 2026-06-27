@@ -1191,6 +1191,19 @@ class Event(AuditBaseModel):
             return EVENT_STATUS_ENDED
         return EVENT_STATUS_LIVE
 
+    @property
+    def spans_extra_days(self):
+        """True when the event ends two or more calendar days after it starts.
+
+        A same-day event or an overnight one that finishes the next morning
+        (end_date == start_date + 1) is not "extra days" — the closing time
+        alone communicates the end, so the end date can be hidden. Only an
+        event that runs into a third day needs its end date shown.
+        """
+        if not self.end_date:
+            return False
+        return (self.end_date - self.start_date).days >= 2
+
     def get_associated_uploads(self):
         """Get all distinct uploads associated with this event via ticket orders."""
         return UploadedFile.objects.filter(
