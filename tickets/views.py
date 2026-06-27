@@ -156,6 +156,7 @@ from .feature_flags import (
 from django.core.cache import cache as django_cache
 
 from .cache_utils import safe_cache_delete, safe_cache_get, safe_cache_set
+from .integrations.registry import marketing_providers
 
 import logging
 logger = logging.getLogger(__name__)
@@ -5250,6 +5251,7 @@ def event_detail(request, event_id):
         'mailchimp_pending_count': mailchimp_pending_count,
         'slicktext_pending_count': slicktext_pending_count,
         'meta_ads_pending_count': meta_ads_pending_count,
+        'marketing_providers': marketing_providers(org),
         'category_labels': category_labels,
         'additional_income_lines': additional_income_lines,
         'income_sources': IncomeSource.objects.filter(organization=org).order_by('order', 'name'),
