@@ -49,12 +49,21 @@
     {% endif %}
 </div>
 
-<div class="ticket-layout" style="display:grid;grid-template-columns:{% if qr_code %}auto 1fr{% else %}1fr{% endif %};gap:16px;align-items:start;">
+<div class="ticket-layout" style="display:grid;grid-template-columns:{% if ticket_qrs %}auto 1fr{% else %}1fr{% endif %};gap:16px;align-items:start;">
 
-    {% if qr_code %}
-    <div class="qr-card" style="animation:fadeUp 0.4s 0.05s ease both;">
-        <img src="data:image/png;base64,{{ qr_code }}" alt="Ticket QR Code">
-        <p class="qr-note"><i class="bi bi-qr-code"></i> Present at the door</p>
+    {% if ticket_qrs %}
+    <div style="display:flex;flex-direction:column;gap:16px;animation:fadeUp 0.4s 0.05s ease both;">
+        {% for q in ticket_qrs %}
+        <div class="qr-card">
+            <img src="data:image/png;base64,{{ q.qr_b64 }}" alt="Ticket QR Code">
+            <p class="qr-note">
+                <i class="bi bi-qr-code"></i>
+                {{ q.ticket.ticket_type }}{% if q.ticket.tier_name %} &middot; {{ q.ticket.tier_name }}{% endif %}
+                {% if q.ticket.scanned_at %}&middot; <span style="color:var(--success);">Scanned</span>{% endif %}
+            </p>
+        </div>
+        {% endfor %}
+        <p class="qr-note" style="text-align:center;">Present one QR code per guest at the door</p>
     </div>
     {% endif %}
 

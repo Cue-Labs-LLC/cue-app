@@ -297,7 +297,7 @@ def send_order_confirmation_email_task(self, order_id):
     from django.template.loader import render_to_string
     from django.conf import settings
     from tickets.models import TicketOrder
-    from tickets.utils import generate_qr_png_bytes
+    from tickets.utils import build_ticket_qr_codes
 
     try:
         order = TicketOrder.objects.select_related(
@@ -308,7 +308,8 @@ def send_order_confirmation_email_task(self, order_id):
         return
 
     customer = order.customer
-    qr_png_bytes = generate_qr_png_bytes(order.order_number)
+    tickets = list(order.tickets.all())
+    ticket_qrs = build_ticket_qr_codes(tickets)
 
     from decimal import Decimal
     try:
@@ -320,8 +321,9 @@ def send_order_confirmation_email_task(self, order_id):
         'order': order,
         'customer': customer,
         'event': order.event,
-        'tickets': list(order.tickets.all()),
-        'show_qr_code': bool(qr_png_bytes),
+        'tickets': tickets,
+        'ticket_qrs': ticket_qrs,
+        'show_qr_code': bool(ticket_qrs),
         'service_fee': service_fee,
     }
     html_body = render_to_string('tickets/buy/order_confirmation_email.html', context)
@@ -335,10 +337,10 @@ def send_order_confirmation_email_task(self, order_id):
         to=[customer.email],
     )
     msg.attach_alternative(html_body, 'text/html')
-    if qr_png_bytes:
-        qr_attachment = MIMEImage(qr_png_bytes)
-        qr_attachment.add_header('Content-ID', '<qrcode>')
-        qr_attachment.add_header('Content-Disposition', 'inline', filename='qrcode.png')
+    for qr in ticket_qrs:
+        qr_attachment = MIMEImage(qr['png_bytes'])
+        qr_attachment.add_header('Content-ID', f"<{qr['cid']}>")
+        qr_attachment.add_header('Content-Disposition', 'inline', filename=f"{qr['cid']}.png")
         msg.attach(qr_attachment)
 
     try:

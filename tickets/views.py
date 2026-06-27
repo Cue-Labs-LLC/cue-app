@@ -147,7 +147,7 @@ from .services.marketing import (
 from .services.marketing.analytics import DEFAULT_WINDOW, resolve_window
 from .services.customer_filters import filter_customers
 from .services.weather import get_event_weather_forecast, get_event_hourly_forecast
-from .utils import get_organization, require_org, require_organizer, require_host, require_admin, require_owner, clear_org_cache, next_order_number, generate_qr_b64, link_customer_to_buyer
+from .utils import get_organization, require_org, require_organizer, require_host, require_admin, require_owner, clear_org_cache, next_order_number, generate_qr_b64, link_customer_to_buyer, ticket_qr_payload
 from .feature_flags import (
     smart_pricing_recommendations_enabled,
     browse_events_enabled,
@@ -11625,10 +11625,15 @@ def my_ticket_detail(request, order_id):
         id=order_id,
         customer__email=request.user.email,
     )
-    qr_code = generate_qr_b64(order.order_number) if not order.refunded_at else ''
+    ticket_qrs = []
+    if not order.refunded_at:
+        ticket_qrs = [
+            {'ticket': t, 'qr_b64': generate_qr_b64(ticket_qr_payload(t))}
+            for t in order.tickets.all()
+        ]
     return render(request, 'tickets/ticket_detail.html', {
         'order': order,
-        'qr_code': qr_code,
+        'ticket_qrs': ticket_qrs,
     })
 
 

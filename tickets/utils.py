@@ -29,6 +29,33 @@ def generate_qr_png_bytes(data: str) -> bytes | None:
         return None
 
 
+# Prefix marking a per-ticket QR payload, distinguishing it from a legacy
+# order-number payload (e.g. "ORD-...") so the scanner can route the two paths.
+TICKET_QR_PREFIX = 'TKT-'
+
+
+def ticket_qr_payload(ticket) -> str:
+    """Return the scannable payload encoded into an individual ticket's QR code."""
+    return f"{TICKET_QR_PREFIX}{ticket.id}"
+
+
+def build_ticket_qr_codes(tickets):
+    """Return per-ticket QR data for emails/templates.
+
+    Produces a list of dicts ``[{'ticket', 'cid', 'png_bytes'}]`` — one entry per
+    ticket — where ``cid`` is the inline-image Content-ID stem (e.g. ``qrcode-0``).
+    Returns ``[]`` if qrcode is unavailable (mirrors generate_qr_png_bytes' ImportError
+    path), so callers can treat an empty list as "no QR codes to show".
+    """
+    out = []
+    for i, ticket in enumerate(tickets):
+        png = generate_qr_png_bytes(ticket_qr_payload(ticket))
+        if not png:
+            return []
+        out.append({'ticket': ticket, 'cid': f'qrcode-{i}', 'png_bytes': png})
+    return out
+
+
 def generate_username(first_name, last_name):
     """Generate a unique slugified username from first + last name."""
     from django.utils.text import slugify
