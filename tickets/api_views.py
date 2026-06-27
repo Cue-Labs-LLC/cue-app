@@ -8,6 +8,7 @@ from decimal import Decimal, InvalidOperation
 
 from django.contrib.auth import authenticate
 from django.core.cache import cache as django_cache
+from django.core.exceptions import ValidationError
 from django.db import transaction
 from django.db.models import Count, DecimalField, F, IntegerField, OuterRef, Q, Subquery, Sum
 from django.db.models.functions import Coalesce
@@ -44,7 +45,12 @@ from .models import (
     TICKETING_TYPE_DIRECT,
     UserProfile,
 )
-from .utils import next_order_number, link_customer_to_buyer, extract_fee_from_display_cents
+from .utils import (
+    next_order_number,
+    link_customer_to_buyer,
+    extract_fee_from_display_cents,
+    TICKET_QR_PREFIX,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -1792,6 +1798,81 @@ def scanner_event(request):
     })
 
 
+def _scanner_checkin_ticket(event, org, ticket_id):
+    """Check in a single ticket (per-ticket QR scan), admitting one attendee.
+
+    Marks the individual ticket's scanned_at, and only flips the order's
+    checked_in_at once every ticket in the order has been scanned — keeping
+    order-level state consistent with the whole-order admit path.
+
+    Returns the same response keys the scanner app already consumes, plus the
+    scanned ticket_type and the number of tickets still unscanned in the order.
+    """
+    order_checked_in_count = lambda: TicketOrder.objects.filter(
+        event=event, customer__organization=org, checked_in_at__isnull=False
+    ).count()
+
+    with transaction.atomic():
+        try:
+            ticket = (
+                Ticket.objects
+                .select_for_update()
+                .filter(
+                    id=ticket_id,
+                    ticket_order__customer__organization=org,
+                    ticket_order__event=event,
+                )
+                .select_related('ticket_order', 'ticket_order__customer')
+                .first()
+            )
+        except (ValueError, ValidationError):
+            # Malformed UUID — treat as an unknown ticket.
+            return Response({'error': 'Ticket not found'}, status=404)
+        if ticket is None:
+            return Response({'error': 'Ticket not found'}, status=404)
+
+        order = ticket.ticket_order
+        if order.refunded_at is not None:
+            return Response({
+                'status': 'refunded',
+                'order_number': order.order_number,
+                'customer_name': order.customer.name,
+                'ticket_type': ticket.ticket_type,
+            })
+        if ticket.scanned_at is not None:
+            return Response({
+                'status': 'already_checked_in',
+                'order_number': order.order_number,
+                'customer_name': order.customer.name,
+                'checked_in_at': ticket.scanned_at.isoformat(),
+                'ticket_type': ticket.ticket_type,
+                'ticket_types': [t.ticket_type for t in order.tickets.all()],
+                'tickets_remaining': order.tickets.filter(scanned_at__isnull=True).count(),
+                'checked_in_count': order_checked_in_count(),
+            })
+
+        now = timezone.now()
+        ticket.scanned_at = now
+        ticket.save(update_fields=['scanned_at'])
+        # Once every ticket in the order is scanned, mark the order checked in too.
+        tickets_remaining = order.tickets.filter(scanned_at__isnull=True).count()
+        if tickets_remaining == 0 and order.checked_in_at is None:
+            order.checked_in_at = now
+            order.checked_in_by = None  # no Cue account for scanner guests
+            order.save(update_fields=['checked_in_at', 'checked_in_by'])
+
+    return Response({
+        'status': 'checked_in',
+        'order_number': order.order_number,
+        'customer_name': order.customer.name,
+        'checked_in_at': now.isoformat(),
+        'ticket_type': ticket.ticket_type,
+        'ticket_types': [t.ticket_type for t in order.tickets.all()],
+        'tickets_remaining': tickets_remaining,
+        'checked_in_count': order_checked_in_count(),
+    })
+
+
 @api_view(['POST'])
 @authentication_classes([ScannerSessionAuthentication])
 @permission_classes([IsScannerAuthenticated])
@@ -1823,6 +1904,13 @@ def scanner_checkin(request):
         return Response({'error': 'order_number is required'}, status=400)
     if event_id and str(event.pk) != event_id:
         return Response({'error': 'Event mismatch'}, status=403)
+
+    # Per-ticket QR codes (TKT-<ticket-uuid>) admit a single attendee per scan.
+    # Legacy order-number codes fall through to the whole-order path below.
+    if order_number.startswith(TICKET_QR_PREFIX):
+        return _scanner_checkin_ticket(
+            event, org, order_number[len(TICKET_QR_PREFIX):]
+        )
 
     with transaction.atomic():
         order = (
@@ -2159,9 +2247,10 @@ def _send_receipt_email_for_order(order, to_email):
     from django.core.mail import EmailMultiAlternatives
     from django.template.loader import render_to_string
     from django.conf import settings as django_settings
-    from tickets.utils import generate_qr_png_bytes
+    from tickets.utils import build_ticket_qr_codes
 
-    qr_png_bytes = generate_qr_png_bytes(order.order_number)
+    tickets = list(order.tickets.all())
+    ticket_qrs = build_ticket_qr_codes(tickets)
     try:
         service_fee = _Decimal(order.stripe_checkout_session.platform_fee_cents) / 100
     except Exception:
@@ -2171,8 +2260,9 @@ def _send_receipt_email_for_order(order, to_email):
         'order': order,
         'customer': order.customer,
         'event': order.event,
-        'tickets': list(order.tickets.all()),
-        'show_qr_code': bool(qr_png_bytes),
+        'tickets': tickets,
+        'ticket_qrs': ticket_qrs,
+        'show_qr_code': bool(ticket_qrs),
         'service_fee': service_fee,
     }
     html_body = render_to_string('tickets/buy/order_confirmation_email.html', context)
@@ -2185,10 +2275,10 @@ def _send_receipt_email_for_order(order, to_email):
         to=[to_email],
     )
     msg.attach_alternative(html_body, 'text/html')
-    if qr_png_bytes:
-        qr_attachment = MIMEImage(qr_png_bytes)
-        qr_attachment.add_header('Content-ID', '<qrcode>')
-        qr_attachment.add_header('Content-Disposition', 'inline', filename='qrcode.png')
+    for qr in ticket_qrs:
+        qr_attachment = MIMEImage(qr['png_bytes'])
+        qr_attachment.add_header('Content-ID', f"<{qr['cid']}>")
+        qr_attachment.add_header('Content-Disposition', 'inline', filename=f"{qr['cid']}.png")
         msg.attach(qr_attachment)
 
     try:

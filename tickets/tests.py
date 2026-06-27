@@ -7420,6 +7420,141 @@ class ScannerCheckinAPITests(TestCase):
         self.assertEqual(res.status_code, 404)
 
 
+class PerTicketQRCheckinTests(TestCase):
+    """Per-ticket QR codes (TKT-<id>) admit one attendee per scan."""
+
+    def setUp(self):
+        from .models import ScannerSession
+
+        self.org = Organization.objects.create(name='QR Org', slug='qr-org')
+        self.venue = Venue.objects.create(organization=self.org, name='QR Venue', city='SF')
+        self.event = Event.objects.create(
+            organization=self.org, name='QR Event', venue=self.venue,
+            start_date=date.today(), scanner_pin='4321',
+        )
+        self.customer = Customer.objects.create(
+            organization=self.org, name='Group Buyer', email='group@example.com',
+        )
+        self.order = TicketOrder.objects.create(
+            customer=self.customer, event=self.event, order_number='#QR-1',
+            order_date=timezone.now(), total_amount=Decimal('30.00'),
+        )
+        self.tickets = [
+            Ticket.objects.create(
+                ticket_order=self.order, ticket_type='General Admission', price=Decimal('10.00'),
+            )
+            for _ in range(3)
+        ]
+        self.session = ScannerSession.objects.create(event=self.event)
+        self.auth = f'Scanner {self.session.token}'
+
+    def _scan(self, payload):
+        return self.client.post(
+            '/api/scanner/checkin/',
+            data=json.dumps({'order_number': payload}),
+            content_type='application/json',
+            HTTP_AUTHORIZATION=self.auth,
+        )
+
+    def test_build_ticket_qr_codes_one_per_ticket_distinct_cids(self):
+        from .utils import build_ticket_qr_codes, ticket_qr_payload
+
+        qrs = build_ticket_qr_codes(self.tickets)
+        self.assertEqual(len(qrs), 3)
+        self.assertEqual([q['cid'] for q in qrs], ['qrcode-0', 'qrcode-1', 'qrcode-2'])
+        self.assertEqual(len({q['cid'] for q in qrs}), 3)
+        self.assertTrue(all(q['png_bytes'] for q in qrs))
+        self.assertEqual(ticket_qr_payload(self.tickets[0]), f'TKT-{self.tickets[0].id}')
+
+    def test_per_ticket_scan_admits_one_attendee(self):
+        from .utils import ticket_qr_payload
+
+        res = self._scan(ticket_qr_payload(self.tickets[0]))
+        self.assertEqual(res.status_code, 200, res.content)
+        self.assertEqual(res.json()['status'], 'checked_in')
+        self.assertEqual(res.json()['tickets_remaining'], 2)
+
+        self.tickets[0].refresh_from_db()
+        self.tickets[1].refresh_from_db()
+        self.assertIsNotNone(self.tickets[0].scanned_at)
+        self.assertIsNone(self.tickets[1].scanned_at)
+
+        # Order is not fully checked in until every ticket is scanned.
+        self.order.refresh_from_db()
+        self.assertIsNone(self.order.checked_in_at)
+
+    def test_order_checked_in_after_last_ticket(self):
+        from .utils import ticket_qr_payload
+
+        for t in self.tickets[:-1]:
+            self._scan(ticket_qr_payload(t))
+        self.order.refresh_from_db()
+        self.assertIsNone(self.order.checked_in_at)
+
+        res = self._scan(ticket_qr_payload(self.tickets[-1]))
+        self.assertEqual(res.json()['tickets_remaining'], 0)
+        self.order.refresh_from_db()
+        self.assertIsNotNone(self.order.checked_in_at)
+
+    def test_rescanning_same_ticket_reports_already_checked_in(self):
+        from .utils import ticket_qr_payload
+
+        payload = ticket_qr_payload(self.tickets[0])
+        self.assertEqual(self._scan(payload).json()['status'], 'checked_in')
+        res = self._scan(payload)
+        self.assertEqual(res.status_code, 200, res.content)
+        self.assertEqual(res.json()['status'], 'already_checked_in')
+
+    def test_legacy_order_number_still_admits_whole_order(self):
+        res = self._scan('#QR-1')
+        self.assertEqual(res.status_code, 200, res.content)
+        self.assertEqual(res.json()['status'], 'checked_in')
+        self.order.refresh_from_db()
+        self.assertIsNotNone(self.order.checked_in_at)
+        for t in self.tickets:
+            t.refresh_from_db()
+            self.assertIsNotNone(t.scanned_at)
+
+    def test_unknown_ticket_id_returns_404(self):
+        self.assertEqual(self._scan(f'TKT-{uuid.uuid4()}').status_code, 404)
+
+    def test_malformed_ticket_id_returns_404(self):
+        self.assertEqual(self._scan('TKT-not-a-uuid').status_code, 404)
+
+    def test_confirmation_email_attaches_one_qr_per_ticket(self):
+        from django.core import mail
+        from tickets.tasks import send_order_confirmation_email_task
+
+        send_order_confirmation_email_task.apply(args=[str(self.order.id)]).get()
+
+        self.assertEqual(len(mail.outbox), 1)
+        msg = mail.outbox[0]
+        cids = [
+            a.get('Content-ID') for a in msg.attachments
+            if hasattr(a, 'get') and a.get('Content-ID')
+        ]
+        self.assertEqual(sorted(cids), ['<qrcode-0>', '<qrcode-1>', '<qrcode-2>'])
+        html_body = next(b for b, mime in msg.alternatives if mime == 'text/html')
+        for cid in ('qrcode-0', 'qrcode-1', 'qrcode-2'):
+            self.assertIn(f'cid:{cid}', html_body)
+
+    def test_ticket_from_other_event_returns_404(self):
+        from .utils import ticket_qr_payload
+
+        other_event = Event.objects.create(
+            organization=self.org, name='Other Event', venue=self.venue, start_date=date.today(),
+        )
+        other_order = TicketOrder.objects.create(
+            customer=self.customer, event=other_event, order_number='#QR-2',
+            order_date=timezone.now(), total_amount=Decimal('10.00'),
+        )
+        other_ticket = Ticket.objects.create(
+            ticket_order=other_order, ticket_type='GA', price=Decimal('10.00'),
+        )
+        # The scanner session is bound to self.event, so a ticket from another event is invisible.
+        self.assertEqual(self._scan(ticket_qr_payload(other_ticket)).status_code, 404)
+
+
 class TapToPayEndpointsTests(TestCase):
     """Tests for the three Tap-to-Pay-on-iPhone backend endpoints."""
 
