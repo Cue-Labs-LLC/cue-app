@@ -1197,11 +1197,11 @@ document.addEventListener('DOMContentLoaded', function() {
         <a href="{% url 'tickets:integrations_overview' %}">Manage integrations</a>
     </p>
     {% else %}
-    <div class="empty-state" style="padding: 24px;">
-        <i class="bi bi-plug"></i>
+    <div class="empty-state" style="padding: 28px 24px;">
+        <i class="bi bi-plug" style="font-size: 16px;"></i>
         <p class="mb-2">No marketing integrations connected yet.</p>
-        <a href="{% url 'tickets:integrations_overview' %}" class="btn btn-sm btn-primary">
-            <i class="bi bi-plug"></i> Connect in Integrations
+        <a href="{% url 'tickets:integrations_overview' %}" class="btn btn-sm btn-outline-secondary" style="padding: 3px 9px; font-size: 9.5px; letter-spacing: 0.04em;">
+            Connect in Integrations
         </a>
     </div>
     {% endif %}
@@ -1758,7 +1758,17 @@ document.addEventListener('DOMContentLoaded', function() {
         {% include 'tickets/_survey_matcher_panels.html' %}
     </div>
     {% else %}
-    {% include 'tickets/_integration_cta.html' with connected=False label='Typeform' icon='bi-clipboard2-data' url_name='tickets:typeform_settings' blurb='Connect Typeform to stream survey responses into Cue and match them to your events.' %}
+    <div class="empty-state" style="padding: 28px 24px;">
+        <i class="bi bi-clipboard2-data" style="font-size: 16px;"></i>
+        <p class="mb-1">No survey responses yet</p>
+        <p class="text-body-secondary small mb-2">
+            Build a survey in Cue and send it to your attendees to start collecting responses.
+        </p>
+        <p class="text-body-secondary small mb-0">
+            Already collecting responses elsewhere?
+            <a href="{% url 'tickets:typeform_settings' %}">Connect a survey integration</a>.
+        </p>
+    </div>
     {% endif %}
 {% endif %}
 
