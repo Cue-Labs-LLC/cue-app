@@ -1432,8 +1432,11 @@ document.addEventListener('DOMContentLoaded', function() {
     <div class="text-body-secondary small">
         {% if survey_scheduled_send_display %}
         <i class="bi bi-clock-history me-1"></i>Scheduled to send {{ survey_scheduled_send_display }}.
+        {% elif survey_schedule_resolved.opted_out %}
+        <i class="bi bi-clock me-1"></i>Auto-send canceled for this event.
+        <a href="{% url 'tickets:event_survey_builder' event.id %}">Re-enable</a>
         {% elif survey_schedule_resolved.has_schedule %}
-        <i class="bi bi-clock me-1"></i>Auto-send: {{ survey_schedule_resolved.description }}{% if survey_schedule_resolved.send_at_display %} &middot; {{ survey_schedule_resolved.send_at_display }}{% endif %}.
+        <i class="bi bi-clock me-1"></i>Auto-sends {{ survey_schedule_resolved.description }}{% if survey_schedule_resolved.send_at_display %} &middot; {{ survey_schedule_resolved.send_at_display }}{% endif %}.
         <a href="{% url 'tickets:event_survey_builder' event.id %}">Change</a>
         {% else %}
         <i class="bi bi-clock me-1"></i>No automatic send time.
@@ -2293,34 +2296,22 @@ document.addEventListener('DOMContentLoaded', function() {
             All attendees have already been sent this survey.
           </div>
           <div id="sendSurveyContent" class="d-none">
-            <p>This will email the survey to
+            <p>This will email the survey <strong>now</strong> to
               <strong id="sendSurveyCount">0</strong> attendee(s)
               who haven't received it yet.</p>
 
-            <div class="fw-medium mb-2">When to send</div>
-            <div class="btn-group btn-group-sm w-100 mb-3" role="group" aria-label="When to send">
-              <input type="radio" class="btn-check" name="send_mode" id="ssModeNow" value="now" checked>
-              <label class="btn btn-outline-primary" for="ssModeNow">Send now</label>
-              <input type="radio" class="btn-check" name="send_mode" id="ssModeSchedule" value="schedule"
-                     {% if not survey_schedule_resolved.can_schedule %}disabled{% endif %}>
-              <label class="btn btn-outline-primary" for="ssModeSchedule">Use scheduled time</label>
-            </div>
-
-            {% if survey_schedule_resolved.can_schedule %}
-            <div id="ssScheduledPanel" class="d-none rounded border p-3 mb-1"
-                 style="background: var(--bs-tertiary-bg, rgba(0,0,0,.03));">
-              <div class="small text-body-secondary">Scheduled send time</div>
-              <div class="fw-medium">{{ survey_schedule_resolved.send_at_display }}</div>
-              <div class="small text-body-secondary mt-1">
-                {{ survey_schedule_resolved.description }}.
-                <a href="{% url 'tickets:event_survey_builder' event.id %}">Change in survey settings</a>
-              </div>
+            {% if survey_schedule_resolved.has_schedule %}
+            <div class="small text-body-secondary border-top pt-2 mt-2">
+              <i class="bi bi-clock me-1"></i>This event auto-sends its survey
+              {{ survey_schedule_resolved.description }}. Sending now overrides that
+              and goes out immediately.
+              <a href="{% url 'tickets:event_survey_builder' event.id %}">Change schedule</a>
             </div>
             {% else %}
-            <div class="small text-body-secondary">
-              No automatic send time is set for this event.
+            <div class="small text-body-secondary border-top pt-2 mt-2">
+              <i class="bi bi-clock me-1"></i>No automatic send time is set.
               <a href="{% url 'tickets:event_survey_builder' event.id %}">Set a schedule</a>
-              to send later, or send now.
+              to have the survey send itself after the event.
             </div>
             {% endif %}
           </div>
@@ -2408,9 +2399,9 @@ if (document.readyState === 'loading') {
     initSurveyResponseModal();
 }
 
-// Send-survey modal: fetch the recipient count fresh each time it opens, and
-// toggle between "Send now" and "Use scheduled time" (the schedule itself is
-// configured in the survey builder, so this dialog only chooses now vs scheduled).
+// Send-survey modal: fetch the recipient count fresh each time it opens. This
+// dialog sends immediately; scheduled delivery is handled automatically by the
+// survey scheduler for events with an auto-send schedule.
 (function() {
     var ssModal = document.getElementById('sendSurveyModal');
     if (!ssModal) return;
@@ -2420,26 +2411,6 @@ if (document.readyState === 'loading') {
     var empty   = document.getElementById('sendSurveyEmpty');
     var error   = document.getElementById('sendSurveyError');
     var btn     = document.getElementById('sendSurveyConfirmBtn');
-    var btnLabel = document.getElementById('sendSurveyConfirmLabel');
-    var schedPanel = document.getElementById('ssScheduledPanel');
-
-    var recipientsAvailable = false;   // count > 0 (or unknown after an error)
-
-    function scheduleMode() {
-        var checked = document.querySelector('input[name="send_mode"]:checked');
-        return checked && checked.value === 'schedule';
-    }
-
-    function syncMode() {
-        var sched = scheduleMode();
-        if (schedPanel) schedPanel.classList.toggle('d-none', !sched);
-        btnLabel.textContent = sched ? 'Schedule survey' : 'Send survey';
-        btn.disabled = !recipientsAvailable;
-    }
-
-    document.querySelectorAll('input[name="send_mode"]').forEach(function (el) {
-        el.addEventListener('change', syncMode);
-    });
 
     ssModal.addEventListener('show.bs.modal', function () {
         loading.classList.remove('d-none');
@@ -2447,10 +2418,6 @@ if (document.readyState === 'loading') {
         empty.classList.add('d-none');
         error.classList.add('d-none');
         btn.disabled = true;
-        recipientsAvailable = false;
-        // Reset to "Send now" each open.
-        var now = document.getElementById('ssModeNow');
-        if (now) now.checked = true;
         fetch("{% url 'tickets:survey_recipient_count' event.id %}",
               { headers: { 'X-Requested-With': 'XMLHttpRequest' } })
             .then(function (r) { return r.json(); })
@@ -2459,8 +2426,7 @@ if (document.readyState === 'loading') {
                 if (d.count > 0) {
                     document.getElementById('sendSurveyCount').textContent = d.count;
                     content.classList.remove('d-none');
-                    recipientsAvailable = true;
-                    syncMode();
+                    btn.disabled = false;
                 } else {
                     empty.classList.remove('d-none');   // btn stays disabled
                 }
@@ -2469,8 +2435,7 @@ if (document.readyState === 'loading') {
                 loading.classList.add('d-none');
                 error.classList.remove('d-none');
                 content.classList.remove('d-none');
-                recipientsAvailable = true;             // allow send; server re-checks
-                syncMode();
+                btn.disabled = false;                   // allow send; server re-checks
             });
     });
 })();
