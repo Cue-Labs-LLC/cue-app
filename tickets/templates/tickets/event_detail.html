@@ -764,6 +764,27 @@ document.addEventListener('DOMContentLoaded', function() {
     font-size: 12px; padding: 4px 8px; font-family: inherit;
 }
 .chart-custom-range input[type="date"]:focus { outline: none; border-color: var(--accent); }
+
+/* Expandable survey-match rows (Check for new responses modal). */
+.matcher-row { cursor: pointer; }
+.matcher-row:hover { background: var(--bg-inset); }
+.matcher-caret { transition: transform 0.15s ease; font-size: 0.75em; color: var(--text-tertiary); }
+.matcher-row[aria-expanded="true"] .matcher-caret { color: var(--text-secondary); }
+.matcher-detail-row:hover { background: transparent; }
+.matcher-detail-cell {
+    background: var(--bg-inset);
+    border-top: none;
+    padding: 16px 18px;
+}
+.matcher-detail-section + .matcher-detail-section { margin-top: 14px; }
+.matcher-detail-label {
+    font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em;
+    color: var(--text-tertiary); margin-bottom: 6px;
+}
+.matcher-answer { padding: 5px 0; }
+.matcher-answer + .matcher-answer { border-top: 1px solid var(--border); }
+.matcher-answer-q { margin-bottom: 1px; }
+.matcher-answer-a { color: var(--text-primary); white-space: pre-wrap; word-break: break-word; }
 </style>
 <div class="card mb-4">
     <div class="card-header d-flex align-items-center justify-content-between flex-wrap gap-2">
@@ -5103,17 +5124,51 @@ function setupSurveyMatcher(container) {
         return d.toLocaleDateString(undefined, {year: 'numeric', month: 'short', day: 'numeric'});
     }
 
+    // Turn an answer value (string | number | array) into display text.
+    function formatAnswerValue(value) {
+        if (value === null || value === undefined || value === '') return '';
+        if (Array.isArray(value)) return value.join(', ');
+        return String(value);
+    }
+
     function previewText(answers) {
         if (!Array.isArray(answers) || !answers.length) return '<span class="text-body-secondary">—</span>';
         return answers.slice(0, 2).map(function (a) {
             var title = a.title ? '<span class="text-body-secondary">' + escapeHtml(a.title) + ':</span> ' : '';
-            var value = a.value;
-            if (value === null || value === undefined || value === '') return '';
-            if (Array.isArray(value)) value = value.join(', ');
-            var text = String(value);
+            var text = formatAnswerValue(a.value);
+            if (!text) return '';
             if (text.length > 120) text = text.slice(0, 120) + '…';
             return '<div class="text-truncate" style="max-width: 100%;">' + title + escapeHtml(text) + '</div>';
         }).filter(Boolean).join('') || '<span class="text-body-secondary">—</span>';
+    }
+
+    // Full match details shown when a row is expanded: AI reasoning + every answer.
+    function detailContent(c) {
+        var reasoning = c.reasoning ? escapeHtml(c.reasoning) : 'No reasoning provided.';
+        var html =
+            '<div class="matcher-detail-section">' +
+              '<div class="matcher-detail-label"><i class="bi bi-stars me-1"></i>Why this match</div>' +
+              '<p class="mb-0 small">' + reasoning + '</p>' +
+            '</div>';
+
+        var answers = Array.isArray(c.answers) ? c.answers : [];
+        var rows = answers.map(function (a) {
+            var text = formatAnswerValue(a.value);
+            if (!a.title && !text) return '';
+            return (
+                '<div class="matcher-answer">' +
+                  '<div class="matcher-answer-q text-body-secondary small">' + escapeHtml(a.title || '—') + '</div>' +
+                  '<div class="matcher-answer-a small">' + (text ? escapeHtml(text) : '<span class="text-body-secondary">—</span>') + '</div>' +
+                '</div>'
+            );
+        }).filter(Boolean).join('');
+
+        html +=
+            '<div class="matcher-detail-section">' +
+              '<div class="matcher-detail-label"><i class="bi bi-card-list me-1"></i>Survey responses</div>' +
+              (rows || '<p class="mb-0 small text-body-secondary">No answers on this response.</p>') +
+            '</div>';
+        return html;
     }
 
     function renderRow(c) {
@@ -5122,11 +5177,15 @@ function setupSurveyMatcher(container) {
         var rid = String(c.response_id || '');
         var reasoning = c.reasoning || '';
         return (
-            '<tr data-response-id="' + escapeHtml(rid) + '">' +
-              '<td class="text-muted small text-nowrap">' + escapeHtml(formatDate(c.responded_at)) + '</td>' +
+            '<tr class="matcher-row" data-response-id="' + escapeHtml(rid) + '" ' +
+                'role="button" tabindex="0" aria-expanded="false" ' +
+                'title="Click for full match details">' +
+              '<td class="text-muted small text-nowrap">' +
+                '<i class="bi bi-chevron-right matcher-caret me-1" aria-hidden="true"></i>' +
+                escapeHtml(formatDate(c.responded_at)) +
+              '</td>' +
               '<td>' +
                 '<span class="badge ' + escapeHtml(chipClass) + '" ' +
-                       'title="' + escapeHtml(reasoning) + '" ' +
                        'aria-label="Match confidence: ' + pct + ' percent">' + pct + '%</span>' +
               '</td>' +
               '<td class="small" style="max-width: 480px;">' + previewText(c.preview_answers) + '</td>' +
@@ -5136,6 +5195,9 @@ function setupSurveyMatcher(container) {
                         'data-confidence="' + (c.confidence || 0) + '" ' +
                         'data-reasoning="' + escapeHtml(reasoning) + '">Link</button>' +
               '</td>' +
+            '</tr>' +
+            '<tr class="matcher-detail-row d-none" data-detail-for="' + escapeHtml(rid) + '">' +
+              '<td colspan="4" class="matcher-detail-cell">' + detailContent(c) + '</td>' +
             '</tr>'
         );
     }
@@ -5172,12 +5234,33 @@ function setupSurveyMatcher(container) {
             });
     }
 
+    function toggleDetail(row) {
+        var rid = row.getAttribute('data-response-id');
+        if (!rid) return;
+        var detail = container.querySelector('.matcher-detail-row[data-detail-for="' + (window.CSS && CSS.escape ? CSS.escape(rid) : rid) + '"]');
+        if (!detail) return;
+        var expanded = detail.classList.toggle('d-none') === false;
+        row.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+        var caret = row.querySelector('.matcher-caret');
+        if (caret) {
+            caret.classList.toggle('bi-chevron-down', expanded);
+            caret.classList.toggle('bi-chevron-right', !expanded);
+        }
+    }
+
     container.addEventListener('click', function (e) {
         if (e.target.closest('.matcher-find-btn')) {
             loadCandidates();
             return;
         }
         var linkBtn = e.target.closest('.matcher-link-btn');
+        if (!linkBtn) {
+            var row = e.target.closest('.matcher-row');
+            if (row) {
+                toggleDetail(row);
+                return;
+            }
+        }
         if (linkBtn) {
             linkBtn.disabled = true;
             linkBtn.innerHTML = 'Linking…';
@@ -5210,6 +5293,15 @@ function setupSurveyMatcher(container) {
                     showOnly(errorEl);
                 });
         }
+    });
+
+    // Keyboard parity: Enter/Space on a focused row toggles its detail panel.
+    container.addEventListener('keydown', function (e) {
+        if (e.key !== 'Enter' && e.key !== ' ' && e.key !== 'Spacebar') return;
+        var row = e.target.closest && e.target.closest('.matcher-row');
+        if (!row || row !== e.target) return;
+        e.preventDefault();
+        toggleDetail(row);
     });
 
     // When the matcher lives inside a modal (populated-state "Check for new

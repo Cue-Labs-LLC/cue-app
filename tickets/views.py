@@ -12873,10 +12873,21 @@ def _survey_candidate_dict(response, candidate, subscription=None):
             'type': str(ans.get('type') or ''),
             'value': ans.get('value'),
         })
+    # Full answer set for the expandable per-row detail panel (every Q/A pair).
+    answers = []
+    for ans in raw:
+        if not isinstance(ans, dict):
+            continue
+        answers.append({
+            'title': str(ans.get('title') or '')[:200],
+            'type': str(ans.get('type') or ''),
+            'value': ans.get('value'),
+        })
     return {
         'response_id': str(response.id),
         'responded_at': response.responded_at.isoformat() if response.responded_at else None,
         'preview_answers': preview,
+        'answers': answers,
         'confidence': confidence,
         'confidence_pct': pct,
         'confidence_class': confidence_class,
