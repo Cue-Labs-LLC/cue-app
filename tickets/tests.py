@@ -664,46 +664,52 @@ class VenueAddressFieldsTests(TestCase):
 
 
 class ChatTestMixin:
-    """Shared setup for chat tests: creates org, user, profile, venue, event, customer, order."""
+    """Shared setup for chat tests: creates org, user, profile, venue, event, customer, order.
 
-    def setUp(self):
-        self.client = Client()
-        self.org = Organization.objects.create(name='Test Org', slug='test-org')
-        self.user = User.objects.create_user(
+    The read-only fixture graph is built once per class in setUpTestData; only the
+    per-test HTTP client/session and a fresh conversation_id live in setUp.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.org = Organization.objects.create(name='Test Org', slug='test-org')
+        cls.user = User.objects.create_user(
             username='chatuser', email='chat@test.com', password='testpass123'
         )
-        UserProfile.objects.create(user=self.user, organization=self.org, org_role=UserProfile.OrgRole.OWNER)
-        self.client.login(username='chat@test.com', password='testpass123')
-        # Hit any org-required view to seed the session with _org_id
-        self.client.get(reverse('tickets:home'))
-
-        self.venue = Venue.objects.create(
-            organization=self.org, name='Test Venue', city='Test City'
+        UserProfile.objects.create(user=cls.user, organization=cls.org, org_role=UserProfile.OrgRole.OWNER)
+        cls.venue = Venue.objects.create(
+            organization=cls.org, name='Test Venue', city='Test City'
         )
-        self.event = Event.objects.create(
-            organization=self.org, name='Summer Fest',
-            venue=self.venue, start_date=date(2025, 7, 15)
+        cls.event = Event.objects.create(
+            organization=cls.org, name='Summer Fest',
+            venue=cls.venue, start_date=date(2025, 7, 15)
         )
-        self.customer = Customer.objects.create(
-            organization=self.org, email='alice@example.com',
+        cls.customer = Customer.objects.create(
+            organization=cls.org, email='alice@example.com',
             name='Alice Smith', lifetime_value=Decimal('500.00'),
             rfm_segment='VIP',
         )
-        self.csv_format = CSVFormat.objects.create(
-            organization=self.org, name='Chat Test Format',
+        cls.csv_format = CSVFormat.objects.create(
+            organization=cls.org, name='Chat Test Format',
             column_mapping={'order_number': 'Order ID'},
         )
-        self.upload = UploadedFile.objects.create(
-            organization=self.org, csv_format=self.csv_format,
+        cls.upload = UploadedFile.objects.create(
+            organization=cls.org, csv_format=cls.csv_format,
             filename='test.csv', status='completed',
         )
-        self.order = TicketOrder.objects.create(
-            customer=self.customer, event=self.event,
-            uploaded_file=self.upload,
+        cls.order = TicketOrder.objects.create(
+            customer=cls.customer, event=cls.event,
+            uploaded_file=cls.upload,
             order_number='CHAT-001',
             order_date='2025-07-10 10:00:00',
             total_amount=Decimal('500.00'),
         )
+
+    def setUp(self):
+        self.client = Client()
+        self.client.login(username='chat@test.com', password='testpass123')
+        # Hit any org-required view to seed the session with _org_id
+        self.client.get(reverse('tickets:home'))
         self.conversation_id = uuid.uuid4()
 
 
@@ -1167,53 +1173,56 @@ class MemberInviteTests(TestCase):
 class MobileAPITests(TestCase):
     """Test cases for the mobile API endpoints."""
 
-    def setUp(self):
-        self.client = Client()
-        self.org = Organization.objects.create(
+    @classmethod
+    def setUpTestData(cls):
+        cls.org = Organization.objects.create(
             name='API Test Org', slug='api-test-org',
             stripe_account_id='acct_test_api',
             stripe_onboarding_complete=True,
         )
-        self.user = User.objects.create_user(
+        cls.user = User.objects.create_user(
             username='apiuser',
             email='api@example.com',
             password='apipass123',
         )
         UserProfile.objects.create(
-            user=self.user,
-            organization=self.org,
+            user=cls.user,
+            organization=cls.org,
             org_role=UserProfile.OrgRole.OWNER,
             role=UserProfile.Role.ORGANIZER,
         )
-        self.token = Token.objects.create(user=self.user)
-        self.auth_header = {'HTTP_AUTHORIZATION': f'Token {self.token.key}'}
+        cls.token = Token.objects.create(user=cls.user)
+        cls.auth_header = {'HTTP_AUTHORIZATION': f'Token {cls.token.key}'}
 
-        self.venue = Venue.objects.create(
-            organization=self.org, name='Test Venue', city='Portland'
+        cls.venue = Venue.objects.create(
+            organization=cls.org, name='Test Venue', city='Portland'
         )
-        self.event = Event.objects.create(
-            organization=self.org,
+        cls.event = Event.objects.create(
+            organization=cls.org,
             name='Test Event',
-            venue=self.venue,
+            venue=cls.venue,
             start_date=date.today() + timedelta(days=7),
         )
-        self.customer = Customer.objects.create(
-            organization=self.org,
+        cls.customer = Customer.objects.create(
+            organization=cls.org,
             email='buyer@example.com',
             name='Test Buyer',
         )
-        self.order = TicketOrder.objects.create(
-            customer=self.customer,
-            event=self.event,
+        cls.order = TicketOrder.objects.create(
+            customer=cls.customer,
+            event=cls.event,
             order_number='TEST-001',
             order_date=timezone.now(),
             total_amount=Decimal('25.00'),
         )
         Ticket.objects.create(
-            ticket_order=self.order,
+            ticket_order=cls.order,
             ticket_type='General Admission',
             price=Decimal('25.00'),
         )
+
+    def setUp(self):
+        self.client = Client()
 
     def test_login_success(self):
         response = self.client.post(
@@ -1617,24 +1626,32 @@ class StripeWebhookTests(TestCase):
 class FinancePayoutTests(TestCase):
     """Tests for organizer payout requests and connected-account payout webhooks."""
 
-    def setUp(self):
-        self.client = Client()
-        self.org = Organization.objects.create(
+    @classmethod
+    def setUpTestData(cls):
+        cls.org = Organization.objects.create(
             name='Finance Test Org',
             slug='finance-test-org',
             stripe_account_id='acct_123',
             stripe_onboarding_complete=True,
         )
-        self.user = User.objects.create_user(
+        cls.user = User.objects.create_user(
             username='finance-owner',
             email='owner@example.com',
             password='testpass123',
         )
         UserProfile.objects.create(
-            user=self.user,
-            organization=self.org,
+            user=cls.user,
+            organization=cls.org,
             org_role=UserProfile.OrgRole.OWNER,
         )
+
+    def setUp(self):
+        # The org id is now stable across tests (setUpTestData), so the per-org
+        # connected-balance cache would leak a prior test's figure into later
+        # finance_overview assertions. Clear it before each test.
+        from django.core.cache import cache as django_cache
+        django_cache.clear()
+        self.client = Client()
         self.client.login(username='owner@example.com', password='testpass123')
         self.client.get(reverse('tickets:home'))
         self.payout_url = reverse('tickets:initiate_payout')
@@ -2111,17 +2128,18 @@ class CSVProcessorChunkRollbackTest(TestCase):
         "2024-06-01,carol@example.com,Carol Lee,GA\n"
     )
 
-    def setUp(self):
-        self.org = Organization.objects.create(name='Chunk Test Org', slug='chunk-test-org')
-        self.venue = Venue.objects.create(organization=self.org, name='Venue', city='City')
-        self.event = Event.objects.create(
-            organization=self.org,
+    @classmethod
+    def setUpTestData(cls):
+        cls.org = Organization.objects.create(name='Chunk Test Org', slug='chunk-test-org')
+        cls.venue = Venue.objects.create(organization=cls.org, name='Venue', city='City')
+        cls.event = Event.objects.create(
+            organization=cls.org,
             name='Chunk Test Event',
-            venue=self.venue,
+            venue=cls.venue,
             start_date=date(2024, 6, 15),
         )
-        self.csv_format = CSVFormat.objects.create(
-            organization=self.org,
+        cls.csv_format = CSVFormat.objects.create(
+            organization=cls.org,
             name='Chunk Test Format',
             column_mapping={
                 'order_date': ['order_date'],
@@ -2130,12 +2148,12 @@ class CSVProcessorChunkRollbackTest(TestCase):
                 'ticket_type': ['ticket_type'],
             },
         )
-        self.upload = UploadedFile.objects.create(
-            organization=self.org,
-            csv_format=self.csv_format,
+        cls.upload = UploadedFile.objects.create(
+            organization=cls.org,
+            csv_format=cls.csv_format,
             filename='chunk_test.csv',
             status='pending',
-            metadata={'event_id': str(self.event.id), 'event_name': self.event.name,
+            metadata={'event_id': str(cls.event.id), 'event_name': cls.event.name,
                       'event_start_date': '2024-06-15'},
         )
 
@@ -2225,19 +2243,20 @@ class PoshRevenueSubtotalTest(TestCase):
     SUBTOTAL_SUM = Decimal('19.11')   # 12.74 + 6.37 (what POSH reports as revenue)
     TOTAL_SUM = Decimal('23.99')      # 15.99 + 8.00 (fee-inclusive — must NOT be used)
 
-    def setUp(self):
-        self.org = Organization.objects.create(name='Posh Org', slug='posh-org')
-        self.venue = Venue.objects.create(organization=self.org, name='Venue', city='City')
-        self.event = Event.objects.create(
-            organization=self.org, name='Posh Event', venue=self.venue,
+    @classmethod
+    def setUpTestData(cls):
+        cls.org = Organization.objects.create(name='Posh Org', slug='posh-org')
+        cls.venue = Venue.objects.create(organization=cls.org, name='Venue', city='City')
+        cls.event = Event.objects.create(
+            organization=cls.org, name='Posh Event', venue=cls.venue,
             start_date=date(2026, 6, 15),
         )
         # The POSH built-in format is seeded by migration (organization=None, is_system).
-        self.csv_format = CSVFormat.objects.get(name='POSH', is_system=True)
-        self.upload = UploadedFile.objects.create(
-            organization=self.org, csv_format=self.csv_format,
+        cls.csv_format = CSVFormat.objects.get(name='POSH', is_system=True)
+        cls.upload = UploadedFile.objects.create(
+            organization=cls.org, csv_format=cls.csv_format,
             filename='posh.csv', status='pending',
-            metadata={'event_id': str(self.event.id), 'event_name': self.event.name,
+            metadata={'event_id': str(cls.event.id), 'event_name': cls.event.name,
                       'event_start_date': '2026-06-15'},
         )
 
@@ -2509,19 +2528,19 @@ class EmailCompleteProfileViewTest(TestCase):
 class TestRFMCalculator(TestCase):
     """Tests for RFMCalculator.calculate_all()."""
 
-    def setUp(self):
-        from datetime import date
-        self.org = Organization.objects.create(name='RFM Test Org', slug='rfm-test-org')
-        self.venue = Venue.objects.create(organization=self.org, name='Venue', city='City')
-        self.event = Event.objects.create(
-            organization=self.org, name='Event', venue=self.venue,
+    @classmethod
+    def setUpTestData(cls):
+        cls.org = Organization.objects.create(name='RFM Test Org', slug='rfm-test-org')
+        cls.venue = Venue.objects.create(organization=cls.org, name='Venue', city='City')
+        cls.event = Event.objects.create(
+            organization=cls.org, name='Event', venue=cls.venue,
             start_date=date(2025, 1, 1),
         )
-        self.csv_format = CSVFormat.objects.create(
-            organization=self.org, name='Fmt', column_mapping={'order_number': 'Order ID'},
+        cls.csv_format = CSVFormat.objects.create(
+            organization=cls.org, name='Fmt', column_mapping={'order_number': 'Order ID'},
         )
-        self.upload = UploadedFile.objects.create(
-            organization=self.org, csv_format=self.csv_format,
+        cls.upload = UploadedFile.objects.create(
+            organization=cls.org, csv_format=cls.csv_format,
             filename='test.csv', status='completed',
         )
 
@@ -2622,20 +2641,21 @@ class TestRFMCalculator(TestCase):
 class TestCustomerBehaviorProfiler(TestCase):
     """Tests for layered customer behavior profiling."""
 
-    def setUp(self):
-        self.org = Organization.objects.create(name='Behavior Org', slug='behavior-org')
-        self.venue = Venue.objects.create(organization=self.org, name='Venue', city='City')
-        self.event = Event.objects.create(
-            organization=self.org,
+    @classmethod
+    def setUpTestData(cls):
+        cls.org = Organization.objects.create(name='Behavior Org', slug='behavior-org')
+        cls.venue = Venue.objects.create(organization=cls.org, name='Venue', city='City')
+        cls.event = Event.objects.create(
+            organization=cls.org,
             name='Event',
-            venue=self.venue,
+            venue=cls.venue,
             start_date=date(2025, 1, 1),
         )
-        self.csv_format = CSVFormat.objects.create(
-            organization=self.org, name='Fmt', column_mapping={'order_number': 'Order ID'},
+        cls.csv_format = CSVFormat.objects.create(
+            organization=cls.org, name='Fmt', column_mapping={'order_number': 'Order ID'},
         )
-        self.upload = UploadedFile.objects.create(
-            organization=self.org, csv_format=self.csv_format, filename='test.csv', status='completed',
+        cls.upload = UploadedFile.objects.create(
+            organization=cls.org, csv_format=cls.csv_format, filename='test.csv', status='completed',
         )
 
     def _make_customer(self, email, lifetime_value=Decimal('0.00'), last_order_date=None):
@@ -3033,6 +3053,8 @@ class SMSCampaignLinkEventTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, 'linkEventModal')
         self.assertContains(response, 'Link to event')
+        # Each picker option shows the event date to disambiguate same-named events.
+        self.assertContains(response, 'Jun 01, 2026')
         # The partial's leading comment must not leak into the rendered page.
         self.assertNotContains(response, 'Requires `link_events`')
 
@@ -3221,22 +3243,27 @@ class HealthCheckTest(TestCase):
 class EventDetailCacheTest(TestCase):
     """Tests for _compute_event_stats() caching and cache invalidation."""
 
-    def setUp(self):
-        from django.core.cache import cache as django_cache
-        self.org = Organization.objects.create(name='Cache Test Org', slug='cache-test-org')
-        self.venue = Venue.objects.create(organization=self.org, name='Venue', city='City')
-        self.event = Event.objects.create(
-            organization=self.org, name='Cache Test Event', venue=self.venue,
+    @classmethod
+    def setUpTestData(cls):
+        cls.org = Organization.objects.create(name='Cache Test Org', slug='cache-test-org')
+        cls.venue = Venue.objects.create(organization=cls.org, name='Venue', city='City')
+        cls.event = Event.objects.create(
+            organization=cls.org, name='Cache Test Event', venue=cls.venue,
             start_date=date(2025, 8, 1),
         )
-        self.customer = Customer.objects.create(
-            organization=self.org, email='cachebuyer@example.com', name='Cache Buyer',
+        cls.customer = Customer.objects.create(
+            organization=cls.org, email='cachebuyer@example.com', name='Cache Buyer',
         )
-        self.csv_format = CSVFormat.objects.create(
-            organization=self.org,
+        cls.csv_format = CSVFormat.objects.create(
+            organization=cls.org,
             name='Cache Format',
             column_mapping={'order_number': 'Order ID'},
         )
+
+    def setUp(self):
+        # Cache state is per-test, not a fixture: clear before each test so the
+        # now-stable event id from setUpTestData can't leak cached stats across tests.
+        from django.core.cache import cache as django_cache
         django_cache.clear()
 
     def tearDown(self):
@@ -7391,6 +7418,141 @@ class ScannerCheckinAPITests(TestCase):
             HTTP_AUTHORIZATION=self.auth,
         )
         self.assertEqual(res.status_code, 404)
+
+
+class PerTicketQRCheckinTests(TestCase):
+    """Per-ticket QR codes (TKT-<id>) admit one attendee per scan."""
+
+    def setUp(self):
+        from .models import ScannerSession
+
+        self.org = Organization.objects.create(name='QR Org', slug='qr-org')
+        self.venue = Venue.objects.create(organization=self.org, name='QR Venue', city='SF')
+        self.event = Event.objects.create(
+            organization=self.org, name='QR Event', venue=self.venue,
+            start_date=date.today(), scanner_pin='4321',
+        )
+        self.customer = Customer.objects.create(
+            organization=self.org, name='Group Buyer', email='group@example.com',
+        )
+        self.order = TicketOrder.objects.create(
+            customer=self.customer, event=self.event, order_number='#QR-1',
+            order_date=timezone.now(), total_amount=Decimal('30.00'),
+        )
+        self.tickets = [
+            Ticket.objects.create(
+                ticket_order=self.order, ticket_type='General Admission', price=Decimal('10.00'),
+            )
+            for _ in range(3)
+        ]
+        self.session = ScannerSession.objects.create(event=self.event)
+        self.auth = f'Scanner {self.session.token}'
+
+    def _scan(self, payload):
+        return self.client.post(
+            '/api/scanner/checkin/',
+            data=json.dumps({'order_number': payload}),
+            content_type='application/json',
+            HTTP_AUTHORIZATION=self.auth,
+        )
+
+    def test_build_ticket_qr_codes_one_per_ticket_distinct_cids(self):
+        from .utils import build_ticket_qr_codes, ticket_qr_payload
+
+        qrs = build_ticket_qr_codes(self.tickets)
+        self.assertEqual(len(qrs), 3)
+        self.assertEqual([q['cid'] for q in qrs], ['qrcode-0', 'qrcode-1', 'qrcode-2'])
+        self.assertEqual(len({q['cid'] for q in qrs}), 3)
+        self.assertTrue(all(q['png_bytes'] for q in qrs))
+        self.assertEqual(ticket_qr_payload(self.tickets[0]), f'TKT-{self.tickets[0].id}')
+
+    def test_per_ticket_scan_admits_one_attendee(self):
+        from .utils import ticket_qr_payload
+
+        res = self._scan(ticket_qr_payload(self.tickets[0]))
+        self.assertEqual(res.status_code, 200, res.content)
+        self.assertEqual(res.json()['status'], 'checked_in')
+        self.assertEqual(res.json()['tickets_remaining'], 2)
+
+        self.tickets[0].refresh_from_db()
+        self.tickets[1].refresh_from_db()
+        self.assertIsNotNone(self.tickets[0].scanned_at)
+        self.assertIsNone(self.tickets[1].scanned_at)
+
+        # Order is not fully checked in until every ticket is scanned.
+        self.order.refresh_from_db()
+        self.assertIsNone(self.order.checked_in_at)
+
+    def test_order_checked_in_after_last_ticket(self):
+        from .utils import ticket_qr_payload
+
+        for t in self.tickets[:-1]:
+            self._scan(ticket_qr_payload(t))
+        self.order.refresh_from_db()
+        self.assertIsNone(self.order.checked_in_at)
+
+        res = self._scan(ticket_qr_payload(self.tickets[-1]))
+        self.assertEqual(res.json()['tickets_remaining'], 0)
+        self.order.refresh_from_db()
+        self.assertIsNotNone(self.order.checked_in_at)
+
+    def test_rescanning_same_ticket_reports_already_checked_in(self):
+        from .utils import ticket_qr_payload
+
+        payload = ticket_qr_payload(self.tickets[0])
+        self.assertEqual(self._scan(payload).json()['status'], 'checked_in')
+        res = self._scan(payload)
+        self.assertEqual(res.status_code, 200, res.content)
+        self.assertEqual(res.json()['status'], 'already_checked_in')
+
+    def test_legacy_order_number_still_admits_whole_order(self):
+        res = self._scan('#QR-1')
+        self.assertEqual(res.status_code, 200, res.content)
+        self.assertEqual(res.json()['status'], 'checked_in')
+        self.order.refresh_from_db()
+        self.assertIsNotNone(self.order.checked_in_at)
+        for t in self.tickets:
+            t.refresh_from_db()
+            self.assertIsNotNone(t.scanned_at)
+
+    def test_unknown_ticket_id_returns_404(self):
+        self.assertEqual(self._scan(f'TKT-{uuid.uuid4()}').status_code, 404)
+
+    def test_malformed_ticket_id_returns_404(self):
+        self.assertEqual(self._scan('TKT-not-a-uuid').status_code, 404)
+
+    def test_confirmation_email_attaches_one_qr_per_ticket(self):
+        from django.core import mail
+        from tickets.tasks import send_order_confirmation_email_task
+
+        send_order_confirmation_email_task.apply(args=[str(self.order.id)]).get()
+
+        self.assertEqual(len(mail.outbox), 1)
+        msg = mail.outbox[0]
+        cids = [
+            a.get('Content-ID') for a in msg.attachments
+            if hasattr(a, 'get') and a.get('Content-ID')
+        ]
+        self.assertEqual(sorted(cids), ['<qrcode-0>', '<qrcode-1>', '<qrcode-2>'])
+        html_body = next(b for b, mime in msg.alternatives if mime == 'text/html')
+        for cid in ('qrcode-0', 'qrcode-1', 'qrcode-2'):
+            self.assertIn(f'cid:{cid}', html_body)
+
+    def test_ticket_from_other_event_returns_404(self):
+        from .utils import ticket_qr_payload
+
+        other_event = Event.objects.create(
+            organization=self.org, name='Other Event', venue=self.venue, start_date=date.today(),
+        )
+        other_order = TicketOrder.objects.create(
+            customer=self.customer, event=other_event, order_number='#QR-2',
+            order_date=timezone.now(), total_amount=Decimal('10.00'),
+        )
+        other_ticket = Ticket.objects.create(
+            ticket_order=other_order, ticket_type='GA', price=Decimal('10.00'),
+        )
+        # The scanner session is bound to self.event, so a ticket from another event is invisible.
+        self.assertEqual(self._scan(ticket_qr_payload(other_ticket)).status_code, 404)
 
 
 class TapToPayEndpointsTests(TestCase):
@@ -14277,6 +14439,960 @@ class MarketTrendCalculatorTests(TestCase):
         self.assertEqual(sea['trend'], 'growing')
         self.assertIn(sea['dominant_driver'], ('promoters', 'detractors'))
         self.assertEqual(sea['recommended_action']['url_name'], 'tickets:survey_analytics')
+
+
+class ScheduledSurveySendTests(TestCase):
+    """Scheduling the post-event survey relative to the event end."""
+
+    def setUp(self):
+        from zoneinfo import ZoneInfo
+        self.ZoneInfo = ZoneInfo
+        self.client = Client()
+        self.org = Organization.objects.create(name='Sched Org', slug='sched-org')
+        self.user = User.objects.create_user(
+            username='schedhost', email='host@test.com', password='testpass123',
+        )
+        UserProfile.objects.create(user=self.user, organization=self.org,
+                                   org_role=UserProfile.OrgRole.OWNER)
+        self.client.login(username='host@test.com', password='testpass123')
+        self.client.get(reverse('tickets:home'))  # seed _org_id in session
+
+        self.venue = Venue.objects.create(organization=self.org, name='Venue', city='City')
+        # Event ends far in the future so "schedule after event" is always future.
+        self.event = Event.objects.create(
+            organization=self.org, name='Future Show', venue=self.venue,
+            start_date=date(2099, 1, 1), start_time=time(20, 0),
+            end_date=date(2099, 1, 1), end_time=time(22, 0),
+            timezone='America/New_York',
+        )
+        self.customer = Customer.objects.create(
+            organization=self.org, email='fan@example.com', name='Fan',
+        )
+        TicketOrder.objects.create(
+            customer=self.customer, event=self.event,
+            order_number='SCHED-1', order_date='2098-12-01 10:00:00',
+            total_amount=Decimal('50.00'),
+        )
+
+    # ---- Event.end_datetime() -------------------------------------------------
+
+    def test_end_datetime_uses_end_fields_in_event_tz(self):
+        end = self.event.end_datetime()
+        self.assertEqual(end.tzinfo, self.ZoneInfo('America/New_York'))
+        self.assertEqual((end.year, end.month, end.day, end.hour), (2099, 1, 1, 22))
+
+    def test_end_datetime_falls_back_to_start(self):
+        ev = Event.objects.create(
+            organization=self.org, name='No End', venue=self.venue, start_date=date(2099, 6, 1),
+            start_time=time(18, 30), timezone='America/Los_Angeles',
+        )
+        end = ev.end_datetime()
+        self.assertEqual((end.year, end.month, end.day, end.hour, end.minute),
+                         (2099, 6, 1, 18, 30))
+
+    def test_end_datetime_defaults_time_to_end_of_day(self):
+        ev = Event.objects.create(
+            organization=self.org, name='No Times', venue=self.venue, start_date=date(2099, 6, 1),
+            timezone='America/Los_Angeles',
+        )
+        end = ev.end_datetime()
+        self.assertEqual((end.hour, end.minute), (23, 59))
+
+    # ---- _compute_survey_send_at ---------------------------------------------
+
+    def test_compute_hours_offset(self):
+        from tickets.views import _compute_survey_send_at
+        from zoneinfo import ZoneInfo
+        # End 2099-01-01 22:00 EST (UTC-5) + 3h -> 2099-01-02 06:00 UTC
+        result = _compute_survey_send_at(self.event, 'hours', 3, None)
+        self.assertEqual(result, datetime(2099, 1, 2, 6, 0, tzinfo=ZoneInfo('UTC')))
+
+    def test_compute_days_at_time(self):
+        from tickets.views import _compute_survey_send_at
+        from zoneinfo import ZoneInfo
+        # 2 days after end date (2099-01-03) at 09:00 EST -> 14:00 UTC
+        result = _compute_survey_send_at(self.event, 'days', 2, time(9, 0))
+        self.assertEqual(result, datetime(2099, 1, 3, 14, 0, tzinfo=ZoneInfo('UTC')))
+
+    def test_compute_rejects_bad_input(self):
+        from tickets.views import _compute_survey_send_at
+        with self.assertRaises(ValueError):
+            _compute_survey_send_at(self.event, 'days', 2, None)      # missing time
+        with self.assertRaises(ValueError):
+            _compute_survey_send_at(self.event, 'bogus', 2, time(9, 0))
+        with self.assertRaises(ValueError):
+            _compute_survey_send_at(self.event, 'hours', 'abc', None)
+        with self.assertRaises(ValueError):
+            _compute_survey_send_at(self.event, 'hours', -1, None)
+
+    # ---- send_survey: send now (manual override) -----------------------------
+
+    def test_send_now_sends_immediately(self):
+        from django.core import mail
+        resp = self.client.post(
+            reverse('tickets:send_survey', args=[self.event.id]),
+            {'send_mode': 'now'},
+        )
+        self.assertEqual(resp.status_code, 302)
+        inv = SurveyInvitation.objects.get(event=self.event, customer=self.customer)
+        self.assertIsNone(inv.scheduled_send_at)
+        inv.refresh_from_db()
+        self.assertIsNotNone(inv.sent_at)
+        self.assertEqual(len(mail.outbox), 1)
+
+    # ---- auto-arm: the scheduler creates scheduled invitations ----------------
+
+    def _ended_yesterday_event(self, **schedule):
+        """An event whose end is in the past (anchor passed) so it's arm-eligible.
+
+        The date is derived in the event's own timezone (not UTC) so that a fixed
+        22:00 end_time lands a full day in the past regardless of the wall-clock
+        time the suite runs — computing it in UTC collapsed the gap near the
+        UTC-day boundary and left a +1h send time in the future.
+        """
+        from zoneinfo import ZoneInfo
+        now_et = timezone.now().astimezone(ZoneInfo('America/New_York'))
+        yesterday = (now_et - timedelta(days=1)).date()
+        ev = Event.objects.create(
+            organization=self.org, name='Just Ended', venue=self.venue,
+            start_date=yesterday, end_date=yesterday, end_time=time(22, 0),
+            timezone='America/New_York', **schedule,
+        )
+        TicketOrder.objects.create(
+            customer=self.customer, event=ev, order_number=f'ARM-{ev.public_id}',
+            order_date='2000-01-01 10:00:00', total_amount=Decimal('10.00'),
+        )
+        return ev
+
+    def test_auto_arm_creates_pending_invitations_without_sending(self):
+        from django.core import mail
+        # Ended yesterday, send 5 days after end -> send time still in the future.
+        event = self._ended_yesterday_event(
+            survey_send_offset_type='days', survey_send_offset_value=5,
+            survey_send_time_of_day=time(9, 0),
+        )
+        call_command('send_due_survey_invitations')
+        inv = SurveyInvitation.objects.get(event=event, customer=self.customer)
+        self.assertIsNotNone(inv.scheduled_send_at)
+        self.assertIsNone(inv.sent_at)
+        self.assertEqual(len(mail.outbox), 0)  # scheduled, not sent yet
+
+    def test_auto_arm_skips_event_before_anchor(self):
+        # self.event ends in 2099 -> anchor not reached, so nothing is armed.
+        self.event.survey_send_offset_type = 'hours'
+        self.event.survey_send_offset_value = 1
+        self.event.save()
+        call_command('send_due_survey_invitations')
+        self.assertFalse(SurveyInvitation.objects.filter(event=self.event).exists())
+
+    def test_auto_arm_then_dispatch_sends_when_overdue(self):
+        from django.core import mail
+        # Ended yesterday, send 1 hour after end -> already due; armed then sent.
+        event = self._ended_yesterday_event(
+            survey_send_offset_type='hours', survey_send_offset_value=1,
+        )
+        call_command('send_due_survey_invitations', '--sync')
+        inv = SurveyInvitation.objects.get(event=event, customer=self.customer)
+        self.assertIsNotNone(inv.sent_at)
+        self.assertEqual(len(mail.outbox), 1)
+
+    def test_auto_arm_is_idempotent(self):
+        event = self._ended_yesterday_event(
+            survey_send_offset_type='days', survey_send_offset_value=5,
+            survey_send_time_of_day=time(9, 0),
+        )
+        call_command('send_due_survey_invitations')
+        call_command('send_due_survey_invitations')
+        self.assertEqual(SurveyInvitation.objects.filter(event=event).count(), 1)
+
+    def test_auto_arm_skips_opted_out_event(self):
+        event = self._ended_yesterday_event(
+            survey_send_offset_type='hours', survey_send_offset_value=1,
+            survey_auto_send_opted_out=True,
+        )
+        call_command('send_due_survey_invitations')
+        self.assertFalse(SurveyInvitation.objects.filter(event=event).exists())
+
+    def test_no_arm_flag_only_dispatches(self):
+        event = self._ended_yesterday_event(
+            survey_send_offset_type='hours', survey_send_offset_value=1,
+        )
+        call_command('send_due_survey_invitations', '--no-arm')
+        self.assertFalse(SurveyInvitation.objects.filter(event=event).exists())
+
+    # ---- task due-filter ------------------------------------------------------
+
+    def test_task_skips_future_scheduled_rows(self):
+        from django.core import mail
+        from tickets.tasks import send_survey_emails_task
+        future = timezone.now() + timedelta(days=5)
+        c2 = Customer.objects.create(organization=self.org, email='due@example.com', name='Due')
+        TicketOrder.objects.create(
+            customer=c2, event=self.event, order_number='SCHED-2',
+            order_date='2098-12-01 10:00:00', total_amount=Decimal('20.00'),
+        )
+        future_inv = SurveyInvitation.objects.create(
+            organization=self.org, event=self.event, customer=self.customer,
+            email='fan@example.com', scheduled_send_at=future,
+        )
+        due_inv = SurveyInvitation.objects.create(
+            organization=self.org, event=self.event, customer=c2,
+            email='due@example.com', scheduled_send_at=timezone.now() - timedelta(minutes=1),
+        )
+        send_survey_emails_task(str(self.event.id), str(self.org.id))
+        future_inv.refresh_from_db()
+        due_inv.refresh_from_db()
+        self.assertIsNone(future_inv.sent_at)       # still pending
+        self.assertIsNotNone(due_inv.sent_at)       # sent
+        self.assertEqual(len(mail.outbox), 1)
+
+    def test_due_command_dispatches_and_sends(self):
+        from django.core import mail
+        SurveyInvitation.objects.create(
+            organization=self.org, event=self.event, customer=self.customer,
+            email='fan@example.com', scheduled_send_at=timezone.now() - timedelta(minutes=1),
+        )
+        call_command('send_due_survey_invitations', '--sync')
+        self.assertEqual(len(mail.outbox), 1)
+
+    # ---- cancel + preview -----------------------------------------------------
+
+    def test_cancel_removes_pending_and_unlocks(self):
+        from tickets.views import _survey_locked
+        SurveyInvitation.objects.create(
+            organization=self.org, event=self.event, customer=self.customer,
+            email='fan@example.com', scheduled_send_at=timezone.now() + timedelta(days=2),
+        )
+        self.assertTrue(_survey_locked(self.event))
+        resp = self.client.post(reverse('tickets:cancel_scheduled_survey', args=[self.event.id]))
+        self.assertEqual(resp.status_code, 302)
+        self.assertFalse(SurveyInvitation.objects.filter(event=self.event).exists())
+        self.assertFalse(_survey_locked(self.event))
+        # Cancel opts the event out of auto-send so the scheduler won't re-arm it.
+        self.event.refresh_from_db()
+        self.assertTrue(self.event.survey_auto_send_opted_out)
+
+    def test_cancel_leaves_sent_invitations(self):
+        SurveyInvitation.objects.create(
+            organization=self.org, event=self.event, customer=self.customer,
+            email='fan@example.com', sent_at=timezone.now(),
+            scheduled_send_at=timezone.now() - timedelta(days=1),
+        )
+        self.client.post(reverse('tickets:cancel_scheduled_survey', args=[self.event.id]))
+        self.assertTrue(SurveyInvitation.objects.filter(event=self.event).exists())
+
+    def test_preview_returns_display_for_valid_offset(self):
+        resp = self.client.get(
+            reverse('tickets:survey_schedule_preview', args=[self.event.id]),
+            {'offset_type': 'days', 'offset_value': '2', 'time_of_day': '09:00'},
+        )
+        data = resp.json()
+        self.assertTrue(data['valid'])
+        self.assertIn('2099', data['display'])
+
+    def test_preview_rejects_past_offset(self):
+        past_event = Event.objects.create(
+            organization=self.org, name='Past Show 2', venue=self.venue, start_date=date(2000, 1, 1),
+            end_date=date(2000, 1, 1), end_time=time(22, 0), timezone='America/New_York',
+        )
+        resp = self.client.get(
+            reverse('tickets:survey_schedule_preview', args=[past_event.id]),
+            {'offset_type': 'hours', 'offset_value': '1'},
+        )
+        data = resp.json()
+        self.assertFalse(data['valid'])
+        self.assertIn('error', data)
+
+
+class SurveyReplyToSenderTests(TestCase):
+    """Survey emails send with the organizer's name + reply-to when opted in."""
+
+    def setUp(self):
+        self.client = Client()
+        self.org = Organization.objects.create(name='Acme Events', slug='acme-events')
+        self.user = User.objects.create_user(
+            username='replytohost', email='host@acme.com', password='testpass123',
+        )
+        UserProfile.objects.create(user=self.user, organization=self.org,
+                                   org_role=UserProfile.OrgRole.OWNER)
+        self.client.login(username='host@acme.com', password='testpass123')
+        self.client.get(reverse('tickets:home'))  # seed _org_id in session
+
+        self.venue = Venue.objects.create(organization=self.org, name='Venue', city='City')
+        self.event = Event.objects.create(
+            organization=self.org, name='Acme Fest', venue=self.venue,
+            start_date=date(2099, 1, 1), end_date=date(2099, 1, 1), end_time=time(22, 0),
+            timezone='America/New_York',
+        )
+        self.customer = Customer.objects.create(
+            organization=self.org, email='fan@example.com', name='Fan',
+        )
+
+    # ---- survey_sender_fields helper -----------------------------------------
+
+    def test_sender_fields_default_when_no_reply_to(self):
+        from tickets.tasks import survey_sender_fields
+        from django.conf import settings
+        from_email, reply_to = survey_sender_fields(self.org)
+        self.assertEqual(from_email, settings.DEFAULT_FROM_EMAIL)
+        self.assertIsNone(reply_to)
+
+    def test_sender_fields_uses_org_name_and_reply_to_when_set(self):
+        from tickets.tasks import survey_sender_fields
+        self.org.survey_reply_to_email = 'events@acme.com'
+        self.org.save()
+        from_email, reply_to = survey_sender_fields(self.org)
+        # Org name on the From line, keeping Cue's verified sending address.
+        self.assertTrue(from_email.startswith('Acme Events <'))
+        self.assertIn('@', from_email)
+        self.assertEqual(reply_to, ['events@acme.com'])
+
+    # ---- send task ------------------------------------------------------------
+
+    def test_send_task_sets_reply_to_and_from_for_opted_in_org(self):
+        from django.core import mail
+        from tickets.tasks import send_survey_emails_task
+        self.org.survey_reply_to_email = 'events@acme.com'
+        self.org.save()
+        SurveyInvitation.objects.create(
+            organization=self.org, event=self.event, customer=self.customer,
+            email='fan@example.com',
+        )
+        send_survey_emails_task(str(self.event.id), str(self.org.id))
+        self.assertEqual(len(mail.outbox), 1)
+        msg = mail.outbox[0]
+        self.assertEqual(msg.reply_to, ['events@acme.com'])
+        self.assertTrue(msg.from_email.startswith('Acme Events <'))
+        # Body masthead reflects the organizer, and the HTML alternative is present.
+        self.assertIn('Acme Events', msg.body)
+        self.assertEqual(msg.alternatives[0][1], 'text/html')
+
+    def test_send_task_keeps_cue_default_when_not_opted_in(self):
+        from django.core import mail
+        from django.conf import settings
+        from tickets.tasks import send_survey_emails_task
+        SurveyInvitation.objects.create(
+            organization=self.org, event=self.event, customer=self.customer,
+            email='fan@example.com',
+        )
+        send_survey_emails_task(str(self.event.id), str(self.org.id))
+        self.assertEqual(len(mail.outbox), 1)
+        msg = mail.outbox[0]
+        self.assertEqual(msg.from_email, settings.DEFAULT_FROM_EMAIL)
+        self.assertEqual(msg.reply_to, [])
+
+    # ---- save view ------------------------------------------------------------
+
+    def test_reply_to_save_persists_and_clears(self):
+        resp = self.client.post(
+            reverse('tickets:survey_reply_to_save'), {'reply_to_email': 'events@acme.com'},
+        )
+        self.assertEqual(resp.status_code, 302)
+        self.org.refresh_from_db()
+        self.assertEqual(self.org.survey_reply_to_email, 'events@acme.com')
+        # Blank clears the override.
+        self.client.post(reverse('tickets:survey_reply_to_save'), {'reply_to_email': ''})
+        self.org.refresh_from_db()
+        self.assertEqual(self.org.survey_reply_to_email, '')
+
+    def test_reply_to_save_rejects_invalid_email(self):
+        resp = self.client.post(
+            reverse('tickets:survey_reply_to_save'), {'reply_to_email': 'not-an-email'},
+        )
+        self.assertEqual(resp.status_code, 302)
+        self.org.refresh_from_db()
+        self.assertEqual(self.org.survey_reply_to_email, '')
+
+
+class DefaultSurveyScheduleTests(TestCase):
+    """Configuring the survey send schedule as an org default with per-event override."""
+
+    def setUp(self):
+        self.client = Client()
+        self.org = Organization.objects.create(name='Default Sched Org', slug='default-sched-org')
+        self.user = User.objects.create_user(
+            username='defsched', email='def@test.com', password='testpass123',
+        )
+        UserProfile.objects.create(user=self.user, organization=self.org,
+                                   org_role=UserProfile.OrgRole.OWNER)
+        self.client.login(username='def@test.com', password='testpass123')
+        self.client.get(reverse('tickets:home'))  # seed _org_id
+
+        self.venue = Venue.objects.create(organization=self.org, name='Venue', city='City')
+        self.event = Event.objects.create(
+            organization=self.org, name='Future Show', venue=self.venue,
+            start_date=date(2099, 1, 1), start_time=time(20, 0),
+            end_date=date(2099, 1, 1), end_time=time(22, 0),
+            timezone='America/New_York',
+        )
+
+    # ---- resolver -------------------------------------------------------------
+
+    def test_resolved_schedule_none_when_unset(self):
+        self.assertIsNone(self.event.resolved_survey_schedule())
+
+    def test_resolved_schedule_falls_back_to_org_default(self):
+        self.org.survey_send_offset_type = 'days'
+        self.org.survey_send_offset_value = 1
+        self.org.survey_send_time_of_day = time(9, 0)
+        self.org.save()
+        self.event.refresh_from_db()
+        sched = self.event.resolved_survey_schedule()
+        self.assertEqual(sched['offset_type'], 'days')
+        self.assertEqual(sched['offset_value'], 1)
+        self.assertEqual(sched['time_of_day'], time(9, 0))
+
+    def test_event_override_wins_over_org_default(self):
+        self.org.survey_send_offset_type = 'days'
+        self.org.survey_send_offset_value = 1
+        self.org.survey_send_time_of_day = time(9, 0)
+        self.org.save()
+        self.event.survey_send_offset_type = 'hours'
+        self.event.survey_send_offset_value = 3
+        self.event.save()
+        self.event.refresh_from_db()
+        sched = self.event.resolved_survey_schedule()
+        self.assertEqual(sched['offset_type'], 'hours')
+        self.assertEqual(sched['offset_value'], 3)
+
+    # ---- save endpoint --------------------------------------------------------
+
+    def test_org_scope_save_writes_org_fields(self):
+        resp = self.client.post(
+            reverse('tickets:survey_schedule_save'),
+            {'offset_type': 'days', 'offset_value': '2', 'time_of_day': '18:00'},
+        )
+        self.assertEqual(resp.status_code, 302)
+        self.org.refresh_from_db()
+        self.assertEqual(self.org.survey_send_offset_type, 'days')
+        self.assertEqual(self.org.survey_send_offset_value, 2)
+        self.assertEqual(self.org.survey_send_time_of_day, time(18, 0))
+
+    def test_event_scope_save_writes_event_fields(self):
+        resp = self.client.post(
+            reverse('tickets:event_survey_schedule_save', args=[self.event.id]),
+            {'offset_type': 'hours', 'offset_value': '5'},
+        )
+        self.assertEqual(resp.status_code, 302)
+        self.event.refresh_from_db()
+        self.assertEqual(self.event.survey_send_offset_type, 'hours')
+        self.assertEqual(self.event.survey_send_offset_value, 5)
+
+    def test_blank_offset_clears_schedule(self):
+        self.org.survey_send_offset_type = 'days'
+        self.org.survey_send_offset_value = 2
+        self.org.survey_send_time_of_day = time(9, 0)
+        self.org.save()
+        self.client.post(reverse('tickets:survey_schedule_save'), {'offset_type': ''})
+        self.org.refresh_from_db()
+        self.assertEqual(self.org.survey_send_offset_type, '')
+        self.assertIsNone(self.org.survey_send_offset_value)
+        self.assertIsNone(self.org.survey_send_time_of_day)
+
+    def test_days_without_time_is_rejected(self):
+        self.client.post(
+            reverse('tickets:survey_schedule_save'),
+            {'offset_type': 'days', 'offset_value': '2'},  # no time_of_day
+        )
+        self.org.refresh_from_db()
+        self.assertEqual(self.org.survey_send_offset_type, '')  # unchanged
+
+    def test_save_rejected_when_survey_locked(self):
+        SurveyInvitation.objects.create(
+            organization=self.org, event=self.event,
+            customer=Customer.objects.create(organization=self.org, email='a@b.com', name='A'),
+            email='a@b.com',
+        )
+        self.client.post(
+            reverse('tickets:event_survey_schedule_save', args=[self.event.id]),
+            {'offset_type': 'hours', 'offset_value': '5'},
+        )
+        self.event.refresh_from_db()
+        self.assertEqual(self.event.survey_send_offset_type, '')  # locked, unchanged
+
+    # ---- resolved schedule context (surveys tab + send dialog) ----------------
+
+    def test_event_detail_resolves_schedule_from_org_default(self):
+        self.org.survey_send_offset_type = 'days'
+        self.org.survey_send_offset_value = 3
+        self.org.survey_send_time_of_day = time(10, 30)
+        self.org.save()
+        resp = self.client.get(reverse('tickets:event_detail', args=[self.event.id]))
+        resolved = resp.context['survey_schedule_resolved']
+        self.assertTrue(resolved['has_schedule'])
+        self.assertEqual(resolved['description'], "3 days after the event ends at 10:30 AM")
+        self.assertTrue(resolved['send_at_display'])      # future event -> computable
+        self.assertTrue(resolved['can_schedule'])
+
+    def test_event_detail_resolved_when_unset(self):
+        resp = self.client.get(reverse('tickets:event_detail', args=[self.event.id]))
+        resolved = resp.context['survey_schedule_resolved']
+        self.assertFalse(resolved['has_schedule'])
+        self.assertEqual(resolved['description'], "Send manually")
+        self.assertFalse(resolved['can_schedule'])
+
+    # ---- builder context ------------------------------------------------------
+
+    def test_builder_exposes_schedule_context(self):
+        resp = self.client.get(reverse('tickets:survey_builder'))
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn('survey_schedule_save_url', resp.context)
+        self.assertIn('survey_send_offset_choices', resp.context)
+
+    def test_builder_reports_override_state(self):
+        # Inheriting -> not overridden.
+        url = reverse('tickets:event_survey_builder', args=[self.event.id])
+        self.assertFalse(self.client.get(url).context['survey_schedule_overridden'])
+        # With an event-level schedule -> overridden.
+        self.event.survey_send_offset_type = 'hours'
+        self.event.survey_send_offset_value = 4
+        self.event.save()
+        self.assertTrue(self.client.get(url).context['survey_schedule_overridden'])
+
+    # ---- auto-arm honors the resolved schedule --------------------------------
+
+    def _ended_yesterday_event(self):
+        # Derive the date in the event's timezone (not UTC) so the fixed 22:00
+        # end_time is reliably in the past no matter when the suite runs.
+        from zoneinfo import ZoneInfo
+        now_et = timezone.now().astimezone(ZoneInfo('America/New_York'))
+        yesterday = (now_et - timedelta(days=1)).date()
+        return Event.objects.create(
+            organization=self.org, name='Ended Show', venue=self.venue,
+            start_date=yesterday, end_date=yesterday, end_time=time(22, 0),
+            timezone='America/New_York',
+        )
+
+    def test_auto_arm_uses_org_default_schedule(self):
+        from django.core import mail
+        # Org default applies to an event with no per-event override.
+        self.org.survey_send_offset_type = 'days'
+        self.org.survey_send_offset_value = 5
+        self.org.survey_send_time_of_day = time(9, 0)
+        self.org.save()
+        event = self._ended_yesterday_event()
+        c = Customer.objects.create(organization=self.org, email='g@example.com', name='G')
+        TicketOrder.objects.create(
+            customer=c, event=event, order_number='RS-1',
+            order_date='2000-01-01 10:00:00', total_amount=Decimal('10.00'),
+        )
+        call_command('send_due_survey_invitations')
+        inv = SurveyInvitation.objects.get(event=event, customer=c)
+        self.assertIsNotNone(inv.scheduled_send_at)
+        self.assertIsNone(inv.sent_at)
+        self.assertEqual(len(mail.outbox), 0)
+
+    def test_auto_arm_skips_event_without_schedule(self):
+        event = self._ended_yesterday_event()  # no org or event schedule
+        c = Customer.objects.create(organization=self.org, email='h@example.com', name='H')
+        TicketOrder.objects.create(
+            customer=c, event=event, order_number='RS-2',
+            order_date='2000-01-01 10:00:00', total_amount=Decimal('10.00'),
+        )
+        call_command('send_due_survey_invitations')
+        self.assertFalse(SurveyInvitation.objects.filter(event=event).exists())
+
+    def test_resave_schedule_clears_opt_out(self):
+        self.event.survey_auto_send_opted_out = True
+        self.event.save()
+        self.client.post(
+            reverse('tickets:event_survey_schedule_save', args=[self.event.id]),
+            {'offset_type': 'hours', 'offset_value': '3'},
+        )
+        self.event.refresh_from_db()
+        self.assertFalse(self.event.survey_auto_send_opted_out)
+
+    # ---- anchor (event start vs end) -----------------------------------------
+
+    def test_resolved_schedule_defaults_anchor_to_end(self):
+        self.org.survey_send_offset_type = 'hours'
+        self.org.survey_send_offset_value = 2
+        self.org.save()
+        self.event.refresh_from_db()
+        self.assertEqual(self.event.resolved_survey_schedule()['anchor'], 'end')
+
+    def test_save_persists_start_anchor(self):
+        self.client.post(
+            reverse('tickets:survey_schedule_save'),
+            {'offset_type': 'hours', 'offset_value': '2', 'anchor': 'start'},
+        )
+        self.org.refresh_from_db()
+        self.assertEqual(self.org.survey_send_anchor, 'start')
+
+    def test_compute_from_start_anchor(self):
+        from tickets.views import _compute_survey_send_at
+        from zoneinfo import ZoneInfo
+        # Start 2099-01-01 20:00 EST (UTC-5) + 2h -> 2099-01-01 22:00 EST = 03:00 UTC next day
+        result = _compute_survey_send_at(self.event, 'hours', 2, None, 'start')
+        self.assertEqual(result, datetime(2099, 1, 2, 3, 0, tzinfo=ZoneInfo('UTC')))
+
+    def test_compute_from_end_anchor_unchanged(self):
+        from tickets.views import _compute_survey_send_at
+        from zoneinfo import ZoneInfo
+        # End 2099-01-01 22:00 EST + 2h -> 2099-01-02 05:00 UTC (default anchor)
+        result = _compute_survey_send_at(self.event, 'hours', 2, None)
+        self.assertEqual(result, datetime(2099, 1, 2, 5, 0, tzinfo=ZoneInfo('UTC')))
+
+    def test_preview_respects_start_anchor(self):
+        resp = self.client.get(
+            reverse('tickets:survey_schedule_preview', args=[self.event.id]),
+            {'offset_type': 'hours', 'offset_value': '2', 'anchor': 'start'},
+        )
+        self.assertTrue(resp.json()['valid'])
+
+    def test_describe_includes_anchor_word(self):
+        from tickets.views import _describe_survey_schedule
+        self.assertEqual(
+            _describe_survey_schedule({'offset_type': 'hours', 'offset_value': 3, 'anchor': 'start'}),
+            "3 hours after the event starts",
+        )
+        self.assertEqual(
+            _describe_survey_schedule({'offset_type': 'hours', 'offset_value': 3, 'anchor': 'end'}),
+            "3 hours after the event ends",
+        )
+
+    def test_event_detail_resolved_respects_start_anchor(self):
+        self.org.survey_send_offset_type = 'hours'
+        self.org.survey_send_offset_value = 2
+        self.org.survey_send_anchor = 'start'
+        self.org.save()
+        resp = self.client.get(reverse('tickets:event_detail', args=[self.event.id]))
+        self.assertEqual(
+            resp.context['survey_schedule_resolved']['description'],
+            "2 hours after the event starts",
+        )
+
+
+class SurveyHubTests(TestCase):
+    """Surveys hub: response counts (internal + external) and the Results link."""
+
+    def setUp(self):
+        self.client = Client()
+        self.org = Organization.objects.create(name='Hub Org', slug='hub-org')
+        self.user = User.objects.create_user(
+            username='hubuser', email='hub@test.com', password='testpass123',
+        )
+        UserProfile.objects.create(user=self.user, organization=self.org,
+                                   org_role=UserProfile.OrgRole.OWNER)
+        self.client.login(username='hub@test.com', password='testpass123')
+        self.client.get(reverse('tickets:home'))  # seed _org_id
+        self.venue = Venue.objects.create(organization=self.org, name='Venue', city='City')
+
+    def _event(self, name):
+        return Event.objects.create(
+            organization=self.org, name=name, venue=self.venue, start_date=date(2025, 8, 1),
+        )
+
+    def _hub_event(self, event_id):
+        resp = self.client.get(reverse('tickets:survey_hub'))
+        self.assertEqual(resp.status_code, 200)
+        return next(e for e in resp.context['events'] if e.id == event_id)
+
+    def _add_external(self, event, email):
+        upload = ExternalSurveyUpload.objects.create(
+            organization=self.org, filename='typeform.csv',
+            status=ExternalSurveyUpload.Status.COMPLETED,
+        )
+        ExternalSurveyResponse.objects.create(
+            organization=self.org, upload=upload, event=event,
+            responded_at=timezone.now(), email=email,
+            typeform_response_id='tf-' + email, raw_answers=[],
+        )
+
+    def _add_internal(self, event, email):
+        customer = Customer.objects.create(organization=self.org, email=email, name=email)
+        invitation = SurveyInvitation.objects.create(
+            organization=self.org, event=event, customer=customer, email=email,
+        )
+        SurveyResponse.objects.create(
+            organization=self.org, event=event, customer=customer, invitation=invitation,
+        )
+
+    def test_external_only_responses_are_counted(self):
+        event = self._event('External Only')
+        self._add_external(event, 'a@example.com')
+        self._add_external(event, 'b@example.com')
+        self.assertEqual(self._hub_event(event.id).response_count, 2)
+
+    def test_internal_and_external_are_summed(self):
+        event = self._event('Mixed')
+        self._add_internal(event, 'i@example.com')
+        self._add_external(event, 'e@example.com')
+        self.assertEqual(self._hub_event(event.id).response_count, 2)
+
+    def test_no_responses_counts_zero(self):
+        event = self._event('Empty')
+        self.assertEqual(self._hub_event(event.id).response_count, 0)
+
+    def test_results_link_uses_tab_query_param(self):
+        event = self._event('Linky')
+        self._add_external(event, 'x@example.com')
+        html = self.client.get(reverse('tickets:survey_hub')).content.decode()
+        self.assertIn('?tab=surveys', html)
+        self.assertNotIn('#tab-surveys', html)
+
+
+class OnboardingChecklistTests(TestCase):
+    """Dashboard 'Getting started' checklist for new organizers."""
+
+    def setUp(self):
+        from .models import EVENT_STATUS_LIVE, EVENT_STATUS_DRAFT
+        self.EVENT_STATUS_LIVE = EVENT_STATUS_LIVE
+        self.EVENT_STATUS_DRAFT = EVENT_STATUS_DRAFT
+        self.client = Client()
+        self.org = Organization.objects.create(name='Onboarding Org', slug='onboarding-org')
+        self.user = User.objects.create_user(
+            username='organizer', email='org@test.com', password='pass12345',
+        )
+        UserProfile.objects.create(
+            user=self.user, organization=self.org,
+            role=UserProfile.Role.ORGANIZER, org_role=UserProfile.OrgRole.OWNER,
+        )
+        OrganizationMembership.objects.create(
+            user=self.user, organization=self.org, org_role=UserProfile.OrgRole.OWNER,
+        )
+        self.client.login(username='org@test.com', password='pass12345')
+
+    def _onboarding(self):
+        return self.client.get(reverse('tickets:home')).context['onboarding']
+
+    def _make_event(self, status=None):
+        venue = Venue.objects.create(organization=self.org, name='Venue', city='City')
+        return Event.objects.create(
+            organization=self.org, name='Event', venue=venue,
+            start_date=date(2026, 6, 15), start_time=time(19, 0, 0),
+            ticketing_type=TICKETING_TYPE_DIRECT,
+            status=status or self.EVENT_STATUS_DRAFT,
+        )
+
+    def test_new_org_shows_checklist_with_incomplete_steps(self):
+        onboarding = self._onboarding()
+        self.assertTrue(onboarding['show'])
+        self.assertEqual(onboarding['complete_count'], 0)
+        self.assertEqual(onboarding['total'], 3)
+        steps = {s['key']: s for s in onboarding['steps']}
+        self.assertFalse(steps['create_event']['complete'])
+
+    def test_create_event_step_completes(self):
+        self._make_event()
+        steps = {s['key']: s for s in self._onboarding()['steps']}
+        self.assertTrue(steps['create_event']['complete'])
+        self.assertFalse(steps['go_live']['complete'])
+
+    def test_go_live_step_completes_when_event_live(self):
+        self._make_event(status=self.EVENT_STATUS_LIVE)
+        steps = {s['key']: s for s in self._onboarding()['steps']}
+        self.assertTrue(steps['create_event']['complete'])
+        self.assertTrue(steps['go_live']['complete'])
+
+    def test_payouts_step_completes(self):
+        self.org.stripe_onboarding_complete = True
+        self.org.save(update_fields=['stripe_onboarding_complete'])
+        steps = {s['key']: s for s in self._onboarding()['steps']}
+        self.assertTrue(steps['setup_payouts']['complete'])
+
+    def test_all_complete_hides_card_without_dismissal(self):
+        self._make_event(status=self.EVENT_STATUS_LIVE)
+        self.org.stripe_onboarding_complete = True
+        self.org.save(update_fields=['stripe_onboarding_complete'])
+        onboarding = self._onboarding()
+        self.assertTrue(onboarding['all_complete'])
+        self.assertFalse(onboarding['show'])
+
+    def test_dismiss_hides_card(self):
+        resp = self.client.post(reverse('tickets:dismiss_onboarding'))
+        self.assertRedirects(resp, reverse('tickets:home'))
+        self.org.refresh_from_db()
+        self.assertIsNotNone(self.org.onboarding_dismissed_at)
+        self.assertFalse(self._onboarding()['show'])
+
+    def test_dismiss_requires_post(self):
+        resp = self.client.get(reverse('tickets:dismiss_onboarding'))
+        self.assertEqual(resp.status_code, 405)
+
+
+class VenueCreateInlineTests(TestCase):
+    """Tests for the inline venue creation AJAX endpoint."""
+
+    def setUp(self):
+        self.client = Client()
+        self.org = Organization.objects.create(name='Inline Org', slug='inline-org')
+        self.user = User.objects.create_user(
+            username='inlinehost', email='inline@test.com', password='testpass123'
+        )
+        UserProfile.objects.create(
+            user=self.user, organization=self.org, org_role=UserProfile.OrgRole.OWNER
+        )
+        self.client.login(username='inline@test.com', password='testpass123')
+        # Seed the session with _org_id so @require_org passes.
+        self.client.get(reverse('tickets:home'))
+        self.url = reverse('tickets:venue_create_inline')
+
+    def test_creates_venue_and_returns_json(self):
+        resp = self.client.post(self.url, {'name': 'The Fillmore', 'city': 'San Francisco', 'capacity': '1200'})
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertTrue(data['success'])
+        venue = Venue.objects.get(name='The Fillmore')
+        self.assertEqual(venue.organization, self.org)
+        self.assertEqual(venue.capacity, 1200)
+        self.assertEqual(data['venue']['id'], str(venue.id))
+        self.assertEqual(data['venue']['capacity'], 1200)
+        self.assertIn('The Fillmore', data['venue']['label'])
+
+    def test_missing_name_returns_error(self):
+        resp = self.client.post(self.url, {'city': 'San Francisco'})
+        self.assertEqual(resp.status_code, 400)
+        data = resp.json()
+        self.assertFalse(data['success'])
+        self.assertIn('name', data['errors'])
+        self.assertFalse(Venue.objects.exists())
+
+    def test_duplicate_name_city_returns_error(self):
+        Venue.objects.create(organization=self.org, name='Dup Venue', city='Oakland')
+        resp = self.client.post(self.url, {'name': 'Dup Venue', 'city': 'Oakland'})
+        self.assertEqual(resp.status_code, 400)
+        data = resp.json()
+        self.assertFalse(data['success'])
+        self.assertEqual(Venue.objects.filter(name='Dup Venue').count(), 1)
+
+    def test_get_not_allowed(self):
+        resp = self.client.get(self.url)
+        self.assertEqual(resp.status_code, 405)
+
+    def test_requires_login(self):
+        self.client.logout()
+        resp = self.client.post(self.url, {'name': 'No Auth Venue'})
+        self.assertEqual(resp.status_code, 302)
+        self.assertFalse(Venue.objects.filter(name='No Auth Venue').exists())
+
+
+class ExternalEventsFeatureFlagTests(TestCase):
+    """Gate external-event creation (manual + CSV) behind external_events_enabled."""
+
+    def setUp(self):
+        self.client = Client()
+        self.org = Organization.objects.create(name='Flag Org', slug='flag-org')
+        self.user = User.objects.create_user(
+            username='flaguser', email='flag@test.com', password='pass12345'
+        )
+        UserProfile.objects.create(
+            user=self.user, organization=self.org, org_role=UserProfile.OrgRole.OWNER
+        )
+        OrganizationMembership.objects.create(
+            user=self.user, organization=self.org, org_role=UserProfile.OrgRole.OWNER
+        )
+        self.client.login(username='flag@test.com', password='pass12345')
+        self.client.get(reverse('tickets:home'))  # seed _org_id in session
+
+        self.csv_format = CSVFormat.objects.create(
+            organization=self.org, name='Fmt', column_mapping={'order_number': 'Order ID'}
+        )
+        self.venue = Venue.objects.create(organization=self.org, name='V', city='C')
+        self.event = Event.objects.create(
+            organization=self.org, name='Ext Event', venue=self.venue,
+            start_date=date(2024, 6, 15), start_time=time(19, 0, 0),
+        )
+        self.upload = UploadedFile.objects.create(
+            organization=self.org, csv_format=self.csv_format, filename='u.csv',
+            status='completed',
+        )
+
+    def _enable(self):
+        self.org.external_events_enabled = True
+        self.org.save(update_fields=['external_events_enabled'])
+
+    def test_default_flag_off(self):
+        self.assertFalse(self.org.external_events_enabled)
+
+    def test_type_select_redirects_to_direct_when_off(self):
+        resp = self.client.get(reverse('tickets:event_type_select'))
+        self.assertRedirects(
+            resp, reverse('tickets:event_create', kwargs={'ticketing_type': 'direct'})
+        )
+
+    def test_type_select_shows_chooser_when_on(self):
+        self._enable()
+        resp = self.client.get(reverse('tickets:event_type_select'))
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, 'External Ticketing')
+
+    def test_external_create_blocked_when_off(self):
+        resp = self.client.get(
+            reverse('tickets:event_create', kwargs={'ticketing_type': 'external'})
+        )
+        self.assertRedirects(
+            resp, reverse('tickets:event_create', kwargs={'ticketing_type': 'direct'})
+        )
+
+    def test_external_create_allowed_when_on(self):
+        self._enable()
+        resp = self.client.get(
+            reverse('tickets:event_create', kwargs={'ticketing_type': 'external'})
+        )
+        self.assertEqual(resp.status_code, 200)
+
+    def test_csv_upload_404_when_off(self):
+        resp = self.client.get(
+            reverse('tickets:event_upload_csv', kwargs={'event_id': self.event.id})
+        )
+        self.assertEqual(resp.status_code, 404)
+
+    def test_csv_upload_reachable_when_on(self):
+        self._enable()
+        resp = self.client.get(
+            reverse('tickets:event_upload_csv', kwargs={'event_id': self.event.id})
+        )
+        self.assertEqual(resp.status_code, 200)
+
+    def test_reprocess_404_when_off(self):
+        resp = self.client.get(
+            reverse('tickets:reprocess_csv_file', kwargs={'file_id': self.upload.id})
+        )
+        self.assertEqual(resp.status_code, 404)
+
+
+class EventEffectiveStatusTest(TestCase):
+    """effective_status compares the full timezone-aware end datetime against now,
+    so a 'live' event flips to 'ended' once its end time passes — not just once the
+    calendar day rolls over."""
+
+    def setUp(self):
+        self.org = Organization.objects.create(
+            name='Status Org', slug='status-org',
+        )
+        self.venue = Venue.objects.create(
+            organization=self.org, name='Venue', city='City',
+        )
+
+    def _event(self, **kwargs):
+        defaults = dict(
+            organization=self.org, name='E', venue=self.venue,
+            ticketing_type=TICKETING_TYPE_DIRECT, status='live',
+            timezone='America/Los_Angeles',
+        )
+        defaults.update(kwargs)
+        return Event.objects.create(**defaults)
+
+    def test_ended_when_end_time_passed_same_day(self):
+        """Event that ended a few hours ago today is 'ended', not 'live'."""
+        now = timezone.localtime(timezone.now())
+        ended = now - timedelta(hours=3)
+        event = self._event(
+            start_date=ended.date(), start_time=time(0, 0),
+            end_date=ended.date(), end_time=ended.time(),
+        )
+        self.assertEqual(event.effective_status, 'ended')
+
+    def test_live_when_end_time_later_today(self):
+        """Event ending later today is still 'live'."""
+        now = timezone.localtime(timezone.now())
+        ends = now + timedelta(hours=3)
+        event = self._event(
+            start_date=now.date(), start_time=time(0, 0),
+            end_date=ends.date(), end_time=ends.time(),
+        )
+        self.assertEqual(event.effective_status, 'live')
 
 
 class EventDuplicateViewTests(TestCase):

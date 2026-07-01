@@ -198,7 +198,7 @@ class MetaAdsApplyViewTests(TestCase):
         session['_org_id'] = str(self.org.id)
         session.save()
 
-    @patch('tickets.views.MetaAdsClient')
+    @patch('tickets.integrations.meta_ads.MetaAdsClient')
     def test_apply_upserts_single_meta_campaign_expense(self, mock_client_cls):
         client = mock_client_cls.return_value
         client.list_campaigns.return_value = [{'id': 'cmp_1', 'name': 'Event Campaign'}]
@@ -224,7 +224,7 @@ class MetaAdsApplyViewTests(TestCase):
         self.assertEqual(expense.external_metadata['campaign_name'], 'Event Campaign')
         self.assertEqual(expense.version, 2)
 
-    @patch('tickets.views.MetaAdsClient')
+    @patch('tickets.integrations.meta_ads.MetaAdsClient')
     def test_apply_allows_multiple_linked_campaigns(self, mock_client_cls):
         client = mock_client_cls.return_value
         client.list_campaigns.return_value = [
@@ -246,8 +246,8 @@ class MetaAdsApplyViewTests(TestCase):
             {'cmp_1', 'cmp_2'},
         )
 
-    @patch('tickets.views.MetaCampaignMatcher')
-    @patch('tickets.views.MetaAdsClient')
+    @patch('tickets.integrations.meta_ads.MetaCampaignMatcher')
+    @patch('tickets.integrations.meta_ads.MetaAdsClient')
     def test_match_endpoint_returns_modal_json(self, mock_client_cls, mock_matcher_cls):
         client = mock_client_cls.return_value
         client.list_campaigns.return_value = [{
@@ -281,8 +281,8 @@ class MetaAdsApplyViewTests(TestCase):
         self.assertContains(response, 'data-match-url="')
         self.assertNotContains(response, '<a href="/events/{}/meta-ads/match/" class="btn btn-sm btn-primary">'.format(self.event.id))
 
-    @patch('tickets.views.django_tz.now')
-    @patch('tickets.views.MetaAdsClient')
+    @patch('tickets.integrations.meta_ads.django_tz.now')
+    @patch('tickets.integrations.meta_ads.MetaAdsClient')
     def test_event_detail_lists_linked_meta_campaigns(self, mock_client_cls, mock_now):
         mock_now.return_value = datetime(2026, 5, 8, 15, 0, tzinfo=timezone.utc)
         client = mock_client_cls.return_value
@@ -326,7 +326,7 @@ class MetaAdsApplyViewTests(TestCase):
         self.assertContains(response, '$44.00')
         self.assertContains(response, '$12.75')
 
-    @patch('tickets.views.MetaAdsClient')
+    @patch('tickets.integrations.meta_ads.MetaAdsClient')
     def test_refresh_action_updates_only_selected_linked_campaign(self, mock_client_cls):
         client = mock_client_cls.return_value
         client.get_campaign_insights.return_value = _insights('99.00', 4, '200.00')
@@ -367,7 +367,7 @@ class MetaAdsApplyViewTests(TestCase):
         self.assertEqual(other.version, 1)
         client.get_campaign_insights.assert_called_once_with('cmp_1')
 
-    @patch('tickets.views.MetaAdsClient')
+    @patch('tickets.integrations.meta_ads.MetaAdsClient')
     def test_refresh_flags_confirmed_expense_when_attribution_changes(self, mock_client_cls):
         client = mock_client_cls.return_value
         # Spend unchanged; only API attribution moved.
@@ -398,7 +398,7 @@ class MetaAdsApplyViewTests(TestCase):
         self.assertIsNotNone(expense.api_data_changed_at)
         self.assertTrue(expense.needs_review)
 
-    @patch('tickets.views.MetaAdsClient')
+    @patch('tickets.integrations.meta_ads.MetaAdsClient')
     def test_remove_action_soft_deletes_only_selected_linked_campaign(self, mock_client_cls):
         selected = EventExpense.objects.create(
             event=self.event,
@@ -479,7 +479,7 @@ class MetaAdsApplyViewTests(TestCase):
         self.assertEqual(refresh_manual.status_code, 404)
         self.assertEqual(remove_manual.status_code, 404)
 
-    @patch('tickets.views.MetaAdsClient')
+    @patch('tickets.integrations.meta_ads.MetaAdsClient')
     def test_refresh_action_failure_keeps_existing_amount(self, mock_client_cls):
         client = mock_client_cls.return_value
         client.get_campaign_insights.side_effect = MetaAdsAPIError('Meta unavailable')
@@ -572,7 +572,7 @@ class MetaAdsApplyViewTests(TestCase):
         self.assertContains(response, '$75.50')
         self.assertEqual(client.get_campaign_insights.call_count, 2)
 
-    @patch('tickets.views.MetaAdsClient')
+    @patch('tickets.integrations.meta_ads.MetaAdsClient')
     def test_event_detail_refresh_failure_keeps_page_rendering_and_stored_amount(self, mock_client_cls):
         client = mock_client_cls.return_value
         client.get_campaign_insights.side_effect = MetaAdsAPIError('Meta unavailable')
@@ -595,7 +595,7 @@ class MetaAdsApplyViewTests(TestCase):
         self.assertNotIn('last_synced_at', expense.external_metadata)
         self.assertContains(response, '$44.00')
 
-    @patch('tickets.views.MetaAdsClient')
+    @patch('tickets.integrations.meta_ads.MetaAdsClient')
     def test_event_detail_without_meta_credentials_does_not_refresh(self, mock_client_cls):
         self.org.meta_ads_access_token = ''
         self.org.meta_ads_account_id = ''

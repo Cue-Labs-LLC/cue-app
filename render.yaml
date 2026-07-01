@@ -154,6 +154,31 @@ services:
           type: redis
           property: connectionString
 
+  # Post-event survey scheduler. Every 5 min: dispatch survey invitations whose
+  # relative-to-event-end send time has arrived. Only enqueues Celery tasks
+  # (sending runs on the worker), so it needs DB + broker.
+  - type: cron
+    name: cue-survey-scheduler
+    runtime: python
+    schedule: "*/5 * * * *"
+    branch: main
+    buildCommand: pip install -r requirements.txt
+    startCommand: python manage.py send_due_survey_invitations
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.0
+      - key: DJANGO_ENV
+        value: production
+      - key: SECRET_KEY
+        sync: false
+      - key: DATABASE_URL
+        sync: false
+      - key: CELERY_BROKER_URL
+        fromService:
+          name: ltv-updater-redis
+          type: redis
+          property: connectionString
+
   # ----------------------------------------------------------------------
   # STAGING — TEMPORARILY DISABLED (2026-06-05) to avoid Render charges.
   #

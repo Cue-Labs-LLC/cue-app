@@ -764,6 +764,27 @@ document.addEventListener('DOMContentLoaded', function() {
     font-size: 12px; padding: 4px 8px; font-family: inherit;
 }
 .chart-custom-range input[type="date"]:focus { outline: none; border-color: var(--accent); }
+
+/* Expandable survey-match rows (Check for new responses modal). */
+.matcher-row { cursor: pointer; }
+.matcher-row:hover { background: var(--bg-inset); }
+.matcher-caret { transition: transform 0.15s ease; font-size: 0.75em; color: var(--text-tertiary); }
+.matcher-row[aria-expanded="true"] .matcher-caret { color: var(--text-secondary); }
+.matcher-detail-row:hover { background: transparent; }
+.matcher-detail-cell {
+    background: var(--bg-inset);
+    border-top: none;
+    padding: 16px 18px;
+}
+.matcher-detail-section + .matcher-detail-section { margin-top: 14px; }
+.matcher-detail-label {
+    font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em;
+    color: var(--text-tertiary); margin-bottom: 6px;
+}
+.matcher-answer { padding: 5px 0; }
+.matcher-answer + .matcher-answer { border-top: 1px solid var(--border); }
+.matcher-answer-q { margin-bottom: 1px; }
+.matcher-answer-a { color: var(--text-primary); white-space: pre-wrap; word-break: break-word; }
 </style>
 <div class="card mb-4">
     <div class="card-header d-flex align-items-center justify-content-between flex-wrap gap-2">
@@ -1133,7 +1154,7 @@ document.addEventListener('DOMContentLoaded', function() {
 {% if org.sms_marketing_enabled and is_org_host %}
 <div class="marketing-subnav" role="tablist">
     <button type="button" class="marketing-subnav-btn active" data-marketing-view="native">SMS</button>
-    <button type="button" class="marketing-subnav-btn" data-marketing-view="linked">Linked campaigns</button>
+    <button type="button" class="marketing-subnav-btn" data-marketing-view="linked">Integrations</button>
 </div>
 <div class="marketing-section" data-marketing-section="native">
 <div class="card mb-4">
@@ -1184,396 +1205,28 @@ document.addEventListener('DOMContentLoaded', function() {
 {% endif %}
 
 <div class="marketing-section" data-marketing-section="linked"{% if org.sms_marketing_enabled and is_org_host %} hidden{% endif %}>
-<div class="card mb-4">
-    <div class="card-header d-flex justify-content-between align-items-center">
-        <h5 class="mb-0">Meta Ads</h5>
-        <div class="d-inline-flex gap-2 align-items-center">
-            {% if is_org_admin and meta_ads_pending_count %}
-            <form method="post" action="{% url 'tickets:event_meta_ads_confirm_all' event.id %}" class="d-inline" data-marketing-form="confirm-all" data-channel="ads">
-                {% csrf_token %}
-                <button type="submit" class="btn btn-sm btn-outline-primary">Confirm all ({{ meta_ads_pending_count }})</button>
-            </form>
-            {% endif %}
-            {% if is_org_admin %}
-                {% if org.meta_ads_access_token and org.meta_ads_account_id %}
-                <button type="button"
-                        class="btn btn-sm btn-primary"
-                        data-bs-toggle="modal"
-                        data-bs-target="#metaAdsMatchModal"
-                        data-match-url="{% url 'tickets:event_meta_ads_match' event.id %}?format=json"
-                        data-apply-url="{% url 'tickets:event_meta_ads_apply' event.id %}">
-                    <i class="bi bi-megaphone"></i> Match Meta Ads campaign
-                </button>
-                {% else %}
-                <a href="{% url 'tickets:meta_ads_settings' %}" class="btn btn-sm btn-primary">
-                    <i class="bi bi-facebook"></i> Connect Meta Ads
-                </a>
-                {% endif %}
-            {% endif %}
-        </div>
+    <h5 class="mb-3">Integrations</h5>
+    {% regroup marketing_providers by category as provider_groups %}
+    {% for group in provider_groups %}
+    <div class="marketing-category-title">{{ group.grouper }}</div>
+    {% for provider in group.list %}
+    {% include provider.marketing_card %}
+    {% endfor %}
+    {% endfor %}
+    {% if marketing_providers %}
+    <p class="text-body-secondary small mt-2 mb-0">
+        <a href="{% url 'tickets:integrations_overview' %}">Manage integrations</a>
+    </p>
+    {% else %}
+    <div class="empty-state" style="padding: 28px 24px;">
+        <i class="bi bi-plug" style="font-size: 16px;"></i>
+        <p class="mb-2">No marketing integrations connected yet.</p>
+        <a href="{% url 'tickets:integrations_overview' %}" class="btn btn-sm btn-outline-secondary" style="padding: 3px 9px; font-size: 9.5px; letter-spacing: 0.04em;">
+            Connect in Integrations
+        </a>
     </div>
-    <div class="card-body">
-        {% if org.meta_ads_access_token and org.meta_ads_account_id %}
-        <p class="text-body-secondary mb-3">
-            Connected account: <strong>{{ org.meta_ads_account_name|default:org.meta_ads_account_id }}</strong>
-        </p>
-        <div id="metaAdsApplyFlash" class="alert d-none mb-3" role="alert"></div>
-        <div id="metaAdsLinkedSection"{% if not meta_ads_expenses %} class="d-none"{% endif %}>
-            <div class="table-responsive mb-3">
-                <table class="table table-hover mb-0">
-                    <thead>
-                        <tr>
-                            <th>Linked Campaign</th>
-                            <th>Attributed orders</th>
-                            <th>Attributed revenue</th>
-                            <th>Spend</th>
-                            <th>Status</th>
-                            <th></th>
-                        </tr>
-                    </thead>
-                    <tbody id="metaAdsExpenseRows">
-                        {% for meta_ads_expense in meta_ads_expenses %}
-                        <tr data-row-id="{{ meta_ads_expense.id }}" data-channel="ads">
-                            <td>
-                                <strong>{{ meta_ads_expense.external_metadata.campaign_name|default:meta_ads_expense.description }}</strong>
-                                {% if meta_ads_expense.external_id %}
-                                <div class="text-body-secondary small">{{ meta_ads_expense.external_id }}</div>
-                                {% endif %}
-                                <div class="text-body-secondary small" data-field="attribution_source" title="Source of the attributed orders/revenue shown">
-                                    {% if meta_ads_expense.attribution_source == 'manual' %}Attribution: manual entry{% elif meta_ads_expense.attribution_source == 'cue' %}Attribution: Cue-tracked (UTM){% elif meta_ads_expense.attribution_source == 'api' %}Attribution: Meta estimate{% else %}Attribution: no data{% endif %}
-                                </div>
-                            </td>
-                            <td data-field="effective_attributed_orders" data-editable="true" data-field-name="manual_attributed_orders" data-input-type="number" data-step="1" data-min="0" data-numeric-value="{% if meta_ads_expense.manual_attributed_orders is not None %}{{ meta_ads_expense.manual_attributed_orders }}{% elif meta_ads_expense.effective_attributed_orders %}{{ meta_ads_expense.effective_attributed_orders }}{% else %}{% endif %}" data-edit-url="{% url 'tickets:event_meta_ads_metrics_edit' event.id meta_ads_expense.id %}" data-row-id="{{ meta_ads_expense.id }}" data-channel="ads" title="Click to edit">{{ meta_ads_expense.effective_attributed_orders|default:"—" }}</td>
-                            <td data-field="effective_attributed_revenue" data-editable="true" data-field-name="manual_attributed_revenue" data-input-type="number" data-step="0.01" data-min="0" data-numeric-value="{% if meta_ads_expense.manual_attributed_revenue is not None %}{{ meta_ads_expense.manual_attributed_revenue }}{% elif meta_ads_expense.effective_attributed_revenue %}{{ meta_ads_expense.effective_attributed_revenue }}{% else %}{% endif %}" data-edit-url="{% url 'tickets:event_meta_ads_metrics_edit' event.id meta_ads_expense.id %}" data-row-id="{{ meta_ads_expense.id }}" data-channel="ads" title="Click to edit">${{ meta_ads_expense.effective_attributed_revenue|currency }}</td>
-                            <td data-field="amount"><strong>${{ meta_ads_expense.amount|currency }}</strong></td>
-                            <td data-field="status">
-                                <span class="badge {% if meta_ads_expense.needs_review %}bg-warning text-dark{% elif meta_ads_expense.is_confirmed %}bg-success{% else %}bg-secondary{% endif %}">{% if meta_ads_expense.needs_review %}Re-review{% elif meta_ads_expense.is_confirmed %}Confirmed{% else %}Pending{% endif %}</span>
-                            </td>
-                            <td class="text-end">
-                                <div class="d-inline-flex gap-1 flex-wrap">
-                                    {% if meta_ads_expense.external_id %}
-                                    <button type="button" class="btn btn-sm btn-outline-primary" data-copy-tracked-url="{{ request.scheme }}://{{ request.get_host }}{% url 'tickets:public_event_buy' event.public_id %}?utm_source=facebook&utm_medium=paid&utm_id={{ meta_ads_expense.external_id }}" title="Copy this campaign's tracked ticket URL to paste into the ad's destination">Copy tracked URL</button>
-                                    {% endif %}
-                                    <form method="post" action="{% url 'tickets:event_meta_ads_unconfirm' event.id meta_ads_expense.id %}" class="d-inline{% if not meta_ads_expense.is_confirmed %} d-none{% endif %}" data-marketing-form="unconfirm" data-row-id="{{ meta_ads_expense.id }}" data-channel="ads">
-                                        {% csrf_token %}
-                                        <button type="submit" class="btn btn-sm btn-outline-warning">Unconfirm</button>
-                                    </form>
-                                    <form method="post" action="{% url 'tickets:event_meta_ads_confirm' event.id meta_ads_expense.id %}" class="d-inline{% if meta_ads_expense.is_confirmed %} d-none{% endif %}" data-marketing-form="confirm" data-row-id="{{ meta_ads_expense.id }}" data-channel="ads">
-                                        {% csrf_token %}
-                                        <button type="submit" class="btn btn-sm btn-success">Confirm</button>
-                                    </form>
-                                    <form method="post" action="{% url 'tickets:event_meta_ads_refresh' event.id meta_ads_expense.id %}" class="d-inline" data-marketing-form="refresh" data-row-id="{{ meta_ads_expense.id }}" data-channel="ads">
-                                        {% csrf_token %}
-                                        <button type="submit" class="btn btn-sm btn-outline-secondary">Refresh</button>
-                                    </form>
-                                    <form method="post" action="{% url 'tickets:event_meta_ads_remove' event.id meta_ads_expense.id %}" class="d-inline" data-marketing-form="remove" data-row-id="{{ meta_ads_expense.id }}" data-channel="ads" data-confirm-text="Remove this linked Meta Ads campaign from the event?">
-                                        {% csrf_token %}
-                                        <button type="submit" class="btn btn-sm btn-outline-danger">Remove</button>
-                                    </form>
-                                </div>
-                            </td>
-                        </tr>
-                        {% endfor %}
-                    </tbody>
-                </table>
-            </div>
-        </div>
-        {% if is_org_admin %}
-        <div id="metaAdsInlineSuggestions"
-             {% if meta_ads_expenses %}class="d-none"{% endif %}
-             data-match-url="{% url 'tickets:event_meta_ads_match' event.id %}?format=json"
-             data-apply-url="{% url 'tickets:event_meta_ads_apply' event.id %}">
-            <h6 class="mb-3">Suggested Meta Ads campaigns</h6>
-            <div class="meta-ads-inline-loading py-3 text-center">
-                <div class="spinner-border spinner-border-sm text-primary" role="status" aria-hidden="true"></div>
-                <span class="text-body-secondary ms-2">Ranking campaigns…</span>
-            </div>
-            <div class="meta-ads-inline-error alert alert-danger d-none mb-0"></div>
-            <div class="meta-ads-inline-results row g-3"></div>
-            <p class="meta-ads-inline-empty text-body-secondary mb-0 d-none">
-                No matching Meta Ads campaigns found near this event's dates. Use the Match button above to search again.
-            </p>
-        </div>
-        {% endif %}
-        <p id="metaAdsHelpText" class="mb-0 text-body-secondary{% if not meta_ads_expenses and is_org_admin %} d-none{% endif %}">
-            Use campaign matching to find Meta campaigns for this event, pull lifetime campaign spend and attributed purchases from Meta, and save it as a marketing expense. Click an attribution cell to override the value. Use "Copy tracked URL" to set each ad's destination — orders from that link are attributed to the campaign (Cue-tracked), which is more accurate than Meta's cross-event estimate.
-        </p>
-        {% else %}
-        <div class="empty-state" style="padding: 24px;">
-            <i class="bi bi-megaphone"></i>
-            <p class="mb-0">Connect Meta Ads to match campaigns and pull campaign spend into this event.</p>
-        </div>
-        {% endif %}
-    </div>
-</div>
-
-<div class="card mb-4">
-    <div class="card-header d-flex justify-content-between align-items-center">
-        <h5 class="mb-0">Mailchimp</h5>
-        <div class="d-inline-flex gap-2 align-items-center">
-            {% if is_org_admin and mailchimp_pending_count %}
-            <form method="post" action="{% url 'tickets:event_mailchimp_confirm_all' event.id %}" class="d-inline" data-marketing-form="confirm-all" data-channel="email">
-                {% csrf_token %}
-                <button type="submit" class="btn btn-sm btn-outline-primary">Confirm all ({{ mailchimp_pending_count }})</button>
-            </form>
-            {% endif %}
-            {% if is_org_admin %}
-                {% if mailchimp_connection %}
-                <button type="button"
-                        class="btn btn-sm btn-primary"
-                        data-bs-toggle="modal"
-                        data-bs-target="#mailchimpMatchModal"
-                        data-match-url="{% url 'tickets:event_mailchimp_match' event.id %}?format=json"
-                        data-apply-url="{% url 'tickets:event_mailchimp_apply' event.id %}">
-                    <i class="bi bi-envelope-paper"></i> Match Mailchimp campaign
-                </button>
-                {% else %}
-                <a href="{% url 'tickets:mailchimp_settings' %}" class="btn btn-sm btn-primary">
-                    <i class="bi bi-envelope-paper"></i> Connect Mailchimp
-                </a>
-                {% endif %}
-            {% endif %}
-        </div>
-    </div>
-    <div class="card-body">
-        {% if mailchimp_connection %}
-        <p class="text-body-secondary mb-3">
-            Connected account: <strong>{{ org.mailchimp_account_name|default:org.mailchimp_login_email|default:org.mailchimp_account_id }}</strong>
-        </p>
-        <div id="mailchimpApplyFlash" class="alert d-none mb-3" role="alert"></div>
-        <div id="mailchimpLinkedSection"{% if not mailchimp_campaigns %} class="d-none"{% endif %}>
-            <div class="table-responsive mb-3">
-                <table class="table table-hover mb-0">
-                    <thead>
-                        <tr>
-                            <th>Linked Campaign</th>
-                            <th>Sent</th>
-                            <th>Emails</th>
-                            <th>Unique Opens</th>
-                            <th>Clicks</th>
-                            <th>Orders</th>
-                            <th>Revenue</th>
-                            <th>Status</th>
-                            <th></th>
-                        </tr>
-                    </thead>
-                    <tbody id="mailchimpCampaignRows">
-                        {% for mailchimp_campaign in mailchimp_campaigns %}
-                        <tr data-row-id="{{ mailchimp_campaign.id }}" data-channel="email">
-                            <td>
-                                <strong>{{ mailchimp_campaign.campaign_title }}</strong>
-                                {% if mailchimp_campaign.subject_line %}
-                                <div class="text-body-secondary small">{{ mailchimp_campaign.subject_line }}</div>
-                                {% endif %}
-                                <div class="text-body-secondary small">{{ mailchimp_campaign.external_id }}</div>
-                            </td>
-                            <td>{{ mailchimp_campaign.send_time_display|default:"Unknown" }}</td>
-                            <td data-field="effective_emails_sent" data-editable="true" data-field-name="manual_emails_sent" data-input-type="number" data-step="1" data-min="0" data-numeric-value="{% if mailchimp_campaign.manual_emails_sent is not None %}{{ mailchimp_campaign.manual_emails_sent }}{% else %}{{ mailchimp_campaign.emails_sent }}{% endif %}" data-edit-url="{% url 'tickets:event_mailchimp_metrics_edit' event.id mailchimp_campaign.id %}" data-row-id="{{ mailchimp_campaign.id }}" data-channel="email" title="Click to edit">{{ mailchimp_campaign.effective_emails_sent }}</td>
-                            <td data-field="effective_unique_opens" data-editable="true" data-field-name="manual_unique_opens" data-input-type="number" data-step="1" data-min="0" data-numeric-value="{% if mailchimp_campaign.manual_unique_opens is not None %}{{ mailchimp_campaign.manual_unique_opens }}{% else %}{{ mailchimp_campaign.unique_opens }}{% endif %}" data-edit-url="{% url 'tickets:event_mailchimp_metrics_edit' event.id mailchimp_campaign.id %}" data-row-id="{{ mailchimp_campaign.id }}" data-channel="email" title="Click to edit">{{ mailchimp_campaign.effective_unique_opens }}</td>
-                            <td data-field="effective_clicks" data-editable="true" data-field-name="manual_clicks" data-input-type="number" data-step="1" data-min="0" data-numeric-value="{% if mailchimp_campaign.manual_clicks is not None %}{{ mailchimp_campaign.manual_clicks }}{% else %}{{ mailchimp_campaign.unique_clicks }}{% endif %}" data-edit-url="{% url 'tickets:event_mailchimp_metrics_edit' event.id mailchimp_campaign.id %}" data-row-id="{{ mailchimp_campaign.id }}" data-channel="email" title="Click to edit">{{ mailchimp_campaign.effective_clicks }}</td>
-                            <td data-field="effective_orders" data-editable="true" data-field-name="manual_orders" data-input-type="number" data-step="1" data-min="0" data-numeric-value="{% if mailchimp_campaign.manual_orders is not None %}{{ mailchimp_campaign.manual_orders }}{% else %}{{ mailchimp_campaign.ecommerce_orders }}{% endif %}" data-edit-url="{% url 'tickets:event_mailchimp_metrics_edit' event.id mailchimp_campaign.id %}" data-row-id="{{ mailchimp_campaign.id }}" data-channel="email" title="Click to edit">{{ mailchimp_campaign.effective_orders }}</td>
-                            <td data-field="effective_revenue" data-editable="true" data-field-name="manual_revenue" data-input-type="number" data-step="0.01" data-min="0" data-numeric-value="{% if mailchimp_campaign.manual_revenue is not None %}{{ mailchimp_campaign.manual_revenue }}{% else %}{{ mailchimp_campaign.ecommerce_revenue }}{% endif %}" data-edit-url="{% url 'tickets:event_mailchimp_metrics_edit' event.id mailchimp_campaign.id %}" data-row-id="{{ mailchimp_campaign.id }}" data-channel="email" title="Click to edit">${{ mailchimp_campaign.effective_revenue|currency }}</td>
-                            <td data-field="status">
-                                <span class="badge {% if mailchimp_campaign.needs_review %}bg-warning text-dark{% elif mailchimp_campaign.is_confirmed %}bg-success{% else %}bg-secondary{% endif %}">{% if mailchimp_campaign.needs_review %}Re-review{% elif mailchimp_campaign.is_confirmed %}Confirmed{% else %}Pending{% endif %}</span>
-                            </td>
-                            <td class="text-end">
-                                <div class="d-inline-flex gap-1 flex-wrap">
-                                    <form method="post" action="{% url 'tickets:event_mailchimp_unconfirm' event.id mailchimp_campaign.id %}" class="d-inline{% if not mailchimp_campaign.is_confirmed %} d-none{% endif %}" data-marketing-form="unconfirm" data-row-id="{{ mailchimp_campaign.id }}" data-channel="email">
-                                        {% csrf_token %}
-                                        <button type="submit" class="btn btn-sm btn-outline-warning">Unconfirm</button>
-                                    </form>
-                                    <form method="post" action="{% url 'tickets:event_mailchimp_confirm' event.id mailchimp_campaign.id %}" class="d-inline{% if mailchimp_campaign.is_confirmed %} d-none{% endif %}" data-marketing-form="confirm" data-row-id="{{ mailchimp_campaign.id }}" data-channel="email">
-                                        {% csrf_token %}
-                                        <button type="submit" class="btn btn-sm btn-success">Confirm</button>
-                                    </form>
-                                    <form method="post" action="{% url 'tickets:event_mailchimp_refresh' event.id mailchimp_campaign.id %}" class="d-inline" data-marketing-form="refresh" data-row-id="{{ mailchimp_campaign.id }}" data-channel="email">
-                                        {% csrf_token %}
-                                        <button type="submit" class="btn btn-sm btn-outline-secondary">Refresh</button>
-                                    </form>
-                                    <form method="post" action="{% url 'tickets:event_mailchimp_remove' event.id mailchimp_campaign.id %}" class="d-inline" data-marketing-form="remove" data-row-id="{{ mailchimp_campaign.id }}" data-channel="email" data-confirm-text="Remove this linked Mailchimp campaign from the event?">
-                                        {% csrf_token %}
-                                        <button type="submit" class="btn btn-sm btn-outline-danger">Remove</button>
-                                    </form>
-                                </div>
-                            </td>
-                        </tr>
-                        {% endfor %}
-                    </tbody>
-                </table>
-            </div>
-        </div>
-        {% if is_org_admin %}
-        <div id="mailchimpInlineSuggestions"
-             {% if mailchimp_campaigns %}class="d-none"{% endif %}
-             data-match-url="{% url 'tickets:event_mailchimp_match' event.id %}?format=json"
-             data-apply-url="{% url 'tickets:event_mailchimp_apply' event.id %}">
-            <h6 class="mb-3">Suggested Mailchimp campaigns</h6>
-            <div class="mailchimp-inline-loading py-3 text-center">
-                <div class="spinner-border spinner-border-sm text-primary" role="status" aria-hidden="true"></div>
-                <span class="text-body-secondary ms-2">Ranking campaigns…</span>
-            </div>
-            <div class="mailchimp-inline-error alert alert-danger d-none mb-0"></div>
-            <form id="mailchimpInlineForm" method="post" action="" class="d-none">
-                {% csrf_token %}
-                <div class="mailchimp-inline-results"></div>
-                <div class="mt-3 d-flex justify-content-end">
-                    <button type="submit" id="mailchimpInlineApplyButton" class="btn btn-primary" disabled>
-                        <i class="bi bi-check2-circle me-1"></i> Apply selected (0)
-                    </button>
-                </div>
-            </form>
-            <p class="mailchimp-inline-empty text-body-secondary mb-0 d-none">
-                No matching Mailchimp campaigns found near this event's dates. Use the Match button above to search again.
-            </p>
-        </div>
-        {% endif %}
-        <p id="mailchimpHelpText" class="mb-0 text-body-secondary{% if not mailchimp_campaigns and is_org_admin %} d-none{% endif %}">
-            Use campaign matching to find Mailchimp email campaigns for this event and save opens, clicks, bounces, unsubscribes, and reported revenue.
-        </p>
-        {% else %}
-        <div class="empty-state" style="padding: 24px;">
-            <i class="bi bi-envelope-paper"></i>
-            <p class="mb-0">Connect Mailchimp to match email campaigns and attach campaign results to this event.</p>
-        </div>
-        {% endif %}
-    </div>
-</div>
-
-<div class="card mb-4">
-    <div class="card-header d-flex justify-content-between align-items-center">
-        <h5 class="mb-0">SlickText</h5>
-        <div class="d-inline-flex gap-2 align-items-center">
-            {% if is_org_admin and slicktext_pending_count %}
-            <form method="post" action="{% url 'tickets:event_slicktext_confirm_all' event.id %}" class="d-inline" data-marketing-form="confirm-all" data-channel="sms">
-                {% csrf_token %}
-                <button type="submit" class="btn btn-sm btn-outline-primary">Confirm all ({{ slicktext_pending_count }})</button>
-            </form>
-            {% endif %}
-            {% if is_org_admin %}
-                {% if slicktext_connection %}
-                <button type="button"
-                        class="btn btn-sm btn-primary"
-                        data-bs-toggle="modal"
-                        data-bs-target="#slicktextMatchModal"
-                        data-match-url="{% url 'tickets:event_slicktext_match' event.id %}?format=json"
-                        data-apply-url="{% url 'tickets:event_slicktext_apply' event.id %}">
-                    <i class="bi bi-chat-dots"></i> Match SlickText broadcast
-                </button>
-                {% else %}
-                <a href="{% url 'tickets:slicktext_settings' %}" class="btn btn-sm btn-primary">
-                    <i class="bi bi-chat-dots"></i> Connect SlickText
-                </a>
-                {% endif %}
-            {% endif %}
-        </div>
-    </div>
-    <div class="card-body">
-        {% if slicktext_connection %}
-        <p class="text-body-secondary mb-3">
-            Connected brand: <strong>{{ org.slicktext_brand_name|default:org.slicktext_brand_id }}</strong>
-        </p>
-        <div id="slicktextApplyFlash" class="alert alert-success d-none mb-3" role="alert"></div>
-        <div id="slicktextLinkedSection"{% if not slicktext_campaigns %} class="d-none"{% endif %}>
-            <div class="table-responsive mb-3">
-                <table class="table table-hover mb-0">
-                    <thead>
-                        <tr>
-                            <th>Linked Broadcast</th>
-                            <th>Sent</th>
-                            <th>Audience</th>
-                            <th>Clicks</th>
-                            <th>Unsubscribes</th>
-                            <th>Orders</th>
-                            <th>Revenue</th>
-                            <th>Status</th>
-                            <th></th>
-                        </tr>
-                    </thead>
-                    <tbody id="slicktextCampaignRows">
-                        {% for sms_campaign in slicktext_campaigns %}
-                        <tr data-row-id="{{ sms_campaign.id }}" data-channel="sms">
-                            <td>
-                                <strong>{{ sms_campaign.name }}</strong>
-                                {% if sms_campaign.message %}
-                                <div class="text-body-secondary small">{{ sms_campaign.message|truncatechars:120 }}</div>
-                                {% endif %}
-                                <div class="text-body-secondary small">{{ sms_campaign.external_id }}</div>
-                                <div class="text-body-secondary small" data-field="attribution_source" title="Source of the attributed orders/revenue shown">
-                                    {% if sms_campaign.attribution_source == 'manual' %}Attribution: manual entry{% elif sms_campaign.attribution_source == 'cue' %}Attribution: Cue-tracked (UTM){% elif sms_campaign.attribution_source == 'slicktext' %}Attribution: SlickText{% else %}Attribution: no data{% endif %}
-                                </div>
-                            </td>
-                            <td>{{ sms_campaign.send_time_display|default:"Unknown" }}</td>
-                            <td data-field="effective_audience" data-editable="true" data-field-name="manual_audience" data-input-type="number" data-step="1" data-min="0" data-numeric-value="{% if sms_campaign.manual_audience is not None %}{{ sms_campaign.manual_audience }}{% else %}{{ sms_campaign.audience_size }}{% endif %}" data-edit-url="{% url 'tickets:event_slicktext_metrics_edit' event.id sms_campaign.id %}" data-row-id="{{ sms_campaign.id }}" data-channel="sms" title="Click to edit">{{ sms_campaign.effective_audience }}</td>
-                            <td data-field="effective_clicks" data-editable="true" data-field-name="manual_clicks" data-input-type="number" data-step="1" data-min="0" data-numeric-value="{% if sms_campaign.manual_clicks is not None %}{{ sms_campaign.manual_clicks }}{% else %}{{ sms_campaign.unique_clicks }}{% endif %}" data-edit-url="{% url 'tickets:event_slicktext_metrics_edit' event.id sms_campaign.id %}" data-row-id="{{ sms_campaign.id }}" data-channel="sms" title="Click to edit">{{ sms_campaign.effective_clicks }}</td>
-                            <td data-field="effective_unsubscribes" data-editable="true" data-field-name="manual_unsubscribes" data-input-type="number" data-step="1" data-min="0" data-numeric-value="{% if sms_campaign.manual_unsubscribes is not None %}{{ sms_campaign.manual_unsubscribes }}{% else %}{{ sms_campaign.unsubscribes }}{% endif %}" data-edit-url="{% url 'tickets:event_slicktext_metrics_edit' event.id sms_campaign.id %}" data-row-id="{{ sms_campaign.id }}" data-channel="sms" title="Click to edit">{{ sms_campaign.effective_unsubscribes }}</td>
-                            <td data-field="effective_orders" data-editable="true" data-field-name="manual_orders" data-input-type="number" data-step="1" data-min="0" data-numeric-value="{% if sms_campaign.manual_orders is not None %}{{ sms_campaign.manual_orders }}{% else %}{{ sms_campaign.effective_orders }}{% endif %}" data-edit-url="{% url 'tickets:event_slicktext_metrics_edit' event.id sms_campaign.id %}" data-row-id="{{ sms_campaign.id }}" data-channel="sms" title="Click to edit">{{ sms_campaign.effective_orders }}</td>
-                            <td data-field="effective_revenue" data-editable="true" data-field-name="manual_revenue" data-input-type="number" data-step="0.01" data-min="0" data-numeric-value="{% if sms_campaign.manual_revenue is not None %}{{ sms_campaign.manual_revenue }}{% else %}{{ sms_campaign.effective_revenue }}{% endif %}" data-edit-url="{% url 'tickets:event_slicktext_metrics_edit' event.id sms_campaign.id %}" data-row-id="{{ sms_campaign.id }}" data-channel="sms" title="Click to edit">${{ sms_campaign.effective_revenue|currency }}</td>
-                            <td data-field="status">
-                                <span class="badge {% if sms_campaign.needs_review %}bg-warning text-dark{% elif sms_campaign.is_confirmed %}bg-success{% else %}bg-secondary{% endif %}">{% if sms_campaign.needs_review %}Re-review{% elif sms_campaign.is_confirmed %}Confirmed{% else %}Pending{% endif %}</span>
-                            </td>
-                            <td class="text-end">
-                                <div class="d-inline-flex gap-1 flex-wrap">
-                                    <form method="post" action="{% url 'tickets:event_slicktext_unconfirm' event.id sms_campaign.id %}" class="d-inline{% if not sms_campaign.is_confirmed %} d-none{% endif %}" data-marketing-form="unconfirm" data-row-id="{{ sms_campaign.id }}" data-channel="sms">
-                                        {% csrf_token %}
-                                        <button type="submit" class="btn btn-sm btn-outline-warning">Unconfirm</button>
-                                    </form>
-                                    <form method="post" action="{% url 'tickets:event_slicktext_confirm' event.id sms_campaign.id %}" class="d-inline{% if sms_campaign.is_confirmed %} d-none{% endif %}" data-marketing-form="confirm" data-row-id="{{ sms_campaign.id }}" data-channel="sms">
-                                        {% csrf_token %}
-                                        <button type="submit" class="btn btn-sm btn-success">Confirm</button>
-                                    </form>
-                                    <form method="post" action="{% url 'tickets:event_slicktext_refresh' event.id sms_campaign.id %}" class="d-inline" data-marketing-form="refresh" data-row-id="{{ sms_campaign.id }}" data-channel="sms">
-                                        {% csrf_token %}
-                                        <button type="submit" class="btn btn-sm btn-outline-secondary">Refresh</button>
-                                    </form>
-                                    <form method="post" action="{% url 'tickets:event_slicktext_remove' event.id sms_campaign.id %}" class="d-inline" data-marketing-form="remove" data-row-id="{{ sms_campaign.id }}" data-channel="sms" data-confirm-text="Remove this linked SlickText broadcast from the event?">
-                                        {% csrf_token %}
-                                        <button type="submit" class="btn btn-sm btn-outline-danger">Remove</button>
-                                    </form>
-                                </div>
-                            </td>
-                        </tr>
-                        {% endfor %}
-                    </tbody>
-                </table>
-            </div>
-        </div>
-        {% if is_org_admin %}
-        <div id="slicktextInlineSuggestions"
-             {% if slicktext_campaigns %}class="d-none"{% endif %}
-             data-match-url="{% url 'tickets:event_slicktext_match' event.id %}?format=json"
-             data-apply-url="{% url 'tickets:event_slicktext_apply' event.id %}">
-            <h6 class="mb-3">Suggested SlickText broadcasts</h6>
-            <div class="slicktext-inline-loading py-3 text-center">
-                <div class="spinner-border spinner-border-sm text-primary" role="status" aria-hidden="true"></div>
-                <span class="text-body-secondary ms-2">Ranking broadcasts…</span>
-            </div>
-            <div class="slicktext-inline-error alert alert-danger d-none mb-0"></div>
-            <form id="slicktextInlineForm" method="post" action="" class="d-none">
-                {% csrf_token %}
-                <div class="slicktext-inline-results"></div>
-                <div class="mt-3 d-flex justify-content-end">
-                    <button type="submit" id="slicktextInlineApplyButton" class="btn btn-primary" disabled>
-                        <i class="bi bi-check2-circle me-1"></i> Apply selected (0)
-                    </button>
-                </div>
-            </form>
-            <p class="slicktext-inline-empty text-body-secondary mb-0 d-none">
-                No matching SlickText broadcasts found near this event's dates. Use the Match button above to search again.
-            </p>
-        </div>
-        {% endif %}
-        <p id="slicktextHelpText" class="mb-0 text-body-secondary{% if not slicktext_campaigns and is_org_admin %} d-none{% endif %}">
-            Use campaign matching to find SlickText broadcasts for this event and save audience size, clicks, unsubscribes, and attributed revenue.
-        </p>
-        {% else %}
-        <div class="empty-state" style="padding: 24px;">
-            <i class="bi bi-chat-dots"></i>
-            <p class="mb-0">Connect SlickText to match SMS broadcasts and attach campaign results to this event.</p>
-        </div>
-        {% endif %}
-    </div>
-</div>
-</div><!-- /Linked campaigns view -->
+    {% endif %}
+</div><!-- /Integrations view -->
 
 </div><!-- /tab-marketing -->
 
@@ -1795,21 +1448,48 @@ document.addEventListener('DOMContentLoaded', function() {
 <!-- ===== TAB 5: Surveys ===== -->
 <div class="tab-pane fade" id="tab-surveys" role="tabpanel">
 
-<div class="d-flex justify-content-end gap-2 mb-3">
-    {% if typeform_subscriptions and survey_results %}
-    <button type="button" class="btn btn-sm btn-outline-primary"
-            data-bs-toggle="modal" data-bs-target="#surveyMatchModal">
-        <i class="bi bi-arrow-clockwise"></i> Check for new responses
-    </button>
-    {% endif %}
-    <a href="{% url 'tickets:event_survey_builder' event.id %}" class="btn btn-sm btn-outline-secondary">
-        <i class="bi bi-pencil-square"></i> Build survey
-    </a>
-    <form method="post" action="{% url 'tickets:send_survey' event.id %}"
-          onsubmit="return confirm('Send the survey to attendees who haven\'t received it yet?');">
-        {% csrf_token %}
-        <button type="submit" class="btn btn-sm btn-primary"><i class="bi bi-send"></i> Send survey</button>
-    </form>
+<div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
+    {# Left: where the survey's automatic send time comes from. #}
+    <div class="text-body-secondary small">
+        {% if survey_scheduled_send_display %}
+        <i class="bi bi-clock-history me-1"></i>Scheduled to send {{ survey_scheduled_send_display }}.
+        {% elif survey_schedule_resolved.opted_out %}
+        <i class="bi bi-clock me-1"></i>Auto-send canceled for this event.
+        <a href="{% url 'tickets:event_survey_builder' event.id %}">Re-enable</a>
+        {% elif survey_schedule_resolved.has_schedule %}
+        <i class="bi bi-clock me-1"></i>Auto-sends {{ survey_schedule_resolved.description }}{% if survey_schedule_resolved.send_at_display %} &middot; {{ survey_schedule_resolved.send_at_display }}{% endif %}.
+        <a href="{% url 'tickets:event_survey_builder' event.id %}">Change</a>
+        {% else %}
+        <i class="bi bi-clock me-1"></i>No automatic send time.
+        <a href="{% url 'tickets:event_survey_builder' event.id %}">Set one</a>
+        {% endif %}
+    </div>
+    {# Right: actions. #}
+    <div class="d-flex flex-wrap gap-2">
+        {% if typeform_subscriptions and survey_results %}
+        <button type="button" class="btn btn-sm btn-outline-primary"
+                data-bs-toggle="modal" data-bs-target="#surveyMatchModal">
+            <i class="bi bi-arrow-clockwise"></i> Check for new responses
+        </button>
+        {% endif %}
+        <a href="{% url 'tickets:event_survey_builder' event.id %}" class="btn btn-sm btn-outline-secondary">
+            <i class="bi bi-pencil-square"></i> Build survey
+        </a>
+        {% if survey_scheduled_send_display %}
+        <form method="post" action="{% url 'tickets:cancel_scheduled_survey' event.id %}" class="d-inline"
+              onsubmit="return confirm('Cancel the scheduled survey send? Invitations will be removed and the survey unlocked.');">
+            {% csrf_token %}
+            <button type="submit" class="btn btn-sm btn-outline-danger">
+                <i class="bi bi-x-circle"></i> Cancel scheduled send
+            </button>
+        </form>
+        {% else %}
+        <button type="button" class="btn btn-sm btn-primary"
+                data-bs-toggle="modal" data-bs-target="#sendSurveyModal">
+            <i class="bi bi-send"></i> Send survey
+        </button>
+        {% endif %}
+    </div>
 </div>
 
 {% if survey_results %}
@@ -2102,12 +1782,15 @@ document.addEventListener('DOMContentLoaded', function() {
         {% include 'tickets/_survey_matcher_panels.html' %}
     </div>
     {% else %}
-    <div class="empty-state" style="padding: 48px 0;">
-        <i class="bi bi-clipboard2-data fs-2 text-muted"></i>
-        <p class="text-muted mt-2 mb-1">No Typeform forms are syncing to this organization yet.</p>
-        <p class="text-muted small">
-            <a href="{% url 'tickets:typeform_settings' %}">Sync a Typeform form</a>
-            to start collecting responses for your events.
+    <div class="empty-state" style="padding: 28px 24px;">
+        <i class="bi bi-clipboard2-data" style="font-size: 16px;"></i>
+        <p class="mb-1">No survey responses yet</p>
+        <p class="text-body-secondary small mb-2">
+            Build a survey in Cue and send it to your attendees to start collecting responses.
+        </p>
+        <p class="text-body-secondary small mb-0">
+            Already collecting responses elsewhere?
+            <a href="{% url 'tickets:typeform_settings' %}">Connect a survey integration</a>.
         </p>
     </div>
     {% endif %}
@@ -2257,7 +1940,7 @@ document.addEventListener('DOMContentLoaded', function() {
 </div>
 {% endif %}
 
-{% if event.ticketing_type != 'direct' %}
+{% if event.ticketing_type != 'direct' and external_events_enabled %}
 <div id="event-uploads-card" data-url="{% url 'tickets:event_uploads_summary' event.id %}">
     <div class="card">
         <div class="card-header">
@@ -2351,7 +2034,7 @@ document.addEventListener('DOMContentLoaded', function() {
 </div>
 
 <!-- Upload CSV Modal -->
-{% if event.ticketing_type != 'direct' %}
+{% if event.ticketing_type != 'direct' and external_events_enabled %}
 <div class="modal fade" id="uploadCsvModal" tabindex="-1" aria-labelledby="uploadCsvModalLabel" aria-hidden="true">
     <div class="modal-dialog modal-lg">
         <div class="modal-content">
@@ -2613,6 +2296,58 @@ document.addEventListener('DOMContentLoaded', function() {
 </div>
 {% endif %}
 
+<!-- Send-survey confirmation modal: shows how many attendees will receive the survey -->
+<div class="modal fade" id="sendSurveyModal" tabindex="-1" aria-labelledby="sendSurveyModalLabel" aria-hidden="true">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="sendSurveyModalLabel"><i class="bi bi-send"></i> Send survey</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <form method="post" action="{% url 'tickets:send_survey' event.id %}">
+        {% csrf_token %}
+        <div class="modal-body">
+          <div id="sendSurveyLoading" class="text-center py-3">
+            <span class="spinner-border spinner-border-sm"></span> Counting attendees&hellip;
+          </div>
+          <div id="sendSurveyError" class="alert alert-warning d-none mb-0">
+            Couldn't load the recipient count. You can still send.
+          </div>
+          <div id="sendSurveyEmpty" class="d-none alert alert-info mb-0">
+            All attendees have already been sent this survey.
+          </div>
+          <div id="sendSurveyContent" class="d-none">
+            <p>This will email the survey <strong>now</strong> to
+              <strong id="sendSurveyCount">0</strong> attendee(s)
+              who haven't received it yet.</p>
+
+            {% if survey_schedule_resolved.has_schedule %}
+            <div class="small text-body-secondary border-top pt-2 mt-2">
+              <i class="bi bi-clock me-1"></i>This event auto-sends its survey
+              {{ survey_schedule_resolved.description }}. Sending now overrides that
+              and goes out immediately.
+              <a href="{% url 'tickets:event_survey_builder' event.id %}">Change schedule</a>
+            </div>
+            {% else %}
+            <div class="small text-body-secondary border-top pt-2 mt-2">
+              <i class="bi bi-clock me-1"></i>No automatic send time is set.
+              <a href="{% url 'tickets:event_survey_builder' event.id %}">Set a schedule</a>
+              to have the survey send itself after the event.
+            </div>
+            {% endif %}
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+          <button type="submit" id="sendSurveyConfirmBtn" class="btn btn-primary" disabled>
+            <i class="bi bi-send"></i> <span id="sendSurveyConfirmLabel">Send survey</span>
+          </button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+
 {% endblock %}
 
 {% block extra_js %}
@@ -2684,6 +2419,47 @@ if (document.readyState === 'loading') {
 } else {
     initSurveyResponseModal();
 }
+
+// Send-survey modal: fetch the recipient count fresh each time it opens. This
+// dialog sends immediately; scheduled delivery is handled automatically by the
+// survey scheduler for events with an auto-send schedule.
+(function() {
+    var ssModal = document.getElementById('sendSurveyModal');
+    if (!ssModal) return;
+
+    var loading = document.getElementById('sendSurveyLoading');
+    var content = document.getElementById('sendSurveyContent');
+    var empty   = document.getElementById('sendSurveyEmpty');
+    var error   = document.getElementById('sendSurveyError');
+    var btn     = document.getElementById('sendSurveyConfirmBtn');
+
+    ssModal.addEventListener('show.bs.modal', function () {
+        loading.classList.remove('d-none');
+        content.classList.add('d-none');
+        empty.classList.add('d-none');
+        error.classList.add('d-none');
+        btn.disabled = true;
+        fetch("{% url 'tickets:survey_recipient_count' event.id %}",
+              { headers: { 'X-Requested-With': 'XMLHttpRequest' } })
+            .then(function (r) { return r.json(); })
+            .then(function (d) {
+                loading.classList.add('d-none');
+                if (d.count > 0) {
+                    document.getElementById('sendSurveyCount').textContent = d.count;
+                    content.classList.remove('d-none');
+                    btn.disabled = false;
+                } else {
+                    empty.classList.remove('d-none');   // btn stays disabled
+                }
+            })
+            .catch(function () {
+                loading.classList.add('d-none');
+                error.classList.remove('d-none');
+                content.classList.remove('d-none');
+                btn.disabled = false;                   // allow send; server re-checks
+            });
+    });
+})();
 </script>
 <script>
 // Marketing tab sub-view toggle: SMS vs Linked campaigns. Hidden sections stay in
@@ -2706,11 +2482,18 @@ if (document.readyState === 'loading') {
 })();
 </script>
 <script>
-(function() {
+// Activate the tab named by ?tab=<name> (or a legacy #tab-<name> hash) on load,
+// and keep the URL in sync as tabs change. Deferred to DOMContentLoaded so the
+// (defer-loaded) Bootstrap bundle has run and `bootstrap.Tab` is defined.
+function initEventDetailTabs() {
     var tabs = document.getElementById('eventDetailTabs');
-    if (!tabs) return;
+    if (!tabs || typeof bootstrap === 'undefined') return;
     var params = new URLSearchParams(window.location.search);
     var activeTab = params.get('tab');
+    // Fall back to a legacy #tab-<name> hash link (e.g. from older bookmarks).
+    if (!activeTab && window.location.hash.indexOf('#tab-') === 0) {
+        activeTab = window.location.hash.slice('#tab-'.length);
+    }
     if (activeTab) {
         var btn = tabs.querySelector('[data-bs-target="#tab-' + activeTab + '"]');
         if (btn) { new bootstrap.Tab(btn).show(); }
@@ -2724,7 +2507,12 @@ if (document.readyState === 'loading') {
         else { url.searchParams.set('tab', tabName); }
         history.replaceState(null, '', url.toString());
     });
-})();
+}
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', initEventDetailTabs);
+} else {
+    initEventDetailTabs();
+}
 </script>
 <script>
 // Customers tab: bulk-select buyers and tag them.
@@ -5336,17 +5124,51 @@ function setupSurveyMatcher(container) {
         return d.toLocaleDateString(undefined, {year: 'numeric', month: 'short', day: 'numeric'});
     }
 
+    // Turn an answer value (string | number | array) into display text.
+    function formatAnswerValue(value) {
+        if (value === null || value === undefined || value === '') return '';
+        if (Array.isArray(value)) return value.join(', ');
+        return String(value);
+    }
+
     function previewText(answers) {
         if (!Array.isArray(answers) || !answers.length) return '<span class="text-body-secondary">—</span>';
         return answers.slice(0, 2).map(function (a) {
             var title = a.title ? '<span class="text-body-secondary">' + escapeHtml(a.title) + ':</span> ' : '';
-            var value = a.value;
-            if (value === null || value === undefined || value === '') return '';
-            if (Array.isArray(value)) value = value.join(', ');
-            var text = String(value);
+            var text = formatAnswerValue(a.value);
+            if (!text) return '';
             if (text.length > 120) text = text.slice(0, 120) + '…';
             return '<div class="text-truncate" style="max-width: 100%;">' + title + escapeHtml(text) + '</div>';
         }).filter(Boolean).join('') || '<span class="text-body-secondary">—</span>';
+    }
+
+    // Full match details shown when a row is expanded: AI reasoning + every answer.
+    function detailContent(c) {
+        var reasoning = c.reasoning ? escapeHtml(c.reasoning) : 'No reasoning provided.';
+        var html =
+            '<div class="matcher-detail-section">' +
+              '<div class="matcher-detail-label"><i class="bi bi-stars me-1"></i>Why this match</div>' +
+              '<p class="mb-0 small">' + reasoning + '</p>' +
+            '</div>';
+
+        var answers = Array.isArray(c.answers) ? c.answers : [];
+        var rows = answers.map(function (a) {
+            var text = formatAnswerValue(a.value);
+            if (!a.title && !text) return '';
+            return (
+                '<div class="matcher-answer">' +
+                  '<div class="matcher-answer-q text-body-secondary small">' + escapeHtml(a.title || '—') + '</div>' +
+                  '<div class="matcher-answer-a small">' + (text ? escapeHtml(text) : '<span class="text-body-secondary">—</span>') + '</div>' +
+                '</div>'
+            );
+        }).filter(Boolean).join('');
+
+        html +=
+            '<div class="matcher-detail-section">' +
+              '<div class="matcher-detail-label"><i class="bi bi-card-list me-1"></i>Survey responses</div>' +
+              (rows || '<p class="mb-0 small text-body-secondary">No answers on this response.</p>') +
+            '</div>';
+        return html;
     }
 
     function renderRow(c) {
@@ -5355,11 +5177,15 @@ function setupSurveyMatcher(container) {
         var rid = String(c.response_id || '');
         var reasoning = c.reasoning || '';
         return (
-            '<tr data-response-id="' + escapeHtml(rid) + '">' +
-              '<td class="text-muted small text-nowrap">' + escapeHtml(formatDate(c.responded_at)) + '</td>' +
+            '<tr class="matcher-row" data-response-id="' + escapeHtml(rid) + '" ' +
+                'role="button" tabindex="0" aria-expanded="false" ' +
+                'title="Click for full match details">' +
+              '<td class="text-muted small text-nowrap">' +
+                '<i class="bi bi-chevron-right matcher-caret me-1" aria-hidden="true"></i>' +
+                escapeHtml(formatDate(c.responded_at)) +
+              '</td>' +
               '<td>' +
                 '<span class="badge ' + escapeHtml(chipClass) + '" ' +
-                       'title="' + escapeHtml(reasoning) + '" ' +
                        'aria-label="Match confidence: ' + pct + ' percent">' + pct + '%</span>' +
               '</td>' +
               '<td class="small" style="max-width: 480px;">' + previewText(c.preview_answers) + '</td>' +
@@ -5369,6 +5195,9 @@ function setupSurveyMatcher(container) {
                         'data-confidence="' + (c.confidence || 0) + '" ' +
                         'data-reasoning="' + escapeHtml(reasoning) + '">Link</button>' +
               '</td>' +
+            '</tr>' +
+            '<tr class="matcher-detail-row d-none" data-detail-for="' + escapeHtml(rid) + '">' +
+              '<td colspan="4" class="matcher-detail-cell">' + detailContent(c) + '</td>' +
             '</tr>'
         );
     }
@@ -5405,12 +5234,33 @@ function setupSurveyMatcher(container) {
             });
     }
 
+    function toggleDetail(row) {
+        var rid = row.getAttribute('data-response-id');
+        if (!rid) return;
+        var detail = container.querySelector('.matcher-detail-row[data-detail-for="' + (window.CSS && CSS.escape ? CSS.escape(rid) : rid) + '"]');
+        if (!detail) return;
+        var expanded = detail.classList.toggle('d-none') === false;
+        row.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+        var caret = row.querySelector('.matcher-caret');
+        if (caret) {
+            caret.classList.toggle('bi-chevron-down', expanded);
+            caret.classList.toggle('bi-chevron-right', !expanded);
+        }
+    }
+
     container.addEventListener('click', function (e) {
         if (e.target.closest('.matcher-find-btn')) {
             loadCandidates();
             return;
         }
         var linkBtn = e.target.closest('.matcher-link-btn');
+        if (!linkBtn) {
+            var row = e.target.closest('.matcher-row');
+            if (row) {
+                toggleDetail(row);
+                return;
+            }
+        }
         if (linkBtn) {
             linkBtn.disabled = true;
             linkBtn.innerHTML = 'Linking…';
@@ -5443,6 +5293,15 @@ function setupSurveyMatcher(container) {
                     showOnly(errorEl);
                 });
         }
+    });
+
+    // Keyboard parity: Enter/Space on a focused row toggles its detail panel.
+    container.addEventListener('keydown', function (e) {
+        if (e.key !== 'Enter' && e.key !== ' ' && e.key !== 'Spacebar') return;
+        var row = e.target.closest && e.target.closest('.matcher-row');
+        if (!row || row !== e.target) return;
+        e.preventDefault();
+        toggleDetail(row);
     });
 
     // When the matcher lives inside a modal (populated-state "Check for new

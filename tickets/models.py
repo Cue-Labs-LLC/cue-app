@@ -80,11 +80,46 @@ class AuditBaseModel(BaseModel):
         super().delete(using=using, keep_parents=keep_parents)
 
 
+# Offset types for the default post-event survey send schedule. An empty
+# offset_type means "send immediately" (no scheduled offset configured).
+SURVEY_SEND_OFFSET_CHOICES = [('hours', 'hours'), ('days', 'days')]
+
+# Whether the survey send offset is measured from the event start or end.
+SURVEY_SEND_ANCHOR_CHOICES = [('end', 'end'), ('start', 'start')]
+
+
 class Organization(BaseModel):
     """Organization that owns venues, events, uploads, customers, and custom fields."""
     name = models.CharField(max_length=200)
     slug = models.SlugField(max_length=100, unique=True)
     rfm_recalc_in_progress = models.BooleanField(default=False)
+    survey_email_subject = models.CharField(
+        max_length=255, blank=True, default='',
+        help_text="Org-wide default subject for survey invitation emails. "
+                  "Use {event} for the event name. Blank = built-in default.",
+    )
+    survey_reply_to_email = models.EmailField(
+        blank=True, default='',
+        help_text="Replies to survey invitations go here, and the org name appears "
+                  "on the From line. Blank = send as Cue with no reply-to.",
+    )
+    # Org-wide default schedule for sending the post-event survey, expressed as
+    # an offset from the event start or end. Blank offset_type = send immediately.
+    survey_send_offset_type = models.CharField(
+        max_length=10, blank=True, default='', choices=SURVEY_SEND_OFFSET_CHOICES,
+        help_text="Default survey send timing: 'hours' or 'days' relative to the "
+                  "event. Blank = send immediately.",
+    )
+    survey_send_offset_value = models.PositiveSmallIntegerField(null=True, blank=True)
+    survey_send_time_of_day = models.TimeField(
+        null=True, blank=True,
+        help_text="Time of day to send when offset_type is 'days' (event timezone).",
+    )
+    survey_send_anchor = models.CharField(
+        max_length=10, blank=True, default='', choices=SURVEY_SEND_ANCHOR_CHOICES,
+        help_text="Whether the offset is measured from the event 'start' or 'end'. "
+                  "Blank = end.",
+    )
     sms_marketing_enabled = models.BooleanField(
         default=False,
         help_text=(
@@ -185,6 +220,13 @@ class Organization(BaseModel):
         default=True,
         help_text='Show the AI Event Summary card on event detail pages.',
     )
+    external_events_enabled = models.BooleanField(
+        default=False,
+        help_text=(
+            'Allow this org to create external (CSV-imported) events. Off by '
+            'default; direct ticketing only.'
+        ),
+    )
     photo = models.ImageField(
         upload_to='org_photos/',
         storage=_get_media_storage,
@@ -201,6 +243,10 @@ class Organization(BaseModel):
         blank=True,
         default='',
     )
+    # Set when the organizer dismisses the dashboard "Getting started" checklist.
+    # The checklist's step completion is derived from existing data (events, Stripe
+    # onboarding); this only records that the card should stay hidden.
+    onboarding_dismissed_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         ordering = ['name']
@@ -1074,6 +1120,29 @@ class Event(AuditBaseModel):
         default=0,
         help_text="Number of times the public ticket page (/e/<id>/) was loaded.",
     )
+    survey_email_subject = models.CharField(
+        max_length=255, blank=True, default='',
+        help_text="Per-event override for the survey email subject. "
+                  "Use {event} for the event name. Blank = org default.",
+    )
+    # Per-event override for the survey send schedule. Blank offset_type =
+    # inherit the org default (see Event.resolved_survey_schedule()).
+    survey_send_offset_type = models.CharField(
+        max_length=10, blank=True, default='', choices=SURVEY_SEND_OFFSET_CHOICES,
+        help_text="Per-event override for survey send timing. Blank = org default.",
+    )
+    survey_send_offset_value = models.PositiveSmallIntegerField(null=True, blank=True)
+    survey_send_time_of_day = models.TimeField(null=True, blank=True)
+    survey_send_anchor = models.CharField(
+        max_length=10, blank=True, default='', choices=SURVEY_SEND_ANCHOR_CHOICES,
+        help_text="Per-event override: measure the offset from the event 'start' "
+                  "or 'end'. Blank = end.",
+    )
+    survey_auto_send_opted_out = models.BooleanField(
+        default=False,
+        help_text="Set when a host cancels a scheduled survey send. Stops the "
+                  "auto-send scheduler from re-arming this event's survey.",
+    )
     scanner_pin = models.CharField(
         max_length=8, null=True, blank=True, unique=True, db_index=True,
         help_text="6-digit PIN for guest scanner access (no Cue account required).",
@@ -1120,12 +1189,23 @@ class Event(AuditBaseModel):
             EVENT_STATUS_DRAFT, EVENT_STATUS_ENDED, EVENT_STATUS_CANCELLED
         ):
             return self.status
-        # status == 'live' - check if event date has passed
-        today = timezone.now().date()
-        end = self.end_date or self.start_date
-        if end < today:
+        # status == 'live' - check if the event end time has passed
+        if self.end_datetime() < timezone.now():
             return EVENT_STATUS_ENDED
         return EVENT_STATUS_LIVE
+
+    @property
+    def spans_extra_days(self):
+        """True when the event ends two or more calendar days after it starts.
+
+        A same-day event or an overnight one that finishes the next morning
+        (end_date == start_date + 1) is not "extra days" — the closing time
+        alone communicates the end, so the end date can be hidden. Only an
+        event that runs into a third day needs its end date shown.
+        """
+        if not self.end_date:
+            return False
+        return (self.end_date - self.start_date).days >= 2
 
     def get_associated_uploads(self):
         """Get all distinct uploads associated with this event via ticket orders."""
@@ -1136,6 +1216,69 @@ class Event(AuditBaseModel):
     def get_upload_count(self):
         """Get count of distinct uploads associated with this event."""
         return self.get_associated_uploads().count()
+
+    def resolved_survey_subject(self):
+        """Effective survey email subject: event override → org default →
+        built-in default, with {event} expanded to the event name."""
+        template = (
+            (self.survey_email_subject or '').strip()
+            or (self.organization.survey_email_subject or '').strip()
+            or DEFAULT_SURVEY_SUBJECT
+        )
+        return template.replace('{event}', self.name)
+
+    def resolved_survey_schedule(self):
+        """Effective survey send schedule: event override → org default → None.
+
+        Returns a dict {'offset_type', 'offset_value', 'time_of_day'} or None when
+        neither the event nor the org configures a schedule (= send immediately).
+        """
+        if (self.survey_send_offset_type or '').strip():
+            src = self
+        elif (self.organization.survey_send_offset_type or '').strip():
+            src = self.organization
+        else:
+            return None
+        return {
+            'offset_type': src.survey_send_offset_type,
+            'offset_value': src.survey_send_offset_value,
+            'time_of_day': src.survey_send_time_of_day,
+            'anchor': src.survey_send_anchor or 'end',
+        }
+
+    def start_datetime(self):
+        """Timezone-aware datetime for when the event starts, in the event's own
+        timezone. Used to anchor survey-send scheduling to the event start.
+
+        Falls back to midnight when start_time is unset. Returns an aware datetime.
+        """
+        from datetime import datetime, time as dt_time
+        from zoneinfo import ZoneInfo
+
+        start_time = self.start_time or dt_time(0, 0)
+        try:
+            tz = ZoneInfo(self.timezone)
+        except Exception:
+            tz = ZoneInfo('America/Los_Angeles')
+        return datetime.combine(self.start_date, start_time, tzinfo=tz)
+
+    def end_datetime(self):
+        """Timezone-aware datetime for when the event ends, in the event's own
+        timezone. Used to anchor relative survey-send scheduling.
+
+        Falls back gracefully: end_date → start_date; end_time → start_time →
+        end of day (23:59). Returns an aware datetime.
+        """
+        from datetime import datetime, time as dt_time
+        from zoneinfo import ZoneInfo
+
+        end_date = self.end_date or self.start_date
+        end_time = self.end_time or self.start_time or dt_time(23, 59)
+        try:
+            tz = ZoneInfo(self.timezone)
+        except Exception:
+            tz = ZoneInfo('America/Los_Angeles')
+        return datetime.combine(end_date, end_time, tzinfo=tz)
 
 
 def generate_unique_scanner_pin():
@@ -2763,6 +2906,12 @@ class StripeCheckoutSession(BaseModel):
         return f"Stripe session {self.stripe_session_id} ({self.status})"
 
 
+# Built-in fallback subject for survey invitation emails. Use {event} for the
+# event name. Overridden per-org (Organization.survey_email_subject) and
+# per-event (Event.survey_email_subject); see Event.resolved_survey_subject().
+DEFAULT_SURVEY_SUBJECT = "How was {event}? Share your feedback"
+
+
 class SurveyQuestion(BaseModel):
     """A question in a post-event survey."""
     QUESTION_TYPE_CHOICES = [
@@ -2861,6 +3010,12 @@ class SurveyInvitation(BaseModel):
     )
     token = models.UUIDField(default=uuid.uuid4, unique=True, db_index=True)
     email = models.EmailField(help_text="Denormalized from customer at send time")
+    scheduled_send_at = models.DateTimeField(
+        null=True, blank=True, db_index=True,
+        help_text="Absolute UTC time this invitation may be sent. NULL = send "
+                  "immediately. The bulk send task only dispatches rows whose "
+                  "scheduled time is in the past (or NULL).",
+    )
     sent_at = models.DateTimeField(null=True, blank=True)
     completed_at = models.DateTimeField(null=True, blank=True)
 

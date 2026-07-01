@@ -77,6 +77,26 @@
     .qb-preview-col { position: static; margin-top: 24px; }
     #qb-preview { height: 560px; }
   }
+
+  /* Config-field status — make "is this set?" obvious at a glance, so a real
+     value never reads like an empty placeholder. */
+  .cfg-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 6px; }
+  .cfg-head .form-label { margin: 0; }
+  .cfg-status {
+    display: inline-flex; align-items: center; gap: 5px;
+    font-size: .7rem; font-weight: 600; letter-spacing: .01em; white-space: nowrap;
+    padding: 3px 9px; border-radius: 999px;
+  }
+  .cfg-status i { font-size: .8rem; line-height: 1; }
+  .cfg-status--set { color: var(--bs-success); background: rgba(var(--bs-success-rgb,25,135,84), .12); }
+  .cfg-status--unset { color: var(--text-muted, #6b7177); background: var(--surface-2, rgba(0,0,0,.06)); }
+  /* Success left-accent reinforces "this field holds a real value." */
+  .cfg-input--set { border-left: 3px solid var(--bs-success); }
+  /* Resolved readout: shows the inherited value that will actually be used
+     when the field is left blank. */
+  .cfg-resolved { display: flex; align-items: baseline; gap: 7px; margin-top: 8px; font-size: .8rem; }
+  .cfg-resolved-label { color: var(--text-muted,#6b7177); text-transform: uppercase; letter-spacing: .06em; font-size: .64rem; font-weight: 700; }
+  .cfg-resolved-val { font-weight: 600; }
 </style>
 {% endblock %}
 
@@ -106,6 +126,202 @@
 
 <div class="row g-4">
 <div class="col-lg-7">
+
+{# ---- Survey email subject (org default / per-event override) ---- #}
+<div class="card mb-3">
+  <div class="card-body">
+    <form method="post" action="{{ survey_subject_save_url }}">
+      {% csrf_token %}
+      <div class="cfg-head">
+        <label class="form-label small fw-medium" for="survey-email-subject">Survey email subject</label>
+        {% if survey_email_subject %}
+        <span class="cfg-status cfg-status--set"><i class="bi bi-check-circle-fill"></i> Custom subject set</span>
+        {% else %}
+        <span class="cfg-status cfg-status--unset"><i class="bi bi-dash-circle"></i> Using default</span>
+        {% endif %}
+      </div>
+      <input type="text" name="email_subject" id="survey-email-subject" maxlength="255"
+             class="form-control{% if survey_email_subject %} cfg-input--set{% endif %}"
+             value="{{ survey_email_subject }}"
+             placeholder="{{ survey_subject_inherited }}"
+             {% if locked %}disabled{% endif %}>
+      <div class="form-text">
+        Use <code>{event}</code> for the event name. Leave blank to use
+        {% if event %}the default survey's subject{% else %}the built-in default{% endif %}.
+      </div>
+      {% if not survey_email_subject %}
+      <div class="cfg-resolved">
+        <span class="cfg-resolved-label">Will send as</span>
+        <span class="cfg-resolved-val">{{ survey_subject_inherited }}</span>
+      </div>
+      {% endif %}
+      {% if not locked %}
+      <button type="submit" class="btn btn-outline-primary btn-sm mt-2">Save subject</button>
+      {% endif %}
+    </form>
+
+    {% if not event %}
+    {# ---- Reply-to / sender identity (org-wide only) ---- #}
+    <hr class="my-3">
+    <form method="post" action="{% url 'tickets:survey_reply_to_save' %}">
+      {% csrf_token %}
+      <div class="cfg-head">
+        <label class="form-label small fw-medium" for="survey-reply-to">Reply-to email</label>
+        {% if survey_reply_to_email %}
+        <span class="cfg-status cfg-status--set"><i class="bi bi-check-circle-fill"></i> Active</span>
+        {% else %}
+        <span class="cfg-status cfg-status--unset"><i class="bi bi-dash-circle"></i> Not set</span>
+        {% endif %}
+      </div>
+      <input type="email" name="reply_to_email" id="survey-reply-to"
+             class="form-control{% if survey_reply_to_email %} cfg-input--set{% endif %}"
+             value="{{ survey_reply_to_email }}" placeholder="events@yourdomain.com">
+      <div class="form-text">
+        {% if survey_reply_to_email %}
+        Replies go to <strong>{{ survey_reply_to_email }}</strong> and your organization's
+        name appears on the From line.
+        {% else %}
+        When set, your organization's name appears on the From line and replies go
+        to this address. Leave blank to send as Cue with no reply-to.
+        {% endif %}
+      </div>
+      <button type="submit" class="btn btn-outline-primary btn-sm mt-2">Save reply-to</button>
+    </form>
+    {% endif %}
+
+    <hr class="my-3">
+    <form method="post" action="{{ survey_send_test_url }}" class="row g-2 align-items-end">
+      {% csrf_token %}
+      <div class="col-sm">
+        <label class="form-label small fw-medium mb-1" for="survey-test-email">Send a test email</label>
+        <input type="email" name="test_email" id="survey-test-email" class="form-control"
+               value="{{ request.user.email }}" placeholder="you@example.com" required>
+      </div>
+      <div class="col-sm-auto">
+        <button type="submit" class="btn btn-outline-secondary btn-sm">Send test</button>
+      </div>
+    </form>
+    <div class="form-text mt-1">Sends the current survey email (with the resolved subject) so you can preview it.</div>
+  </div>
+</div>
+
+{% comment %}
+  Send time. Org scope: the org-wide DEFAULT (Send manually / Schedule
+  automatically). Event scope: this event either USES THE DEFAULT or sets a
+  CUSTOM schedule.
+{% endcomment %}
+<div class="card mb-3 sched-card">
+  <div class="card-body">
+    <form method="post" action="{{ survey_schedule_save_url }}" id="survey-schedule-form">
+      {% csrf_token %}
+      {% if event %}
+        <label class="form-label small fw-medium mb-1">Send time for this event</label>
+        <div class="form-text mb-2">When this event's survey goes out automatically.</div>
+        <div class="btn-group btn-group-sm w-100 mb-3" role="group" aria-label="Send time">
+          <input type="radio" class="btn-check" name="sched_mode" id="sched-default" value="default"
+                 {% if not survey_schedule_overridden %}checked{% endif %} {% if locked %}disabled{% endif %}>
+          <label class="btn btn-outline-primary" for="sched-default">Use the default</label>
+          <input type="radio" class="btn-check" name="sched_mode" id="sched-custom" value="custom"
+                 {% if survey_schedule_overridden %}checked{% endif %} {% if locked %}disabled{% endif %}>
+          <label class="btn btn-outline-primary" for="sched-custom">Custom for this event</label>
+        </div>
+        <div id="sched-default-note" class="d-flex align-items-center gap-2 mb-2 text-body-secondary small">
+          <i class="bi bi-arrow-down-left-circle"></i>
+          <span>Default: <strong>{{ survey_schedule_inherited }}</strong>.
+            <a href="{% url 'tickets:survey_builder' %}">Change the default</a>.</span>
+        </div>
+      {% else %}
+        <label class="form-label small fw-medium mb-1">Default send time</label>
+        <div class="form-text mb-2">
+          When surveys go out automatically. Applies to every event unless the event
+          sets its own. Hosts can always send now from an event.
+        </div>
+        <div class="btn-group btn-group-sm w-100 mb-3" role="group" aria-label="Default send time">
+          <input type="radio" class="btn-check" name="sched_mode" id="sched-manual" value="manual"
+                 {% if not survey_send_offset_type %}checked{% endif %} {% if locked %}disabled{% endif %}>
+          <label class="btn btn-outline-primary" for="sched-manual">Send manually</label>
+          <input type="radio" class="btn-check" name="sched_mode" id="sched-auto" value="auto"
+                 {% if survey_send_offset_type %}checked{% endif %} {% if locked %}disabled{% endif %}>
+          <label class="btn btn-outline-primary" for="sched-auto">Schedule automatically</label>
+        </div>
+      {% endif %}
+
+      {# Shared schedule fields — shown only in 'custom' (event) / 'auto' (org) mode. #}
+      <div id="sched-fields">
+        <div class="row g-2 align-items-end">
+          <div class="col-sm-3">
+            <label class="form-label small mb-1" for="survey-offset-value">Amount</label>
+            <input type="number" min="0" step="1" class="form-control" name="offset_value"
+                   id="survey-offset-value" value="{{ survey_send_offset_value|default:'1' }}"
+                   {% if locked %}disabled{% endif %}>
+          </div>
+          <div class="col-sm-3">
+            <label class="form-label small mb-1" for="survey-offset-type-unit">Unit</label>
+            <select class="form-select" name="offset_type" id="survey-offset-type-unit" {% if locked %}disabled{% endif %}>
+              {% for value, label in survey_send_offset_choices %}
+              <option value="{{ value }}"
+                {% if survey_send_offset_type == value or not survey_send_offset_type and value == 'days' %}selected{% endif %}>{{ label }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div class="col-sm-6" id="survey-anchor-wrap">
+            <label class="form-label small mb-1" for="survey-anchor">Relative to</label>
+            <select class="form-select" name="anchor" id="survey-anchor" {% if locked %}disabled{% endif %}>
+              <option value="end" {% if survey_send_anchor != 'start' %}selected{% endif %}>the event end</option>
+              <option value="start" {% if survey_send_anchor == 'start' %}selected{% endif %}>the event start</option>
+            </select>
+          </div>
+          <div class="col-sm-4" id="survey-time-of-day-wrap">
+            <label class="form-label small mb-1" for="survey-time-of-day">Time of day</label>
+            <input type="time" class="form-control" name="time_of_day" id="survey-time-of-day"
+                   value="{{ survey_send_time_of_day|time:'H:i'|default:'09:00' }}"
+                   {% if locked %}disabled{% endif %}>
+          </div>
+        </div>
+      </div>
+      {% if not locked %}
+      <button type="submit" class="btn btn-outline-primary btn-sm mt-3">Save send time</button>
+      {% endif %}
+    </form>
+  </div>
+</div>
+<script>
+// Send-time card: reveal the schedule fields only in the active mode, and the
+// time-of-day input only for "days". When the host picks "Use the default" /
+// "Send manually", clear the unit so the POST stores a blank offset_type.
+(function() {
+  var form = document.getElementById('survey-schedule-form');
+  if (!form) return;
+  var modes = form.querySelectorAll('input[name="sched_mode"]');
+  var fields = document.getElementById('sched-fields');
+  var defaultNote = document.getElementById('sched-default-note');
+  var unit = document.getElementById('survey-offset-type-unit');
+  var todWrap = document.getElementById('survey-time-of-day-wrap');
+  // Modes that reveal the schedule fields.
+  var ACTIVE = {custom: true, auto: true};
+
+  function selectedMode() {
+    var m = form.querySelector('input[name="sched_mode"]:checked');
+    return m ? m.value : '';
+  }
+  function syncUnit() {
+    todWrap.style.display = (unit.value === 'days') ? '' : 'none';
+  }
+  function sync() {
+    var active = ACTIVE[selectedMode()];
+    fields.style.display = active ? '' : 'none';
+    if (defaultNote) defaultNote.style.display = active ? 'none' : '';
+    // In default/manual mode the schedule is cleared on save: drop the unit so
+    // the form posts a blank offset_type (= inherit / send manually).
+    unit.disabled = !active;
+    if (active) syncUnit();
+  }
+  modes.forEach(function(el){ el.addEventListener('change', sync); });
+  unit.addEventListener('change', syncUnit);
+  sync();
+})();
+</script>
+
 {% if event and not questions %}
 {# Event uses the org default — offer to customize, preview read-only. #}
 <div class="card mb-3">

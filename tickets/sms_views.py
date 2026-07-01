@@ -256,13 +256,15 @@ def customers_bulk_sms_status(request):
 # ---------------------------------------------------------------------------
 
 def _org_events_for_picker(org):
-    """Lightweight (id, name) list of the org's events, newest first — embedded in
-    the "link to event" picker for client-side typeahead. Mirrors the
-    ticket_link_events approach in sms_campaign_create."""
+    """Lightweight (id, name, start_date) list of the org's events, newest first —
+    embedded in the "link to event" picker for client-side typeahead. The date
+    disambiguates events that share a name. Mirrors the ticket_link_events
+    approach in sms_campaign_create."""
     return [
-        {'id': str(e.id), 'name': e.name}
+        {'id': str(e.id), 'name': e.name, 'start_date': e.start_date}
         for e in Event.objects.filter(organization=org, deleted_at__isnull=True)
-                              .order_by('-start_date').values_list('id', 'name', named=True)
+                              .order_by('-start_date')
+                              .values_list('id', 'name', 'start_date', named=True)
     ]
 
 
@@ -519,7 +521,7 @@ def sms_campaign_create(request):
     # composer's "Add a ticket link" dropdown. effective_status is a property, so
     # filter the (small) set of live direct events in Python.
     ticket_link_events = [
-        {'id': str(ev.id), 'name': ev.name}
+        {'id': str(ev.id), 'name': ev.name, 'start_date': ev.start_date}
         for ev in Event.objects.filter(
             organization=org, deleted_at__isnull=True,
             ticketing_type=TICKETING_TYPE_DIRECT, status=EVENT_STATUS_LIVE,

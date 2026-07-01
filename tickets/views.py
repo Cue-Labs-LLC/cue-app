@@ -31,7 +31,7 @@ from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
 from django.db import connection, IntegrityError, transaction
 from django.utils import timezone as django_tz
-from django.utils.dateparse import parse_date, parse_datetime
+from django.utils.dateparse import parse_date, parse_datetime, parse_time
 from django.utils.http import url_has_allowed_host_and_scheme
 from django.utils.text import slugify
 
@@ -41,6 +41,7 @@ from .models import (
     CSVFormat, UploadedFile, Customer, CustomerTag, Event, EventExpense, EventEmailCampaign, EventSMSCampaign, EventTalent, TicketOrder, Ticket, Venue,
     CustomField, CustomFieldOption, EventCustomFieldValue, IncomeSource, EventIncome,
     SurveyQuestion, SurveyQuestionOption, SurveyInvitation, SurveyResponse, SurveyAnswer, SurveyAnswerOption,
+    DEFAULT_SURVEY_SUBJECT, SURVEY_SEND_OFFSET_CHOICES,
     PipedreamCalendarConnection, OrganizationAPIKey,
     SaleableTicketType, SaleableTicketTypeTier, StripeCheckoutSession, Payout, PromoCode,
     ExternalSurveyUpload, ExternalSurveyResponse, TypeformFormSubscription, EventDailyPageView,
@@ -52,7 +53,7 @@ from .models import (
 )
 from .forms import (
     EventCSVUploadForm, EventExpenseForm, TicketPriceEntryForm, CSVFormatForm,
-    VenueForm, EventForm, EventTalentFormSet, LoginForm,
+    VenueForm, VenueChoiceField, EventForm, EventTalentFormSet, LoginForm,
     CustomFieldForm, CustomFieldOptionFormSet,
     IncomeSourceForm, EventIncomeForm,
     OTPVerificationForm, MemberInviteForm, AttendeePhoneForm,
@@ -146,7 +147,7 @@ from .services.marketing import (
 from .services.marketing.analytics import DEFAULT_WINDOW, resolve_window
 from .services.customer_filters import filter_customers
 from .services.weather import get_event_weather_forecast, get_event_hourly_forecast
-from .utils import get_organization, require_org, require_organizer, require_host, require_admin, require_owner, clear_org_cache, next_order_number, generate_qr_b64, link_customer_to_buyer
+from .utils import get_organization, require_org, require_organizer, require_host, require_admin, require_owner, clear_org_cache, next_order_number, generate_qr_b64, link_customer_to_buyer, ticket_qr_payload
 from .feature_flags import (
     smart_pricing_recommendations_enabled,
     browse_events_enabled,
@@ -155,6 +156,7 @@ from .feature_flags import (
 from django.core.cache import cache as django_cache
 
 from .cache_utils import safe_cache_delete, safe_cache_get, safe_cache_set
+from .integrations.registry import marketing_providers
 
 import logging
 logger = logging.getLogger(__name__)
@@ -1483,7 +1485,11 @@ def create_organization(request):
                 profile.save(update_fields=['organization', 'role', 'org_role'])
             clear_org_cache(request)
             request.session['_org_id'] = str(org.pk)
-            messages.success(request, f"Organization '{org.name}' created. You can now use the app.")
+            messages.success(
+                request,
+                f"Welcome to Cue! '{org.name}' is ready — follow the Getting started "
+                "steps below to launch your first event.",
+            )
             return redirect('tickets:home')
     else:
         form = OrganizationForm()
@@ -1743,6 +1749,71 @@ def invite_revoke(request, token):
     return redirect('tickets:member_list')
 
 
+def _onboarding_state(org):
+    """Build the dashboard "Getting started" checklist for a new organizer.
+
+    Step completion is derived from existing data (no per-step flags). The card
+    hides once every step is complete or the org dismisses it.
+    """
+    if org is None:
+        # Only superusers can reach the dashboard without an org; nothing to onboard.
+        return {'show': False, 'steps': [], 'complete_count': 0, 'total': 0, 'all_complete': False}
+
+    org_events = Event.objects.filter(organization=org)
+    has_event = org_events.exists()
+    has_live_event = org_events.filter(status=EVENT_STATUS_LIVE).exists()
+    payouts_ready = bool(org.stripe_onboarding_complete)
+
+    steps = [
+        {
+            'key': 'create_event',
+            'label': 'Create your first event',
+            'description': 'Set up an event and add ticket types to start selling on Cue.',
+            'url': reverse('tickets:event_create', args=[TICKETING_TYPE_DIRECT]),
+            'cta': 'Create event',
+            'complete': has_event,
+        },
+        {
+            'key': 'setup_payouts',
+            'label': 'Set up payouts so you can get paid',
+            'description': 'Connect a Stripe account to receive ticket revenue.',
+            'url': reverse('tickets:finance_overview'),
+            'cta': 'Set up payouts',
+            'complete': payouts_ready,
+        },
+        {
+            'key': 'go_live',
+            'label': 'Publish your event',
+            'description': 'Take your event live so fans can find it and buy tickets.',
+            'url': reverse('tickets:event_list'),
+            'cta': 'Go to events',
+            'complete': has_live_event,
+        },
+    ]
+
+    complete_count = sum(1 for step in steps if step['complete'])
+    all_complete = complete_count == len(steps)
+    return {
+        'show': not org.onboarding_dismissed_at and not all_complete,
+        'steps': steps,
+        'complete_count': complete_count,
+        'total': len(steps),
+        'all_complete': all_complete,
+    }
+
+
+@login_required
+@require_org
+@require_organizer
+@require_http_methods(["POST"])
+def dismiss_onboarding(request):
+    """Hide the dashboard "Getting started" checklist for the current org."""
+    org = get_organization(request)
+    org.onboarding_dismissed_at = django_tz.now()
+    org.save(update_fields=['onboarding_dismissed_at'])
+    return redirect('tickets:home')
+
+
 @login_required
 @require_org
 @require_organizer
@@ -1840,6 +1911,7 @@ def home(request):
         'total_revenue': total_revenue,
         'total_tickets': total_tickets,
         'ai_recommendations': ai_recommendations,
+        'onboarding': _onboarding_state(org),
     }
     return render(request, 'tickets/home.html', context)
 
@@ -2094,9 +2166,27 @@ def ai_recommendation_unconfirmed_matches(request, recommendation_id):
     return JsonResponse(payload)
 
 
+def require_external_events(view):
+    """Gate a view behind the org's external_events_enabled flag.
+
+    External (CSV-imported) events are off by default; orgs are direct-ticketing
+    only until this per-org flag is enabled. Mirrors require_loyalty_feature.
+    """
+    from functools import wraps
+
+    @wraps(view)
+    def wrapped(request, *args, **kwargs):
+        org = get_organization(request)
+        if not org or not org.external_events_enabled:
+            raise Http404('External events are not enabled for this organization.')
+        return view(request, *args, **kwargs)
+    return wrapped
+
+
 @login_required
 @require_org
 @require_host
+@require_external_events
 @require_http_methods(["GET", "POST"])
 def price_entry(request, file_id):
     """Display form for manually entering ticket prices or tiers."""
@@ -2328,6 +2418,7 @@ def process_csv_file(request, uploaded_file, manual_prices=None, tier_definition
 @login_required
 @require_org
 @require_host
+@require_external_events
 @require_http_methods(["GET", "POST"])
 def reprocess_csv_file(request, file_id):
     """Delete all orders from an upload and re-run the CSV processor with current format settings."""
@@ -4079,6 +4170,10 @@ def _compute_event_stats(event):
     # Survey results — internal (SurveyResponse/SurveyAnswer)
     survey_invitations_count = SurveyInvitation.objects.filter(event=event).count()
     survey_responses_count = SurveyResponse.objects.filter(event=event).count()
+    # Earliest pending scheduled send (None if nothing is scheduled / all sent).
+    survey_scheduled_send_at = SurveyInvitation.objects.filter(
+        event=event, sent_at__isnull=True, scheduled_send_at__isnull=False,
+    ).aggregate(earliest=Min('scheduled_send_at'))['earliest']
 
     star_avg = None
     int_nps_total = int_promoters = int_passives = int_detractors = 0
@@ -4321,6 +4416,7 @@ def _compute_event_stats(event):
         'page_views_over_time': page_views_over_time,
         'survey_invitations_count': survey_invitations_count,
         'survey_responses_count': survey_responses_count,
+        'survey_scheduled_send_at': survey_scheduled_send_at,
         'external_survey_responses_count': ext_count,
         'survey_total_response_count': survey_total_response_count,
         'survey_results': survey_results,
@@ -4943,6 +5039,37 @@ def event_detail(request, event_id):
     saleable_ticket_types_list = stats['saleable_ticket_types_list']
     survey_invitations_count = stats['survey_invitations_count']
     survey_responses_count = stats['survey_responses_count']
+    survey_scheduled_send_at = stats['survey_scheduled_send_at']
+    survey_scheduled_send_display = (
+        _format_survey_send_time(event, survey_scheduled_send_at)
+        if survey_scheduled_send_at else None
+    )
+    # Resolved send schedule (event override → org default) shown read-only in the
+    # Send-survey dialog and as the surveys-tab "Auto-send" summary. The schedule
+    # itself is configured in the survey builder, not here.
+    _resolved_schedule = event.resolved_survey_schedule()
+    _schedule_send_at_display = None
+    _schedule_is_past = False
+    if _resolved_schedule:
+        try:
+            _schedule_dt = _compute_survey_send_at(
+                event, _resolved_schedule['offset_type'], _resolved_schedule['offset_value'],
+                _resolved_schedule['time_of_day'], _resolved_schedule.get('anchor', 'end'),
+            )
+            _schedule_is_past = _schedule_dt <= django_tz.now()
+            _schedule_send_at_display = _format_survey_send_time(event, _schedule_dt)
+        except ValueError:
+            pass
+    survey_schedule_resolved = {
+        'has_schedule': _resolved_schedule is not None,
+        'description': _describe_survey_schedule(_resolved_schedule),
+        'send_at_display': _schedule_send_at_display,
+        'is_past': _schedule_is_past,
+        # Schedule can actually be used only if it computes to a future time.
+        'can_schedule': bool(_schedule_send_at_display) and not _schedule_is_past,
+        # A prior cancel opted this event out of automatic arming.
+        'opted_out': event.survey_auto_send_opted_out,
+    }
     external_survey_responses_count = stats['external_survey_responses_count']
     survey_total_response_count = stats['survey_total_response_count']
     survey_results = stats['survey_results']
@@ -5126,6 +5253,7 @@ def event_detail(request, event_id):
         'mailchimp_pending_count': mailchimp_pending_count,
         'slicktext_pending_count': slicktext_pending_count,
         'meta_ads_pending_count': meta_ads_pending_count,
+        'marketing_providers': marketing_providers(org),
         'category_labels': category_labels,
         'additional_income_lines': additional_income_lines,
         'income_sources': IncomeSource.objects.filter(organization=org).order_by('order', 'name'),
@@ -5136,6 +5264,9 @@ def event_detail(request, event_id):
         'org_has_custom_fields': bool(org_custom_fields),
         'survey_invitations_count': survey_invitations_count,
         'survey_responses_count': survey_responses_count,
+        'survey_scheduled_send_at': survey_scheduled_send_at,
+        'survey_scheduled_send_display': survey_scheduled_send_display,
+        'survey_schedule_resolved': survey_schedule_resolved,
         'external_survey_responses_count': external_survey_responses_count,
         'survey_total_response_count': survey_total_response_count,
         'survey_results': survey_results,
@@ -6137,6 +6268,48 @@ def venue_create(request):
 @login_required
 @require_org
 @require_host
+@require_http_methods(["POST"])
+def venue_create_inline(request):
+    """Create a venue via AJAX (from the create/edit event page) and return JSON.
+
+    Returns the new venue's id, dropdown label (matching VenueChoiceField), and
+    capacity so the event form's venue <select> can be updated without a reload.
+    """
+    org = get_organization(request)
+    form = VenueForm(request.POST)
+    if form.is_valid():
+        venue = form.save(commit=False)
+        venue.organization = org
+        # unique_together includes `organization`, which isn't a form field, so the
+        # form can't validate it — guard the IntegrityError and report it inline.
+        # Normalize first so the check matches the city casing applied on save().
+        from .address_utils import normalize_venue_address_fields
+        normalize_venue_address_fields(venue)
+        if Venue.objects.filter(
+            organization=org, name=venue.name, city=venue.city
+        ).exists():
+            return JsonResponse(
+                {'success': False, 'errors': {
+                    'name': ['A venue with this name and city already exists.']
+                }},
+                status=400,
+            )
+        venue.save()
+        label = VenueChoiceField(queryset=Venue.objects.none()).label_from_instance(venue)
+        return JsonResponse({
+            'success': True,
+            'venue': {
+                'id': str(venue.id),
+                'label': label,
+                'capacity': venue.capacity,
+            },
+        })
+    return JsonResponse({'success': False, 'errors': form.errors}, status=400)
+
+
+@login_required
+@require_org
+@require_host
 def venue_edit(request, venue_id):
     """Edit an existing venue."""
     org = get_organization(request)
@@ -6162,7 +6335,14 @@ def venue_edit(request, venue_id):
 @require_org
 @require_host
 def event_type_select(request):
-    """Landing page to choose Direct or External ticketing before creating an event."""
+    """Landing page to choose Direct or External ticketing before creating an event.
+
+    When external events are disabled for the org (the default), skip the chooser
+    and go straight to the direct-ticketing create form.
+    """
+    org = get_organization(request)
+    if not (org and org.external_events_enabled):
+        return redirect('tickets:event_create', ticketing_type='direct')
     return render(request, 'tickets/event_type_select.html', {})
 
 
@@ -6172,9 +6352,12 @@ def event_type_select(request):
 def event_create(request, ticketing_type):
     """Create new event (ticketing_type comes from URL, chosen on type-select page)."""
     from .models import TICKETING_TYPE_DIRECT, TICKETING_TYPE_EXTERNAL
+    from django.conf import settings as django_settings
     if ticketing_type not in (TICKETING_TYPE_DIRECT, TICKETING_TYPE_EXTERNAL):
         return redirect('tickets:event_type_select')
     org = get_organization(request)
+    if ticketing_type == TICKETING_TYPE_EXTERNAL and not org.external_events_enabled:
+        return redirect('tickets:event_create', ticketing_type=TICKETING_TYPE_DIRECT)
 
     if ticketing_type == TICKETING_TYPE_DIRECT:
         if request.method == 'POST':
@@ -6247,6 +6430,7 @@ def event_create(request, ticketing_type):
             'ticketing_type': ticketing_type,
             'no_venues': no_venues,
             'venue_capacities_json': json.dumps(venue_capacities),
+            'google_maps_api_key': django_settings.GOOGLE_MAPS_API_KEY,
         }
         return render(request, 'tickets/event_create.html', context)
 
@@ -6308,6 +6492,7 @@ def event_create(request, ticketing_type):
         'talent_formset': talent_formset,
         'venue_capacities_json': json.dumps(venue_capacities),
         'ticketing_type': ticketing_type,
+        'google_maps_api_key': django_settings.GOOGLE_MAPS_API_KEY,
     }
     return render(request, 'tickets/event_create.html', context)
 
@@ -6318,6 +6503,7 @@ def event_create(request, ticketing_type):
 def event_edit(request, event_id):
     """Edit an existing event."""
     from .models import TICKETING_TYPE_DIRECT
+    from django.conf import settings as django_settings
     org = get_organization(request)
     event = get_object_or_404(Event.objects.filter(organization=org), id=event_id)
 
@@ -6363,6 +6549,7 @@ def event_edit(request, event_id):
                 for v in Venue.objects.filter(organization=org)
                 if v.capacity
             }),
+            'google_maps_api_key': django_settings.GOOGLE_MAPS_API_KEY,
         }
         return render(request, 'tickets/event_edit.html', context)
 
@@ -6412,6 +6599,7 @@ def event_edit(request, event_id):
         'talent_formset': talent_formset,
         'event': event,
         'ticketing_type': event.ticketing_type,
+        'google_maps_api_key': django_settings.GOOGLE_MAPS_API_KEY,
     }
     return render(request, 'tickets/event_edit.html', context)
 
@@ -6419,6 +6607,7 @@ def event_edit(request, event_id):
 @login_required
 @require_org
 @require_host
+@require_external_events
 @require_http_methods(["GET", "POST"])
 def event_upload_csv(request, event_id):
     """Upload a CSV directly for an existing event."""
@@ -6487,419 +6676,34 @@ def settings_overview(request):
     return render(request, 'tickets/settings_overview.html')
 
 
-@login_required
-@require_org
-@require_admin
-def settings_google_calendar(request):
-    """Google Calendar (Pipedream) settings: set or edit webhook URL, or disconnect."""
-    from django.core.validators import URLValidator
-    from django.core.exceptions import ValidationError
-
-    org = get_organization(request)
-    connection = PipedreamCalendarConnection.objects.filter(organization=org).first()
-
-    if request.method == 'POST':
-        webhook_url = (request.POST.get('webhook_url') or '').strip()
-        if not webhook_url:
-            messages.error(request, 'Please enter a webhook URL.')
-            return redirect('tickets:settings_google_calendar')
-        try:
-            URLValidator()(webhook_url)
-        except ValidationError:
-            messages.error(request, 'Please enter a valid URL.')
-            return redirect('tickets:settings_google_calendar')
-        connection, created = PipedreamCalendarConnection.objects.get_or_create(
-            organization=org,
-            defaults={'webhook_url': webhook_url},
-        )
-        if not created:
-            connection.webhook_url = webhook_url
-            connection.save()
-        messages.success(request, 'Google Calendar (Pipedream) webhook saved. New events will be sent to this URL.')
-        return redirect('tickets:settings_google_calendar')
-
-    context = {
-        'connection': connection,
-    }
-    return render(request, 'tickets/settings_google_calendar.html', context)
 
 
-@login_required
-@require_org
-@require_admin
-def settings_google_calendar_disconnect(request):
-    """Remove Pipedream calendar connection for the current org."""
-    if request.method != 'POST':
-        return redirect('tickets:settings_google_calendar')
-    org = get_organization(request)
-    PipedreamCalendarConnection.objects.filter(organization=org).delete()
-    messages.success(request, 'Google Calendar (Pipedream) disconnected.')
-    return redirect('tickets:settings_google_calendar')
 
 
-@login_required
-@require_org
-@require_admin
-@require_http_methods(["GET"])
-def meta_ads_settings(request):
-    """Show Meta Ads connection state for the current org."""
-    org = get_organization(request)
-    accounts = None
-    if org.meta_ads_access_token and not org.meta_ads_account_id:
-        try:
-            accounts = MetaAdsClient(org.meta_ads_access_token).list_ad_accounts()
-        except MetaAdsAPIError as exc:
-            messages.error(request, f'Could not load Meta ad accounts: {exc}')
-
-    return render(request, 'tickets/settings_meta_ads.html', {
-        'accounts': accounts,
-        'callback_url': request.build_absolute_uri(reverse('tickets:meta_ads_callback')),
-        'facebook_configured': bool(settings.FACEBOOK_APP_ID and settings.FACEBOOK_APP_SECRET),
-    })
 
 
-@login_required
-@require_org
-@require_admin
-@require_http_methods(["POST"])
-def meta_ads_connect(request):
-    """Start Facebook OAuth for Meta Ads Insights access."""
-    if not settings.FACEBOOK_APP_ID or not settings.FACEBOOK_APP_SECRET:
-        messages.error(request, 'Meta Ads is not configured. Add FACEBOOK_APP_ID and FACEBOOK_APP_SECRET.')
-        return redirect('tickets:meta_ads_settings')
-
-    state = secrets.token_urlsafe(32)
-    request.session['meta_oauth_state'] = state
-    callback_url = request.build_absolute_uri(reverse('tickets:meta_ads_callback'))
-    params = urlencode({
-        'client_id': settings.FACEBOOK_APP_ID,
-        'redirect_uri': callback_url,
-        'state': state,
-        'scope': 'ads_read,business_management',
-        'response_type': 'code',
-    })
-    return redirect(f'https://www.facebook.com/{settings.FACEBOOK_GRAPH_API_VERSION}/dialog/oauth?{params}')
 
 
-@login_required
-@require_org
-@require_admin
-@require_http_methods(["GET"])
-def meta_ads_callback(request):
-    """Handle Facebook OAuth callback and persist the long-lived user token."""
-    org = get_organization(request)
-    expected_state = request.session.pop('meta_oauth_state', None)
-    if not expected_state or request.GET.get('state') != expected_state:
-        messages.error(request, 'Meta Ads connection could not be verified. Please try again.')
-        return redirect('tickets:meta_ads_settings')
-
-    if request.GET.get('error'):
-        messages.error(request, request.GET.get('error_description') or 'Meta Ads authorization was cancelled.')
-        return redirect('tickets:meta_ads_settings')
-
-    code = request.GET.get('code')
-    if not code:
-        messages.error(request, 'Meta did not return an authorization code.')
-        return redirect('tickets:meta_ads_settings')
-
-    callback_url = request.build_absolute_uri(reverse('tickets:meta_ads_callback'))
-    try:
-        short_token = meta_exchange_code_for_token(code, callback_url)
-        long_token = exchange_for_long_lived_token(short_token['access_token'])
-        access_token = long_token['access_token']
-        profile = MetaAdsClient(access_token).get_user_profile()
-    except (KeyError, MetaAdsAPIError) as exc:
-        messages.error(request, f'Could not connect Meta Ads: {exc}')
-        return redirect('tickets:meta_ads_settings')
-
-    expires_in = long_token.get('expires_in')
-    org.meta_ads_access_token = access_token
-    org.meta_ads_user_id = profile.get('id', '')
-    org.meta_ads_account_id = ''
-    org.meta_ads_account_name = ''
-    org.meta_ads_token_expires_at = (
-        django_tz.now() + timedelta(seconds=int(expires_in))
-        if expires_in else None
-    )
-    org.save(update_fields=[
-        'meta_ads_access_token',
-        'meta_ads_user_id',
-        'meta_ads_account_id',
-        'meta_ads_account_name',
-        'meta_ads_token_expires_at',
-    ])
-    messages.success(request, 'Meta Ads connected. Choose an ad account to finish setup.')
-    return redirect('tickets:meta_ads_select_account')
 
 
-@login_required
-@require_org
-@require_admin
-@require_http_methods(["GET", "POST"])
-def meta_ads_select_account(request):
-    """Pick the Meta ad account to use for campaign spend."""
-    org = get_organization(request)
-    if not org.meta_ads_access_token:
-        messages.error(request, 'Connect Meta Ads before choosing an ad account.')
-        return redirect('tickets:meta_ads_settings')
-
-    try:
-        accounts = MetaAdsClient(org.meta_ads_access_token).list_ad_accounts()
-    except MetaAdsAPIError as exc:
-        messages.error(request, f'Could not load Meta ad accounts: {exc}')
-        return redirect('tickets:meta_ads_settings')
-
-    if request.method == 'POST':
-        selected_account_id = request.POST.get('account_id', '')
-        selected = next((account for account in accounts if account.get('id') == selected_account_id), None)
-        if not selected:
-            messages.error(request, 'Please choose a valid Meta ad account.')
-            return redirect('tickets:meta_ads_select_account')
-
-        org.meta_ads_account_id = selected.get('id', '')
-        org.meta_ads_account_name = selected.get('name', '')
-        org.save(update_fields=['meta_ads_account_id', 'meta_ads_account_name'])
-        messages.success(request, f'Meta Ads account "{org.meta_ads_account_name}" connected.')
-        return redirect('tickets:meta_ads_settings')
-
-    return render(request, 'tickets/settings_meta_ads.html', {
-        'accounts': accounts,
-        'callback_url': request.build_absolute_uri(reverse('tickets:meta_ads_callback')),
-        'facebook_configured': bool(settings.FACEBOOK_APP_ID and settings.FACEBOOK_APP_SECRET),
-    })
 
 
-@login_required
-@require_org
-@require_admin
-@require_http_methods(["POST"])
-def meta_ads_disconnect(request):
-    """Clear Meta Ads tokens and account selection for the current org."""
-    org = get_organization(request)
-    org.meta_ads_access_token = ''
-    org.meta_ads_user_id = ''
-    org.meta_ads_account_id = ''
-    org.meta_ads_account_name = ''
-    org.meta_ads_token_expires_at = None
-    org.save(update_fields=[
-        'meta_ads_access_token',
-        'meta_ads_user_id',
-        'meta_ads_account_id',
-        'meta_ads_account_name',
-        'meta_ads_token_expires_at',
-    ])
-    messages.success(request, 'Meta Ads disconnected.')
-    return redirect('tickets:meta_ads_settings')
 
 
-@login_required
-@require_org
-@require_admin
-@require_http_methods(["GET"])
-def mailchimp_settings(request):
-    """Show Mailchimp connection state for the current org."""
-    org = get_organization(request)
-    return render(request, 'tickets/settings_mailchimp.html', {
-        'org': org,
-        'mailchimp_connection': _get_mailchimp_connection(org),
-        'mailchimp_configured': bool(settings.MAILCHIMP_CLIENT_ID and settings.MAILCHIMP_CLIENT_SECRET),
-    })
 
 
-@login_required
-@require_org
-@require_admin
-@require_http_methods(["POST"])
-def mailchimp_connect(request):
-    """Start direct Mailchimp OAuth for report access."""
-    org = get_organization(request)
-    if not settings.MAILCHIMP_CLIENT_ID or not settings.MAILCHIMP_CLIENT_SECRET:
-        messages.error(request, 'Mailchimp OAuth is not configured. Add MAILCHIMP_CLIENT_ID and MAILCHIMP_CLIENT_SECRET.')
-        return redirect('tickets:mailchimp_settings')
-
-    callback_url = request.build_absolute_uri(reverse('tickets:mailchimp_callback'))
-    state = secrets.token_urlsafe(32)
-    request.session['mailchimp_oauth_state'] = state
-    return redirect(build_authorize_url(callback_url, state))
 
 
-@login_required
-@require_org
-@require_admin
-@require_http_methods(["GET"])
-def mailchimp_callback(request):
-    """Persist direct Mailchimp OAuth credentials after authorization."""
-    org = get_organization(request)
-    if request.GET.get('error'):
-        messages.error(request, request.GET.get('error_description') or request.GET.get('error') or 'Mailchimp authorization was cancelled.')
-        return redirect('tickets:mailchimp_settings')
-
-    expected_state = request.session.get('mailchimp_oauth_state')
-    state = request.GET.get('state')
-    if not expected_state or not state or state != expected_state:
-        messages.error(request, 'Mailchimp authorization could not be verified. Please try connecting again.')
-        return redirect('tickets:mailchimp_settings')
-    request.session.pop('mailchimp_oauth_state', None)
-
-    code = request.GET.get('code')
-    if not code:
-        messages.error(request, 'Mailchimp did not return an authorization code. Please try connecting again.')
-        return redirect('tickets:mailchimp_settings')
-
-    callback_url = request.build_absolute_uri(reverse('tickets:mailchimp_callback'))
-    try:
-        access_token = exchange_code_for_token(code, callback_url)
-        metadata = get_oauth_metadata(access_token)
-        dc = metadata.get('dc')
-        if not dc:
-            raise MailchimpAPIError('Mailchimp did not return an account data center.')
-        account_root = MailchimpClient(access_token, dc).get_account_root()
-    except MailchimpAPIError as exc:
-        messages.error(request, f'Could not verify Mailchimp connection: {exc}')
-        return redirect('tickets:mailchimp_settings')
-
-    login = metadata.get('login') or {}
-    org.mailchimp_access_token = access_token
-    org.mailchimp_dc = dc
-    org.mailchimp_account_id = str(
-        account_root.get('account_id')
-        or metadata.get('account_id')
-        or metadata.get('user_id')
-        or ''
-    )
-    org.mailchimp_account_name = str(
-        account_root.get('account_name')
-        or metadata.get('accountname')
-        or metadata.get('account_name')
-        or ''
-    )
-    org.mailchimp_login_email = str(login.get('email') or metadata.get('login_email') or account_root.get('email') or '')
-    org.save(update_fields=[
-        'mailchimp_access_token',
-        'mailchimp_dc',
-        'mailchimp_account_id',
-        'mailchimp_account_name',
-        'mailchimp_login_email',
-    ])
-
-    messages.success(request, 'Mailchimp connected.')
-    return redirect('tickets:mailchimp_settings')
 
 
-@login_required
-@require_org
-@require_admin
-@require_http_methods(["POST"])
-def mailchimp_disconnect(request):
-    """Disconnect Mailchimp from the current org."""
-    org = get_organization(request)
-    if _get_mailchimp_connection(org):
-        org.mailchimp_access_token = ''
-        org.mailchimp_dc = ''
-        org.mailchimp_account_id = ''
-        org.mailchimp_account_name = ''
-        org.mailchimp_login_email = ''
-        org.save(update_fields=[
-            'mailchimp_access_token',
-            'mailchimp_dc',
-            'mailchimp_account_id',
-            'mailchimp_account_name',
-            'mailchimp_login_email',
-        ])
-        messages.success(request, 'Mailchimp disconnected.')
-    else:
-        messages.info(request, 'Mailchimp was not connected.')
-    return redirect('tickets:mailchimp_settings')
 
 
-@login_required
-@require_org
-@require_admin
-@require_http_methods(["POST"])
-def mailchimp_save_hints(request):
-    """Save the org's free-form campaign naming hints for the AI matcher."""
-    org = get_organization(request)
-    hints = request.POST.get('campaign_title_hints', '').strip()
-    if len(hints) > 2000:
-        messages.error(request, 'Campaign naming hints must be 2000 characters or fewer.')
-        return redirect('tickets:mailchimp_settings')
-    org.mailchimp_campaign_title_hints = hints
-    org.save(update_fields=['mailchimp_campaign_title_hints'])
-    messages.success(request, 'Campaign naming hints saved.')
-    return redirect('tickets:mailchimp_settings')
 
 
-@login_required
-@require_org
-@require_admin
-def slicktext_settings(request):
-    """Show SlickText connection status and the credential form."""
-    org = get_organization(request)
-    return render(request, 'tickets/settings_slicktext.html', {
-        'org': org,
-        'slicktext_connection': _get_slicktext_connection(org),
-    })
 
 
-@login_required
-@require_org
-@require_admin
-@require_http_methods(["POST"])
-def slicktext_save(request):
-    """Validate posted SlickText API key, fetch the brand, and persist credentials."""
-    org = get_organization(request)
-    api_key = (request.POST.get('api_key') or '').strip()
-    if not api_key:
-        messages.error(request, 'Enter your SlickText API key.')
-        return redirect('tickets:slicktext_settings')
-
-    try:
-        brand = SlickTextClient(api_key).get_brand()
-    except SlickTextAPIError as exc:
-        messages.error(request, f'Could not verify SlickText credentials: {exc}')
-        return redirect('tickets:slicktext_settings')
-
-    brand_id = str(brand.get('brand_id') or brand.get('id') or '')
-    if not brand_id:
-        messages.error(request, 'SlickText did not return a brand ID for this API key.')
-        return redirect('tickets:slicktext_settings')
-
-    org.slicktext_api_key = api_key
-    org.slicktext_brand_id = brand_id
-    org.slicktext_brand_name = str(brand.get('name') or brand.get('legal_name') or '')
-    org.slicktext_validated_at = django_tz.now()
-    org.save(update_fields=[
-        'slicktext_api_key',
-        'slicktext_brand_id',
-        'slicktext_brand_name',
-        'slicktext_validated_at',
-    ])
-    messages.success(request, 'SlickText connected.')
-    return redirect('tickets:slicktext_settings')
 
 
-@login_required
-@require_org
-@require_admin
-@require_http_methods(["POST"])
-def slicktext_disconnect(request):
-    """Disconnect SlickText from the current org."""
-    org = get_organization(request)
-    if _get_slicktext_connection(org):
-        org.slicktext_api_key = ''
-        org.slicktext_brand_id = ''
-        org.slicktext_brand_name = ''
-        org.slicktext_validated_at = None
-        org.save(update_fields=[
-            'slicktext_api_key',
-            'slicktext_brand_id',
-            'slicktext_brand_name',
-            'slicktext_validated_at',
-        ])
-        messages.success(request, 'SlickText disconnected.')
-    else:
-        messages.info(request, 'SlickText was not connected.')
-    return redirect('tickets:slicktext_settings')
 
 
 @login_required
@@ -7283,605 +7087,22 @@ def event_pricing_recommendation(request, event_id):
 # Event Expense Views
 # ---------------------------------------------------------------------------
 
-@login_required
-@require_org
-@require_admin
-@require_http_methods(["GET"])
-def event_meta_ads_match(request, event_id):
-    """Rank Meta campaigns that likely correspond to this event."""
-    org = get_organization(request)
-    wants_json = request.GET.get('format') == 'json'
-    event = get_object_or_404(
-        Event.objects.filter(organization=org).select_related('venue'),
-        id=event_id,
-    )
-    if not org.meta_ads_access_token or not org.meta_ads_account_id:
-        if wants_json:
-            return JsonResponse({
-                'success': False,
-                'error': 'Connect Meta Ads and choose an ad account before matching campaigns.',
-            }, status=400)
-        messages.error(request, 'Connect Meta Ads and choose an ad account before matching campaigns.')
-        return redirect('tickets:meta_ads_settings')
-
-    try:
-        client = MetaAdsClient(org.meta_ads_access_token)
-        campaigns = client.list_campaigns(org.meta_ads_account_id)
-        match_result = MetaCampaignMatcher(org).rank(event, campaigns)
-    except MetaAdsAPIError as exc:
-        # Upstream provider error, not a gateway failure on our side — return a
-        # handled response so it doesn't log/alert as a 502 "Bad Gateway".
-        if wants_json:
-            return JsonResponse({'success': False, 'error': f'Could not load Meta campaigns: {exc}'})
-        messages.error(request, f'Could not load Meta campaigns: {exc}')
-        return redirect('tickets:event_detail', event_id=event.id)
-    except Exception as exc:
-        logger.exception("Meta campaign matching failed for event %s: %s", event.id, exc)
-        if wants_json:
-            return JsonResponse({
-                'success': False,
-                'error': 'Could not rank Meta campaigns. Please check your OpenAI configuration and try again.',
-            }, status=500)
-        messages.error(request, 'Could not rank Meta campaigns. Please check your OpenAI configuration and try again.')
-        return redirect('tickets:event_detail', event_id=event.id)
-
-    campaigns_by_id = {str(campaign.get('id')): campaign for campaign in campaigns}
-    candidates = []
-    for candidate in match_result.candidates:
-        campaign = campaigns_by_id.get(candidate.campaign_id)
-        if not campaign:
-            continue
-        confidence_pct = int(round(candidate.confidence * 100))
-        if candidate.confidence >= 0.7:
-            confidence_class = 'bg-success'
-        elif candidate.confidence >= 0.3:
-            confidence_class = 'bg-warning'
-        else:
-            confidence_class = 'bg-secondary'
-        candidates.append({
-            'campaign': campaign,
-            'confidence': candidate.confidence,
-            'confidence_pct': confidence_pct,
-            'confidence_class': confidence_class,
-            'reasoning': candidate.reasoning,
-        })
-
-    if wants_json:
-        return JsonResponse({
-            'success': True,
-            'account_name': org.meta_ads_account_name,
-            'candidates': [
-                {
-                    'campaign_id': item['campaign'].get('id'),
-                    'campaign_name': item['campaign'].get('name') or item['campaign'].get('id'),
-                    'objective': item['campaign'].get('objective') or 'No objective',
-                    'start_time': _format_meta_ads_datetime(
-                        item['campaign'].get('start_time') or item['campaign'].get('created_time')
-                    ) or 'Unknown',
-                    'stop_time': _format_meta_ads_datetime(item['campaign'].get('stop_time')) or 'Not set',
-                    'confidence_pct': item['confidence_pct'],
-                    'confidence_class': item['confidence_class'],
-                    'reasoning': item['reasoning'],
-                }
-                for item in candidates
-            ],
-        })
-
-    return render(request, 'tickets/event_meta_ads_match.html', {
-        'event': event,
-        'candidates': candidates,
-        'account_name': org.meta_ads_account_name,
-    })
 
 
-@login_required
-@require_org
-@require_admin
-@require_http_methods(["POST"])
-def event_meta_ads_apply(request, event_id):
-    """Pull campaign lifetime spend and upsert it as this event's Meta Ads expense."""
-    org = get_organization(request)
-    event = get_object_or_404(Event.objects.filter(organization=org), id=event_id)
-    wants_json = request.headers.get('X-Requested-With') == 'XMLHttpRequest'
-
-    def _json_error(msg, status):
-        return JsonResponse({'success': False, 'error': msg}, status=status)
-
-    if not org.meta_ads_access_token or not org.meta_ads_account_id:
-        if wants_json:
-            return _json_error('Connect Meta Ads and choose an ad account before applying campaign spend.', 400)
-        messages.error(request, 'Connect Meta Ads and choose an ad account before applying campaign spend.')
-        return redirect('tickets:meta_ads_settings')
-
-    campaign_id = request.POST.get('campaign_id', '').strip()
-    if not campaign_id:
-        if wants_json:
-            return _json_error('Choose a Meta campaign to apply.', 400)
-        messages.error(request, 'Choose a Meta campaign to apply.')
-        return redirect('tickets:event_meta_ads_match', event_id=event.id)
-
-    try:
-        client = MetaAdsClient(org.meta_ads_access_token)
-        campaigns = client.list_campaigns(org.meta_ads_account_id)
-        campaign = next((item for item in campaigns if str(item.get('id')) == campaign_id), None)
-        if not campaign:
-            if wants_json:
-                return _json_error('The selected Meta campaign was not found in this ad account.', 404)
-            messages.error(request, 'The selected Meta campaign was not found in this ad account.')
-            return redirect('tickets:event_meta_ads_match', event_id=event.id)
-        insights = client.get_campaign_insights(campaign_id)
-    except MetaAdsAPIError as exc:
-        if wants_json:
-            return _json_error(f'Could not pull campaign spend from Meta: {exc}', 502)
-        messages.error(request, f'Could not pull campaign spend from Meta: {exc}')
-        return redirect('tickets:event_meta_ads_match', event_id=event.id)
-
-    spend = insights.spend
-    campaign_name = campaign.get('name') or campaign_id
-    expense, created = EventExpense.objects.get_or_create(
-        event=event,
-        source='meta_ads',
-        external_id=campaign_id,
-        deleted_at__isnull=True,
-        defaults={
-            'category': 'marketing',
-            'description': f'Meta Ads: {campaign_name}'[:300],
-            'amount': spend,
-            'api_attributed_orders': insights.purchases,
-            'api_attributed_revenue': insights.purchase_value,
-            'expense_date': event.start_date,
-            'external_metadata': {},
-            'created_by': request.user,
-        },
-    )
-    if not created:
-        api_changed = (
-            expense.amount != spend
-            or expense.api_attributed_orders != insights.purchases
-            or expense.api_attributed_revenue != insights.purchase_value
-        )
-        was_confirmed = bool(expense.confirmed_at)
-        expense.category = 'marketing'
-        expense.description = f'Meta Ads: {campaign_name}'[:300]
-        expense.amount = spend
-        expense.api_attributed_orders = insights.purchases
-        expense.api_attributed_revenue = insights.purchase_value
-        expense.expense_date = expense.expense_date or event.start_date
-        expense.external_id = campaign_id
-        expense.updated_by = request.user
-        expense.version += 1
-        if was_confirmed and api_changed:
-            expense.api_data_changed_at = django_tz.now()
-
-    expense.external_metadata = {
-        'campaign_name': campaign_name,
-        'ad_account_id': org.meta_ads_account_id,
-        'ad_account_name': org.meta_ads_account_name,
-        'last_synced_at': django_tz.now().isoformat(),
-    }
-    expense.save()
-    _invalidate_event_list_cache(org)
-    _invalidate_marketing_cache(org)
-
-    action = 'updated' if not created else 'added'
-    success_msg = f'Meta Ads campaign spend ${spend:,.2f} {action} as a linked marketing expense.'
-
-    if wants_json:
-        linked = list(
-            EventExpense.objects.filter(
-                event=event,
-                source='meta_ads',
-                deleted_at__isnull=True,
-            ).order_by('-created_at')
-        )
-        return JsonResponse({
-            'success': True,
-            'message': success_msg,
-            'expenses': [_serialize_meta_ads_expense(item, event) for item in linked],
-        })
-
-    messages.success(request, success_msg)
-    return _marketing_tab_redirect(event)
 
 
-@login_required
-@require_org
-@require_admin
-@require_http_methods(["POST"])
-def event_meta_ads_refresh(request, event_id, expense_id):
-    """Refresh a single linked Meta Ads campaign expense."""
-    org = get_organization(request)
-    event, expense = _get_active_meta_ads_expense_or_404(org, event_id, expense_id)
-    ajax = _wants_marketing_json(request)
-
-    if not org.meta_ads_access_token or not org.meta_ads_account_id:
-        msg = 'Connect Meta Ads and choose an ad account before refreshing campaign spend.'
-        if ajax:
-            return JsonResponse({'ok': False, 'error': msg}, status=400)
-        messages.error(request, msg)
-        return redirect('tickets:meta_ads_settings')
-
-    try:
-        insights = MetaAdsClient(org.meta_ads_access_token).get_campaign_insights(expense.external_id)
-    except MetaAdsAPIError as exc:
-        logger.warning(
-            "Meta Ads row refresh failed for org=%s event=%s expense=%s campaign=%s: %s",
-            org.id,
-            event.id,
-            expense.id,
-            expense.external_id,
-            exc,
-        )
-        msg = f'Could not refresh this Meta Ads campaign spend: {exc}'
-        # Upstream provider error, not a gateway failure on our side — return a
-        # handled response so it doesn't log/alert as a 502 "Bad Gateway".
-        if ajax:
-            return JsonResponse({'ok': False, 'error': msg})
-        messages.warning(request, msg)
-        return _marketing_tab_redirect(event)
-
-    api_changed = _update_meta_ads_expense_from_insights(expense, insights, request.user)
-    django_cache.delete(_event_stats_cache_key(event.pk))
-    if api_changed:
-        _invalidate_event_list_cache(org)
-        _invalidate_marketing_cache(org)
-
-    if ajax:
-        expense.refresh_from_db()
-        return JsonResponse({'ok': True, 'row': _serialize_ads_row(expense)})
-    messages.success(request, f'Meta Ads campaign spend refreshed to ${insights.spend:,.2f}.')
-    return _marketing_tab_redirect(event)
 
 
-@login_required
-@require_org
-@require_admin
-@require_http_methods(["POST"])
-def event_meta_ads_remove(request, event_id, expense_id):
-    """Unlink a Meta Ads campaign from an event by soft-deleting its expense."""
-    org = get_organization(request)
-    event, expense = _get_active_meta_ads_expense_or_404(org, event_id, expense_id)
-
-    expense.updated_by = request.user
-    expense.save(update_fields=['updated_by'])
-    expense.delete()
-    django_cache.delete(_event_stats_cache_key(event.pk))
-    _invalidate_event_list_cache(org)
-    _invalidate_marketing_cache(org)
-
-    if _wants_marketing_json(request):
-        return JsonResponse({'ok': True, 'removed_id': str(expense.id)})
-    messages.success(request, 'Meta Ads campaign removed from this event.')
-    return _marketing_tab_redirect(event)
 
 
-@login_required
-@require_org
-@require_admin
-@require_http_methods(["GET"])
-def event_mailchimp_match(request, event_id):
-    """Rank Mailchimp campaigns that likely correspond to this event."""
-    org = get_organization(request)
-    wants_json = request.GET.get('format') == 'json'
-    event = get_object_or_404(
-        Event.objects.filter(organization=org).select_related('venue'),
-        id=event_id,
-    )
-    connection = _get_mailchimp_connection(org)
-    if not connection:
-        if wants_json:
-            return JsonResponse({
-                'success': False,
-                'error': 'Connect Mailchimp before matching campaigns.',
-            }, status=400)
-        messages.error(request, 'Connect Mailchimp before matching campaigns.')
-        return redirect('tickets:mailchimp_settings')
-
-    try:
-        reports = fetch_org_reports_cached(org)
-        match_result = MailchimpCampaignMatcher(org).rank(event, reports)
-    except MailchimpAPIError as exc:
-        if wants_json:
-            return JsonResponse({'success': False, 'error': f'Could not load Mailchimp campaigns: {exc}'}, status=502)
-        messages.error(request, f'Could not load Mailchimp campaigns: {exc}')
-        return redirect('tickets:event_detail', event_id=event.id)
-    except Exception as exc:
-        logger.exception("Mailchimp campaign matching failed for event %s: %s", event.id, exc)
-        if wants_json:
-            return JsonResponse({
-                'success': False,
-                'error': 'Could not rank Mailchimp campaigns. Please check your OpenAI configuration and try again.',
-            }, status=500)
-        messages.error(request, 'Could not rank Mailchimp campaigns. Please check your OpenAI configuration and try again.')
-        return redirect('tickets:event_detail', event_id=event.id)
-
-    linked_ids = set(
-        EventEmailCampaign.objects.filter(
-            event=event,
-            source='mailchimp',
-            deleted_at__isnull=True,
-        ).exclude(external_id='').values_list('external_id', flat=True)
-    )
-
-    reports_by_id = {str(report.get('id')): report for report in reports}
-    candidates = []
-    for candidate in match_result.candidates:
-        report = reports_by_id.get(candidate.campaign_id)
-        if not report:
-            continue
-        confidence_pct = int(round(candidate.confidence * 100))
-        if candidate.confidence >= 0.7:
-            confidence_class = 'bg-success'
-        elif candidate.confidence >= 0.3:
-            confidence_class = 'bg-warning'
-        else:
-            confidence_class = 'bg-secondary'
-        candidates.append({
-            'report': report,
-            'confidence': candidate.confidence,
-            'confidence_pct': confidence_pct,
-            'confidence_class': confidence_class,
-            'reasoning': candidate.reasoning,
-            'is_linked': str(report.get('id')) in linked_ids,
-        })
-
-    if wants_json:
-        return JsonResponse({
-            'success': True,
-            'account_name': connection.mailchimp_account_name or connection.mailchimp_login_email,
-            'candidates': [
-                {
-                    'campaign_id': item['report'].get('id'),
-                    'campaign_title': item['report'].get('campaign_title') or item['report'].get('id'),
-                    'subject_line': item['report'].get('subject_line') or '',
-                    'send_time': _format_meta_ads_datetime(item['report'].get('send_time')) or 'Unknown',
-                    'emails_sent': item['report'].get('emails_sent') or 0,
-                    'confidence': item['confidence'],
-                    'confidence_pct': item['confidence_pct'],
-                    'confidence_class': item['confidence_class'],
-                    'reasoning': item['reasoning'],
-                    'is_linked': item['is_linked'],
-                }
-                for item in candidates
-            ],
-        })
-
-    return render(request, 'tickets/event_mailchimp_match.html', {
-        'event': event,
-        'candidates': candidates,
-        'account_name': connection.mailchimp_account_name or connection.mailchimp_login_email,
-    })
 
 
-@login_required
-@require_org
-@require_admin
-@require_http_methods(["POST"])
-def event_mailchimp_apply(request, event_id):
-    """Pull campaign report details and upsert them as this event's Mailchimp campaign results."""
-    org = get_organization(request)
-    event = get_object_or_404(Event.objects.filter(organization=org), id=event_id)
-    wants_json = request.headers.get('X-Requested-With') == 'XMLHttpRequest'
-    connection = _get_mailchimp_connection(org)
-    if not connection:
-        if wants_json:
-            return JsonResponse({'success': False, 'error': 'Connect Mailchimp before applying campaign results.'}, status=400)
-        messages.error(request, 'Connect Mailchimp before applying campaign results.')
-        return redirect('tickets:mailchimp_settings')
-
-    campaign_ids = [cid.strip() for cid in request.POST.getlist('campaign_id') if cid.strip()]
-    if not campaign_ids:
-        if wants_json:
-            return JsonResponse({'success': False, 'error': 'Choose at least one Mailchimp campaign to apply.'}, status=400)
-        messages.error(request, 'Choose at least one Mailchimp campaign to apply.')
-        return redirect('tickets:event_mailchimp_match', event_id=event.id)
-
-    confidences = request.POST.getlist('confidence')
-    reasonings = request.POST.getlist('reasoning')
-
-    try:
-        reports = fetch_org_reports_cached(org)
-    except MailchimpAPIError as exc:
-        if wants_json:
-            return JsonResponse({'success': False, 'error': f'Could not load Mailchimp campaigns: {exc}'}, status=502)
-        messages.error(request, f'Could not load Mailchimp campaigns: {exc}')
-        return redirect('tickets:event_mailchimp_match', event_id=event.id)
-    client = MailchimpClient(connection.mailchimp_access_token, connection.mailchimp_dc)
-
-    available_ids = {str(item.get('id')) for item in reports}
-    unknown_ids = [cid for cid in campaign_ids if cid not in available_ids]
-    valid_ids = [cid for cid in campaign_ids if cid in available_ids]
-    if unknown_ids and not wants_json:
-        messages.error(
-            request,
-            'These Mailchimp campaigns were not found in this account: ' + ', '.join(unknown_ids),
-        )
-
-    added_titles = []
-    updated_titles = []
-    failed_ids = []
-    for index, campaign_id in enumerate(valid_ids):
-        confidence = confidences[index] if index < len(confidences) else None
-        reasoning = (reasonings[index] if index < len(reasonings) else '').strip()
-        try:
-            report = client.get_campaign_report(campaign_id)
-            email_campaign, created = _save_mailchimp_campaign_from_report(
-                event,
-                report,
-                user=request.user,
-                match_confidence=confidence or None,
-                match_reasoning=reasoning,
-            )
-        except MailchimpAPIError as exc:
-            logger.warning(
-                "Mailchimp apply failed for org=%s event=%s campaign=%s: %s",
-                org.id, event.id, campaign_id, exc,
-            )
-            failed_ids.append(campaign_id)
-            continue
-        if created:
-            added_titles.append(email_campaign.campaign_title)
-        else:
-            updated_titles.append(email_campaign.campaign_title)
-
-    succeeded = len(added_titles) + len(updated_titles)
-    if succeeded == 1:
-        only_title = (added_titles + updated_titles)[0]
-        verb = 'added' if added_titles else 'updated'
-        success_msg = f'Mailchimp campaign "{only_title}" {verb} for this event.'
-    elif succeeded:
-        parts = []
-        if added_titles:
-            parts.append(f'added {len(added_titles)}')
-        if updated_titles:
-            parts.append(f'updated {len(updated_titles)}')
-        success_msg = f'Linked {succeeded} Mailchimp campaigns to this event ({", ".join(parts)}).'
-    else:
-        success_msg = ''
-
-    if wants_json:
-        all_linked = list(
-            EventEmailCampaign.objects.filter(
-                event=event,
-                source='mailchimp',
-                deleted_at__isnull=True,
-            ).order_by('-send_time', '-created_at')
-        )
-        return JsonResponse({
-            'success': succeeded > 0,
-            'message': success_msg,
-            'failed_ids': failed_ids,
-            'unknown_ids': unknown_ids,
-            'campaigns': [_serialize_mailchimp_campaign(c, event) for c in all_linked],
-        })
-
-    if succeeded:
-        messages.success(request, success_msg)
-
-    if failed_ids:
-        messages.error(
-            request,
-            'Could not pull results from Mailchimp for: ' + ', '.join(failed_ids),
-        )
-
-    if not succeeded and not unknown_ids and not failed_ids:
-        messages.error(request, 'No Mailchimp campaigns were applied.')
-
-    return _marketing_tab_redirect(event)
 
 
-@login_required
-@require_org
-@require_admin
-@require_http_methods(["POST"])
-def event_mailchimp_refresh_all(request, event_id):
-    """Refresh all linked Mailchimp campaign reports for an event."""
-    org = get_organization(request)
-    event = get_object_or_404(Event.objects.filter(organization=org), id=event_id)
-    connection = _get_mailchimp_connection(org)
-    if not connection:
-        return JsonResponse({
-            'success': False,
-            'error': 'Connect Mailchimp before refreshing campaign results.',
-        }, status=400)
-
-    email_campaigns = list(
-        EventEmailCampaign.objects.filter(
-            event=event,
-            source='mailchimp',
-            deleted_at__isnull=True,
-        ).exclude(external_id='')
-    )
-    client = MailchimpClient(connection.mailchimp_access_token, connection.mailchimp_dc)
-    had_error = False
-    refreshed_campaigns = []
-
-    for email_campaign in email_campaigns:
-        try:
-            report = client.get_campaign_report(email_campaign.external_id)
-            refreshed, _created = _save_mailchimp_campaign_from_report(event, report, user=request.user)
-            refreshed_campaigns.append(refreshed)
-        except MailchimpAPIError as exc:
-            had_error = True
-            logger.warning(
-                "Mailchimp bulk refresh failed for org=%s event=%s email_campaign=%s campaign=%s: %s",
-                org.id,
-                event.id,
-                email_campaign.id,
-                email_campaign.external_id,
-                exc,
-            )
-            refreshed_campaigns.append(email_campaign)
-
-    refreshed_campaigns.sort(key=lambda item: (item.send_time or django_tz.datetime.min.replace(tzinfo=django_tz.utc), item.created_at), reverse=True)
-    return JsonResponse({
-        'success': True,
-        'had_error': had_error,
-        'campaigns': [
-            _serialize_mailchimp_campaign(email_campaign, event)
-            for email_campaign in refreshed_campaigns
-        ],
-    })
 
 
-@login_required
-@require_org
-@require_admin
-@require_http_methods(["POST"])
-def event_mailchimp_refresh(request, event_id, email_campaign_id):
-    """Refresh a single linked Mailchimp campaign report."""
-    org = get_organization(request)
-    event, email_campaign = _get_active_mailchimp_campaign_or_404(org, event_id, email_campaign_id)
-    ajax = _wants_marketing_json(request)
-    connection = _get_mailchimp_connection(org)
-    if not connection:
-        msg = 'Connect Mailchimp before refreshing campaign results.'
-        if ajax:
-            return JsonResponse({'ok': False, 'error': msg}, status=400)
-        messages.error(request, msg)
-        return redirect('tickets:mailchimp_settings')
-
-    try:
-        report = MailchimpClient(connection.mailchimp_access_token, connection.mailchimp_dc).get_campaign_report(email_campaign.external_id)
-        refreshed, _created = _save_mailchimp_campaign_from_report(event, report, user=request.user)
-    except MailchimpAPIError as exc:
-        logger.warning(
-            "Mailchimp row refresh failed for org=%s event=%s email_campaign=%s campaign=%s: %s",
-            org.id,
-            event.id,
-            email_campaign.id,
-            email_campaign.external_id,
-            exc,
-        )
-        msg = 'Could not refresh this Mailchimp campaign.'
-        if ajax:
-            return JsonResponse({'ok': False, 'error': msg}, status=502)
-        messages.warning(request, msg)
-        return _marketing_tab_redirect(event)
-
-    if ajax:
-        return JsonResponse({'ok': True, 'row': _serialize_email_row(refreshed)})
-    messages.success(request, f'Mailchimp campaign "{refreshed.campaign_title}" refreshed.')
-    return _marketing_tab_redirect(event)
 
 
-@login_required
-@require_org
-@require_admin
-@require_http_methods(["POST"])
-def event_mailchimp_remove(request, event_id, email_campaign_id):
-    """Unlink a Mailchimp campaign from an event by soft-deleting its stored results."""
-    org = get_organization(request)
-    event, email_campaign = _get_active_mailchimp_campaign_or_404(org, event_id, email_campaign_id)
-
-    email_campaign.updated_by = request.user
-    email_campaign.save(update_fields=['updated_by'])
-    email_campaign.delete()
-
-    if _wants_marketing_json(request):
-        return JsonResponse({'ok': True, 'removed_id': str(email_campaign.id)})
-    messages.success(request, 'Mailchimp campaign removed from this event.')
-    return _marketing_tab_redirect(event)
 
 
 def _parse_optional_int(raw):
@@ -7992,231 +7213,22 @@ def _serialize_ads_row(e):
     }
 
 
-@login_required
-@require_org
-@require_admin
-@require_http_methods(["POST"])
-def event_mailchimp_metrics_edit(request, event_id, email_campaign_id):
-    """Set or clear manual_clicks/manual_orders/manual_revenue on a Mailchimp campaign.
-
-    Partial update: only fields present in POST are written. Empty string clears
-    (sets to NULL → fall back to API). Missing key leaves the field unchanged.
-    """
-    org = get_organization(request)
-    event, email_campaign = _get_active_mailchimp_campaign_or_404(org, event_id, email_campaign_id)
-    ajax = _wants_marketing_json(request)
-    update_fields = []
-    int_fields = ['manual_emails_sent', 'manual_unique_opens', 'manual_clicks', 'manual_unsubscribes', 'manual_orders']
-    try:
-        for field in int_fields:
-            if field in request.POST:
-                setattr(email_campaign, field, _parse_optional_int(request.POST.get(field)))
-                update_fields.append(field)
-        if 'manual_revenue' in request.POST:
-            email_campaign.manual_revenue = _parse_optional_decimal(request.POST.get('manual_revenue'))
-            update_fields.append('manual_revenue')
-    except (ValueError, InvalidOperation):
-        msg = 'Enter non-negative numbers (or leave a field blank to use the API value).'
-        if ajax:
-            return JsonResponse({'ok': False, 'error': msg}, status=400)
-        messages.error(request, msg)
-        return _marketing_tab_redirect(event)
-    if not update_fields:
-        if ajax:
-            return JsonResponse({'ok': True, 'row': _serialize_email_row(email_campaign)})
-        return _marketing_tab_redirect(event)
-    email_campaign.updated_by = request.user
-    update_fields += ['updated_by', 'updated_at']
-    email_campaign.save(update_fields=update_fields)
-    _invalidate_marketing_cache(org)
-    if ajax:
-        return JsonResponse({'ok': True, 'row': _serialize_email_row(email_campaign)})
-    messages.success(request, f'Updated metrics for "{email_campaign.campaign_title}".')
-    return _marketing_tab_redirect(event)
 
 
-@login_required
-@require_org
-@require_admin
-@require_http_methods(["POST"])
-def event_mailchimp_confirm(request, event_id, email_campaign_id):
-    org = get_organization(request)
-    event, email_campaign = _get_active_mailchimp_campaign_or_404(org, event_id, email_campaign_id)
-    email_campaign.confirmed_at = django_tz.now()
-    email_campaign.confirmed_by = request.user
-    email_campaign.updated_by = request.user
-    email_campaign.save(update_fields=['confirmed_at', 'confirmed_by', 'updated_by', 'updated_at'])
-    _invalidate_marketing_cache(org)
-    if _wants_marketing_json(request):
-        return JsonResponse({'ok': True, 'row': _serialize_email_row(email_campaign)})
-    messages.success(request, f'Confirmed "{email_campaign.campaign_title}".')
-    return _marketing_tab_redirect(event)
 
 
-@login_required
-@require_org
-@require_admin
-@require_http_methods(["POST"])
-def event_mailchimp_unconfirm(request, event_id, email_campaign_id):
-    org = get_organization(request)
-    event, email_campaign = _get_active_mailchimp_campaign_or_404(org, event_id, email_campaign_id)
-    email_campaign.confirmed_at = None
-    email_campaign.confirmed_by = None
-    email_campaign.updated_by = request.user
-    email_campaign.save(update_fields=['confirmed_at', 'confirmed_by', 'updated_by', 'updated_at'])
-    _invalidate_marketing_cache(org)
-    if _wants_marketing_json(request):
-        return JsonResponse({'ok': True, 'row': _serialize_email_row(email_campaign)})
-    messages.success(request, f'Removed "{email_campaign.campaign_title}" from reports.')
-    return _marketing_tab_redirect(event)
 
 
-@login_required
-@require_org
-@require_admin
-@require_http_methods(["POST"])
-def event_slicktext_metrics_edit(request, event_id, sms_campaign_id):
-    """Partial update of manual_clicks/manual_orders/manual_revenue."""
-    org = get_organization(request)
-    event, sms_campaign = _get_active_slicktext_campaign_or_404(org, event_id, sms_campaign_id)
-    ajax = _wants_marketing_json(request)
-    update_fields = []
-    int_fields = ['manual_audience', 'manual_clicks', 'manual_unsubscribes', 'manual_orders']
-    try:
-        for field in int_fields:
-            if field in request.POST:
-                setattr(sms_campaign, field, _parse_optional_int(request.POST.get(field)))
-                update_fields.append(field)
-        if 'manual_revenue' in request.POST:
-            sms_campaign.manual_revenue = _parse_optional_decimal(request.POST.get('manual_revenue'))
-            update_fields.append('manual_revenue')
-    except (ValueError, InvalidOperation):
-        msg = 'Enter non-negative numbers (or leave a field blank to use the API value).'
-        if ajax:
-            return JsonResponse({'ok': False, 'error': msg}, status=400)
-        messages.error(request, msg)
-        return _marketing_tab_redirect(event)
-    if not update_fields:
-        if ajax:
-            return JsonResponse({'ok': True, 'row': _serialize_sms_row(sms_campaign)})
-        return _marketing_tab_redirect(event)
-    sms_campaign.updated_by = request.user
-    update_fields += ['updated_by', 'updated_at']
-    sms_campaign.save(update_fields=update_fields)
-    _invalidate_marketing_cache(org)
-    if ajax:
-        return JsonResponse({'ok': True, 'row': _serialize_sms_row(sms_campaign)})
-    messages.success(request, f'Updated metrics for "{sms_campaign.name}".')
-    return _marketing_tab_redirect(event)
 
 
-@login_required
-@require_org
-@require_admin
-@require_http_methods(["POST"])
-def event_slicktext_confirm(request, event_id, sms_campaign_id):
-    org = get_organization(request)
-    event, sms_campaign = _get_active_slicktext_campaign_or_404(org, event_id, sms_campaign_id)
-    sms_campaign.confirmed_at = django_tz.now()
-    sms_campaign.confirmed_by = request.user
-    sms_campaign.updated_by = request.user
-    sms_campaign.save(update_fields=['confirmed_at', 'confirmed_by', 'updated_by', 'updated_at'])
-    _invalidate_marketing_cache(org)
-    if _wants_marketing_json(request):
-        return JsonResponse({'ok': True, 'row': _serialize_sms_row(sms_campaign)})
-    messages.success(request, f'Confirmed "{sms_campaign.name}".')
-    return _marketing_tab_redirect(event)
 
 
-@login_required
-@require_org
-@require_admin
-@require_http_methods(["POST"])
-def event_slicktext_unconfirm(request, event_id, sms_campaign_id):
-    org = get_organization(request)
-    event, sms_campaign = _get_active_slicktext_campaign_or_404(org, event_id, sms_campaign_id)
-    sms_campaign.confirmed_at = None
-    sms_campaign.confirmed_by = None
-    sms_campaign.updated_by = request.user
-    sms_campaign.save(update_fields=['confirmed_at', 'confirmed_by', 'updated_by', 'updated_at'])
-    _invalidate_marketing_cache(org)
-    if _wants_marketing_json(request):
-        return JsonResponse({'ok': True, 'row': _serialize_sms_row(sms_campaign)})
-    messages.success(request, f'Removed "{sms_campaign.name}" from reports.')
-    return _marketing_tab_redirect(event)
 
 
-@login_required
-@require_org
-@require_admin
-@require_http_methods(["POST"])
-def event_meta_ads_metrics_edit(request, event_id, expense_id):
-    """Partial update of manual_attributed_orders / manual_attributed_revenue."""
-    org = get_organization(request)
-    event, expense = _get_active_meta_ads_expense_or_404(org, event_id, expense_id)
-    ajax = _wants_marketing_json(request)
-    update_fields = []
-    try:
-        if 'manual_attributed_orders' in request.POST:
-            expense.manual_attributed_orders = _parse_optional_int(request.POST.get('manual_attributed_orders'))
-            update_fields.append('manual_attributed_orders')
-        if 'manual_attributed_revenue' in request.POST:
-            expense.manual_attributed_revenue = _parse_optional_decimal(request.POST.get('manual_attributed_revenue'))
-            update_fields.append('manual_attributed_revenue')
-    except (ValueError, InvalidOperation):
-        msg = 'Enter non-negative numbers for attributed orders and revenue.'
-        if ajax:
-            return JsonResponse({'ok': False, 'error': msg}, status=400)
-        messages.error(request, msg)
-        return _marketing_tab_redirect(event)
-    if not update_fields:
-        if ajax:
-            return JsonResponse({'ok': True, 'row': _serialize_ads_row(expense)})
-        return _marketing_tab_redirect(event)
-    expense.updated_by = request.user
-    update_fields += ['updated_by', 'updated_at']
-    expense.save(update_fields=update_fields)
-    _invalidate_marketing_cache(org)
-    if ajax:
-        return JsonResponse({'ok': True, 'row': _serialize_ads_row(expense)})
-    messages.success(request, 'Updated ad attribution.')
-    return _marketing_tab_redirect(event)
 
 
-@login_required
-@require_org
-@require_admin
-@require_http_methods(["POST"])
-def event_meta_ads_confirm(request, event_id, expense_id):
-    org = get_organization(request)
-    event, expense = _get_active_meta_ads_expense_or_404(org, event_id, expense_id)
-    expense.confirmed_at = django_tz.now()
-    expense.confirmed_by = request.user
-    expense.updated_by = request.user
-    expense.save(update_fields=['confirmed_at', 'confirmed_by', 'updated_by', 'updated_at'])
-    _invalidate_marketing_cache(org)
-    if _wants_marketing_json(request):
-        return JsonResponse({'ok': True, 'row': _serialize_ads_row(expense)})
-    messages.success(request, 'Confirmed ad spend.')
-    return _marketing_tab_redirect(event)
 
 
-@login_required
-@require_org
-@require_admin
-@require_http_methods(["POST"])
-def event_meta_ads_unconfirm(request, event_id, expense_id):
-    org = get_organization(request)
-    event, expense = _get_active_meta_ads_expense_or_404(org, event_id, expense_id)
-    expense.confirmed_at = None
-    expense.confirmed_by = None
-    expense.updated_by = request.user
-    expense.save(update_fields=['confirmed_at', 'confirmed_by', 'updated_by', 'updated_at'])
-    _invalidate_marketing_cache(org)
-    if _wants_marketing_json(request):
-        return JsonResponse({'ok': True, 'row': _serialize_ads_row(expense)})
-    messages.success(request, 'Removed ad spend from reports.')
-    return _marketing_tab_redirect(event)
 
 
 def _confirm_all_channel(request, event_id, model_cls, extra_filter, serialize_row, label):
@@ -8248,362 +7260,20 @@ def _confirm_all_channel(request, event_id, model_cls, extra_filter, serialize_r
     return _marketing_tab_redirect(event)
 
 
-@login_required
-@require_org
-@require_admin
-@require_http_methods(["POST"])
-def event_mailchimp_confirm_all(request, event_id):
-    """Confirm every unconfirmed Mailchimp campaign on the event."""
-    return _confirm_all_channel(
-        request, event_id, EventEmailCampaign,
-        extra_filter={'source': 'mailchimp'},
-        serialize_row=_serialize_email_row,
-        label='Mailchimp campaign(s)',
-    )
 
 
-@login_required
-@require_org
-@require_admin
-@require_http_methods(["POST"])
-def event_slicktext_confirm_all(request, event_id):
-    """Confirm every unconfirmed SlickText broadcast on the event."""
-    return _confirm_all_channel(
-        request, event_id, EventSMSCampaign,
-        extra_filter={'source': 'slicktext'},
-        serialize_row=_serialize_sms_row,
-        label='SlickText broadcast(s)',
-    )
 
 
-@login_required
-@require_org
-@require_admin
-@require_http_methods(["POST"])
-def event_meta_ads_confirm_all(request, event_id):
-    """Confirm every unconfirmed Meta Ads expense on the event."""
-    return _confirm_all_channel(
-        request, event_id, EventExpense,
-        extra_filter={'source': 'meta_ads'},
-        serialize_row=_serialize_ads_row,
-        label='Meta Ads expense(s)',
-    )
 
 
-@login_required
-@require_org
-@require_admin
-@require_http_methods(["GET"])
-def event_slicktext_match(request, event_id):
-    """Rank SlickText broadcasts that likely correspond to this event."""
-    org = get_organization(request)
-    wants_json = request.GET.get('format') == 'json'
-    event = get_object_or_404(
-        Event.objects.filter(organization=org).select_related('venue'),
-        id=event_id,
-    )
-    connection = _get_slicktext_connection(org)
-    if not connection:
-        if wants_json:
-            return JsonResponse({
-                'success': False,
-                'error': 'Connect SlickText before matching campaigns.',
-            }, status=400)
-        messages.error(request, 'Connect SlickText before matching campaigns.')
-        return redirect('tickets:slicktext_settings')
-
-    try:
-        client = SlickTextClient(connection.slicktext_api_key, connection.slicktext_brand_id)
-        campaigns = client.list_campaigns()
-        match_result = SlickTextCampaignMatcher(org).rank(event, campaigns)
-    except SlickTextAPIError as exc:
-        if wants_json:
-            return JsonResponse({'success': False, 'error': f'Could not load SlickText campaigns: {exc}'}, status=502)
-        messages.error(request, f'Could not load SlickText campaigns: {exc}')
-        return redirect('tickets:event_detail', event_id=event.id)
-    except Exception as exc:
-        logger.exception("SlickText campaign matching failed for event %s: %s", event.id, exc)
-        if wants_json:
-            return JsonResponse({
-                'success': False,
-                'error': 'Could not rank SlickText campaigns. Please check your OpenAI configuration and try again.',
-            }, status=500)
-        messages.error(request, 'Could not rank SlickText campaigns. Please check your OpenAI configuration and try again.')
-        return redirect('tickets:event_detail', event_id=event.id)
-
-    linked_ids = set(
-        EventSMSCampaign.objects.filter(
-            event=event,
-            source='slicktext',
-            deleted_at__isnull=True,
-        ).exclude(external_id='').values_list('external_id', flat=True)
-    )
-
-    campaigns_by_id = {str(campaign.get('campaign_id') or campaign.get('id')): campaign for campaign in campaigns}
-    candidates = []
-    for candidate in match_result.candidates:
-        campaign = campaigns_by_id.get(candidate.campaign_id)
-        if not campaign:
-            continue
-        confidence_pct = int(round(candidate.confidence * 100))
-        if candidate.confidence >= 0.7:
-            confidence_class = 'bg-success'
-        elif candidate.confidence >= 0.3:
-            confidence_class = 'bg-warning'
-        else:
-            confidence_class = 'bg-secondary'
-        external_id = str(campaign.get('campaign_id') or campaign.get('id'))
-        candidates.append({
-            'campaign': campaign,
-            'confidence': candidate.confidence,
-            'confidence_pct': confidence_pct,
-            'confidence_class': confidence_class,
-            'reasoning': candidate.reasoning,
-            'is_linked': external_id in linked_ids,
-        })
-
-    if wants_json:
-        return JsonResponse({
-            'success': True,
-            'brand_name': connection.slicktext_brand_name or connection.slicktext_brand_id,
-            'candidates': [
-                {
-                    'campaign_id': str(item['campaign'].get('campaign_id') or item['campaign'].get('id')),
-                    'name': item['campaign'].get('name') or '',
-                    'message': item['campaign'].get('body') or item['campaign'].get('message') or '',
-                    'send_time': _format_meta_ads_datetime(
-                        item['campaign'].get('finished')
-                        or item['campaign'].get('started')
-                        or item['campaign'].get('scheduled')
-                    ) or 'Unknown',
-                    'audience_size': item['campaign'].get('audience_size') or 0,
-                    'status': item['campaign'].get('status') or '',
-                    'confidence': item['confidence'],
-                    'confidence_pct': item['confidence_pct'],
-                    'confidence_class': item['confidence_class'],
-                    'reasoning': item['reasoning'],
-                    'is_linked': item['is_linked'],
-                }
-                for item in candidates
-            ],
-        })
-
-    return render(request, 'tickets/event_slicktext_match.html', {
-        'event': event,
-        'candidates': candidates,
-        'brand_name': connection.slicktext_brand_name or connection.slicktext_brand_id,
-    })
 
 
-@login_required
-@require_org
-@require_admin
-@require_http_methods(["POST"])
-def event_slicktext_apply(request, event_id):
-    """Pull SlickText campaign + analytics for each chosen ID and upsert as EventSMSCampaign rows."""
-    org = get_organization(request)
-    event = get_object_or_404(Event.objects.filter(organization=org), id=event_id)
-    wants_json = request.headers.get('X-Requested-With') == 'XMLHttpRequest'
-    connection = _get_slicktext_connection(org)
-    if not connection:
-        if wants_json:
-            return JsonResponse({'success': False, 'error': 'Connect SlickText before applying campaign results.'}, status=400)
-        messages.error(request, 'Connect SlickText before applying campaign results.')
-        return redirect('tickets:slicktext_settings')
-
-    campaign_ids = [cid.strip() for cid in request.POST.getlist('campaign_id') if cid.strip()]
-    if not campaign_ids:
-        if wants_json:
-            return JsonResponse({'success': False, 'error': 'Choose at least one SlickText broadcast to apply.'}, status=400)
-        messages.error(request, 'Choose at least one SlickText broadcast to apply.')
-        return redirect('tickets:event_slicktext_match', event_id=event.id)
-
-    confidences = request.POST.getlist('confidence')
-    reasonings = request.POST.getlist('reasoning')
-
-    client = SlickTextClient(connection.slicktext_api_key, connection.slicktext_brand_id)
-    added_titles = []
-    updated_titles = []
-    failed_ids = []
-    for index, campaign_id in enumerate(campaign_ids):
-        confidence = confidences[index] if index < len(confidences) else None
-        reasoning = (reasonings[index] if index < len(reasonings) else '').strip()
-        try:
-            report = _slicktext_fetch_campaign_with_analytics(client, campaign_id)
-            sms_campaign, created = _save_slicktext_campaign_from_report(
-                event,
-                report,
-                user=request.user,
-                match_confidence=confidence or None,
-                match_reasoning=reasoning,
-            )
-        except SlickTextAPIError as exc:
-            logger.warning(
-                "SlickText apply failed for org=%s event=%s campaign=%s: %s",
-                org.id, event.id, campaign_id, exc,
-            )
-            failed_ids.append(campaign_id)
-            continue
-        if created:
-            added_titles.append(sms_campaign.name)
-        else:
-            updated_titles.append(sms_campaign.name)
-
-    succeeded = len(added_titles) + len(updated_titles)
-    if succeeded:
-        # Newly linked broadcasts have fresh external_ids to match orders against.
-        _recompute_utm_attribution_for_event(org, event)
-    if succeeded == 1:
-        only_title = (added_titles + updated_titles)[0]
-        verb = 'added' if added_titles else 'updated'
-        success_msg = f'SlickText broadcast "{only_title}" {verb} for this event.'
-    elif succeeded:
-        parts = []
-        if added_titles:
-            parts.append(f'added {len(added_titles)}')
-        if updated_titles:
-            parts.append(f'updated {len(updated_titles)}')
-        success_msg = f'Linked {succeeded} SlickText broadcasts to this event ({", ".join(parts)}).'
-    else:
-        success_msg = ''
-
-    if wants_json:
-        all_linked = list(
-            EventSMSCampaign.objects.filter(
-                event=event,
-                source='slicktext',
-                deleted_at__isnull=True,
-            ).order_by('-send_time', '-created_at')
-        )
-        return JsonResponse({
-            'success': succeeded > 0,
-            'message': success_msg,
-            'added_count': len(added_titles),
-            'updated_count': len(updated_titles),
-            'failed_ids': failed_ids,
-            'campaigns': [_serialize_slicktext_campaign(item, event) for item in all_linked],
-        })
-
-    if succeeded:
-        messages.success(request, success_msg)
-
-    if failed_ids:
-        messages.error(
-            request,
-            'Could not pull results from SlickText for: ' + ', '.join(failed_ids),
-        )
-
-    if not succeeded and not failed_ids:
-        messages.error(request, 'No SlickText broadcasts were applied.')
-
-    return _marketing_tab_redirect(event)
 
 
-@login_required
-@require_org
-@require_admin
-@require_http_methods(["POST"])
-def event_slicktext_refresh_all(request, event_id):
-    """Refresh all linked SlickText campaign analytics for an event."""
-    org = get_organization(request)
-    event = get_object_or_404(Event.objects.filter(organization=org), id=event_id)
-    connection = _get_slicktext_connection(org)
-    if not connection:
-        return JsonResponse({
-            'success': False,
-            'error': 'Connect SlickText before refreshing campaign results.',
-        }, status=400)
-
-    sms_campaigns = list(
-        EventSMSCampaign.objects.filter(
-            event=event,
-            source='slicktext',
-            deleted_at__isnull=True,
-        ).exclude(external_id='')
-    )
-    client = SlickTextClient(connection.slicktext_api_key, connection.slicktext_brand_id)
-    had_error = False
-    refreshed = []
-
-    for sms_campaign in sms_campaigns:
-        try:
-            report = _slicktext_fetch_campaign_with_analytics(client, sms_campaign.external_id)
-            refreshed_row, _created = _save_slicktext_campaign_from_report(event, report, user=request.user)
-            refreshed.append(refreshed_row)
-        except SlickTextAPIError as exc:
-            had_error = True
-            logger.warning(
-                "SlickText bulk refresh failed for org=%s event=%s sms_campaign=%s campaign=%s: %s",
-                org.id, event.id, sms_campaign.id, sms_campaign.external_id, exc,
-            )
-            refreshed.append(sms_campaign)
-
-    refreshed.sort(
-        key=lambda item: (item.send_time or django_tz.datetime.min.replace(tzinfo=django_tz.utc), item.created_at),
-        reverse=True,
-    )
-    return JsonResponse({
-        'success': True,
-        'had_error': had_error,
-        'campaigns': [_serialize_slicktext_campaign(item, event) for item in refreshed],
-    })
 
 
-@login_required
-@require_org
-@require_admin
-@require_http_methods(["POST"])
-def event_slicktext_refresh(request, event_id, sms_campaign_id):
-    """Refresh a single linked SlickText campaign."""
-    org = get_organization(request)
-    event, sms_campaign = _get_active_slicktext_campaign_or_404(org, event_id, sms_campaign_id)
-    ajax = _wants_marketing_json(request)
-    connection = _get_slicktext_connection(org)
-    if not connection:
-        msg = 'Connect SlickText before refreshing campaign results.'
-        if ajax:
-            return JsonResponse({'ok': False, 'error': msg}, status=400)
-        messages.error(request, msg)
-        return redirect('tickets:slicktext_settings')
-
-    try:
-        client = SlickTextClient(connection.slicktext_api_key, connection.slicktext_brand_id)
-        report = _slicktext_fetch_campaign_with_analytics(client, sms_campaign.external_id)
-        refreshed, _created = _save_slicktext_campaign_from_report(event, report, user=request.user)
-    except SlickTextAPIError as exc:
-        logger.warning(
-            "SlickText row refresh failed for org=%s event=%s sms_campaign=%s campaign=%s: %s",
-            org.id, event.id, sms_campaign.id, sms_campaign.external_id, exc,
-        )
-        msg = 'Could not refresh this SlickText broadcast.'
-        if ajax:
-            return JsonResponse({'ok': False, 'error': msg}, status=502)
-        messages.warning(request, msg)
-        return _marketing_tab_redirect(event)
-
-    if ajax:
-        return JsonResponse({'ok': True, 'row': _serialize_sms_row(refreshed)})
-    messages.success(request, f'SlickText broadcast "{refreshed.name}" refreshed.')
-    return _marketing_tab_redirect(event)
 
 
-@login_required
-@require_org
-@require_admin
-@require_http_methods(["POST"])
-def event_slicktext_remove(request, event_id, sms_campaign_id):
-    """Unlink a SlickText broadcast from an event by soft-deleting its stored results."""
-    org = get_organization(request)
-    event, sms_campaign = _get_active_slicktext_campaign_or_404(org, event_id, sms_campaign_id)
-
-    sms_campaign.updated_by = request.user
-    sms_campaign.save(update_fields=['updated_by'])
-    sms_campaign.delete()
-
-    if _wants_marketing_json(request):
-        return JsonResponse({'ok': True, 'removed_id': str(sms_campaign.id)})
-    messages.success(request, 'SlickText broadcast removed from this event.')
-    return _marketing_tab_redirect(event)
 
 
 @login_required
@@ -9397,11 +8067,117 @@ def _parse_survey_answer(question, post_data):
     return {'question': question, 'star_rating': None, 'nps_score': None, 'text_answer': value}, None
 
 
+def _survey_recipients(event, org):
+    """Attendees with a ticket order for `event` who have NOT yet been sent a
+    survey invitation. Single source of truth for the count modal and send_survey."""
+    existing_customer_ids = SurveyInvitation.objects.filter(
+        event=event
+    ).values_list('customer_id', flat=True)
+    return Customer.objects.filter(
+        ticket_orders__event=event, organization=org
+    ).distinct().exclude(id__in=existing_customer_ids)
+
+
+def _event_tz(event):
+    """ZoneInfo for the event's timezone, falling back to Pacific on bad data."""
+    try:
+        return ZoneInfo(event.timezone)
+    except (ZoneInfoNotFoundError, ValueError):
+        return ZoneInfo('America/Los_Angeles')
+
+
+def _compute_survey_send_at(event, offset_type, offset_value, time_of_day, anchor='end'):
+    """Absolute UTC datetime to send the survey, from an offset relative to the
+    event's start or end. Raises ValueError with a user-facing message on bad input.
+
+    anchor 'end' (default) -> measured from event end; 'start' -> from event start
+    offset_type 'hours' -> anchor + N hours
+    offset_type 'days'  -> N days after the anchor date, at time_of_day (event tz)
+    """
+    try:
+        value = int(offset_value)
+    except (TypeError, ValueError):
+        raise ValueError("Enter a whole number for the offset.")
+    if value < 0:
+        raise ValueError("The offset can't be negative.")
+
+    anchor_dt = (event.start_datetime() if anchor == 'start'
+                 else event.end_datetime())  # aware, in the event's timezone
+
+    if offset_type == 'hours':
+        send_local = anchor_dt + timedelta(hours=value)
+    elif offset_type == 'days':
+        if not isinstance(time_of_day, time):
+            raise ValueError("Pick a time of day to send.")
+        send_local = datetime.combine(
+            anchor_dt.date() + timedelta(days=value), time_of_day, tzinfo=anchor_dt.tzinfo,
+        )
+    else:
+        raise ValueError("Choose how to schedule the survey.")
+
+    return send_local.astimezone(ZoneInfo('UTC'))
+
+
+def _format_survey_send_time(event, dt_utc):
+    """Human-readable send time in the event's timezone, e.g. 'Jun 27, 2026 at 6:00 PM PDT'."""
+    local = dt_utc.astimezone(_event_tz(event))
+    return local.strftime('%b %d, %Y at %-I:%M %p %Z')
+
+
+@login_required
+@require_org
+@require_host
+def survey_recipient_count(request, event_id):
+    """Count of attendees who would receive the survey if sent now. GET, JSON."""
+    org = get_organization(request)
+    event = get_object_or_404(Event.objects.filter(organization=org), id=event_id)
+    return JsonResponse({'count': _survey_recipients(event, org).count()})
+
+
+@login_required
+@require_org
+@require_host
+def survey_schedule_preview(request, event_id):
+    """Preview the absolute send time for a relative survey-send offset. GET, JSON.
+
+    Powers the live "Survey will send: …" line in the send modal so the host sees
+    exactly what the scheduled POST would compute.
+    """
+    org = get_organization(request)
+    event = get_object_or_404(Event.objects.filter(organization=org), id=event_id)
+
+    time_of_day = parse_time(request.GET.get('time_of_day') or '')
+    try:
+        send_at = _compute_survey_send_at(
+            event,
+            request.GET.get('offset_type'),
+            request.GET.get('offset_value'),
+            time_of_day,
+            request.GET.get('anchor') or 'end',
+        )
+    except ValueError as exc:
+        return JsonResponse({'valid': False, 'error': str(exc)})
+
+    if send_at <= django_tz.now():
+        return JsonResponse({
+            'valid': False,
+            'error': 'That works out to a time in the past — pick a larger offset.',
+        })
+    return JsonResponse({'valid': True, 'display': _format_survey_send_time(event, send_at)})
+
+
 @login_required
 @require_org
 @require_host
 def send_survey(request, event_id):
-    """Create survey invitations and dispatch email task. POST only."""
+    """Send the survey to attendees immediately. POST only.
+
+    This is the manual "send now" path. Scheduled delivery is handled
+    automatically by the survey scheduler (see the send_due_survey_invitations
+    management command) for events with an auto-send schedule, so this view only
+    ever sends right away — used to override the schedule and send early, or to
+    send for events with no schedule configured.
+    """
     if request.method != 'POST':
         return redirect('tickets:event_detail', event_id=event_id)
 
@@ -9409,13 +8185,7 @@ def send_survey(request, event_id):
     event = get_object_or_404(Event.objects.filter(organization=org), id=event_id)
 
     # Get attendees who don't already have an invitation for this event
-    existing_customer_ids = SurveyInvitation.objects.filter(
-        event=event
-    ).values_list('customer_id', flat=True)
-
-    attendees = Customer.objects.filter(
-        ticket_orders__event=event, organization=org
-    ).distinct().exclude(id__in=existing_customer_ids)
+    attendees = _survey_recipients(event, org)
 
     if not attendees.exists():
         messages.info(request, "All attendees have already been sent a survey for this event.")
@@ -9426,28 +8196,64 @@ def send_survey(request, event_id):
     # event already owns questions (e.g. it was customized or already sent).
     _clone_effective_to_event(event)
 
-    # Create invitations
-    invitations = []
-    for customer in attendees:
-        invitations.append(SurveyInvitation(
+    # Create invitations (scheduled_send_at=None → send immediately).
+    invitations = [
+        SurveyInvitation(
             event=event,
             customer=customer,
             organization=org,
             email=customer.email,
-        ))
+            scheduled_send_at=None,
+        )
+        for customer in attendees
+    ]
     SurveyInvitation.objects.bulk_create(invitations)
     # bulk_create bypasses post_save signals — invalidate manually
     django_cache.delete(_event_stats_cache_key(event.id))
     _invalidate_event_upload_stats_cache(event.id)
 
-    # Dispatch Celery task
     from .tasks import send_survey_emails_task
     send_survey_emails_task.delay(str(event_id), str(org.id))
-
     messages.success(
         request,
         f"Survey invitations created for {len(invitations)} attendee(s). Emails are being sent."
     )
+    return redirect('tickets:event_detail', event_id=event_id)
+
+
+@login_required
+@require_org
+@require_host
+def cancel_scheduled_survey(request, event_id):
+    """Cancel a scheduled (not-yet-sent) survey send. POST only.
+
+    Deletes the pending scheduled invitations, which also unlocks the survey
+    builder and restores the recipient pool so the host can reschedule or edit.
+    """
+    if request.method != 'POST':
+        return redirect('tickets:event_detail', event_id=event_id)
+
+    org = get_organization(request)
+    event = get_object_or_404(Event.objects.filter(organization=org), id=event_id)
+
+    deleted, _ = SurveyInvitation.objects.filter(
+        event=event,
+        organization=org,
+        sent_at__isnull=True,
+        scheduled_send_at__isnull=False,
+    ).delete()
+    # Opt the event out of auto-send so the scheduler doesn't immediately re-arm
+    # the invitations the host just canceled.
+    if not event.survey_auto_send_opted_out:
+        event.survey_auto_send_opted_out = True
+        event.save(update_fields=['survey_auto_send_opted_out'])
+    django_cache.delete(_event_stats_cache_key(event.id))
+    _invalidate_event_upload_stats_cache(event.id)
+
+    if deleted:
+        messages.success(request, "Scheduled survey send canceled.")
+    else:
+        messages.info(request, "There was no scheduled survey send to cancel.")
     return redirect('tickets:event_detail', event_id=event_id)
 
 
@@ -9637,6 +8443,39 @@ def survey_builder(request, event_id=None):
         'reorder_url': reverse(reorder_name, args=args),
         'preview_url': reverse('tickets:event_survey_preview', args=args) if event
                        else reverse('tickets:survey_preview'),
+        'survey_email_subject': event.survey_email_subject if event else org.survey_email_subject,
+        'survey_subject_inherited': (
+            ((org.survey_email_subject or '').strip() or DEFAULT_SURVEY_SUBJECT)
+            if event else DEFAULT_SURVEY_SUBJECT
+        ),
+        'survey_subject_save_url': (
+            reverse('tickets:event_survey_email_subject_save', args=[event.id]) if event
+            else reverse('tickets:survey_email_subject_save')
+        ),
+        # Org-wide reply-to (sender identity). Org scope only; no per-event override.
+        'survey_reply_to_email': org.survey_reply_to_email,
+        'survey_send_test_url': (
+            reverse('tickets:event_survey_send_test_email', args=[event.id]) if event
+            else reverse('tickets:survey_send_test_email')
+        ),
+        # Default send schedule (org default / per-event override), mirroring subject.
+        'survey_send_offset_type': (event if event else org).survey_send_offset_type,
+        'survey_send_offset_value': (event if event else org).survey_send_offset_value,
+        'survey_send_time_of_day': (event if event else org).survey_send_time_of_day,
+        'survey_send_anchor': (event if event else org).survey_send_anchor or 'end',
+        'survey_send_offset_choices': SURVEY_SEND_OFFSET_CHOICES,
+        # Event scope: whether this event has its own schedule (vs inheriting the default).
+        'survey_schedule_overridden': bool(event and event.survey_send_offset_type),
+        'survey_schedule_inherited': _describe_survey_schedule(
+            {'offset_type': org.survey_send_offset_type,
+             'offset_value': org.survey_send_offset_value,
+             'time_of_day': org.survey_send_time_of_day,
+             'anchor': org.survey_send_anchor or 'end'} if event else None
+        ),
+        'survey_schedule_save_url': (
+            reverse('tickets:event_survey_schedule_save', args=[event.id]) if event
+            else reverse('tickets:survey_schedule_save')
+        ),
     }
     if event and not questions:
         context['effective_preview'] = list(_resolve_effective_questions(event))
@@ -9761,8 +8600,8 @@ def survey_reorder(request, event_id=None):
 
 class _PreviewOption:
     """Stand-in mimicking SurveyQuestionOption for rendering survey_form.html."""
-    def __init__(self, idx, label):
-        self.id = f"opt{idx}"
+    def __init__(self, q_idx, opt_idx, label):
+        self.id = f"q{q_idx}o{opt_idx}"
         self.label = label
 
 
@@ -9782,7 +8621,7 @@ class _PreviewQuestion:
         self.question_type = qtype
         self.is_required = required
         self.options = _PreviewOptionManager(
-            [_PreviewOption(j, lbl) for j, lbl in enumerate(labels)]
+            [_PreviewOption(idx, j, lbl) for j, lbl in enumerate(labels)]
         )
 
 
@@ -9883,6 +8722,188 @@ def event_survey_customize(request, event_id):
 @login_required
 @require_org
 @require_host
+def survey_email_subject_save(request, event_id=None):
+    """Save the survey email subject for the org template or one event. POST only."""
+    org, event = _survey_scope(request, event_id)
+    if request.method != 'POST':
+        return _builder_redirect(event)
+    if event and _survey_locked(event):
+        messages.error(request, "This survey has been sent and can no longer be edited.")
+        return _builder_redirect(event)
+    subject = (request.POST.get('email_subject') or '').strip()[:255]
+    if event:
+        event.survey_email_subject = subject
+        event.save(update_fields=['survey_email_subject'])
+    else:
+        org.survey_email_subject = subject
+        org.save(update_fields=['survey_email_subject'])
+    messages.success(request, "Survey email subject saved.")
+    return _builder_redirect(event)
+
+
+@login_required
+@require_org
+@require_host
+def survey_reply_to_save(request):
+    """Save the org-wide survey reply-to email. Org scope only, POST only.
+
+    Blank clears the override (surveys then send as Cue with no reply-to)."""
+    org = get_organization(request)
+    if request.method != 'POST':
+        return _builder_redirect(None)
+    reply_to = (request.POST.get('reply_to_email') or '').strip()
+    if reply_to:
+        from django.core.validators import validate_email
+        from django.core.exceptions import ValidationError
+        try:
+            validate_email(reply_to)
+        except ValidationError:
+            messages.error(request, "Enter a valid reply-to email address.")
+            return _builder_redirect(None)
+    org.survey_reply_to_email = reply_to
+    org.save(update_fields=['survey_reply_to_email'])
+    messages.success(request, "Survey reply-to address saved.")
+    return _builder_redirect(None)
+
+
+def _describe_survey_schedule(schedule):
+    """Human-readable description of a resolved survey schedule dict (or None).
+
+    e.g. "2 days after the event ends at 9:00 AM", "3 hours after the event ends",
+    or "Send manually" when no automatic schedule is configured.
+    """
+    if not schedule or not (schedule.get('offset_type') or '').strip():
+        return "Send manually"
+    value = schedule.get('offset_value')
+    if value is None:
+        return "Send manually"
+    anchor_word = 'starts' if schedule.get('anchor') == 'start' else 'ends'
+    if schedule['offset_type'] == 'hours':
+        unit = 'hour' if value == 1 else 'hours'
+        return f"{value} {unit} after the event {anchor_word}"
+    unit = 'day' if value == 1 else 'days'
+    tod = schedule.get('time_of_day')
+    when = tod.strftime('%-I:%M %p') if tod else '9:00 AM'
+    return f"{value} {unit} after the event {anchor_word} at {when}"
+
+
+@login_required
+@require_org
+@require_host
+def survey_schedule_save(request, event_id=None):
+    """Save the default survey send schedule for the org template or one event.
+
+    Mirrors survey_email_subject_save: an org-level default with a per-event
+    override. A blank offset_type clears the schedule (= inherit / send now).
+    POST only.
+    """
+    org, event = _survey_scope(request, event_id)
+    if request.method != 'POST':
+        return _builder_redirect(event)
+    if event and _survey_locked(event):
+        messages.error(request, "This survey has been sent and can no longer be edited.")
+        return _builder_redirect(event)
+
+    offset_type = (request.POST.get('offset_type') or '').strip()
+    target = event if event else org
+
+    schedule_fields = [
+        'survey_send_offset_type', 'survey_send_offset_value',
+        'survey_send_time_of_day', 'survey_send_anchor',
+    ]
+
+    # Re-saving an event's schedule re-enables auto-send if a prior cancel had
+    # opted it out (the org template has no opt-out flag).
+    save_fields = list(schedule_fields)
+    if event:
+        event.survey_auto_send_opted_out = False
+        save_fields.append('survey_auto_send_opted_out')
+
+    if offset_type not in ('hours', 'days'):
+        # Clear the schedule -> send immediately (event) / no org default.
+        target.survey_send_offset_type = ''
+        target.survey_send_offset_value = None
+        target.survey_send_time_of_day = None
+        target.survey_send_anchor = ''
+        target.save(update_fields=save_fields)
+        messages.success(request, "Survey send time saved.")
+        return _builder_redirect(event)
+
+    try:
+        value = int(request.POST.get('offset_value'))
+        if value < 0:
+            raise ValueError
+    except (TypeError, ValueError):
+        messages.error(request, "Enter a whole number for the send-time offset.")
+        return _builder_redirect(event)
+
+    time_of_day = None
+    if offset_type == 'days':
+        time_of_day = parse_time(request.POST.get('time_of_day') or '')
+        if time_of_day is None:
+            messages.error(request, "Pick a time of day to send.")
+            return _builder_redirect(event)
+
+    anchor = 'start' if request.POST.get('anchor') == 'start' else 'end'
+    target.survey_send_offset_type = offset_type
+    target.survey_send_offset_value = value
+    target.survey_send_time_of_day = time_of_day
+    target.survey_send_anchor = anchor
+    target.save(update_fields=save_fields)
+    messages.success(request, "Survey send time saved.")
+    return _builder_redirect(event)
+
+
+@login_required
+@require_org
+@require_host
+def survey_send_test_email(request, event_id=None):
+    """Send a one-off test survey email to a chosen address. POST only."""
+    org, event = _survey_scope(request, event_id)
+    if request.method != 'POST':
+        return _builder_redirect(event)
+
+    recipient = (request.POST.get('test_email') or '').strip()
+    from django.core.validators import validate_email
+    from django.core.exceptions import ValidationError
+    try:
+        validate_email(recipient)
+    except ValidationError:
+        messages.error(request, "Enter a valid email address to send a test to.")
+        return _builder_redirect(event)
+
+    # Org-scope test has no event — render against a throwaway sample.
+    target = event or Event(
+        organization=org, name='Your Event', start_date=django_tz.now().date()
+    )
+    site_url = settings.SITE_URL.rstrip('/')
+    # Test has no invitation; point the button at the organizer survey preview
+    # (same page the builder's live preview uses) instead of a dead token URL.
+    preview_path = (reverse('tickets:event_survey_preview', args=[event.id]) if event
+                    else reverse('tickets:survey_preview'))
+    survey_url = f"{site_url}{preview_path}"
+
+    from .tasks import build_survey_email, survey_sender_fields
+    from django.core.mail import EmailMultiAlternatives
+    subject, text_body, html_body = build_survey_email(target, survey_url)
+    from_email, reply_to = survey_sender_fields(org)
+    try:
+        msg = EmailMultiAlternatives(
+            subject=subject, body=text_body, from_email=from_email,
+            to=[recipient], reply_to=reply_to,
+        )
+        msg.attach_alternative(html_body, "text/html")
+        msg.send()
+        messages.success(request, f"Test survey email sent to {recipient}.")
+    except Exception:
+        logger.exception("Failed to send test survey email to %s", recipient)
+        messages.error(request, "Couldn't send the test email. Check email settings and try again.")
+    return _builder_redirect(event)
+
+
+@login_required
+@require_org
+@require_host
 def event_survey_reset(request, event_id):
     """Remove event-scoped questions so the event falls back to the org default. POST only."""
     org, event = _survey_scope(request, event_id)
@@ -9902,12 +8923,23 @@ def event_survey_reset(request, event_id):
 def survey_hub(request):
     """Top-level Surveys landing: events with survey activity + links to builders."""
     org = get_organization(request)
+
+    def _per_event_count(model):
+        # Isolated per-row subquery (avoids join inflation across the multiple
+        # related tables we count here). See CLAUDE.md / event_list pattern.
+        return Coalesce(Subquery(
+            model.objects.filter(event=OuterRef('pk')).values('event')
+            .annotate(c=Count('id')).values('c')[:1],
+            output_field=models.IntegerField(),
+        ), 0)
+
     events = (
         Event.objects.filter(organization=org)
         .select_related('venue')
         .annotate(
-            response_count=Count('survey_responses', distinct=True),
-            invitation_count=Count('survey_invitations', distinct=True),
+            # Total responses = internal (SurveyResponse) + external (Typeform CSV).
+            response_count=_per_event_count(SurveyResponse) + _per_event_count(ExternalSurveyResponse),
+            invitation_count=_per_event_count(SurveyInvitation),
         )
         .order_by('-start_date', '-start_time')[:50]
     )
@@ -10691,6 +9723,42 @@ def _extract_utm_params(request):
     return params
 
 
+def _event_social_proof(event):
+    """Build the public-page social proof: up to 6 distinct confirmed attendees + total count."""
+    _preview_orders = (
+        TicketOrder.objects
+        .filter(event=event, refunded_at__isnull=True, is_in_person=False)
+        .select_related('customer')
+        .order_by('-order_date')
+    )
+    _seen = set()
+    attendee_preview = []
+    for _order in _preview_orders[:50]:
+        if _order.customer_id not in _seen:
+            _seen.add(_order.customer_id)
+            _name = _order.customer.name or ''
+            _parts = _name.split()
+            if len(_parts) >= 2:
+                _initials = (_parts[0][0] + _parts[-1][0]).upper()
+            elif _parts:
+                _initials = _parts[0][:2].upper()
+            else:
+                _initials = '?'
+            attendee_preview.append({
+                'initials': _initials,
+                'first_name': _parts[0] if _parts else '',
+            })
+            if len(attendee_preview) >= 6:
+                break
+
+    attendee_count = Ticket.objects.filter(
+        ticket_order__event=event,
+        ticket_order__refunded_at__isnull=True,
+        ticket_order__is_in_person=False,
+    ).count()
+    return attendee_preview, attendee_count
+
+
 def public_event_buy(request, public_id):
     """Public ticket selector page. POST stores cart in session and redirects to checkout."""
     event = get_object_or_404(
@@ -10702,14 +9770,26 @@ def public_event_buy(request, public_id):
     if eff == EVENT_STATUS_DRAFT:
         raise Http404()
     if eff == EVENT_STATUS_ENDED:
-        return render(
-            request,
-            'tickets/buy/sales_ended.html',
-            {
-                'event': event,
-                **_build_public_event_preview_context(event, suffix='Ticket Sales Ended'),
-            },
-        )
+        attendee_preview, attendee_count = _event_social_proof(event)
+        return render(request, 'tickets/buy/public_event_buy.html', {
+            'event': event,
+            'sales_ended': True,
+            'form': None,
+            'available_pairs': [],
+            'locked_pairs': [],
+            'coming_soon_types': [],
+            'waitlisted_sold_out_types': [],
+            'waitlist_join_forms': {},
+            'already_on_waitlist': set(),
+            'all_sold_out': False,
+            'min_ticket_price': None,
+            'view_event_id': '',
+            'attendee_preview': attendee_preview,
+            'attendee_count': attendee_count,
+            'wl_held_tt_id': None,
+            'user_is_authenticated': request.user.is_authenticated,
+            **_build_public_event_preview_context(event, suffix='Ticket Sales Ended'),
+        })
     if eff == EVENT_STATUS_CANCELLED:
         return render(
             request,
@@ -10846,37 +9926,7 @@ def public_event_buy(request, public_id):
     min_ticket_price = min((tt.effective_price for tt in all_types), default=None)
 
     # Social proof: up to 6 distinct confirmed attendees + total ticket count
-    _preview_orders = (
-        TicketOrder.objects
-        .filter(event=event, refunded_at__isnull=True, is_in_person=False)
-        .select_related('customer')
-        .order_by('-order_date')
-    )
-    _seen = set()
-    attendee_preview = []
-    for _order in _preview_orders[:50]:
-        if _order.customer_id not in _seen:
-            _seen.add(_order.customer_id)
-            _name = _order.customer.name or ''
-            _parts = _name.split()
-            if len(_parts) >= 2:
-                _initials = (_parts[0][0] + _parts[-1][0]).upper()
-            elif _parts:
-                _initials = _parts[0][:2].upper()
-            else:
-                _initials = '?'
-            attendee_preview.append({
-                'initials': _initials,
-                'first_name': _parts[0] if _parts else '',
-            })
-            if len(attendee_preview) >= 6:
-                break
-
-    attendee_count = Ticket.objects.filter(
-        ticket_order__event=event,
-        ticket_order__refunded_at__isnull=True,
-        ticket_order__is_in_person=False,
-    ).count()
+    attendee_preview, attendee_count = _event_social_proof(event)
 
     # Sold-out ticket types that have waitlist enabled (for the "sold out" section)
     if wl_feature_on:
@@ -12761,10 +11811,15 @@ def my_ticket_detail(request, order_id):
         id=order_id,
         customer__email=request.user.email,
     )
-    qr_code = generate_qr_b64(order.order_number) if not order.refunded_at else ''
+    ticket_qrs = []
+    if not order.refunded_at:
+        ticket_qrs = [
+            {'ticket': t, 'qr_b64': generate_qr_b64(ticket_qr_payload(t))}
+            for t in order.tickets.all()
+        ]
     return render(request, 'tickets/ticket_detail.html', {
         'order': order,
-        'qr_code': qr_code,
+        'ticket_qrs': ticket_qrs,
     })
 
 
@@ -13938,87 +12993,10 @@ def survey_analytics(request):
 
 # ── Typeform integration ────────────────────────────────────────────────────
 
-@login_required
-@require_org
-@require_admin
-def typeform_settings(request):
-    """Show Typeform connection status, current form subscriptions, and sync controls."""
-    org = get_organization(request)
-    subscriptions = (
-        TypeformFormSubscription.objects
-        .filter(organization=org)
-        .order_by('-is_active', '-created_at')
-    )
-    return render(request, 'tickets/typeform_settings.html', {
-        'org': org,
-        'is_connected': bool(org.typeform_access_token),
-        'subscriptions': subscriptions,
-    })
 
 
-@login_required
-@require_org
-@require_admin
-@require_http_methods(["POST"])
-def typeform_connect(request):
-    """Validate the posted Personal Access Token, save it, and stash the account email."""
-    from .services.typeform.client import TypeformAPIError, TypeformClient
-
-    org = get_organization(request)
-    token = (request.POST.get('access_token') or '').strip()
-    if not token:
-        messages.error(request, 'Paste a Typeform Personal Access Token.')
-        return redirect('tickets:typeform_settings')
-
-    try:
-        me = TypeformClient(access_token=token).validate_token()
-    except TypeformAPIError as exc:
-        messages.error(request, f'Could not verify Typeform credentials: {exc}')
-        return redirect('tickets:typeform_settings')
-
-    org.typeform_access_token = token
-    org.typeform_account_email = (me.get('email') or '')[:254]
-    org.typeform_validated_at = django_tz.now()
-    org.save(update_fields=[
-        'typeform_access_token', 'typeform_account_email', 'typeform_validated_at',
-    ])
-    messages.success(request, 'Typeform connected.')
-    return redirect('tickets:typeform_settings')
 
 
-@login_required
-@require_org
-@require_admin
-@require_http_methods(["POST"])
-def typeform_disconnect(request):
-    """Disconnect Typeform: delete all webhooks and clear org credentials."""
-    from .services.typeform.client import TypeformAPIError, TypeformClient
-
-    org = get_organization(request)
-    if not org.typeform_access_token:
-        messages.info(request, 'Typeform was not connected.')
-        return redirect('tickets:typeform_settings')
-
-    client = TypeformClient(access_token=org.typeform_access_token)
-    tag = getattr(settings, 'TYPEFORM_WEBHOOK_TAG', 'cue')
-    for sub in TypeformFormSubscription.objects.filter(organization=org, is_active=True):
-        try:
-            client.delete_webhook(sub.form_id, tag=tag)
-        except TypeformAPIError as exc:
-            logger.warning('Failed to delete Typeform webhook for sub %s: %s', sub.id, exc)
-        sub.is_active = False
-        sub.webhook_id = ''
-        sub.last_sync_error = ''
-        sub.save(update_fields=['is_active', 'webhook_id', 'last_sync_error'])
-
-    org.typeform_access_token = ''
-    org.typeform_account_email = ''
-    org.typeform_validated_at = None
-    org.save(update_fields=[
-        'typeform_access_token', 'typeform_account_email', 'typeform_validated_at',
-    ])
-    messages.success(request, 'Typeform disconnected.')
-    return redirect('tickets:typeform_settings')
 
 
 def _typeform_webhook_url(request, sub_id) -> str:
@@ -14053,361 +13031,14 @@ def _refresh_subscription_questions(subscription, definition):
         subscription.save(update_fields=['questions'])
 
 
-@login_required
-@require_org
-@require_admin
-def typeform_form_picker(request):
-    """List Typeform forms; let the org check which to subscribe (creates webhooks)."""
-    from .services.typeform.client import TypeformAPIError, TypeformClient
-
-    org = get_organization(request)
-    if not org.typeform_access_token:
-        messages.error(request, 'Connect Typeform first.')
-        return redirect('tickets:typeform_settings')
-
-    client = TypeformClient(access_token=org.typeform_access_token)
-    try:
-        forms = client.list_forms()
-    except TypeformAPIError as exc:
-        messages.error(request, f'Could not load Typeform forms: {exc}')
-        return redirect('tickets:typeform_settings')
-
-    existing = {s.form_id: s for s in TypeformFormSubscription.objects.filter(organization=org)}
-
-    if request.method == 'POST':
-        selected_form_ids = set(request.POST.getlist('form_ids'))
-        tag = getattr(settings, 'TYPEFORM_WEBHOOK_TAG', 'cue')
-
-        forms_by_id = {f.get('id'): f for f in forms if f.get('id')}
-        created = 0
-        for form_id in selected_form_ids:
-            form_meta = forms_by_id.get(form_id)
-            if not form_meta:
-                continue
-            sub = existing.get(form_id)
-            if sub is None:
-                upload = ExternalSurveyUpload.objects.create(
-                    organization=org,
-                    filename=f'Typeform: {form_meta.get("title") or form_id}',
-                    status=ExternalSurveyUpload.Status.COMPLETED,
-                )
-                sub = TypeformFormSubscription.objects.create(
-                    organization=org,
-                    form_id=form_id,
-                    form_title=(form_meta.get('title') or '')[:255],
-                    upload=upload,
-                )
-            else:
-                # Re-activating a previously deactivated subscription. Clear any stale
-                # last_sync_error from a prior (possibly expired) token so the row
-                # doesn't show a misleading red error line after reconnect.
-                sub.is_active = True
-                sub.form_title = (form_meta.get('title') or sub.form_title)[:255]
-                sub.last_sync_error = ''
-                sub.save(update_fields=['is_active', 'form_title', 'last_sync_error'])
-
-            # Snapshot the form's questions so we can render them on Surveys pages
-            # without re-fetching the definition on every read. Best-effort: a
-            # Typeform hiccup here just means we keep the existing snapshot.
-            try:
-                definition = client.get_form(form_id)
-                _refresh_subscription_questions(sub, definition)
-            except TypeformAPIError as exc:
-                logger.warning(
-                    'Could not snapshot questions for sub %s: %s', sub.id, exc,
-                )
-                definition = None
-
-            # Seed a starting field_map from the form definition so structured
-            # columns (nps_score, overall_rating, text_feedback, …) populate on
-            # first sync without the user having to visit the mapping editor.
-            # Only when never configured before (None) — an explicit `{}` save
-            # means "ignore everything" and must be preserved.
-            if definition and sub.field_map is None:
-                from .services.typeform.field_mapping import auto_field_map
-                suggested = auto_field_map(definition)
-                if suggested:
-                    sub.field_map = suggested
-                    sub.save(update_fields=['field_map'])
-
-            webhook_url = _typeform_webhook_url(request, sub.id)
-            if not _is_publicly_reachable(webhook_url):
-                messages.warning(
-                    request,
-                    f'Form "{sub.form_title}" subscribed without a webhook: {webhook_url} is not '
-                    'publicly reachable. Use "Sync recent" to pull responses manually, or set '
-                    'TYPEFORM_WEBHOOK_BASE_URL to a public tunnel (e.g. ngrok) and re-pick.',
-                )
-            else:
-                try:
-                    webhook = client.create_webhook(
-                        form_id=form_id,
-                        url=webhook_url,
-                        secret=sub.webhook_secret,
-                        tag=tag,
-                    )
-                    sub.webhook_id = str(webhook.get('id') or '')[:64]
-                    sub.save(update_fields=['webhook_id'])
-                except TypeformAPIError as exc:
-                    messages.warning(
-                        request,
-                        f'Form "{sub.form_title}" subscribed but webhook registration failed: {exc}',
-                    )
-            created += 1
-
-        # Deactivate any previously-active subscriptions that the org just unchecked.
-        for sub in existing.values():
-            if sub.is_active and sub.form_id not in selected_form_ids:
-                try:
-                    client.delete_webhook(sub.form_id, tag=tag)
-                except TypeformAPIError:
-                    pass
-                sub.is_active = False
-                sub.webhook_id = ''
-                sub.save(update_fields=['is_active', 'webhook_id'])
-
-        messages.success(request, f'Subscribed to {created} Typeform form(s).')
-        return redirect('tickets:typeform_settings')
-
-    rows = []
-    for form in forms:
-        sub = existing.get(form.get('id'))
-        rows.append({
-            'id': form.get('id'),
-            'title': form.get('title') or form.get('id'),
-            'last_updated_at': form.get('last_updated_at'),
-            'is_subscribed': bool(sub and sub.is_active),
-        })
-    return render(request, 'tickets/typeform_form_picker.html', {
-        'forms': rows,
-    })
 
 
-@login_required
-@require_org
-@require_admin
-@require_http_methods(["POST"])
-def typeform_form_sync(request, sub_id):
-    """Trigger an on-demand pull of recent responses for one subscription."""
-    from .tasks import sync_typeform_form_task
-
-    org = get_organization(request)
-    subscription = get_object_or_404(
-        TypeformFormSubscription.objects.filter(organization=org), id=sub_id,
-    )
-    sync_typeform_form_task.delay(str(subscription.id))
-    messages.success(request, f'Syncing "{subscription.form_title}" — new responses will appear shortly.')
-
-    next_url = (request.POST.get('next') or '').strip()
-    if next_url and url_has_allowed_host_and_scheme(next_url, allowed_hosts={request.get_host()}):
-        return redirect(next_url)
-    return redirect('tickets:typeform_settings')
 
 
-@login_required
-@require_org
-@require_admin
-@require_http_methods(["POST"])
-def typeform_form_unsubscribe(request, sub_id):
-    """Delete the webhook and deactivate one form subscription."""
-    from .services.typeform.client import TypeformAPIError, TypeformClient
-
-    org = get_organization(request)
-    subscription = get_object_or_404(
-        TypeformFormSubscription.objects.filter(organization=org), id=sub_id,
-    )
-    if org.typeform_access_token:
-        tag = getattr(settings, 'TYPEFORM_WEBHOOK_TAG', 'cue')
-        try:
-            TypeformClient(access_token=org.typeform_access_token).delete_webhook(
-                subscription.form_id, tag=tag,
-            )
-        except TypeformAPIError as exc:
-            logger.warning('Failed to delete webhook for sub %s: %s', subscription.id, exc)
-    subscription.is_active = False
-    subscription.webhook_id = ''
-    subscription.save(update_fields=['is_active', 'webhook_id'])
-    messages.success(request, f'Unsubscribed from "{subscription.form_title}".')
-    return redirect('tickets:typeform_settings')
 
 
-@login_required
-@require_org
-@require_admin
-def typeform_form_mapping(request, sub_id):
-    """Per-form field mapping editor: pick which Typeform question feeds which
-    ExternalSurveyResponse column. New ingests use the saved map; existing rows
-    can be re-projected by ticking the backfill checkbox.
-    """
-    from collections import OrderedDict
-
-    from .services.typeform.client import TypeformAPIError, TypeformClient
-    from .services.typeform.field_mapping import (
-        TARGET_FIELDS, apply_field_map, auto_field_map, flatten_form_fields,
-    )
-
-    SAMPLE_RESPONSE_LIMIT = 50
-    SAMPLE_VALUES_PER_FIELD = 3
-
-    org = get_organization(request)
-    subscription = get_object_or_404(
-        TypeformFormSubscription.objects.filter(organization=org), id=sub_id,
-    )
-
-    if not org.typeform_access_token:
-        messages.error(request, 'Connect Typeform first to edit field mappings.')
-        return redirect('tickets:typeform_settings')
-
-    client = TypeformClient(access_token=org.typeform_access_token)
-    try:
-        definition = client.get_form(subscription.form_id)
-    except TypeformAPIError as exc:
-        messages.error(request, f'Could not load form definition: {exc}')
-        definition = {'fields': []}
-    else:
-        # Refresh the persisted question snapshot used to display titles on the
-        # Surveys tab without re-fetching the definition on every render.
-        _refresh_subscription_questions(subscription, definition)
-
-    flat_fields = flatten_form_fields(definition)
-
-    if request.method == 'POST':
-        new_map: dict = {}
-        for field in flat_fields:
-            key = field.get('ref') or field.get('id')
-            if not key:
-                continue
-            value = (request.POST.get(f'map_{key}') or '').strip()
-            if value and value in TARGET_FIELDS:
-                new_map[key] = value
-        subscription.field_map = new_map
-        subscription.save(update_fields=['field_map'])
-
-        backfilled = 0
-        if request.POST.get('backfill') == '1' and subscription.upload_id:
-            from .services.typeform.ingest import apply_field_map_to_subscription
-            backfilled, affected_event_ids = apply_field_map_to_subscription(
-                subscription, new_map, limit=500,
-            )
-            for eid in affected_event_ids:
-                django_cache.delete(_event_stats_cache_key(eid))
-                _invalidate_event_upload_stats_cache(eid)
-
-        msg = f'Field mapping saved ({len(new_map)} field(s)).'
-        if backfilled:
-            msg += f' Re-applied to {backfilled} existing response(s).'
-        messages.success(request, msg)
-        return redirect('tickets:typeform_form_mapping', sub_id=subscription.id)
-
-    # Collect up to 3 distinct sample values per question, scanning the most
-    # recent 50 ingested responses for this form. Lets the user map deterministically.
-    samples_by_key: dict[str, list[str]] = {}
-    if subscription.upload_id:
-        recent_raws = (
-            ExternalSurveyResponse.objects
-            .filter(organization=org, upload_id=subscription.upload_id)
-            .exclude(typeform_response_id='')
-            .order_by('-responded_at')
-            .values_list('raw_answers', flat=True)[:SAMPLE_RESPONSE_LIMIT]
-        )
-        seen: dict[str, OrderedDict] = {}
-        for raw in recent_raws:
-            for ans in raw or []:
-                if not isinstance(ans, dict):
-                    continue
-                key = ans.get('ref') or ans.get('id')
-                if not key:
-                    continue
-                value = ans.get('value')
-                if value in (None, '', []):
-                    continue
-                text = (
-                    ', '.join(str(v) for v in value)
-                    if isinstance(value, list) else str(value)
-                ).strip()
-                if not text:
-                    continue
-                bucket = seen.setdefault(key, OrderedDict())
-                if text not in bucket and len(bucket) < SAMPLE_VALUES_PER_FIELD:
-                    bucket[text] = None
-        samples_by_key = {k: list(v.keys()) for k, v in seen.items()}
-
-    # `field_map is None` means the subscription has never been saved through this
-    # editor — only then do we pre-fill the dropdowns with auto-detect suggestions.
-    # An empty `{}` is a deliberate "everything Ignored" save and must be respected
-    # on reload (no auto-detect bleed-through).
-    if subscription.field_map is None:
-        current_map = auto_field_map(definition)
-    else:
-        current_map = subscription.field_map
-    fields = []
-    for field in flat_fields:
-        key = field.get('ref') or field.get('id')
-        if not key:
-            continue
-        fields.append({
-            'key': key,
-            'title': field.get('title') or '(untitled)',
-            'group_title': field.get('group_title') or '',
-            'type': field.get('type'),
-            'mapped_to': current_map.get(key, ''),
-            'samples': samples_by_key.get(key, []),
-        })
-
-    return render(request, 'tickets/typeform_form_mapping.html', {
-        'subscription': subscription,
-        'fields': fields,
-        'target_fields': TARGET_FIELDS,
-        'has_saved_mapping': subscription.field_map is not None,
-    })
 
 
-@csrf_exempt
-@require_http_methods(["POST"])
-def typeform_webhook(request, sub_id):
-    """Receive Typeform webhook deliveries: verify HMAC, ingest one response, queue LLM match."""
-    import base64
-    import hashlib
-    import hmac as hmac_mod
-
-    from .services.typeform.ingest import ingest_response
-    from .tasks import match_survey_response_to_event_task
-
-    try:
-        subscription = TypeformFormSubscription.objects.select_related('organization').get(
-            id=sub_id, is_active=True,
-        )
-    except (TypeformFormSubscription.DoesNotExist, ValueError, Http404):
-        return HttpResponse(status=404)
-
-    signature_header = request.headers.get('Typeform-Signature', '')
-    if not signature_header.startswith('sha256='):
-        return HttpResponse('Invalid signature header', status=401)
-    posted_b64 = signature_header[len('sha256='):]
-
-    raw_body = request.body
-    digest = hmac_mod.new(
-        subscription.webhook_secret.encode('utf-8'),
-        raw_body, hashlib.sha256,
-    ).digest()
-    expected_b64 = base64.b64encode(digest).decode('ascii')
-    if not hmac_mod.compare_digest(posted_b64, expected_b64):
-        return HttpResponse('Bad signature', status=401)
-
-    try:
-        payload = json.loads(raw_body.decode('utf-8'))
-    except (ValueError, UnicodeDecodeError):
-        return HttpResponseBadRequest('Invalid JSON')
-
-    form_response = payload.get('form_response')
-    if not form_response:
-        return HttpResponseBadRequest('Missing form_response')
-
-    response, created = ingest_response(subscription, form_response)
-    if response and created:
-        match_survey_response_to_event_task.delay(str(response.id))
-
-    return JsonResponse({'ok': True, 'created': bool(created)})
 
 
 def _survey_candidate_dict(response, candidate, subscription=None):
@@ -14440,10 +13071,21 @@ def _survey_candidate_dict(response, candidate, subscription=None):
             'type': str(ans.get('type') or ''),
             'value': ans.get('value'),
         })
+    # Full answer set for the expandable per-row detail panel (every Q/A pair).
+    answers = []
+    for ans in raw:
+        if not isinstance(ans, dict):
+            continue
+        answers.append({
+            'title': str(ans.get('title') or '')[:200],
+            'type': str(ans.get('type') or ''),
+            'value': ans.get('value'),
+        })
     return {
         'response_id': str(response.id),
         'responded_at': response.responded_at.isoformat() if response.responded_at else None,
         'preview_answers': preview,
+        'answers': answers,
         'confidence': confidence,
         'confidence_pct': pct,
         'confidence_class': confidence_class,
@@ -14594,7 +13236,7 @@ def event_survey_apply(request, event_id):
 
     if linked_count:
         messages.success(request, f'Linked {linked_count} survey response(s).')
-    return redirect(reverse('tickets:event_detail', args=[event.id]) + '#tab-surveys')
+    return redirect(reverse('tickets:event_detail', args=[event.id]) + '?tab=surveys')
 
 
 @login_required
@@ -14613,7 +13255,7 @@ def event_survey_unlink(request, event_id):
             django_cache.delete(_event_stats_cache_key(str(event.id)))
             _invalidate_event_upload_stats_cache(str(event.id))
             messages.success(request, 'Survey response unlinked.')
-    return redirect(reverse('tickets:event_detail', args=[event.id]) + '#tab-surveys')
+    return redirect(reverse('tickets:event_detail', args=[event.id]) + '?tab=surveys')
 
 
 @login_required

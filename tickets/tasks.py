@@ -159,16 +159,54 @@ def send_otp_email_task(self, otp_id):
 
 
 
+def build_survey_email(event, survey_url):
+    """Render the survey invitation email as (subject, text_body, html_body).
+    Shared by the bulk send task and the builder's test-send."""
+    from django.template.loader import render_to_string
+    # Masthead/sender name mirrors the From-line opt-in: when the org sets a
+    # reply-to, the email presents as the organizer; otherwise it's "Cue".
+    org = event.organization
+    sender_name = org.name if (org.survey_reply_to_email or '').strip() else 'Cue'
+    context = {'event': event, 'survey_url': survey_url, 'sender_name': sender_name}
+    return (
+        event.resolved_survey_subject(),
+        render_to_string('tickets/survey/survey_email.txt', context),
+        render_to_string('tickets/survey/survey_email.html', context),
+    )
+
+
+def survey_sender_fields(organization):
+    """(from_email, reply_to) for an org's survey mail.
+
+    Opt-in: when survey_reply_to_email is set, show the org name on the From line
+    (keeping Cue's verified sending address so SPF/DKIM/DMARC still pass) and route
+    replies to the organizer. Blank = today's behavior: Cue default sender, no
+    reply-to. Shared by the bulk send task and the builder's test-send."""
+    from django.conf import settings
+    from email.utils import parseaddr, formataddr
+    reply_to = (organization.survey_reply_to_email or '').strip()
+    if not reply_to:
+        return settings.DEFAULT_FROM_EMAIL, None
+    _, address = parseaddr(settings.DEFAULT_FROM_EMAIL)  # e.g. noreply@cueup.co
+    return formataddr((organization.name, address)), [reply_to]
+
+
 @shared_task(bind=True, max_retries=2, default_retry_delay=30)
 def send_survey_emails_task(self, event_id, organization_id):
-    """Send survey emails to all unsent invitations for an event."""
-    from django.core.mail import send_mail
-    from django.template.loader import render_to_string
+    """Send survey emails for an event's due, unsent invitations.
+
+    Only sends rows whose scheduled_send_at is NULL (send-now) or already in the
+    past, so scheduled invitations sit untouched until the send_due_survey_invitations
+    cron dispatches them once due.
+    """
+    from django.core.mail import EmailMultiAlternatives
     from django.conf import settings
+    from django.db.models import Q
+    from django.utils import timezone
     from tickets.models import SurveyInvitation, Event
 
     try:
-        event = Event.objects.select_related('venue').get(id=event_id)
+        event = Event.objects.select_related('venue', 'organization').get(id=event_id)
     except Event.DoesNotExist:
         logger.warning("Event %s not found, skipping survey emails", event_id)
         return
@@ -177,29 +215,28 @@ def send_survey_emails_task(self, event_id, organization_id):
         event_id=event_id,
         organization_id=organization_id,
         sent_at__isnull=True,
+    ).filter(
+        Q(scheduled_send_at__isnull=True) | Q(scheduled_send_at__lte=timezone.now())
     )
 
     site_url = settings.SITE_URL.rstrip('/')
+    from_email, reply_to = survey_sender_fields(event.organization)
     sent_count = 0
 
     for invitation in invitations:
         survey_url = f"{site_url}/survey/{invitation.token}/"
-        context = {
-            'event': event,
-            'survey_url': survey_url,
-        }
-        html_body = render_to_string('tickets/survey/survey_email.html', context)
-        text_body = render_to_string('tickets/survey/survey_email.txt', context)
+        subject, text_body, html_body = build_survey_email(event, survey_url)
 
         try:
-            send_mail(
-                subject=f"How was {event.name}? Share your feedback",
-                message=text_body,
-                from_email=settings.DEFAULT_FROM_EMAIL,
-                recipient_list=[invitation.email],
-                html_message=html_body,
+            msg = EmailMultiAlternatives(
+                subject=subject,
+                body=text_body,
+                from_email=from_email,
+                to=[invitation.email],
+                reply_to=reply_to,
             )
-            from django.utils import timezone
+            msg.attach_alternative(html_body, "text/html")
+            msg.send()
             invitation.sent_at = timezone.now()
             invitation.save(update_fields=['sent_at'])
             sent_count += 1
@@ -260,7 +297,7 @@ def send_order_confirmation_email_task(self, order_id):
     from django.template.loader import render_to_string
     from django.conf import settings
     from tickets.models import TicketOrder
-    from tickets.utils import generate_qr_png_bytes
+    from tickets.utils import build_ticket_qr_codes
 
     try:
         order = TicketOrder.objects.select_related(
@@ -271,7 +308,8 @@ def send_order_confirmation_email_task(self, order_id):
         return
 
     customer = order.customer
-    qr_png_bytes = generate_qr_png_bytes(order.order_number)
+    tickets = list(order.tickets.all())
+    ticket_qrs = build_ticket_qr_codes(tickets)
 
     from decimal import Decimal
     try:
@@ -283,8 +321,9 @@ def send_order_confirmation_email_task(self, order_id):
         'order': order,
         'customer': customer,
         'event': order.event,
-        'tickets': list(order.tickets.all()),
-        'show_qr_code': bool(qr_png_bytes),
+        'tickets': tickets,
+        'ticket_qrs': ticket_qrs,
+        'show_qr_code': bool(ticket_qrs),
         'service_fee': service_fee,
     }
     html_body = render_to_string('tickets/buy/order_confirmation_email.html', context)
@@ -298,10 +337,10 @@ def send_order_confirmation_email_task(self, order_id):
         to=[customer.email],
     )
     msg.attach_alternative(html_body, 'text/html')
-    if qr_png_bytes:
-        qr_attachment = MIMEImage(qr_png_bytes)
-        qr_attachment.add_header('Content-ID', '<qrcode>')
-        qr_attachment.add_header('Content-Disposition', 'inline', filename='qrcode.png')
+    for qr in ticket_qrs:
+        qr_attachment = MIMEImage(qr['png_bytes'])
+        qr_attachment.add_header('Content-ID', f"<{qr['cid']}>")
+        qr_attachment.add_header('Content-Disposition', 'inline', filename=f"{qr['cid']}.png")
         msg.attach(qr_attachment)
 
     try:

@@ -504,7 +504,7 @@ class MarketingAnalyticsService:
 
     def _broadcast_audience_series(self):
         """One point per broadcast (native SMS + external SlickText) for the
-        audience-over-time scatter and the by-market breakdown.
+        audience-over-time line chart and the by-market breakdown.
 
         Market = the linked event's venue city ('No market' when a native campaign
         has no event). Market-independent and window-scoped, so it caches with the

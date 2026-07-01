@@ -69,11 +69,16 @@
         </div>
         {% endif %}
 
-        {% if show_qr_code %}
-        <div style="margin: 0 0 24px; text-align: center;">
-            <p style="margin: 0 0 12px; font-size: 13px; color: #999; text-transform: uppercase; letter-spacing: 0.05em;">Ticket QR code</p>
-            <img src="cid:qrcode" alt="Ticket QR Code" width="180" height="180" style="display: block; margin: 0 auto;">
-            <p style="color: #555; font-size: 13px; margin: 12px 0 0;">Show this QR code at the door for check-in.</p>
+        {% if ticket_qrs %}
+        <div style="margin: 0 0 24px;">
+            <p style="margin: 0 0 16px; font-size: 13px; color: #999; text-transform: uppercase; letter-spacing: 0.05em; text-align: center;">Your ticket QR codes</p>
+            {% for q in ticket_qrs %}
+            <div style="margin: 0 0 24px; text-align: center;">
+                <p style="margin: 0 0 8px; color: #333; font-size: 14px; font-weight: 600;">{{ q.ticket.ticket_type }}{% if q.ticket.tier_name %} &mdash; {{ q.ticket.tier_name }}{% endif %}</p>
+                <img src="cid:{{ q.cid }}" alt="Ticket QR code" width="180" height="180" style="display: block; margin: 0 auto;">
+            </div>
+            {% endfor %}
+            <p style="color: #555; font-size: 13px; margin: 12px 0 0; text-align: center;">Show one QR code per guest at the door for check-in.</p>
         </div>
         {% endif %}
 

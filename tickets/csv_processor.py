@@ -780,6 +780,15 @@ class CSVProcessor:
 
                     event = existing_events.get(event_key)
                     if not event:
+                        # Defensive guard: CSV import auto-creates external events.
+                        # Entry views are gated by require_external_events, but block
+                        # here too so the processor can't silently create external
+                        # events for an org that has the feature disabled.
+                        if org is not None and not getattr(org, 'external_events_enabled', False):
+                            raise ValueError(
+                                'External events are not enabled for this organization; '
+                                'cannot create events from CSV.'
+                            )
                         event_kwargs = dict(
                             name=event_name,
                             venue=venue,

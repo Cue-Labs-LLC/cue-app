@@ -343,11 +343,11 @@
             return new Date(ms).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
         };
         new Chart(el, {
-            type: 'scatter',
+            type: 'line',
             data: {
                 datasets: [
-                    { label: 'Native', data: points.native, backgroundColor: '#4f7cff', borderColor: '#4f7cff', pointRadius: 5, pointHoverRadius: 7 },
-                    { label: 'SlickText', data: points.slicktext, backgroundColor: '#33c481', borderColor: '#33c481', pointRadius: 5, pointHoverRadius: 7 }
+                    { label: 'Native', data: points.native, backgroundColor: '#4f7cff', borderColor: '#4f7cff', pointRadius: 5, pointHoverRadius: 7, fill: false, tension: 0.25, spanGaps: true },
+                    { label: 'SlickText', data: points.slicktext, backgroundColor: '#33c481', borderColor: '#33c481', pointRadius: 5, pointHoverRadius: 7, fill: false, tension: 0.25, spanGaps: true }
                 ]
             },
             options: {

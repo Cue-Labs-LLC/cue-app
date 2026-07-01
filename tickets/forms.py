@@ -1004,12 +1004,17 @@ class EventForm(forms.ModelForm):
     def __init__(self, *args, ticketing_type_locked=False, hide_ticket_link=False, **kwargs):
         organization = kwargs.pop('organization', None)
         super().__init__(*args, **kwargs)
+        # Use VenueChoiceField for richer, consistent labels (matches DirectEventForm
+        # and inline venue creation). Reassigning preserves the field's position.
         if organization is not None:
-            self.fields['venue'].queryset = Venue.objects.filter(
-                organization=organization
-            ).order_by('name', 'city')
+            venue_qs = Venue.objects.filter(organization=organization).order_by('name', 'city')
         else:
-            self.fields['venue'].queryset = Venue.objects.none()
+            venue_qs = Venue.objects.none()
+        self.fields['venue'] = VenueChoiceField(
+            queryset=venue_qs,
+            empty_label="Select a venue",
+            widget=forms.Select(attrs={'class': 'form-select'}),
+        )
         self.fields['description'].required = False
         self.fields['capacity'].required = False
         self.fields['max_tickets_per_customer'].required = False

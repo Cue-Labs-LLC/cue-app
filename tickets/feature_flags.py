@@ -30,6 +30,13 @@ def loyalty_enabled(organization):
     return bool(organization.loyalty_feature_enabled)
 
 
+def external_events_enabled(organization):
+    """Return True if the organization may create external (CSV) events."""
+    if organization is None:
+        return False
+    return bool(organization.external_events_enabled)
+
+
 def browse_events_enabled():
     """Return True to make the public Browse Events page accessible."""
     return _global_feature_flags().browse_events_enabled

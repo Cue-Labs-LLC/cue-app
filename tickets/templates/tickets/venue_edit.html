@@ -1,5 +1,6 @@
 {% extends 'tickets/base.html' %}
 {% load crispy_forms_tags %}
+{% load static %}
 
 {% block title %}Edit Venue{% endblock %}
 
@@ -52,213 +53,131 @@
 
 {% block extra_js %}
 {% if google_maps_api_key %}
+<script src="{% static 'tickets/js/address_autocomplete.js' %}" defer></script>
 <script>
-window.initVenuePlacesAutocomplete = async function() {
+document.addEventListener('DOMContentLoaded', function () {
     var streetInput = document.getElementById('id_street_address');
-    if (!streetInput || !window.google || !google.maps || !google.maps.importLibrary) {
-        return;
+    if (!streetInput || !window.CueAddressAutocomplete) return;
+
+    var capacityInput = document.getElementById('id_capacity');
+    var capacityGroup = capacityInput ? (capacityInput.closest('.mb-3') || capacityInput.parentNode) : null;
+    if (!capacityGroup || !capacityGroup.parentNode) return;
+
+    var cityField = document.getElementById('id_city');
+    var stateField = document.getElementById('id_state');
+    var postalField = document.getElementById('id_postal_code');
+    var countryField = document.getElementById('id_country');
+
+    var wrapper = document.createElement('div');
+    wrapper.className = 'venue-address-autocomplete-wrapper mb-3';
+
+    var label = document.createElement('label');
+    label.className = 'form-label venue-address-autocomplete-label';
+    label.textContent = 'Address';
+    wrapper.appendChild(label);
+
+    // Current-address row (shown when an address already exists).
+    var currentRow = document.createElement('div');
+    currentRow.className = 'd-flex align-items-center gap-2';
+
+    var currentDisplay = document.createElement('input');
+    currentDisplay.type = 'text';
+    currentDisplay.className = 'form-control';
+    currentDisplay.readOnly = true;
+    currentRow.appendChild(currentDisplay);
+
+    var changeBtn = document.createElement('button');
+    changeBtn.type = 'button';
+    changeBtn.className = 'btn btn-outline-secondary text-nowrap';
+    changeBtn.textContent = 'Change address';
+    currentRow.appendChild(changeBtn);
+
+    wrapper.appendChild(currentRow);
+
+    // Lookup row (hidden until "Change address" is clicked).
+    var lookupRow = document.createElement('div');
+
+    var field = document.createElement('div');
+    field.className = 'cue-autocomplete-field';
+    var input = document.createElement('input');
+    input.type = 'text';
+    input.className = 'form-control';
+    input.placeholder = 'Start typing an address';
+    input.autocomplete = 'off';
+    var dropdown = document.createElement('div');
+    field.appendChild(input);
+    field.appendChild(dropdown);
+    lookupRow.appendChild(field);
+
+    var lookupActions = document.createElement('div');
+    lookupActions.className = 'd-flex gap-2 mt-2';
+    var confirmBtn = document.createElement('button');
+    confirmBtn.type = 'button';
+    confirmBtn.className = 'btn btn-primary btn-sm';
+    confirmBtn.textContent = 'Confirm address';
+    confirmBtn.disabled = true;
+    lookupActions.appendChild(confirmBtn);
+    var cancelBtn = document.createElement('button');
+    cancelBtn.type = 'button';
+    cancelBtn.className = 'btn btn-outline-secondary btn-sm';
+    cancelBtn.textContent = 'Cancel';
+    lookupActions.appendChild(cancelBtn);
+    lookupRow.appendChild(lookupActions);
+
+    wrapper.appendChild(lookupRow);
+    capacityGroup.parentNode.insertBefore(wrapper, capacityGroup);
+
+    // Populate the current display from existing hidden field values, or go
+    // straight to the lookup row when there is no existing address.
+    var existingStreet = streetInput.value;
+    if (existingStreet) {
+        var parts = [existingStreet];
+        [cityField, stateField, postalField, countryField].forEach(function (el) {
+            if (el && el.value) parts.push(el.value);
+        });
+        currentDisplay.value = parts.join(', ');
+        lookupRow.style.display = 'none';
+    } else {
+        currentRow.style.display = 'none';
     }
 
-    try {
-        var capacityInput = document.getElementById('id_capacity');
-        var capacityGroup = capacityInput ? (capacityInput.closest('.mb-3') || capacityInput.parentNode) : null;
-        if (!capacityGroup || !capacityGroup.parentNode) {
-            return;
-        }
-
-        var wrapper = document.createElement('div');
-        wrapper.className = 'venue-address-autocomplete-wrapper mb-3';
-
-        var label = document.createElement('label');
-        label.className = 'form-label venue-address-autocomplete-label';
-        label.textContent = 'Address';
-        wrapper.appendChild(label);
-
-        // Build current-address row (shown when an address already exists).
-        var currentRow = document.createElement('div');
-        currentRow.id = 'venue-address-current';
-        currentRow.className = 'd-flex align-items-center gap-2';
-
-        var currentDisplay = document.createElement('input');
-        currentDisplay.type = 'text';
-        currentDisplay.className = 'form-control';
-        currentDisplay.readOnly = true;
-        currentDisplay.id = 'venue-address-current-display';
-        currentRow.appendChild(currentDisplay);
-
-        var changeBtn = document.createElement('button');
-        changeBtn.type = 'button';
-        changeBtn.className = 'btn btn-outline-secondary text-nowrap';
-        changeBtn.textContent = 'Change address';
-        currentRow.appendChild(changeBtn);
-
-        wrapper.appendChild(currentRow);
-
-        // Build lookup row (hidden until Change address is clicked).
-        var lookupRow = document.createElement('div');
-        lookupRow.id = 'venue-address-lookup';
-
-        var placesLib = await google.maps.importLibrary('places');
-        var placeAutocomplete = new placesLib.PlaceAutocompleteElement({
-            types: ['address'],
-        });
-
-        placeAutocomplete.id = 'venue-address-autocomplete';
-        placeAutocomplete.className = 'form-control';
-        lookupRow.appendChild(placeAutocomplete);
-
-        var lookupActions = document.createElement('div');
-        lookupActions.className = 'd-flex gap-2 mt-2';
-
-        var confirmBtn = document.createElement('button');
-        confirmBtn.type = 'button';
-        confirmBtn.className = 'btn btn-primary btn-sm';
-        confirmBtn.textContent = 'Confirm address';
-        confirmBtn.disabled = true;
-        lookupActions.appendChild(confirmBtn);
-
-        var cancelBtn = document.createElement('button');
-        cancelBtn.type = 'button';
-        cancelBtn.className = 'btn btn-outline-secondary btn-sm';
-        cancelBtn.textContent = 'Cancel';
-        lookupActions.appendChild(cancelBtn);
-
-        lookupRow.appendChild(lookupActions);
-
-        wrapper.appendChild(lookupRow);
-
-        capacityGroup.parentNode.insertBefore(wrapper, capacityGroup);
-
-        // Populate the current-address display from existing hidden field values,
-        // or skip straight to the lookup if there is no existing address.
-        var existingStreet = streetInput.value;
-        if (existingStreet) {
-            var existingCity    = (document.getElementById('id_city')        || {}).value || '';
-            var existingState   = (document.getElementById('id_state')       || {}).value || '';
-            var existingPostal  = (document.getElementById('id_postal_code') || {}).value || '';
-            var existingCountry = (document.getElementById('id_country')     || {}).value || '';
-            var parts = [existingStreet];
-            if (existingCity)    parts.push(existingCity);
-            if (existingState)   parts.push(existingState);
-            if (existingPostal)  parts.push(existingPostal);
-            if (existingCountry) parts.push(existingCountry);
-            currentDisplay.value = parts.join(', ');
-            lookupRow.style.display = 'none';
-        } else {
-            currentRow.style.display = 'none';
-        }
-
-        changeBtn.addEventListener('click', function() {
-            currentRow.style.display = 'none';
-            lookupRow.style.display = '';
-            placeAutocomplete.focus();
-        });
-
-        cancelBtn.addEventListener('click', function() {
-            lookupRow.style.display = 'none';
-            currentRow.style.display = '';
-        });
-
-        placeAutocomplete.addEventListener('gmp-select', async function(event) {
-            var place = event.place;
-            if (!place && event.placePrediction && typeof event.placePrediction.toPlace === 'function') {
-                place = event.placePrediction.toPlace();
-            }
-            if (!place || !place.fetchFields) {
-                return;
-            }
-
-            await place.fetchFields({
-                fields: ['addressComponents', 'formattedAddress'],
-            });
-
-            var components = place.addressComponents || [];
-            var streetNumber = '';
-            var route = '';
-            var city = '';
-            var state = '';
-            var postalCode = '';
-            var country = '';
-
-            for (var i = 0; i < components.length; i++) {
-                var component = components[i];
-                var types = component.types || [];
-
-                if (types.indexOf('street_number') !== -1) {
-                    streetNumber = component.longText || '';
-                } else if (types.indexOf('route') !== -1) {
-                    route = component.longText || '';
-                } else if (types.indexOf('locality') !== -1) {
-                    city = component.longText || '';
-                } else if (types.indexOf('administrative_area_level_1') !== -1) {
-                    state = component.shortText || '';
-                } else if (types.indexOf('postal_code') !== -1) {
-                    postalCode = component.longText || '';
-                } else if (types.indexOf('country') !== -1) {
-                    country = component.longText || '';
-                }
-            }
-
-            var street = '';
-            if (streetNumber && route) {
-                street = streetNumber + ' ' + route;
-            } else if (route) {
-                street = route;
-            } else if (streetNumber) {
-                street = streetNumber;
-            }
-            if (!street && place.formattedAddress) {
-                var firstComma = place.formattedAddress.indexOf(',');
-                street = firstComma !== -1
-                    ? place.formattedAddress.slice(0, firstComma).trim()
-                    : place.formattedAddress.trim();
-            }
-            if (street) {
-                streetInput.value = street;
-            }
-
-            var cityField = document.getElementById('id_city');
-            var stateField = document.getElementById('id_state');
-            var postalField = document.getElementById('id_postal_code');
-            var countryField = document.getElementById('id_country');
-
-            if (cityField && city) cityField.value = city;
-            if (stateField && state) stateField.value = state;
-            if (postalField && postalCode) postalField.value = postalCode;
-            if (countryField && country) countryField.value = country;
-
+    var pendingFormatted = '';
+    CueAddressAutocomplete.attach({
+        inputEl: input,
+        dropdownEl: dropdown,
+        apiKey: '{{ google_maps_api_key|escapejs }}',
+        fields: {
+            street: streetInput, city: cityField, state: stateField,
+            postal: postalField, country: countryField,
+        },
+        onSelect: function (formatted) {
+            pendingFormatted = formatted || '';
             confirmBtn.disabled = false;
-            confirmBtn.dataset.formattedAddress = place.formattedAddress || '';
-        });
-
-        confirmBtn.addEventListener('click', function() {
-            if (confirmBtn.dataset.formattedAddress) {
-                currentDisplay.value = confirmBtn.dataset.formattedAddress;
-            }
-            lookupRow.style.display = 'none';
-            currentRow.style.display = '';
+        },
+        onClear: function () {
+            pendingFormatted = '';
             confirmBtn.disabled = true;
-            confirmBtn.dataset.formattedAddress = '';
-        });
+        },
+    });
 
-    } catch (e) {
-        console && console.error && console.error('Error initializing PlaceAutocompleteElement', e);
-    }
-};
-(function() {
-    var key = '{{ google_maps_api_key|escapejs }}';
-    if (!key) return;
-    var s = document.createElement('script');
-    s.src = 'https://maps.googleapis.com/maps/api/js?key=' + key + '&libraries=places';
-    s.async = true;
-    s.defer = true;
-    s.onload = function() {
-        if (window.initVenuePlacesAutocomplete) {
-            window.initVenuePlacesAutocomplete();
-        }
-    };
-    document.head.appendChild(s);
-})();
+    changeBtn.addEventListener('click', function () {
+        currentRow.style.display = 'none';
+        lookupRow.style.display = '';
+        input.focus();
+    });
+
+    cancelBtn.addEventListener('click', function () {
+        lookupRow.style.display = 'none';
+        currentRow.style.display = '';
+    });
+
+    confirmBtn.addEventListener('click', function () {
+        if (pendingFormatted) currentDisplay.value = pendingFormatted;
+        lookupRow.style.display = 'none';
+        currentRow.style.display = '';
+        confirmBtn.disabled = true;
+    });
+});
 </script>
 {% endif %}
 {% endblock %}
