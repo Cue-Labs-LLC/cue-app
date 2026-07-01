@@ -14543,8 +14543,16 @@ class ScheduledSurveySendTests(TestCase):
     # ---- auto-arm: the scheduler creates scheduled invitations ----------------
 
     def _ended_yesterday_event(self, **schedule):
-        """An event whose end is in the past (anchor passed) so it's arm-eligible."""
-        yesterday = (timezone.now() - timedelta(days=1)).date()
+        """An event whose end is in the past (anchor passed) so it's arm-eligible.
+
+        The date is derived in the event's own timezone (not UTC) so that a fixed
+        22:00 end_time lands a full day in the past regardless of the wall-clock
+        time the suite runs — computing it in UTC collapsed the gap near the
+        UTC-day boundary and left a +1h send time in the future.
+        """
+        from zoneinfo import ZoneInfo
+        now_et = timezone.now().astimezone(ZoneInfo('America/New_York'))
+        yesterday = (now_et - timedelta(days=1)).date()
         ev = Event.objects.create(
             organization=self.org, name='Just Ended', venue=self.venue,
             start_date=yesterday, end_date=yesterday, end_time=time(22, 0),
@@ -14944,7 +14952,11 @@ class DefaultSurveyScheduleTests(TestCase):
     # ---- auto-arm honors the resolved schedule --------------------------------
 
     def _ended_yesterday_event(self):
-        yesterday = (timezone.now() - timedelta(days=1)).date()
+        # Derive the date in the event's timezone (not UTC) so the fixed 22:00
+        # end_time is reliably in the past no matter when the suite runs.
+        from zoneinfo import ZoneInfo
+        now_et = timezone.now().astimezone(ZoneInfo('America/New_York'))
+        yesterday = (now_et - timedelta(days=1)).date()
         return Event.objects.create(
             organization=self.org, name='Ended Show', venue=self.venue,
             start_date=yesterday, end_date=yesterday, end_time=time(22, 0),
