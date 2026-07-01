@@ -77,7 +77,6 @@ from .services.segmentation import (
 from .services.segmentation.segment_definitions import (
     SEGMENT_BADGE_COLORS,
     SEGMENT_DESCRIPTIONS,
-    SEGMENT_RULES,
 )
 RFM_RECENCY_LABELS = {
     5: "Bought very recently",
@@ -2980,21 +2979,9 @@ def marketing_ai_analyze(request):
 @require_org
 @require_host
 def customer_segments(request):
-    """Analytics page for RFM segments and purchase-pattern behavior profiles."""
+    """Minimal analytics page for RFM segment distribution."""
     org = get_organization(request)
     segment_order = list(SEGMENT_BADGE_COLORS.keys())
-
-    # Build segment definitions for "What the segments mean" card (simple language + optional R/F/M).
-    segment_definitions = []
-    for name, r_range, f_range, m_range in SEGMENT_RULES:
-        segment_definitions.append({
-            "segment": name,
-            "description": SEGMENT_DESCRIPTIONS.get(name, ""),
-            "badge_color": SEGMENT_BADGE_COLORS.get(name, "secondary"),
-            "r_range": _format_range(r_range),
-            "f_range": _format_range(f_range),
-            "m_range": _format_range(m_range),
-        })
 
     segment_stats, total_customers = _normalized_customer_group_stats(
         org,
@@ -3002,41 +2989,9 @@ def customer_segments(request):
         segment_order,
         SEGMENT_BADGE_COLORS,
     )
-    segment_stats_json = json.dumps([
-        {'segment': s['segment'], 'count': s['count'], 'avg_ltv': float(s['avg_ltv'])}
-        for s in segment_stats
-    ])
-    behavior_stats, _ = _normalized_customer_group_stats(
-        org,
-        'behavior_profile',
-        BEHAVIOR_PROFILE_ORDER,
-        BEHAVIOR_PROFILE_BADGE_COLORS,
-    )
-    behavior_stats_json = json.dumps([
-        {
-            'segment': s['segment'],
-            'count': s['count'],
-            'avg_ltv': float(s['avg_ltv']),
-            'avg_gap': s['avg_gap'],
-        }
-        for s in behavior_stats
-    ])
-    behavior_definitions = [
-        {
-            'segment': name,
-            'description': BEHAVIOR_PROFILE_DESCRIPTIONS.get(name, ''),
-            'badge_color': BEHAVIOR_PROFILE_BADGE_COLORS.get(name, 'secondary'),
-        }
-        for name in BEHAVIOR_PROFILE_ORDER
-    ]
     segment_mode_display = _segment_mode_display(org)
     context = {
         'segment_stats': segment_stats,
-        'segment_stats_json': segment_stats_json,
-        'segment_definitions': segment_definitions,
-        'behavior_stats': behavior_stats,
-        'behavior_stats_json': behavior_stats_json,
-        'behavior_definitions': behavior_definitions,
         'total_customers': total_customers,
         'rfm_recalc_in_progress': org.rfm_recalc_in_progress,
         'segment_mode_label': segment_mode_display['label'],

@@ -3412,9 +3412,9 @@ class CustomerSegmentationViewTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.context['segment_mode_label'], 'Automatic')
-        self.assertContains(response, 'How segments are decided')
+        self.assertContains(response, 'Scoring')
         self.assertContains(response, 'Cue sorts customers automatically using relative RFM scores')
-        self.assertContains(response, 'Choose how segments are decided')
+        self.assertContains(response, 'Settings')
 
     def test_customer_segments_hides_tuning_link_for_non_admins(self):
         self.client.force_login(self.host)
@@ -3422,8 +3422,7 @@ class CustomerSegmentationViewTests(TestCase):
         response = self.client.get(reverse('tickets:customer_segments'))
 
         self.assertEqual(response.status_code, 200)
-        self.assertContains(response, 'How segments are decided')
-        self.assertNotContains(response, 'Choose how segments are decided')
+        self.assertContains(response, 'Scoring')
         self.assertNotContains(response, 'href="{}"'.format(reverse('tickets:settings_segment_tuning')))
 
     def test_customer_segments_shows_custom_rule_summary(self):
@@ -3453,7 +3452,7 @@ class CustomerSegmentationViewTests(TestCase):
         self.assertContains(response, 'Segment Settings')
         self.assertContains(response, reverse('tickets:settings_segment_tuning'))
 
-    def test_customer_segments_includes_behavior_stats(self):
+    def test_customer_segments_is_minimal_and_links_to_filtered_customers(self):
         customer = Customer.objects.create(
             organization=self.org,
             email='profiled@example.com',
@@ -3462,10 +3461,7 @@ class CustomerSegmentationViewTests(TestCase):
             last_order_date=date.today() - timedelta(days=12),
             rfm_segment='Loyal',
             behavior_profile='Fast Repeat',
-            behavior_profile_reason='Returns quickly after each purchase and is currently active.',
             days_since_last_order=12,
-            avg_days_between_orders=14,
-            days_to_second_order=16,
         )
         TicketOrder.objects.create(
             customer=customer,
@@ -3479,10 +3475,14 @@ class CustomerSegmentationViewTests(TestCase):
         response = self.client.get(reverse('tickets:customer_segments'))
 
         self.assertEqual(response.status_code, 200)
-        self.assertIn('behavior_stats', response.context)
-        self.assertTrue(any(row['segment'] == 'Fast Repeat' for row in response.context['behavior_stats']))
-        self.assertContains(response, 'Behavior profiles')
-        self.assertContains(response, 'Fast Repeat')
+        self.assertContains(response, 'Segments')
+        self.assertContains(response, 'href="{}?segment=Loyal"'.format(reverse('tickets:customer_list')))
+        self.assertContains(response, 'progress-bar')
+        self.assertNotIn('behavior_stats', response.context)
+        self.assertNotContains(response, 'Behavior profiles')
+        self.assertNotContains(response, 'Fast Repeat')
+        self.assertNotContains(response, 'chart.umd.min.js')
+        self.assertNotContains(response, '<canvas')
 
     def test_customer_detail_shows_behavior_profile_metrics(self):
         customer = Customer.objects.create(
