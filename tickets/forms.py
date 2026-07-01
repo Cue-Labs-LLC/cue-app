@@ -101,28 +101,34 @@ class SegmentTuningForm(forms.ModelForm):
     """
 
     recency_active_days = forms.IntegerField(
-        min_value=1, label="Active within (days)",
-        widget=forms.NumberInput(attrs={'class': 'form-control'}),
+        min_value=1, label="Days since last order to still count as active",
+        widget=forms.NumberInput(attrs={
+            'class': 'form-control', 'aria-label': 'Days since last order to still count as active'}),
     )
     recency_cooling_days = forms.IntegerField(
-        min_value=2, label="Lapsed after (days)",
-        widget=forms.NumberInput(attrs={'class': 'form-control'}),
+        min_value=2, label="Days since last order before a customer counts as gone",
+        widget=forms.NumberInput(attrs={
+            'class': 'form-control', 'aria-label': 'Days since last order before a customer counts as gone'}),
     )
     freq_few = forms.IntegerField(
-        min_value=2, label="A few orders start at",
-        widget=forms.NumberInput(attrs={'class': 'form-control'}),
+        min_value=2, label="Orders that make someone a repeat customer",
+        widget=forms.NumberInput(attrs={
+            'class': 'form-control', 'aria-label': 'Orders that make someone a repeat customer'}),
     )
     freq_many = forms.IntegerField(
-        min_value=2, label="Buys often starts at",
-        widget=forms.NumberInput(attrs={'class': 'form-control'}),
+        min_value=2, label="Orders that make someone a frequent buyer",
+        widget=forms.NumberInput(attrs={
+            'class': 'form-control', 'aria-label': 'Orders that make someone a frequent buyer'}),
     )
     monetary_mid = forms.DecimalField(
-        min_value=0, max_digits=10, decimal_places=2, label="Decent spend ($)",
-        widget=forms.NumberInput(attrs={'class': 'form-control', 'step': '0.01'}),
+        min_value=0, max_digits=10, decimal_places=2, label="Total spent to count as a good spender",
+        widget=forms.NumberInput(attrs={
+            'class': 'form-control', 'step': '0.01', 'aria-label': 'Dollars spent to count as a good spender'}),
     )
     monetary_high = forms.DecimalField(
-        min_value=0, max_digits=10, decimal_places=2, label="Top spender ($)",
-        widget=forms.NumberInput(attrs={'class': 'form-control', 'step': '0.01'}),
+        min_value=0, max_digits=10, decimal_places=2, label="Total spent to count as a top spender",
+        widget=forms.NumberInput(attrs={
+            'class': 'form-control', 'step': '0.01', 'aria-label': 'Dollars spent to count as a top spender'}),
     )
 
     class Meta:

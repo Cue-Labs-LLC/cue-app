@@ -32,6 +32,8 @@ from tickets.models import Customer, TicketOrder
 from .rfm_calculator import _assign_score
 from .segment_definitions import (
     CANONICAL_VALUE_ORDER,
+    FREQUENCY_FEW,
+    FREQUENCY_MANY,
     SEGMENT_VALUE_ORDER,
     classify_segment,
     classify_segment_absolute,
@@ -317,6 +319,67 @@ class SegmentDiagnostics:
             "by_segment": distribution,
             "over_concentrated": over_concentrated,
         }
+
+    def recommended_bands(self, bands):
+        """Data-driven fixes for mis-set 'frequent buyer' / 'top spender' cut-offs.
+
+        One read-only pass over the org's order counts + spend. Returns only the
+        levers that are clearly too high (so the top groups are near-empty) with a
+        better value, e.g. {'freq_many': 3, 'monetary_high': 65}. Empty when the
+        current cut-offs already populate the top groups.
+        """
+        band_kwargs, monetary_bands = bands
+        freq_few = int(band_kwargs.get('freq_few', FREQUENCY_FEW))
+        freq_many = int(band_kwargs.get('freq_many', FREQUENCY_MANY))
+        mid, high = monetary_bands
+
+        base = (
+            self._base_queryset()
+            .annotate(order_count=Count('ticket_orders'))
+            .values('order_count', 'lifetime_value')
+        )
+        if base.count() > BACKTEST_MAX_CUSTOMERS:
+            return {}
+
+        order_counts = []
+        spends = []
+        for row in base.iterator(chunk_size=2000):
+            oc = row['order_count'] or 0
+            if oc > 0:
+                order_counts.append(oc)
+            lv = float(row['lifetime_value'] or 0)
+            if lv > 0:
+                spends.append(lv)
+
+        rec = {}
+
+        # Frequent buyer: if the current cut-off makes the 'frequent' group tiny,
+        # suggest the smallest count above 'a few' that is a top-~15% (or smaller)
+        # slice, falling back to the smallest count that isn't empty.
+        if order_counts:
+            n = len(order_counts)
+
+            def share_ge(k):
+                return sum(1 for c in order_counts if c >= k) / n
+
+            if share_ge(freq_many) < 0.02:
+                cand = [k for k in range(freq_few + 1, max(order_counts) + 1) if share_ge(k) > 0]
+                top = [k for k in cand if share_ge(k) <= 0.15]
+                best = top[0] if top else (cand[0] if cand else None)
+                if best and best < freq_many:
+                    rec['freq_many'] = best
+
+        # Top spender: if almost no one clears the current amount, suggest ~the
+        # 85th percentile of spend (a friendly rounded number).
+        if spends and high > 0:
+            share_high = sum(1 for s in spends if s >= high) / len(spends)
+            if share_high < 0.02:
+                p85 = float(np.percentile(np.array(spends, dtype=float), 85))
+                p85 = round(p85 / 5) * 5 if p85 >= 20 else round(p85, 2)
+                if mid < p85 < high:
+                    rec['monetary_high'] = p85
+
+        return rec
 
     # ---- predictive validity (backtest) ------------------------------------
 
