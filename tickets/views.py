@@ -75,11 +75,9 @@ from .services.segmentation import (
     BEHAVIOR_PROFILE_ORDER,
 )
 from .services.segmentation.segment_definitions import (
-    CANONICAL_VALUE_ORDER,
     SEGMENT_BADGE_COLORS,
     SEGMENT_DESCRIPTIONS,
     SEGMENT_RULES,
-    classify_segment_canonical,
 )
 RFM_RECENCY_LABELS = {
     5: "Bought very recently",
@@ -307,29 +305,6 @@ def _event_list_cache_key(org_id, search, sort, page, status_filter, actions_cou
 def _invalidate_event_list_cache(org):
     """Bump the version counter so all existing event_list cache entries expire naturally."""
     key = f'event_list_ver:{org.pk}'
-    try:
-        django_cache.incr(key)
-    except ValueError:
-        try:
-            django_cache.set(key, 1, timeout=None)
-        except Exception:
-            pass
-    except Exception:
-        pass
-
-
-def _segment_health_cache_key(org):
-    """Versioned, org-scoped cache key for the segment_health internal diagnostics."""
-    try:
-        version = django_cache.get(f'segment_health_ver:{org.pk}', 0)
-    except Exception:
-        version = 0
-    return f'segment_health:{version}:{org.pk}'
-
-
-def _invalidate_segment_health_cache(org):
-    """Bump the version counter so cached segment_health diagnostics expire after a recalc."""
-    key = f'segment_health_ver:{org.pk}'
     try:
         django_cache.incr(key)
     except ValueError:
@@ -2772,6 +2747,37 @@ def _format_range(min_max):
     return f"{lo}-{hi}"
 
 
+def _segment_mode_display(org):
+    """Return display copy for how this org currently assigns RFM segments."""
+    if org.segment_mode == 'absolute':
+        from .services.segmentation.segment_definitions import default_segment_bands
+
+        defaults = default_segment_bands()
+        bands = {**defaults, **(org.segment_bands or {})}
+        return {
+            'label': 'Custom rules',
+            'summary': (
+                'Customers are sorted with fixed cut-offs: active within {active} days, '
+                'slipping away through {cooling} days, repeat at {few} orders, '
+                'frequent at {many} orders, good spender at ${mid:g}, top spender at ${high:g}.'
+            ).format(
+                active=int(bands['recency_active_days']),
+                cooling=int(bands['recency_cooling_days']),
+                few=int(bands['freq_few']),
+                many=int(bands['freq_many']),
+                mid=float(bands['monetary_mid']),
+                high=float(bands['monetary_high']),
+            ),
+        }
+    return {
+        'label': 'Automatic',
+        'summary': (
+            'Cue sorts customers automatically using relative RFM scores for recency, '
+            'frequency, and total spend within your organization.'
+        ),
+    }
+
+
 def _parse_churn_days(request):
     """Return a validated churn threshold from the query string."""
     raw_days = request.GET.get('days', '').strip()
@@ -3023,6 +3029,7 @@ def customer_segments(request):
         }
         for name in BEHAVIOR_PROFILE_ORDER
     ]
+    segment_mode_display = _segment_mode_display(org)
     context = {
         'segment_stats': segment_stats,
         'segment_stats_json': segment_stats_json,
@@ -3032,6 +3039,8 @@ def customer_segments(request):
         'behavior_definitions': behavior_definitions,
         'total_customers': total_customers,
         'rfm_recalc_in_progress': org.rfm_recalc_in_progress,
+        'segment_mode_label': segment_mode_display['label'],
+        'segment_mode_summary': segment_mode_display['summary'],
     }
     return render(request, 'tickets/customer_segments.html', context)
 
@@ -3125,55 +3134,6 @@ def recalculate_segments(request):
     return redirect('tickets:customer_segments')
 
 
-def _segment_health_display(internal):
-    """Shape raw SegmentDiagnostics internal output for the template."""
-    dims = ['recency', 'frequency', 'monetary']
-    raw = internal.get('raw_value_stats', {})
-    histograms = internal.get('score_histograms', {})
-    score_rows = []
-    for dim in dims:
-        buckets = histograms.get(dim, {})
-        total = sum(buckets.values()) or 1
-        stat = raw.get(dim) or {}
-        # Degenerate bucketing: >=60% share one value, so >=3 score buckets collapse.
-        collapsed = bool(stat) and stat.get('p20') == stat.get('p60')
-        score_rows.append({
-            'dim': dim,
-            'collapsed': collapsed,
-            'n_distinct': stat.get('n_distinct'),
-            'buckets': [
-                {
-                    'score': s,
-                    'count': buckets.get(s, 0),
-                    'pct': round(100.0 * buckets.get(s, 0) / total, 1),
-                }
-                for s in range(1, 6)
-            ],
-        })
-
-    cube = internal.get('cube_coverage', {})
-    cell_counts = sorted(
-        cube.get('segment_cell_counts', {}).items(), key=lambda kv: -kv[1]
-    )
-    sizes = internal.get('segment_size_distribution', {})
-    size_rows = [
-        {
-            'segment': name,
-            'count': info['count'],
-            'pct': info['pct'],
-            'badge_color': SEGMENT_BADGE_COLORS.get(name, 'secondary'),
-        }
-        for name, info in sizes.get('by_segment', {}).items()
-    ]
-    return {
-        'score_rows': score_rows,
-        'cube_coverage': cube,
-        'cube_cell_counts': cell_counts,
-        'segment_size_rows': size_rows,
-        'over_concentrated': sizes.get('over_concentrated', []),
-    }
-
-
 def _segment_health_backtest_rows(bt):
     """Shape a backtest result (per-segment table) for the template, or None."""
     if not bt or bt.get('status') != 'ok':
@@ -3217,80 +3177,6 @@ def _align_backtest_rows(proposed_rows, current_rows, order):
         [by_p.get(n) or zero(n) for n in names],
         [by_c.get(n) or zero(n) for n in names],
     )
-
-
-@login_required
-@require_org
-@require_host
-def segment_health(request):
-    """Diagnostics panel: is the RFM segmentation internally sound and predictive?
-
-    The cheap internal diagnostics (score histograms, cube coverage, segment
-    sizes) are computed on every load and cached with a versioned, org-scoped
-    key. The expensive as-of-T backtest only runs when explicitly requested via
-    ?backtest=1, since it recomputes RFM from raw orders.
-    """
-    from .services.segmentation.validation import SegmentDiagnostics
-
-    org = get_organization(request)
-    diagnostics = SegmentDiagnostics(org)
-
-    cache_key = _segment_health_cache_key(org)
-    internal = django_cache.get(cache_key)
-    if internal is None:
-        internal = diagnostics._internal_diagnostics()
-        django_cache.set(cache_key, internal, 300)
-
-    show_backtest = request.GET.get('backtest') == '1'
-    try:
-        holdout_days = int(request.GET.get('holdout_days', 180))
-    except (TypeError, ValueError):
-        holdout_days = 180
-    holdout_days = max(30, min(730, holdout_days))
-
-    backtest = backtest_status = canonical_rows = canonical_coverage = None
-    separation = None
-    if show_backtest:
-        # The backtest is expensive (recomputes RFM from raw orders), so cache it
-        # per (org-version, holdout_days). The version bumps on any recalc/CSV
-        # import, so cached results never outlive a segment change.
-        bt_key = f"{cache_key}:bt:{holdout_days}"
-        cached_bt = django_cache.get(bt_key)
-        if cached_bt is None:
-            result = diagnostics._backtest(holdout_days=holdout_days)
-            canonical_result = diagnostics._backtest(
-                holdout_days=holdout_days,
-                rule_set=classify_segment_canonical,
-                value_order=CANONICAL_VALUE_ORDER,
-            )
-            cached_bt = {
-                'status': result.get('status'),
-                'rows': _segment_health_backtest_rows(result),
-                'separation': result.get('separation') if result.get('status') == 'ok' else None,
-                'canonical_rows': _segment_health_backtest_rows(canonical_result),
-                'coverage': diagnostics._cube_coverage(
-                    classify_segment_canonical, explain_fn=None
-                ),
-            }
-            django_cache.set(bt_key, cached_bt, 300)
-        backtest_status = cached_bt['status']
-        backtest = cached_bt['rows']
-        separation = cached_bt['separation']
-        canonical_rows = cached_bt['canonical_rows']
-        canonical_coverage = cached_bt['coverage']
-
-    context = {
-        'display': _segment_health_display(internal),
-        'show_backtest': show_backtest,
-        'holdout_days': holdout_days,
-        'backtest_status': backtest_status,
-        'backtest_rows': backtest,
-        'backtest_separation': separation,
-        'canonical_rows': canonical_rows,
-        'canonical_coverage': canonical_coverage,
-        'rfm_recalc_in_progress': org.rfm_recalc_in_progress,
-    }
-    return render(request, 'tickets/segment_health.html', context)
 
 
 # ---------------------------------------------------------------------------
@@ -6953,7 +6839,7 @@ def _preview_size_rows(sizes):
 
 
 def _annotate_order_check(rows):
-    """For the 'are your groups in the right order?' list.
+    """For the 'are your segments in the right order?' list.
 
     rows are in value order (best group first). Each non-empty group's later spend
     should be <= the group above it. Flag any that spent MORE than the last non-empty
@@ -7012,14 +6898,14 @@ def _recommendations(diag, candidate, current_score=None):
         if result.get('status') != 'ok' or score is None:
             return False
         # Match the visible verdict margin: a recommendation should not click
-        # through into "worse than current automatic grouping."
+        # through into "worse than current automatic segments."
         return score >= current_score - 0.05
 
     out = []
     if 'freq_many' in recs and passes_revenue_check(['freq_many']):
         out.append({
             'label': 'Set “frequent buyer” to {} orders'.format(recs['freq_many']),
-            'why': 'Almost nobody qualifies now, so your top groups are nearly empty.',
+            'why': 'Almost nobody qualifies now, so your top segments are nearly empty.',
             'apply_json': json.dumps({'id_freq_many': recs['freq_many']}),
         })
     if 'monetary_high' in recs and passes_revenue_check(['monetary_high']):
@@ -7044,7 +6930,7 @@ def _recommendations(diag, candidate, current_score=None):
 
 
 def _spread_note(segment):
-    """Plain-English advice when one preview group dominates the customer base."""
+    """Plain-English advice when one preview segment dominates the customer base."""
     if not segment:
         return None
     if segment == 'Dormant':
@@ -7056,11 +6942,11 @@ def _spread_note(segment):
         )
     if segment in ('VIP', 'Loyal', 'Big Spender'):
         return (
-            'Most customers fall into one top group ({}). Raise the frequent-buyer '
-            'or top-spender thresholds so the highest-value groups stay selective.'
+            'Most customers fall into one top segment ({}). Raise the frequent-buyer '
+            'or top-spender thresholds so the highest-value segments stay selective.'
         ).format(segment)
     return (
-        'Most customers fall into one group ({}). Adjust the cut-offs above to '
+        'Most customers fall into one segment ({}). Adjust the cut-offs above to '
         'spread customers only if this does not match how you would market to them.'
     ).format(segment)
 
@@ -7105,10 +6991,8 @@ def settings_segment_tuning(request):
                     org.refresh_from_db(fields=['rfm_recalc_in_progress'])
                     if not org.rfm_recalc_in_progress:
                         recalculate_rfm_task.delay(str(org.id))
-                    _invalidate_segment_health_cache(org)
                     messages.success(request, 'Saved. Recalculating segments with your cut-offs.')
                 else:
-                    _invalidate_segment_health_cache(org)
                     messages.success(request, 'Cut-offs saved. Segments stay on percentile mode.')
                 return redirect('tickets:settings_segment_tuning')
 

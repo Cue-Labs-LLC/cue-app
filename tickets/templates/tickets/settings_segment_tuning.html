@@ -1,7 +1,7 @@
 {% extends 'tickets/base.html' %}
 {% load humanize %}
 
-{% block title %}Customer Groups{% endblock %}
+{% block title %}Segment Settings{% endblock %}
 
 {% block extra_head %}
 <style>
@@ -28,16 +28,16 @@
 {% block content %}
 <div class="page-header">
     <div>
-        <h1>Customer Groups</h1>
-        <p class="page-header-subtitle">Cue sorts your customers into groups like VIP, Regulars, and At-Risk. Choose how the sorting works.</p>
+        <h1>Segment Settings</h1>
+        <p class="page-header-subtitle">Cue sorts your customers into segments like VIP, Regulars, and At-Risk. Choose how the sorting works.</p>
     </div>
     <div class="page-header-actions">
-        <a href="{% url 'tickets:segment_health' %}" class="btn btn-outline-secondary"><i class="bi bi-bar-chart"></i> See the group report</a>
+        <a href="{% url 'tickets:customer_segments' %}" class="btn btn-outline-secondary"><i class="bi bi-bar-chart"></i> View live segment results</a>
     </div>
 </div>
 
 {% if rfm_recalc_in_progress %}
-<div class="alert alert-info"><i class="bi bi-hourglass-split"></i> Updating your groups &mdash; this only takes a moment.</div>
+<div class="alert alert-info"><i class="bi bi-hourglass-split"></i> Updating your segments &mdash; this only takes a moment.</div>
 {% endif %}
 
 <form method="post" novalidate id="segTuneForm">
@@ -55,7 +55,7 @@
                             <input type="radio" name="segment_mode" value="percentile" class="form-check-input mt-1 me-2" {% if form.segment_mode.value != 'absolute' %}checked{% endif %}>
                             <span>
                                 <span class="fw-semibold">Sort them automatically</span>
-                                <span class="d-block text-muted small mt-1">Cue picks the groups for you. Simplest option &mdash; nothing to set up.</span>
+                                <span class="d-block text-muted small mt-1">Cue picks the segments for you. Simplest option &mdash; nothing to set up.</span>
                             </span>
                         </span>
                     </label>
@@ -111,12 +111,12 @@
                 {% for e in form.monetary_high.errors %}<div class="text-danger small">{{ e }}</div>{% endfor %}
 
                 <div class="mt-4">
-                    <button type="submit" name="action" value="preview_backtest" class="btn btn-primary rules-only"><i class="bi bi-people"></i> See my groups</button>
+                    <button type="submit" name="action" value="preview_backtest" class="btn btn-primary rules-only"><i class="bi bi-people"></i> See my segments</button>
                 </div>
             </div>
         </div>
 
-        <!-- Results, full width so the group bars and comparison have room -->
+        <!-- Results, full width so the segment bars and comparison have room -->
         <div id="previewArea" class="mt-4">
             {% include 'tickets/_segment_preview.html' %}
         </div>

@@ -3,12 +3,12 @@
 <div class="alert alert-warning"><i class="bi bi-exclamation-triangle"></i> Please check the numbers in your rules above, then try again.</div>
 {% endif %}
 
-<!-- 1. Who lands in each group -->
+<!-- 1. Who lands in each segment -->
 <div class="card mb-4">
-    <div class="card-header"><h5 class="mb-0">Your groups</h5></div>
+    <div class="card-header"><h5 class="mb-0">Your segments</h5></div>
     <div class="card-body">
         {% if preview_sizes %}
-        <p class="text-muted small mb-3">This is just <strong>who lands in each group</strong> with these numbers. Nothing is saved yet &mdash; the check below shows whether the grouping actually predicts spending.</p>
+        <p class="text-muted small mb-3">This is just <strong>who lands in each segment</strong> with these numbers. Nothing is saved yet &mdash; the check below shows whether these segments actually predict spending.</p>
         <div style="max-width: 680px;">
         {% for row in preview_sizes %}
         <div class="group-row py-2">
@@ -26,35 +26,35 @@
         {% else %}
         <div class="empty-state">
             <i class="bi bi-people d-block"></i>
-            <p>Press <strong>See my groups</strong> to preview how your customers would be grouped.</p>
+            <p>Press <strong>See my segments</strong> to preview how your customers would be sorted into segments.</p>
         </div>
         {% endif %}
     </div>
 </div>
 
 {% if backtest_status %}
-<!-- 2. Does the grouping actually work? (the order check) -->
+<!-- 2. Do these segments actually work? (the order check) -->
 <div class="card mb-4">
-    <div class="card-header"><h5 class="mb-0">Does this grouping work?</h5></div>
+    <div class="card-header"><h5 class="mb-0">Do these segments work?</h5></div>
     <div class="card-body">
         {% if backtest_status == 'ok' and order_rows %}
         <p class="text-muted small mb-3" style="max-width: 70ch;">
             We sorted your customers as they were a few months ago, then looked at what they
             <strong>actually spent next</strong>. Good rules put your biggest future spenders in your top
-            groups &mdash; so the bars below should get <strong>shorter as you go down</strong>.
+            segments &mdash; so the bars below should get <strong>shorter as you go down</strong>.
             These flags are only checking future revenue; recency and order count still decide
-            who lands in each group.
+            who lands in each segment.
         </p>
 
         <div class="alert {% if order_violations == 0 %}alert-success{% else %}alert-warning{% endif %} d-flex align-items-center gap-2">
             <i class="bi {% if order_violations == 0 %}bi-check-circle-fill{% else %}bi-exclamation-triangle-fill{% endif %} fs-4"></i>
             <div>
                 {% if order_violations == 0 %}
-                <strong>Your groups line up.</strong> The more valuable the group, the more they actually spent later.
+                <strong>Your segments line up.</strong> The more valuable the segment, the more they actually spent later.
                 {% elif order_violations <= 2 %}
                 <strong>Mostly in order</strong>, with a couple of future-revenue flags below.
                 {% else %}
-                <strong>Revenue order is uneven.</strong> Some lower groups spent more later than higher groups &mdash; see the flags below.
+                <strong>Revenue order is uneven.</strong> Some lower segments spent more later than higher segments &mdash; see the flags below.
                 {% endif %}
             </div>
         </div>
@@ -65,7 +65,7 @@
 
         {% if backtest_verdict %}
         <p class="text-muted small mt-3 mb-0">
-            Overall, this does {% if backtest_verdict.label == 'better' %}a <strong>better</strong>{% elif backtest_verdict.label == 'worse' %}a <strong>worse</strong>{% else %}<strong>about the same</strong>{% endif %} job than your current automatic grouping at spotting who's likely to spend more later.
+            Overall, this does {% if backtest_verdict.label == 'better' %}a <strong>better</strong>{% elif backtest_verdict.label == 'worse' %}a <strong>worse</strong>{% else %}<strong>about the same</strong>{% endif %} job than your current automatic segments at spotting who's likely to spend more later.
         </p>
         {% endif %}
 
@@ -92,7 +92,7 @@
         {% endif %}
 
         {% elif backtest_status == 'too_large' %}
-        <div class="alert alert-secondary mb-0"><i class="bi bi-info-circle"></i> You have too many customers to check this in the browser. Save your rules and open the group report instead.</div>
+        <div class="alert alert-secondary mb-0"><i class="bi bi-info-circle"></i> You have too many customers to check this in the browser. Save your rules to apply them, then review the results on the Segments page.</div>
         {% else %}
         <div class="alert alert-secondary mb-0"><i class="bi bi-info-circle"></i> There isn't enough recent order history to check these rules yet.</div>
         {% endif %}
