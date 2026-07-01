@@ -14543,8 +14543,16 @@ class ScheduledSurveySendTests(TestCase):
     # ---- auto-arm: the scheduler creates scheduled invitations ----------------
 
     def _ended_yesterday_event(self, **schedule):
-        """An event whose end is in the past (anchor passed) so it's arm-eligible."""
-        yesterday = (timezone.now() - timedelta(days=1)).date()
+        """An event whose end is in the past (anchor passed) so it's arm-eligible.
+
+        The date is derived in the event's own timezone (not UTC) so that a fixed
+        22:00 end_time lands a full day in the past regardless of the wall-clock
+        time the suite runs — computing it in UTC collapsed the gap near the
+        UTC-day boundary and left a +1h send time in the future.
+        """
+        from zoneinfo import ZoneInfo
+        now_et = timezone.now().astimezone(ZoneInfo('America/New_York'))
+        yesterday = (now_et - timedelta(days=1)).date()
         ev = Event.objects.create(
             organization=self.org, name='Just Ended', venue=self.venue,
             start_date=yesterday, end_date=yesterday, end_time=time(22, 0),
@@ -14944,7 +14952,11 @@ class DefaultSurveyScheduleTests(TestCase):
     # ---- auto-arm honors the resolved schedule --------------------------------
 
     def _ended_yesterday_event(self):
-        yesterday = (timezone.now() - timedelta(days=1)).date()
+        # Derive the date in the event's timezone (not UTC) so the fixed 22:00
+        # end_time is reliably in the past no matter when the suite runs.
+        from zoneinfo import ZoneInfo
+        now_et = timezone.now().astimezone(ZoneInfo('America/New_York'))
+        yesterday = (now_et - timedelta(days=1)).date()
         return Event.objects.create(
             organization=self.org, name='Ended Show', venue=self.venue,
             start_date=yesterday, end_date=yesterday, end_time=time(22, 0),
@@ -15338,3 +15350,46 @@ class ExternalEventsFeatureFlagTests(TestCase):
             reverse('tickets:reprocess_csv_file', kwargs={'file_id': self.upload.id})
         )
         self.assertEqual(resp.status_code, 404)
+
+
+class EventEffectiveStatusTest(TestCase):
+    """effective_status compares the full timezone-aware end datetime against now,
+    so a 'live' event flips to 'ended' once its end time passes — not just once the
+    calendar day rolls over."""
+
+    def setUp(self):
+        self.org = Organization.objects.create(
+            name='Status Org', slug='status-org',
+        )
+        self.venue = Venue.objects.create(
+            organization=self.org, name='Venue', city='City',
+        )
+
+    def _event(self, **kwargs):
+        defaults = dict(
+            organization=self.org, name='E', venue=self.venue,
+            ticketing_type=TICKETING_TYPE_DIRECT, status='live',
+            timezone='America/Los_Angeles',
+        )
+        defaults.update(kwargs)
+        return Event.objects.create(**defaults)
+
+    def test_ended_when_end_time_passed_same_day(self):
+        """Event that ended a few hours ago today is 'ended', not 'live'."""
+        now = timezone.localtime(timezone.now())
+        ended = now - timedelta(hours=3)
+        event = self._event(
+            start_date=ended.date(), start_time=time(0, 0),
+            end_date=ended.date(), end_time=ended.time(),
+        )
+        self.assertEqual(event.effective_status, 'ended')
+
+    def test_live_when_end_time_later_today(self):
+        """Event ending later today is still 'live'."""
+        now = timezone.localtime(timezone.now())
+        ends = now + timedelta(hours=3)
+        event = self._event(
+            start_date=now.date(), start_time=time(0, 0),
+            end_date=ends.date(), end_time=ends.time(),
+        )
+        self.assertEqual(event.effective_status, 'live')

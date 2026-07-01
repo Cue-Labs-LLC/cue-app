@@ -1189,10 +1189,8 @@ class Event(AuditBaseModel):
             EVENT_STATUS_DRAFT, EVENT_STATUS_ENDED, EVENT_STATUS_CANCELLED
         ):
             return self.status
-        # status == 'live' - check if event date has passed
-        today = timezone.now().date()
-        end = self.end_date or self.start_date
-        if end < today:
+        # status == 'live' - check if the event end time has passed
+        if self.end_datetime() < timezone.now():
             return EVENT_STATUS_ENDED
         return EVENT_STATUS_LIVE
 
