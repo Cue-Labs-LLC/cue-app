@@ -2638,6 +2638,307 @@ class TestRFMCalculator(TestCase):
         self.assertGreaterEqual(c2.rfm_recency_score, c1.rfm_recency_score)
 
 
+class TestSegmentDiagnostics(TestCase):
+    """Tests for SegmentDiagnostics (read-only segment accuracy evaluation)."""
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.org = Organization.objects.create(name='Diag Org', slug='diag-org')
+        cls.other_org = Organization.objects.create(name='Other Org', slug='other-diag-org')
+        cls.venue = Venue.objects.create(organization=cls.org, name='Venue', city='City')
+        cls.event = Event.objects.create(
+            organization=cls.org, name='Event', venue=cls.venue,
+            start_date=date(2025, 1, 1),
+        )
+        cls.csv_format = CSVFormat.objects.create(
+            organization=cls.org, name='Fmt', column_mapping={'order_number': 'Order ID'},
+        )
+        cls.upload = UploadedFile.objects.create(
+            organization=cls.org, csv_format=cls.csv_format,
+            filename='test.csv', status='completed',
+        )
+
+    def _make_customer(self, email, lifetime_value=Decimal('0.00'), last_order_date=None):
+        return Customer.objects.create(
+            organization=self.org, email=email, name=email,
+            lifetime_value=lifetime_value, last_order_date=last_order_date,
+        )
+
+    def _make_order(self, customer, total, days_ago):
+        import uuid
+        from datetime import timedelta
+        TicketOrder.objects.create(
+            customer=customer, event=self.event, uploaded_file=self.upload,
+            order_number=str(uuid.uuid4())[:20],
+            order_date=timezone.now() - timedelta(days=days_ago),
+            total_amount=Decimal(str(total)),
+        )
+
+    def test_cube_coverage_reports_gaps_and_canonical_is_total(self):
+        """Current 8 rules leave cells uncovered; canonical grid covers all 125."""
+        from tickets.services.segmentation.validation import SegmentDiagnostics
+        from tickets.services.segmentation.segment_definitions import (
+            classify_segment, classify_segment_explain, classify_segment_canonical,
+        )
+        diag = SegmentDiagnostics(self.org)
+        current = diag._cube_coverage(classify_segment, explain_fn=classify_segment_explain)
+        self.assertLess(current['coverage_pct'], 100.0)
+        self.assertTrue(current['uncovered_cells'])
+
+        canonical = diag._cube_coverage(classify_segment_canonical, explain_fn=None)
+        self.assertEqual(canonical['coverage_pct'], 100.0)
+        self.assertEqual(canonical['uncovered_cells'], [])
+
+    def _seed_backtest_data(self):
+        """6 high-value repeat customers + 5 one-off dormant customers."""
+        good = [self._make_customer(f'good{i}@example.com') for i in range(6)]
+        bad = [self._make_customer(f'bad{i}@example.com') for i in range(5)]
+        for c in good:
+            # pre-cutoff (older than 90 days): frequent, high spend
+            self._make_order(c, 300, days_ago=100)
+            self._make_order(c, 300, days_ago=150)
+            self._make_order(c, 300, days_ago=200)
+            # holdout (within 90 days): repeat purchases
+            self._make_order(c, 250, days_ago=30)
+            self._make_order(c, 250, days_ago=15)
+        for c in bad:
+            # single old low-value order, no holdout activity
+            self._make_order(c, 20, days_ago=250)
+        return good, bad
+
+    def test_backtest_separation_sane(self):
+        """Top segment out-performs bottom on repeat rate; Spearman non-negative."""
+        from tickets.services.segmentation.validation import SegmentDiagnostics
+        self._seed_backtest_data()
+
+        bt = SegmentDiagnostics(self.org)._backtest(holdout_days=90)
+        self.assertEqual(bt['status'], 'ok')
+        per = bt['per_segment']
+        self.assertGreaterEqual(len(per), 2)
+
+        ranked = sorted(per.items(), key=lambda kv: -kv[1]['avg_future_revenue'])
+        top, bottom = ranked[0][1], ranked[-1][1]
+        self.assertGreater(top['repeat_rate'], bottom['repeat_rate'])
+        self.assertGreaterEqual(bt['separation']['spearman_future_revenue'], 0)
+
+    def test_backtest_insufficient_holdout(self):
+        """No orders in the holdout window -> insufficient_holdout."""
+        from tickets.services.segmentation.validation import SegmentDiagnostics
+        c = self._make_customer('only_old@example.com')
+        self._make_order(c, 100, days_ago=300)  # only pre-cutoff
+
+        bt = SegmentDiagnostics(self.org)._backtest(holdout_days=90)
+        self.assertEqual(bt['status'], 'insufficient_holdout')
+
+    def test_histograms_and_sizes_sum_to_scored_customers(self):
+        """Score histogram and segment-size totals equal the scored customer count."""
+        from tickets.services.segmentation.rfm_calculator import RFMCalculator
+        from tickets.services.segmentation.validation import SegmentDiagnostics
+        self._seed_backtest_data()
+        RFMCalculator(self.org).calculate_all()
+
+        scored = (
+            Customer.objects.filter(organization=self.org)
+            .exclude(email__endswith='@placeholder.local')
+            .count()
+        )
+        internal = SegmentDiagnostics(self.org)._internal_diagnostics()
+        self.assertEqual(sum(internal['score_histograms']['frequency'].values()), scored)
+        self.assertEqual(internal['segment_size_distribution']['total_scored'], scored)
+
+    def test_backtest_is_read_only(self):
+        """Running the backtest must not mutate stored RFM fields."""
+        from tickets.services.segmentation.rfm_calculator import RFMCalculator
+        from tickets.services.segmentation.validation import SegmentDiagnostics
+        self._seed_backtest_data()
+        RFMCalculator(self.org).calculate_all()
+
+        before = {
+            c.id: (c.rfm_recency_score, c.rfm_frequency_score,
+                   c.rfm_monetary_score, c.rfm_segment)
+            for c in Customer.objects.filter(organization=self.org)
+        }
+        SegmentDiagnostics(self.org).calculate(holdout_days=90, compare_canonical=True)
+        after = {
+            c.id: (c.rfm_recency_score, c.rfm_frequency_score,
+                   c.rfm_monetary_score, c.rfm_segment)
+            for c in Customer.objects.filter(organization=self.org)
+        }
+        self.assertEqual(before, after)
+
+    def test_diagnostics_are_org_scoped(self):
+        """Diagnostics for one org ignore another org's customers."""
+        from tickets.services.segmentation.validation import SegmentDiagnostics
+        Customer.objects.create(
+            organization=self.other_org, email='leak@example.com', name='leak',
+            rfm_segment='VIP', rfm_frequency_score=5,
+        )
+        self._make_customer('mine@example.com')
+        internal = SegmentDiagnostics(self.org)._internal_diagnostics()
+        self.assertNotIn('VIP', internal['segment_size_distribution']['by_segment'])
+
+    def test_backtest_absolute_path(self):
+        """The absolute-band backtest produces a scored per-segment table."""
+        from tickets.services.segmentation.validation import SegmentDiagnostics
+        from tickets.services.segmentation.segment_definitions import classify_segment_absolute
+        self._seed_backtest_data()
+        bt = SegmentDiagnostics(self.org)._backtest(
+            holdout_days=90, absolute_fn=classify_segment_absolute,
+        )
+        self.assertEqual(bt['status'], 'ok')
+        self.assertTrue(bt['per_segment'])
+
+    def test_backtest_nets_partial_refunds(self):
+        """Holdout revenue subtracts partial refunds (matches LTV definition)."""
+        import uuid
+        from tickets.services.segmentation.validation import SegmentDiagnostics
+        customers = [self._make_customer(f'pr{i}@example.com') for i in range(5)]
+        for c in customers:
+            # pre-cutoff order (segmentable)
+            self._make_order(c, 100, days_ago=200)
+            # holdout order: $200 face, $50 partially refunded -> nets to $150
+            TicketOrder.objects.create(
+                customer=c, event=self.event, uploaded_file=self.upload,
+                order_number=str(uuid.uuid4())[:20],
+                order_date=timezone.now() - timedelta(days=20),
+                total_amount=Decimal('200.00'), refunded_amount=Decimal('50.00'),
+            )
+        bt = SegmentDiagnostics(self.org)._backtest(holdout_days=90)
+        self.assertEqual(bt['status'], 'ok')
+        # All five identical -> one segment, avg future revenue nets the refund.
+        revenues = [s['avg_future_revenue'] for s in bt['per_segment'].values()]
+        self.assertIn(150.0, revenues)
+
+    def test_backtest_too_large_guard(self):
+        """A tenant over the customer ceiling short-circuits to too_large."""
+        from unittest.mock import patch
+        from tickets.services.segmentation import validation
+        self._seed_backtest_data()
+        with patch.object(validation, 'BACKTEST_MAX_CUSTOMERS', 0):
+            bt = validation.SegmentDiagnostics(self.org)._backtest(holdout_days=90)
+        self.assertEqual(bt['status'], 'too_large')
+
+    def test_separation_scores_needs_two_segments(self):
+        """A single segment can't be scored: spearman is None, not a crash."""
+        from tickets.services.segmentation.validation import SegmentDiagnostics
+        from tickets.services.segmentation.segment_definitions import SEGMENT_VALUE_ORDER
+        sep = SegmentDiagnostics(self.org)._separation_scores(
+            {'VIP': {'n': 3, 'avg_future_revenue': 10.0, 'repeat_rate': 0.5}},
+            SEGMENT_VALUE_ORDER,
+        )
+        self.assertIsNone(sep['spearman_future_revenue'])
+        self.assertEqual(sep['monotonic_violations'], 0)
+
+
+class TestSegmentClassifiers(TestCase):
+    """Pure-function tests for the candidate segment classifiers and helpers."""
+
+    def test_absolute_classifier_branches(self):
+        from tickets.services.segmentation.segment_definitions import classify_segment_absolute
+        bands = (40.0, 75.0)
+        cases = [
+            (10, 5, 100, "VIP"),          # active, many, high
+            (10, 5, 10, "Loyal"),         # active, many, low
+            (10, 3, 100, "Big Spender"),  # active, few, high
+            (10, 3, 10, "Promising"),     # active, few, low
+            (10, 1, 10, "New"),           # active, one
+            (120, 3, 10, "At-Risk"),      # cooling, few
+            (120, 1, 10, "Promising"),    # cooling, one
+            (300, 2, 10, "Lapsed"),       # lost, repeat history
+            (300, 1, 10, "Dormant"),      # lost, single
+        ]
+        for recency, freq, mon, expected in cases:
+            self.assertEqual(
+                classify_segment_absolute(recency, freq, mon, bands), expected,
+                f"r={recency} f={freq} m={mon}",
+            )
+
+    def test_absolute_all_zero_bands_no_false_vip(self):
+        """With a degenerate all-zero money band, no one is a high spender."""
+        from tickets.services.segmentation.segment_definitions import classify_segment_absolute
+        # active + many but high threshold is 0 -> not VIP/Big Spender, falls to Loyal
+        self.assertEqual(classify_segment_absolute(10, 5, 0, (0.0, 0.0)), "Loyal")
+
+    def test_derive_monetary_bands(self):
+        from tickets.services.segmentation.segment_definitions import derive_monetary_bands
+        self.assertEqual(derive_monetary_bands([]), (0.0, 0.0))
+        self.assertEqual(derive_monetary_bands([0, 0, 0]), (0.0, 0.0))
+        mid, high = derive_monetary_bands([10, 10, 10, 10])  # degenerate -> high>mid
+        self.assertGreater(high, mid)
+        mid, high = derive_monetary_bands([10, 20, 30, 40, 50])
+        self.assertLess(mid, high)
+
+    def test_canonical_none_input_and_grid(self):
+        from tickets.services.segmentation.segment_definitions import classify_segment_canonical
+        self.assertEqual(classify_segment_canonical(None, 3, 3), "Lost")
+        self.assertEqual(classify_segment_canonical(5, 5, 5), "Champions")
+        self.assertEqual(classify_segment_canonical(1, 1, 1), "Lost")
+
+    def test_spearman_edge_cases(self):
+        from tickets.services.segmentation.validation import _spearman, _percentile_breakpoints
+        self.assertIsNone(_spearman([1], [1]))          # too short
+        self.assertIsNone(_spearman([1, 1, 1], [5, 6, 7]))  # zero variance in x
+        self.assertAlmostEqual(_spearman([1, 2, 3], [1, 2, 3]), 1.0)
+        # degenerate array falls back to median x4
+        self.assertEqual(_percentile_breakpoints([3, 3, 3, 3]), [3.0, 3.0, 3.0, 3.0])
+
+
+class TestValidateSegmentsCommand(TestCase):
+    """Tests for the validate_segments management command."""
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.org = Organization.objects.create(name='Cmd Org', slug='cmd-org')
+        cls.venue = Venue.objects.create(organization=cls.org, name='V', city='C')
+        cls.event = Event.objects.create(
+            organization=cls.org, name='E', venue=cls.venue, start_date=date(2025, 1, 1),
+        )
+        cls.csv_format = CSVFormat.objects.create(
+            organization=cls.org, name='F', column_mapping={'order_number': 'Order ID'},
+        )
+        cls.upload = UploadedFile.objects.create(
+            organization=cls.org, csv_format=cls.csv_format, filename='t.csv', status='completed',
+        )
+        import uuid
+
+        def order(customer, total, days_ago):
+            TicketOrder.objects.create(
+                customer=customer, event=cls.event, uploaded_file=cls.upload,
+                order_number=str(uuid.uuid4())[:20],
+                order_date=timezone.now() - timedelta(days=days_ago),
+                total_amount=Decimal(str(total)),
+            )
+
+        for i in range(8):
+            c = Customer.objects.create(organization=cls.org, email=f'cmd{i}@e.com', name=f'c{i}')
+            order(c, 100, 200)
+            if i < 6:
+                order(c, 80, 20)  # holdout activity
+
+    def test_command_runs_with_all_comparisons(self):
+        from io import StringIO
+        from django.core.management import call_command
+        out = StringIO()
+        call_command('validate_segments', '--org', 'cmd-org', '--holdout-days', '90',
+                     '--compare-canonical', '--compare-absolute', stdout=out)
+        output = out.getvalue()
+        self.assertIn('Cube coverage', output)
+        self.assertIn('canonical', output)
+        self.assertIn('absolute', output)
+
+    def test_command_unknown_org_errors(self):
+        from django.core.management import call_command
+        from django.core.management.base import CommandError
+        with self.assertRaises(CommandError):
+            call_command('validate_segments', '--org', 'does-not-exist')
+
+    def test_command_bad_cutoff_errors(self):
+        from django.core.management import call_command
+        from django.core.management.base import CommandError
+        with self.assertRaises(CommandError):
+            call_command('validate_segments', '--org', 'cmd-org', '--cutoff', 'not-a-date')
+
+
 class TestCustomerBehaviorProfiler(TestCase):
     """Tests for layered customer behavior profiling."""
 
@@ -2839,6 +3140,41 @@ class CustomerSegmentationViewTests(TestCase):
         self.assertTrue(any(row['segment'] == 'Fast Repeat' for row in response.context['behavior_stats']))
         self.assertContains(response, 'Behavior profiles')
         self.assertContains(response, 'Fast Repeat')
+
+    def test_segment_health_renders_internal_diagnostics(self):
+        Customer.objects.create(
+            organization=self.org, email='sh1@example.com', name='SH1',
+            lifetime_value=Decimal('180.00'), last_order_date=date.today() - timedelta(days=12),
+            rfm_segment='Loyal', rfm_recency_score=4, rfm_frequency_score=3, rfm_monetary_score=4,
+        )
+        response = self.client.get(reverse('tickets:segment_health'))
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('display', response.context)
+        self.assertFalse(response.context['show_backtest'])
+        self.assertContains(response, 'Rule coverage')
+        self.assertContains(response, 'Segment sizes')
+
+    def test_segment_health_backtest_opt_in(self):
+        import uuid
+        good = Customer.objects.create(organization=self.org, email='g@example.com', name='G')
+        bad = Customer.objects.create(organization=self.org, email='b@example.com', name='B')
+        for days in (100, 150, 200, 30, 15):
+            TicketOrder.objects.create(
+                customer=good, event=self.event, uploaded_file=self.upload,
+                order_number=str(uuid.uuid4())[:20],
+                order_date=timezone.now() - timedelta(days=days),
+                total_amount=Decimal('300.00'),
+            )
+        TicketOrder.objects.create(
+            customer=bad, event=self.event, uploaded_file=self.upload,
+            order_number=str(uuid.uuid4())[:20],
+            order_date=timezone.now() - timedelta(days=250),
+            total_amount=Decimal('20.00'),
+        )
+        response = self.client.get(reverse('tickets:segment_health'), {'backtest': '1', 'holdout_days': '90'})
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.context['show_backtest'])
+        self.assertEqual(response.context['holdout_days'], 90)
 
     def test_customer_detail_shows_behavior_profile_metrics(self):
         customer = Customer.objects.create(
