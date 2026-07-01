@@ -1,0 +1,24 @@
+{% load humanize %}
+<div class="table-responsive">
+    <table class="table table-hover table-sm mb-0 align-middle">
+        <caption class="ps-2">{{ caption }} &mdash; segments ranked by actual future revenue per customer</caption>
+        <thead>
+            <tr>
+                <th>Segment</th>
+                <th class="text-end">Customers</th>
+                <th class="text-end">Repeat rate</th>
+                <th class="text-end">Avg future revenue</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for row in rows %}
+            <tr>
+                <td><span class="badge bg-{{ row.badge_color }}">{{ row.segment }}</span></td>
+                <td class="text-end" style="font-variant-numeric: tabular-nums;">{{ row.n|intcomma }}</td>
+                <td class="text-end" style="font-variant-numeric: tabular-nums;">{{ row.repeat_rate }}%</td>
+                <td class="text-end" style="font-variant-numeric: tabular-nums;"><span class="revenue">${{ row.avg_future_revenue|floatformat:2 }}</span></td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>

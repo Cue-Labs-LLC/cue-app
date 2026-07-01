@@ -361,6 +361,8 @@ def recalculate_rfm_task(self, organization_id):
         org.rfm_recalc_in_progress = True
         org.save(update_fields=["rfm_recalc_in_progress"])
         recalculate_customer_segments(org)
+        from tickets.views import _invalidate_segment_health_cache
+        _invalidate_segment_health_cache(org)
     except Exception as exc:
         logger.exception("RFM recalc failed for org %s", organization_id)
         raise self.retry(exc=exc)
@@ -746,6 +748,8 @@ def process_csv_task(self, uploaded_file_id, manual_prices=None, tier_definition
         except Exception:
             logger.exception("RFM recalc after CSV import failed for %s", uploaded_file_id)
         _invalidate_event_list_cache(uploaded_file.organization)
+        from tickets.views import _invalidate_segment_health_cache
+        _invalidate_segment_health_cache(uploaded_file.organization)
 
     logger.info(
         "process_csv_task complete for %s: %d success, %d errors",
