@@ -5067,6 +5067,8 @@ def event_detail(request, event_id):
         'is_past': _schedule_is_past,
         # Schedule can actually be used only if it computes to a future time.
         'can_schedule': bool(_schedule_send_at_display) and not _schedule_is_past,
+        # A prior cancel opted this event out of automatic arming.
+        'opted_out': event.survey_auto_send_opted_out,
     }
     external_survey_responses_count = stats['external_survey_responses_count']
     survey_total_response_count = stats['survey_total_response_count']
@@ -7970,39 +7972,19 @@ def survey_schedule_preview(request, event_id):
 @require_org
 @require_host
 def send_survey(request, event_id):
-    """Create survey invitations and dispatch email task. POST only."""
+    """Send the survey to attendees immediately. POST only.
+
+    This is the manual "send now" path. Scheduled delivery is handled
+    automatically by the survey scheduler (see the send_due_survey_invitations
+    management command) for events with an auto-send schedule, so this view only
+    ever sends right away — used to override the schedule and send early, or to
+    send for events with no schedule configured.
+    """
     if request.method != 'POST':
         return redirect('tickets:event_detail', event_id=event_id)
 
     org = get_organization(request)
     event = get_object_or_404(Event.objects.filter(organization=org), id=event_id)
-
-    # Resolve the send time. send_mode 'schedule' uses the event's resolved
-    # schedule (configured in the survey builder); anything else sends now.
-    scheduled_send_at = None
-    if request.POST.get('send_mode') == 'schedule':
-        schedule = event.resolved_survey_schedule()
-        if not schedule:
-            messages.error(
-                request,
-                "No automatic send time is set for this event. Choose Send now, or "
-                "set a schedule in the survey builder.",
-            )
-            return redirect('tickets:event_detail', event_id=event_id)
-        try:
-            scheduled_send_at = _compute_survey_send_at(
-                event, schedule['offset_type'], schedule['offset_value'],
-                schedule['time_of_day'], schedule.get('anchor', 'end'),
-            )
-        except ValueError as exc:
-            messages.error(request, str(exc))
-            return redirect('tickets:event_detail', event_id=event_id)
-        if scheduled_send_at <= django_tz.now():
-            messages.error(
-                request,
-                "That schedule works out to a time in the past — pick a larger offset.",
-            )
-            return redirect('tickets:event_detail', event_id=event_id)
 
     # Get attendees who don't already have an invitation for this event
     attendees = _survey_recipients(event, org)
@@ -8016,36 +7998,28 @@ def send_survey(request, event_id):
     # event already owns questions (e.g. it was customized or already sent).
     _clone_effective_to_event(event)
 
-    # Create invitations
-    invitations = []
-    for customer in attendees:
-        invitations.append(SurveyInvitation(
+    # Create invitations (scheduled_send_at=None → send immediately).
+    invitations = [
+        SurveyInvitation(
             event=event,
             customer=customer,
             organization=org,
             email=customer.email,
-            scheduled_send_at=scheduled_send_at,
-        ))
+            scheduled_send_at=None,
+        )
+        for customer in attendees
+    ]
     SurveyInvitation.objects.bulk_create(invitations)
     # bulk_create bypasses post_save signals — invalidate manually
     django_cache.delete(_event_stats_cache_key(event.id))
     _invalidate_event_upload_stats_cache(event.id)
 
-    if scheduled_send_at is not None:
-        # Scheduled: the send_due_survey_invitations cron picks these up when due.
-        messages.success(
-            request,
-            f"Survey scheduled for {len(invitations)} attendee(s) — sending "
-            f"{_format_survey_send_time(event, scheduled_send_at)}."
-        )
-    else:
-        # Send now: dispatch the Celery task immediately.
-        from .tasks import send_survey_emails_task
-        send_survey_emails_task.delay(str(event_id), str(org.id))
-        messages.success(
-            request,
-            f"Survey invitations created for {len(invitations)} attendee(s). Emails are being sent."
-        )
+    from .tasks import send_survey_emails_task
+    send_survey_emails_task.delay(str(event_id), str(org.id))
+    messages.success(
+        request,
+        f"Survey invitations created for {len(invitations)} attendee(s). Emails are being sent."
+    )
     return redirect('tickets:event_detail', event_id=event_id)
 
 
@@ -8070,6 +8044,11 @@ def cancel_scheduled_survey(request, event_id):
         sent_at__isnull=True,
         scheduled_send_at__isnull=False,
     ).delete()
+    # Opt the event out of auto-send so the scheduler doesn't immediately re-arm
+    # the invitations the host just canceled.
+    if not event.survey_auto_send_opted_out:
+        event.survey_auto_send_opted_out = True
+        event.save(update_fields=['survey_auto_send_opted_out'])
     django_cache.delete(_event_stats_cache_key(event.id))
     _invalidate_event_upload_stats_cache(event.id)
 
@@ -8635,13 +8614,20 @@ def survey_schedule_save(request, event_id=None):
         'survey_send_time_of_day', 'survey_send_anchor',
     ]
 
+    # Re-saving an event's schedule re-enables auto-send if a prior cancel had
+    # opted it out (the org template has no opt-out flag).
+    save_fields = list(schedule_fields)
+    if event:
+        event.survey_auto_send_opted_out = False
+        save_fields.append('survey_auto_send_opted_out')
+
     if offset_type not in ('hours', 'days'):
         # Clear the schedule -> send immediately (event) / no org default.
         target.survey_send_offset_type = ''
         target.survey_send_offset_value = None
         target.survey_send_time_of_day = None
         target.survey_send_anchor = ''
-        target.save(update_fields=schedule_fields)
+        target.save(update_fields=save_fields)
         messages.success(request, "Survey send time saved.")
         return _builder_redirect(event)
 
@@ -8665,7 +8651,7 @@ def survey_schedule_save(request, event_id=None):
     target.survey_send_offset_value = value
     target.survey_send_time_of_day = time_of_day
     target.survey_send_anchor = anchor
-    target.save(update_fields=schedule_fields)
+    target.save(update_fields=save_fields)
     messages.success(request, "Survey send time saved.")
     return _builder_redirect(event)
 

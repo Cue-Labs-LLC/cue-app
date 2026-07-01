@@ -14525,24 +14525,7 @@ class ScheduledSurveySendTests(TestCase):
         with self.assertRaises(ValueError):
             _compute_survey_send_at(self.event, 'hours', -1, None)
 
-    # ---- send_survey: schedule vs now ----------------------------------------
-
-    def test_schedule_creates_pending_invitations_without_sending(self):
-        from django.core import mail
-        # Schedule comes from the event's configured send time (set in the builder).
-        self.event.survey_send_offset_type = 'days'
-        self.event.survey_send_offset_value = 2
-        self.event.survey_send_time_of_day = time(9, 0)
-        self.event.save()
-        resp = self.client.post(
-            reverse('tickets:send_survey', args=[self.event.id]),
-            {'send_mode': 'schedule'},
-        )
-        self.assertEqual(resp.status_code, 302)
-        inv = SurveyInvitation.objects.get(event=self.event, customer=self.customer)
-        self.assertIsNotNone(inv.scheduled_send_at)
-        self.assertIsNone(inv.sent_at)
-        self.assertEqual(len(mail.outbox), 0)  # not sent yet
+    # ---- send_survey: send now (manual override) -----------------------------
 
     def test_send_now_sends_immediately(self):
         from django.core import mail
@@ -14557,23 +14540,77 @@ class ScheduledSurveySendTests(TestCase):
         self.assertIsNotNone(inv.sent_at)
         self.assertEqual(len(mail.outbox), 1)
 
-    def test_schedule_in_the_past_is_rejected(self):
-        past_event = Event.objects.create(
-            organization=self.org, name='Past Show', venue=self.venue, start_date=date(2000, 1, 1),
-            end_date=date(2000, 1, 1), end_time=time(22, 0), timezone='America/New_York',
-            survey_send_offset_type='hours', survey_send_offset_value=1,
+    # ---- auto-arm: the scheduler creates scheduled invitations ----------------
+
+    def _ended_yesterday_event(self, **schedule):
+        """An event whose end is in the past (anchor passed) so it's arm-eligible."""
+        yesterday = (timezone.now() - timedelta(days=1)).date()
+        ev = Event.objects.create(
+            organization=self.org, name='Just Ended', venue=self.venue,
+            start_date=yesterday, end_date=yesterday, end_time=time(22, 0),
+            timezone='America/New_York', **schedule,
         )
         TicketOrder.objects.create(
-            customer=self.customer, event=past_event,
-            order_number='PAST-1', order_date='2000-01-01 10:00:00',
-            total_amount=Decimal('10.00'),
+            customer=self.customer, event=ev, order_number=f'ARM-{ev.public_id}',
+            order_date='2000-01-01 10:00:00', total_amount=Decimal('10.00'),
         )
-        resp = self.client.post(
-            reverse('tickets:send_survey', args=[past_event.id]),
-            {'send_mode': 'schedule'},
+        return ev
+
+    def test_auto_arm_creates_pending_invitations_without_sending(self):
+        from django.core import mail
+        # Ended yesterday, send 5 days after end -> send time still in the future.
+        event = self._ended_yesterday_event(
+            survey_send_offset_type='days', survey_send_offset_value=5,
+            survey_send_time_of_day=time(9, 0),
         )
-        self.assertEqual(resp.status_code, 302)
-        self.assertFalse(SurveyInvitation.objects.filter(event=past_event).exists())
+        call_command('send_due_survey_invitations')
+        inv = SurveyInvitation.objects.get(event=event, customer=self.customer)
+        self.assertIsNotNone(inv.scheduled_send_at)
+        self.assertIsNone(inv.sent_at)
+        self.assertEqual(len(mail.outbox), 0)  # scheduled, not sent yet
+
+    def test_auto_arm_skips_event_before_anchor(self):
+        # self.event ends in 2099 -> anchor not reached, so nothing is armed.
+        self.event.survey_send_offset_type = 'hours'
+        self.event.survey_send_offset_value = 1
+        self.event.save()
+        call_command('send_due_survey_invitations')
+        self.assertFalse(SurveyInvitation.objects.filter(event=self.event).exists())
+
+    def test_auto_arm_then_dispatch_sends_when_overdue(self):
+        from django.core import mail
+        # Ended yesterday, send 1 hour after end -> already due; armed then sent.
+        event = self._ended_yesterday_event(
+            survey_send_offset_type='hours', survey_send_offset_value=1,
+        )
+        call_command('send_due_survey_invitations', '--sync')
+        inv = SurveyInvitation.objects.get(event=event, customer=self.customer)
+        self.assertIsNotNone(inv.sent_at)
+        self.assertEqual(len(mail.outbox), 1)
+
+    def test_auto_arm_is_idempotent(self):
+        event = self._ended_yesterday_event(
+            survey_send_offset_type='days', survey_send_offset_value=5,
+            survey_send_time_of_day=time(9, 0),
+        )
+        call_command('send_due_survey_invitations')
+        call_command('send_due_survey_invitations')
+        self.assertEqual(SurveyInvitation.objects.filter(event=event).count(), 1)
+
+    def test_auto_arm_skips_opted_out_event(self):
+        event = self._ended_yesterday_event(
+            survey_send_offset_type='hours', survey_send_offset_value=1,
+            survey_auto_send_opted_out=True,
+        )
+        call_command('send_due_survey_invitations')
+        self.assertFalse(SurveyInvitation.objects.filter(event=event).exists())
+
+    def test_no_arm_flag_only_dispatches(self):
+        event = self._ended_yesterday_event(
+            survey_send_offset_type='hours', survey_send_offset_value=1,
+        )
+        call_command('send_due_survey_invitations', '--no-arm')
+        self.assertFalse(SurveyInvitation.objects.filter(event=event).exists())
 
     # ---- task due-filter ------------------------------------------------------
 
@@ -14623,6 +14660,9 @@ class ScheduledSurveySendTests(TestCase):
         self.assertEqual(resp.status_code, 302)
         self.assertFalse(SurveyInvitation.objects.filter(event=self.event).exists())
         self.assertFalse(_survey_locked(self.event))
+        # Cancel opts the event out of auto-send so the scheduler won't re-arm it.
+        self.event.refresh_from_db()
+        self.assertTrue(self.event.survey_auto_send_opted_out)
 
     def test_cancel_leaves_sent_invitations(self):
         SurveyInvitation.objects.create(
@@ -14901,41 +14941,54 @@ class DefaultSurveyScheduleTests(TestCase):
         self.event.save()
         self.assertTrue(self.client.get(url).context['survey_schedule_overridden'])
 
-    # ---- simplified send dialog (send_mode only) ------------------------------
+    # ---- auto-arm honors the resolved schedule --------------------------------
 
-    def test_send_schedule_uses_resolved_schedule(self):
+    def _ended_yesterday_event(self):
+        yesterday = (timezone.now() - timedelta(days=1)).date()
+        return Event.objects.create(
+            organization=self.org, name='Ended Show', venue=self.venue,
+            start_date=yesterday, end_date=yesterday, end_time=time(22, 0),
+            timezone='America/New_York',
+        )
+
+    def test_auto_arm_uses_org_default_schedule(self):
         from django.core import mail
+        # Org default applies to an event with no per-event override.
         self.org.survey_send_offset_type = 'days'
-        self.org.survey_send_offset_value = 2
+        self.org.survey_send_offset_value = 5
         self.org.survey_send_time_of_day = time(9, 0)
         self.org.save()
+        event = self._ended_yesterday_event()
         c = Customer.objects.create(organization=self.org, email='g@example.com', name='G')
         TicketOrder.objects.create(
-            customer=c, event=self.event, order_number='RS-1',
-            order_date='2098-12-01 10:00:00', total_amount=Decimal('10.00'),
+            customer=c, event=event, order_number='RS-1',
+            order_date='2000-01-01 10:00:00', total_amount=Decimal('10.00'),
         )
-        resp = self.client.post(
-            reverse('tickets:send_survey', args=[self.event.id]),
-            {'send_mode': 'schedule'},  # no offset fields -> uses resolved schedule
-        )
-        self.assertEqual(resp.status_code, 302)
-        inv = SurveyInvitation.objects.get(event=self.event, customer=c)
+        call_command('send_due_survey_invitations')
+        inv = SurveyInvitation.objects.get(event=event, customer=c)
         self.assertIsNotNone(inv.scheduled_send_at)
         self.assertIsNone(inv.sent_at)
         self.assertEqual(len(mail.outbox), 0)
 
-    def test_send_schedule_without_configured_schedule_errors(self):
+    def test_auto_arm_skips_event_without_schedule(self):
+        event = self._ended_yesterday_event()  # no org or event schedule
         c = Customer.objects.create(organization=self.org, email='h@example.com', name='H')
         TicketOrder.objects.create(
-            customer=c, event=self.event, order_number='RS-2',
-            order_date='2098-12-01 10:00:00', total_amount=Decimal('10.00'),
+            customer=c, event=event, order_number='RS-2',
+            order_date='2000-01-01 10:00:00', total_amount=Decimal('10.00'),
         )
-        resp = self.client.post(
-            reverse('tickets:send_survey', args=[self.event.id]),
-            {'send_mode': 'schedule'},  # nothing configured
+        call_command('send_due_survey_invitations')
+        self.assertFalse(SurveyInvitation.objects.filter(event=event).exists())
+
+    def test_resave_schedule_clears_opt_out(self):
+        self.event.survey_auto_send_opted_out = True
+        self.event.save()
+        self.client.post(
+            reverse('tickets:event_survey_schedule_save', args=[self.event.id]),
+            {'offset_type': 'hours', 'offset_value': '3'},
         )
-        self.assertEqual(resp.status_code, 302)
-        self.assertFalse(SurveyInvitation.objects.filter(event=self.event).exists())
+        self.event.refresh_from_db()
+        self.assertFalse(self.event.survey_auto_send_opted_out)
 
     # ---- anchor (event start vs end) -----------------------------------------
 

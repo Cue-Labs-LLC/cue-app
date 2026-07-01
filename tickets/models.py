@@ -1138,6 +1138,11 @@ class Event(AuditBaseModel):
         help_text="Per-event override: measure the offset from the event 'start' "
                   "or 'end'. Blank = end.",
     )
+    survey_auto_send_opted_out = models.BooleanField(
+        default=False,
+        help_text="Set when a host cancels a scheduled survey send. Stops the "
+                  "auto-send scheduler from re-arming this event's survey.",
+    )
     scanner_pin = models.CharField(
         max_length=8, null=True, blank=True, unique=True, db_index=True,
         help_text="6-digit PIN for guest scanner access (no Cue account required).",
