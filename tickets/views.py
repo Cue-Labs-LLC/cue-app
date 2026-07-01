@@ -61,7 +61,7 @@ from .forms import (
     SaleableTicketTypeForm, SaleableTicketTypeTierFormSet, PublicTicketPurchaseForm,
     DirectEventForm, DirectTicketTypeFormSet,
     PromoCodeForm, SurveyUploadForm, UserProfileForm, OrgProfileForm,
-    OrgDisplayPreferencesForm,
+    OrgDisplayPreferencesForm, SegmentTuningForm,
     WaitlistJoinForm, OrganizerWaitlistForm,
     LoyaltyProgramForm, LoyaltyTierFormSet,
 )
@@ -3191,6 +3191,32 @@ def _segment_health_backtest_rows(bt):
         }
         for name, s in rows
     ]
+
+
+def _align_backtest_rows(proposed_rows, current_rows, order):
+    """Align two backtest tables to the same segments, same order, for easy compare.
+
+    Returns (proposed, current) covering the union of segments present in either,
+    ordered by `order`, zero-filling any segment absent from one side.
+    """
+    proposed_rows = proposed_rows or []
+    current_rows = current_rows or []
+    by_p = {r['segment']: r for r in proposed_rows}
+    by_c = {r['segment']: r for r in current_rows}
+    present = set(by_p) | set(by_c)
+    names = [s for s in order if s in present]
+    names += [s for s in present if s not in order]  # defensive: unranked names last
+
+    def zero(name):
+        return {
+            'segment': name, 'badge_color': SEGMENT_BADGE_COLORS.get(name, 'secondary'),
+            'n': 0, 'repeat_rate': 0.0, 'avg_future_revenue': 0.0,
+        }
+
+    return (
+        [by_p.get(n) or zero(n) for n in names],
+        [by_c.get(n) or zero(n) for n in names],
+    )
 
 
 @login_required
@@ -6894,6 +6920,124 @@ def settings_display_preferences(request):
     else:
         form = OrgDisplayPreferencesForm(instance=org)
     return render(request, 'tickets/settings_display_preferences.html', {'form': form, 'org': org})
+
+
+def _candidate_bands_from_form(form):
+    """Build (kwargs, monetary_tuple) for classify_segment_absolute from a valid form."""
+    cd = form.cleaned_data
+    kwargs = {
+        'recency_active': cd['recency_active_days'],
+        'recency_cooling': cd['recency_cooling_days'],
+        'freq_few': cd['freq_few'],
+        'freq_many': cd['freq_many'],
+    }
+    monetary = (float(cd['monetary_mid']), float(cd['monetary_high']))
+    return kwargs, monetary
+
+
+def _preview_size_rows(sizes):
+    """Shape preview_absolute_sizes output for the template (adds badge colors)."""
+    if not sizes or sizes.get('status') != 'ok':
+        return None
+    return [
+        {
+            'segment': name,
+            'count': info['count'],
+            'pct': info['pct'],
+            'badge_color': SEGMENT_BADGE_COLORS.get(name, 'secondary'),
+        }
+        for name, info in sizes['by_segment'].items()
+    ]
+
+
+@login_required
+@require_org
+@require_admin
+def settings_segment_tuning(request):
+    """Set absolute segment cut-offs, preview the result, and switch modes.
+
+    Actions (hidden `action` field): preview (sizes), preview_backtest (sizes +
+    separation), save (persist + recalc if absolute), reset (re-seed suggested).
+    """
+    from .services.segmentation.segment_definitions import (
+        seed_segment_bands, classify_segment_absolute, SEGMENT_VALUE_ORDER,
+    )
+    from .services.segmentation.validation import SegmentDiagnostics
+    from .tasks import recalculate_rfm_task
+
+    org = get_organization(request)
+    # Ensure monetary defaults are meaningful before the form renders.
+    seed_segment_bands(org)
+
+    context = {'org': org, 'preview_sizes': None, 'preview_current_sizes': None,
+               'backtest_rows': None, 'backtest_current_rows': None,
+               'backtest_separation': None, 'backtest_status': None,
+               'rfm_recalc_in_progress': org.rfm_recalc_in_progress}
+
+    if request.method == 'POST':
+        action = request.POST.get('action', 'save')
+        if action == 'reset':
+            seed_segment_bands(org, force=True)
+            messages.info(request, 'Cut-offs reset to the suggested values for your data.')
+            return redirect('tickets:settings_segment_tuning')
+
+        form = SegmentTuningForm(request.POST, instance=org)
+        if form.is_valid():
+            if action == 'save':
+                form.save()
+                if org.segment_mode == 'absolute':
+                    # Re-read the flag from DB — it may have flipped since page load.
+                    org.refresh_from_db(fields=['rfm_recalc_in_progress'])
+                    if not org.rfm_recalc_in_progress:
+                        recalculate_rfm_task.delay(str(org.id))
+                    _invalidate_segment_health_cache(org)
+                    messages.success(request, 'Saved. Recalculating segments with your cut-offs.')
+                else:
+                    _invalidate_segment_health_cache(org)
+                    messages.success(request, 'Cut-offs saved. Segments stay on percentile mode.')
+                return redirect('tickets:settings_segment_tuning')
+
+            elif action in ('preview', 'preview_backtest'):
+                # no save — just render the requested preview
+                candidate = _candidate_bands_from_form(form)
+                diag = SegmentDiagnostics(org)
+                context['preview_sizes'] = _preview_size_rows(diag.preview_absolute_sizes(candidate))
+                if action == 'preview_backtest':
+                    result = diag._backtest(
+                        absolute_fn=classify_segment_absolute, bands=candidate,
+                        value_order=SEGMENT_VALUE_ORDER,
+                    )
+                    context['backtest_status'] = result.get('status')
+                    if result.get('status') == 'ok':
+                        context['backtest_rows'] = _segment_health_backtest_rows(result)
+                        context['backtest_separation'] = result.get('separation')
+                    # current-rules backtest for side-by-side comparison
+                    current = diag._backtest(holdout_days=result.get('holdout_days', 180))
+                    if current.get('status') == 'ok':
+                        context['backtest_current_rows'] = _segment_health_backtest_rows(current)
+                        context['backtest_current_separation'] = current.get('separation')
+                    # Align both tables to the same segments/order so rows compare 1:1.
+                    if context.get('backtest_rows') and context.get('backtest_current_rows'):
+                        context['backtest_rows'], context['backtest_current_rows'] = _align_backtest_rows(
+                            context['backtest_rows'], context['backtest_current_rows'], SEGMENT_VALUE_ORDER,
+                        )
+                    # Plain-English verdict: is the proposed better/similar/worse?
+                    prop_sep = (result.get('separation') or {}).get('spearman_future_revenue')
+                    cur_sep = (current.get('separation') or {}).get('spearman_future_revenue')
+                    if result.get('status') == 'ok' and prop_sep is not None and cur_sep is not None:
+                        delta = round(prop_sep - cur_sep, 4)
+                        verdict = 'better' if delta > 0.05 else 'worse' if delta < -0.05 else 'similar'
+                        context['backtest_verdict'] = {
+                            'proposed': prop_sep, 'current': cur_sep,
+                            'delta': delta, 'label': verdict,
+                            'proposed_pct': max(0, round(prop_sep * 100)),
+                            'current_pct': max(0, round(cur_sep * 100)),
+                        }
+    else:
+        form = SegmentTuningForm(instance=org)
+
+    context['form'] = form
+    return render(request, 'tickets/settings_segment_tuning.html', context)
 
 
 # Forecast Tool Views

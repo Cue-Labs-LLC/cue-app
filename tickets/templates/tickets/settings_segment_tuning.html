@@ -1,0 +1,233 @@
+{% extends 'tickets/base.html' %}
+{% load humanize %}
+
+{% block title %}Segment Cut-offs{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1>Segment Cut-offs</h1>
+        <p class="page-header-subtitle">Set fixed rules for how customers are grouped, preview the result, then switch your segments over.</p>
+    </div>
+    <div class="page-header-actions">
+        <a href="{% url 'tickets:segment_health' %}" class="btn btn-outline-secondary"><i class="bi bi-clipboard-pulse"></i> Segment Health</a>
+    </div>
+</div>
+
+<p class="text-muted mb-4" style="max-width: 72ch;">
+    <strong>Percentile</strong> mode ranks customers against each other (the top slice is always "VIP").
+    <strong>Absolute</strong> mode uses the fixed cut-offs below, so a customer only changes group when
+    their own behavior changes. Preview first; nothing changes until you save with Absolute selected.
+</p>
+
+{% if rfm_recalc_in_progress %}
+<div class="alert alert-info"><i class="bi bi-hourglass-split"></i> Recalculation in progress — segments will refresh shortly.</div>
+{% endif %}
+
+<form method="post" novalidate>
+    {% csrf_token %}
+    {% if form.non_field_errors %}<div class="alert alert-danger">{{ form.non_field_errors }}</div>{% endif %}
+
+    <div class="row g-3">
+        <div class="col-lg-7">
+            <div class="card h-100">
+                <div class="card-header"><h5 class="mb-0">Cut-offs</h5></div>
+                <div class="card-body">
+                    <div class="mb-3" style="max-width: 320px;">
+                        <label class="form-label" for="{{ form.segment_mode.id_for_label }}">Segmentation mode
+                            <i class="bi bi-info-circle text-muted ms-1" data-bs-toggle="tooltip" title="Percentile ranks customers against each other (the top slice is always VIP). Absolute uses the fixed cut-offs below, so a customer only changes group when their own behavior changes."></i>
+                        </label>
+                        {{ form.segment_mode }}
+                        {% for e in form.segment_mode.errors %}<div class="text-danger small">{{ e }}</div>{% endfor %}
+                    </div>
+
+                    <h6 class="text-muted text-uppercase small mt-4">Recency</h6>
+                    <div class="row g-3">
+                        <div class="col-sm-6">
+                            <label class="form-label" for="{{ form.recency_active_days.id_for_label }}">{{ form.recency_active_days.label }}
+                                <i class="bi bi-info-circle text-muted ms-1" data-bs-toggle="tooltip" title="Days since a customer's last order to still count as active. Bought within this window = treated as a current customer (VIP / Loyal / Big Spender / New)."></i>
+                            </label>
+                            {{ form.recency_active_days }}
+                            {% for e in form.recency_active_days.errors %}<div class="text-danger small">{{ e }}</div>{% endfor %}
+                        </div>
+                        <div class="col-sm-6">
+                            <label class="form-label" for="{{ form.recency_cooling_days.id_for_label }}">{{ form.recency_cooling_days.label }}
+                                <i class="bi bi-info-circle text-muted ms-1" data-bs-toggle="tooltip" title="Days since last order before a customer counts as lapsed. Between 'Active within' and this = At-Risk (gone quiet); past this = Lapsed / Dormant."></i>
+                            </label>
+                            {{ form.recency_cooling_days }}
+                            {% for e in form.recency_cooling_days.errors %}<div class="text-danger small">{{ e }}</div>{% endfor %}
+                        </div>
+                    </div>
+                    <div class="mt-3">
+                        <div class="text-muted small mb-1">Recency windows (days since last order):</div>
+                        <div class="d-flex flex-wrap gap-3 small">
+                            <span class="d-inline-flex align-items-center gap-1">
+                                <span class="badge bg-success">Active</span>
+                                <span id="win-active">0&ndash;{{ form.recency_active_days.value|default:90 }}</span>
+                            </span>
+                            <span class="d-inline-flex align-items-center gap-1">
+                                <span class="badge bg-warning text-dark">At-Risk</span>
+                                <span id="win-atrisk">{{ form.recency_active_days.value|default:90|add:1 }}&ndash;{{ form.recency_cooling_days.value|default:180 }}</span>
+                            </span>
+                            <span class="d-inline-flex align-items-center gap-1">
+                                <span class="badge bg-secondary">Lapsed</span>
+                                <span id="win-lapsed">{{ form.recency_cooling_days.value|default:180|add:1 }}+</span>
+                            </span>
+                        </div>
+                    </div>
+
+                    <h6 class="text-muted text-uppercase small mt-4">Frequency</h6>
+                    <div class="row g-3">
+                        <div class="col-sm-6">
+                            <label class="form-label" for="{{ form.freq_few.id_for_label }}">{{ form.freq_few.label }}
+                                <i class="bi bi-info-circle text-muted ms-1" data-bs-toggle="tooltip" title="Order count where a customer becomes a repeat buyer ('a few'). Below this is a one-time buyer (New / Promising)."></i>
+                            </label>
+                            {{ form.freq_few }}
+                            {% for e in form.freq_few.errors %}<div class="text-danger small">{{ e }}</div>{% endfor %}
+                        </div>
+                        <div class="col-sm-6">
+                            <label class="form-label" for="{{ form.freq_many.id_for_label }}">{{ form.freq_many.label }}
+                                <i class="bi bi-info-circle text-muted ms-1" data-bs-toggle="tooltip" title="Order count where a customer becomes a frequent buyer. At or above this = Loyal (or VIP if they also spend high)."></i>
+                            </label>
+                            {{ form.freq_many }}
+                            {% for e in form.freq_many.errors %}<div class="text-danger small">{{ e }}</div>{% endfor %}
+                        </div>
+                    </div>
+
+                    <h6 class="text-muted text-uppercase small mt-4">Money</h6>
+                    <div class="row g-3">
+                        <div class="col-sm-6">
+                            <label class="form-label" for="{{ form.monetary_mid.id_for_label }}">{{ form.monetary_mid.label }}
+                                <i class="bi bi-info-circle text-muted ms-1" data-bs-toggle="tooltip" title="Lifetime spend that marks a decent customer. A recent buyer at or above this counts as Promising even with a single order; a cooling one counts as At-Risk."></i>
+                            </label>
+                            {{ form.monetary_mid }}
+                            {% for e in form.monetary_mid.errors %}<div class="text-danger small">{{ e }}</div>{% endfor %}
+                        </div>
+                        <div class="col-sm-6">
+                            <label class="form-label" for="{{ form.monetary_high.id_for_label }}">{{ form.monetary_high.label }}
+                                <i class="bi bi-info-circle text-muted ms-1" data-bs-toggle="tooltip" title="Lifetime spend that marks a high-value customer. At or above this = Big Spender (or VIP if they also buy often)."></i>
+                            </label>
+                            {{ form.monetary_high }}
+                            {% for e in form.monetary_high.errors %}<div class="text-danger small">{{ e }}</div>{% endfor %}
+                        </div>
+                    </div>
+
+                    <div class="d-flex flex-wrap gap-2 mt-4">
+                        <button type="submit" name="action" value="preview" class="btn btn-outline-primary"><i class="bi bi-eye"></i> Preview sizes</button>
+                        <button type="submit" name="action" value="preview_backtest" class="btn btn-outline-primary"><i class="bi bi-graph-up"></i> Preview with backtest</button>
+                        <button type="submit" name="action" value="save" class="btn btn-primary" {% if rfm_recalc_in_progress %}disabled{% endif %}><i class="bi bi-check2"></i> Save</button>
+                        <button type="submit" name="action" value="reset" class="btn btn-link text-muted">Reset to suggested</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="col-lg-5">
+            <div class="card h-100">
+                <div class="card-header"><h5 class="mb-0">Preview: segment sizes</h5></div>
+                <div class="card-body">
+                    {% if preview_sizes %}
+                    <p class="text-muted small mb-3">How your customers would group under these cut-offs (not saved yet).</p>
+                    {% for row in preview_sizes %}
+                    <div class="d-flex align-items-center gap-2 mb-1">
+                        <span class="badge bg-{{ row.badge_color }}" style="min-width: 6.5em;">{{ row.segment }}</span>
+                        <div class="progress flex-grow-1" style="height: 12px;">
+                            <div class="progress-bar bg-{{ row.badge_color }}" style="width: {{ row.pct }}%;"></div>
+                        </div>
+                        <span class="text-muted small text-end" style="width: 5.5em; font-variant-numeric: tabular-nums;">{{ row.count|intcomma }} ({{ row.pct }}%)</span>
+                    </div>
+                    {% endfor %}
+                    {% else %}
+                    <div class="empty-state">
+                        <i class="bi bi-eye d-block"></i>
+                        <p>Click <strong>Preview sizes</strong> to see how these cut-offs would group your customers.</p>
+                    </div>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+    </div>
+
+    {% if backtest_status %}
+    <div class="card mt-4">
+        <div class="card-header"><h5 class="mb-0">Preview: would these cut-offs predict spending better?</h5></div>
+        <div class="card-body">
+            {% if backtest_status == 'ok' %}
+            {% if backtest_verdict %}
+            <div class="alert {% if backtest_verdict.label == 'better' %}alert-success{% elif backtest_verdict.label == 'worse' %}alert-warning{% else %}alert-secondary{% endif %} d-flex align-items-center gap-2">
+                <i class="bi {% if backtest_verdict.label == 'better' %}bi-check-circle-fill{% elif backtest_verdict.label == 'worse' %}bi-exclamation-triangle-fill{% else %}bi-dash-circle-fill{% endif %} fs-5"></i>
+                <div>
+                    {% if backtest_verdict.label == 'better' %}
+                    These cut-offs would predict future spending <strong>better</strong> than your current rules.
+                    {% elif backtest_verdict.label == 'worse' %}
+                    These cut-offs would predict future spending <strong>worse</strong> than your current rules — consider adjusting before saving.
+                    {% else %}
+                    These cut-offs predict future spending <strong>about the same</strong> as your current rules.
+                    {% endif %}
+                </div>
+            </div>
+
+            <div class="mb-2" style="max-width: 560px;">
+                <div class="d-flex justify-content-between small mb-1">
+                    <span><strong>These cut-offs</strong></span>
+                    <span class="fw-semibold">{{ backtest_verdict.proposed }}</span>
+                </div>
+                <div class="progress mb-3" style="height: 16px;">
+                    <div class="progress-bar bg-success" style="width: {{ backtest_verdict.proposed_pct }}%;"></div>
+                </div>
+                <div class="d-flex justify-content-between small mb-1">
+                    <span>Your current rules</span>
+                    <span class="fw-semibold">{{ backtest_verdict.current }}</span>
+                </div>
+                <div class="progress" style="height: 16px;">
+                    <div class="progress-bar bg-secondary" style="width: {{ backtest_verdict.current_pct }}%;"></div>
+                </div>
+            </div>
+            <p class="text-muted small mb-3">
+                This is a 0&ndash;1 accuracy score: it checks whether the groups you treat as more valuable
+                actually spent more over the following months. Higher is better; 1.0 is perfect.
+            </p>
+            {% endif %}
+
+            <button class="btn btn-link btn-sm p-0 text-muted" type="button" data-bs-toggle="collapse" data-bs-target="#segmentDetail">
+                <i class="bi bi-table"></i> Show segment-by-segment detail
+            </button>
+            <div class="collapse mt-3" id="segmentDetail">
+                <p class="text-muted small mb-2">Same segments in the same order on both sides, so you can compare row by row. A 0 means no customers land in that segment under those rules.</p>
+                <div class="row g-3">
+                    <div class="col-md-6">{% include 'tickets/_backtest_table.html' with rows=backtest_rows caption="These cut-offs" subtitle="best to worst segment" %}</div>
+                    <div class="col-md-6">{% if backtest_current_rows %}{% include 'tickets/_backtest_table.html' with rows=backtest_current_rows caption="Current rules" subtitle="best to worst segment" %}{% endif %}</div>
+                </div>
+            </div>
+            {% elif backtest_status == 'too_large' %}
+            <div class="alert alert-warning mb-0"><i class="bi bi-exclamation-triangle"></i> Too many customers to backtest in the browser. Run <code>python manage.py validate_segments --org {{ org.slug }} --compare-absolute</code> instead.</div>
+            {% else %}
+            <div class="alert alert-info mb-0"><i class="bi bi-info-circle"></i> Not enough recent order history to backtest these cut-offs yet.</div>
+            {% endif %}
+        </div>
+    </div>
+    {% endif %}
+</form>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+(function () {
+    var active = document.getElementById('{{ form.recency_active_days.id_for_label }}');
+    var cooling = document.getElementById('{{ form.recency_cooling_days.id_for_label }}');
+    var winActive = document.getElementById('win-active');
+    var winAtRisk = document.getElementById('win-atrisk');
+    var winLapsed = document.getElementById('win-lapsed');
+    if (!active || !cooling || !winActive) return;
+    function update() {
+        var a = parseInt(active.value, 10);
+        var c = parseInt(cooling.value, 10);
+        if (!isNaN(a)) winActive.textContent = '0–' + a;
+        if (!isNaN(a) && !isNaN(c)) winAtRisk.textContent = (a + 1) + '–' + c;
+        if (!isNaN(c)) winLapsed.textContent = (c + 1) + '+';
+    }
+    active.addEventListener('input', update);
+    cooling.addEventListener('input', update);
+})();
+</script>
+{% endblock %}

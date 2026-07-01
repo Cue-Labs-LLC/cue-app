@@ -271,12 +271,63 @@ class SegmentDiagnostics:
             "over_concentrated": over_concentrated,
         }
 
+    def preview_absolute_sizes(self, bands):
+        """Segment sizes the org WOULD have under candidate absolute `bands`.
+
+        Read-only, in-memory: one pass over current customers applying
+        classify_segment_absolute with the candidate cut-offs. `bands` is an
+        (kwargs, monetary_tuple) pair from bands_from_org(). Cheap enough to run
+        on every Preview click, but still ceiling-guarded for huge tenants.
+        """
+        band_kwargs, monetary_bands = bands
+        now = timezone.now().date()
+        base = (
+            self._base_queryset()
+            .annotate(order_count=Count("ticket_orders"))
+            .values("order_count", "lifetime_value", "last_order_date")
+        )
+        if base.count() > BACKTEST_MAX_CUSTOMERS:
+            return {"status": "too_large", "max_customers": BACKTEST_MAX_CUSTOMERS}
+
+        counts = {}
+        total = 0
+        for row in base.iterator(chunk_size=2000):
+            oc = row["order_count"] or 0
+            if oc <= 0:
+                seg = "Dormant"
+            else:
+                lod = row["last_order_date"]
+                rd = (now - lod).days if lod else RECENCY_NULL_FALLBACK
+                seg = classify_segment_absolute(
+                    rd, oc, float(row["lifetime_value"] or 0), monetary_bands, **band_kwargs
+                ) or "Dormant"
+            counts[seg] = counts.get(seg, 0) + 1
+            total += 1
+
+        distribution = {}
+        over_concentrated = []
+        for name, n in sorted(counts.items(), key=lambda kv: -kv[1]):
+            pct = round(100.0 * n / total, 1) if total else 0.0
+            distribution[name] = {"count": n, "pct": pct}
+            if pct > 40.0:
+                over_concentrated.append(name)
+        return {
+            "status": "ok",
+            "total_scored": total,
+            "by_segment": distribution,
+            "over_concentrated": over_concentrated,
+        }
+
     # ---- predictive validity (backtest) ------------------------------------
 
     def _backtest(self, cutoff=None, holdout_days=180, rule_set=None,
-                  value_order=None, absolute_fn=None,
+                  value_order=None, absolute_fn=None, bands=None,
                   min_holdout_orders=MIN_HOLDOUT_ORDERS):
         """Backtest a segmentation against realized holdout behavior.
+
+        bands (absolute mode only): an (kwargs, monetary_tuple) pair from
+        bands_from_org() to score with fixed per-org cut-offs. When omitted, the
+        monetary band is derived from the as-of-T spend distribution.
 
         By default segments via the score-based rule_set (percentile RFM). Pass
         absolute_fn to instead segment from raw as-of-T values (recency days,
@@ -351,13 +402,17 @@ class SegmentDiagnostics:
 
         seg_by_customer = {}
         if absolute_fn is not None:
-            # Absolute bands: segment straight from raw as-of-T values. Monetary
-            # bands are seeded once from the as-of-T spend distribution (the
-            # production analog of seeding at deploy time), then held fixed.
-            monetary_bands = derive_monetary_bands(spends)
+            # Absolute bands: segment straight from raw as-of-T values. With
+            # explicit `bands` use the org's stored cut-offs; otherwise derive the
+            # monetary band from the as-of-T spend distribution with default
+            # recency/frequency cut-offs.
+            if bands is not None:
+                band_kwargs, monetary_bands = bands
+            else:
+                band_kwargs, monetary_bands = {}, derive_monetary_bands(spends)
             for row, rd, fr, sp in zip(segmented, recency_days, freqs, spends):
                 seg_by_customer[row["id"]] = (
-                    absolute_fn(rd, fr, sp, monetary_bands) or "Dormant"
+                    absolute_fn(rd, fr, sp, monetary_bands, **band_kwargs) or "Dormant"
                 )
         else:
             bp_r = _percentile_breakpoints(recency_days)
