@@ -120,7 +120,6 @@ urlpatterns = [
     path('analytics/', views.analytics_overview, name='analytics_overview'),
     path('analytics/segments/', views.customer_segments, name='customer_segments'),
     path('analytics/segments/recalculate/', views.recalculate_segments, name='recalculate_segments'),
-    path('analytics/segment-health/', views.segment_health, name='segment_health'),
     path('analytics/churn/', views.churn_overview, name='churn_overview'),
     path('analytics/churn/bulk-tag/', views.churn_bulk_tag, name='churn_bulk_tag'),
     path('analytics/repeat-customers/', views.repeat_customers, name='repeat_customers'),

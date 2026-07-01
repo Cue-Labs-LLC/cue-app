@@ -3058,6 +3058,14 @@ class TestSegmentTuning(TestCase):
         resp = self.client.get(reverse('tickets:settings_segment_tuning'))
         self.assertNotEqual(resp.status_code, 200)  # blocked (redirect or 403)
 
+    def test_view_links_back_to_live_segment_results(self):
+        self.client.force_login(self.admin)
+        resp = self.client.get(reverse('tickets:settings_segment_tuning'))
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, 'View live segment results')
+        self.assertContains(resp, reverse('tickets:customer_segments'))
+
     def test_view_preview_does_not_save(self):
         self.client.force_login(self.admin)
         self._cust('v1@e.com', ltv='60.00', last=date.today() - timedelta(days=10))
@@ -3127,7 +3135,7 @@ class TestSegmentTuning(TestCase):
         self.assertIn(verdict['label'], ('better', 'similar', 'worse'))
         self.assertContains(resp, 'likely to spend more later')
         # the "order check" narrative + plain "what to change" tips
-        self.assertContains(resp, 'Does this grouping work')
+        self.assertContains(resp, 'Do these segments work')
         self.assertContains(resp, 'shorter as you go down')
         self.assertContains(resp, 'These flags are only checking future revenue')
         order_rows = resp.context['order_rows']
@@ -3376,6 +3384,12 @@ class CustomerSegmentationViewTests(TestCase):
             password='testpass123',
         )
         UserProfile.objects.create(user=self.user, organization=self.org, org_role=UserProfile.OrgRole.OWNER)
+        self.host = User.objects.create_user(
+            username='segmenthost',
+            email='segment-host@test.com',
+            password='testpass123',
+        )
+        UserProfile.objects.create(user=self.host, organization=self.org, org_role=UserProfile.OrgRole.HOST)
         self.client.login(username='segment@test.com', password='testpass123')
         self.client.get(reverse('tickets:home'))
 
@@ -3392,6 +3406,52 @@ class CustomerSegmentationViewTests(TestCase):
         self.upload = UploadedFile.objects.create(
             organization=self.org, csv_format=self.csv_format, filename='test.csv', status='completed',
         )
+
+    def test_customer_segments_shows_automatic_mode_copy_for_admins(self):
+        response = self.client.get(reverse('tickets:customer_segments'))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context['segment_mode_label'], 'Automatic')
+        self.assertContains(response, 'How segments are decided')
+        self.assertContains(response, 'Cue sorts customers automatically using relative RFM scores')
+        self.assertContains(response, 'Choose how segments are decided')
+
+    def test_customer_segments_hides_tuning_link_for_non_admins(self):
+        self.client.force_login(self.host)
+
+        response = self.client.get(reverse('tickets:customer_segments'))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'How segments are decided')
+        self.assertNotContains(response, 'Choose how segments are decided')
+        self.assertNotContains(response, 'href="{}"'.format(reverse('tickets:settings_segment_tuning')))
+
+    def test_customer_segments_shows_custom_rule_summary(self):
+        self.org.segment_mode = 'absolute'
+        self.org.segment_bands = {
+            'recency_active_days': 60,
+            'recency_cooling_days': 150,
+            'freq_few': 2,
+            'freq_many': 4,
+            'monetary_mid': 40.0,
+            'monetary_high': 90.0,
+        }
+        self.org.save(update_fields=['segment_mode', 'segment_bands'])
+
+        response = self.client.get(reverse('tickets:customer_segments'))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context['segment_mode_label'], 'Custom rules')
+        self.assertContains(response, 'active within 60 days')
+        self.assertContains(response, 'frequent at 4 orders')
+        self.assertContains(response, 'top spender at $90')
+
+    def test_settings_overview_links_to_segment_settings_for_admins(self):
+        response = self.client.get(reverse('tickets:settings_overview'))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'Segment Settings')
+        self.assertContains(response, reverse('tickets:settings_segment_tuning'))
 
     def test_customer_segments_includes_behavior_stats(self):
         customer = Customer.objects.create(
@@ -3423,41 +3483,6 @@ class CustomerSegmentationViewTests(TestCase):
         self.assertTrue(any(row['segment'] == 'Fast Repeat' for row in response.context['behavior_stats']))
         self.assertContains(response, 'Behavior profiles')
         self.assertContains(response, 'Fast Repeat')
-
-    def test_segment_health_renders_internal_diagnostics(self):
-        Customer.objects.create(
-            organization=self.org, email='sh1@example.com', name='SH1',
-            lifetime_value=Decimal('180.00'), last_order_date=date.today() - timedelta(days=12),
-            rfm_segment='Loyal', rfm_recency_score=4, rfm_frequency_score=3, rfm_monetary_score=4,
-        )
-        response = self.client.get(reverse('tickets:segment_health'))
-        self.assertEqual(response.status_code, 200)
-        self.assertIn('display', response.context)
-        self.assertFalse(response.context['show_backtest'])
-        self.assertContains(response, 'Rule coverage')
-        self.assertContains(response, 'Segment sizes')
-
-    def test_segment_health_backtest_opt_in(self):
-        import uuid
-        good = Customer.objects.create(organization=self.org, email='g@example.com', name='G')
-        bad = Customer.objects.create(organization=self.org, email='b@example.com', name='B')
-        for days in (100, 150, 200, 30, 15):
-            TicketOrder.objects.create(
-                customer=good, event=self.event, uploaded_file=self.upload,
-                order_number=str(uuid.uuid4())[:20],
-                order_date=timezone.now() - timedelta(days=days),
-                total_amount=Decimal('300.00'),
-            )
-        TicketOrder.objects.create(
-            customer=bad, event=self.event, uploaded_file=self.upload,
-            order_number=str(uuid.uuid4())[:20],
-            order_date=timezone.now() - timedelta(days=250),
-            total_amount=Decimal('20.00'),
-        )
-        response = self.client.get(reverse('tickets:segment_health'), {'backtest': '1', 'holdout_days': '90'})
-        self.assertEqual(response.status_code, 200)
-        self.assertTrue(response.context['show_backtest'])
-        self.assertEqual(response.context['holdout_days'], 90)
 
     def test_customer_detail_shows_behavior_profile_metrics(self):
         customer = Customer.objects.create(

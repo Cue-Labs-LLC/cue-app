@@ -1,5 +1,5 @@
 {% load humanize %}
-{# Single ranked "are your groups in the right order?" list. Expects order_rows. #}
+{# Single ranked "are your segments in the right order?" list. Expects order_rows. #}
 {% for row in order_rows %}
 <div class="d-flex align-items-center gap-2 mb-2{% if row.n == 0 %} opacity-50{% endif %}">
     <span class="badge {% if row.n == 0 %}bg-light text-muted border fw-normal{% else %}bg-{{ row.badge_color }}{% endif %}" style="min-width: 8em;">{{ row.segment }}</span>
