@@ -3068,8 +3068,40 @@ class TestSegmentTuning(TestCase):
         })
         self.assertEqual(resp.status_code, 200)
         self.assertIsNotNone(resp.context['preview_sizes'])
+        self.assertContains(resp, 'Nothing is saved yet')  # bars actually rendered
         self.org.refresh_from_db()
         self.assertEqual(self.org.segment_mode, 'percentile')  # not saved
+
+    def test_view_preview_ajax_returns_partial(self):
+        self.client.force_login(self.admin)
+        self._cust('ax@e.com', ltv='60.00', last=date.today() - timedelta(days=10))
+        resp = self.client.post(
+            reverse('tickets:settings_segment_tuning'),
+            {'action': 'preview', 'segment_mode': 'absolute',
+             'recency_active_days': 90, 'recency_cooling_days': 180,
+             'freq_few': 2, 'freq_many': 3, 'monetary_mid': '40.00', 'monetary_high': '75.00'},
+            HTTP_X_REQUESTED_WITH='XMLHttpRequest',
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, 'Nothing is saved yet')     # the preview partial
+        self.assertNotContains(resp, 'How should we sort')    # NOT the full page
+
+    def test_view_preview_ajax_screenshot_payload_valid(self):
+        """Reproduce the exact browser payload from the bug screenshot."""
+        self.client.force_login(self.admin)
+        self._cust('sc@e.com', ltv='60.00', last=date.today() - timedelta(days=10))
+        resp = self.client.post(
+            reverse('tickets:settings_segment_tuning'),
+            {'action': 'preview', 'segment_mode': 'absolute',
+             'recency_active_days': '60', 'recency_cooling_days': '180',
+             'freq_few': '2', 'freq_many': '5',
+             'monetary_mid': '40.0', 'monetary_high': '75.0'},
+            HTTP_X_REQUESTED_WITH='XMLHttpRequest',
+        )
+        content = resp.content.decode()
+        self.assertNotIn('Please check the numbers', content,
+                         msg='form was unexpectedly invalid')
+        self.assertIn('Nothing is saved yet', content)
 
     def test_view_preview_backtest_shows_verdict(self):
         self.client.force_login(self.admin)
@@ -3093,14 +3125,85 @@ class TestSegmentTuning(TestCase):
         self.assertEqual(resp.context['backtest_status'], 'ok')
         verdict = resp.context['backtest_verdict']
         self.assertIn(verdict['label'], ('better', 'similar', 'worse'))
-        self.assertContains(resp, 'predict future spending')
-        # both detail tables cover the same segments in the same order
-        proposed = resp.context['backtest_rows']
-        current = resp.context['backtest_current_rows']
+        self.assertContains(resp, 'likely to spend more later')
+        # the "order check" narrative + plain "what to change" tips
+        self.assertContains(resp, 'Does this grouping work')
+        self.assertContains(resp, 'shorter as you go down')
+        self.assertContains(resp, 'These flags are only checking future revenue')
+        order_rows = resp.context['order_rows']
+        self.assertIn('bar_pct', order_rows[0])
+        self.assertIn('out_of_order', order_rows[0])
+        self.assertIn('recommendations', resp.context)  # apply-buttons (may be empty)
+        # order check is the value-ordered group list
         self.assertEqual(
-            [r['segment'] for r in proposed],
-            [r['segment'] for r in current],
+            [r['segment'] for r in order_rows],
+            [r['segment'] for r in resp.context['backtest_current_rows']],
         )
+
+    def test_recommended_bands_lowers_frequent_buyer(self):
+        from tickets.services.segmentation.validation import SegmentDiagnostics
+        from tickets.services.segmentation.segment_definitions import bands_from_org
+        # Customers with 2-3 orders each, but 'frequent buyer' set high (5) -> the
+        # top groups are empty, so it should recommend a lower frequent-buyer number.
+        for i in range(10):
+            c = self._cust(f'r{i}@e.com', ltv='120.00', last=date.today() - timedelta(days=10))
+            self._order(c, 60, days_ago=10)
+            self._order(c, 60, days_ago=40)
+            if i % 2 == 0:
+                self._order(c, 60, days_ago=70)  # some have 3 orders
+        self.org.segment_bands = {
+            'recency_active_days': 90, 'recency_cooling_days': 180,
+            'freq_few': 2, 'freq_many': 5, 'monetary_mid': 40.0, 'monetary_high': 75.0,
+        }
+        self.org.save(update_fields=['segment_bands'])
+        recs = SegmentDiagnostics(self.org).recommended_bands(bands_from_org(self.org))
+        self.assertIn('freq_many', recs)
+        self.assertLess(recs['freq_many'], 5)
+        self.assertGreater(recs['freq_many'], 2)  # above 'a few'
+
+    def test_recommended_bands_empty_when_reasonable(self):
+        from tickets.services.segmentation.validation import SegmentDiagnostics
+        from tickets.services.segmentation.segment_definitions import bands_from_org
+        for i in range(10):
+            c = self._cust(f'ok{i}@e.com', ltv='50.00', last=date.today() - timedelta(days=10))
+            self._order(c, 50, days_ago=10)
+            self._order(c, 50, days_ago=40)
+            self._order(c, 50, days_ago=70)  # everyone has 3 orders
+        self.org.segment_bands = {
+            'recency_active_days': 90, 'recency_cooling_days': 180,
+            'freq_few': 2, 'freq_many': 3, 'monetary_mid': 20.0, 'monetary_high': 40.0,
+        }
+        self.org.save(update_fields=['segment_bands'])
+        recs = SegmentDiagnostics(self.org).recommended_bands(bands_from_org(self.org))
+        self.assertNotIn('freq_many', recs)  # 'many' at 3 already populated
+
+    def test_ui_recommendations_hide_changes_that_backtest_worse(self):
+        from tickets.views import _recommendations
+
+        class FakeDiagnostics:
+            def recommended_bands(self, candidate):
+                return {'freq_many': 3}
+
+            def _backtest(self, **kwargs):
+                return {
+                    'status': 'ok',
+                    'separation': {'spearman_future_revenue': 0.10},
+                }
+
+        candidate = (
+            {'recency_active': 90, 'recency_cooling': 180, 'freq_few': 2, 'freq_many': 5},
+            (40.0, 75.0),
+        )
+        recs = _recommendations(FakeDiagnostics(), candidate, current_score=0.30)
+        self.assertEqual(recs, [])
+
+    def test_spread_note_for_dormant_is_not_threshold_advice(self):
+        from tickets.views import _spread_note
+
+        note = _spread_note('Dormant')
+        self.assertIn('That can be normal', note)
+        self.assertIn('widen the “Recently active” or “Slipping away” day ranges', note)
+        self.assertNotIn('lower your thresholds', note)
 
     def test_view_save_switches_mode_and_recalcs(self):
         self.client.force_login(self.admin)

@@ -6936,18 +6936,133 @@ def _candidate_bands_from_form(form):
 
 
 def _preview_size_rows(sizes):
-    """Shape preview_absolute_sizes output for the template (adds badge colors)."""
+    """Shape preview_absolute_sizes output for the template (badge color + plain blurb)."""
     if not sizes or sizes.get('status') != 'ok':
         return None
+    from .services.segmentation.segment_definitions import SEGMENT_DESCRIPTIONS
     return [
         {
             'segment': name,
             'count': info['count'],
             'pct': info['pct'],
             'badge_color': SEGMENT_BADGE_COLORS.get(name, 'secondary'),
+            'description': SEGMENT_DESCRIPTIONS.get(name, ''),
         }
         for name, info in sizes['by_segment'].items()
     ]
+
+
+def _annotate_order_check(rows):
+    """For the 'are your groups in the right order?' list.
+
+    rows are in value order (best group first). Each non-empty group's later spend
+    should be <= the group above it. Flag any that spent MORE than the last non-empty
+    group above them, rescale bars to this list's own max, and count the violations.
+    Returns (rows, violations).
+    """
+    max_rev = max((r['avg_future_revenue'] for r in rows if r['n']), default=0) or 1
+    violations = 0
+    prev = None  # (segment, avg) of the last non-empty group above
+    for r in rows:
+        r['bar_pct'] = max(0, round(100 * r['avg_future_revenue'] / max_rev)) if r['n'] else 0
+        r['out_of_order'] = False
+        r['above'] = None
+        if r['n']:
+            if prev is not None and r['avg_future_revenue'] > prev[1]:
+                r['out_of_order'] = True
+                r['above'] = prev[0]
+                violations += 1
+            prev = (r['segment'], r['avg_future_revenue'])
+    return rows, violations
+
+
+def _recommendations(diag, candidate, current_score=None):
+    """One-click 'apply' recommendations from data-driven better cut-offs.
+
+    Each item: label + why + apply_json (a {input_id: value} map the front-end
+    fills in, then re-runs the check). Empty when the cut-offs already look good
+    or when a suggested change would fail the same future-revenue check shown in
+    this panel.
+    """
+    recs = diag.recommended_bands(candidate)  # e.g. {'freq_many': 3, 'monetary_high': 65}
+    if not recs:
+        return []
+
+    from .services.segmentation.segment_definitions import classify_segment_absolute, SEGMENT_VALUE_ORDER
+
+    def trial_candidate(keys):
+        band_kwargs, monetary_bands = candidate
+        trial_kwargs = dict(band_kwargs)
+        mid, high = monetary_bands
+        if 'freq_many' in keys:
+            trial_kwargs['freq_many'] = recs['freq_many']
+        if 'monetary_high' in keys:
+            high = recs['monetary_high']
+        return trial_kwargs, (mid, high)
+
+    def passes_revenue_check(keys):
+        if current_score is None:
+            return True
+        result = diag._backtest(
+            absolute_fn=classify_segment_absolute,
+            bands=trial_candidate(keys),
+            value_order=SEGMENT_VALUE_ORDER,
+        )
+        score = (result.get('separation') or {}).get('spearman_future_revenue')
+        if result.get('status') != 'ok' or score is None:
+            return False
+        # Match the visible verdict margin: a recommendation should not click
+        # through into "worse than current automatic grouping."
+        return score >= current_score - 0.05
+
+    out = []
+    if 'freq_many' in recs and passes_revenue_check(['freq_many']):
+        out.append({
+            'label': 'Set “frequent buyer” to {} orders'.format(recs['freq_many']),
+            'why': 'Almost nobody qualifies now, so your top groups are nearly empty.',
+            'apply_json': json.dumps({'id_freq_many': recs['freq_many']}),
+        })
+    if 'monetary_high' in recs and passes_revenue_check(['monetary_high']):
+        out.append({
+            'label': 'Set “top spender” to ${:g}'.format(recs['monetary_high']),
+            'why': 'Hardly anyone clears the current amount, so your best spenders don’t stand out.',
+            'apply_json': json.dumps({'id_monetary_high': recs['monetary_high']}),
+        })
+    if len(out) > 1 and passes_revenue_check(['freq_many', 'monetary_high']):
+        combined = {}
+        if 'freq_many' in recs:
+            combined['id_freq_many'] = recs['freq_many']
+        if 'monetary_high' in recs:
+            combined['id_monetary_high'] = recs['monetary_high']
+        out.append({
+            'label': 'Use all suggested numbers',
+            'why': '',
+            'apply_json': json.dumps(combined),
+            'primary': True,
+        })
+    return out
+
+
+def _spread_note(segment):
+    """Plain-English advice when one preview group dominates the customer base."""
+    if not segment:
+        return None
+    if segment == 'Dormant':
+        return (
+            'Most customers are Dormant. That can be normal if many have no orders '
+            'or only one old, low-spend order. If you want to treat more older '
+            'customers as still reachable, widen the “Recently active” or '
+            '“Slipping away” day ranges.'
+        )
+    if segment in ('VIP', 'Loyal', 'Big Spender'):
+        return (
+            'Most customers fall into one top group ({}). Raise the frequent-buyer '
+            'or top-spender thresholds so the highest-value groups stay selective.'
+        ).format(segment)
+    return (
+        'Most customers fall into one group ({}). Adjust the cut-offs above to '
+        'spread customers only if this does not match how you would market to them.'
+    ).format(segment)
 
 
 @login_required
@@ -7016,11 +7131,21 @@ def settings_segment_tuning(request):
                     if current.get('status') == 'ok':
                         context['backtest_current_rows'] = _segment_health_backtest_rows(current)
                         context['backtest_current_separation'] = current.get('separation')
-                    # Align both tables to the same segments/order so rows compare 1:1.
+                    # Align both to the same value-ordered groups (current only feeds
+                    # the one-line verdict now), then build the single "order check".
                     if context.get('backtest_rows') and context.get('backtest_current_rows'):
                         context['backtest_rows'], context['backtest_current_rows'] = _align_backtest_rows(
                             context['backtest_rows'], context['backtest_current_rows'], SEGMENT_VALUE_ORDER,
                         )
+                        order_rows, violations = _annotate_order_check(context['backtest_rows'])
+                        context['order_rows'] = order_rows
+                        context['order_violations'] = violations
+                        cur_sep = (current.get('separation') or {}).get('spearman_future_revenue')
+                        context['recommendations'] = _recommendations(diag, candidate, cur_sep)
+                        # Over-concentration has no single safe value to apply.
+                        _spread = next((r['segment'] for r in (context.get('preview_sizes') or [])
+                                        if r['pct'] > 40), None)
+                        context['spread_note'] = _spread_note(_spread)
                     # Plain-English verdict: is the proposed better/similar/worse?
                     prop_sep = (result.get('separation') or {}).get('spearman_future_revenue')
                     cur_sep = (current.get('separation') or {}).get('spearman_future_revenue')
@@ -7033,6 +7158,14 @@ def settings_segment_tuning(request):
                             'proposed_pct': max(0, round(prop_sep * 100)),
                             'current_pct': max(0, round(cur_sep * 100)),
                         }
+
+        # AJAX preview: return just the result partial so the page updates in
+        # place (no reload). Falls back to full page for non-AJAX posts
+        # (progressive enhancement). Fires for valid and invalid forms.
+        if (action in ('preview', 'preview_backtest')
+                and request.headers.get('x-requested-with') == 'XMLHttpRequest'):
+            context['form'] = form
+            return render(request, 'tickets/_segment_preview.html', context)
     else:
         form = SegmentTuningForm(instance=org)
 
