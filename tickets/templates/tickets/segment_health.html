@@ -7,6 +7,7 @@
 <div class="page-header">
     <h1>Segment Health</h1>
     <div class="page-header-actions">
+        <a href="{% url 'tickets:settings_segment_tuning' %}" class="btn btn-outline-secondary"><i class="bi bi-sliders"></i> Tune cut-offs</a>
         <a href="{% url 'tickets:customer_segments' %}" class="btn btn-outline-secondary"><i class="bi bi-diagram-3"></i> Segments</a>
         <form method="post" action="{% url 'tickets:recalculate_segments' %}" class="d-inline">
             {% csrf_token %}

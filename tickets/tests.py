@@ -2841,9 +2841,11 @@ class TestSegmentClassifiers(TestCase):
             (10, 5, 10, "Loyal"),         # active, many, low
             (10, 3, 100, "Big Spender"),  # active, few, high
             (10, 3, 10, "Promising"),     # active, few, low
-            (10, 1, 10, "New"),           # active, one
+            (10, 1, 10, "New"),           # active, one, low spend
+            (10, 1, 50, "Promising"),     # active, one, decent spend (>= mid) -> Promising
             (120, 3, 10, "At-Risk"),      # cooling, few
-            (120, 1, 10, "Promising"),    # cooling, one
+            (120, 1, 50, "At-Risk"),      # cooling, one, decent spend -> At-Risk
+            (120, 1, 10, "Promising"),    # cooling, one, low spend
             (300, 2, 10, "Lapsed"),       # lost, repeat history
             (300, 1, 10, "Dormant"),      # lost, single
         ]
@@ -2937,6 +2939,184 @@ class TestValidateSegmentsCommand(TestCase):
         from django.core.management.base import CommandError
         with self.assertRaises(CommandError):
             call_command('validate_segments', '--org', 'cmd-org', '--cutoff', 'not-a-date')
+
+
+class TestSegmentTuning(TestCase):
+    """Tests for absolute-mode segmentation + the cut-off tuning form/view."""
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.org = Organization.objects.create(name='Tune Org', slug='tune-org')
+        cls.admin = User.objects.create_user('tuner', 'tuner@test.com', 'pw')
+        UserProfile.objects.create(user=cls.admin, organization=cls.org, org_role=UserProfile.OrgRole.OWNER)
+        cls.host = User.objects.create_user('hostuser', 'host@test.com', 'pw')
+        UserProfile.objects.create(user=cls.host, organization=cls.org, org_role=UserProfile.OrgRole.HOST)
+        cls.venue = Venue.objects.create(organization=cls.org, name='V', city='C')
+        cls.event = Event.objects.create(organization=cls.org, name='E', venue=cls.venue, start_date=date(2025, 1, 1))
+        cls.fmt = CSVFormat.objects.create(organization=cls.org, name='F', column_mapping={'order_number': 'Order ID'})
+        cls.upload = UploadedFile.objects.create(organization=cls.org, csv_format=cls.fmt, filename='t.csv', status='completed')
+
+    def _cust(self, email, ltv='0.00', last=None):
+        return Customer.objects.create(
+            organization=self.org, email=email, name=email,
+            lifetime_value=Decimal(ltv), last_order_date=last,
+        )
+
+    def _order(self, c, total, days_ago):
+        import uuid
+        TicketOrder.objects.create(
+            customer=c, event=self.event, uploaded_file=self.upload,
+            order_number=str(uuid.uuid4())[:20],
+            order_date=timezone.now() - timedelta(days=days_ago), total_amount=Decimal(str(total)),
+        )
+
+    # ---- classifier + band helpers ----
+    def test_classify_absolute_band_overrides(self):
+        from tickets.services.segmentation.segment_definitions import classify_segment_absolute
+        # 3 orders, recent, high spend: default freq_many=5 -> Big Spender
+        self.assertEqual(classify_segment_absolute(10, 3, 100, (40.0, 75.0)), "Big Spender")
+        # lower "buys often" to 3 -> now VIP
+        self.assertEqual(
+            classify_segment_absolute(10, 3, 100, (40.0, 75.0), freq_many=3), "VIP",
+        )
+
+    def test_seed_segment_bands_idempotent_and_force(self):
+        from tickets.services.segmentation.segment_definitions import seed_segment_bands
+        for i in range(5):
+            self._cust(f's{i}@e.com', ltv=str(20 + i * 30))
+        bands = seed_segment_bands(self.org)
+        self.assertGreater(bands['monetary_high'], 0)
+        self.org.refresh_from_db()
+        self.assertEqual(self.org.segment_bands['monetary_high'], bands['monetary_high'])
+        # second call is a no-op (already seeded)
+        again = seed_segment_bands(self.org)
+        self.assertEqual(again, bands)
+        # force re-seeds
+        forced = seed_segment_bands(self.org, force=True)
+        self.assertIn('monetary_high', forced)
+
+    # ---- form ----
+    def test_form_roundtrips_bands_and_validates(self):
+        from tickets.forms import SegmentTuningForm
+        data = {
+            'segment_mode': 'absolute', 'recency_active_days': 90, 'recency_cooling_days': 180,
+            'freq_few': 2, 'freq_many': 4, 'monetary_mid': '40.00', 'monetary_high': '75.00',
+        }
+        form = SegmentTuningForm(data, instance=self.org)
+        self.assertTrue(form.is_valid(), form.errors)
+        org = form.save()
+        org.refresh_from_db()
+        self.assertEqual(org.segment_mode, 'absolute')
+        self.assertEqual(org.segment_bands['freq_many'], 4)
+        self.assertEqual(org.segment_bands['monetary_high'], 75.0)
+        # bad ordering rejected
+        bad = dict(data, freq_few=5, freq_many=3)
+        self.assertFalse(SegmentTuningForm(bad, instance=self.org).is_valid())
+
+    # ---- RFMCalculator branch ----
+    def test_rfmcalculator_absolute_vs_percentile(self):
+        from tickets.services.segmentation.rfm_calculator import RFMCalculator
+        c = self._cust('recent@e.com', ltv='50.00', last=date.today() - timedelta(days=10))
+        self._order(c, 50, days_ago=10)  # one recent order, low spend
+
+        self.org.segment_mode = 'percentile'
+        self.org.save(update_fields=['segment_mode'])
+        RFMCalculator(self.org).calculate_all()
+        c.refresh_from_db()
+        self.assertTrue(c.rfm_segment)
+        self.assertIsNotNone(c.rfm_recency_score)
+
+        self.org.segment_mode = 'absolute'
+        # explicit bands so $50 is below the decent-spend threshold (-> New)
+        self.org.segment_bands = {
+            'recency_active_days': 90, 'recency_cooling_days': 180,
+            'freq_few': 2, 'freq_many': 5, 'monetary_mid': 100.0, 'monetary_high': 200.0,
+        }
+        self.org.save(update_fields=['segment_mode', 'segment_bands'])
+        RFMCalculator(self.org).calculate_all()
+        c.refresh_from_db()
+        # recent single order below the decent-spend threshold -> New
+        self.assertEqual(c.rfm_segment, 'New')
+        # percentile scores still populated in absolute mode
+        self.assertIsNotNone(c.rfm_recency_score)
+
+    # ---- preview ----
+    def test_preview_absolute_sizes_sums_and_scoped(self):
+        from tickets.services.segmentation.validation import SegmentDiagnostics
+        from tickets.services.segmentation.segment_definitions import bands_from_org, seed_segment_bands
+        for i in range(4):
+            c = self._cust(f'p{i}@e.com', ltv='60.00', last=date.today() - timedelta(days=10))
+            self._order(c, 60, days_ago=10)
+        seed_segment_bands(self.org)
+        sizes = SegmentDiagnostics(self.org).preview_absolute_sizes(bands_from_org(self.org))
+        self.assertEqual(sizes['status'], 'ok')
+        self.assertEqual(sizes['total_scored'], 4)
+
+    # ---- view ----
+    def test_view_admin_gate(self):
+        self.client.force_login(self.host)  # non-admin
+        resp = self.client.get(reverse('tickets:settings_segment_tuning'))
+        self.assertNotEqual(resp.status_code, 200)  # blocked (redirect or 403)
+
+    def test_view_preview_does_not_save(self):
+        self.client.force_login(self.admin)
+        self._cust('v1@e.com', ltv='60.00', last=date.today() - timedelta(days=10))
+        resp = self.client.post(reverse('tickets:settings_segment_tuning'), {
+            'action': 'preview', 'segment_mode': 'absolute',
+            'recency_active_days': 90, 'recency_cooling_days': 180,
+            'freq_few': 2, 'freq_many': 3, 'monetary_mid': '40.00', 'monetary_high': '75.00',
+        })
+        self.assertEqual(resp.status_code, 200)
+        self.assertIsNotNone(resp.context['preview_sizes'])
+        self.org.refresh_from_db()
+        self.assertEqual(self.org.segment_mode, 'percentile')  # not saved
+
+    def test_view_preview_backtest_shows_verdict(self):
+        self.client.force_login(self.admin)
+        # High/low split so both backtests yield >=2 segments (holdout_days=180 ->
+        # pre-cutoff orders are >=180 days ago, holdout orders <180).
+        for i in range(6):
+            c = self._cust(f'good{i}@e.com')
+            self._order(c, 200, days_ago=300)  # pre-cutoff, frequent + high spend
+            self._order(c, 200, days_ago=250)
+            self._order(c, 200, days_ago=200)
+            self._order(c, 150, days_ago=60)   # holdout repeat
+        for i in range(5):
+            c = self._cust(f'bad{i}@e.com')
+            self._order(c, 20, days_ago=250)   # single old low-value order, no holdout
+        resp = self.client.post(reverse('tickets:settings_segment_tuning'), {
+            'action': 'preview_backtest', 'segment_mode': 'absolute',
+            'recency_active_days': 90, 'recency_cooling_days': 180,
+            'freq_few': 2, 'freq_many': 3, 'monetary_mid': '40.00', 'monetary_high': '75.00',
+        })
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.context['backtest_status'], 'ok')
+        verdict = resp.context['backtest_verdict']
+        self.assertIn(verdict['label'], ('better', 'similar', 'worse'))
+        self.assertContains(resp, 'predict future spending')
+        # both detail tables cover the same segments in the same order
+        proposed = resp.context['backtest_rows']
+        current = resp.context['backtest_current_rows']
+        self.assertEqual(
+            [r['segment'] for r in proposed],
+            [r['segment'] for r in current],
+        )
+
+    def test_view_save_switches_mode_and_recalcs(self):
+        self.client.force_login(self.admin)
+        c = self._cust('v2@e.com', ltv='20.00', last=date.today() - timedelta(days=10))
+        self._order(c, 20, days_ago=10)  # below the $40 decent-spend threshold
+        resp = self.client.post(reverse('tickets:settings_segment_tuning'), {
+            'action': 'save', 'segment_mode': 'absolute',
+            'recency_active_days': 90, 'recency_cooling_days': 180,
+            'freq_few': 2, 'freq_many': 4, 'monetary_mid': '40.00', 'monetary_high': '75.00',
+        })
+        self.assertEqual(resp.status_code, 302)
+        self.org.refresh_from_db()
+        self.assertEqual(self.org.segment_mode, 'absolute')
+        c.refresh_from_db()
+        # eager recalc ran with absolute bands
+        self.assertEqual(c.rfm_segment, 'New')
 
 
 class TestCustomerBehaviorProfiler(TestCase):

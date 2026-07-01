@@ -92,6 +92,102 @@ class OrgDisplayPreferencesForm(forms.ModelForm):
         self.helper.form_tag = False
 
 
+class SegmentTuningForm(forms.ModelForm):
+    """Edit an org's segmentation mode + absolute cut-off bands.
+
+    The six band values live in the Organization.segment_bands JSONField; this
+    form flattens them into individual fields for editing and writes them back on
+    save. Recency in days, frequency in order counts, monetary in dollars.
+    """
+
+    recency_active_days = forms.IntegerField(
+        min_value=1, label="Active within (days)",
+        widget=forms.NumberInput(attrs={'class': 'form-control'}),
+    )
+    recency_cooling_days = forms.IntegerField(
+        min_value=2, label="Lapsed after (days)",
+        widget=forms.NumberInput(attrs={'class': 'form-control'}),
+    )
+    freq_few = forms.IntegerField(
+        min_value=2, label="A few orders start at",
+        widget=forms.NumberInput(attrs={'class': 'form-control'}),
+    )
+    freq_many = forms.IntegerField(
+        min_value=2, label="Buys often starts at",
+        widget=forms.NumberInput(attrs={'class': 'form-control'}),
+    )
+    monetary_mid = forms.DecimalField(
+        min_value=0, max_digits=10, decimal_places=2, label="Decent spend ($)",
+        widget=forms.NumberInput(attrs={'class': 'form-control', 'step': '0.01'}),
+    )
+    monetary_high = forms.DecimalField(
+        min_value=0, max_digits=10, decimal_places=2, label="Top spender ($)",
+        widget=forms.NumberInput(attrs={'class': 'form-control', 'step': '0.01'}),
+    )
+
+    class Meta:
+        model = Organization
+        fields = ['segment_mode']
+        widgets = {
+            'segment_mode': forms.Select(attrs={'class': 'form-select'}),
+        }
+
+    BAND_FIELDS = [
+        'recency_active_days', 'recency_cooling_days', 'freq_few', 'freq_many',
+        'monetary_mid', 'monetary_high',
+    ]
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # Seed initial band values from the org's stored bands, falling back to
+        # module defaults (no DB write here — the view seeds monetary on GET).
+        from .services.segmentation.segment_definitions import default_segment_bands
+        stored = (self.instance.segment_bands or {}) if self.instance else {}
+        defaults = default_segment_bands()
+        if not self.is_bound:
+            for f in self.BAND_FIELDS:
+                self.fields[f].initial = stored.get(f, defaults[f])
+        self.helper = FormHelper()
+        self.helper.form_tag = False
+
+    def clean(self):
+        cleaned = super().clean()
+        active = cleaned.get('recency_active_days')
+        cooling = cleaned.get('recency_cooling_days')
+        few = cleaned.get('freq_few')
+        many = cleaned.get('freq_many')
+        mid = cleaned.get('monetary_mid')
+        high = cleaned.get('monetary_high')
+        if active is not None and cooling is not None and active >= cooling:
+            self.add_error('recency_cooling_days', 'Cooling window must be longer than the active window.')
+        if few is not None and many is not None and few >= many:
+            self.add_error('freq_many', 'Buys-often must be more orders than a few.')
+        if mid is not None and high is not None and mid >= high:
+            self.add_error('monetary_high', 'Top-spender threshold must be higher than the decent-spend threshold.')
+        return cleaned
+
+    def band_values(self):
+        """Return the cleaned band values as a JSON-serializable dict."""
+        return {
+            'recency_active_days': self.cleaned_data['recency_active_days'],
+            'recency_cooling_days': self.cleaned_data['recency_cooling_days'],
+            'freq_few': self.cleaned_data['freq_few'],
+            'freq_many': self.cleaned_data['freq_many'],
+            'monetary_mid': float(self.cleaned_data['monetary_mid']),
+            'monetary_high': float(self.cleaned_data['monetary_high']),
+        }
+
+    def save(self, commit=True):
+        org = super().save(commit=False)
+        org.segment_bands = self.band_values()
+        if commit:
+            # Only write the two tuning columns — a bare save() would clobber
+            # fields like rfm_recalc_in_progress read at request start, racing a
+            # running recalc task.
+            org.save(update_fields=['segment_mode', 'segment_bands'])
+        return org
+
+
 class MemberInviteForm(forms.Form):
     """Form to invite a member to the organization by email or phone."""
 

@@ -148,22 +148,100 @@ def derive_monetary_bands(spends):
     return (mid, high)
 
 
-def classify_segment_absolute(recency_days, freq, monetary, monetary_bands):
+def default_segment_bands():
+    """The module-default absolute cut-offs (monetary seeded per-org separately)."""
+    return {
+        "recency_active_days": RECENCY_ACTIVE_DAYS,
+        "recency_cooling_days": RECENCY_COOLING_DAYS,
+        "freq_few": FREQUENCY_FEW,
+        "freq_many": FREQUENCY_MANY,
+        "monetary_mid": 0.0,
+        "monetary_high": 0.0,
+    }
+
+
+def bands_from_org(org):
+    """Build absolute-mode inputs from org.segment_bands, defaulting per key.
+
+    Returns (kwargs, monetary_bands) where kwargs feeds classify_segment_absolute's
+    recency/frequency thresholds and monetary_bands is the (mid, high) tuple.
+    """
+    stored = org.segment_bands or {}
+    d = default_segment_bands()
+
+    def _as_int(key):
+        # int(float(...)) tolerates decimal strings from a corrupted JSON blob so
+        # a malformed value never crashes the recalc task mid-run.
+        try:
+            return int(float(stored.get(key, d[key])))
+        except (TypeError, ValueError):
+            return int(d[key])
+
+    kwargs = {
+        "recency_active": _as_int("recency_active_days"),
+        "recency_cooling": _as_int("recency_cooling_days"),
+        "freq_few": _as_int("freq_few"),
+        "freq_many": _as_int("freq_many"),
+    }
+    monetary_bands = (
+        float(stored.get("monetary_mid", d["monetary_mid"])),
+        float(stored.get("monetary_high", d["monetary_high"])),
+    )
+    return kwargs, monetary_bands
+
+
+def seed_segment_bands(org, force=False):
+    """Seed org.segment_bands from the org's current spend distribution and persist.
+
+    Monetary mid/high come from derive_monetary_bands over positive lifetime_value;
+    recency/frequency come from module defaults. No-op if already seeded unless force.
+    Returns the resulting bands dict.
+    """
+    from tickets.models import Customer  # local import avoids circular import
+    if org.segment_bands and not force:
+        return org.segment_bands
+    spends = list(
+        Customer.objects.filter(organization=org)
+        .exclude(email__endswith="@placeholder.local")
+        .values_list("lifetime_value", flat=True)
+    )
+    mid, high = derive_monetary_bands(spends)
+    d = default_segment_bands()
+    bands = {
+        "recency_active_days": d["recency_active_days"],
+        "recency_cooling_days": d["recency_cooling_days"],
+        "freq_few": d["freq_few"],
+        "freq_many": d["freq_many"],
+        "monetary_mid": round(mid, 2),
+        "monetary_high": round(high, 2),
+    }
+    org.segment_bands = bands
+    org.save(update_fields=["segment_bands"])
+    return bands
+
+
+def classify_segment_absolute(recency_days, freq, monetary, monetary_bands,
+                              recency_active=RECENCY_ACTIVE_DAYS,
+                              recency_cooling=RECENCY_COOLING_DAYS,
+                              freq_many=FREQUENCY_MANY, freq_few=FREQUENCY_FEW):
     """Behavior-anchored absolute-threshold segment from raw as-of values.
 
     recency_days: days since last order; freq: order count; monetary: spend;
     monetary_bands: (mid, high) currency thresholds from derive_monetary_bands.
+    recency_active/recency_cooling/freq_many/freq_few: per-org cut-offs (default to
+    the module constants when not supplied).
     """
-    _mid, high = monetary_bands
+    mid, high = monetary_bands
     freq = freq or 0
     monetary = float(monetary or 0)
-    active = recency_days <= RECENCY_ACTIVE_DAYS
-    cooling = RECENCY_ACTIVE_DAYS < recency_days <= RECENCY_COOLING_DAYS
-    many = freq >= FREQUENCY_MANY
-    few = FREQUENCY_FEW <= freq < FREQUENCY_MANY
-    # high must be a real threshold: with a degenerate all-zero band, no one is
-    # a high spender (guards against everyone landing in VIP/Big Spender).
+    active = recency_days <= recency_active
+    cooling = recency_active < recency_days <= recency_cooling
+    many = freq >= freq_many
+    few = freq_few <= freq < freq_many
+    # Money bands must be real thresholds: with a degenerate all-zero band nobody
+    # clears them (guards against everyone landing in VIP/Big Spender/Promising).
     high_val = high > 0 and monetary >= high
+    mid_val = mid > 0 and monetary >= mid  # "decent spend"
 
     if active:
         if many and high_val:
@@ -172,14 +250,16 @@ def classify_segment_absolute(recency_days, freq, monetary, monetary_bands):
             return "Loyal"
         if high_val:
             return "Big Spender"
-        if few:
+        # A few orders OR a single decent-spend order -> worth nurturing.
+        if few or mid_val:
             return "Promising"
         return "New"
     if cooling:
-        if many or few:
+        # Had real engagement (repeat orders or decent spend) -> worth winning back.
+        if many or few or mid_val:
             return "At-Risk"
         return "Promising"
-    if freq >= 2:
+    if freq >= freq_few:
         return "Lapsed"
     return "Dormant"
 

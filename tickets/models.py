@@ -93,6 +93,20 @@ class Organization(BaseModel):
     name = models.CharField(max_length=200)
     slug = models.SlugField(max_length=100, unique=True)
     rfm_recalc_in_progress = models.BooleanField(default=False)
+    # How rfm_segment is assigned. "percentile" = population-relative quintiles
+    # (default, legacy). "absolute" = behavior-anchored fixed cut-offs from
+    # segment_bands (see tickets/services/segmentation/segment_definitions.py).
+    SEGMENT_MODE_CHOICES = [
+        ('percentile', 'Percentile (relative)'),
+        ('absolute', 'Absolute (fixed cut-offs)'),
+    ]
+    segment_mode = models.CharField(
+        max_length=12, choices=SEGMENT_MODE_CHOICES, default='percentile', db_index=True,
+    )
+    # Absolute-mode cut-offs. Empty {} means "use module defaults + auto-seeded
+    # monetary". Keys: recency_active_days, recency_cooling_days, freq_few,
+    # freq_many, monetary_mid, monetary_high.
+    segment_bands = models.JSONField(default=dict, blank=True)
     survey_email_subject = models.CharField(
         max_length=255, blank=True, default='',
         help_text="Org-wide default subject for survey invitation emails. "

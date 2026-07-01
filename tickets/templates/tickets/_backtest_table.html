@@ -1,7 +1,7 @@
 {% load humanize %}
 <div class="table-responsive">
     <table class="table table-hover table-sm mb-0 align-middle">
-        <caption class="ps-2">{{ caption }} &mdash; segments ranked by actual future revenue per customer</caption>
+        <caption class="ps-2">{{ caption }} &mdash; {{ subtitle|default:"segments ranked by actual future revenue per customer" }}</caption>
         <thead>
             <tr>
                 <th>Segment</th>
@@ -12,12 +12,21 @@
         </thead>
         <tbody>
             {% for row in rows %}
+            {% if row.n == 0 %}
+            <tr class="text-muted fst-italic" style="opacity: .5;">
+                <td><span class="badge bg-light text-muted border fw-normal">{{ row.segment }}</span></td>
+                <td class="text-end">&mdash;</td>
+                <td class="text-end">&mdash;</td>
+                <td class="text-end">no customers</td>
+            </tr>
+            {% else %}
             <tr>
                 <td><span class="badge bg-{{ row.badge_color }}">{{ row.segment }}</span></td>
                 <td class="text-end" style="font-variant-numeric: tabular-nums;">{{ row.n|intcomma }}</td>
                 <td class="text-end" style="font-variant-numeric: tabular-nums;">{{ row.repeat_rate }}%</td>
                 <td class="text-end" style="font-variant-numeric: tabular-nums;"><span class="revenue">${{ row.avg_future_revenue|floatformat:2 }}</span></td>
             </tr>
+            {% endif %}
             {% endfor %}
         </tbody>
     </table>
