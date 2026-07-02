@@ -147,11 +147,11 @@
     /* ── Suppress the uppercase label ────────────────── */
     .col-filter-label { display: none; }
 
-    /* ── Allow filter dropdowns to escape their clipping ancestors ── */
-    /* dashboard.css sets .card { overflow: hidden } which clips dropdown panels */
+    /* dashboard.css sets .card { overflow: hidden } — allow dropdowns outside
+       the card boundary. The table-responsive overflow is left at Bootstrap's
+       default (overflow-x: auto) so the table scrolls on narrow screens;
+       col-filter dropdowns use Popper's fixed strategy instead (see JS below). */
     .customer-list-card { overflow: visible; }
-    /* Bootstrap sets .table-responsive { overflow-x: auto } which also clips */
-    .cust-table-scroll { overflow: visible; }
 </style>
 {% endblock %}
 
@@ -624,6 +624,16 @@ function applyColFilter(newParams) {
             applyColFilter({market: marketEl.value});
         });
     }
+
+    // Re-init col-filter dropdowns with Popper's fixed strategy so panels
+    // escape the table-responsive overflow-x:auto container on narrow screens.
+    // dispose() + new Dropdown() is safe here because Bootstrap's auto-init
+    // (DOMContentLoaded) has already run by the time this script executes.
+    document.querySelectorAll('.col-filter-btn').forEach(function(btn) {
+        var existing = bootstrap.Dropdown.getInstance(btn);
+        if (existing) existing.dispose();
+        new bootstrap.Dropdown(btn, { popperConfig: { strategy: 'fixed' } });
+    });
 })();
 </script>
 {% if org.sms_marketing_enabled and is_org_host %}
