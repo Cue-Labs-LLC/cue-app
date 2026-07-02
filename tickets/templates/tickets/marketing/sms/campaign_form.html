@@ -138,6 +138,19 @@
     .sms-prefill-notice i { color: var(--accent); }
     .sms-prefill-notice a { color: var(--text-tertiary); font-size: 12px; margin-left: auto; }
 
+    .sms-prefill-gap {
+        display: flex; align-items: flex-start; gap: 8px;
+        background: var(--warning-muted);
+        border: 1px solid rgba(196, 154, 60, 0.22);
+        border-left: 2px solid var(--warning);
+        border-radius: var(--radius);
+        padding: 10px 14px; margin: 6px 0 4px;
+        font-size: 13px; font-weight: 300; color: var(--text-primary);
+        line-height: 1.5;
+    }
+    .sms-prefill-gap i { color: var(--warning); flex-shrink: 0; margin-top: 2px; font-size: 13px; }
+    .sms-prefill-gap b { font-weight: 600; }
+
     .sms-aud-group { margin-top: 16px; }
     .sms-aud-grouprow {
         display: flex; align-items: center; justify-content: space-between; gap: 12px;
@@ -461,6 +474,10 @@
                             <span>{{ prefill.label }} selected from the Customers page</span>
                             <a href="{% url 'tickets:customer_list' %}">Change selection</a>
                         </div>
+                        <div class="sms-prefill-gap" id="prefill-gap-warning" hidden>
+                            <i class="bi bi-exclamation-triangle"></i>
+                            <span id="prefill-gap-text"></span>
+                        </div>
                         {% else %}
                         {% if event %}
                         <div class="sms-aud-group" data-aud-group="scope">
@@ -760,6 +777,9 @@
         var countPill = document.getElementById('aud-count-pill');
         var noteEl = document.getElementById('aud-note');
         var refreshBtn = document.getElementById('aud-refresh');
+        var prefillGapEl = document.getElementById('prefill-gap-warning');
+        var prefillGapTextEl = document.getElementById('prefill-gap-text');
+        var prefillCount = {% if prefill %}{{ prefill.count }}{% else %}0{% endif %};
 
         function pulse() {
             if (!countPill) return;
@@ -783,6 +803,18 @@
                     if (noteEl) noteEl.textContent = j.exceeds_cap
                         ? 'Exceeds the ' + j.cap + ' cap — narrow the audience.'
                         : 'Only opted-in, contactable, non-opted-out customers are counted.';
+                    // Warn when a prefill selection has non-subscribers that will be silently skipped.
+                    if (prefillGapEl && prefillCount > 0 && !j.exceeds_cap) {
+                        var reachable = parseInt(j.count, 10) || 0;
+                        var skipped = prefillCount - reachable;
+                        if (skipped > 0 && prefillGapTextEl) {
+                            prefillGapTextEl.innerHTML =
+                                '<b>' + skipped.toLocaleString() + '</b> of your <b>' + prefillCount.toLocaleString() + '</b> selected customers aren\'t subscribed to SMS and won\'t receive this campaign.';
+                            prefillGapEl.hidden = false;
+                        } else {
+                            prefillGapEl.hidden = true;
+                        }
+                    }
                 })
                 .catch(function () { countEl.textContent = '?'; });
         }
