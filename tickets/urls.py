@@ -337,6 +337,10 @@ urlpatterns = [
     path('settings/custom-fields/<int:field_id>/delete/', views.custom_field_delete, name='custom_field_delete'),
     path('settings/custom-fields/reorder/', views.custom_field_reorder, name='custom_field_reorder'),
 
+    # Markets
+    path('markets/', views.market_list, name='market_list'),
+    path('markets/builder/', views.market_builder, name='market_builder'),
+
     # Venues
     path('venues/', views.venue_list, name='venue_list'),
     path('venues/create/', views.venue_create, name='venue_create'),
