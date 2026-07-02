@@ -3,6 +3,60 @@
 
 {% block title %}Customers{% endblock %}
 
+{% block extra_head %}
+{{ block.super }}
+<style>
+    #custActionBar {
+        overflow: visible;
+        position: relative;
+        z-index: 20;
+    }
+    .customer-action-toolbar {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 0.75rem;
+        min-height: 52px;
+    }
+    .customer-action-toolbar #custSelectedCount {
+        min-width: 94px;
+    }
+    .customer-action-primary {
+        font-weight: 600;
+        padding-left: 1.1rem;
+        padding-right: 1.1rem;
+        min-width: 118px;
+    }
+    .customer-action-menu {
+        width: min(320px, calc(100vw - 2rem));
+        padding: 1rem;
+        z-index: 1050;
+    }
+    .customer-action-menu-label {
+        color: var(--bs-secondary-color);
+        font-size: 0.7rem;
+        font-weight: 600;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+    }
+    .customer-action-menu .form-select,
+    .customer-action-menu .form-control {
+        max-width: none !important;
+    }
+    .customer-action-menu .btn-link {
+        --bs-btn-padding-x: 0;
+        --bs-btn-padding-y: 0.15rem;
+        font-size: 0.8125rem;
+        text-align: left;
+    }
+    @media (max-width: 767.98px) {
+        .customer-action-primary {
+            flex: 1 1 auto;
+        }
+    }
+</style>
+{% endblock %}
+
 {% block content %}
 <div class="page-header d-flex align-items-center justify-content-between">
     <h1>Customers</h1>
@@ -17,7 +71,7 @@
 {% endif %}
 
 <div class="search-bar">
-    <form method="get" class="d-flex flex-wrap gap-2 w-100 align-items-center">
+    <form method="get" action="{% url 'tickets:customer_list' %}" id="customerFilterForm" class="d-flex flex-wrap gap-2 w-100 align-items-center">
         <input type="text" name="search" class="form-control" style="max-width: 240px;" placeholder="Search by name or email..." value="{{ search_query }}">
         <select name="segment" class="form-select" style="max-width: 180px;">
             <option value="">All segments</option>
@@ -42,10 +96,16 @@
             <option value="{{ no_market_value }}" {% if market_filter == no_market_value %}selected{% endif %}>No market</option>
             {% endif %}
         </select>
-        <button type="submit" class="btn btn-outline-secondary"><i class="bi bi-search"></i></button>
         {% if search_query or segment_filter or tag_filter or market_filter %}
         <a href="{% url 'tickets:customer_list' %}" class="btn btn-outline-secondary">Clear</a>
         {% endif %}
+        <span class="text-muted small ms-auto">
+            {% if search_query or segment_filter or tag_filter or market_filter %}
+            {{ page_obj.paginator.count|intcomma }} matching customer{{ page_obj.paginator.count|pluralize }}
+            {% else %}
+            {{ page_obj.paginator.count|intcomma }} customer{{ page_obj.paginator.count|pluralize }}
+            {% endif %}
+        </span>
     </form>
 </div>
 
@@ -60,22 +120,38 @@
     <input type="hidden" name="tag" value="{{ tag_filter }}">
     <input type="hidden" name="market" value="{{ market_filter }}">
     <input type="hidden" name="sort" value="{{ sort_by }}">
-    <div class="card-body d-flex flex-wrap align-items-center gap-2">
-        <strong id="custSelectedCount" class="me-2">0 selected</strong>
-        <div class="btn-group btn-group-sm" role="group" aria-label="Tag mode">
-            <input type="radio" class="btn-check" name="tag_mode" id="custModeExisting" value="existing" autocomplete="off" {% if org_tags %}checked{% else %}disabled{% endif %}>
-            <label class="btn btn-outline-primary" for="custModeExisting">Existing tag</label>
-            <input type="radio" class="btn-check" name="tag_mode" id="custModeNew" value="new" autocomplete="off" {% if not org_tags %}checked{% endif %}>
-            <label class="btn btn-outline-primary" for="custModeNew">New tag</label>
+    <div class="card-body customer-action-toolbar">
+        <strong id="custSelectedCount">0 selected</strong>
+        <button type="submit" name="sms_compose" value="1"
+                class="btn btn-primary btn-sm customer-action-primary"
+                formaction="{% url 'tickets:customers_bulk_sms_compose' %}">
+            <i class="bi bi-send"></i> Send SMS
+        </button>
+        <div class="dropdown">
+            <button class="btn btn-outline-secondary btn-sm" type="button"
+                    data-bs-toggle="dropdown" data-bs-auto-close="outside"
+                    aria-expanded="false" aria-label="More selected customer actions">
+                <i class="bi bi-three-dots"></i>
+            </button>
+            <div class="dropdown-menu dropdown-menu-end customer-action-menu">
+                <div class="customer-action-menu-label mb-2">Tag selected</div>
+                <div class="btn-group btn-group-sm w-100 mb-2" role="group" aria-label="Tag mode">
+                    <input type="radio" class="btn-check" name="tag_mode" id="custModeExisting" value="existing" autocomplete="off" {% if org_tags %}checked{% else %}disabled{% endif %}>
+                    <label class="btn btn-outline-secondary" for="custModeExisting">Existing tag</label>
+                    <input type="radio" class="btn-check" name="tag_mode" id="custModeNew" value="new" autocomplete="off" {% if not org_tags %}checked{% endif %}>
+                    <label class="btn btn-outline-secondary" for="custModeNew">New tag</label>
+                </div>
+                <select id="custTagSelect" name="tag_id" class="form-select form-select-sm mb-2{% if not org_tags %} d-none{% endif %}" style="max-width: 240px;">
+                    {% for t in org_tags %}<option value="{{ t.id }}">{{ t.name }}</option>{% endfor %}
+                </select>
+                <input type="text" id="custNewTag" name="new_tag_name" class="form-control form-control-sm mb-2{% if org_tags %} d-none{% endif %}" style="max-width: 240px;" placeholder="New tag name" maxlength="50">
+                <button type="submit" class="btn btn-outline-secondary btn-sm w-100">Apply tag</button>
+                <hr>
+                <div class="customer-action-menu-label mb-2">SMS status</div>
+                <button type="submit" class="btn btn-link text-success text-decoration-none d-block" formaction="{% url 'tickets:customers_bulk_sms_status' %}" name="sms_status" value="opt_in">Opt in to SMS</button>
+                <button type="submit" class="btn btn-link text-danger text-decoration-none d-block" formaction="{% url 'tickets:customers_bulk_sms_status' %}" name="sms_status" value="opt_out">Opt out of SMS</button>
+            </div>
         </div>
-        <select id="custTagSelect" name="tag_id" class="form-select form-select-sm{% if not org_tags %} d-none{% endif %}" style="max-width: 240px;">
-            {% for t in org_tags %}<option value="{{ t.id }}">{{ t.name }}</option>{% endfor %}
-        </select>
-        <input type="text" id="custNewTag" name="new_tag_name" class="form-control form-control-sm{% if org_tags %} d-none{% endif %}" style="max-width: 240px;" placeholder="New tag name" maxlength="50">
-        <button type="submit" class="btn btn-primary btn-sm">Tag selected</button>
-        <span class="vr d-none d-sm-inline"></span>
-        <button type="submit" class="btn btn-outline-success btn-sm" formaction="{% url 'tickets:customers_bulk_sms_status' %}" name="sms_status" value="opt_in">Opt in to SMS</button>
-        <button type="submit" class="btn btn-outline-danger btn-sm" formaction="{% url 'tickets:customers_bulk_sms_status' %}" name="sms_status" value="opt_out">Opt out of SMS</button>
     </div>
 </form>
 
@@ -253,6 +329,64 @@
 {% endblock %}
 
 {% block extra_js %}
+<script>
+// Customer list: auto-apply search and filters without a submit button.
+(function() {
+    var form = document.getElementById('customerFilterForm');
+    if (!form) return;
+
+    var searchInput = form.querySelector('input[name="search"]');
+    var filterControls = form.querySelectorAll('select[name="segment"], select[name="tag"], select[name="market"]');
+    var debounceTimer = null;
+
+    function normalizedQueryFromForm() {
+        var params = new URLSearchParams();
+        Array.from(new FormData(form).entries()).forEach(function(entry) {
+            var key = entry[0];
+            var value = (entry[1] || '').toString().trim();
+            if (value) params.append(key, value);
+        });
+        return params.toString();
+    }
+
+    function normalizedCurrentQuery() {
+        var current = new URLSearchParams(window.location.search);
+        var params = new URLSearchParams();
+        Array.from(new FormData(form).keys()).forEach(function(key) {
+            var value = (current.get(key) || '').trim();
+            if (value) params.append(key, value);
+        });
+        return params.toString();
+    }
+
+    function applyFilters() {
+        var query = normalizedQueryFromForm();
+        if (query === normalizedCurrentQuery()) return;
+        var action = form.getAttribute('action') || window.location.pathname;
+        window.location.assign(action + (query ? '?' + query : ''));
+    }
+
+    if (searchInput) {
+        searchInput.addEventListener('input', function() {
+            window.clearTimeout(debounceTimer);
+            debounceTimer = window.setTimeout(applyFilters, 400);
+        });
+    }
+
+    Array.prototype.slice.call(filterControls).forEach(function(control) {
+        control.addEventListener('change', function() {
+            window.clearTimeout(debounceTimer);
+            applyFilters();
+        });
+    });
+
+    form.addEventListener('submit', function(e) {
+        e.preventDefault();
+        window.clearTimeout(debounceTimer);
+        applyFilters();
+    });
+})();
+</script>
 {% if org.sms_marketing_enabled and is_org_host %}
 <script>
 // Customer list: bulk-select customers and tag them.
@@ -343,9 +477,9 @@
     });
 
     form.addEventListener('submit', function(e) {
-        // The SMS opt-in/out buttons post to a different endpoint and don't need
-        // a tag, so skip the tag-mode validation when one of them is the submitter.
-        var isSms = e.submitter && e.submitter.name === 'sms_status';
+        // The SMS actions post to different endpoints and don't need a tag, so
+        // skip the tag-mode validation when one of them is the submitter.
+        var isSms = e.submitter && (e.submitter.name === 'sms_status' || e.submitter.name === 'sms_compose');
         if (!isSms) {
             var mode = (document.querySelector('input[name="tag_mode"]:checked') || {}).value;
             if (mode === 'existing') {

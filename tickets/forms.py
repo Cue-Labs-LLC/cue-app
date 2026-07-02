@@ -1964,10 +1964,11 @@ class SMSCampaignForm(forms.ModelForm):
             'body': forms.Textarea(attrs={'rows': 4, 'maxlength': 1600}),
         }
 
-    def __init__(self, *args, organization=None, event=None, **kwargs):
+    def __init__(self, *args, organization=None, event=None, has_manual_includes=False, **kwargs):
         super().__init__(*args, **kwargs)
         self.organization = organization
         self.event = event
+        self.has_manual_includes = has_manual_includes
         # Assembled in clean(); the view reads this and (in event mode) adds event_id.
         self.filter_criteria = {}
         if organization is not None:
@@ -1996,7 +1997,7 @@ class SMSCampaignForm(forms.ModelForm):
         # sufficient — a single-market org sending market-only would reach everyone,
         # bypassing the fail-safe). Event mode supplies event_id in the view.
         non_market = {k: v for k, v in criteria.items() if k != 'market_id'}
-        if not non_market and self.event is None:
+        if not non_market and self.event is None and not self.has_manual_includes:
             self.add_error(None, 'Choose at least one tag or segment.')
         if cleaned.get('send_mode') == self.SEND_SCHEDULE:
             scheduled = cleaned.get('scheduled_at')

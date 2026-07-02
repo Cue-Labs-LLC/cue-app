@@ -128,6 +128,15 @@
     }
     .sms-aud-count.is-pulsing b { animation: smsCountPulse 0.32s ease; }
     @keyframes smsCountPulse { 0% { transform: scale(1); } 45% { transform: scale(1.18); } 100% { transform: scale(1); } }
+    .sms-prefill-notice {
+        display: flex; align-items: center; gap: 8px;
+        background: var(--accent-muted); border: 1px solid var(--accent-muted-border);
+        border-left: 2px solid var(--accent); border-radius: var(--radius);
+        padding: 10px 14px; margin: 12px 0 4px;
+        font-size: 13px; font-weight: 300; color: var(--text-primary);
+    }
+    .sms-prefill-notice i { color: var(--accent); }
+    .sms-prefill-notice a { color: var(--text-tertiary); font-size: 12px; margin-left: auto; }
 
     .sms-aud-group { margin-top: 16px; }
     .sms-aud-grouprow {
@@ -420,6 +429,9 @@
     <form method="post" novalidate id="sms-campaign-form">
         {% csrf_token %}
         <input type="hidden" name="idempotency_key" value="{{ idempotency_key }}">
+        {% if manual_include_ids_csv %}
+        <input type="hidden" name="manual_include_ids" value="{{ manual_include_ids_csv }}">
+        {% endif %}
         {% if event %}
         <input type="hidden" name="event" value="{{ event.id }}">
         <div class="sms-event-banner sms-reveal sms-reveal-1">
@@ -443,6 +455,13 @@
                             <span class="sms-label" style="margin-bottom:0;">Audience</span>
                             <span class="sms-aud-count" id="aud-count-pill"><b id="aud-count">—</b> recipients</span>
                         </div>
+                        {% if prefill %}
+                        <div class="sms-prefill-notice">
+                            <i class="bi bi-people-fill"></i>
+                            <span>{{ prefill.label }} selected from the Customers page</span>
+                            <a href="{% url 'tickets:customer_list' %}">Change selection</a>
+                        </div>
+                        {% else %}
                         {% if event %}
                         <div class="sms-aud-group" data-aud-group="scope">
                             <div class="sms-aud-chips" data-aud-chips="scope">
@@ -511,6 +530,7 @@
                             </div>
                         </div>
                         <div class="sms-hint">Need a custom group? Tag customers on the Customers page, then pick the tag here.</div>
+                        {% endif %}
                         {% endif %}
                         <div class="sms-aud-preview">
                             <span class="sms-hint" id="aud-note">Only opted-in, contactable, non-opted-out customers are counted.</span>
