@@ -68,7 +68,7 @@ from .forms import (
 from .csv_processor import CSVProcessor
 from .services.forecasting.preview import generate_forecast_preview
 from .services.pricing import SmartPricingRecommender
-from .services.markets import MarketBuilder
+from .services.markets import MarketBuilder, NO_MARKET_LABEL
 from .services.churn_detection.churn_calculator import ChurnDetectionService, THRESHOLD_OPTIONS
 from .services.segmentation import (
     BEHAVIOR_PROFILE_BADGE_COLORS,
@@ -2672,11 +2672,11 @@ def customer_list(request):
 @require_org
 @require_host
 def customer_ltv_by_market(request):
-    """Display customer LTV metrics aggregated by city (event venue city)."""
+    """Display customer LTV metrics aggregated by assigned market."""
     org = get_organization(request)
     qs = (
         TicketOrder.objects.filter(event__organization=org)
-        .values('event__venue__city')
+        .values('event__market_id', 'event__market__name')
         .annotate(
             total_ltv=Sum('total_amount'),
             order_count=Count('id'),
@@ -2685,9 +2685,9 @@ def customer_ltv_by_market(request):
     )
     sort_by = request.GET.get('sort', '-total_ltv')
     if sort_by == 'city':
-        qs = qs.order_by('event__venue__city')
+        qs = qs.order_by('event__market__name')
     elif sort_by == '-city':
-        qs = qs.order_by('-event__venue__city')
+        qs = qs.order_by('-event__market__name')
     elif sort_by == 'total_ltv':
         qs = qs.order_by('total_ltv')
     elif sort_by == '-total_ltv':
@@ -2705,14 +2705,17 @@ def customer_ltv_by_market(request):
 
     market_stats = []
     for row in qs:
-        city = row['event__venue__city'] or ''
+        market_name = (row['event__market__name'] or '').strip() or NO_MARKET_LABEL
         customer_count = row['customer_count'] or 0
         total_ltv = row['total_ltv'] or Decimal('0.00')
         avg_ltv = (total_ltv / customer_count) if customer_count else Decimal('0.00')
         order_count = row['order_count'] or 0
         avg_orders = round(order_count / customer_count, 1) if customer_count else 0
         market_stats.append({
-            'city': city.strip() or '-',
+            'market_id': str(row['event__market_id']) if row['event__market_id'] else '',
+            'market_name': market_name,
+            'market_label': market_name,
+            'city': market_name,
             'total_ltv': total_ltv,
             'order_count': order_count,
             'customer_count': customer_count,
@@ -2722,6 +2725,9 @@ def customer_ltv_by_market(request):
 
     chart_data = [
         {
+            'market_id': row['market_id'],
+            'market_name': row['market_name'],
+            'market_label': row['market_label'],
             'city': row['city'],
             'total_ltv': float(row['total_ltv']),
             'avg_ltv': float(row['avg_ltv']),
@@ -3478,11 +3484,20 @@ def repeat_customers(request):
     else:
         summary = result['summary']
 
-    # Build market (venue city) aggregation from already-filtered events
+    # Build market aggregation from already-filtered events
     markets = {}
     for e in chart_events:
-        city = e.get('venue_city') or 'Unknown'
-        m = markets.setdefault(city, {'city': city, 'total': 0, 'new_count': 0, 'returning_count': 0})
+        market_label = e.get('market_label') or NO_MARKET_LABEL
+        market_id = e.get('market_id') or ''
+        m = markets.setdefault(market_label, {
+            'market_id': market_id,
+            'market_name': market_label,
+            'market_label': market_label,
+            'city': market_label,
+            'total': 0,
+            'new_count': 0,
+            'returning_count': 0,
+        })
         m['total'] += e['total']
         m['new_count'] += e['new_count']
         m['returning_count'] += e['returning_count']
@@ -6215,6 +6230,7 @@ def venue_edit(request, venue_id):
         form = VenueForm(request.POST, instance=venue)
         if form.is_valid():
             form.save()
+            MarketBuilder(org).assign_events_for_venue(venue)
             messages.success(request, f"Venue '{venue.name}, {venue.city}' updated successfully.")
             return redirect('tickets:venue_list')
     else:
@@ -6282,6 +6298,7 @@ def event_create(request, ticketing_type):
                     event.created_by = request.user
                     event.venue = venue
                     event.ticketing_type = TICKETING_TYPE_DIRECT
+                    MarketBuilder(org).assign_event(event, save=False)
                     event.save()
                     created_by_index = {}
                     for idx, tt_form in enumerate(ticket_formset.forms):
@@ -6344,6 +6361,7 @@ def event_create(request, ticketing_type):
             event.organization = org
             event.created_by = request.user
             event.status = EVENT_STATUS_LIVE
+            MarketBuilder(org).assign_event(event, save=False)
             event.save()
             instances = talent_formset.save(commit=False)
             for obj in instances:
@@ -6415,6 +6433,7 @@ def event_edit(request, event_id):
                     event = form.save(commit=False)
                     event.updated_by = request.user
                     event.venue = venue
+                    MarketBuilder(org).assign_event(event, save=False)
                     event.save()
                     _invalidate_event_list_cache(org)
                     _invalidate_marketing_cache(org)
@@ -6458,6 +6477,7 @@ def event_edit(request, event_id):
             was_future = event.start_date >= date.today()
             event = form.save(commit=False)
             event.updated_by = request.user
+            MarketBuilder(org).assign_event(event, save=False)
             event.save()
             instances = talent_formset.save(commit=False)
             for obj in instances:
@@ -7714,7 +7734,7 @@ def profitability_overview(request):
             paid_ticket_sum=F('cached_paid_ticket_sum'),
             paid_ticket_count=F('cached_paid_ticket_count'),
         )
-        .select_related('venue')
+        .select_related('venue', 'market')
         .order_by('-start_date')
     )
 
@@ -7762,12 +7782,17 @@ def profitability_overview(request):
     summary_profit = summary_net_revenue - summary_expenses
     summary_margin = (summary_profit / summary_net_revenue * 100) if summary_net_revenue > 0 else None
 
-    # Market rollup by venue city (sorted high → low for chart)
+    # Market rollup by assigned market (sorted high → low for chart)
     markets: dict = {}
     for row in event_rows:
-        city = (row['event'].venue.city if row['event'].venue else None) or 'Unknown'
-        m = markets.setdefault(city, {
-            'city': city, 'revenue': Decimal('0.00'),
+        event_market = row['event'].market
+        market_label = event_market.name if event_market else NO_MARKET_LABEL
+        m = markets.setdefault(market_label, {
+            'market_id': str(event_market.id) if event_market else '',
+            'market_name': market_label,
+            'market_label': market_label,
+            'city': market_label,
+            'revenue': Decimal('0.00'),
             'expenses': Decimal('0.00'), 'profit': Decimal('0.00'),
             'event_count': 0,
         })
@@ -7779,7 +7804,7 @@ def profitability_overview(request):
 
     # Market chart data - sorted high → low by profit
     market_chart_data = {
-        'labels': [m['city'] for m in market_rows],
+        'labels': [m['market_label'] for m in market_rows],
         'profit': [float(m['profit']) for m in market_rows],
     }
 
@@ -13091,26 +13116,49 @@ def survey_event_link(request, upload_id):
 @require_org
 def survey_analytics(request):
     org = get_organization(request)
+    market_filter = request.GET.get('market', '').strip() or None
     city_filter = request.GET.get('city', '').strip() or None
 
     from .services.external_survey.analytics import ExternalSurveyAnalytics
-    stats = ExternalSurveyAnalytics(organization=org).calculate(city=city_filter)
+    from .services.external_survey.analytics import NO_MARKET_VALUE
+    stats = ExternalSurveyAnalytics(organization=org).calculate(market=market_filter, city=city_filter)
 
     feedback_qs = ExternalSurveyResponse.objects.filter(organization=org)
-    if city_filter:
-        feedback_qs = feedback_qs.filter(event__venue__city=city_filter)
-    feedback_qs = feedback_qs.select_related('event', 'event__venue').order_by('-responded_at')
+    if market_filter == NO_MARKET_VALUE:
+        feedback_qs = feedback_qs.filter(event__market__isnull=True)
+    elif market_filter:
+        try:
+            _uuid.UUID(str(market_filter))
+        except (TypeError, ValueError):
+            feedback_qs = feedback_qs.none()
+        else:
+            feedback_qs = feedback_qs.filter(event__market_id=market_filter)
+    elif city_filter:
+        feedback_qs = feedback_qs.filter(Q(event__market__name=city_filter) | Q(event__market__geography_value=city_filter))
+    feedback_qs = feedback_qs.select_related('event', 'event__venue', 'event__market').order_by('-responded_at')
     paginator = Paginator(feedback_qs, 25)
     page_obj = paginator.get_page(request.GET.get('page'))
 
-    distinct_cities = sorted(set(
-        c for c in ExternalSurveyResponse.objects.filter(organization=org)
-        .filter(event__isnull=False, event__venue__isnull=False)
-        .exclude(event__venue__city='')
-        .values_list('event__venue__city', flat=True)
-        .distinct()
-        if c
-    ))
+    market_rows = (
+        ExternalSurveyResponse.objects.filter(organization=org, event__isnull=False)
+        .values('event__market_id', 'event__market__name')
+        .annotate(total=Count('id'))
+        .order_by('event__market__name')
+    )
+    distinct_cities = [
+        {
+            'value': str(row['event__market_id']) if row['event__market_id'] else NO_MARKET_VALUE,
+            'label': row['event__market__name'] or NO_MARKET_LABEL,
+        }
+        for row in market_rows
+    ]
+    selected_market_label = ''
+    for row in distinct_cities:
+        if row['value'] == market_filter:
+            selected_market_label = row['label']
+            break
+    if city_filter and not selected_market_label:
+        selected_market_label = city_filter
 
     # Subscriptions that are syncing rows but have no field_map saved — those
     # rows show up in the DB but contribute nothing to the totals here because
@@ -13128,8 +13176,10 @@ def survey_analytics(request):
 
     return render(request, 'tickets/survey_analytics.html', {
         'stats': stats,
-        'city_filter': city_filter,
+        'city_filter': selected_market_label,
+        'market_filter': market_filter or '',
         'distinct_cities': distinct_cities,
+        'no_market_value': NO_MARKET_VALUE,
         'page_obj': page_obj,
         'rating_labels': [r['overall_rating'] for r in stats['rating_breakdown']],
         'rating_counts': [r['count'] for r in stats['rating_breakdown']],

@@ -9,6 +9,8 @@ from tickets.models import (
     MARKET_GEOGRAPHY_STATE,
 )
 
+NO_MARKET_LABEL = 'No market'
+
 
 class MarketBuilder:
     """Create org markets from event venue geography and assign matching events."""
@@ -38,6 +40,65 @@ class MarketBuilder:
     @staticmethod
     def normalize_value(value):
         return (value or '').strip()
+
+    @staticmethod
+    def label_for_market(market):
+        return market.name if market else NO_MARKET_LABEL
+
+    def resolve_for_venue(self, venue):
+        """Return the best matching existing market for a venue, or None."""
+        if not venue:
+            return None
+
+        candidates = [
+            (MARKET_GEOGRAPHY_CITY, getattr(venue, 'city', '')),
+            (MARKET_GEOGRAPHY_STATE, getattr(venue, 'state', '')),
+            (MARKET_GEOGRAPHY_COUNTRY, getattr(venue, 'country', '')),
+        ]
+        for level, raw_value in candidates:
+            value = self.normalize_value(raw_value)
+            if not value:
+                continue
+            market = Market.objects.filter(
+                organization=self.organization,
+                geography_level=level,
+                geography_value=value,
+            ).first()
+            if market:
+                return market
+        return None
+
+    def assign_event(self, event, save=True):
+        """Assign an event's market from existing rules. Does not create markets."""
+        market = self.resolve_for_venue(getattr(event, 'venue', None))
+        event.market = market
+        if save and event.pk:
+            event.save(update_fields=['market'])
+        return market
+
+    def assign_events_for_venue(self, venue):
+        """Reassign all events at a venue after its geography changes."""
+        market = self.resolve_for_venue(venue)
+        return Event.objects.filter(
+            organization=self.organization,
+            venue=venue,
+        ).update(market=market)
+
+    def assign_all_events(self):
+        """Backfill all organization events from existing market rules."""
+        updated_count = 0
+        events = (
+            Event.objects.filter(organization=self.organization)
+            .select_related('venue', 'market')
+        )
+        for event in events:
+            old_market_id = event.market_id
+            market = self.resolve_for_venue(event.venue)
+            if old_market_id != (market.id if market else None):
+                event.market = market
+                event.save(update_fields=['market'])
+                updated_count += 1
+        return updated_count
 
     def preview(self, level):
         level = self.normalize_level(level)
@@ -78,7 +139,6 @@ class MarketBuilder:
     @transaction.atomic
     def build(self, level, values):
         level = self.normalize_level(level)
-        venue_field = self.LEVEL_FIELDS[level]
         raw_values = values or []
         values = []
         seen = set()
@@ -89,17 +149,13 @@ class MarketBuilder:
                 seen.add(value)
 
         created_count = 0
-        updated_count = 0
         markets = []
         for value in values:
             market, created = self._get_or_create_market(level, value)
             if created:
                 created_count += 1
             markets.append(market)
-            updated_count += Event.objects.filter(
-                organization=self.organization,
-                **{f'venue__{venue_field}': value},
-            ).update(market=market)
+        updated_count = self.assign_all_events()
 
         return {
             'created_count': created_count,

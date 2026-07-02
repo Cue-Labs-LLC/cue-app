@@ -799,6 +799,9 @@ class CSVProcessor:
                         if org is not None:
                             event_kwargs['organization'] = org
                         event = Event(**event_kwargs)
+                        if org is not None:
+                            from .services.markets import MarketBuilder
+                            MarketBuilder(org).assign_event(event, save=False)
                         events_to_create.append(event)
                         existing_events[event_key] = event
                 
