@@ -309,7 +309,13 @@ def sms_campaign_list(request):
     audience_points = {'native': [], 'slicktext': []}
     for r in visible:
         audience_points[r['channel']].append({
-            'x': r['sent_ms'], 'y': r['audience'], 'name': r['name'], 'market': r['market'],
+            'x': r['sent_ms'],
+            'y': r['audience'],
+            'name': r['name'],
+            'market_id': r.get('market_id', ''),
+            'market_name': r.get('market_name') or r['market'],
+            'market_label': r.get('market_label') or r['market'],
+            'market': r['market'],
         })
 
     # By-market breakdown spans ALL markets (always-on comparison), independent of
@@ -317,7 +323,14 @@ def sms_campaign_list(request):
     breakdown = {}
     for r in series:
         agg = breakdown.setdefault(
-            r['market'], {'market': r['market'], 'broadcasts': 0, 'total_audience': 0},
+            r['market'], {
+                'market_id': r.get('market_id', ''),
+                'market_name': r.get('market_name') or r['market'],
+                'market_label': r.get('market_label') or r['market'],
+                'market': r['market'],
+                'broadcasts': 0,
+                'total_audience': 0,
+            },
         )
         agg['broadcasts'] += 1
         agg['total_audience'] += r['audience']

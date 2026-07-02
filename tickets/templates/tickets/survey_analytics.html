@@ -32,10 +32,10 @@
     <div class="d-flex gap-2 align-items-center flex-wrap">
         {% if distinct_cities %}
         <form method="get" class="d-flex gap-2 align-items-center">
-            <select name="city" class="form-select form-select-sm" onchange="this.form.submit()" style="width:auto;">
-                <option value="">All cities</option>
+            <select name="market" class="form-select form-select-sm" onchange="this.form.submit()" style="width:auto;">
+                <option value="">All markets</option>
                 {% for c in distinct_cities %}
-                <option value="{{ c }}" {% if city_filter == c %}selected{% endif %}>{{ c }}</option>
+                <option value="{{ c.value }}" {% if market_filter == c.value %}selected{% endif %}>{{ c.label }}</option>
                 {% endfor %}
             </select>
         </form>
@@ -176,16 +176,16 @@
     </div>
 </div>
 
-{# City NPS breakdown #}
+{# Market NPS breakdown #}
 {% if stats.city_breakdown %}
 <div class="card mb-4">
-    <div class="card-header"><strong>City Breakdown</strong></div>
+    <div class="card-header"><strong>Market Breakdown</strong></div>
     <div class="card-body p-0">
         <div class="table-responsive">
             <table class="table table-hover mb-0">
                 <thead>
                     <tr>
-                        <th>City</th>
+                        <th>Market</th>
                         <th>Responses</th>
                         <th>NPS Score <i class="bi bi-info-circle" data-bs-toggle="tooltip" title="Net Promoter Score: % Promoters minus % Detractors. Ranges from -100 to 100." style="cursor:help;"></i></th>
                         <th>Promoters <i class="bi bi-info-circle" data-bs-toggle="tooltip" title="Scored 9–10. Enthusiastic fans likely to recommend the event to others." style="cursor:help;"></i></th>
@@ -197,7 +197,7 @@
                     {% for row in stats.city_breakdown %}
                     <tr>
                         <td>
-                            <a href="?city={{ row.city_raw|urlencode }}">
+                            <a href="?market={{ row.city_raw|urlencode }}">
                                 {{ row.city }}
                             </a>
                         </td>
@@ -279,11 +279,11 @@
         </small>
         <div class="d-flex gap-1">
             {% if page_obj.has_previous %}
-            <a href="?{% if city_filter %}city={{ city_filter }}&{% endif %}page={{ page_obj.previous_page_number }}"
+            <a href="?{% if market_filter %}market={{ market_filter }}&{% endif %}page={{ page_obj.previous_page_number }}"
                class="btn btn-sm btn-outline-secondary">&laquo; Prev</a>
             {% endif %}
             {% if page_obj.has_next %}
-            <a href="?{% if city_filter %}city={{ city_filter }}&{% endif %}page={{ page_obj.next_page_number }}"
+            <a href="?{% if market_filter %}market={{ market_filter }}&{% endif %}page={{ page_obj.next_page_number }}"
                class="btn btn-sm btn-outline-secondary">Next &raquo;</a>
             {% endif %}
         </div>

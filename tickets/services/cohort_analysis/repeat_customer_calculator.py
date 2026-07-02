@@ -4,6 +4,7 @@ Derives all data from existing TicketOrder + Event tables.
 """
 import pandas as pd
 from tickets.models import TicketOrder, Event
+from tickets.services.markets import NO_MARKET_LABEL
 
 
 class RepeatCustomerCalculator:
@@ -57,7 +58,7 @@ class RepeatCustomerCalculator:
 
         # Fetch event details
         event_ids = event_stats['event_id'].tolist()
-        events_qs = Event.objects.filter(id__in=event_ids).select_related('venue')
+        events_qs = Event.objects.filter(id__in=event_ids).select_related('venue', 'market')
         event_map = {e.id: e for e in events_qs}
 
         events_list = []
@@ -70,6 +71,9 @@ class RepeatCustomerCalculator:
                 'event_name': event.name,
                 'event_date': event.start_date.isoformat(),
                 'venue_name': event.venue.name if event.venue else '',
+                'market_id': str(event.market_id) if event.market_id else '',
+                'market_name': event.market.name if event.market else NO_MARKET_LABEL,
+                'market_label': event.market.name if event.market else NO_MARKET_LABEL,
                 'venue_city': event.venue.city if event.venue else '',
                 'total': int(row['total']),
                 'new_count': int(row['new_count']),

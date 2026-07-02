@@ -773,6 +773,75 @@ class MarketBuilderTests(TestCase):
         self.assertEqual(self.second_event.market, market)
         self.assertFalse(Event.objects.filter(organization=self.other_org, market__isnull=False).exists())
 
+    def test_assignment_uses_city_before_state_and_country(self):
+        from tickets.services.markets import MarketBuilder
+
+        country = Market.objects.create(
+            organization=self.org,
+            name='United States',
+            geography_level='country',
+            geography_value='US',
+        )
+        state = Market.objects.create(
+            organization=self.org,
+            name='California',
+            geography_level='state',
+            geography_value='CA',
+        )
+        city = Market.objects.create(
+            organization=self.org,
+            name='San Diego Metro',
+            geography_level='city',
+            geography_value='San Diego',
+        )
+
+        builder = MarketBuilder(self.org)
+
+        self.assertEqual(builder.resolve_for_venue(self.sd_venue), city)
+        state_only = Venue.objects.create(
+            organization=self.org, name='State Hall', city='Fresno', state='CA', country='US',
+        )
+        self.assertEqual(builder.resolve_for_venue(state_only), state)
+        country_only = Venue.objects.create(
+            organization=self.org, name='Country Hall', city='Boise', state='ID', country='US',
+        )
+        self.assertEqual(builder.resolve_for_venue(country_only), country)
+
+    def test_assign_event_clears_market_when_no_rule_matches(self):
+        from tickets.services.markets import MarketBuilder
+
+        Market.objects.create(
+            organization=self.org,
+            name='San Diego',
+            geography_level='city',
+            geography_value='San Diego',
+        )
+        builder = MarketBuilder(self.org)
+        builder.assign_event(self.event)
+        self.event.refresh_from_db()
+        self.assertIsNotNone(self.event.market)
+
+        self.event.venue = self.blank_venue
+        self.event.save(update_fields=['venue'])
+        builder.assign_event(self.event)
+        self.event.refresh_from_db()
+
+        self.assertIsNone(self.event.market)
+
+    def test_assign_all_events_is_idempotent(self):
+        from tickets.services.markets import MarketBuilder
+
+        Market.objects.create(
+            organization=self.org,
+            name='San Diego',
+            geography_level='city',
+            geography_value='San Diego',
+        )
+        builder = MarketBuilder(self.org)
+
+        self.assertEqual(builder.assign_all_events(), 2)
+        self.assertEqual(builder.assign_all_events(), 0)
+
 
 class MarketViewTests(TestCase):
     def setUp(self):
@@ -822,6 +891,221 @@ class MarketViewTests(TestCase):
         self.assertRedirects(response, reverse('tickets:market_list'))
         market = Market.objects.get(organization=self.org, geography_level='city', geography_value='San Diego')
         self.assertTrue(Event.objects.filter(organization=self.org, market=market).exists())
+
+
+class MarketEntityReportingTests(TestCase):
+    def setUp(self):
+        self.client = Client()
+        self.org = Organization.objects.create(
+            name='Market Reporting Org',
+            slug='market-reporting-org',
+            external_events_enabled=True,
+        )
+        self.user = User.objects.create_user(
+            username='market-reporter',
+            email='market-reporter@example.com',
+            password='pw',
+        )
+        UserProfile.objects.create(
+            user=self.user,
+            organization=self.org,
+            org_role=UserProfile.OrgRole.OWNER,
+        )
+        OrganizationMembership.objects.create(
+            user=self.user,
+            organization=self.org,
+            org_role=UserProfile.OrgRole.OWNER,
+        )
+        self.client.force_login(self.user)
+        self.client.get(reverse('tickets:home'))
+
+        self.market = Market.objects.create(
+            organization=self.org,
+            name='Central Texas',
+            geography_level='city',
+            geography_value='Austin',
+        )
+        self.venue = Venue.objects.create(
+            organization=self.org,
+            name='Austin Hall',
+            city='Austin',
+            state='TX',
+            country='US',
+        )
+        self.unassigned_venue = Venue.objects.create(
+            organization=self.org,
+            name='Dallas Hall',
+            city='Dallas',
+            state='TX',
+            country='US',
+        )
+        self.event = Event.objects.create(
+            organization=self.org,
+            name='Austin Report Show',
+            venue=self.venue,
+            market=self.market,
+            start_date=date(2025, 1, 10),
+            start_time=time(20, 0),
+            end_date=date(2025, 1, 10),
+            end_time=time(22, 0),
+        )
+        self.unassigned_event = Event.objects.create(
+            organization=self.org,
+            name='Dallas Report Show',
+            venue=self.unassigned_venue,
+            start_date=date(2025, 2, 10),
+            start_time=time(20, 0),
+            end_date=date(2025, 2, 10),
+            end_time=time(22, 0),
+        )
+        self.customer = Customer.objects.create(
+            organization=self.org,
+            email='market-buyer@example.com',
+            name='Market Buyer',
+        )
+        TicketOrder.objects.create(
+            customer=self.customer,
+            event=self.event,
+            order_number='MARKET-ORDER-1',
+            order_date=timezone.make_aware(datetime(2025, 1, 5, 10, 0)),
+            total_amount=Decimal('40.00'),
+            is_in_person=False,
+        )
+        TicketOrder.objects.create(
+            customer=self.customer,
+            event=self.unassigned_event,
+            order_number='MARKET-ORDER-2',
+            order_date=timezone.make_aware(datetime(2025, 2, 5, 10, 0)),
+            total_amount=Decimal('25.00'),
+            is_in_person=False,
+        )
+
+    def test_ltv_by_market_uses_event_market_name(self):
+        response = self.client.get(reverse('tickets:customer_ltv_by_market'))
+
+        labels = {row['market_label'] for row in response.context['market_stats']}
+        self.assertIn('Central Texas', labels)
+        self.assertIn('No market', labels)
+        self.assertNotIn('Austin', labels)
+        central = next(row for row in response.context['market_stats'] if row['market_label'] == 'Central Texas')
+        self.assertEqual(central['market_id'], str(self.market.id))
+        self.assertEqual(central['city'], 'Central Texas')
+
+    def test_repeat_customer_market_breakdown_uses_event_market_name(self):
+        response = self.client.get(reverse('tickets:repeat_customers'), {'window': 'all'})
+
+        rows = json.loads(response.context['market_chart_data_json'])
+        labels = {row['market_label'] for row in rows}
+        self.assertIn('Central Texas', labels)
+        self.assertIn('No market', labels)
+        self.assertNotIn('Austin', labels)
+
+    def test_profitability_market_chart_uses_event_market_name(self):
+        EventExpense.objects.create(
+            event=self.event,
+            category='production',
+            description='Production',
+            amount=Decimal('10.00'),
+            expense_date=self.event.start_date,
+            created_by=self.user,
+        )
+
+        response = self.client.get(reverse('tickets:profitability_overview'), {'window': 'all'})
+        chart = json.loads(response.context['market_chart_data_json'])
+
+        self.assertIn('Central Texas', chart['labels'])
+        self.assertIn('No market', chart['labels'])
+        self.assertNotIn('Austin', chart['labels'])
+
+    def test_survey_analytics_filter_and_breakdown_use_market_id(self):
+        upload = ExternalSurveyUpload.objects.create(
+            organization=self.org,
+            filename='survey.csv',
+            status=ExternalSurveyUpload.Status.COMPLETED,
+            created_by=self.user,
+        )
+        ExternalSurveyResponse.objects.create(
+            organization=self.org,
+            upload=upload,
+            event=self.event,
+            email='central@example.com',
+            responded_at=timezone.make_aware(datetime(2025, 1, 12, 9, 0)),
+            nps_score=10,
+        )
+        ExternalSurveyResponse.objects.create(
+            organization=self.org,
+            upload=upload,
+            event=self.unassigned_event,
+            email='nomarket@example.com',
+            responded_at=timezone.make_aware(datetime(2025, 2, 12, 9, 0)),
+            nps_score=3,
+        )
+
+        response = self.client.get(reverse('tickets:survey_analytics'), {'market': str(self.market.id)})
+
+        self.assertEqual(response.context['stats']['total'], 1)
+        self.assertEqual(response.context['market_filter'], str(self.market.id))
+        labels = {row['city'] for row in response.context['stats']['city_breakdown']}
+        self.assertIn('Central Texas', labels)
+        self.assertIn('No market', labels)
+        self.assertNotIn('Austin', labels)
+
+    def test_external_event_create_assigns_matching_market(self):
+        response = self.client.post(reverse('tickets:event_create', args=['external']), {
+            'name': 'Created Report Show',
+            'ticketing_type': 'external',
+            'venue': str(self.venue.id),
+            'start_date': '2025-03-10',
+            'start_time': '20:00',
+            'end_date': '2025-03-10',
+            'end_time': '22:00',
+            'timezone': 'America/Chicago',
+            'ticket_link': '',
+            'talent-TOTAL_FORMS': '0',
+            'talent-INITIAL_FORMS': '0',
+            'talent-MIN_NUM_FORMS': '0',
+            'talent-MAX_NUM_FORMS': '1000',
+        })
+
+        self.assertEqual(response.status_code, 302)
+        event = Event.objects.get(organization=self.org, name='Created Report Show')
+        self.assertEqual(event.market, self.market)
+
+    def test_external_event_edit_reassigns_when_venue_changes(self):
+        response = self.client.post(reverse('tickets:event_edit', args=[self.event.id]), {
+            'name': self.event.name,
+            'ticketing_type': 'external',
+            'venue': str(self.unassigned_venue.id),
+            'start_date': '2025-01-10',
+            'start_time': '20:00',
+            'end_date': '2025-01-10',
+            'end_time': '22:00',
+            'timezone': 'America/Chicago',
+            'ticket_link': '',
+            'talent-TOTAL_FORMS': '0',
+            'talent-INITIAL_FORMS': '0',
+            'talent-MIN_NUM_FORMS': '0',
+            'talent-MAX_NUM_FORMS': '1000',
+        })
+
+        self.assertEqual(response.status_code, 302)
+        self.event.refresh_from_db()
+        self.assertIsNone(self.event.market)
+
+    def test_venue_geography_edit_reassigns_affected_events(self):
+        response = self.client.post(reverse('tickets:venue_edit', args=[self.unassigned_venue.id]), {
+            'name': self.unassigned_venue.name,
+            'city': 'Austin',
+            'street_address': '',
+            'state': 'TX',
+            'postal_code': '',
+            'country': 'US',
+            'capacity': '',
+        })
+
+        self.assertEqual(response.status_code, 302)
+        self.unassigned_event.refresh_from_db()
+        self.assertEqual(self.unassigned_event.market, self.market)
 
 
 class VenueAdminScopeTests(TestCase):
@@ -3770,7 +4054,7 @@ class CustomerDetailMarketingTabTests(TestCase):
 class SMSBroadcastAudienceTests(TestCase):
     """The SMS tab's broadcast-audience chart + by-market breakdown combine native
     SMS campaigns and external SlickText broadcasts, grouped by the linked event's
-    venue city (the 'market')."""
+    assigned market."""
 
     def setUp(self):
         from .models import SMSCampaign, EventSMSCampaign
@@ -3792,13 +4076,22 @@ class SMSBroadcastAudienceTests(TestCase):
             organization=self.org, name='Austin Show', venue=self.venue,
             start_date=date(2026, 6, 1), start_time=time(20, 0, 0),
         )
-        # Native SMS campaign (sent), event-scoped -> Austin market.
+        self.market = Market.objects.create(
+            organization=self.org,
+            name='Central Texas',
+            geography_level='city',
+            geography_value='Austin',
+        )
+        from tickets.services.markets import MarketBuilder
+        MarketBuilder(self.org).assign_event(self.event)
+
+        # Native SMS campaign (sent), event-scoped -> Central Texas market.
         SMSCampaign.objects.create(
             organization=self.org, name='Native Blast', body='Tickets!',
             event=self.event, status=SMSCampaign.Status.SENT,
             sent_at=timezone.now() - timedelta(days=3), audience_size=120,
         )
-        # External SlickText broadcast (confirmed) on the same event -> Austin market.
+        # External SlickText broadcast (confirmed) on the same event -> Central Texas market.
         EventSMSCampaign.objects.create(
             event=self.event, source='slicktext', external_id='st-1',
             name='SlickText Blast', send_time=timezone.now() - timedelta(days=5),
@@ -3810,21 +4103,24 @@ class SMSBroadcastAudienceTests(TestCase):
         response = self.client.get(self.url)
         self.assertEqual(response.status_code, 200)
         breakdown = {r['market']: r for r in response.context['market_breakdown']}
-        self.assertIn('Austin', breakdown)
-        self.assertEqual(breakdown['Austin']['broadcasts'], 2)
-        self.assertEqual(breakdown['Austin']['total_audience'], 200)
-        self.assertEqual(breakdown['Austin']['avg_audience'], 100)
-        self.assertIn('Austin', response.context['market_choices'])
+        self.assertIn('Central Texas', breakdown)
+        self.assertNotIn('Austin', breakdown)
+        self.assertEqual(breakdown['Central Texas']['broadcasts'], 2)
+        self.assertEqual(breakdown['Central Texas']['total_audience'], 200)
+        self.assertEqual(breakdown['Central Texas']['avg_audience'], 100)
+        self.assertEqual(breakdown['Central Texas']['market_id'], str(self.market.id))
+        self.assertIn('Central Texas', response.context['market_choices'])
 
     def test_market_filter_scopes_chart_points(self):
-        response = self.client.get(self.url, {'market': 'Austin'})
+        response = self.client.get(self.url, {'market': 'Central Texas'})
         self.assertEqual(response.status_code, 200)
         points = json.loads(response.context['audience_points_json'])
         self.assertEqual(len(points['native']), 1)
         self.assertEqual(len(points['slicktext']), 1)
-        self.assertEqual(points['native'][0]['market'], 'Austin')
+        self.assertEqual(points['native'][0]['market'], 'Central Texas')
+        self.assertEqual(points['native'][0]['market_id'], str(self.market.id))
         self.assertEqual(points['native'][0]['y'], 120)
-        self.assertEqual(response.context['selected_market'], 'Austin')
+        self.assertEqual(response.context['selected_market'], 'Central Texas')
 
     def test_unknown_market_falls_back_to_all(self):
         response = self.client.get(self.url, {'market': 'Nowhere'})
@@ -14713,13 +15009,22 @@ class MarketTrendCalculatorTests(TestCase):
             y, q = divmod(abs_q - back, 4)
             self.quarters.append(date(y, q * 3 + 1, 15))
 
-    def _venue(self, city):
+    def _venue(self, city, market_name=None):
+        Market.objects.get_or_create(
+            organization=self.org,
+            geography_level='city',
+            geography_value=city,
+            defaults={'name': market_name or city},
+        )
         return Venue.objects.create(organization=self.org, name=city + ' Hall', city=city)
 
     def _event(self, venue, start_date, name):
-        return Event.objects.create(
+        event = Event.objects.create(
             organization=self.org, name=name, venue=venue, start_date=start_date,
         )
+        from tickets.services.markets import MarketBuilder
+        MarketBuilder(self.org).assign_event(event)
+        return event
 
     def _order_with_tickets(self, event, n_tickets, customer_prefix, seq):
         """Create one order at `event` with `n_tickets` tickets, each a unique customer."""
@@ -14883,6 +15188,25 @@ class MarketTrendCalculatorTests(TestCase):
         self.assertEqual(austin['dominant_driver'], 'acquisition')
         self.assertIn('Austin', austin['diagnosis_text'])
         self.assertIsNotNone(austin['recommended_action'])
+
+    def test_market_label_comes_from_market_entity_not_venue_city(self):
+        from tickets.services.market_trends import MarketTrendCalculator
+
+        venue = self._venue('Austin', market_name='Central Texas')
+        for i, n in enumerate([10, 20, 30, 40]):
+            event = self._event(venue, self.quarters[i], 'Austin Q{}'.format(i + 1))
+            for s in range(n):
+                self._order_with_tickets(event, 1, 'central{}'.format(i), s)
+
+        result = MarketTrendCalculator(self.org, period='quarter', metric='tickets').calculate()
+        labels = {m['market_label'] for m in result['markets']}
+
+        self.assertIn('Central Texas', labels)
+        self.assertNotIn('Austin', labels)
+        central = next(m for m in result['markets'] if m['market_label'] == 'Central Texas')
+        self.assertEqual(central['city'], 'Central Texas')
+        self.assertEqual(central['market_name'], 'Central Texas')
+        self.assertTrue(central['market_id'])
 
     def test_stable_market(self):
         from tickets.services.market_trends import MarketTrendCalculator
