@@ -7,7 +7,7 @@ from django import forms
 from .models import (
     Organization, UserProfile, OrganizationMembership, OrganizationInvitation, EmailOTP, PhoneOTP,
     AIRecommendation,
-    CSVFormat, UploadedFile, Customer, CustomerTag, Event, ScannerSession, EventExpense, EventEmailCampaign, EventSMSCampaign, EventTalent, TicketOrder, Ticket, TicketTier, Venue,
+    CSVFormat, UploadedFile, Customer, CustomerTag, Event, ScannerSession, EventExpense, EventEmailCampaign, EventSMSCampaign, EventTalent, TicketOrder, Ticket, TicketTier, Venue, Market,
     CustomField, CustomFieldOption, EventCustomFieldValue,
     IncomeSource, EventIncome,
     SurveyQuestion, SurveyInvitation, SurveyResponse, SurveyAnswer,
@@ -227,15 +227,6 @@ class VenueAdmin(admin.ModelAdmin):
     ]
     readonly_fields = ['id', 'created_at', 'updated_at']
 
-    def get_queryset(self, request):
-        qs = super().get_queryset(request)
-        if request.user.is_superuser:
-            return qs
-        profile = getattr(request.user, 'profile', None)
-        if profile and profile.organization_id:
-            return qs.filter(organization=profile.organization)
-        return qs.none()
-
     def save_model(self, request, obj, form, change):
         if not change and not getattr(obj, 'organization_id', None):
             profile = getattr(request.user, 'profile', None)
@@ -262,9 +253,56 @@ class VenueAdmin(admin.ModelAdmin):
     event_count.short_description = 'Events'
     
     def get_queryset(self, request):
-        """Optimize queryset with event count."""
+        """Optimize queryset with event count; filter by org for non-superusers."""
         qs = super().get_queryset(request)
+        if not request.user.is_superuser:
+            profile = getattr(request.user, 'profile', None)
+            if profile and profile.organization_id:
+                qs = qs.filter(organization=profile.organization)
+            else:
+                qs = qs.none()
         return qs.annotate(event_count=Count('events'))
+
+
+@admin.register(Market)
+class MarketAdmin(admin.ModelAdmin):
+    list_display = ['name', 'geography_level', 'geography_value', 'event_count', 'organization', 'created_at']
+    list_filter = ['organization', 'geography_level', 'created_at']
+    search_fields = ['name', 'geography_value']
+    readonly_fields = ['id', 'created_at', 'updated_at']
+    autocomplete_fields = ['organization']
+
+    fieldsets = (
+        ('Market', {
+            'fields': ('organization', 'name', 'geography_level', 'geography_value')
+        }),
+        ('Metadata', {
+            'fields': ('id', 'created_at', 'updated_at'),
+            'classes': ('collapse',)
+        }),
+    )
+
+    def event_count(self, obj):
+        return obj.event_count
+    event_count.short_description = 'Events'
+    event_count.admin_order_field = 'event_count'
+
+    def get_queryset(self, request):
+        qs = super().get_queryset(request)
+        if not request.user.is_superuser:
+            profile = getattr(request.user, 'profile', None)
+            if profile and profile.organization_id:
+                qs = qs.filter(organization=profile.organization)
+            else:
+                qs = qs.none()
+        return qs.annotate(event_count=Count('events'))
+
+    def save_model(self, request, obj, form, change):
+        if not change and not getattr(obj, 'organization_id', None):
+            profile = getattr(request.user, 'profile', None)
+            if profile and profile.organization_id:
+                obj.organization = profile.organization
+        super().save_model(request, obj, form, change)
 
 
 class EventTalentInline(admin.TabularInline):

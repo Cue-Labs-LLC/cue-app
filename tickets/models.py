@@ -1028,6 +1028,61 @@ class Venue(BaseModel):
         return f"{self.name}, {self.city}"
 
 
+MARKET_GEOGRAPHY_CITY = 'city'
+MARKET_GEOGRAPHY_STATE = 'state'
+MARKET_GEOGRAPHY_COUNTRY = 'country'
+MARKET_GEOGRAPHY_CHOICES = [
+    (MARKET_GEOGRAPHY_CITY, 'City'),
+    (MARKET_GEOGRAPHY_STATE, 'State'),
+    (MARKET_GEOGRAPHY_COUNTRY, 'Country'),
+]
+
+
+class Market(BaseModel):
+    """Organization-scoped geographic market for event grouping."""
+    organization = models.ForeignKey(
+        Organization,
+        on_delete=models.CASCADE,
+        related_name='markets',
+    )
+    name = models.CharField(max_length=120, db_index=True)
+    geography_level = models.CharField(
+        max_length=20,
+        choices=MARKET_GEOGRAPHY_CHOICES,
+        db_index=True,
+    )
+    geography_value = models.CharField(max_length=120, db_index=True)
+
+    class Meta:
+        unique_together = [
+            ['organization', 'name'],
+            ['organization', 'geography_level', 'geography_value'],
+        ]
+        ordering = ['geography_level', 'name']
+        indexes = [
+            models.Index(fields=['organization', 'geography_level', 'geography_value']),
+        ]
+
+    def clean(self):
+        super().clean()
+        valid_levels = {choice[0] for choice in MARKET_GEOGRAPHY_CHOICES}
+        if self.geography_level not in valid_levels:
+            raise ValidationError({'geography_level': 'Choose a valid geography level.'})
+        if not (self.name or '').strip():
+            raise ValidationError({'name': 'Market name is required.'})
+        if not (self.geography_value or '').strip():
+            raise ValidationError({'geography_value': 'Geography value is required.'})
+
+    def save(self, *args, **kwargs):
+        self.name = (self.name or '').strip()
+        self.geography_value = (self.geography_value or '').strip()
+        self.full_clean()
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return self.name
+
+
 TICKETING_TYPE_DIRECT = 'direct'
 TICKETING_TYPE_EXTERNAL = 'external'
 TICKETING_TYPE_CHOICES = [
@@ -1067,6 +1122,13 @@ class Event(AuditBaseModel):
         'Venue',
         on_delete=models.PROTECT,
         related_name='events'
+    )
+    market = models.ForeignKey(
+        'Market',
+        on_delete=models.SET_NULL,
+        related_name='events',
+        null=True,
+        blank=True,
     )
     start_date = models.DateField(db_index=True)
     start_time = models.TimeField(null=True, blank=True)
@@ -1192,6 +1254,7 @@ class Event(AuditBaseModel):
             models.Index(fields=['name', 'start_date']),
             models.Index(fields=['organization', '-start_date']),
             models.Index(fields=['ticketing_type', 'status', 'start_date']),
+            models.Index(fields=['organization', 'market', '-start_date']),
         ]
 
     def __str__(self):

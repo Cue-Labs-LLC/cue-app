@@ -14,7 +14,7 @@ from decimal import Decimal
 from rest_framework.authtoken.models import Token
 from .models import (
     UploadedFile, TicketOrder, Customer, CustomerTag, Event,
-    Venue, CSVFormat, Ticket, TicketTier,
+    Venue, Market, CSVFormat, Ticket, TicketTier,
     Organization, UserProfile, OrganizationMembership, OrganizationInvitation, ChatMessage,
     AITokenUsage, AIRecommendation,
     EventExpense,
@@ -661,6 +661,188 @@ class VenueAddressFieldsTests(TestCase):
         venue.save()
         venue.refresh_from_db()
         self.assertEqual(venue.street_address, '125 Northwest 5th Avenue')
+
+
+class MarketModelTests(TestCase):
+    def setUp(self):
+        self.org = Organization.objects.create(name='Market Org', slug='market-org')
+        self.other_org = Organization.objects.create(name='Other Market Org', slug='other-market-org')
+        self.venue = Venue.objects.create(organization=self.org, name='Market Hall', city='San Diego')
+        self.event = Event.objects.create(
+            organization=self.org,
+            name='Market Event',
+            venue=self.venue,
+            start_date=date(2026, 1, 1),
+        )
+
+    def test_market_uniqueness_is_scoped_to_organization(self):
+        from django.core.exceptions import ValidationError
+
+        Market.objects.create(
+            organization=self.org,
+            name='San Diego',
+            geography_level='city',
+            geography_value='San Diego',
+        )
+        with self.assertRaises(ValidationError):
+            Market.objects.create(
+                organization=self.org,
+                name='San Diego',
+                geography_level='state',
+                geography_value='CA',
+            )
+
+        other_market = Market.objects.create(
+            organization=self.other_org,
+            name='San Diego',
+            geography_level='city',
+            geography_value='San Diego',
+        )
+        self.assertEqual(other_market.name, 'San Diego')
+
+    def test_event_market_is_nullable_when_market_is_deleted(self):
+        market = Market.objects.create(
+            organization=self.org,
+            name='San Diego',
+            geography_level='city',
+            geography_value='San Diego',
+        )
+        self.event.market = market
+        self.event.save(update_fields=['market'])
+
+        market.delete()
+        self.event.refresh_from_db()
+
+        self.assertIsNone(self.event.market)
+
+
+class MarketBuilderTests(TestCase):
+    def setUp(self):
+        self.org = Organization.objects.create(name='Builder Org', slug='builder-org')
+        self.other_org = Organization.objects.create(name='Builder Other Org', slug='builder-other-org')
+        self.sd_venue = Venue.objects.create(
+            organization=self.org, name='SD Hall', city='San Diego', state='CA', country='US'
+        )
+        self.sd_other_venue = Venue.objects.create(
+            organization=self.org, name='SD Club', city='San Diego', state='CA', country='US'
+        )
+        self.blank_venue = Venue.objects.create(
+            organization=self.org, name='Blank Hall', city='', state='', country=''
+        )
+        self.la_venue = Venue.objects.create(
+            organization=self.other_org, name='LA Hall', city='Los Angeles', state='CA', country='US'
+        )
+        self.event = Event.objects.create(
+            organization=self.org, name='SD One', venue=self.sd_venue, start_date=date(2026, 1, 1)
+        )
+        self.second_event = Event.objects.create(
+            organization=self.org, name='SD Two', venue=self.sd_other_venue, start_date=date(2026, 2, 1)
+        )
+        Event.objects.create(
+            organization=self.org, name='Blank', venue=self.blank_venue, start_date=date(2026, 3, 1)
+        )
+        Event.objects.create(
+            organization=self.other_org, name='LA One', venue=self.la_venue, start_date=date(2026, 4, 1)
+        )
+
+    def test_preview_is_org_scoped_and_ignores_blank_values(self):
+        from tickets.services.markets import MarketBuilder
+
+        rows = MarketBuilder(self.org).preview('city')
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]['value'], 'San Diego')
+        self.assertEqual(rows[0]['event_count'], 2)
+        self.assertEqual(rows[0]['venue_count'], 2)
+
+    def test_build_creates_markets_idempotently_and_assigns_matching_events(self):
+        from tickets.services.markets import MarketBuilder
+
+        builder = MarketBuilder(self.org)
+        first_result = builder.build('city', ['San Diego'])
+        second_result = builder.build('city', ['San Diego'])
+
+        self.assertEqual(first_result['created_count'], 1)
+        self.assertEqual(first_result['updated_count'], 2)
+        self.assertEqual(second_result['created_count'], 0)
+        self.assertEqual(Market.objects.filter(organization=self.org).count(), 1)
+        market = Market.objects.get(organization=self.org, geography_level='city', geography_value='San Diego')
+        self.event.refresh_from_db()
+        self.second_event.refresh_from_db()
+        self.assertEqual(self.event.market, market)
+        self.assertEqual(self.second_event.market, market)
+        self.assertFalse(Event.objects.filter(organization=self.other_org, market__isnull=False).exists())
+
+
+class MarketViewTests(TestCase):
+    def setUp(self):
+        self.org = Organization.objects.create(name='Market View Org', slug='market-view-org')
+        self.other_org = Organization.objects.create(name='Market View Other Org', slug='market-view-other-org')
+        self.user = User.objects.create_user(username='market-owner', password='pw')
+        UserProfile.objects.create(
+            user=self.user, organization=self.org, org_role=UserProfile.OrgRole.OWNER,
+        )
+        OrganizationMembership.objects.create(
+            user=self.user, organization=self.org, org_role=UserProfile.OrgRole.OWNER,
+        )
+        self.venue = Venue.objects.create(
+            organization=self.org, name='SD Hall', city='San Diego', state='CA', country='US'
+        )
+        other_venue = Venue.objects.create(
+            organization=self.other_org, name='LA Hall', city='Los Angeles', state='CA', country='US'
+        )
+        Event.objects.create(
+            organization=self.org, name='SD Event', venue=self.venue, start_date=date(2026, 1, 1)
+        )
+        Event.objects.create(
+            organization=self.other_org, name='LA Event', venue=other_venue, start_date=date(2026, 1, 1)
+        )
+
+    def test_market_list_requires_login(self):
+        response = self.client.get(reverse('tickets:market_list'))
+        self.assertEqual(response.status_code, 302)
+
+    def test_builder_preview_is_org_scoped(self):
+        self.client.force_login(self.user)
+
+        response = self.client.get(reverse('tickets:market_builder'), {'level': 'city'})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'San Diego')
+        self.assertNotContains(response, 'Los Angeles')
+
+    def test_builder_post_creates_market_and_assigns_event(self):
+        self.client.force_login(self.user)
+
+        response = self.client.post(
+            reverse('tickets:market_builder'),
+            {'level': 'city', 'values': ['San Diego']},
+        )
+
+        self.assertRedirects(response, reverse('tickets:market_list'))
+        market = Market.objects.get(organization=self.org, geography_level='city', geography_value='San Diego')
+        self.assertTrue(Event.objects.filter(organization=self.org, market=market).exists())
+
+
+class VenueAdminScopeTests(TestCase):
+    def test_venue_admin_queryset_is_scoped_for_non_superusers(self):
+        from django.contrib import admin
+        from tickets.admin import VenueAdmin
+
+        org = Organization.objects.create(name='Admin Org', slug='admin-org')
+        other_org = Organization.objects.create(name='Other Admin Org', slug='other-admin-org')
+        user = User.objects.create_user(username='venue-admin')
+        UserProfile.objects.create(
+            user=user, organization=org, org_role=UserProfile.OrgRole.OWNER,
+        )
+        Venue.objects.create(organization=org, name='Own Venue', city='San Diego')
+        Venue.objects.create(organization=other_org, name='Other Venue', city='Los Angeles')
+        request = RequestFactory().get('/admin/tickets/venue/')
+        request.user = user
+
+        qs = VenueAdmin(Venue, admin.site).get_queryset(request)
+
+        self.assertEqual(list(qs.values_list('name', flat=True)), ['Own Venue'])
 
 
 class ChatTestMixin:

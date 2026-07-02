@@ -38,7 +38,7 @@ from django.utils.text import slugify
 from .models import (
     Organization, UserProfile, OrganizationMembership, OrganizationInvitation,
     AIRecommendation,
-    CSVFormat, UploadedFile, Customer, CustomerTag, Event, EventExpense, EventEmailCampaign, EventSMSCampaign, EventTalent, TicketOrder, Ticket, Venue,
+    CSVFormat, UploadedFile, Customer, CustomerTag, Event, EventExpense, EventEmailCampaign, EventSMSCampaign, EventTalent, TicketOrder, Ticket, Venue, Market,
     CustomField, CustomFieldOption, EventCustomFieldValue, IncomeSource, EventIncome,
     SurveyQuestion, SurveyQuestionOption, SurveyInvitation, SurveyResponse, SurveyAnswer, SurveyAnswerOption,
     DEFAULT_SURVEY_SUBJECT, SURVEY_SEND_OFFSET_CHOICES,
@@ -68,6 +68,7 @@ from .forms import (
 from .csv_processor import CSVProcessor
 from .services.forecasting.preview import generate_forecast_preview
 from .services.pricing import SmartPricingRecommender
+from .services.markets import MarketBuilder
 from .services.churn_detection.churn_calculator import ChurnDetectionService, THRESHOLD_OPTIONS
 from .services.segmentation import (
     BEHAVIOR_PROFILE_BADGE_COLORS,
@@ -6053,6 +6054,61 @@ def format_duplicate(request, format_id):
         f"Created an editable copy '{copy.name}'. Customize it below.",
     )
     return redirect('tickets:format_edit', format_id=copy.id)
+
+
+# Market Management Views
+
+@login_required
+@require_org
+@require_host
+def market_list(request):
+    """List organization markets with event counts."""
+    org = get_organization(request)
+    markets = (
+        Market.objects.filter(organization=org)
+        .annotate(event_count=Count('events'))
+        .order_by('geography_level', 'name')
+    )
+    context = {
+        'markets': markets,
+    }
+    return render(request, 'tickets/market_list.html', context)
+
+
+@login_required
+@require_org
+@require_host
+def market_builder(request):
+    """Bulk-create markets from event venue city, state, or country."""
+    org = get_organization(request)
+    builder = MarketBuilder(org)
+    level = builder.normalize_level(
+        request.POST.get('level') if request.method == 'POST' else request.GET.get('level')
+    )
+
+    if request.method == 'POST':
+        values = request.POST.getlist('values')
+        if not values:
+            messages.error(request, 'Select at least one region to create markets.')
+            return redirect(f"{reverse('tickets:market_builder')}?{urlencode({'level': level})}")
+
+        result = builder.build(level, values)
+        messages.success(
+            request,
+            f"Created {result['created_count']} market(s) and assigned "
+            f"{result['updated_count']} event(s)."
+        )
+        return redirect('tickets:market_list')
+
+    context = {
+        'level': level,
+        'level_choices': [
+            {'value': key, 'label': label}
+            for key, label in builder.LEVEL_LABELS.items()
+        ],
+        'preview_rows': builder.preview(level),
+    }
+    return render(request, 'tickets/market_builder.html', context)
 
 
 # Venue Management Views
