@@ -32,7 +32,7 @@ from .models import (
     _generate_tracking_token,
 )
 from .forms import SMSCampaignForm
-from .services.customer_filters import filter_customers
+from .services.customer_filters import filter_customers, _valid_uuids
 from .services.sms_consent import set_sms_opt_in
 from .services.tagging import tag_customers
 from .sms import (
@@ -258,6 +258,55 @@ def customers_bulk_sms_status(request):
     return redirect(back)
 
 
+@login_required
+@require_org
+@require_host
+@require_sms_feature
+@require_POST
+def customers_bulk_sms_compose(request):
+    """Capture selected customer IDs and open the campaign composer pre-targeted."""
+    org = get_organization(request)
+    cap = getattr(settings, 'SMS_CAMPAIGN_MAX_RECIPIENTS', 5000)
+
+    if request.POST.get('select_all') == '1':
+        criteria = {
+            'search': request.POST.get('search') or None,
+            'rfm_segment': request.POST.get('segment') or None,
+            'tag_id': request.POST.get('tag') or None,
+            'market_id': request.POST.get('market') or None,
+        }
+        qs = filter_customers(org, criteria).distinct()
+        ids = [str(i) for i in qs.values_list('id', flat=True)[:cap]]
+    else:
+        posted = _valid_uuids(s for s in request.POST.getlist('customer_ids') if s)
+        ids = [
+            str(i) for i in
+            Customer.objects.filter(organization=org, id__in=posted)
+            .values_list('id', flat=True)
+        ]
+
+    params = urlencode({k: v for k, v in (
+        ('search', request.POST.get('search', '')),
+        ('segment', request.POST.get('segment', '')),
+        ('tag', request.POST.get('tag', '')),
+        ('market', request.POST.get('market', '')),
+        ('sort', request.POST.get('sort', '')),
+    ) if v})
+    back = reverse('tickets:customer_list') + (f'?{params}' if params else '')
+
+    if not ids:
+        messages.warning(request, 'No customers selected.')
+        return redirect(back)
+
+    n = len(ids)
+    request.session['sms_compose_prefill'] = {
+        'ids': ids,
+        'count': n,
+        'label': f'{n} customer{"s" if n != 1 else ""}',
+    }
+    return redirect('tickets:sms_campaign_create')
+
+
 # ---------------------------------------------------------------------------
 # Campaigns
 # ---------------------------------------------------------------------------
@@ -383,6 +432,26 @@ def sms_campaign_create(request):
     confirm_cost_cents = None
     confirm_cost_tokens = None
     insufficient_credits = False
+    prefill = None
+    manual_include_ids = []
+
+    # Customer-list bulk SMS starts as a session handoff on GET, then persists
+    # through review/confirm via a hidden field on POST.
+    if request.method == 'GET':
+        prefill = request.session.pop('sms_compose_prefill', None)
+        if prefill:
+            manual_include_ids = list(prefill.get('ids') or [])
+    else:
+        raw_manual_ids = request.POST.get('manual_include_ids', '')
+        manual_include_ids = _valid_uuids(raw_manual_ids.split(','))
+        if manual_include_ids:
+            n = len(manual_include_ids)
+            prefill = {
+                'ids': manual_include_ids,
+                'count': n,
+                'label': f'{n} customer{"s" if n != 1 else ""}',
+            }
+    has_manual = bool(manual_include_ids)
 
     event = None
     event_id = request.POST.get('event') or request.GET.get('event')
@@ -404,7 +473,10 @@ def sms_campaign_create(request):
         audience_scope = 'event'
 
     if request.method == 'POST':
-        form = SMSCampaignForm(request.POST, organization=org, event=event)
+        form = SMSCampaignForm(
+            request.POST, organization=org, event=event,
+            has_manual_includes=has_manual,
+        )
         if form.is_valid():
             # Audience lives inline on the campaign. In event mode the scope picks
             # exactly one audience — the event's ticket buyers, all subscribers, or
@@ -420,6 +492,7 @@ def sms_campaign_create(request):
                     criteria = {'event_id': str(event.id)}
             recipients = SMSCampaign(
                 organization=org, filter_criteria=criteria,
+                manual_include_ids=manual_include_ids,
             ).materialize(org, cap=cap + 1)
             confirm_count = len(recipients)
             exceeds_cap = confirm_count > cap
@@ -480,6 +553,7 @@ def sms_campaign_create(request):
                             campaign.created_by = request.user
                             campaign.event = event
                             campaign.filter_criteria = criteria
+                            campaign.manual_include_ids = manual_include_ids
                             campaign.link_url = extract_first_url(campaign.body)
                             # Per-campaign attribution: swap any shared event ticket
                             # link for one unique to this campaign (mutates body/link_url).
@@ -534,8 +608,16 @@ def sms_campaign_create(request):
                             )
                         return redirect('tickets:sms_campaign_detail', pk=campaign.id)
     else:
-        initial = {'name': event.name} if event else {}
-        form = SMSCampaignForm(organization=org, event=event, initial=initial)
+        if prefill:
+            initial = {'name': f'SMS - {prefill["label"]}'}
+        elif event:
+            initial = {'name': event.name}
+        else:
+            initial = {}
+        form = SMSCampaignForm(
+            organization=org, event=event, initial=initial,
+            has_manual_includes=has_manual,
+        )
 
     # Live direct-ticketing events whose buy page is on sale — offered in the
     # composer's "Add a ticket link" dropdown. effective_status is a property, so
@@ -569,6 +651,8 @@ def sms_campaign_create(request):
         'balance_cents': org.sms_credit_balance_cents,
         'insufficient_credits': insufficient_credits,
         'idempotency_key': idem_key,
+        'prefill': prefill,
+        'manual_include_ids_csv': ','.join(manual_include_ids),
         'footer_disclosure_days': getattr(settings, 'SMS_FOOTER_DISCLOSURE_DAYS', 30),
     })
 

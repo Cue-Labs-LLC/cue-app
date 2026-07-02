@@ -1863,11 +1863,11 @@ class SMSCampaign(AuditBaseModel):
         """Org-scoped candidate Customer queryset: criteria ∪ manual includes − excludes,
         restricted to opted-in customers with a phone. Dedupe + suppression happen in
         materialize(). Fail-safe: empty criteria AND no manual includes → none."""
-        from tickets.services.customer_filters import filter_customers
+        from tickets.services.customer_filters import filter_customers, _valid_uuids
         org = organization or self.organization
         criteria = self.filter_criteria or {}
-        include_ids = self.manual_include_ids or []
-        exclude_ids = self.manual_exclude_ids or []
+        include_ids = _valid_uuids(self.manual_include_ids or [])
+        exclude_ids = _valid_uuids(self.manual_exclude_ids or [])
 
         if not criteria and not include_ids:
             return Customer.objects.none()

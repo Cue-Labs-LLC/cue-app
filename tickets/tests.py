@@ -5965,6 +5965,7 @@ class CustomerTagManagementTests(TestCase):
         customers_in_page = list(resp.context['page_obj'])
         self.assertIn(tagged, customers_in_page)
         self.assertNotIn(self.customer, customers_in_page)
+        self.assertContains(resp, '1 matching customer')
 
     def test_customer_list_bad_tag_uuid_graceful(self):
         resp = self.client.get(reverse('tickets:customer_list'), {'tag': 'notauuid'})
@@ -6208,7 +6209,9 @@ class ChurnDetectionTests(TestCase):
 class CustomerBulkSMSStatusTests(TestCase):
     def setUp(self):
         self.client = Client()
-        self.org = Organization.objects.create(name='SMS Org', slug='sms-org')
+        self.org = Organization.objects.create(
+            name='SMS Org', slug='sms-org', sms_marketing_enabled=True,
+        )
         self.user = User.objects.create_user(
             username='smshost', email='smshost@test.com', password='testpass123',
         )
@@ -6227,6 +6230,7 @@ class CustomerBulkSMSStatusTests(TestCase):
             phone='+13105550002', sms_opt_in=False,
         )
         self.url = reverse('tickets:customers_bulk_sms_status')
+        self.compose_url = reverse('tickets:customers_bulk_sms_compose')
 
     def test_opt_in_sets_flag_and_date_on_selected_only(self):
         response = self.client.post(self.url, {
@@ -6312,6 +6316,53 @@ class CustomerBulkSMSStatusTests(TestCase):
         self.bob.refresh_from_db()
         self.assertTrue(self.alice.sms_opt_in)
         self.assertFalse(self.bob.sms_opt_in)
+
+    def test_compose_stores_org_scoped_selection_in_session(self):
+        other_org = Organization.objects.create(name='Other SMS Org', slug='other-compose-sms')
+        outsider = Customer.objects.create(
+            organization=other_org, email='out-compose@example.com', name='Outsider',
+            phone='+13105559999', sms_opt_in=True,
+        )
+
+        response = self.client.post(self.compose_url, {
+            'customer_ids': [str(self.alice.id), str(outsider.id), 'not-a-uuid'],
+            'search': 'alice',
+        })
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response['Location'], reverse('tickets:sms_campaign_create'))
+        prefill = self.client.session['sms_compose_prefill']
+        self.assertEqual(prefill['ids'], [str(self.alice.id)])
+        self.assertEqual(prefill['label'], '1 customer')
+
+    def test_compose_page_uses_locked_manual_audience(self):
+        self.client.post(self.compose_url, {
+            'customer_ids': [str(self.alice.id), str(self.bob.id)],
+        })
+
+        response = self.client.get(reverse('tickets:sms_campaign_create'))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, '2 customers selected from the Customers page')
+        self.assertContains(response, 'name="manual_include_ids"')
+        self.assertEqual(
+            set(response.context['manual_include_ids_csv'].split(',')),
+            {str(self.alice.id), str(self.bob.id)},
+        )
+
+    def test_sms_campaign_manual_includes_ignore_malformed_ids(self):
+        from .models import SMSCampaign
+        self.alice.sms_opt_in = True
+        self.alice.save(update_fields=['sms_opt_in'])
+
+        campaign = SMSCampaign(
+            organization=self.org,
+            name='Manual',
+            body='Hello',
+            manual_include_ids=['not-a-uuid', str(self.alice.id)],
+        )
+
+        self.assertEqual(list(campaign.candidate_customers(self.org)), [self.alice])
 
 
 class AIRecommendationTests(TestCase):
