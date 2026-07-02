@@ -33,8 +33,17 @@
             {% endfor %}
         </select>
         {% endif %}
+        <select name="market" class="form-select" style="max-width: 190px;">
+            <option value="">All markets</option>
+            {% for market in market_choices %}
+            <option value="{{ market.id }}" {% if market_filter == market.id|stringformat:'s' %}selected{% endif %}>{{ market.name }}</option>
+            {% endfor %}
+            {% if has_no_market %}
+            <option value="{{ no_market_value }}" {% if market_filter == no_market_value %}selected{% endif %}>No market</option>
+            {% endif %}
+        </select>
         <button type="submit" class="btn btn-outline-secondary"><i class="bi bi-search"></i></button>
-        {% if search_query or segment_filter or tag_filter %}
+        {% if search_query or segment_filter or tag_filter or market_filter %}
         <a href="{% url 'tickets:customer_list' %}" class="btn btn-outline-secondary">Clear</a>
         {% endif %}
     </form>
@@ -49,6 +58,7 @@
     <input type="hidden" name="search" value="{{ search_query }}">
     <input type="hidden" name="segment" value="{{ segment_filter }}">
     <input type="hidden" name="tag" value="{{ tag_filter }}">
+    <input type="hidden" name="market" value="{{ market_filter }}">
     <input type="hidden" name="sort" value="{{ sort_by }}">
     <div class="card-body d-flex flex-wrap align-items-center gap-2">
         <strong id="custSelectedCount" class="me-2">0 selected</strong>
@@ -95,7 +105,7 @@
                         {% endif %}
                         <th>
                             {% with asc='name' desc='-name' %}
-                            <a href="?sort={% if sort_by == asc %}{{ desc }}{% else %}{{ asc }}{% endif %}&search={{ search_query }}&segment={{ segment_filter }}&tag={{ tag_filter }}">Name
+                            <a href="?sort={% if sort_by == asc %}{{ desc }}{% else %}{{ asc }}{% endif %}&search={{ search_query }}&segment={{ segment_filter }}&tag={{ tag_filter }}&market={{ market_filter }}">Name
                                 {% if sort_by == asc %}<i class="bi bi-arrow-up"></i>
                                 {% elif sort_by == desc %}<i class="bi bi-arrow-down"></i>
                                 {% else %}<i class="bi bi-arrow-down-up"></i>{% endif %}
@@ -104,7 +114,7 @@
                         </th>
                         <th>
                             {% with asc='email' desc='-email' %}
-                            <a href="?sort={% if sort_by == asc %}{{ desc }}{% else %}{{ asc }}{% endif %}&search={{ search_query }}&segment={{ segment_filter }}&tag={{ tag_filter }}">Email
+                            <a href="?sort={% if sort_by == asc %}{{ desc }}{% else %}{{ asc }}{% endif %}&search={{ search_query }}&segment={{ segment_filter }}&tag={{ tag_filter }}&market={{ market_filter }}">Email
                                 {% if sort_by == asc %}<i class="bi bi-arrow-up"></i>
                                 {% elif sort_by == desc %}<i class="bi bi-arrow-down"></i>
                                 {% else %}<i class="bi bi-arrow-down-up"></i>{% endif %}
@@ -115,7 +125,7 @@
                         <th class="d-none d-sm-table-cell">SMS Subscriber</th>
                         <th>
                             {% with asc='rfm_segment' desc='-rfm_segment' %}
-                            <a href="?sort={% if sort_by == asc %}{{ desc }}{% else %}{{ asc }}{% endif %}&search={{ search_query }}&segment={{ segment_filter }}&tag={{ tag_filter }}">Segment
+                            <a href="?sort={% if sort_by == asc %}{{ desc }}{% else %}{{ asc }}{% endif %}&search={{ search_query }}&segment={{ segment_filter }}&tag={{ tag_filter }}&market={{ market_filter }}">Segment
                                 {% if sort_by == asc %}<i class="bi bi-arrow-up"></i>
                                 {% elif sort_by == desc %}<i class="bi bi-arrow-down"></i>
                                 {% else %}<i class="bi bi-arrow-down-up"></i>{% endif %}
@@ -124,7 +134,7 @@
                         </th>
                         <th>
                             {% with asc='lifetime_value' desc='-lifetime_value' %}
-                            <a href="?sort={% if sort_by == desc %}{{ asc }}{% else %}{{ desc }}{% endif %}&search={{ search_query }}&segment={{ segment_filter }}&tag={{ tag_filter }}">Lifetime Value
+                            <a href="?sort={% if sort_by == desc %}{{ asc }}{% else %}{{ desc }}{% endif %}&search={{ search_query }}&segment={{ segment_filter }}&tag={{ tag_filter }}&market={{ market_filter }}">Lifetime Value
                                 {% if sort_by == asc %}<i class="bi bi-arrow-up"></i>
                                 {% elif sort_by == desc %}<i class="bi bi-arrow-down"></i>
                                 {% else %}<i class="bi bi-arrow-down-up"></i>{% endif %}
@@ -134,7 +144,7 @@
                         {% if loyalty_feature_enabled %}
                         <th class="d-none d-sm-table-cell">
                             {% with asc='points_balance' desc='-points_balance' %}
-                            <a href="?sort={% if sort_by == desc %}{{ asc }}{% else %}{{ desc }}{% endif %}&search={{ search_query }}&segment={{ segment_filter }}&tag={{ tag_filter }}">Points Balance
+                            <a href="?sort={% if sort_by == desc %}{{ asc }}{% else %}{{ desc }}{% endif %}&search={{ search_query }}&segment={{ segment_filter }}&tag={{ tag_filter }}&market={{ market_filter }}">Points Balance
                                 {% if sort_by == asc %}<i class="bi bi-arrow-up"></i>
                                 {% elif sort_by == desc %}<i class="bi bi-arrow-down"></i>
                                 {% else %}<i class="bi bi-arrow-down-up"></i>{% endif %}
@@ -144,7 +154,7 @@
                         {% endif %}
                         <th class="d-none d-sm-table-cell">
                             {% with asc='last_order_date' desc='-last_order_date' %}
-                            <a href="?sort={% if sort_by == desc %}{{ asc }}{% else %}{{ desc }}{% endif %}&search={{ search_query }}&segment={{ segment_filter }}&tag={{ tag_filter }}">Last Order
+                            <a href="?sort={% if sort_by == desc %}{{ asc }}{% else %}{{ desc }}{% endif %}&search={{ search_query }}&segment={{ segment_filter }}&tag={{ tag_filter }}&market={{ market_filter }}">Last Order
                                 {% if sort_by == asc %}<i class="bi bi-arrow-up"></i>
                                 {% elif sort_by == desc %}<i class="bi bi-arrow-down"></i>
                                 {% else %}<i class="bi bi-arrow-down-up"></i>{% endif %}
@@ -154,7 +164,7 @@
                         <th class="d-none d-sm-table-cell">Total Orders</th>
                         <th class="d-none d-md-table-cell">
                             {% with asc='first_tag_name' desc='-first_tag_name' %}
-                            <a href="?sort={% if sort_by == asc %}{{ desc }}{% else %}{{ asc }}{% endif %}&search={{ search_query }}&segment={{ segment_filter }}&tag={{ tag_filter }}">Tags
+                            <a href="?sort={% if sort_by == asc %}{{ desc }}{% else %}{{ asc }}{% endif %}&search={{ search_query }}&segment={{ segment_filter }}&tag={{ tag_filter }}&market={{ market_filter }}">Tags
                                 {% if sort_by == asc %}<i class="bi bi-arrow-up"></i>
                                 {% elif sort_by == desc %}<i class="bi bi-arrow-down"></i>
                                 {% else %}<i class="bi bi-arrow-down-up"></i>{% endif %}
@@ -222,11 +232,11 @@
             <nav>
                 <ul class="pagination mb-0">
                     {% if page_obj.has_previous %}
-                    <li class="page-item"><a class="page-link" href="?page={{ page_obj.previous_page_number }}&search={{ search_query }}&sort={{ sort_by }}&segment={{ segment_filter }}&tag={{ tag_filter }}">Previous</a></li>
+                    <li class="page-item"><a class="page-link" href="?page={{ page_obj.previous_page_number }}&search={{ search_query }}&sort={{ sort_by }}&segment={{ segment_filter }}&tag={{ tag_filter }}&market={{ market_filter }}">Previous</a></li>
                     {% endif %}
                     <li class="page-item active"><span class="page-link">{{ page_obj.number }} / {{ page_obj.paginator.num_pages }}</span></li>
                     {% if page_obj.has_next %}
-                    <li class="page-item"><a class="page-link" href="?page={{ page_obj.next_page_number }}&search={{ search_query }}&sort={{ sort_by }}&segment={{ segment_filter }}&tag={{ tag_filter }}">Next</a></li>
+                    <li class="page-item"><a class="page-link" href="?page={{ page_obj.next_page_number }}&search={{ search_query }}&sort={{ sort_by }}&segment={{ segment_filter }}&tag={{ tag_filter }}&market={{ market_filter }}">Next</a></li>
                     {% endif %}
                 </ul>
             </nav>

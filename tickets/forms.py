@@ -7,7 +7,8 @@ from crispy_forms.helper import FormHelper
 from crispy_forms.layout import Layout, Row, Column, Submit, Field
 from django.forms import inlineformset_factory
 from django.utils import timezone
-from .models import Organization, CSVFormat, Venue, Event, EventTalent, EventExpense, CustomField, CustomFieldOption, IncomeSource, EventIncome, SaleableTicketType, SaleableTicketTypeTier, UserProfile, PromoCode, OrganizerWaitlist, CustomerTag, SMSCampaign, LoyaltyProgram, LoyaltyTier, SurveyQuestion, SurveyQuestionOption
+from .models import Organization, CSVFormat, Venue, Event, EventTalent, EventExpense, CustomField, CustomFieldOption, IncomeSource, EventIncome, SaleableTicketType, SaleableTicketTypeTier, UserProfile, PromoCode, OrganizerWaitlist, CustomerTag, SMSCampaign, LoyaltyProgram, LoyaltyTier, SurveyQuestion, SurveyQuestionOption, Market, TicketOrder
+from .services.customer_filters import NO_MARKET_VALUE, market_filter_options
 
 
 def _default_csv_format_for(organization):
@@ -1942,6 +1943,10 @@ class SMSCampaignForm(forms.ModelForm):
         queryset=CustomerTag.objects.none(), required=False,
         widget=forms.CheckboxSelectMultiple,
     )
+    market_id = forms.ChoiceField(
+        choices=[('', 'All markets')], required=False,
+        widget=forms.Select(attrs={'class': 'form-select'}),
+    )
     send_mode = forms.ChoiceField(
         choices=[(SEND_NOW, 'Send now'), (SEND_SCHEDULE, 'Schedule for later')],
         initial=SEND_NOW, widget=forms.RadioSelect,
@@ -1967,6 +1972,13 @@ class SMSCampaignForm(forms.ModelForm):
         self.filter_criteria = {}
         if organization is not None:
             self.fields['tag_ids'].queryset = CustomerTag.objects.filter(organization=organization)
+            # T10: use shared helper so market options logic lives in one place
+            markets, has_no_market = market_filter_options(organization)
+            choices = [('', 'All markets')]
+            choices.extend((str(m.id), m.name) for m in markets)
+            if has_no_market:
+                choices.append((NO_MARKET_VALUE, 'No market'))
+            self.fields['market_id'].choices = choices
         self.helper = FormHelper()
         self.helper.form_tag = False
 
@@ -1977,10 +1989,14 @@ class SMSCampaignForm(forms.ModelForm):
             criteria['rfm_segment'] = list(cleaned['rfm_segment'])
         if cleaned.get('tag_ids'):
             criteria['tag_ids'] = [str(t.id) for t in cleaned['tag_ids']]
+        if cleaned.get('market_id'):
+            criteria['market_id'] = cleaned['market_id']
         self.filter_criteria = criteria
-        # (D3) Audience must be non-empty: a tag OR a segment OR an event (event
-        # mode supplies event_id in the view). Otherwise it would mean "everyone".
-        if not criteria and self.event is None:
+        # T3: Audience must have at least one tag or segment (market alone is not
+        # sufficient — a single-market org sending market-only would reach everyone,
+        # bypassing the fail-safe). Event mode supplies event_id in the view.
+        non_market = {k: v for k, v in criteria.items() if k != 'market_id'}
+        if not non_market and self.event is None:
             self.add_error(None, 'Choose at least one tag or segment.')
         if cleaned.get('send_mode') == self.SEND_SCHEDULE:
             scheduled = cleaned.get('scheduled_at')

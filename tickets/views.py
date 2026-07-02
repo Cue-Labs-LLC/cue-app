@@ -19,7 +19,7 @@ from django.urls import reverse, reverse_lazy
 from django.conf import settings
 from django.db.models import (
     Sum, Count, Avg, Max, Min, Q, Subquery, OuterRef, Prefetch,
-    Case, When, Value, F, CharField, Exists, ExpressionWrapper, DecimalField,
+    Case, When, Value, F, CharField, Exists, ExpressionWrapper, DecimalField, IntegerField,
 )
 from django.db.models.functions import Coalesce, Greatest, TruncDate, Cast, TruncMonth, TruncQuarter
 from django.db import models
@@ -145,7 +145,7 @@ from .services.marketing import (
     get_cached_marketing_metrics,
 )
 from .services.marketing.analytics import DEFAULT_WINDOW, resolve_window
-from .services.customer_filters import filter_customers
+from .services.customer_filters import filter_customers, NO_MARKET_VALUE, market_filter_options
 from .services.weather import get_event_weather_forecast, get_event_hourly_forecast
 from .utils import get_organization, require_org, require_organizer, require_host, require_admin, require_owner, clear_org_cache, next_order_number, generate_qr_b64, link_customer_to_buyer, ticket_qr_payload
 from .feature_flags import (
@@ -2582,6 +2582,7 @@ def upload_delete(request, file_id):
 def customer_list(request):
     """Display list of all customers with LTV and optional segment/tag filter."""
     org = get_organization(request)
+    market_context = _customer_market_filter_context(org, request.GET.get('market', ''))
 
     # Segment filter
     segment_filter = request.GET.get('segment', '').strip()
@@ -2603,11 +2604,67 @@ def customer_list(request):
         'rfm_segment': segment_filter or None,
         'tag_id': tag_filter or None,
         'search': search_query or None,
+        'market_id': market_context['market_filter'] or None,
     })
 
-    customers = customers.annotate(order_count=Count('ticket_orders'))
+    customers = customers.annotate(order_count=Count('ticket_orders', distinct=True))
+
+    # T6: when a market filter is active, annotate each customer row with
+    # market-scoped net LTV and last-order date via isolated Subqueries.
+    active_market = market_context['market_filter']
+    if active_market:
+        if active_market == NO_MARKET_VALUE:
+            _mkt_q = {'event__market__isnull': True}
+        else:
+            _mkt_q = {'event__market_id': active_market}
+        _base_order_filter = dict(
+            customer=OuterRef('pk'),
+            event__organization=org,
+            is_in_person=False,
+            refunded_at__isnull=True,
+            **_mkt_q,
+        )
+        _mkt_revenue_sq = Subquery(
+            TicketOrder.objects.filter(**_base_order_filter)
+            .values('customer')
+            .annotate(v=Sum(ExpressionWrapper(
+                F('total_amount') - F('refunded_amount'),
+                output_field=DecimalField(max_digits=10, decimal_places=2),
+            )))
+            .values('v')[:1],
+            output_field=DecimalField(max_digits=10, decimal_places=2),
+        )
+        _mkt_fee_filter = {
+            f'ticket_order__{k}': v for k, v in _base_order_filter.items()
+            if k != 'customer'
+        }
+        _mkt_fee_filter['ticket_order__customer'] = OuterRef('pk')
+        _mkt_fee_sq = Subquery(
+            StripeCheckoutSession.objects.filter(**_mkt_fee_filter)
+            .values('ticket_order__customer')
+            .annotate(v=Sum('platform_fee_cents'))
+            .values('v')[:1],
+            output_field=IntegerField(),
+        )
+        _mkt_last_sq = Subquery(
+            TicketOrder.objects.filter(
+                customer=OuterRef('pk'),
+                event__organization=org,
+                **_mkt_q,
+            ).order_by('-order_date').values('order_date')[:1],
+        )
+        customers = customers.annotate(
+            market_ltv=ExpressionWrapper(
+                Coalesce(_mkt_revenue_sq, Value(Decimal('0.00')))
+                - Cast(Coalesce(_mkt_fee_sq, Value(0)), output_field=DecimalField(max_digits=10, decimal_places=2))
+                  / Value(Decimal('100')),
+                output_field=DecimalField(max_digits=10, decimal_places=2),
+            ),
+            market_last_order=_mkt_last_sq,
+        )
 
     # Sorting
+    default_sort = '-market_ltv' if active_market else '-lifetime_value'
     allowed_sorts = {
         'name', '-name',
         'email', '-email',
@@ -2617,9 +2674,11 @@ def customer_list(request):
         'first_tag_name', '-first_tag_name',
         'points_balance', '-points_balance',
     }
-    sort_by = request.GET.get('sort', '-lifetime_value')
+    if active_market:
+        allowed_sorts |= {'market_ltv', '-market_ltv', 'market_last_order', '-market_last_order'}
+    sort_by = request.GET.get('sort', default_sort)
     if sort_by not in allowed_sorts:
-        sort_by = '-lifetime_value'
+        sort_by = default_sort
 
     if sort_by in ('first_tag_name', '-first_tag_name'):
         # Isolated subquery so we don't join through the M2M and inflate other annotations.
@@ -2660,11 +2719,13 @@ def customer_list(request):
         'sort_by': sort_by,
         'segment_filter': segment_filter,
         'tag_filter': tag_filter,
+        'market_filter': market_context['market_filter'],
         'segment_choices': segment_choices,
         'segment_badge_colors': SEGMENT_BADGE_COLORS,
         'current_segment_definition': current_segment_definition,
         'org_tags': org_tags,
     }
+    context.update(market_context)
     return render(request, 'tickets/customer_list.html', context)
 
 
@@ -2796,19 +2857,116 @@ def _parse_churn_days(request):
     return days
 
 
-def _normalized_customer_group_stats(org, field_name, ordered_labels, badge_colors):
+def _segment_group_case(field_path):
+    """Case/When expression mapping blank/null segment fields to 'Dormant'."""
+    return Case(
+        When(**{field_path: ''}, then=Value('Dormant')),
+        When(**{f'{field_path}__isnull': True}, then=Value('Dormant')),
+        default=F(field_path),
+        output_field=CharField(),
+    )
+
+
+def _annotate_net_revenue(qs):
+    """Filter to non-refunded orders and annotate _fee_cents per order.
+
+    Required before using _net_revenue_sum() in an aggregation.
+    """
+    fee_sq = Subquery(
+        StripeCheckoutSession.objects.filter(
+            ticket_order=OuterRef('pk')
+        ).values('platform_fee_cents')[:1],
+        output_field=IntegerField(),
+    )
+    return qs.filter(refunded_at__isnull=True).annotate(
+        _fee_cents=Coalesce(fee_sq, Value(0)),
+    )
+
+
+def _net_revenue_sum(**kwargs):
+    """Sum expression for net per-order revenue. Requires _annotate_net_revenue() first.
+
+    Pass filter=Q(...) to apply conditional aggregation (e.g. is_in_person=False).
+    """
+    return Coalesce(
+        Sum(
+            ExpressionWrapper(
+                F('total_amount') - F('refunded_amount')
+                - Cast(F('_fee_cents'), output_field=DecimalField(max_digits=10, decimal_places=2))
+                  / Value(Decimal('100')),
+                output_field=DecimalField(max_digits=10, decimal_places=2),
+            ),
+            **kwargs,
+        ),
+        Value(Decimal('0.00')),
+    )
+
+
+def _customer_market_filter_context(org, raw_market):
+    """Return normalized market-filter state for customer/segment pages.
+
+    Short-circuits with empty context when the org has no markets yet,
+    avoiding the has_no_market query and all downstream UI cost.
+    """
+    market_choices, has_no_market = market_filter_options(org)
+    _empty = {
+        'market_choices': [],
+        'has_no_market': False,
+        'market_filter': '',
+        'selected_market_label': '',
+        'no_market_value': NO_MARKET_VALUE,
+    }
+    if not market_choices:
+        return _empty
+    raw_market = (raw_market or '').strip()
+    selected_market = ''
+    selected_market_label = ''
+    if raw_market == NO_MARKET_VALUE and has_no_market:
+        selected_market = NO_MARKET_VALUE
+        selected_market_label = NO_MARKET_LABEL
+    elif raw_market:
+        try:
+            market_uuid = _uuid.UUID(raw_market)
+        except (ValueError, TypeError):
+            market_uuid = None
+        if market_uuid:
+            selected = next((m for m in market_choices if str(m.id) == str(market_uuid)), None)
+            if selected:
+                selected_market = str(selected.id)
+                selected_market_label = selected.name
+    return {
+        'market_choices': market_choices,
+        'has_no_market': has_no_market,
+        'market_filter': selected_market,
+        'selected_market_label': selected_market_label,
+        'no_market_value': NO_MARKET_VALUE,
+    }
+
+
+def _apply_order_market_filter(qs, market_filter):
+    if market_filter == NO_MARKET_VALUE:
+        return qs.filter(event__market__isnull=True)
+    if market_filter:
+        return qs.filter(event__market_id=market_filter)
+    return qs
+
+
+def _normalized_customer_group_stats(org, field_name, ordered_labels, badge_colors, market_filter=''):
     value_expr = f'{field_name}'
-    customer_rows = (
-        Customer.objects.filter(organization=org)
-        .exclude(email__endswith='@placeholder.local')
-        .annotate(
-            group_name=Case(
-                When(**{f'{value_expr}': ''}, then=Value('Dormant')),
-                When(**{f'{value_expr}__isnull': True}, then=Value('Dormant')),
-                default=F(value_expr),
-                output_field=CharField(),
-            )
+    # T1: wrap market-filtered qs in pk__in subquery to de-dup the multi-valued
+    # ticket_orders join before aggregating, so Avg('avg_days_between_orders') is
+    # not weighted by order count.
+    if market_filter:
+        customer_qs = Customer.objects.filter(
+            pk__in=filter_customers(org, {'market_id': market_filter}).values('pk')
         )
+    else:
+        customer_qs = Customer.objects.filter(
+            organization=org
+        ).exclude(email__endswith='@placeholder.local')
+    customer_rows = (
+        customer_qs
+        .annotate(group_name=_segment_group_case(value_expr))  # T12
         .values('group_name')
         .annotate(
             count=Count('id'),
@@ -2816,29 +2974,33 @@ def _normalized_customer_group_stats(org, field_name, ordered_labels, badge_colo
             avg_gap=Avg('avg_days_between_orders'),
         )
     )
+    order_qs = TicketOrder.objects.filter(
+        customer__organization=org,
+        event__organization=org,
+        is_in_person=False,
+    ).exclude(customer__email__endswith='@placeholder.local')
+    order_qs = _apply_order_market_filter(order_qs, market_filter)
+    order_qs = _annotate_net_revenue(order_qs)  # T4: filters refunded, annotates _fee_cents
     order_rows = (
-        TicketOrder.objects.filter(customer__organization=org, is_in_person=False)
-        .annotate(
-            group_name=Case(
-                When(**{f'customer__{value_expr}': ''}, then=Value('Dormant')),
-                When(**{f'customer__{value_expr}__isnull': True}, then=Value('Dormant')),
-                default=F(f'customer__{value_expr}'),
-                output_field=CharField(),
-            )
-        )
+        order_qs
+        .annotate(group_name=_segment_group_case(f'customer__{value_expr}'))  # T12
         .values('group_name')
-        .annotate(total_orders=Count('id'))
+        .annotate(
+            total_orders=Count('id'),
+            market_ltv=_net_revenue_sum(),  # T4: net revenue
+        )
     )
 
     customer_map = {row['group_name'] or 'Dormant': row for row in customer_rows}
-    order_map = {row['group_name'] or 'Dormant': row['total_orders'] for row in order_rows}
+    order_map = {row['group_name'] or 'Dormant': row for row in order_rows}
     total_customers = sum(row['count'] for row in customer_map.values())
     stats = []
     for name in ordered_labels:
         row = customer_map.get(name, {'count': 0, 'total_ltv': Decimal('0'), 'avg_gap': None})
         count = row['count']
-        total_ltv = row.get('total_ltv') or Decimal('0')
-        total_orders = order_map.get(name, 0)
+        order_row = order_map.get(name, {})
+        total_ltv = (order_row.get('market_ltv') if market_filter else row.get('total_ltv')) or Decimal('0')
+        total_orders = order_row.get('total_orders') or 0
         avg_gap = row.get('avg_gap')
         stats.append({
             'segment': name,
@@ -2851,6 +3013,82 @@ def _normalized_customer_group_stats(org, field_name, ordered_labels, badge_colo
             'description': SEGMENT_DESCRIPTIONS.get(name, ''),
         })
     return stats, total_customers
+
+
+def _market_segment_breakdown(org, ordered_labels, badge_colors):
+    # T7: base queryset uses ALL order types for customer counts (matching
+    # filter_customers membership). Revenue stats use is_in_person=False only.
+    # T4: revenue is net (excluding refunds and Stripe fees) via conditional Sum.
+    base_qs = (
+        TicketOrder.objects.filter(
+            customer__organization=org,
+            event__organization=org,
+        )
+        .exclude(customer__email__endswith='@placeholder.local')
+    )
+    # Annotate _fee_cents per order (0 when no Stripe session)
+    fee_sq = Subquery(
+        StripeCheckoutSession.objects.filter(
+            ticket_order=OuterRef('pk')
+        ).values('platform_fee_cents')[:1],
+        output_field=IntegerField(),
+    )
+    base_qs = base_qs.annotate(
+        group_name=_segment_group_case('customer__rfm_segment'),  # T12
+        _fee_cents=Coalesce(fee_sq, Value(0)),
+    )
+    order_rows = (
+        base_qs
+        .values('event__market_id', 'event__market__name', 'group_name')
+        .annotate(
+            # T7: all orders for customer membership count
+            count=Count('customer', distinct=True),
+            # T4: net revenue — is_in_person=False, non-refunded orders only
+            total_net_revenue=_net_revenue_sum(
+                filter=Q(is_in_person=False, refunded_at__isnull=True),
+            ),
+            total_orders=Count('id', filter=Q(is_in_person=False)),
+        )
+    )
+    market_map = {}
+    for row in order_rows:
+        market_id = str(row['event__market_id']) if row['event__market_id'] else NO_MARKET_VALUE
+        market_name = (row['event__market__name'] or '').strip() or NO_MARKET_LABEL
+        market = market_map.setdefault(market_id, {
+            'market_id': market_id,
+            'market_name': market_name,
+            'segments': {},
+            'total_customers': 0,
+        })
+        segment = row['group_name'] or 'Dormant'
+        count = row['count'] or 0
+        market['segments'][segment] = {
+            'segment': segment,
+            'count': count,
+            'total_ltv': row['total_net_revenue'] or Decimal('0'),
+            'total_orders': row['total_orders'] or 0,
+            'badge_color': badge_colors.get(segment, 'secondary'),
+        }
+        market['total_customers'] += count
+
+    rows = []
+    for market in market_map.values():
+        segments = []
+        for name in ordered_labels:
+            seg = market['segments'].get(name)
+            if not seg:
+                continue
+            count = seg['count']
+            segments.append({
+                **seg,
+                'pct': round((100.0 * count / market['total_customers']), 1) if market['total_customers'] else 0,
+                'avg_ltv': (seg['total_ltv'] / count) if count else Decimal('0'),
+                'avg_orders': round((seg['total_orders'] / count), 1) if count else 0,
+            })
+        if segments:
+            market['segments'] = segments
+            rows.append(market)
+    return sorted(rows, key=lambda row: (row['market_name'] == NO_MARKET_LABEL, row['market_name'].lower()))
 
 
 @login_required
@@ -2990,21 +3228,32 @@ def customer_segments(request):
     """Minimal analytics page for RFM segment distribution."""
     org = get_organization(request)
     segment_order = list(SEGMENT_BADGE_COLORS.keys())
+    market_context = _customer_market_filter_context(org, request.GET.get('market', ''))
 
     segment_stats, total_customers = _normalized_customer_group_stats(
         org,
         'rfm_segment',
         segment_order,
         SEGMENT_BADGE_COLORS,
+        market_context['market_filter'],
     )
     segment_mode_display = _segment_mode_display(org)
+    # T5: only compute the breakdown when the org has markets; zero-market orgs
+    # would see a redundant "No market" table that duplicates the main table.
+    breakdown = (
+        _market_segment_breakdown(org, segment_order, SEGMENT_BADGE_COLORS)
+        if market_context['market_choices']
+        else []
+    )
     context = {
         'segment_stats': segment_stats,
         'total_customers': total_customers,
+        'market_segment_breakdown': breakdown,
         'rfm_recalc_in_progress': org.rfm_recalc_in_progress,
         'segment_mode_label': segment_mode_display['label'],
         'segment_mode_summary': segment_mode_display['summary'],
     }
+    context.update(market_context)
     return render(request, 'tickets/customer_segments.html', context)
 
 

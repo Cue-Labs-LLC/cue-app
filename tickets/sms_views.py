@@ -89,6 +89,9 @@ def _criteria_from_post(post):
     tag_ids = [t for t in post.getlist('tag_ids') if t]
     if tag_ids:
         criteria['tag_ids'] = tag_ids
+    market_id = (post.get('market_id') or '').strip()
+    if market_id:
+        criteria['market_id'] = market_id
     event_id = (post.get('event') or '').strip()
     if event_id:
         # Event mode is a single-choice audience; the scope picks exactly one
@@ -182,6 +185,7 @@ def customers_bulk_tag(request):
             'search': request.POST.get('search') or None,
             'rfm_segment': request.POST.get('segment') or None,
             'tag_id': request.POST.get('tag') or None,
+            'market_id': request.POST.get('market') or None,
         }
         customers = filter_customers(org, criteria).distinct()
     else:
@@ -193,6 +197,7 @@ def customers_bulk_tag(request):
         ('search', request.POST.get('search', '')),
         ('segment', request.POST.get('segment', '')),
         ('tag', request.POST.get('tag', '')),
+        ('market', request.POST.get('market', '')),
         ('sort', request.POST.get('sort', '')),
     ) if v})
     back = reverse('tickets:customer_list') + (f'?{params}' if params else '')
@@ -224,6 +229,7 @@ def customers_bulk_sms_status(request):
             'search': request.POST.get('search') or None,
             'rfm_segment': request.POST.get('segment') or None,
             'tag_id': request.POST.get('tag') or None,
+            'market_id': request.POST.get('market') or None,
         }
         customers = filter_customers(org, criteria).distinct()
     else:
@@ -235,6 +241,7 @@ def customers_bulk_sms_status(request):
         ('search', request.POST.get('search', '')),
         ('segment', request.POST.get('segment', '')),
         ('tag', request.POST.get('tag', '')),
+        ('market', request.POST.get('market', '')),
         ('sort', request.POST.get('sort', '')),
     ) if v})
     back = reverse('tickets:customer_list') + (f'?{params}' if params else '')
