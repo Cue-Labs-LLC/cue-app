@@ -274,3 +274,49 @@
 **Depends on:** "Tie market reporting to Market entity" (PR #302) shipped.
 
 ---
+
+## Market Membership Recency Window
+
+**What:** Add a recency dimension to market membership in `filter_customers` — e.g. "in market X" = has an order for an event in X within the last N months (org-configurable or fixed 24 months), instead of ever-bought-there-once-forever.
+
+**Why:** Today a 2019 one-time Austin buyer is a permanent Austin SMS target and inflates every Austin segment count. In an RFM product, market membership is the only slicer with no recency component, so market audiences and market segment counts get staler as the org ages.
+
+**Pros:** Market SMS audiences match who actually lives/attends there now; segment-by-market analytics reflect the current customer base; aligns market membership with the recency philosophy of RFM.
+
+**Cons:** Changes campaign audience sizes materially (needs product sign-off on the window); every market surface (customers list, segments page, SMS preview/materialization) must use the same window or the reconciliation problems return; needs a "why did my audience shrink" explanation in the UI.
+
+**Context:** Raised by the outside-voice review of the market-segments branch (decision D21, 2026-07-02, `.context/plans/market-specific-customer-segments.md`). Current semantics: `filter_customers` market block matches ANY `TicketOrder` → event → market, no date bound. Related risk captured in the same review: markets are auto-reassigned by MarketBuilder/CSV import, so a *scheduled* campaign's market audience can drift or empty between save and send with no zero-recipient warning at send time — a recency window doesn't fix that, but any redesign here should consider a send-time zero-recipient guard in the same pass.
+
+**Depends on:** Market-specific customer segments branch shipped; product decision on window length.
+
+## Segments-by-Market Breakdown: Versioned-Key Cache
+
+**What:** Cache the `_market_segment_breakdown` result (and optionally the market-scoped segment stats) in `customer_segments` using the `event_list`-style versioned cache key pattern (`{view}:{version}:{org_id}`), with a version-bump invalidation helper.
+
+**Why:** The breakdown is a full GROUP BY over every org `TicketOrder` joined through Customer and Event, recomputed on every segments page view. Fine at current org sizes; becomes the slowest thing on the page for a very large org. Caching was considered and deliberately deferred during the market-segments eng review (decision D12, 2026-07-02) to avoid an unmeasured-problem invalidation tax.
+
+**Trigger:** An org exceeds ~200k ticket orders, or the segments page renders slower than ~500ms server-side.
+
+**Pros:** Page stays fast at any scale; follows an established, proven pattern in this codebase.
+
+**Cons:** Five-plus invalidation points must be wired and kept correct — CSV upload success, Market create/edit/delete, event market reassignment (MarketBuilder), RFM recalc completion. Each is a stale-analytics bug if missed.
+
+**Context:** `tickets/views.py:_market_segment_breakdown` and `customer_segments`; cache pattern documented in CLAUDE.md "Caching" (see `_invalidate_event_list_cache`). Note the zero-market gating (task T5 of the same review) already eliminates the cost entirely for orgs with no markets, so this TODO only matters for large market-adopting orgs.
+
+**Depends on:** Market-specific customer segments branch shipped; a measured slow page.
+
+---
+
+## Multi-Market Selection in SMS Audience Builder
+
+**What:** Expose the already-supported `market_ids` criteria as a multi-select in the SMS campaign audience builder ("VIP in Austin OR Seattle"), including multi-value handling in the live preview and `audience_summary`.
+
+**Why:** `filter_customers` and `SMSCampaign.audience_summary` fully support `market_ids` (list of UUIDs and/or `__none__`), but nothing in the UI produces it — it was kept deliberately during the market-segments eng review (decision D1, 2026-07-02) as forward-compatibility for exactly this feature. This TODO is the recorded consumer; without it the plumbing is dead API.
+
+**Pros:** Small UI change (ChoiceField → MultipleChoiceField or checkbox group) over plumbing that is already written and tested end-to-end; persisted `filter_criteria` format already accommodates it.
+
+**Cons:** Audience summary and preview UX need multi-value treatment; the compose form's market group gets visually heavier; needs the same org-scoping and `__none__` gating as the single-select.
+
+**Context:** `tickets/services/customer_filters.py` (`market_ids` handling), `tickets/forms.py SMSCampaignForm.market_id`, `tickets/templates/tickets/marketing/sms/campaign_form.html` (markets audience group). Constraint from the same review (decision D14): markets refine an audience but can never be the sole selector — a tag or segment is still required, regardless of how many markets are picked.
+
+**Depends on:** Market-specific customer segments branch shipped.

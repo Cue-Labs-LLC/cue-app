@@ -30,6 +30,29 @@
     </div>
 </div>
 
+<div class="card mb-4">
+    <div class="card-body">
+        <form method="get" class="d-flex flex-wrap gap-2 align-items-end">
+            <div>
+                <label for="segment-market-filter" class="form-label small text-muted mb-1">Market</label>
+                <select id="segment-market-filter" name="market" class="form-select" style="min-width: 220px;">
+                    <option value="">All markets</option>
+                    {% for market in market_choices %}
+                    <option value="{{ market.id }}" {% if market_filter == market.id|stringformat:'s' %}selected{% endif %}>{{ market.name }}</option>
+                    {% endfor %}
+                    {% if has_no_market %}
+                    <option value="{{ no_market_value }}" {% if market_filter == no_market_value %}selected{% endif %}>No market</option>
+                    {% endif %}
+                </select>
+            </div>
+            <button type="submit" class="btn btn-outline-secondary"><i class="bi bi-funnel"></i> Apply</button>
+            {% if market_filter %}
+            <a href="{% url 'tickets:customer_segments' %}" class="btn btn-outline-secondary">Clear</a>
+            {% endif %}
+        </form>
+    </div>
+</div>
+
 {% if rfm_recalc_in_progress %}
 <div class="alert alert-info">
     <i class="bi bi-hourglass-split"></i>
@@ -39,7 +62,7 @@
 
 <div class="card">
     <div class="card-header d-flex flex-wrap justify-content-between align-items-center gap-2">
-        <h5 class="mb-0">Segments</h5>
+        <h5 class="mb-0">Segments{% if selected_market_label %}: {{ selected_market_label }}{% endif %}</h5>
         {% if total_customers %}
         <span class="text-muted small">{{ total_customers|intcomma }} customer{{ total_customers|pluralize }}</span>
         {% endif %}
@@ -59,9 +82,9 @@
                 </thead>
                 <tbody>
                     {% for row in segment_stats %}
-                    <tr style="cursor: pointer;" onclick="window.location='{% url 'tickets:customer_list' %}?segment={{ row.segment|urlencode }}'">
+                    <tr style="cursor: pointer;" onclick="window.location='{% url 'tickets:customer_list' %}?segment={{ row.segment|urlencode }}{% if market_filter %}&market={{ market_filter|urlencode }}{% endif %}'">
                         <td>
-                            <a href="{% url 'tickets:customer_list' %}?segment={{ row.segment|urlencode }}">
+                            <a href="{% url 'tickets:customer_list' %}?segment={{ row.segment|urlencode }}{% if market_filter %}&market={{ market_filter|urlencode }}{% endif %}">
                                 <span class="badge bg-{{ row.badge_color }}" {% if row.description %}data-bs-toggle="tooltip" data-bs-placement="top" title="{{ row.description }}"{% endif %}>{{ row.segment }}</span>
                             </a>
                         </td>
@@ -93,4 +116,53 @@
         {% endif %}
     </div>
 </div>
+
+{% if market_segment_breakdown %}
+<div class="card mt-4">
+    <div class="card-header">
+        <h5 class="mb-0">Segments by Market</h5>
+    </div>
+    <div class="card-body p-0">
+        <div class="table-responsive">
+            <table class="table table-hover mb-0 align-middle">
+                <thead>
+                    <tr>
+                        <th>Market</th>
+                        <th>Segment</th>
+                        <th>Customers</th>
+                        <th style="min-width: 150px;">Share</th>
+                        <th>Avg LTV</th>
+                        <th>Avg orders</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for market in market_segment_breakdown %}
+                        {% for row in market.segments %}
+                        <tr>
+                            <td>{{ market.market_name }}</td>
+                            <td>
+                                <a href="{% url 'tickets:customer_list' %}?segment={{ row.segment|urlencode }}&market={{ market.market_id|urlencode }}">
+                                    <span class="badge bg-{{ row.badge_color }}">{{ row.segment }}</span>
+                                </a>
+                            </td>
+                            <td>{{ row.count|intcomma }}</td>
+                            <td>
+                                <div class="d-flex align-items-center gap-2">
+                                    <div class="progress flex-grow-1" style="height: 6px; min-width: 90px;">
+                                        <div class="progress-bar bg-{{ row.badge_color }}" role="progressbar" style="width: {{ row.pct }}%;" aria-valuenow="{{ row.pct }}" aria-valuemin="0" aria-valuemax="100"></div>
+                                    </div>
+                                    <span class="text-muted small" style="min-width: 3.5em;">{{ row.pct }}%</span>
+                                </div>
+                            </td>
+                            <td><span class="revenue">${{ row.avg_ltv|currency }}</span></td>
+                            <td>{{ row.avg_orders }}</td>
+                        </tr>
+                        {% endfor %}
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+{% endif %}
 {% endblock %}

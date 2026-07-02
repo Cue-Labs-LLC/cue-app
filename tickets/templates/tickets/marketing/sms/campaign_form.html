@@ -490,6 +490,12 @@
                         </div>
                         {% endif %}
                         {% if not event %}
+                        <div class="sms-aud-group" data-aud-group="markets">
+                            <div class="sms-aud-grouprow">
+                                <label class="sms-aud-grouplabel" for="{{ form.market_id.id_for_label }}">Market</label>
+                            </div>
+                            {{ form.market_id }}
+                        </div>
                         <div class="sms-aud-group" data-aud-group="segments">
                             <div class="sms-aud-grouprow">
                                 <span class="sms-aud-grouplabel">Segments</span>
@@ -946,6 +952,9 @@
 
         document.querySelectorAll('#audience-section input[type=checkbox]').forEach(function (cb) {
             cb.addEventListener('change', function () { syncAll(); refreshAudience(); });
+        });
+        document.querySelectorAll('#audience-section select').forEach(function (sel) {
+            sel.addEventListener('change', refreshAudience);
         });
 
         // Event mode: the scope radios (ticket buyers / all subscribers / a tag) pick a

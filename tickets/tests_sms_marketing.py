@@ -1,7 +1,7 @@
 """Tests for native marketing SMS: recipient resolution, sending, scheduling,
 webhooks, views, and analytics."""
 
-from datetime import timedelta
+from datetime import date, timedelta
 from decimal import Decimal
 from unittest.mock import patch
 
@@ -14,6 +14,7 @@ from django.utils import timezone
 from .models import (
     Organization, UserProfile, Customer, CustomerTag,
     SMSCampaign, SMSMessageRecipient, PhoneSuppression,
+    Venue, Market, Event, CSVFormat, UploadedFile, TicketOrder,
 )
 
 
@@ -106,13 +107,34 @@ class SMSCampaignAudienceTests(TestCase):
         self.assertTrue(PhoneSuppression.is_suppressed('+13105550001', self.org))
         self.assertFalse(PhoneSuppression.is_suppressed('+13105559999', self.org))
 
+    # T11: audience_summary handles __none__ sentinel and invalid/list market criteria
+    def test_audience_summary_market_none_sentinel(self):
+        from .services.customer_filters import NO_MARKET_VALUE
+        c = self._campaign(filter_criteria={'rfm_segment': ['VIP'], 'market_id': NO_MARKET_VALUE})
+        self.assertIn('No market', c.audience_summary(self.org))
+
+    def test_audience_summary_market_list_coercion(self):
+        from tickets.models import Venue, Market, Event
+        venue = Venue.objects.create(organization=self.org, name='H', city='A')
+        mkt = Market.objects.create(
+            organization=self.org, name='Austin', geography_level='city', geography_value='Austin',
+        )
+        c = self._campaign(filter_criteria={'rfm_segment': ['VIP'], 'market_ids': [str(mkt.id)]})
+        self.assertIn('Markets: Austin', c.audience_summary(self.org))
+
+    def test_audience_summary_invalid_market_id_ignored(self):
+        c = self._campaign(filter_criteria={'rfm_segment': ['VIP'], 'market_id': 'not-a-uuid'})
+        # Should not raise; invalid UUID is silently filtered out
+        summary = c.audience_summary(self.org)
+        self.assertNotIn('Markets:', summary)
+
 
 class FilterCustomersRegressionTests(TestCase):
     """The customer_list view was refactored onto filter_customers — make sure
     its segment/tag/search behavior is unchanged."""
     def setUp(self):
         self.client = Client()
-        self.org = Organization.objects.create(name='Org', slug='org-reg')
+        self.org = Organization.objects.create(name='Org', slug='org-reg', sms_marketing_enabled=True)
         self.user = User.objects.create_user('u', 'u@test.com', 'pw')
         UserProfile.objects.create(user=self.user, organization=self.org, org_role=UserProfile.OrgRole.OWNER)
         self.client.login(username='u@test.com', password='pw')
@@ -120,7 +142,41 @@ class FilterCustomersRegressionTests(TestCase):
         self.tag = CustomerTag.objects.create(organization=self.org, name='VIP')
         self.vip = make_customer(self.org, 'vip@x.com', name='Vippy', rfm_segment='VIP')
         self.vip.tags.add(self.tag)
-        make_customer(self.org, 'reg@x.com', name='Reggie', rfm_segment='Loyal')
+        self.reg = make_customer(self.org, 'reg@x.com', name='Reggie', rfm_segment='Loyal')
+        self.no_market_vip = make_customer(self.org, 'nomarket@x.com', name='No Market', rfm_segment='Lapsed')
+        self.venue = Venue.objects.create(organization=self.org, name='Austin Hall', city='Austin')
+        self.other_venue = Venue.objects.create(organization=self.org, name='Seattle Hall', city='Seattle')
+        self.market = Market.objects.create(
+            organization=self.org, name='Austin', geography_level='city', geography_value='Austin',
+        )
+        self.other_market = Market.objects.create(
+            organization=self.org, name='Seattle', geography_level='city', geography_value='Seattle',
+        )
+        self.event = Event.objects.create(
+            organization=self.org, name='Austin Show', venue=self.venue,
+            market=self.market, start_date=date(2026, 1, 1),
+        )
+        self.other_event = Event.objects.create(
+            organization=self.org, name='Seattle Show', venue=self.other_venue,
+            market=self.other_market, start_date=date(2026, 1, 2),
+        )
+        self.unassigned_event = Event.objects.create(
+            organization=self.org, name='Unassigned Show', venue=self.venue,
+            start_date=date(2026, 1, 3),
+        )
+        self.fmt = CSVFormat.objects.create(organization=self.org, name='F', column_mapping={'order_number': 'O'})
+        self.upload = UploadedFile.objects.create(
+            organization=self.org, csv_format=self.fmt, filename='f.csv', status='completed',
+        )
+        for customer, event, order_number, total in (
+            (self.vip, self.event, 'MKT-1', Decimal('100.00')),
+            (self.reg, self.other_event, 'MKT-2', Decimal('50.00')),
+            (self.no_market_vip, self.unassigned_event, 'MKT-3', Decimal('25.00')),
+        ):
+            TicketOrder.objects.create(
+                customer=customer, event=event, uploaded_file=self.upload,
+                order_number=order_number, order_date=timezone.now(), total_amount=total,
+            )
 
     def test_segment_filter(self):
         resp = self.client.get(reverse('tickets:customer_list'), {'segment': 'VIP'})
@@ -140,6 +196,222 @@ class FilterCustomersRegressionTests(TestCase):
         resp = self.client.get(reverse('tickets:customer_list'), {'tag': 'not-a-uuid'})
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp.context['tag_filter'], '')
+
+    def test_market_filter(self):
+        resp = self.client.get(reverse('tickets:customer_list'), {'market': str(self.market.id)})
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual([c.email for c in resp.context['page_obj']], ['vip@x.com'])
+
+    def test_filter_customers_market_id(self):
+        from .services.customer_filters import filter_customers
+        emails = set(
+            filter_customers(self.org, {'market_id': str(self.market.id)})
+            .distinct()
+            .values_list('email', flat=True)
+        )
+        self.assertEqual(emails, {'vip@x.com'})
+
+    def test_no_market_filter(self):
+        from .services.customer_filters import NO_MARKET_VALUE
+        resp = self.client.get(reverse('tickets:customer_list'), {'market': NO_MARKET_VALUE})
+        self.assertEqual([c.email for c in resp.context['page_obj']], ['nomarket@x.com'])
+
+    def test_filter_customers_no_market(self):
+        from .services.customer_filters import NO_MARKET_VALUE, filter_customers
+        emails = set(
+            filter_customers(self.org, {'market_id': NO_MARKET_VALUE})
+            .distinct()
+            .values_list('email', flat=True)
+        )
+        self.assertEqual(emails, {'nomarket@x.com'})
+
+    def test_filter_customers_market_ids(self):
+        from .services.customer_filters import NO_MARKET_VALUE, filter_customers
+        emails = set(
+            filter_customers(self.org, {'market_ids': [str(self.market.id), NO_MARKET_VALUE]})
+            .distinct()
+            .values_list('email', flat=True)
+        )
+        self.assertEqual(emails, {'vip@x.com', 'nomarket@x.com'})
+
+    def test_invalid_market_ignored(self):
+        resp = self.client.get(reverse('tickets:customer_list'), {'market': 'not-a-uuid'})
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.context['market_filter'], '')
+        emails = {c.email for c in resp.context['page_obj']}
+        self.assertEqual(emails, {'vip@x.com', 'reg@x.com', 'nomarket@x.com'})
+
+    def test_filter_customers_invalid_market_ignored(self):
+        from .services.customer_filters import filter_customers
+        emails = set(
+            filter_customers(self.org, {'market_id': 'not-a-uuid'})
+            .distinct()
+            .values_list('email', flat=True)
+        )
+        self.assertEqual(emails, {'vip@x.com', 'reg@x.com', 'nomarket@x.com'})
+
+    def test_market_segment_tag_filters_are_and_combined(self):
+        resp = self.client.get(reverse('tickets:customer_list'), {
+            'market': str(self.market.id),
+            'segment': 'VIP',
+            'tag': str(self.tag.id),
+        })
+        self.assertEqual([c.email for c in resp.context['page_obj']], ['vip@x.com'])
+
+    def test_customer_list_sort_links_preserve_market(self):
+        resp = self.client.get(reverse('tickets:customer_list'), {'market': str(self.market.id)})
+        self.assertContains(resp, f'market={self.market.id}')
+
+    def test_bulk_tag_select_all_respects_market_filter(self):
+        resp = self.client.post(reverse('tickets:customers_bulk_tag'), {
+            'select_all': '1',
+            'market': str(self.other_market.id),
+            'tag_mode': 'new',
+            'new_tag_name': 'Seattle Buyers',
+        })
+        self.assertEqual(resp.status_code, 302)
+        self.vip.refresh_from_db()
+        self.reg.refresh_from_db()
+        seattle = CustomerTag.objects.get(organization=self.org, name='Seattle Buyers')
+        self.assertFalse(self.vip.tags.filter(id=seattle.id).exists())
+        self.assertTrue(self.reg.tags.filter(id=seattle.id).exists())
+
+    # T9: bulk_sms_status with select_all respects market filter (mirrors bulk_tag)
+    def test_bulk_sms_status_select_all_respects_market_filter(self):
+        from .sms_views import customers_bulk_sms_status
+        # Set both customers opted in initially
+        self.vip.sms_opt_in = True
+        self.vip.save(update_fields=['sms_opt_in'])
+        self.reg.sms_opt_in = True
+        self.reg.save(update_fields=['sms_opt_in'])
+        # Opt out select_all in Austin market only
+        resp = self.client.post(reverse('tickets:customers_bulk_sms_status'), {
+            'select_all': '1',
+            'market': str(self.market.id),
+            'sms_opt_in': '0',
+        })
+        self.assertEqual(resp.status_code, 302)
+        self.vip.refresh_from_db()
+        self.reg.refresh_from_db()
+        # Only Austin buyer (vip) should be opted out
+        self.assertFalse(self.vip.sms_opt_in)
+        self.assertTrue(self.reg.sms_opt_in)
+
+    def test_customer_segments_market_scope_and_links(self):
+        resp = self.client.get(reverse('tickets:customer_segments'), {'market': str(self.market.id)})
+        self.assertEqual(resp.status_code, 200)
+        by_segment = {row['segment']: row for row in resp.context['segment_stats']}
+        self.assertEqual(resp.context['total_customers'], 1)
+        self.assertEqual(by_segment['VIP']['count'], 1)
+        self.assertEqual(by_segment['Loyal']['count'], 0)
+        self.assertContains(resp, f'segment=VIP&market={self.market.id}')
+        market_names = {row['market_name'] for row in resp.context['market_segment_breakdown']}
+        self.assertIn('Austin', market_names)
+        self.assertIn('No market', market_names)
+
+    # T2: regression — order_count should not be inflated by tag join
+    def test_order_count_not_inflated_by_tag_join(self):
+        tag2 = CustomerTag.objects.create(organization=self.org, name='Press')
+        self.vip.tags.add(tag2)  # vip now has 2 tags but still 1 order
+        resp = self.client.get(reverse('tickets:customer_list'), {'segment': 'VIP'})
+        self.assertEqual(resp.status_code, 200)
+        customers = {c.email: c for c in resp.context['page_obj']}
+        self.assertIn('vip@x.com', customers)
+        self.assertEqual(customers['vip@x.com'].order_count, 1)
+
+    # T16: customer with 2 orders in the same market must appear exactly once
+    def test_list_dedup_customer_with_two_market_orders(self):
+        TicketOrder.objects.create(
+            customer=self.vip, event=self.event, uploaded_file=self.upload,
+            order_number='MKT-DUP', order_date=timezone.now(), total_amount=Decimal('50.00'),
+        )
+        resp = self.client.get(reverse('tickets:customer_list'), {'market': str(self.market.id)})
+        self.assertEqual(resp.status_code, 200)
+        emails = [c.email for c in resp.context['page_obj']]
+        self.assertEqual(emails.count('vip@x.com'), 1)
+
+    # T13: segments page with __none__ market; breakdown pct and avg_ltv sanity
+    def test_segments_no_market_scoped_stats(self):
+        from .services.customer_filters import NO_MARKET_VALUE
+        resp = self.client.get(reverse('tickets:customer_segments'), {'market': NO_MARKET_VALUE})
+        self.assertEqual(resp.status_code, 200)
+        by_segment = {row['segment']: row for row in resp.context['segment_stats']}
+        # no_market_vip is Lapsed and the only customer in the no-market bucket
+        self.assertEqual(resp.context['total_customers'], 1)
+        self.assertEqual(by_segment['Lapsed']['count'], 1)
+        self.assertEqual(by_segment['Lapsed']['pct'], 100.0)
+
+    def test_segments_breakdown_pct_and_avg_ltv(self):
+        resp = self.client.get(reverse('tickets:customer_segments'))
+        self.assertEqual(resp.status_code, 200)
+        breakdown = {row['market_id']: row for row in resp.context['market_segment_breakdown']}
+        austin_row = breakdown.get(str(self.market.id), {})
+        self.assertIn('segments', austin_row)
+        seg_map = {s['segment']: s for s in austin_row['segments']}
+        vip_seg = seg_map.get('VIP', {})
+        # pct should be 100 since VIP is the only segment in Austin
+        self.assertEqual(vip_seg.get('pct'), 100.0)
+        # avg_ltv should be non-negative
+        self.assertGreaterEqual(vip_seg.get('avg_ltv', -1), 0)
+
+    # T14: form boundary — cross-org market UUID is silently ignored
+    def test_cross_org_market_uuid_ignored_in_filter(self):
+        other_org = Organization.objects.create(name='Other', slug='other-org', sms_marketing_enabled=True)
+        foreign_market = Market.objects.create(
+            organization=other_org, name='Foreign', geography_level='city', geography_value='X',
+        )
+        resp = self.client.get(reverse('tickets:customer_list'), {'market': str(foreign_market.id)})
+        self.assertEqual(resp.status_code, 200)
+        # Falls back to all-market view (market not in org's choices → filter = '')
+        self.assertEqual(resp.context['market_filter'], '')
+
+    # T14: __none__ market option gated on unassigned-market orders existing
+    def test_no_market_option_hidden_when_all_events_have_markets(self):
+        # Move the unassigned event to a market so no orders are market-less
+        self.unassigned_event.market = self.other_market
+        self.unassigned_event.save(update_fields=['market'])
+        resp = self.client.get(reverse('tickets:customer_segments'))
+        self.assertEqual(resp.status_code, 200)
+        self.assertFalse(resp.context['has_no_market'])
+
+    # T8: order-level AND — market_id + event_id must match the SAME order
+    def test_order_level_and_semantics_market_plus_event(self):
+        from .services.customer_filters import filter_customers
+        # vip has an order for self.event (Austin market)
+        # reg has an order for self.other_event (Seattle market)
+        # Query: Austin market AND self.other_event → no customer has SAME order satisfying both
+        result = set(
+            filter_customers(self.org, {
+                'market_id': str(self.market.id),
+                'event_id': str(self.other_event.id),
+            }).distinct().values_list('email', flat=True)
+        )
+        self.assertEqual(result, set())
+
+    def test_order_level_and_semantics_matching_order(self):
+        from .services.customer_filters import filter_customers
+        # vip has an order for self.event which IS in Austin market
+        result = set(
+            filter_customers(self.org, {
+                'market_id': str(self.market.id),
+                'event_id': str(self.event.id),
+            }).distinct().values_list('email', flat=True)
+        )
+        self.assertEqual(result, {'vip@x.com'})
+
+    # T5: zero-market org sees no market UI and no breakdown
+    def test_zero_market_org_hides_market_ui(self):
+        # Create a fresh org with no markets
+        org2 = Organization.objects.create(name='No Mkt', slug='no-mkt', sms_marketing_enabled=True)
+        user2 = User.objects.create_user('u2', 'u2@test.com', 'pw')
+        UserProfile.objects.create(user=user2, organization=org2, org_role=UserProfile.OrgRole.OWNER)
+        client2 = Client()
+        client2.login(username='u2@test.com', password='pw')
+        client2.get(reverse('tickets:home'))
+        resp = client2.get(reverse('tickets:customer_segments'))
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.context['market_choices'], [])
+        self.assertEqual(resp.context['market_segment_breakdown'], [])
 
 
 @override_settings(E2E_TEST_MODE=True, SMS_CAMPAIGN_MAX_RECIPIENTS=5000)
@@ -550,7 +822,24 @@ class SMSViewTests(TestCase):
         UserProfile.objects.create(user=self.user, organization=self.org, org_role=UserProfile.OrgRole.OWNER)
         self.client.login(username='u@test.com', password='pw')
         self.client.get(reverse('tickets:home'))
-        make_customer(self.org, 'a@x.com', '+13105555001')
+        self.customer = make_customer(self.org, 'a@x.com', '+13105555001')
+        self.other_customer = make_customer(self.org, 'b@x.com', '+13105555002')
+        self.venue = Venue.objects.create(organization=self.org, name='Hall', city='Austin')
+        self.market = Market.objects.create(
+            organization=self.org, name='Austin', geography_level='city', geography_value='Austin',
+        )
+        self.event = Event.objects.create(
+            organization=self.org, name='Market Show', venue=self.venue,
+            market=self.market, start_date=date(2026, 1, 1),
+        )
+        self.fmt = CSVFormat.objects.create(organization=self.org, name='F', column_mapping={'order_number': 'O'})
+        self.upload = UploadedFile.objects.create(
+            organization=self.org, csv_format=self.fmt, filename='f.csv', status='completed',
+        )
+        TicketOrder.objects.create(
+            customer=self.customer, event=self.event, uploaded_file=self.upload,
+            order_number='SMS-MKT-1', order_date=timezone.now(), total_amount=Decimal('40.00'),
+        )
 
     def test_native_compose_gated_when_disabled(self):
         # Native send/compose views stay gated behind sms_marketing_enabled,
@@ -638,6 +927,13 @@ class SMSViewTests(TestCase):
 
     def test_preview_returns_count(self):
         resp = self.client.post(reverse('tickets:sms_audience_preview'), {'rfm_segment': 'VIP'})
+        self.assertEqual(resp.json()['count'], 2)
+
+    def test_preview_filters_segment_by_market(self):
+        resp = self.client.post(reverse('tickets:sms_audience_preview'), {
+            'rfm_segment': 'VIP',
+            'market_id': str(self.market.id),
+        })
         self.assertEqual(resp.json()['count'], 1)
 
     def test_compose_get_renders_audience_picker(self):
@@ -645,6 +941,7 @@ class SMSViewTests(TestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertContains(resp, 'id="audience-section"')
         self.assertContains(resp, 'name="rfm_segment"')
+        self.assertContains(resp, 'name="market_id"')
 
     def test_empty_audience_rejected(self):
         # No tag/segment and no event → form invalid, no campaign created.
@@ -654,6 +951,17 @@ class SMSViewTests(TestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(SMSCampaign.objects.count(), 0)
 
+    # T3: market alone cannot be the sole audience selector
+    def test_market_only_audience_rejected(self):
+        resp = self.client.post(reverse('tickets:sms_campaign_create'), {
+            'name': 'Promo', 'body': 'Hello', 'send_mode': 'now',
+            'market_id': str(self.market.id),
+        })
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(SMSCampaign.objects.count(), 0)
+        errors = [str(e) for e in resp.context['form'].non_field_errors()]
+        self.assertIn('Choose at least one tag or segment.', errors)
+
     def test_create_requires_confirm_before_send(self):
         # First POST without confirm: shows count, does NOT create.
         resp = self.client.post(reverse('tickets:sms_campaign_create'), {
@@ -661,8 +969,22 @@ class SMSViewTests(TestCase):
             'send_mode': 'now',
         })
         self.assertEqual(resp.status_code, 200)
-        self.assertEqual(resp.context['confirm_count'], 1)
+        self.assertEqual(resp.context['confirm_count'], 2)
         self.assertEqual(SMSCampaign.objects.count(), 0)
+
+    def test_create_with_market_saves_market_criteria(self):
+        with self.captureOnCommitCallbacks(execute=True):
+            resp = self.client.post(reverse('tickets:sms_campaign_create'), {
+                'name': 'Promo', 'rfm_segment': 'VIP', 'market_id': str(self.market.id),
+                'body': 'Hello', 'send_mode': 'now', 'confirm': '1',
+            })
+        self.assertEqual(resp.status_code, 302)
+        campaign = SMSCampaign.objects.get()
+        self.assertEqual(campaign.filter_criteria, {
+            'rfm_segment': ['VIP'],
+            'market_id': str(self.market.id),
+        })
+        self.assertIn('Markets: Austin', campaign.audience_summary(self.org))
 
     def test_create_with_confirm_sends(self):
         # Send-now dispatches via transaction.on_commit — capture so it fires in TestCase.
@@ -1077,6 +1399,25 @@ class EventSMSTests(TestCase):
         oe = Event.objects.create(organization=other, name='Theirs', venue=ov, start_date=date(2026, 7, 1))
         resp = self.client.get(reverse('tickets:sms_campaign_create'), {'event': str(oe.id)})
         self.assertEqual(resp.status_code, 404)
+
+    # T15: stray market_id POST in event-mode must be discarded — criteria saves
+    # only event_id, not any market_id that might appear in hidden form fields.
+    def test_event_mode_stray_market_id_is_discarded(self):
+        from .models import Market
+        mkt = Market.objects.create(
+            organization=self.org, name='LA', geography_level='city', geography_value='LA',
+        )
+        resp = self.client.post(reverse('tickets:sms_campaign_create'), {
+            'name': 'Fest', 'body': 'See you!',
+            'send_mode': 'now', 'event': str(self.event.id),
+            'market_id': str(mkt.id),  # stray hidden field from non-event mode
+            'confirm': '1',
+        })
+        self.assertEqual(resp.status_code, 302)
+        c = SMSCampaign.objects.get()
+        # market_id must NOT appear in persisted criteria
+        self.assertNotIn('market_id', c.filter_criteria)
+        self.assertEqual(c.filter_criteria, {'event_id': str(self.event.id)})
 
     def test_marketing_tab_button_gated_by_flag(self):
         resp = self.client.get(reverse('tickets:event_detail', args=[self.event.id]))

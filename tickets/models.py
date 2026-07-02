@@ -1929,6 +1929,20 @@ class SMSCampaign(AuditBaseModel):
             )
             if names:
                 parts.append("Tags: " + ", ".join(names))
+        # T11: use _as_list/_valid_uuids to guard against malformed persisted criteria
+        from tickets.services.customer_filters import NO_MARKET_VALUE, _as_list, _valid_uuids
+        raw_market_ids = _as_list(criteria.get('market_ids')) + _as_list(criteria.get('market_id'))
+        no_market = any(str(v) == NO_MARKET_VALUE for v in raw_market_ids)
+        valid_market_ids = _valid_uuids(v for v in raw_market_ids if str(v) != NO_MARKET_VALUE)
+        if raw_market_ids:
+            market_names = list(
+                Market.objects.filter(organization=org, id__in=valid_market_ids)
+                .values_list('name', flat=True)
+            )
+            if no_market:
+                market_names.append("No market")
+            if market_names:
+                parts.append("Markets: " + ", ".join(market_names))
         if self.manual_include_ids:
             parts.append("Custom selection")
         return " · ".join(parts) if parts else "No audience"
