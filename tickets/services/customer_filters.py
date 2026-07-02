@@ -14,6 +14,7 @@ Criteria keys (all optional):
     behavior_profile  str | list[str]
     min_ltv           Decimal | str | number
     last_order_after  date | 'YYYY-MM-DD'
+    last_order_before date | 'YYYY-MM-DD'
     all_subscribers   bool — no-op narrowing; audience is the whole org. Used so an
                       "all opted-in subscribers" send has non-empty criteria (and so
                       passes SMSCampaign.candidate_customers' empty-criteria fail-safe)
@@ -56,6 +57,19 @@ def _valid_uuids(values):
         except (ValueError, AttributeError, TypeError):
             continue
     return out
+
+
+def _coerce_date(value):
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    if isinstance(value, str):
+        try:
+            return datetime.strptime(value, '%Y-%m-%d').date()
+        except ValueError:
+            return None
+    return None
 
 
 def filter_customers(org, criteria):
@@ -131,6 +145,14 @@ def filter_customers(org, criteria):
 
 
 
+    phone = (criteria.get('phone') or '').strip()
+    if phone:
+        qs = qs.filter(phone__icontains=phone)
+
+    sms_opt_in = criteria.get('sms_opt_in')
+    if sms_opt_in is not None:
+        qs = qs.filter(sms_opt_in=sms_opt_in)
+
     min_ltv = criteria.get('min_ltv')
     if min_ltv not in (None, ''):
         try:
@@ -138,18 +160,20 @@ def filter_customers(org, criteria):
         except (InvalidOperation, ValueError):
             pass
 
-    last_order_after = criteria.get('last_order_after')
+    max_ltv = criteria.get('max_ltv')
+    if max_ltv not in (None, ''):
+        try:
+            qs = qs.filter(lifetime_value__lte=Decimal(str(max_ltv)))
+        except (InvalidOperation, ValueError):
+            pass
+
+    last_order_after = _coerce_date(criteria.get('last_order_after'))
     if last_order_after:
-        parsed = last_order_after
-        if isinstance(parsed, datetime):
-            parsed = parsed.date()
-        elif isinstance(parsed, str):
-            try:
-                parsed = datetime.strptime(parsed, '%Y-%m-%d').date()
-            except ValueError:
-                parsed = None
-        if isinstance(parsed, date):
-            qs = qs.filter(last_order_date__gte=parsed)
+        qs = qs.filter(last_order_date__gte=last_order_after)
+
+    last_order_before = _coerce_date(criteria.get('last_order_before'))
+    if last_order_before:
+        qs = qs.filter(last_order_date__lte=last_order_before)
 
     return qs
 

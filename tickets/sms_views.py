@@ -108,6 +108,40 @@ def _criteria_from_post(post):
     return criteria, includes, excludes
 
 
+def _customer_list_criteria_from_post(post):
+    sms_f = post.get('sms_filter', '')
+    return {
+        'search': post.get('search') or None,
+        'rfm_segment': post.get('segment') or None,
+        'tag_id': post.get('tag') or None,
+        'market_id': post.get('market') or None,
+        'last_order_after': post.get('last_order_from') or None,
+        'last_order_before': post.get('last_order_to') or None,
+        'phone': post.get('phone_filter') or None,
+        'sms_opt_in': True if sms_f == '1' else (False if sms_f == '0' else None),
+        'max_ltv': post.get('max_ltv') or None,
+    }
+
+
+def _customer_list_back_url(post):
+    params = urlencode({k: v for k, v in (
+        ('search', post.get('search', '')),
+        ('segment', post.get('segment', '')),
+        ('tag', post.get('tag', '')),
+        ('market', post.get('market', '')),
+        ('last_order_from', post.get('last_order_from', '')),
+        ('last_order_to', post.get('last_order_to', '')),
+        ('phone_filter', post.get('phone_filter', '')),
+        ('sms_filter', post.get('sms_filter', '')),
+        ('min_ltv', post.get('min_ltv', '')),
+        ('max_ltv', post.get('max_ltv', '')),
+        ('min_orders', post.get('min_orders', '')),
+        ('max_orders', post.get('max_orders', '')),
+        ('sort', post.get('sort', '')),
+    ) if v})
+    return reverse('tickets:customer_list') + (f'?{params}' if params else '')
+
+
 @login_required
 @require_org
 @require_host
@@ -181,26 +215,13 @@ def customers_bulk_tag(request):
     the list page shows (search / segment / tag)."""
     org = get_organization(request)
     if request.POST.get('select_all') == '1':
-        criteria = {
-            'search': request.POST.get('search') or None,
-            'rfm_segment': request.POST.get('segment') or None,
-            'tag_id': request.POST.get('tag') or None,
-            'market_id': request.POST.get('market') or None,
-        }
-        customers = filter_customers(org, criteria).distinct()
+        customers = filter_customers(org, _customer_list_criteria_from_post(request.POST)).distinct()
     else:
         posted = [s for s in request.POST.getlist('customer_ids') if s]
         customers = Customer.objects.filter(organization=org, id__in=posted).distinct()
 
     # Return to the list with the active filters preserved.
-    params = urlencode({k: v for k, v in (
-        ('search', request.POST.get('search', '')),
-        ('segment', request.POST.get('segment', '')),
-        ('tag', request.POST.get('tag', '')),
-        ('market', request.POST.get('market', '')),
-        ('sort', request.POST.get('sort', '')),
-    ) if v})
-    back = reverse('tickets:customer_list') + (f'?{params}' if params else '')
+    back = _customer_list_back_url(request.POST)
     tag, count = tag_customers(
         org, customers,
         tag_id=request.POST.get('tag_id'),
@@ -225,26 +246,13 @@ def customers_bulk_sms_status(request):
     (search / segment / tag), mirroring ``customers_bulk_tag``."""
     org = get_organization(request)
     if request.POST.get('select_all') == '1':
-        criteria = {
-            'search': request.POST.get('search') or None,
-            'rfm_segment': request.POST.get('segment') or None,
-            'tag_id': request.POST.get('tag') or None,
-            'market_id': request.POST.get('market') or None,
-        }
-        customers = filter_customers(org, criteria).distinct()
+        customers = filter_customers(org, _customer_list_criteria_from_post(request.POST)).distinct()
     else:
         posted = [s for s in request.POST.getlist('customer_ids') if s]
         customers = Customer.objects.filter(organization=org, id__in=posted).distinct()
 
     # Return to the list with the active filters preserved.
-    params = urlencode({k: v for k, v in (
-        ('search', request.POST.get('search', '')),
-        ('segment', request.POST.get('segment', '')),
-        ('tag', request.POST.get('tag', '')),
-        ('market', request.POST.get('market', '')),
-        ('sort', request.POST.get('sort', '')),
-    ) if v})
-    back = reverse('tickets:customer_list') + (f'?{params}' if params else '')
+    back = _customer_list_back_url(request.POST)
 
     opt_in = request.POST.get('sms_status') == 'opt_in'
     count = set_sms_opt_in(customers, opt_in=opt_in)
@@ -269,13 +277,7 @@ def customers_bulk_sms_compose(request):
     cap = getattr(settings, 'SMS_CAMPAIGN_MAX_RECIPIENTS', 5000)
 
     if request.POST.get('select_all') == '1':
-        criteria = {
-            'search': request.POST.get('search') or None,
-            'rfm_segment': request.POST.get('segment') or None,
-            'tag_id': request.POST.get('tag') or None,
-            'market_id': request.POST.get('market') or None,
-        }
-        qs = filter_customers(org, criteria).distinct()
+        qs = filter_customers(org, _customer_list_criteria_from_post(request.POST)).distinct()
         ids = [str(i) for i in qs.values_list('id', flat=True)[:cap]]
     else:
         posted = _valid_uuids(s for s in request.POST.getlist('customer_ids') if s)
@@ -285,14 +287,7 @@ def customers_bulk_sms_compose(request):
             .values_list('id', flat=True)
         ]
 
-    params = urlencode({k: v for k, v in (
-        ('search', request.POST.get('search', '')),
-        ('segment', request.POST.get('segment', '')),
-        ('tag', request.POST.get('tag', '')),
-        ('market', request.POST.get('market', '')),
-        ('sort', request.POST.get('sort', '')),
-    ) if v})
-    back = reverse('tickets:customer_list') + (f'?{params}' if params else '')
+    back = _customer_list_back_url(request.POST)
 
     if not ids:
         messages.warning(request, 'No customers selected.')

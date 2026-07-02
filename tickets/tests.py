@@ -6224,10 +6224,12 @@ class CustomerBulkSMSStatusTests(TestCase):
         self.alice = Customer.objects.create(
             organization=self.org, email='alice@example.com', name='Alice',
             phone='+13105550001', sms_opt_in=False,
+            last_order_date=date(2026, 1, 15),
         )
         self.bob = Customer.objects.create(
             organization=self.org, email='bob@example.com', name='Bob',
             phone='+13105550002', sms_opt_in=False,
+            last_order_date=date(2025, 12, 15),
         )
         self.url = reverse('tickets:customers_bulk_sms_status')
         self.compose_url = reverse('tickets:customers_bulk_sms_compose')
@@ -6317,6 +6319,23 @@ class CustomerBulkSMSStatusTests(TestCase):
         self.assertTrue(self.alice.sms_opt_in)
         self.assertFalse(self.bob.sms_opt_in)
 
+    def test_select_all_honors_last_order_filter(self):
+        response = self.client.post(self.url, {
+            'sms_status': 'opt_in',
+            'select_all': '1',
+            'last_order_from': '2026-01-01',
+            'last_order_to': '2026-01-31',
+        })
+        expected = (
+            f"{reverse('tickets:customer_list')}"
+            "?last_order_from=2026-01-01&last_order_to=2026-01-31"
+        )
+        self.assertRedirects(response, expected)
+        self.alice.refresh_from_db()
+        self.bob.refresh_from_db()
+        self.assertTrue(self.alice.sms_opt_in)
+        self.assertFalse(self.bob.sms_opt_in)
+
     def test_compose_stores_org_scoped_selection_in_session(self):
         other_org = Organization.objects.create(name='Other SMS Org', slug='other-compose-sms')
         outsider = Customer.objects.create(
@@ -6327,6 +6346,19 @@ class CustomerBulkSMSStatusTests(TestCase):
         response = self.client.post(self.compose_url, {
             'customer_ids': [str(self.alice.id), str(outsider.id), 'not-a-uuid'],
             'search': 'alice',
+        })
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response['Location'], reverse('tickets:sms_campaign_create'))
+        prefill = self.client.session['sms_compose_prefill']
+        self.assertEqual(prefill['ids'], [str(self.alice.id)])
+        self.assertEqual(prefill['label'], '1 customer')
+
+    def test_compose_select_all_honors_last_order_filter(self):
+        response = self.client.post(self.compose_url, {
+            'select_all': '1',
+            'last_order_from': '2026-01-01',
+            'last_order_to': '2026-01-31',
         })
 
         self.assertEqual(response.status_code, 302)

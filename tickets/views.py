@@ -2597,6 +2597,29 @@ def customer_list(request):
 
     # Search
     search_query = request.GET.get('search', '')
+    last_order_from = _customer_filter_date(request.GET.get('last_order_from', ''))
+    last_order_to = _customer_filter_date(request.GET.get('last_order_to', ''))
+    phone_filter = request.GET.get('phone_filter', '').strip()
+    sms_filter = request.GET.get('sms_filter', '').strip()   # '1', '0', or ''
+    min_ltv = request.GET.get('min_ltv', '').strip()
+    max_ltv = request.GET.get('max_ltv', '').strip()
+    min_orders = request.GET.get('min_orders', '').strip()
+    max_orders = request.GET.get('max_orders', '').strip()
+    sms_opt_in_filter = True if sms_filter == '1' else (False if sms_filter == '0' else None)
+    has_active_filters = any([
+        search_query,
+        segment_filter,
+        tag_filter,
+        market_context['market_filter'],
+        last_order_from,
+        last_order_to,
+        phone_filter,
+        sms_filter,
+        min_ltv,
+        max_ltv,
+        min_orders,
+        max_orders,
+    ])
 
     # Build the queryset via the shared filter helper (also used by SMS
     # recipient lists) so filtering logic lives in one place.
@@ -2605,9 +2628,25 @@ def customer_list(request):
         'tag_id': tag_filter or None,
         'search': search_query or None,
         'market_id': market_context['market_filter'] or None,
+        'last_order_after': last_order_from or None,
+        'last_order_before': last_order_to or None,
+        'phone': phone_filter or None,
+        'sms_opt_in': sms_opt_in_filter,
+        'min_ltv': min_ltv or None,
+        'max_ltv': max_ltv or None,
     })
 
     customers = customers.annotate(order_count=Count('ticket_orders', distinct=True))
+    if min_orders:
+        try:
+            customers = customers.filter(order_count__gte=int(min_orders))
+        except ValueError:
+            pass
+    if max_orders:
+        try:
+            customers = customers.filter(order_count__lte=int(max_orders))
+        except ValueError:
+            pass
 
     # T6: when a market filter is active, annotate each customer row with
     # market-scoped net LTV and last-order date via isolated Subqueries.
@@ -2713,6 +2752,21 @@ def customer_list(request):
             }
 
     org_tags = CustomerTag.objects.filter(organization=org)
+    _fp = {k: v for k, v in {
+        'search': search_query,
+        'segment': segment_filter,
+        'tag': tag_filter,
+        'market': market_context['market_filter'],
+        'last_order_from': last_order_from,
+        'last_order_to': last_order_to,
+        'phone_filter': phone_filter,
+        'sms_filter': sms_filter,
+        'min_ltv': min_ltv,
+        'max_ltv': max_ltv,
+        'min_orders': min_orders,
+        'max_orders': max_orders,
+    }.items() if v}
+    filter_params_qs = urlencode(_fp)
     context = {
         'page_obj': page_obj,
         'search_query': search_query,
@@ -2720,6 +2774,16 @@ def customer_list(request):
         'segment_filter': segment_filter,
         'tag_filter': tag_filter,
         'market_filter': market_context['market_filter'],
+        'last_order_from': last_order_from,
+        'last_order_to': last_order_to,
+        'phone_filter': phone_filter,
+        'sms_filter': sms_filter,
+        'min_ltv': min_ltv,
+        'max_ltv': max_ltv,
+        'min_orders': min_orders,
+        'max_orders': max_orders,
+        'filter_params_qs': filter_params_qs,
+        'has_active_filters': has_active_filters,
         'segment_choices': segment_choices,
         'segment_badge_colors': SEGMENT_BADGE_COLORS,
         'current_segment_definition': current_segment_definition,
@@ -2727,6 +2791,11 @@ def customer_list(request):
     }
     context.update(market_context)
     return render(request, 'tickets/customer_list.html', context)
+
+
+def _customer_filter_date(raw_date):
+    parsed = parse_date((raw_date or '').strip())
+    return parsed.isoformat() if parsed else ''
 
 
 @login_required
