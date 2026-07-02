@@ -62,6 +62,34 @@ class SlickTextClient:
             raise SlickTextAPIError("SlickText brand_id is required to fetch campaign analytics.")
         return self._request("GET", f"/brands/{self.brand_id}/analytics/campaigns/{campaign_id}")
 
+    def list_links(self, limit: int = 250, **filters) -> list[dict]:
+        if not self.brand_id:
+            raise SlickTextAPIError("SlickText brand_id is required to list links.")
+        links: list[dict] = []
+        offset = 0
+        page_size = min(250, max(1, limit))
+        while len(links) < limit:
+            count = min(page_size, limit - len(links))
+            params = {"limit": count, "offset": offset, **filters}
+            payload = self._request(
+                "GET",
+                f"/brands/{self.brand_id}/links",
+                params=params,
+            )
+            page = _extract_list(payload, "links")
+            if not page:
+                break
+            links.extend(page)
+            offset += len(page)
+            if len(page) < count:
+                break
+        return links[:limit]
+
+    def get_campaign_links(self, campaign_id: str) -> list[dict]:
+        if not campaign_id:
+            return []
+        return self.list_links(source="Campaign", _source_id=str(campaign_id))
+
     def _request(self, method: str, path: str, params: dict | None = None) -> dict:
         url = f"{self.base_url}{path}"
         headers = {
@@ -87,48 +115,88 @@ class SlickTextClient:
             raise SlickTextAPIError("SlickText returned an invalid JSON response.") from exc
 
 
-def build_campaign_report(campaign: dict, analytics: dict | None) -> dict:
-    """Combine a campaign record + its analytics into a single dict for normalization."""
+def build_campaign_report(campaign: dict, analytics: dict | None, links: list[dict] | None = None) -> dict:
+    """Combine a campaign record, analytics, and campaign links for normalization."""
     return {
         'campaign': campaign or {},
         'analytics': analytics or {},
+        'links': links or [],
     }
 
 
 def normalize_campaign_report(report: dict) -> dict:
-    """Flatten a campaign + analytics pair into the EventSMSCampaign field shape."""
+    """Flatten a SlickText campaign report into the EventSMSCampaign field shape."""
     campaign = report.get('campaign') or {}
     analytics = report.get('analytics') or {}
+    analytics_totals = analytics.get('totals') if isinstance(analytics, dict) else {}
+    analytics_totals = analytics_totals if isinstance(analytics_totals, dict) else {}
+    analytics_campaign = analytics.get('campaign') if isinstance(analytics, dict) else {}
+    analytics_campaign = analytics_campaign if isinstance(analytics_campaign, dict) else {}
+    links = report.get('links') or []
+    link_metrics = _sum_link_metrics(links)
 
     send_time = (
         _parse_datetime(campaign.get('finished'))
+        or _parse_datetime(analytics_campaign.get('finished'))
         or _parse_datetime(campaign.get('started'))
+        or _parse_datetime(analytics_campaign.get('started'))
         or _parse_datetime(campaign.get('scheduled'))
+        or _parse_datetime(analytics_campaign.get('scheduled'))
         or _parse_datetime(campaign.get('status_date'))
+        or _parse_datetime(analytics_campaign.get('status_date'))
     )
 
+    clicks = _to_int(_metric_value(analytics_totals, analytics, 'clicks'))
+    unique_clicks = _to_int(_metric_value(analytics_totals, analytics, 'unique_clicks'))
+    if clicks == 0 and link_metrics['clicks'] > 0:
+        clicks = link_metrics['clicks']
+    if unique_clicks == 0 and link_metrics['unique_clicks'] > 0:
+        unique_clicks = link_metrics['unique_clicks']
+
     return {
-        'external_id': str(campaign.get('campaign_id') or campaign.get('id') or ''),
-        'name': str(campaign.get('name') or '')[:300],
-        'message': str(campaign.get('body') or campaign.get('message') or '')[:1600],
-        'media_url': str(campaign.get('media_url') or '')[:500],
+        'external_id': str(
+            campaign.get('campaign_id')
+            or campaign.get('id')
+            or analytics_campaign.get('campaign_id')
+            or analytics_campaign.get('id')
+            or ''
+        ),
+        'name': str(campaign.get('name') or analytics_campaign.get('name') or '')[:300],
+        'message': str(
+            campaign.get('body')
+            or campaign.get('message')
+            or analytics_campaign.get('body')
+            or analytics_campaign.get('message')
+            or ''
+        )[:1600],
+        'media_url': str(campaign.get('media_url') or analytics_campaign.get('media_url') or '')[:500],
         'send_time': send_time,
-        'audience_size': _to_int(analytics.get('contacts') or campaign.get('audience_size')),
-        'clicks': _to_int(analytics.get('clicks')),
-        'unique_clicks': _to_int(analytics.get('unique_clicks')),
-        'click_rate': _to_decimal(analytics.get('click_rate'), "0.0000"),
-        'unsubscribes': _to_int(analytics.get('unsubscribes')),
-        'unsubscribe_rate': _to_decimal(analytics.get('unsubscribe_rate'), "0.0000"),
-        'orders': _to_int(analytics.get('orders')),
-        'revenue': _to_decimal(analytics.get('revenue'), "0.00"),
+        'audience_size': _to_int(
+            _metric_value(analytics_totals, analytics, 'contacts')
+            or campaign.get('audience_size')
+            or analytics_campaign.get('audience_size')
+        ),
+        'clicks': clicks,
+        'unique_clicks': unique_clicks,
+        'click_rate': _to_decimal(_metric_value(analytics_totals, analytics, 'click_rate'), "0.0000"),
+        'unsubscribes': _to_int(_metric_value(analytics_totals, analytics, 'unsubscribes')),
+        'unsubscribe_rate': _to_decimal(_metric_value(analytics_totals, analytics, 'unsubscribe_rate'), "0.0000"),
+        'orders': _to_int(_metric_value(analytics_totals, analytics, 'orders')),
+        'revenue': _to_decimal(_metric_value(analytics_totals, analytics, 'revenue'), "0.00"),
         'external_metadata': {
-            'status': campaign.get('status'),
-            'status_detail': campaign.get('status_detail'),
-            'completion_percentage': campaign.get('completion_percentage'),
-            'created': campaign.get('created'),
-            'last_updated': campaign.get('last_updated'),
+            'status': campaign.get('status') or analytics_campaign.get('status'),
+            'status_detail': campaign.get('status_detail') or analytics_campaign.get('status_detail'),
+            'completion_percentage': (
+                campaign.get('completion_percentage')
+                if campaign.get('completion_percentage') is not None
+                else analytics_campaign.get('completion_percentage')
+            ),
+            'created': campaign.get('created') or analytics_campaign.get('created'),
+            'last_updated': campaign.get('last_updated') or analytics_campaign.get('last_updated'),
+            'link_metrics': link_metrics,
             'raw_campaign': campaign,
             'raw_analytics': analytics,
+            'raw_links': links,
         },
     }
 
@@ -143,6 +211,21 @@ def _extract_list(payload, key: str):
             if isinstance(value, list):
                 return value
     return []
+
+
+def _metric_value(primary: dict, fallback: dict, key: str):
+    value = primary.get(key)
+    if value is not None:
+        return value
+    return fallback.get(key)
+
+
+def _sum_link_metrics(links: list[dict]) -> dict:
+    return {
+        'clicks': sum(_to_int(link.get('clicks')) for link in links if isinstance(link, dict)),
+        'unique_clicks': sum(_to_int(link.get('unique_clicks')) for link in links if isinstance(link, dict)),
+        'bot_clicks': sum(_to_int(link.get('bot_clicks')) for link in links if isinstance(link, dict)),
+    }
 
 
 def _parse_datetime(value):

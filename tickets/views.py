@@ -4993,13 +4993,17 @@ def _serialize_slicktext_campaign(sms_campaign, event):
 
 
 def _slicktext_fetch_campaign_with_analytics(client, campaign_id):
-    """Fetch a SlickText campaign plus its analytics and bundle them as a report."""
+    """Fetch a SlickText campaign plus best-effort analytics/link metrics."""
     campaign = client.get_campaign(campaign_id)
     try:
         analytics = client.get_campaign_analytics(campaign_id)
     except SlickTextAPIError:
         analytics = {}
-    return build_slicktext_campaign_report(campaign, analytics)
+    try:
+        links = client.get_campaign_links(campaign_id)
+    except SlickTextAPIError:
+        links = []
+    return build_slicktext_campaign_report(campaign, analytics, links)
 
 
 @login_required
