@@ -177,6 +177,12 @@ class FilterCustomersRegressionTests(TestCase):
                 customer=customer, event=event, uploaded_file=self.upload,
                 order_number=order_number, order_date=timezone.now(), total_amount=total,
             )
+        self.vip.last_order_date = date(2026, 1, 15)
+        self.vip.save(update_fields=['last_order_date'])
+        self.reg.last_order_date = date(2026, 2, 20)
+        self.reg.save(update_fields=['last_order_date'])
+        self.no_market_vip.last_order_date = date(2025, 12, 31)
+        self.no_market_vip.save(update_fields=['last_order_date'])
 
     def test_segment_filter(self):
         resp = self.client.get(reverse('tickets:customer_list'), {'segment': 'VIP'})
@@ -258,9 +264,49 @@ class FilterCustomersRegressionTests(TestCase):
         })
         self.assertEqual([c.email for c in resp.context['page_obj']], ['vip@x.com'])
 
+    def test_last_order_from_filter(self):
+        resp = self.client.get(reverse('tickets:customer_list'), {'last_order_from': '2026-01-15'})
+        emails = {c.email for c in resp.context['page_obj']}
+        self.assertEqual(emails, {'vip@x.com', 'reg@x.com'})
+        self.assertEqual(resp.context['last_order_from'], '2026-01-15')
+        self.assertContains(resp, '2 matching customers')
+
+    def test_last_order_to_filter(self):
+        resp = self.client.get(reverse('tickets:customer_list'), {'last_order_to': '2026-01-15'})
+        emails = {c.email for c in resp.context['page_obj']}
+        self.assertEqual(emails, {'vip@x.com', 'nomarket@x.com'})
+        self.assertEqual(resp.context['last_order_to'], '2026-01-15')
+
+    def test_last_order_range_filter(self):
+        resp = self.client.get(reverse('tickets:customer_list'), {
+            'last_order_from': '2026-01-01',
+            'last_order_to': '2026-01-31',
+        })
+        self.assertEqual([c.email for c in resp.context['page_obj']], ['vip@x.com'])
+
+    def test_invalid_last_order_dates_ignored(self):
+        resp = self.client.get(reverse('tickets:customer_list'), {
+            'last_order_from': 'not-a-date',
+            'last_order_to': 'also-bad',
+        })
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.context['last_order_from'], '')
+        self.assertEqual(resp.context['last_order_to'], '')
+        self.assertFalse(resp.context['has_active_filters'])
+        emails = {c.email for c in resp.context['page_obj']}
+        self.assertEqual(emails, {'vip@x.com', 'reg@x.com', 'nomarket@x.com'})
+
     def test_customer_list_sort_links_preserve_market(self):
         resp = self.client.get(reverse('tickets:customer_list'), {'market': str(self.market.id)})
         self.assertContains(resp, f'market={self.market.id}')
+
+    def test_customer_list_sort_links_preserve_last_order_filters(self):
+        resp = self.client.get(reverse('tickets:customer_list'), {
+            'last_order_from': '2026-01-01',
+            'last_order_to': '2026-01-31',
+        })
+        self.assertContains(resp, 'last_order_from=2026-01-01')
+        self.assertContains(resp, 'last_order_to=2026-01-31')
 
     def test_bulk_tag_select_all_respects_market_filter(self):
         resp = self.client.post(reverse('tickets:customers_bulk_tag'), {
@@ -275,6 +321,22 @@ class FilterCustomersRegressionTests(TestCase):
         seattle = CustomerTag.objects.get(organization=self.org, name='Seattle Buyers')
         self.assertFalse(self.vip.tags.filter(id=seattle.id).exists())
         self.assertTrue(self.reg.tags.filter(id=seattle.id).exists())
+
+    def test_bulk_tag_select_all_respects_last_order_filter(self):
+        resp = self.client.post(reverse('tickets:customers_bulk_tag'), {
+            'select_all': '1',
+            'last_order_from': '2026-01-01',
+            'last_order_to': '2026-01-31',
+            'tag_mode': 'new',
+            'new_tag_name': 'January Buyers',
+        })
+        self.assertEqual(resp.status_code, 302)
+        self.assertIn('last_order_from=2026-01-01', resp['Location'])
+        self.assertIn('last_order_to=2026-01-31', resp['Location'])
+        january = CustomerTag.objects.get(organization=self.org, name='January Buyers')
+        self.assertTrue(self.vip.tags.filter(id=january.id).exists())
+        self.assertFalse(self.reg.tags.filter(id=january.id).exists())
+        self.assertFalse(self.no_market_vip.tags.filter(id=january.id).exists())
 
     # T9: bulk_sms_status with select_all respects market filter (mirrors bulk_tag)
     def test_bulk_sms_status_select_all_respects_market_filter(self):

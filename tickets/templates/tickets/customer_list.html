@@ -54,6 +54,104 @@
             flex: 1 1 auto;
         }
     }
+    /* ── th-inner wrapper ─────────────────────────────── */
+    .th-inner {
+        display: flex;
+        align-items: center;
+        gap: 0.2rem;
+        white-space: nowrap;
+    }
+    .th-inner > a { flex: 1; min-width: 0; }
+
+    /* ── Sort arrow states ────────────────────────────── */
+    .th-inner .bi-arrow-down-up {
+        opacity: 0.18;
+        transition: opacity 0.15s;
+    }
+    th:hover .th-inner .bi-arrow-down-up { opacity: 0.55; }
+    .th-inner .bi-arrow-up,
+    .th-inner .bi-arrow-down {
+        color: var(--accent);
+        opacity: 0.85;
+    }
+
+    /* ── Ghost filter button ──────────────────────────── */
+    .col-filter-btn {
+        background: none;
+        border: none;
+        padding: 2px 3px;
+        color: var(--text-tertiary);
+        cursor: pointer;
+        border-radius: var(--radius-sm);
+        line-height: 1;
+        font-size: 0.7rem;
+        flex-shrink: 0;
+        opacity: 0;
+        transition: opacity 0.15s, color 0.15s;
+    }
+    th:hover .col-filter-btn { opacity: 0.6; }
+    th:hover .col-filter-btn:hover { opacity: 1; color: var(--text-primary); }
+    .col-filter-btn.active {
+        opacity: 1;
+        color: var(--accent);
+    }
+    th:has(.col-filter-btn.active) {
+        box-shadow: inset 0 -2px 0 var(--accent);
+    }
+
+    /* ── Filter dropdown panel ────────────────────────── */
+    .col-filter-menu {
+        min-width: 200px;
+        padding: 12px !important;
+        background: var(--bg-surface) !important;
+        border: 1px solid var(--border) !important;
+        border-radius: var(--radius) !important;
+        box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5) !important;
+        z-index: 1055;
+    }
+
+    /* ── Apply button ─────────────────────────────────── */
+    .col-filter-apply {
+        flex: 1;
+        background: var(--accent-muted);
+        border: 1px solid var(--accent-muted-border);
+        color: var(--accent);
+        font-size: 11px;
+        font-weight: 500;
+        letter-spacing: 0.04em;
+        padding: 5px 10px;
+        border-radius: var(--radius-sm);
+        cursor: pointer;
+        transition: background 0.15s;
+        text-align: center;
+    }
+    .col-filter-apply:hover { background: rgba(0, 255, 135, 0.13); }
+
+    /* ── Clear link ───────────────────────────────────── */
+    .col-filter-clear {
+        background: none;
+        border: none;
+        color: var(--text-tertiary);
+        font-size: 11px;
+        padding: 5px 8px;
+        cursor: pointer;
+        transition: color 0.15s;
+        white-space: nowrap;
+    }
+    .col-filter-clear:hover { color: var(--danger); }
+
+    /* ── Inputs/selects inside filter panels ──────────── */
+    .col-filter-menu .form-select,
+    .col-filter-menu .form-control { font-size: 12px; }
+
+    /* ── Suppress the uppercase label ────────────────── */
+    .col-filter-label { display: none; }
+
+    /* ── Allow filter dropdowns to escape their clipping ancestors ── */
+    /* dashboard.css sets .card { overflow: hidden } which clips dropdown panels */
+    .customer-list-card { overflow: visible; }
+    /* Bootstrap sets .table-responsive { overflow-x: auto } which also clips */
+    .cust-table-scroll { overflow: visible; }
 </style>
 {% endblock %}
 
@@ -63,51 +161,38 @@
     <a href="{% url 'tickets:customer_tag_list' %}" class="btn btn-outline-secondary btn-sm"><i class="bi bi-tags"></i> Manage Tags</a>
 </div>
 
+<!-- Compact search + count bar -->
+<div class="d-flex align-items-center gap-2 mb-3 flex-wrap">
+    <div class="input-group input-group-sm" style="max-width: 260px;">
+        <span class="input-group-text"><i class="bi bi-search"></i></span>
+        <input type="text" id="customerSearch" class="form-control"
+               placeholder="Name or email..." value="{{ search_query }}" autocomplete="off">
+    </div>
+    {% if market_choices or has_no_market %}
+    <select id="marketFilter" class="form-select form-select-sm" style="max-width: 180px;">
+        <option value="">All markets</option>
+        {% for m in market_choices %}
+        <option value="{{ m.id }}" {% if market_filter == m.id|stringformat:'s' %}selected{% endif %}>{{ m.name }}</option>
+        {% endfor %}
+        {% if has_no_market %}
+        <option value="{{ no_market_value }}" {% if market_filter == no_market_value %}selected{% endif %}>No market</option>
+        {% endif %}
+    </select>
+    {% endif %}
+    <span class="text-muted small ms-auto">
+        {% if has_active_filters %}{{ page_obj.paginator.count|intcomma }} matching {% else %}{{ page_obj.paginator.count|intcomma }} {% endif %}customer{{ page_obj.paginator.count|pluralize }}
+    </span>
+    {% if has_active_filters %}
+    <a href="{% url 'tickets:customer_list' %}" class="btn btn-sm btn-outline-secondary">Clear filters</a>
+    {% endif %}
+</div>
+
 {% if current_segment_definition %}
 <div class="alert alert-light border mb-3 py-2 px-3 d-flex align-items-start gap-2">
     <span class="badge bg-{{ current_segment_definition.badge_color }} mt-1">{{ current_segment_definition.segment }}</span>
     <span class="small text-muted">{{ current_segment_definition.description }}</span>
 </div>
 {% endif %}
-
-<div class="search-bar">
-    <form method="get" action="{% url 'tickets:customer_list' %}" id="customerFilterForm" class="d-flex flex-wrap gap-2 w-100 align-items-center">
-        <input type="text" name="search" class="form-control" style="max-width: 240px;" placeholder="Search by name or email..." value="{{ search_query }}">
-        <select name="segment" class="form-select" style="max-width: 180px;">
-            <option value="">All segments</option>
-            {% for seg in segment_choices %}
-            <option value="{{ seg }}" {% if segment_filter == seg %}selected{% endif %}>{{ seg }}</option>
-            {% endfor %}
-        </select>
-        {% if org_tags %}
-        <select name="tag" class="form-select" style="max-width: 160px;">
-            <option value="">All tags</option>
-            {% for tag in org_tags %}
-            <option value="{{ tag.id }}" {% if tag_filter == tag.id|stringformat:'s' %}selected{% endif %}>{{ tag.name }}</option>
-            {% endfor %}
-        </select>
-        {% endif %}
-        <select name="market" class="form-select" style="max-width: 190px;">
-            <option value="">All markets</option>
-            {% for market in market_choices %}
-            <option value="{{ market.id }}" {% if market_filter == market.id|stringformat:'s' %}selected{% endif %}>{{ market.name }}</option>
-            {% endfor %}
-            {% if has_no_market %}
-            <option value="{{ no_market_value }}" {% if market_filter == no_market_value %}selected{% endif %}>No market</option>
-            {% endif %}
-        </select>
-        {% if search_query or segment_filter or tag_filter or market_filter %}
-        <a href="{% url 'tickets:customer_list' %}" class="btn btn-outline-secondary">Clear</a>
-        {% endif %}
-        <span class="text-muted small ms-auto">
-            {% if search_query or segment_filter or tag_filter or market_filter %}
-            {{ page_obj.paginator.count|intcomma }} matching customer{{ page_obj.paginator.count|pluralize }}
-            {% else %}
-            {{ page_obj.paginator.count|intcomma }} customer{{ page_obj.paginator.count|pluralize }}
-            {% endif %}
-        </span>
-    </form>
-</div>
 
 {% if org.sms_marketing_enabled and is_org_host %}
 <!-- Selection action bar (revealed once at least one customer is checked) -->
@@ -119,6 +204,14 @@
     <input type="hidden" name="segment" value="{{ segment_filter }}">
     <input type="hidden" name="tag" value="{{ tag_filter }}">
     <input type="hidden" name="market" value="{{ market_filter }}">
+    <input type="hidden" name="last_order_from" value="{{ last_order_from }}">
+    <input type="hidden" name="last_order_to" value="{{ last_order_to }}">
+    <input type="hidden" name="phone_filter" value="{{ phone_filter }}">
+    <input type="hidden" name="sms_filter" value="{{ sms_filter }}">
+    <input type="hidden" name="min_ltv" value="{{ min_ltv }}">
+    <input type="hidden" name="max_ltv" value="{{ max_ltv }}">
+    <input type="hidden" name="min_orders" value="{{ min_orders }}">
+    <input type="hidden" name="max_orders" value="{{ max_orders }}">
     <input type="hidden" name="sort" value="{{ sort_by }}">
     <div class="card-body customer-action-toolbar">
         <strong id="custSelectedCount">0 selected</strong>
@@ -169,83 +262,249 @@
 {% endif %}
 {% endif %}
 
-<div class="card">
+<div class="card customer-list-card">
     <div class="card-body p-0">
-        {% if page_obj %}
-        <div class="table-responsive">
+        <div class="table-responsive cust-table-scroll">
             <table class="table table-hover mb-0 mobile-card-table customer-list-table">
                 <thead>
                     <tr>
                         {% if org.sms_marketing_enabled and is_org_host %}
                         <th style="width: 44px;"><input type="checkbox" class="cust-check" id="custSelectAllRows" aria-label="Select all customers on this page"></th>
                         {% endif %}
+                        <!-- Name: sort only; name+email search handled by top bar -->
                         <th>
-                            {% with asc='name' desc='-name' %}
-                            <a href="?sort={% if sort_by == asc %}{{ desc }}{% else %}{{ asc }}{% endif %}&search={{ search_query }}&segment={{ segment_filter }}&tag={{ tag_filter }}&market={{ market_filter }}">Name
-                                {% if sort_by == asc %}<i class="bi bi-arrow-up"></i>
-                                {% elif sort_by == desc %}<i class="bi bi-arrow-down"></i>
-                                {% else %}<i class="bi bi-arrow-down-up"></i>{% endif %}
-                            </a>
-                            {% endwith %}
+                            <div class="th-inner">
+                                {% with asc='name' desc='-name' %}
+                                <a href="?sort={% if sort_by == asc %}{{ desc }}{% else %}{{ asc }}{% endif %}&{{ filter_params_qs }}">Name
+                                    {% if sort_by == asc %}<i class="bi bi-arrow-up"></i>
+                                    {% elif sort_by == desc %}<i class="bi bi-arrow-down"></i>
+                                    {% else %}<i class="bi bi-arrow-down-up"></i>{% endif %}
+                                </a>
+                                {% endwith %}
+                            </div>
                         </th>
+                        <!-- Email: sort only -->
                         <th>
-                            {% with asc='email' desc='-email' %}
-                            <a href="?sort={% if sort_by == asc %}{{ desc }}{% else %}{{ asc }}{% endif %}&search={{ search_query }}&segment={{ segment_filter }}&tag={{ tag_filter }}&market={{ market_filter }}">Email
-                                {% if sort_by == asc %}<i class="bi bi-arrow-up"></i>
-                                {% elif sort_by == desc %}<i class="bi bi-arrow-down"></i>
-                                {% else %}<i class="bi bi-arrow-down-up"></i>{% endif %}
-                            </a>
-                            {% endwith %}
+                            <div class="th-inner">
+                                {% with asc='email' desc='-email' %}
+                                <a href="?sort={% if sort_by == asc %}{{ desc }}{% else %}{{ asc }}{% endif %}&{{ filter_params_qs }}">Email
+                                    {% if sort_by == asc %}<i class="bi bi-arrow-up"></i>
+                                    {% elif sort_by == desc %}<i class="bi bi-arrow-down"></i>
+                                    {% else %}<i class="bi bi-arrow-down-up"></i>{% endif %}
+                                </a>
+                                {% endwith %}
+                            </div>
                         </th>
-                        <th class="d-none d-sm-table-cell">Phone</th>
-                        <th class="d-none d-sm-table-cell">SMS Subscriber</th>
-                        <th>
-                            {% with asc='rfm_segment' desc='-rfm_segment' %}
-                            <a href="?sort={% if sort_by == asc %}{{ desc }}{% else %}{{ asc }}{% endif %}&search={{ search_query }}&segment={{ segment_filter }}&tag={{ tag_filter }}&market={{ market_filter }}">Segment
-                                {% if sort_by == asc %}<i class="bi bi-arrow-up"></i>
-                                {% elif sort_by == desc %}<i class="bi bi-arrow-down"></i>
-                                {% else %}<i class="bi bi-arrow-down-up"></i>{% endif %}
-                            </a>
-                            {% endwith %}
+                        <!-- Phone: filter by text -->
+                        <th class="d-none d-sm-table-cell">
+                            <div class="th-inner">
+                                Phone
+                                <div class="dropdown">
+                                    <button class="col-filter-btn{% if phone_filter %} active{% endif %}"
+                                            type="button" data-bs-toggle="dropdown" data-bs-auto-close="outside"
+                                            title="Filter by phone">
+                                        <i class="bi bi-funnel{% if phone_filter %}-fill{% endif %}"></i>
+                                    </button>
+                                    <div class="dropdown-menu p-3 col-filter-menu">
+                                        <span class="col-filter-label">Phone contains</span>
+                                        <input type="text" id="filterPhone" class="form-control form-control-sm mb-2"
+                                               value="{{ phone_filter }}" placeholder="e.g. 206">
+                                        <div class="d-flex gap-1">
+                                            <button class="col-filter-apply"
+                                                    onclick="applyColFilter({phone_filter: document.getElementById('filterPhone').value})">Apply</button>
+                                            {% if phone_filter %}<button class="col-filter-clear" onclick="applyColFilter({phone_filter: ''})">Clear</button>{% endif %}
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
                         </th>
+                        <!-- SMS Subscriber: boolean select -->
+                        <th class="d-none d-sm-table-cell">
+                            <div class="th-inner">
+                                SMS Subscriber
+                                <div class="dropdown">
+                                    <button class="col-filter-btn{% if sms_filter %} active{% endif %}"
+                                            type="button" data-bs-toggle="dropdown"
+                                            title="Filter by SMS status">
+                                        <i class="bi bi-funnel{% if sms_filter %}-fill{% endif %}"></i>
+                                    </button>
+                                    <div class="dropdown-menu p-3 col-filter-menu">
+                                        <span class="col-filter-label">SMS subscription</span>
+                                        <select class="form-select form-select-sm"
+                                                onchange="applyColFilter({sms_filter: this.value})">
+                                            <option value="" {% if not sms_filter %}selected{% endif %}>All</option>
+                                            <option value="1" {% if sms_filter == '1' %}selected{% endif %}>Subscribed</option>
+                                            <option value="0" {% if sms_filter == '0' %}selected{% endif %}>Not subscribed</option>
+                                        </select>
+                                    </div>
+                                </div>
+                            </div>
+                        </th>
+                        <!-- Segment: select from choices -->
                         <th>
-                            {% with asc='lifetime_value' desc='-lifetime_value' %}
-                            <a href="?sort={% if sort_by == desc %}{{ asc }}{% else %}{{ desc }}{% endif %}&search={{ search_query }}&segment={{ segment_filter }}&tag={{ tag_filter }}&market={{ market_filter }}">Lifetime Value
-                                {% if sort_by == asc %}<i class="bi bi-arrow-up"></i>
-                                {% elif sort_by == desc %}<i class="bi bi-arrow-down"></i>
-                                {% else %}<i class="bi bi-arrow-down-up"></i>{% endif %}
-                            </a>
-                            {% endwith %}
+                            <div class="th-inner">
+                                {% with asc='rfm_segment' desc='-rfm_segment' %}
+                                <a href="?sort={% if sort_by == asc %}{{ desc }}{% else %}{{ asc }}{% endif %}&{{ filter_params_qs }}">Segment
+                                    {% if sort_by == asc %}<i class="bi bi-arrow-up"></i>
+                                    {% elif sort_by == desc %}<i class="bi bi-arrow-down"></i>
+                                    {% else %}<i class="bi bi-arrow-down-up"></i>{% endif %}
+                                </a>
+                                {% endwith %}
+                                <div class="dropdown">
+                                    <button class="col-filter-btn{% if segment_filter %} active{% endif %}"
+                                            type="button" data-bs-toggle="dropdown"
+                                            title="Filter by segment">
+                                        <i class="bi bi-funnel{% if segment_filter %}-fill{% endif %}"></i>
+                                    </button>
+                                    <div class="dropdown-menu p-3 col-filter-menu">
+                                        <span class="col-filter-label">Segment</span>
+                                        <select class="form-select form-select-sm"
+                                                onchange="applyColFilter({segment: this.value})">
+                                            <option value="" {% if not segment_filter %}selected{% endif %}>All segments</option>
+                                            {% for seg in segment_choices %}
+                                            <option value="{{ seg }}" {% if segment_filter == seg %}selected{% endif %}>{{ seg }}</option>
+                                            {% endfor %}
+                                        </select>
+                                    </div>
+                                </div>
+                            </div>
+                        </th>
+                        <!-- Lifetime Value: min/max number range -->
+                        <th>
+                            <div class="th-inner">
+                                {% with asc='lifetime_value' desc='-lifetime_value' %}
+                                <a href="?sort={% if sort_by == desc %}{{ asc }}{% else %}{{ desc }}{% endif %}&{{ filter_params_qs }}">Lifetime Value
+                                    {% if sort_by == asc %}<i class="bi bi-arrow-up"></i>
+                                    {% elif sort_by == desc %}<i class="bi bi-arrow-down"></i>
+                                    {% else %}<i class="bi bi-arrow-down-up"></i>{% endif %}
+                                </a>
+                                {% endwith %}
+                                <div class="dropdown">
+                                    <button class="col-filter-btn{% if min_ltv or max_ltv %} active{% endif %}"
+                                            type="button" data-bs-toggle="dropdown" data-bs-auto-close="outside"
+                                            title="Filter by lifetime value">
+                                        <i class="bi bi-funnel{% if min_ltv or max_ltv %}-fill{% endif %}"></i>
+                                    </button>
+                                    <div class="dropdown-menu p-3 col-filter-menu">
+                                        <span class="col-filter-label">Lifetime value ($)</span>
+                                        <div class="d-flex gap-1 mb-2">
+                                            <input type="number" id="filterMinLtv" class="form-control form-control-sm"
+                                                   placeholder="Min" min="0" step="0.01" value="{{ min_ltv }}">
+                                            <input type="number" id="filterMaxLtv" class="form-control form-control-sm"
+                                                   placeholder="Max" min="0" step="0.01" value="{{ max_ltv }}">
+                                        </div>
+                                        <div class="d-flex gap-1">
+                                            <button class="col-filter-apply"
+                                                    onclick="applyColFilter({min_ltv: document.getElementById('filterMinLtv').value, max_ltv: document.getElementById('filterMaxLtv').value})">Apply</button>
+                                            {% if min_ltv or max_ltv %}<button class="col-filter-clear" onclick="applyColFilter({min_ltv: '', max_ltv: ''})">Clear</button>{% endif %}
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
                         </th>
                         {% if loyalty_feature_enabled %}
                         <th class="d-none d-sm-table-cell">
-                            {% with asc='points_balance' desc='-points_balance' %}
-                            <a href="?sort={% if sort_by == desc %}{{ asc }}{% else %}{{ desc }}{% endif %}&search={{ search_query }}&segment={{ segment_filter }}&tag={{ tag_filter }}&market={{ market_filter }}">Points Balance
-                                {% if sort_by == asc %}<i class="bi bi-arrow-up"></i>
-                                {% elif sort_by == desc %}<i class="bi bi-arrow-down"></i>
-                                {% else %}<i class="bi bi-arrow-down-up"></i>{% endif %}
-                            </a>
-                            {% endwith %}
+                            <div class="th-inner">
+                                {% with asc='points_balance' desc='-points_balance' %}
+                                <a href="?sort={% if sort_by == desc %}{{ asc }}{% else %}{{ desc }}{% endif %}&{{ filter_params_qs }}">Points Balance
+                                    {% if sort_by == asc %}<i class="bi bi-arrow-up"></i>
+                                    {% elif sort_by == desc %}<i class="bi bi-arrow-down"></i>
+                                    {% else %}<i class="bi bi-arrow-down-up"></i>{% endif %}
+                                </a>
+                                {% endwith %}
+                            </div>
                         </th>
                         {% endif %}
+                        <!-- Last Order: date range -->
                         <th class="d-none d-sm-table-cell">
-                            {% with asc='last_order_date' desc='-last_order_date' %}
-                            <a href="?sort={% if sort_by == desc %}{{ asc }}{% else %}{{ desc }}{% endif %}&search={{ search_query }}&segment={{ segment_filter }}&tag={{ tag_filter }}&market={{ market_filter }}">Last Order
-                                {% if sort_by == asc %}<i class="bi bi-arrow-up"></i>
-                                {% elif sort_by == desc %}<i class="bi bi-arrow-down"></i>
-                                {% else %}<i class="bi bi-arrow-down-up"></i>{% endif %}
-                            </a>
-                            {% endwith %}
+                            <div class="th-inner">
+                                {% with asc='last_order_date' desc='-last_order_date' %}
+                                <a href="?sort={% if sort_by == desc %}{{ asc }}{% else %}{{ desc }}{% endif %}&{{ filter_params_qs }}">Last Order
+                                    {% if sort_by == asc %}<i class="bi bi-arrow-up"></i>
+                                    {% elif sort_by == desc %}<i class="bi bi-arrow-down"></i>
+                                    {% else %}<i class="bi bi-arrow-down-up"></i>{% endif %}
+                                </a>
+                                {% endwith %}
+                                <div class="dropdown">
+                                    <button class="col-filter-btn{% if last_order_from or last_order_to %} active{% endif %}"
+                                            type="button" data-bs-toggle="dropdown" data-bs-auto-close="outside"
+                                            title="Filter by last order date">
+                                        <i class="bi bi-funnel{% if last_order_from or last_order_to %}-fill{% endif %}"></i>
+                                    </button>
+                                    <div class="dropdown-menu dropdown-menu-end col-filter-menu">
+                                        <span class="col-filter-label">Last order date</span>
+                                        <label class="small mb-1 d-block">From</label>
+                                        <input type="date" id="filterDateFrom" class="form-control form-control-sm mb-2"
+                                               value="{{ last_order_from }}">
+                                        <label class="small mb-1 d-block">To</label>
+                                        <input type="date" id="filterDateTo" class="form-control form-control-sm mb-2"
+                                               value="{{ last_order_to }}">
+                                        <div class="d-flex gap-1">
+                                            <button class="col-filter-apply"
+                                                    onclick="applyColFilter({last_order_from: document.getElementById('filterDateFrom').value, last_order_to: document.getElementById('filterDateTo').value})">Apply</button>
+                                            {% if last_order_from or last_order_to %}<button class="col-filter-clear" onclick="applyColFilter({last_order_from: '', last_order_to: ''})">Clear</button>{% endif %}
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
                         </th>
-                        <th class="d-none d-sm-table-cell">Total Orders</th>
+                        <!-- Total Orders: min/max integer range -->
+                        <th class="d-none d-sm-table-cell">
+                            <div class="th-inner">
+                                Total Orders
+                                <div class="dropdown">
+                                    <button class="col-filter-btn{% if min_orders or max_orders %} active{% endif %}"
+                                            type="button" data-bs-toggle="dropdown" data-bs-auto-close="outside"
+                                            title="Filter by order count">
+                                        <i class="bi bi-funnel{% if min_orders or max_orders %}-fill{% endif %}"></i>
+                                    </button>
+                                    <div class="dropdown-menu dropdown-menu-end col-filter-menu">
+                                        <span class="col-filter-label">Total orders</span>
+                                        <div class="d-flex gap-1 mb-2">
+                                            <input type="number" id="filterMinOrders" class="form-control form-control-sm"
+                                                   placeholder="Min" min="0" step="1" value="{{ min_orders }}">
+                                            <input type="number" id="filterMaxOrders" class="form-control form-control-sm"
+                                                   placeholder="Max" min="0" step="1" value="{{ max_orders }}">
+                                        </div>
+                                        <div class="d-flex gap-1">
+                                            <button class="col-filter-apply"
+                                                    onclick="applyColFilter({min_orders: document.getElementById('filterMinOrders').value, max_orders: document.getElementById('filterMaxOrders').value})">Apply</button>
+                                            {% if min_orders or max_orders %}<button class="col-filter-clear" onclick="applyColFilter({min_orders: '', max_orders: ''})">Clear</button>{% endif %}
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </th>
+                        <!-- Tags: select from org_tags -->
                         <th class="d-none d-md-table-cell">
-                            {% with asc='first_tag_name' desc='-first_tag_name' %}
-                            <a href="?sort={% if sort_by == asc %}{{ desc }}{% else %}{{ asc }}{% endif %}&search={{ search_query }}&segment={{ segment_filter }}&tag={{ tag_filter }}&market={{ market_filter }}">Tags
-                                {% if sort_by == asc %}<i class="bi bi-arrow-up"></i>
-                                {% elif sort_by == desc %}<i class="bi bi-arrow-down"></i>
-                                {% else %}<i class="bi bi-arrow-down-up"></i>{% endif %}
-                            </a>
-                            {% endwith %}
+                            <div class="th-inner">
+                                {% with asc='first_tag_name' desc='-first_tag_name' %}
+                                <a href="?sort={% if sort_by == asc %}{{ desc }}{% else %}{{ asc }}{% endif %}&{{ filter_params_qs }}">Tags
+                                    {% if sort_by == asc %}<i class="bi bi-arrow-up"></i>
+                                    {% elif sort_by == desc %}<i class="bi bi-arrow-down"></i>
+                                    {% else %}<i class="bi bi-arrow-down-up"></i>{% endif %}
+                                </a>
+                                {% endwith %}
+                                {% if org_tags %}
+                                <div class="dropdown">
+                                    <button class="col-filter-btn{% if tag_filter %} active{% endif %}"
+                                            type="button" data-bs-toggle="dropdown"
+                                            title="Filter by tag">
+                                        <i class="bi bi-funnel{% if tag_filter %}-fill{% endif %}"></i>
+                                    </button>
+                                    <div class="dropdown-menu dropdown-menu-end col-filter-menu">
+                                        <span class="col-filter-label">Tag</span>
+                                        <select class="form-select form-select-sm"
+                                                onchange="applyColFilter({tag: this.value})">
+                                            <option value="" {% if not tag_filter %}selected{% endif %}>All tags</option>
+                                            {% for t in org_tags %}
+                                            <option value="{{ t.id }}" {% if tag_filter == t.id|stringformat:'s' %}selected{% endif %}>{{ t.name }}</option>
+                                            {% endfor %}
+                                        </select>
+                                    </div>
+                                </div>
+                                {% endif %}
+                            </div>
                         </th>
                     </tr>
                 </thead>
@@ -298,6 +557,15 @@
                             {% endfor %}
                         </td>
                     </tr>
+                    {% empty %}
+                    <tr>
+                        <td colspan="10">
+                            <div class="empty-state">
+                                <i class="bi bi-people d-block"></i>
+                                <p>No customers found.</p>
+                            </div>
+                        </td>
+                    </tr>
                     {% endfor %}
                 </tbody>
             </table>
@@ -308,20 +576,14 @@
             <nav>
                 <ul class="pagination mb-0">
                     {% if page_obj.has_previous %}
-                    <li class="page-item"><a class="page-link" href="?page={{ page_obj.previous_page_number }}&search={{ search_query }}&sort={{ sort_by }}&segment={{ segment_filter }}&tag={{ tag_filter }}&market={{ market_filter }}">Previous</a></li>
+                    <li class="page-item"><a class="page-link" href="?page={{ page_obj.previous_page_number }}&sort={{ sort_by }}&{{ filter_params_qs }}">Previous</a></li>
                     {% endif %}
                     <li class="page-item active"><span class="page-link">{{ page_obj.number }} / {{ page_obj.paginator.num_pages }}</span></li>
                     {% if page_obj.has_next %}
-                    <li class="page-item"><a class="page-link" href="?page={{ page_obj.next_page_number }}&search={{ search_query }}&sort={{ sort_by }}&segment={{ segment_filter }}&tag={{ tag_filter }}&market={{ market_filter }}">Next</a></li>
+                    <li class="page-item"><a class="page-link" href="?page={{ page_obj.next_page_number }}&sort={{ sort_by }}&{{ filter_params_qs }}">Next</a></li>
                     {% endif %}
                 </ul>
             </nav>
-        </div>
-        {% endif %}
-        {% else %}
-        <div class="empty-state">
-            <i class="bi bi-people d-block"></i>
-            <p>No customers found.</p>
         </div>
         {% endif %}
     </div>
@@ -330,61 +592,38 @@
 
 {% block extra_js %}
 <script>
-// Customer list: auto-apply search and filters without a submit button.
+function applyColFilter(newParams) {
+    var url = new URL(window.location.href);
+    url.searchParams.delete('page');
+    for (var k in newParams) {
+        var v = newParams[k];
+        if (v !== '' && v !== null && v !== undefined) {
+            url.searchParams.set(k, v);
+        } else {
+            url.searchParams.delete(k);
+        }
+    }
+    window.location.assign(url.toString());
+}
+
 (function() {
-    var form = document.getElementById('customerFilterForm');
-    if (!form) return;
-
-    var searchInput = form.querySelector('input[name="search"]');
-    var filterControls = form.querySelectorAll('select[name="segment"], select[name="tag"], select[name="market"]');
-    var debounceTimer = null;
-
-    function normalizedQueryFromForm() {
-        var params = new URLSearchParams();
-        Array.from(new FormData(form).entries()).forEach(function(entry) {
-            var key = entry[0];
-            var value = (entry[1] || '').toString().trim();
-            if (value) params.append(key, value);
-        });
-        return params.toString();
-    }
-
-    function normalizedCurrentQuery() {
-        var current = new URLSearchParams(window.location.search);
-        var params = new URLSearchParams();
-        Array.from(new FormData(form).keys()).forEach(function(key) {
-            var value = (current.get(key) || '').trim();
-            if (value) params.append(key, value);
-        });
-        return params.toString();
-    }
-
-    function applyFilters() {
-        var query = normalizedQueryFromForm();
-        if (query === normalizedCurrentQuery()) return;
-        var action = form.getAttribute('action') || window.location.pathname;
-        window.location.assign(action + (query ? '?' + query : ''));
-    }
-
-    if (searchInput) {
-        searchInput.addEventListener('input', function() {
-            window.clearTimeout(debounceTimer);
-            debounceTimer = window.setTimeout(applyFilters, 400);
+    var searchEl = document.getElementById('customerSearch');
+    if (searchEl) {
+        var timer;
+        searchEl.addEventListener('input', function() {
+            clearTimeout(timer);
+            timer = setTimeout(function() {
+                applyColFilter({search: searchEl.value.trim()});
+            }, 400);
         });
     }
 
-    Array.prototype.slice.call(filterControls).forEach(function(control) {
-        control.addEventListener('change', function() {
-            window.clearTimeout(debounceTimer);
-            applyFilters();
+    var marketEl = document.getElementById('marketFilter');
+    if (marketEl) {
+        marketEl.addEventListener('change', function() {
+            applyColFilter({market: marketEl.value});
         });
-    });
-
-    form.addEventListener('submit', function(e) {
-        e.preventDefault();
-        window.clearTimeout(debounceTimer);
-        applyFilters();
-    });
+    }
 })();
 </script>
 {% if org.sms_marketing_enabled and is_org_host %}
