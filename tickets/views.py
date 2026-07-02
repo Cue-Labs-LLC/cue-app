@@ -2841,6 +2841,7 @@ def _normalized_customer_group_stats(org, field_name, ordered_labels, badge_colo
             'avg_orders': round((total_orders / count), 1) if count else 0,
             'avg_gap': round(avg_gap, 1) if avg_gap is not None else None,
             'badge_color': badge_colors.get(name, 'secondary'),
+            'description': SEGMENT_DESCRIPTIONS.get(name, ''),
         })
     return stats, total_customers
 

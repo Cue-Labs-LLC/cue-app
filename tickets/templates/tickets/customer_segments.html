@@ -59,10 +59,10 @@
                 </thead>
                 <tbody>
                     {% for row in segment_stats %}
-                    <tr>
+                    <tr style="cursor: pointer;" onclick="window.location='{% url 'tickets:customer_list' %}?segment={{ row.segment|urlencode }}'">
                         <td>
                             <a href="{% url 'tickets:customer_list' %}?segment={{ row.segment|urlencode }}">
-                                <span class="badge bg-{{ row.badge_color }}">{{ row.segment }}</span>
+                                <span class="badge bg-{{ row.badge_color }}" {% if row.description %}data-bs-toggle="tooltip" data-bs-placement="top" title="{{ row.description }}"{% endif %}>{{ row.segment }}</span>
                             </a>
                         </td>
                         <td>{{ row.count|intcomma }}</td>
