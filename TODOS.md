@@ -258,3 +258,19 @@
 **Depends on:** Nothing. Independent of the conditional-footer PR.
 
 ---
+
+## Markets: Drop legacy `city` serialization aliases and unify the `?market=` param contract
+
+**What:** In a dedicated follow-up (once templates/tests are migrated off them), remove the back-compat cruft left by the city→Market conversion: (a) the `'city': market_name` key emitted by every converted report (views.py `customer_ltv_by_market`, `repeat_customers`, `profitability_overview`; `market_trend_calculator._build_market`; `external_survey/analytics` `city_breakdown`; `marketing/analytics`), (b) the redundant `market_label` field (always equal to `market_name`), (c) the stale `city_raw` key in survey analytics (now holds a market_id), and (d) the inconsistent `?market=` value contract — `survey_analytics` filters by market **UUID** while `sms_campaign_list` still filters by market **name**.
+
+**Why:** `explicit > clever`. A dict key literally named `city` that holds a Market label misleads every future reader, and the same 4-key dict (`market_id`/`market_name`/`market_label`/`city`) is copy-pasted across ~6 sites. The split `?market=` contract (name vs UUID under one param name) is a latent trap: any shared link-builder or future consolidation silently misbehaves (outside-voice review, confidence 4).
+
+**Pros:** One canonical `market_id` + `market_name` shape across all reports; kills the redundant field and the misleading alias; one consistent query-param contract.
+
+**Cons:** Cross-cutting rename touching 6 services/views + their templates + tests. Consumers must migrate in lockstep (templates read `city`, survey links use `city_raw`, LTV sort uses `?sort=city`) or links/sorts break. Best done as its own PR, not squeezed into the shipped conversion.
+
+**Context:** Deferred during /plan-eng-review of "Tie market reporting to Market entity" (PR #302, decision D2). The `city` aliases were intentionally kept in that PR so templates/tests didn't change in the same diff (see `.context/plans/tie-market-reporting-to-market-entity.md`, "Interfaces And Output"). Start by grepping `'city':` and `market_label` in the six converted paths, and `?market=`/`?city=`/`?sort=city` in `survey_analytics.html`, `ltv_by_market.html`, and `sms_campaign_list`.
+
+**Depends on:** "Tie market reporting to Market entity" (PR #302) shipped.
+
+---

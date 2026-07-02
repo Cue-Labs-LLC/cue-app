@@ -512,6 +512,14 @@ class CSVProcessor:
 
         existing_events = {}
 
+        # One builder for the whole chunk: it caches the org's market index on
+        # first resolve, so assigning markets to newly-created events costs one
+        # query for the chunk, not up to three per event.
+        market_builder = None
+        if org is not None:
+            from .services.markets import MarketBuilder
+            market_builder = MarketBuilder(org)
+
         # Fast path: if event_id is in metadata, use that event directly (org-scoped)
         metadata_event_id = self.uploaded_file.metadata.get('event_id')
         pinned_event = None
@@ -799,9 +807,8 @@ class CSVProcessor:
                         if org is not None:
                             event_kwargs['organization'] = org
                         event = Event(**event_kwargs)
-                        if org is not None:
-                            from .services.markets import MarketBuilder
-                            MarketBuilder(org).assign_event(event, save=False)
+                        if market_builder is not None:
+                            market_builder.assign_event(event, save=False)
                         events_to_create.append(event)
                         existing_events[event_key] = event
                 

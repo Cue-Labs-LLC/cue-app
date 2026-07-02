@@ -29,6 +29,7 @@ class MarketBuilder:
 
     def __init__(self, organization):
         self.organization = organization
+        self._market_index = None
 
     @classmethod
     def normalize_level(cls, level):
@@ -45,25 +46,52 @@ class MarketBuilder:
     def label_for_market(market):
         return market.name if market else NO_MARKET_LABEL
 
+    def market_index(self):
+        """This org's markets loaded once as ``{level: {geography_value: Market}}``.
+
+        Cached on the instance so a single builder resolves many events with
+        one query instead of a query per level per event. Call
+        ``invalidate_market_index()`` after creating markets. Reuse a single
+        builder across a loop (e.g. CSV import) to share the cache.
+
+            Market rows (1 query)                     resolve_for_venue(venue)
+            ┌───────────────────────────┐             city?  → index[city][v]
+            │ city  → {'Austin': <M1>}  │  ── build ─▶ state? → index[state][v]
+            │ state → {'TX': <M2>}      │             country?→ index[country][v]
+            │ ...                       │             first hit wins (specificity)
+            └───────────────────────────┘
+        """
+        if self._market_index is None:
+            index = {}
+            for market in Market.objects.filter(organization=self.organization):
+                index.setdefault(market.geography_level, {})[market.geography_value] = market
+            self._market_index = index
+        return self._market_index
+
+    def invalidate_market_index(self):
+        """Drop the cached index so the next resolve re-reads markets from the DB."""
+        self._market_index = None
+
     def resolve_for_venue(self, venue):
-        """Return the best matching existing market for a venue, or None."""
+        """Return the best matching existing market for a venue, or None.
+
+        Specificity order: city > state > country. Backed by the in-memory
+        market index (one query per builder), not a query per level.
+        """
         if not venue:
             return None
 
-        candidates = [
+        index = self.market_index()
+        candidates = (
             (MARKET_GEOGRAPHY_CITY, getattr(venue, 'city', '')),
             (MARKET_GEOGRAPHY_STATE, getattr(venue, 'state', '')),
             (MARKET_GEOGRAPHY_COUNTRY, getattr(venue, 'country', '')),
-        ]
+        )
         for level, raw_value in candidates:
             value = self.normalize_value(raw_value)
             if not value:
                 continue
-            market = Market.objects.filter(
-                organization=self.organization,
-                geography_level=level,
-                geography_value=value,
-            ).first()
+            market = index.get(level, {}).get(value)
             if market:
                 return market
         return None
@@ -85,20 +113,27 @@ class MarketBuilder:
         ).update(market=market)
 
     def assign_all_events(self):
-        """Backfill all organization events from existing market rules."""
-        updated_count = 0
+        """Backfill all organization events from existing market rules.
+
+        One query for the market index, one pull of events, one bulk_update
+        for the changed rows — no per-event queries or saves. Mirrors the
+        batched pattern in migration 0170_backfill_event_markets.
+        """
         events = (
             Event.objects.filter(organization=self.organization)
-            .select_related('venue', 'market')
+            .select_related('venue')
+            .only('id', 'market_id', 'venue__city', 'venue__state', 'venue__country')
         )
+        changed = []
         for event in events:
-            old_market_id = event.market_id
             market = self.resolve_for_venue(event.venue)
-            if old_market_id != (market.id if market else None):
-                event.market = market
-                event.save(update_fields=['market'])
-                updated_count += 1
-        return updated_count
+            new_market_id = market.id if market else None
+            if event.market_id != new_market_id:
+                event.market_id = new_market_id
+                changed.append(event)
+        if changed:
+            Event.objects.bulk_update(changed, ['market'], batch_size=500)
+        return len(changed)
 
     def preview(self, level):
         level = self.normalize_level(level)
@@ -155,6 +190,9 @@ class MarketBuilder:
             if created:
                 created_count += 1
             markets.append(market)
+        # New markets were just created, so drop the cached index before the
+        # backfill resolves events against the full, current market set.
+        self.invalidate_market_index()
         updated_count = self.assign_all_events()
 
         return {

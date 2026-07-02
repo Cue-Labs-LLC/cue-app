@@ -1107,6 +1107,77 @@ class MarketEntityReportingTests(TestCase):
         self.unassigned_event.refresh_from_db()
         self.assertEqual(self.unassigned_event.market, self.market)
 
+    def test_direct_event_create_assigns_matching_market(self):
+        # The direct-ticketing branch of event_create is a separate code path
+        # from the external branch; assert it also assigns Event.market.
+        response = self.client.post(reverse('tickets:event_create', args=['direct']), {
+            'name': 'Direct Market Show',
+            'summary': '',
+            'start_date': '2025-05-10',
+            'start_time': '20:00',
+            'end_date': '2025-05-10',
+            'end_time': '22:00',
+            'description': '',
+            'capacity': '100',
+            'venue': str(self.venue.id),
+            'facebook_pixel_id': '',
+            'ticket_type-TOTAL_FORMS': '1',
+            'ticket_type-INITIAL_FORMS': '0',
+            'ticket_type-MIN_NUM_FORMS': '0',
+            'ticket_type-MAX_NUM_FORMS': '1000',
+            'ticket_type-0-name': 'General Admission',
+            'ticket_type-0-description': '',
+            'ticket_type-0-price': '25.00',
+            'ticket_type-0-quantity_limit': '',
+            'ticket_type-0-max_per_customer': '4',
+            'ticket_type-0-order': '0',
+            'ticket_type-0-unlocks_after': '',
+        })
+
+        self.assertEqual(response.status_code, 302)
+        event = Event.objects.get(organization=self.org, name='Direct Market Show')
+        self.assertEqual(event.market, self.market)
+
+    def test_csv_import_assigns_market_to_created_events(self):
+        # CSV import auto-creates external events; the processor must assign
+        # Event.market from existing rules for those newly-created events.
+        import io
+        csv_format = CSVFormat.objects.create(
+            organization=self.org,
+            name='Market Import Format',
+            column_mapping={
+                'order_date': ['order_date'],
+                'customer_email': ['customer_email'],
+                'customer_name': ['customer_name'],
+                'ticket_type': ['ticket_type'],
+            },
+        )
+        upload = UploadedFile.objects.create(
+            organization=self.org,
+            csv_format=csv_format,
+            filename='market_import.csv',
+            status='pending',
+            # venue_id (Austin) + event_name but NO event_id → a new external
+            # event is created and should resolve to the Central Texas market.
+            metadata={
+                'event_name': 'CSV Market Show',
+                'event_start_date': '2025-06-01',
+                'venue_id': str(self.venue.id),
+            },
+        )
+        csv_body = (
+            "order_date,customer_email,customer_name,ticket_type\n"
+            "2025-06-01,csv-market@example.com,CSV Buyer,GA\n"
+        )
+        from tickets.csv_processor import CSVProcessor
+        results = CSVProcessor(upload, csv_format).process_and_save(
+            io.BytesIO(csv_body.encode('utf-8'))
+        )
+
+        self.assertEqual(results['success_count'], 1)
+        event = Event.objects.get(organization=self.org, name='CSV Market Show')
+        self.assertEqual(event.market, self.market)
+
 
 class VenueAdminScopeTests(TestCase):
     def test_venue_admin_queryset_is_scoped_for_non_superusers(self):
