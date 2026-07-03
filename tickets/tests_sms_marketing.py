@@ -920,6 +920,27 @@ class SMSViewTests(TestCase):
         self.assertContains(resp, 'No campaigns in this window')   # empty state
         self.assertContains(resp, 'New Campaign')                  # native CTA in empty state + toolbar
 
+    def test_campaign_rows_open_detail_modal_with_message(self):
+        # Both native (Cue) and external (SlickText) campaigns render as clickable
+        # rows that carry their message for the detail modal.
+        from tickets.models import SMSCampaign, EventSMSCampaign
+        SMSCampaign.objects.create(
+            organization=self.org, name='Native Blast', body='Native hello world',
+            status=SMSCampaign.Status.SENT, sent_at=timezone.now(), audience_size=10,
+        )
+        EventSMSCampaign.objects.create(
+            event=self.event, source='slicktext', external_id='ext-1',
+            name='SlickText Blast', message='SlickText promo text',
+            send_time=timezone.now(), audience_size=20,
+        )
+        resp = self.client.get(reverse('tickets:sms_campaign_list'))
+        self.assertEqual(resp.status_code, 200)
+        html = resp.content.decode()
+        self.assertIn('id="campaignDetailModal"', html)
+        self.assertIn('class="campaign-row"', html)
+        self.assertIn('Native hello world', html)   # native message in data-message
+        self.assertIn('SlickText promo text', html)  # external message in data-message
+
     def test_campaign_list_audience_view(self):
         # The Audience sub-view renders the broadcast chart + by-market table.
         resp = self.client.get(reverse('tickets:sms_campaign_list'), {'view': 'audience'})

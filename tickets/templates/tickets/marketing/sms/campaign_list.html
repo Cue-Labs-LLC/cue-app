@@ -41,6 +41,8 @@
 
 /* Clickable market breakdown rows */
 .market-breakdown-table tbody tr { cursor: pointer; }
+tr.campaign-row { cursor: pointer; }
+#campaignDetailModal .cdm-message { white-space: pre-wrap; word-break: break-word; }
 
 /* Source badges for unified Campaigns table */
 /* Blue is the default for all external providers; Cue is green. */
@@ -109,11 +111,20 @@
                 </thead>
                 <tbody>
                     {% for row in campaigns_page.object_list %}
-                    <tr>
-                        <td>
-                            {% if row.detail_url %}<a href="{{ row.detail_url }}">{{ row.name }}</a>
-                            {% else %}{{ row.name }}{% endif %}
-                        </td>
+                    <tr class="campaign-row" role="button" tabindex="0"
+                        data-name="{{ row.name }}"
+                        data-source="{{ row.source_label }}"
+                        data-source-key="{{ row.source_key }}"
+                        data-event="{% if row.event %}{{ row.event.name }}{% endif %}"
+                        data-when="{% if row.when %}{{ row.when|date:'M d, Y' }}{% endif %}"
+                        data-audience="{{ row.audience }}"
+                        data-clicks="{% if row.clicks is not None %}{{ row.clicks }}{% endif %}"
+                        data-orders="{% if row.orders is not None %}{{ row.orders }}{% endif %}"
+                        data-revenue="{% if row.revenue is not None %}${{ row.revenue|currency }}{% endif %}"
+                        data-message="{{ row.message }}"
+                        data-media="{{ row.media_url }}"
+                        data-detail-url="{{ row.detail_url|default:'' }}">
+                        <td class="fw-semibold">{{ row.name }}</td>
                         <td><span class="badge source-badge source-badge--{{ row.source_key }}">{{ row.source_label }}</span></td>
                         <td>
                             {% if row.event %}<a href="{% url 'tickets:event_detail' event_id=row.event.id %}?tab=marketing">{{ row.event.name }}</a>
@@ -215,6 +226,39 @@
 {% if sms_native_enabled %}
 {% include 'tickets/marketing/sms/_link_event_modal.html' %}
 {% endif %}
+
+{% if view == 'campaigns' %}
+<div class="modal fade" id="campaignDetailModal" tabindex="-1" aria-labelledby="cdmName" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered modal-dialog-scrollable">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="cdmName">Campaign</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body">
+        <div class="d-flex flex-wrap align-items-center gap-2 mb-3">
+          <span class="badge source-badge" id="cdmSource"></span>
+          <span class="text-body-secondary small" id="cdmWhen"></span>
+          <span class="text-body-secondary small" id="cdmEvent"></span>
+        </div>
+        <div class="fw-semibold small text-body-secondary mb-1">Message</div>
+        <div id="cdmMessage" class="cdm-message p-3 rounded border bg-body-tertiary"></div>
+        <img id="cdmMedia" class="img-fluid rounded mt-2 d-none" alt="Campaign media">
+        <div class="row text-center g-2 mt-3">
+          <div class="col"><div class="small text-body-secondary">Audience</div><div class="fw-semibold" id="cdmAudience">—</div></div>
+          <div class="col"><div class="small text-body-secondary">Clicks</div><div class="fw-semibold" id="cdmClicks">—</div></div>
+          <div class="col"><div class="small text-body-secondary">Orders</div><div class="fw-semibold" id="cdmOrders">—</div></div>
+          <div class="col"><div class="small text-body-secondary">Revenue</div><div class="fw-semibold" id="cdmRevenue">—</div></div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <a href="#" id="cdmDetailLink" class="btn btn-sm btn-outline-primary d-none">Open full campaign</a>
+        <button type="button" class="btn btn-sm btn-secondary" data-bs-dismiss="modal">Close</button>
+      </div>
+    </div>
+  </div>
+</div>
+{% endif %}
 {% endblock %}
 
 {% block extra_js %}
@@ -297,5 +341,48 @@
         });
     });
 })();
+</script>
+
+<script>
+document.addEventListener('DOMContentLoaded', function () {
+    var modalEl = document.getElementById('campaignDetailModal');
+    if (!modalEl || typeof bootstrap === 'undefined') return;
+    var modal = new bootstrap.Modal(modalEl);
+    function set(id, val) {
+        document.getElementById(id).textContent = (val && val.length) ? val : '—';
+    }
+    function openRow(row) {
+        var d = row.dataset;
+        document.getElementById('cdmName').textContent = d.name || 'Campaign';
+        var src = document.getElementById('cdmSource');
+        src.textContent = d.source || '';
+        src.className = 'badge source-badge source-badge--' + (d.sourceKey || '');
+        document.getElementById('cdmWhen').textContent = d.when || '';
+        document.getElementById('cdmEvent').textContent = d.event ? ('· ' + d.event) : '';
+        document.getElementById('cdmMessage').textContent =
+            d.message || '(No message stored for this campaign.)';
+        set('cdmAudience', d.audience);
+        set('cdmClicks', d.clicks);
+        set('cdmOrders', d.orders);
+        set('cdmRevenue', d.revenue);
+        var media = document.getElementById('cdmMedia');
+        if (d.media) { media.src = d.media; media.classList.remove('d-none'); }
+        else { media.classList.add('d-none'); media.removeAttribute('src'); }
+        var link = document.getElementById('cdmDetailLink');
+        if (d.detailUrl) { link.href = d.detailUrl; link.classList.remove('d-none'); }
+        else { link.classList.add('d-none'); }
+        modal.show();
+    }
+    document.querySelectorAll('tr.campaign-row').forEach(function (row) {
+        row.addEventListener('click', function () { openRow(row); });
+        row.addEventListener('keydown', function (e) {
+            if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openRow(row); }
+        });
+    });
+    // Inner links (the event link) navigate without opening the modal.
+    document.querySelectorAll('tr.campaign-row a').forEach(function (a) {
+        a.addEventListener('click', function (e) { e.stopPropagation(); });
+    });
+});
 </script>
 {% endblock %}

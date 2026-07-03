@@ -367,6 +367,8 @@ def sms_campaign_list(request):
             'orders': None,
             'revenue': None,
             'when': c.sent_at or c.scheduled_at,
+            'message': c.body,
+            'media_url': '',
         })
     for c in external_qs:
         label = (c.source or 'slicktext').replace('_', ' ').title()
@@ -381,6 +383,8 @@ def sms_campaign_list(request):
             'orders': c.effective_orders,
             'revenue': c.effective_revenue,
             'when': c.send_time,
+            'message': c.message,
+            'media_url': c.media_url,
         })
 
     _epoch = datetime.min.replace(tzinfo=stdlib_tz.utc)
