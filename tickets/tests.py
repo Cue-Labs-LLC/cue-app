@@ -5528,7 +5528,8 @@ class EventEditViewTests(TestCase):
         response = self.client.get(reverse('tickets:event_edit', args=[event.id]))
 
         self.assertEqual(response.status_code, 200)
-        self.assertContains(response, 'Talent Lineup (optional)')
+        # Talent Lineup was removed from the create/import/edit forms.
+        self.assertNotContains(response, 'Talent Lineup')
 
 
 class TicketTypeCustomerLimitTests(TestCase):
@@ -16989,7 +16990,7 @@ class ExternalEventsFeatureFlagTests(TestCase):
         self._enable()
         resp = self.client.get(reverse('tickets:event_type_select'))
         self.assertEqual(resp.status_code, 200)
-        self.assertContains(resp, 'External Ticketing')
+        self.assertContains(resp, 'Import an Event')
 
     def test_external_create_blocked_when_off(self):
         resp = self.client.get(

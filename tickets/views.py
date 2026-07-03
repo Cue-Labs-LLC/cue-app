@@ -6897,20 +6897,12 @@ def event_edit(request, event_id):
     # External ticketing path
     if request.method == 'POST':
         form = EventForm(request.POST, instance=event, organization=org, ticketing_type_locked=True)
-        talent_formset = EventTalentFormSet(request.POST, prefix='talent')
-        if form.is_valid() and talent_formset.is_valid():
+        if form.is_valid():
             was_future = event.start_date >= date.today()
             event = form.save(commit=False)
             event.updated_by = request.user
             MarketBuilder(org).assign_event(event, save=False)
             event.save()
-            instances = talent_formset.save(commit=False)
-            for obj in instances:
-                if obj.name and obj.name.strip():
-                    obj.event = event
-                    obj.save()
-            for obj in talent_formset.deleted_objects:
-                obj.delete()
             # Save custom field values
             for cf in CustomField.objects.filter(field_type='dropdown', organization=org):
                 field_name = f'custom_field_{cf.id}'
@@ -6931,14 +6923,9 @@ def event_edit(request, event_id):
             return redirect('tickets:event_detail', event_id=event.id)
     else:
         form = EventForm(instance=event, organization=org, ticketing_type_locked=True)
-        talent_formset = EventTalentFormSet(
-            queryset=EventTalent.objects.filter(event=event).order_by('order', 'name'),
-            prefix='talent',
-        )
 
     context = {
         'form': form,
-        'talent_formset': talent_formset,
         'event': event,
         'ticketing_type': event.ticketing_type,
         'google_maps_api_key': django_settings.GOOGLE_MAPS_API_KEY,

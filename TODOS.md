@@ -366,3 +366,17 @@
 **Context:** Raised during onboarding office-hours/eng review as a parallel nice-to-have (2026-07-02), explicitly NOT part of external-first onboarding. Use `event.timezone` for minute precision and `django_tz.localdate()` for day-granular comparisons (see views.py:11719 comment).
 
 **Depends on:** —
+
+## Onboarding: SMS consent-collection surface (Option C)
+
+**What:** Build a dedicated way for organizers to *collect* marketing-SMS consent from customers, rather than only mapping it from a CSV column or asserting it manually. E.g., a shareable public opt-in link/page, an opt-in checkbox at ticket purchase, or a "text START to..." keyword flow.
+
+**Why:** The onboarding "Send your first SMS campaign" step is consent-gated (imported contacts default to `sms_opt_in=False`, and texting non-consented contacts violates TCPA/carrier rules). Today consent can only be (a) mapped from a CSV consent column on import, or (b) set manually via the customer-list bulk action for customers the org already has documented consent for. The "Review consent" step now shows an explainer pointing at those (commit 068a6ae), but there is no first-party way to *gather new* consent. Without it, an org whose export lacks a consent column has no compliant path to a sendable audience beyond re-importing.
+
+**Pros:** Closes the loop on the SMS revenue path (Cue monetizes SMS tokens); gives organizers a compliant, auditable consent source; makes the "send first campaign" activation step reachable for everyone, not just orgs with consent already in their data.
+
+**Cons:** Real scope — needs a public opt-in page/route, consent record-keeping (timestamp, source, IP/double-opt-in for defensibility), and likely Twilio keyword/webhook handling for STOP/START. Compliance-sensitive; get the record-keeping right.
+
+**Context:** Deferred from the onboarding design review (D5/6B) and the "Review consent" UX fix (2026-07-03). The manual/import paths exist today: `set_sms_opt_in` (tickets/services/sms_consent.py), `customers_bulk_sms_status` (tickets/sms_views.py), and CSV consent mapping (`customer_sms_opt_in` in csv_processor.py / the "SMS Marketing Consent" format row). Consent state lives on `Customer.sms_opt_in` / `sms_opt_in_date`; campaign audiences gate on it (models.py). A public opt-in surface is the missing piece.
+
+**Depends on:** —
