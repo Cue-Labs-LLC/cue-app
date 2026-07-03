@@ -403,8 +403,9 @@
                     <thead>
                         <tr>
                             <th>Order Number</th>
-                            <th>Date</th>
+                            <th>Order Date</th>
                             <th>Event</th>
+                            <th>Event Date</th>
                             <th>Venue</th>
                             <th>Total Amount</th>
                             <th>Tickets</th>
@@ -416,6 +417,7 @@
                             <td><strong>{{ order.display_order_number }}</strong></td>
                             <td>{{ order.order_date|date:"M d, Y H:i" }}</td>
                             <td>{{ order.event.name }}</td>
+                            <td>{{ order.event.start_date|date:"M d, Y"|default:"—" }}</td>
                             <td>{{ order.event.venue.name }}</td>
                             <td><strong>${{ order.net_amount|currency }}</strong></td>
                             <td>{{ order.tickets_count }}</td>
