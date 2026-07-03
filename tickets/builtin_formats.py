@@ -71,6 +71,12 @@ BUILTIN_CSV_FORMATS = [
             # Attendee report: per-ticket face value (net to organizer).
             "price": ["Ticket price"],
             # Orders report: order-level organizer net (used when Ticket price absent).
+            # ASSUMPTION (verified against real exports 2026-07): the Attendee report
+            # has NO revenue column and one ticket per row (quantity=1). The processor
+            # uses total_amount DIRECTLY as the order total when present, so if a future
+            # Attendee export ever carried an order-level "Net sales" on each per-ticket
+            # row, revenue would be multiplied by the ticket count. Re-verify before
+            # trusting a new Eventbrite report shape.
             "total_amount": ["Net sales", "Ticket + add-ons revenue"],
             "event_name": ["Event name"],
             "venue": ["Event location"],

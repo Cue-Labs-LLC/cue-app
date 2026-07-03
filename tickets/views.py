@@ -38,7 +38,7 @@ from django.utils.text import slugify
 from .models import (
     Organization, UserProfile, OrganizationMembership, OrganizationInvitation,
     AIRecommendation,
-    CSVFormat, UploadedFile, Customer, CustomerTag, Event, EventExpense, EventEmailCampaign, EventSMSCampaign, EventTalent, TicketOrder, Ticket, Venue, Market,
+    CSVFormat, UploadedFile, Customer, CustomerTag, Event, EventExpense, EventEmailCampaign, EventSMSCampaign, TicketOrder, Ticket, Venue, Market,
     CustomField, CustomFieldOption, EventCustomFieldValue, IncomeSource, EventIncome,
     SurveyQuestion, SurveyQuestionOption, SurveyInvitation, SurveyResponse, SurveyAnswer, SurveyAnswerOption,
     DEFAULT_SURVEY_SUBJECT, SURVEY_SEND_OFFSET_CHOICES,
@@ -53,7 +53,7 @@ from .models import (
 )
 from .forms import (
     EventCSVUploadForm, EventExpenseForm, TicketPriceEntryForm, CSVFormatForm,
-    VenueForm, VenueChoiceField, EventForm, EventTalentFormSet, LoginForm,
+    VenueForm, VenueChoiceField, EventForm, LoginForm,
     CustomFieldForm, CustomFieldOptionFormSet,
     IncomeSourceForm, EventIncomeForm,
     OTPVerificationForm, MemberInviteForm, AttendeePhoneForm,
@@ -1765,16 +1765,18 @@ def invite_revoke(request, token):
     return redirect('tickets:member_list')
 
 
-def _onboarding_state(org):
+def _onboarding_state(org, has_customers):
     """Build the dashboard "Getting started" checklist for a new organizer.
 
     Analytics-first: the guaranteed payoff is importing data to unlock customer
     segments; SMS is a consent-gated later step (its CTA never points at a send
     screen until there's an opted-in audience). Step completion is derived from
     existing data (no per-step flags). The card hides once every step is complete
-    or the org dismisses it.
+    or the org dismisses it. ``has_customers`` is passed in from the home view's
+    already-computed customer count to avoid re-querying it here.
     """
-    empty = {'show': False, 'steps': [], 'complete_count': 0, 'total': 0, 'all_complete': False}
+    empty = {'show': False, 'steps': [], 'complete_count': 0, 'total': 0,
+             'all_complete': False, 'has_sent_campaign': None}
     if org is None:
         # Only superusers can reach the dashboard without an org; nothing to onboard.
         return empty
@@ -1787,9 +1789,9 @@ def _onboarding_state(org):
     real_customers = Customer.objects.filter(organization=org).exclude(
         email__endswith='@placeholder.local'
     )
-    has_customers = real_customers.exists()
     # Campaign audience is gated on consent + a phone (models.py); mirror it here.
-    has_eligible_audience = real_customers.filter(sms_opt_in=True).exclude(phone='').exists()
+    has_eligible_audience = has_customers and real_customers.filter(
+        sms_opt_in=True).exclude(phone='').exists()
     has_sent_campaign = SMSCampaign.objects.filter(
         organization=org, status=SMSCampaign.Status.SENT
     ).exists()
@@ -1855,6 +1857,8 @@ def _onboarding_state(org):
         'complete_count': complete_count,
         'total': len(steps),
         'all_complete': all_complete,
+        # Surfaced so the direct-ticketing upsell can reuse it without re-querying.
+        'has_sent_campaign': has_sent_campaign,
     }
 
 
@@ -1870,21 +1874,26 @@ def dismiss_onboarding(request):
     return redirect('tickets:home')
 
 
-def _direct_ticketing_upsell(org, has_customers):
+def _direct_ticketing_upsell(org, has_customers, has_sent_campaign=None):
     """Whether to show the value-gated "sell through Cue" upsell card (D4/4A).
 
     Shown only AFTER the org has seen value (imported customers or sent a
     campaign), and only while direct ticketing isn't set up and the card hasn't
     been dismissed. Kept quiet and dismissible — never a banner or modal.
+
+    ``has_sent_campaign`` may be passed in (the checklist already computes it) to
+    avoid a duplicate query; it's only looked up here when needed and unknown.
     """
     if org is None or org.directticketing_upsell_dismissed_at or org.stripe_onboarding_complete:
         return False
     if has_customers:
         return True
-    from tickets.models import SMSCampaign
-    return SMSCampaign.objects.filter(
-        organization=org, status=SMSCampaign.Status.SENT
-    ).exists()
+    if has_sent_campaign is None:
+        from tickets.models import SMSCampaign
+        has_sent_campaign = SMSCampaign.objects.filter(
+            organization=org, status=SMSCampaign.Status.SENT
+        ).exists()
+    return has_sent_campaign
 
 
 @login_required
@@ -2013,7 +2022,13 @@ def home(request):
             '-created_at',
         )[:3]
     )
-    
+
+    # Reuse the already-computed customer count for the onboarding predicates so
+    # the checklist and the upsell don't re-query "does this org have customers"
+    # or "has it sent a campaign".
+    has_customers = total_customers > 0
+    onboarding = _onboarding_state(org, has_customers)
+
     context = {
         'page_obj': page_obj,
         'event_ids_show_warning': event_ids_show_warning,
@@ -2024,8 +2039,10 @@ def home(request):
         'total_revenue': total_revenue,
         'total_tickets': total_tickets,
         'ai_recommendations': ai_recommendations,
-        'onboarding': _onboarding_state(org),
-        'show_directticketing_upsell': _direct_ticketing_upsell(org, total_customers > 0),
+        'onboarding': onboarding,
+        'show_directticketing_upsell': _direct_ticketing_upsell(
+            org, has_customers, onboarding.get('has_sent_campaign')
+        ),
     }
     return render(request, 'tickets/home.html', context)
 
