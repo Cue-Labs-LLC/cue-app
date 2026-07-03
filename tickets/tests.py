@@ -1179,6 +1179,276 @@ class MarketEntityReportingTests(TestCase):
         self.assertEqual(event.market, self.market)
 
 
+class CSVImportSMSConsentTests(TestCase):
+    """CSV import maps a consent column to Customer.sms_opt_in (T1).
+
+    Imported contacts must NOT be textable unless the source data says they
+    opted in AND they have a phone. Import grants consent, never revokes it.
+    """
+
+    def setUp(self):
+        # CSV import auto-creates external events, which is gated on this flag
+        # (csv_processor.py). Once T2 flips the model default to True this is the
+        # norm for new orgs; set it explicitly here so the fixture is unambiguous.
+        self.org = Organization.objects.create(
+            name='Consent Org', slug='consent-org', external_events_enabled=True,
+        )
+        self.csv_format = CSVFormat.objects.create(
+            organization=self.org,
+            name='Consent Import Format',
+            column_mapping={
+                'order_date': ['order_date'],
+                'customer_email': ['customer_email'],
+                'customer_name': ['customer_name'],
+                'customer_phone': ['customer_phone'],
+                'ticket_type': ['ticket_type'],
+                'customer_sms_opt_in': ['consent'],
+            },
+        )
+
+    def _import(self, csv_body):
+        import io
+        upload = UploadedFile.objects.create(
+            organization=self.org,
+            csv_format=self.csv_format,
+            filename='consent.csv',
+            status='pending',
+            metadata={'event_name': 'Consent Show', 'event_start_date': '2025-06-01'},
+        )
+        from tickets.csv_processor import CSVProcessor
+        return CSVProcessor(upload, self.csv_format).process_and_save(
+            io.BytesIO(csv_body.encode('utf-8'))
+        )
+
+    def _customer(self, email):
+        return Customer.objects.get(organization=self.org, email=email)
+
+    def test_consent_column_maps_to_sms_opt_in(self):
+        csv_body = (
+            "order_date,customer_email,customer_name,customer_phone,ticket_type,consent\n"
+            "2025-06-01,yes@example.com,Yes Buyer,+15551110001,GA,Yes\n"
+            "2025-06-01,no@example.com,No Buyer,+15551110002,GA,No\n"
+            "2025-06-01,nophone@example.com,NoPhone Buyer,,GA,Yes\n"
+        )
+        results = self._import(csv_body)
+        self.assertEqual(results['success_count'], 3)
+
+        opted_in = self._customer('yes@example.com')
+        self.assertTrue(opted_in.sms_opt_in)
+        self.assertIsNotNone(opted_in.sms_opt_in_date)
+
+        # Explicit "No" stays opted out.
+        self.assertFalse(self._customer('no@example.com').sms_opt_in)
+        # Consent "Yes" but no phone cannot be texted, so must not opt in.
+        self.assertFalse(self._customer('nophone@example.com').sms_opt_in)
+
+        # Only the genuinely-consented, phone-bearing contact is campaign-eligible.
+        eligible = (
+            Customer.objects.filter(organization=self.org, sms_opt_in=True)
+            .exclude(phone='')
+            .values_list('email', flat=True)
+        )
+        self.assertEqual(list(eligible), ['yes@example.com'])
+
+    def test_import_never_revokes_existing_consent(self):
+        Customer.objects.create(
+            organization=self.org, email='vip@example.com', name='VIP',
+            phone='+15551110009', sms_opt_in=True,
+        )
+        # A later import row says consent=No; existing opt-in must be preserved.
+        csv_body = (
+            "order_date,customer_email,customer_name,customer_phone,ticket_type,consent\n"
+            "2025-06-02,vip@example.com,VIP,+15551110009,GA,No\n"
+        )
+        self._import(csv_body)
+        self.assertTrue(self._customer('vip@example.com').sms_opt_in)
+
+
+class NewOrgInitializationTests(TestCase):
+    """T2/T3: new-org flag defaults + idempotent trial-credit seeding."""
+
+    def test_new_org_has_flags_on_by_default(self):
+        org = Organization.objects.create(name='Fresh Org', slug='fresh-org')
+        self.assertTrue(org.external_events_enabled)
+        self.assertTrue(org.sms_marketing_enabled)
+
+    def _expected_trial_cents(self):
+        from tickets.services.org_onboarding import TRIAL_SMS_CREDIT_TOKENS
+        from tickets.services.sms_credits import price_per_segment_cents
+        return int(TRIAL_SMS_CREDIT_TOKENS * price_per_segment_cents())
+
+    def test_initialize_seeds_one_trial_credit_row(self):
+        from tickets.services.org_onboarding import initialize_new_organization
+        from tickets.models import SMSCreditTransaction
+
+        org = Organization.objects.create(name='Seed Org', slug='seed-org')
+        initialize_new_organization(org)
+
+        org.refresh_from_db()
+        self.assertEqual(org.sms_credit_balance_cents, self._expected_trial_cents())
+        rows = SMSCreditTransaction.objects.filter(
+            organization=org, kind=SMSCreditTransaction.Kind.ADJUSTMENT,
+        )
+        self.assertEqual(rows.count(), 1)
+
+    def test_initialize_is_idempotent(self):
+        from tickets.services.org_onboarding import initialize_new_organization
+        from tickets.models import SMSCreditTransaction
+
+        org = Organization.objects.create(name='Idem Org', slug='idem-org')
+        initialize_new_organization(org)
+        initialize_new_organization(org)  # second call must be a no-op
+
+        org.refresh_from_db()
+        self.assertEqual(org.sms_credit_balance_cents, self._expected_trial_cents())
+        self.assertEqual(
+            SMSCreditTransaction.objects.filter(organization=org).count(), 1
+        )
+
+    def test_initialize_is_non_fatal_when_wallet_raises(self):
+        from unittest.mock import patch
+        from tickets.services.org_onboarding import initialize_new_organization
+
+        org = Organization.objects.create(name='Fail Org', slug='fail-org')
+        with patch('tickets.services.sms_credits.credit', side_effect=RuntimeError('boom')):
+            # Must not raise — org creation already succeeded.
+            initialize_new_organization(org)
+        org.refresh_from_db()
+        self.assertEqual(org.sms_credit_balance_cents, 0)
+
+    def test_api_org_creation_path_seeds_flags_and_credits(self):
+        # _ensure_organization_for_user is the mobile/Stripe path that a naive
+        # inline-init would have missed; assert it seeds flags + trial credits.
+        from tickets.api_views import _ensure_organization_for_user
+
+        user = User.objects.create_user(username='mobile-organizer')
+        UserProfile.objects.create(user=user, organization=None)
+
+        org = _ensure_organization_for_user(user)
+
+        self.assertTrue(org.external_events_enabled)
+        self.assertTrue(org.sms_marketing_enabled)
+        org.refresh_from_db()
+        self.assertEqual(org.sms_credit_balance_cents, self._expected_trial_cents())
+
+
+class BuiltinFormatsAndTalentRemovalTests(TestCase):
+    """Eventbrite + POSH built-ins available; Talent Lineup removed from create/import."""
+
+    def setUp(self):
+        self.client = Client()
+        self.org = Organization.objects.create(
+            name='Fmt Org', slug='fmt-org', external_events_enabled=True,
+        )
+        self.user = User.objects.create_user(
+            username='fmtorg', email='fmt@test.com', password='pass12345',
+        )
+        UserProfile.objects.create(
+            user=self.user, organization=self.org,
+            role=UserProfile.Role.ORGANIZER, org_role=UserProfile.OrgRole.OWNER,
+        )
+        OrganizationMembership.objects.create(
+            user=self.user, organization=self.org, org_role=UserProfile.OrgRole.OWNER,
+        )
+        self.venue = Venue.objects.create(organization=self.org, name='V', city='C')
+        self.client.login(username='fmt@test.com', password='pass12345')
+        self.client.get(reverse('tickets:home'))  # seed session org
+
+    def test_builtin_formats_include_posh_and_eventbrite(self):
+        names = set(CSVFormat.available_for(self.org).values_list('name', flat=True))
+        self.assertIn('POSH', names)
+        self.assertIn('Eventbrite', names)
+
+    def test_eventbrite_orders_export_imports_end_to_end(self):
+        # Real Eventbrite "Orders" export headers (order-level, no ticket-class
+        # column) — must import via the Event name fallback for ticket_type, and
+        # book revenue from Net sales.
+        import io
+        from decimal import Decimal
+        eventbrite = CSVFormat.objects.get(name='Eventbrite', is_system=True)
+        upload = UploadedFile.objects.create(
+            organization=self.org, csv_format=eventbrite,
+            filename='eventbrite.csv', status='pending',
+            metadata={'event_name': 'Familiar Faces Day Party', 'event_start_date': '2026-04-25'},
+        )
+        csv_body = (
+            "Order ID,Order date,Buyer first name,Buyer last name,Buyer email,"
+            "Phone number,Ticket quantity,Net sales,Event name,Event location\n"
+            "14572631913,2026-03-30 16:01:14,John,Frye,john@createdpodcast.com,,1,8,Familiar Faces Day Party,Lot 613\n"
+            "14572638553,2026-03-30 16:02:29,Love,Guillette,lovevguillette@gmail.com,,4,32,Familiar Faces Day Party,Lot 613\n"
+        )
+        from tickets.csv_processor import CSVProcessor
+        results = CSVProcessor(upload, eventbrite).process_and_save(
+            io.BytesIO(csv_body.encode('utf-8'))
+        )
+        self.assertEqual(results['success_count'], 2)
+
+        john = Customer.objects.get(organization=self.org, email='john@createdpodcast.com')
+        self.assertEqual(john.name, 'John Frye')
+        order = TicketOrder.objects.get(customer=john)
+        self.assertEqual(order.total_amount, Decimal('8'))
+        # No ticket-class column → ticket_type falls back to the event name.
+        self.assertEqual(order.tickets.first().ticket_type, 'Familiar Faces Day Party')
+
+    def test_eventbrite_attendee_export_multi_ticket_buyer(self):
+        # Attendee report: one row per ticket. A 4-ticket order becomes 4 rows
+        # with the SAME Order ID but unique Barcodes. order_number maps to Barcode
+        # so the tickets don't collapse; all credit the Buyer (not the attendee).
+        import io
+        from decimal import Decimal
+        eventbrite = CSVFormat.objects.get(name='Eventbrite', is_system=True)
+        upload = UploadedFile.objects.create(
+            organization=self.org, csv_format=eventbrite,
+            filename='eventbrite_attendees.csv', status='pending',
+            metadata={'event_name': 'Familiar Faces Day Party', 'event_start_date': '2026-04-25'},
+        )
+        header = (
+            "Order ID,Order date,Buyer first name,Buyer last name,Buyer email,"
+            "Phone number,Ticket type,Ticket quantity,Ticket price,Barcode number,"
+            "Event name,Event location\n"
+        )
+        rows = "".join(
+            f"14572638553,2026-03-30 16:02:29,Love,Guillette,lovevguillette@gmail.com,,"
+            f"entry before 5:30pm,1,8.00,BC-{i},Familiar Faces Day Party,Lot 613\n"
+            for i in range(1, 5)  # 4 tickets, same order, 4 barcodes
+        )
+        from tickets.csv_processor import CSVProcessor
+        results = CSVProcessor(upload, eventbrite).process_and_save(
+            io.BytesIO((header + rows).encode('utf-8'))
+        )
+        self.assertEqual(results['success_count'], 4)
+
+        love = Customer.objects.get(organization=self.org, email='lovevguillette@gmail.com')
+        self.assertEqual(love.name, 'Love Guillette')
+        love_orders = TicketOrder.objects.filter(customer=love)
+        self.assertEqual(love_orders.count(), 4)  # barcode de-dup kept all 4
+        self.assertEqual(sum(o.total_amount for o in love_orders), Decimal('32'))
+        self.assertEqual(love_orders.first().tickets.first().ticket_type, 'entry before 5:30pm')
+
+    def test_import_page_has_no_talent_lineup(self):
+        html = self.client.get(
+            reverse('tickets:event_create', args=['external'])
+        ).content.decode()
+        self.assertNotIn('Talent Lineup', html)
+
+    def test_external_event_create_works_without_talent_fields(self):
+        resp = self.client.post(reverse('tickets:event_create', args=['external']), {
+            'name': 'No Talent Show',
+            'ticketing_type': 'external',
+            'venue': str(self.venue.id),
+            'start_date': '2025-03-10',
+            'start_time': '20:00',
+            'end_date': '2025-03-10',
+            'end_time': '22:00',
+            'timezone': 'America/Chicago',
+            'ticket_link': '',
+        })
+        self.assertEqual(resp.status_code, 302)
+        self.assertTrue(
+            Event.objects.filter(organization=self.org, name='No Talent Show').exists()
+        )
+
+
 class VenueAdminScopeTests(TestCase):
     def test_venue_admin_queryset_is_scoped_for_non_superusers(self):
         from django.contrib import admin
@@ -5259,7 +5529,8 @@ class EventEditViewTests(TestCase):
         response = self.client.get(reverse('tickets:event_edit', args=[event.id]))
 
         self.assertEqual(response.status_code, 200)
-        self.assertContains(response, 'Talent Lineup (optional)')
+        # Talent Lineup was removed from the create/import/edit forms.
+        self.assertNotContains(response, 'Talent Lineup')
 
 
 class TicketTypeCustomerLimitTests(TestCase):
@@ -16438,12 +16709,9 @@ class SurveyHubTests(TestCase):
 
 
 class OnboardingChecklistTests(TestCase):
-    """Dashboard 'Getting started' checklist for new organizers."""
+    """Dashboard 'Getting started' checklist (analytics-first) for new organizers."""
 
     def setUp(self):
-        from .models import EVENT_STATUS_LIVE, EVENT_STATUS_DRAFT
-        self.EVENT_STATUS_LIVE = EVENT_STATUS_LIVE
-        self.EVENT_STATUS_DRAFT = EVENT_STATUS_DRAFT
         self.client = Client()
         self.org = Organization.objects.create(name='Onboarding Org', slug='onboarding-org')
         self.user = User.objects.create_user(
@@ -16461,59 +16729,156 @@ class OnboardingChecklistTests(TestCase):
     def _onboarding(self):
         return self.client.get(reverse('tickets:home')).context['onboarding']
 
-    def _make_event(self, status=None):
-        venue = Venue.objects.create(organization=self.org, name='Venue', city='City')
-        return Event.objects.create(
-            organization=self.org, name='Event', venue=venue,
-            start_date=date(2026, 6, 15), start_time=time(19, 0, 0),
-            ticketing_type=TICKETING_TYPE_DIRECT,
-            status=status or self.EVENT_STATUS_DRAFT,
+    def _steps(self):
+        return {s['key']: s for s in self._onboarding()['steps']}
+
+    def _add_customer(self, email='c@example.com', **kw):
+        return Customer.objects.create(organization=self.org, email=email, name='C', **kw)
+
+    def _sent_campaign(self):
+        from .models import SMSCampaign
+        return SMSCampaign.objects.create(
+            organization=self.org, name='Blast', body='hi',
+            status=SMSCampaign.Status.SENT,
         )
 
-    def test_new_org_shows_checklist_with_incomplete_steps(self):
+    def test_new_org_shows_four_incomplete_steps(self):
         onboarding = self._onboarding()
         self.assertTrue(onboarding['show'])
+        self.assertEqual(onboarding['total'], 4)
         self.assertEqual(onboarding['complete_count'], 0)
-        self.assertEqual(onboarding['total'], 3)
-        steps = {s['key']: s for s in onboarding['steps']}
-        self.assertFalse(steps['create_event']['complete'])
+        self.assertEqual(
+            set(self._steps()),
+            {'set_profile', 'import_data', 'review_segments', 'send_campaign'},
+        )
 
-    def test_create_event_step_completes(self):
-        self._make_event()
-        steps = {s['key']: s for s in self._onboarding()['steps']}
-        self.assertTrue(steps['create_event']['complete'])
-        self.assertFalse(steps['go_live']['complete'])
+    def test_profile_step_completes(self):
+        self.org.description = 'We throw great shows'
+        self.org.save(update_fields=['description'])
+        self.assertTrue(self._steps()['set_profile']['complete'])
 
-    def test_go_live_step_completes_when_event_live(self):
-        self._make_event(status=self.EVENT_STATUS_LIVE)
-        steps = {s['key']: s for s in self._onboarding()['steps']}
-        self.assertTrue(steps['create_event']['complete'])
-        self.assertTrue(steps['go_live']['complete'])
+    def test_import_step_routes_straight_to_external_flow(self):
+        # Must skip the type chooser (which leads with Direct Ticketing) and go
+        # directly to the external/CSV create flow.
+        from .models import TICKETING_TYPE_EXTERNAL
+        self.assertEqual(
+            self._steps()['import_data']['url'],
+            reverse('tickets:event_create', args=[TICKETING_TYPE_EXTERNAL]),
+        )
 
-    def test_payouts_step_completes(self):
-        self.org.stripe_onboarding_complete = True
-        self.org.save(update_fields=['stripe_onboarding_complete'])
-        steps = {s['key']: s for s in self._onboarding()['steps']}
-        self.assertTrue(steps['setup_payouts']['complete'])
+    def test_import_and_segments_complete_with_real_customer(self):
+        self._add_customer()
+        steps = self._steps()
+        self.assertTrue(steps['import_data']['complete'])
+        self.assertTrue(steps['review_segments']['complete'])
 
-    def test_all_complete_hides_card_without_dismissal(self):
-        self._make_event(status=self.EVENT_STATUS_LIVE)
-        self.org.stripe_onboarding_complete = True
-        self.org.save(update_fields=['stripe_onboarding_complete'])
+    def test_placeholder_customer_does_not_complete_import(self):
+        self._add_customer(email='in-person-%s@placeholder.local' % self.org.id)
+        self.assertFalse(self._steps()['import_data']['complete'])
+
+    def test_sms_step_consent_gated_with_no_audience(self):
+        self._add_customer()  # imported but no opt-in
+        step = self._steps()['send_campaign']
+        self.assertEqual(step['cta'], 'Review consent')
+        # Lands on the customer list with the consent explainer focused.
+        self.assertEqual(step['url'], reverse('tickets:customer_list') + '?focus=consent')
+        self.assertFalse(step['complete'])
+
+    def test_consent_help_banner_shows_only_with_focus(self):
+        self._add_customer()
+        base = reverse('tickets:customer_list')
+        with_focus = self.client.get(base + '?focus=consent').content.decode()
+        without = self.client.get(base).content.decode()
+        self.assertIn('Getting an SMS-eligible audience', with_focus)
+        self.assertNotIn('Getting an SMS-eligible audience', without)
+
+    def test_sms_step_points_to_compose_with_eligible_audience(self):
+        self._add_customer(phone='+15551110001', sms_opt_in=True)
+        step = self._steps()['send_campaign']
+        self.assertEqual(step['cta'], 'Compose campaign')
+        self.assertEqual(step['url'], reverse('tickets:sms_campaign_create'))
+
+    def test_sms_step_completes_on_sent_campaign(self):
+        self._add_customer(phone='+15551110001', sms_opt_in=True)
+        self._sent_campaign()
+        self.assertTrue(self._steps()['send_campaign']['complete'])
+
+    def test_all_complete_hides_card(self):
+        self.org.description = 'x'
+        self.org.save(update_fields=['description'])
+        self._add_customer(phone='+15551110001', sms_opt_in=True)
+        self._sent_campaign()
         onboarding = self._onboarding()
         self.assertTrue(onboarding['all_complete'])
         self.assertFalse(onboarding['show'])
 
-    def test_dismiss_hides_card(self):
+    def test_dismiss_hides_card_and_skips_predicates(self):
         resp = self.client.post(reverse('tickets:dismiss_onboarding'))
         self.assertRedirects(resp, reverse('tickets:home'))
         self.org.refresh_from_db()
         self.assertIsNotNone(self.org.onboarding_dismissed_at)
-        self.assertFalse(self._onboarding()['show'])
+        onboarding = self._onboarding()
+        self.assertFalse(onboarding['show'])
+        self.assertEqual(onboarding['steps'], [])
 
     def test_dismiss_requires_post(self):
         resp = self.client.get(reverse('tickets:dismiss_onboarding'))
         self.assertEqual(resp.status_code, 405)
+
+    def _upsell_shown(self):
+        return self.client.get(reverse('tickets:home')).context['show_directticketing_upsell']
+
+    def test_upsell_hidden_before_any_value(self):
+        # Value-gated: nothing imported, no campaign → no upsell.
+        self.assertFalse(self._upsell_shown())
+
+    def test_upsell_shown_after_import(self):
+        self._add_customer()
+        self.assertTrue(self._upsell_shown())
+
+    def test_upsell_shown_after_campaign(self):
+        self._sent_campaign()
+        self.assertTrue(self._upsell_shown())
+
+    def test_upsell_hidden_when_stripe_onboarded(self):
+        self._add_customer()
+        self.org.stripe_onboarding_complete = True
+        self.org.save(update_fields=['stripe_onboarding_complete'])
+        self.assertFalse(self._upsell_shown())
+
+    def test_upsell_dismiss_persists(self):
+        self._add_customer()
+        self.assertTrue(self._upsell_shown())
+        resp = self.client.post(reverse('tickets:dismiss_directticketing_upsell'))
+        self.assertRedirects(resp, reverse('tickets:home'))
+        self.org.refresh_from_db()
+        self.assertIsNotNone(self.org.directticketing_upsell_dismissed_at)
+        self.assertFalse(self._upsell_shown())
+
+    def test_upsell_dismiss_requires_post(self):
+        resp = self.client.get(reverse('tickets:dismiss_directticketing_upsell'))
+        self.assertEqual(resp.status_code, 405)
+
+    def test_zero_data_dashboard_shows_import_cta_and_empty_state(self):
+        html = self.client.get(reverse('tickets:home')).content.decode()
+        self.assertIn('Import an event report', html)      # primary CTA (D2/2A)
+        self.assertIn('No customers yet', html)            # empty state (D3/3A)
+        self.assertIn(reverse('tickets:sample_import_csv'), html)
+
+    def test_dashboard_with_customers_shows_stats_not_empty_state(self):
+        self._add_customer()
+        html = self.client.get(reverse('tickets:home')).content.decode()
+        self.assertIn('Total Customers', html)
+        self.assertNotIn('No customers yet', html)
+
+    def test_sample_import_csv_download(self):
+        resp = self.client.get(reverse('tickets:sample_import_csv'))
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp['Content-Type'], 'text/csv')
+        self.assertIn('attachment', resp['Content-Disposition'])
+        body = resp.content.decode()
+        self.assertIn('sms_opt_in', body)          # consent column documented
+        self.assertIn('customer_email', body)
 
 
 class VenueCreateInlineTests(TestCase):
@@ -16577,7 +16942,11 @@ class ExternalEventsFeatureFlagTests(TestCase):
 
     def setUp(self):
         self.client = Client()
-        self.org = Organization.objects.create(name='Flag Org', slug='flag-org')
+        # The model default is now True (external-first onboarding); this class
+        # exercises the gate itself, so force the flag OFF for the "when off" cases.
+        self.org = Organization.objects.create(
+            name='Flag Org', slug='flag-org', external_events_enabled=False,
+        )
         self.user = User.objects.create_user(
             username='flaguser', email='flag@test.com', password='pass12345'
         )
@@ -16607,8 +16976,10 @@ class ExternalEventsFeatureFlagTests(TestCase):
         self.org.external_events_enabled = True
         self.org.save(update_fields=['external_events_enabled'])
 
-    def test_default_flag_off(self):
-        self.assertFalse(self.org.external_events_enabled)
+    def test_default_flag_on_for_new_org(self):
+        # External-first onboarding: a brand-new org has the flag on by default.
+        fresh = Organization.objects.create(name='Fresh Flag Org', slug='fresh-flag-org')
+        self.assertTrue(fresh.external_events_enabled)
 
     def test_type_select_redirects_to_direct_when_off(self):
         resp = self.client.get(reverse('tickets:event_type_select'))
@@ -16620,7 +16991,7 @@ class ExternalEventsFeatureFlagTests(TestCase):
         self._enable()
         resp = self.client.get(reverse('tickets:event_type_select'))
         self.assertEqual(resp.status_code, 200)
-        self.assertContains(resp, 'External Ticketing')
+        self.assertContains(resp, 'Import an Event')
 
     def test_external_create_blocked_when_off(self):
         resp = self.client.get(

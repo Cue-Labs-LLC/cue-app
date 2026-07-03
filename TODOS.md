@@ -320,3 +320,63 @@
 **Context:** `tickets/services/customer_filters.py` (`market_ids` handling), `tickets/forms.py SMSCampaignForm.market_id`, `tickets/templates/tickets/marketing/sms/campaign_form.html` (markets audience group). Constraint from the same review (decision D14): markets refine an audience but can never be the sole selector — a tag or segment is still required, regardless of how many markets are picked.
 
 **Depends on:** Market-specific customer segments branch shipped.
+
+## Onboarding: Extract shared real-customers helper (DRY)
+
+**What:** Extract a single `real_customers(org)` queryset helper (or a `PLACEHOLDER_EMAIL_SUFFIX` constant + `.exclude()` mixin) and migrate the ~7 sites that repeat `.exclude(email__endswith='@placeholder.local')`.
+
+**Why:** The synthetic in-person placeholder customer (`csv_processor.py:497`) must be excluded from every customer-facing analytic. The literal `@placeholder.local` is currently copy-pasted across `views.py` (1869, 3035, 3050, 3096, 3634), `csv_processor.py`, and `tasks.py:498`. Each new consumer (the onboarding "imported data" predicate is the newest) re-copies it; one missed exclusion is a silent analytics bug.
+
+**Pros:** One definition of "real customer"; new features can't forget the exclusion. Aligns with DRY-aggressive preference.
+
+**Cons:** Touches ~7 analytics views, several of which were just reworked (segment queries, commits #303-#310). Refactor + regression risk not worth bundling into a feature PR.
+
+**Context:** Deferred from the onboarding eng review (decision D3=3B, 2026-07-02) specifically to avoid churning recently-moved segment-query code. Do it as its own PR with the existing analytics tests as the safety net.
+
+**Depends on:** Onboarding external-first branch shipped.
+
+---
+
+## Onboarding: Self-serve vs invite-only (waitlist + ungated API path)
+
+**What:** Decide and implement the real self-serve funnel: either auto-approve external-first web orgs at `create_organization`, gate the currently-ungated `_ensure_organization_for_user` API path, or both.
+
+**Why:** Today `create_organization` (web, external-first) is hard-gated behind `OrganizerWaitlist` APPROVED for non-superusers, while `_ensure_organization_for_user` (`api_views.py:937`, mobile Stripe-Connect) creates orgs with NO gate. So the only ungated org-creation door is the Stripe-first path — inverted from the external-first strategy. The onboarding plan polishes an invite-only front door and calls it a wedge; it is not self-serve until this is resolved.
+
+**Pros:** Turns the external-first onboarding work into an actual self-serve funnel. Removes the strategic inconsistency.
+
+**Cons:** Auto-approve + trial credits + zero verification invites throwaway-org SMS spam (needs abuse guard first). Gating the API path may break the mobile Stripe onboarding flow — needs care.
+
+**Context:** Accepted-and-documented as out of scope in the onboarding eng review (finding 7.5 / Open Q2, 2026-07-02). Tied to the trial-credit-abuse open question — solve verification/abuse before flipping to auto-approve.
+
+**Depends on:** Onboarding external-first branch shipped; trial-credit amount decided; consent (T1) landed.
+
+---
+
+## Onboarding: Org-level timezone
+
+**What:** Add a `timezone` field to `Organization` + `OrgProfileForm`, and default new event forms to it.
+
+**Why:** Timezone is currently set per-event only, so a brand-new org creates its first events with no sensible default and ambiguous TZ context. Related to a known class of UTC-date bugs (see `effective-status-utc-date-bug` learning) where `django_tz.localdate()` / per-event timezone is the right tool.
+
+**Pros:** Removes a real correctness footgun for new organizers; small, self-contained change.
+
+**Cons:** Must decide precedence (org default vs per-event override) and backfill existing orgs' default (likely from their events or `TIME_ZONE`).
+
+**Context:** Raised during onboarding office-hours/eng review as a parallel nice-to-have (2026-07-02), explicitly NOT part of external-first onboarding. Use `event.timezone` for minute precision and `django_tz.localdate()` for day-granular comparisons (see views.py:11719 comment).
+
+**Depends on:** —
+
+## Onboarding: SMS consent-collection surface (Option C)
+
+**What:** Build a dedicated way for organizers to *collect* marketing-SMS consent from customers, rather than only mapping it from a CSV column or asserting it manually. E.g., a shareable public opt-in link/page, an opt-in checkbox at ticket purchase, or a "text START to..." keyword flow.
+
+**Why:** The onboarding "Send your first SMS campaign" step is consent-gated (imported contacts default to `sms_opt_in=False`, and texting non-consented contacts violates TCPA/carrier rules). Today consent can only be (a) mapped from a CSV consent column on import, or (b) set manually via the customer-list bulk action for customers the org already has documented consent for. The "Review consent" step now shows an explainer pointing at those (commit 068a6ae), but there is no first-party way to *gather new* consent. Without it, an org whose export lacks a consent column has no compliant path to a sendable audience beyond re-importing.
+
+**Pros:** Closes the loop on the SMS revenue path (Cue monetizes SMS tokens); gives organizers a compliant, auditable consent source; makes the "send first campaign" activation step reachable for everyone, not just orgs with consent already in their data.
+
+**Cons:** Real scope — needs a public opt-in page/route, consent record-keeping (timestamp, source, IP/double-opt-in for defensibility), and likely Twilio keyword/webhook handling for STOP/START. Compliance-sensitive; get the record-keeping right.
+
+**Context:** Deferred from the onboarding design review (D5/6B) and the "Review consent" UX fix (2026-07-03). The manual/import paths exist today: `set_sms_opt_in` (tickets/services/sms_consent.py), `customers_bulk_sms_status` (tickets/sms_views.py), and CSV consent mapping (`customer_sms_opt_in` in csv_processor.py / the "SMS Marketing Consent" format row). Consent state lives on `Customer.sms_opt_in` / `sms_opt_in_date`; campaign audiences gate on it (models.py). A public opt-in surface is the missing piece.
+
+**Depends on:** —

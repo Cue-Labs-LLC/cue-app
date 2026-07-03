@@ -135,11 +135,13 @@ class Organization(BaseModel):
                   "Blank = end.",
     )
     sms_marketing_enabled = models.BooleanField(
-        default=False,
+        default=True,
         help_text=(
-            'Gates the native marketing SMS feature for this org. Off by default; '
-            'enable per-org for pilot rollout. FeatureFlagSettings is a global '
-            'singleton and cannot scope to individual orgs, so the SMS gate lives here.'
+            'Gates the native marketing SMS feature for this org. On by default for '
+            'new orgs (existing orgs unchanged by the default flip). Actual sending is '
+            'still gated by per-customer consent and platform A2P readiness. '
+            'FeatureFlagSettings is a global singleton and cannot scope to individual '
+            'orgs, so the SMS gate lives here.'
         ),
     )
     loyalty_feature_enabled = models.BooleanField(
@@ -235,10 +237,10 @@ class Organization(BaseModel):
         help_text='Show the AI Event Summary card on event detail pages.',
     )
     external_events_enabled = models.BooleanField(
-        default=False,
+        default=True,
         help_text=(
-            'Allow this org to create external (CSV-imported) events. Off by '
-            'default; direct ticketing only.'
+            'Allow this org to create external (CSV-imported) events. On by default '
+            '(external-first onboarding); a data migration backfilled existing orgs.'
         ),
     )
     photo = models.ImageField(
@@ -261,6 +263,8 @@ class Organization(BaseModel):
     # The checklist's step completion is derived from existing data (events, Stripe
     # onboarding); this only records that the card should stay hidden.
     onboarding_dismissed_at = models.DateTimeField(null=True, blank=True)
+    # Same idea for the value-gated "sell through Cue" direct-ticketing upsell.
+    directticketing_upsell_dismissed_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         ordering = ['name']

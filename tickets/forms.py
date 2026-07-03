@@ -1088,7 +1088,7 @@ class EventForm(forms.ModelForm):
         model = Event
         fields = [
             'name', 'ticketing_type', 'venue', 'start_date', 'start_time', 'end_date', 'end_time',
-            'description', 'capacity', 'max_tickets_per_customer', 'timezone', 'ticket_link',
+            'description', 'capacity', 'timezone', 'ticket_link',
         ]
         widgets = {
             'name': forms.TextInput(attrs={'class': 'form-control', 'placeholder': 'e.g., Familiar Faces'}),
@@ -1099,7 +1099,6 @@ class EventForm(forms.ModelForm):
             'end_time': forms.TimeInput(attrs={'type': 'time', 'class': 'form-control'}),
             'description': forms.Textarea(attrs={'rows': 3, 'class': 'form-control', 'placeholder': 'Optional event description'}),
             'capacity': forms.NumberInput(attrs={'class': 'form-control', 'placeholder': 'e.g., 500', 'min': '1'}),
-            'max_tickets_per_customer': forms.NumberInput(attrs={'class': 'form-control', 'placeholder': 'Unlimited', 'min': '1'}),
             'timezone': forms.Select(attrs={'class': 'form-select'}),
             'ticket_link': forms.URLInput(attrs={'class': 'form-control', 'placeholder': 'https://...'}),
         }
@@ -1120,8 +1119,6 @@ class EventForm(forms.ModelForm):
         )
         self.fields['description'].required = False
         self.fields['capacity'].required = False
-        self.fields['max_tickets_per_customer'].required = False
-        self.fields['max_tickets_per_customer'].help_text = 'Optional cumulative cap per customer across all purchases for this event.'
         self.fields['ticket_link'].required = False
         self.fields['start_time'].required = True
         self.fields['end_time'].required = True
@@ -1152,7 +1149,6 @@ class EventForm(forms.ModelForm):
                 Column('capacity', css_class='form-group col-md-3 mb-0'),
                 Column('timezone', css_class='form-group col-md-3 mb-0'),
             ),
-            Field('max_tickets_per_customer'),
             Field('description'),
             *([Field('ticket_link')] if not hide_ticket_link else []),
         ]

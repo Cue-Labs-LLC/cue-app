@@ -34,8 +34,8 @@
         <h1>Create Direct Event</h1>
         <p class="page-header-subtitle">Sell tickets natively through Cue and Stripe.</p>
         {% else %}
-        <h1>Create External Event</h1>
-        <p class="page-header-subtitle">Upload CSV data from a third-party ticketing platform.</p>
+        <h1>Import Event</h1>
+        <p class="page-header-subtitle">Add an event you sold elsewhere, then upload its ticket data (CSV) to see your customers.</p>
         {% endif %}
     </div>
 </div>
@@ -155,36 +155,6 @@
             <div class="card">
                 <div class="card-body">
                     {% crispy form %}
-                    <h6 class="mt-4">Talent Lineup (optional)</h6>
-                    <p class="small text-muted">Add performers or DJs in display order. Click "Add talent" to add a row.</p>
-                    {{ talent_formset.management_form }}
-                    <div class="table-responsive">
-                        <table class="table table-sm" id="talent-formset-table">
-                            <thead>
-                                <tr>
-                                    <th>Name</th>
-                                    <th>Order</th>
-                                    <th>Remove</th>
-                                </tr>
-                            </thead>
-                            <tbody id="talent-formset-tbody">
-                            </tbody>
-                        </table>
-                    </div>
-                    <button type="button" id="talent-add-row" class="btn btn-sm btn-outline-secondary mb-3">
-                        <i class="bi bi-plus-lg"></i> Add talent
-                    </button>
-                    <template id="talent-row-template">
-                        <tr class="talent-form-row">
-                            <td>{{ talent_formset.empty_form.name }}</td>
-                            <td>{{ talent_formset.empty_form.order }}</td>
-                            <td>
-                                <button type="button" class="btn btn-sm btn-outline-danger talent-remove" aria-label="Remove row">Remove</button>
-                                <span class="d-none">{{ talent_formset.empty_form.DELETE }}</span>
-                                {{ talent_formset.empty_form.id }}
-                            </td>
-                        </tr>
-                    </template>
                     <div class="mt-4">
                         <button type="submit" class="btn btn-primary">
                             Create Event
@@ -557,70 +527,6 @@ document.addEventListener('DOMContentLoaded', function () {
     }
 }());
 }); {# /DOMContentLoaded #}
-{% else %}
-(function() {
-    var totalFormsInput = document.querySelector('input[name="talent-TOTAL_FORMS"]');
-    var tbody = document.getElementById('talent-formset-tbody');
-    var template = document.getElementById('talent-row-template');
-    var addBtn = document.getElementById('talent-add-row');
-    if (!totalFormsInput || !tbody || !template || !addBtn) return;
-
-    function getTotalForms() {
-        return parseInt(totalFormsInput.value, 10) || 0;
-    }
-    function setTotalForms(n) {
-        totalFormsInput.value = n;
-    }
-
-    addBtn.addEventListener('click', function() {
-        var index = getTotalForms();
-        var clone = template.content.cloneNode(true);
-        clone.querySelectorAll('[name], [id], [for]').forEach(function(el) {
-            if (el.id) el.id = el.id.replace(/__prefix__/g, index);
-            if (el.name) el.name = el.name.replace(/__prefix__/g, index);
-            if (el.getAttribute('for')) el.setAttribute('for', el.getAttribute('for').replace(/__prefix__/g, index));
-        });
-        clone.querySelectorAll('input:not([type="hidden"]), select, textarea').forEach(function(el) {
-            if (el.type !== 'hidden') el.value = '';
-        });
-        tbody.appendChild(clone);
-        setTotalForms(index + 1);
-    });
-
-    tbody.addEventListener('click', function(e) {
-        var removeBtn = e.target.closest('.talent-remove');
-        if (!removeBtn) return;
-        e.preventDefault();
-        var row = removeBtn.closest('tr');
-        if (!row) return;
-        var idInput = row.querySelector('input[name^="talent-"][name$="-id"]');
-        var deleteInput = row.querySelector('input[name^="talent-"][name$="-DELETE"]');
-        if (idInput && idInput.value) {
-            if (deleteInput) deleteInput.checked = true;
-            row.style.display = 'none';
-        } else {
-            row.remove();
-            var rows = tbody.querySelectorAll('tr.talent-form-row');
-            var i, r, names;
-            for (i = 0; i < rows.length; i++) {
-                r = rows[i];
-                names = r.querySelectorAll('[name^="talent-"], [id^="id_talent-"]');
-                names.forEach(function(el) {
-                    if (el.name) {
-                        var match = el.name.match(/^talent-(\d+)-(.*)$/);
-                        if (match) el.name = 'talent-' + i + '-' + match[2];
-                    }
-                    if (el.id) {
-                        var idMatch = el.id.match(/^id_talent-(\d+)-(.*)$/);
-                        if (idMatch) el.id = 'id_talent-' + i + '-' + idMatch[2];
-                    }
-                });
-            }
-            setTotalForms(rows.length);
-        }
-    });
-})();
-
 {% endif %}
 </script>
 {% endblock %}

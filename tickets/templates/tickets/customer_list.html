@@ -161,6 +161,28 @@
     <a href="{% url 'tickets:customer_tag_list' %}" class="btn btn-outline-secondary btn-sm"><i class="bi bi-tags"></i> Manage Tags</a>
 </div>
 
+{% if show_consent_help %}
+<div class="card mb-4">
+    <div class="card-body">
+        <div class="fw-semibold mb-2"><i class="bi bi-chat-dots me-2"></i>Getting an SMS-eligible audience</div>
+        <p class="small text-body-secondary mb-2">
+            You can only text customers who have <strong>opted in to marketing SMS</strong>. The
+            <strong>SMS Subscriber</strong> column shows who's eligible (green check), and you can
+            filter by SMS status using the funnel on that column. There are three ways to grow this list:
+        </p>
+        <ul class="small text-body-secondary mb-2">
+            <li><strong>On import</strong> — map a consent column from your CSV (Settings → CSV Formats → "SMS Marketing Consent").</li>
+            <li><strong>Going forward</strong> — collect opt-ins at ticket purchase or via opt-in forms.</li>
+            <li><strong>Manually</strong> — select customers you already have consent from, then <em>SMS status → Opt in to SMS</em> in the actions menu.</li>
+        </ul>
+        <p class="small text-body-secondary mb-0">
+            <i class="bi bi-exclamation-triangle me-1"></i>Only opt in customers who have genuinely
+            consented to marketing texts — sending to non-consented contacts violates carrier and TCPA rules.
+        </p>
+    </div>
+</div>
+{% endif %}
+
 <!-- Compact search + count bar -->
 <div class="d-flex align-items-center gap-2 mb-3 flex-wrap">
     <div class="input-group input-group-sm" style="max-width: 260px;">

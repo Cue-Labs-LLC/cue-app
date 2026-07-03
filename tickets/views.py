@@ -38,7 +38,7 @@ from django.utils.text import slugify
 from .models import (
     Organization, UserProfile, OrganizationMembership, OrganizationInvitation,
     AIRecommendation,
-    CSVFormat, UploadedFile, Customer, CustomerTag, Event, EventExpense, EventEmailCampaign, EventSMSCampaign, EventTalent, TicketOrder, Ticket, Venue, Market,
+    CSVFormat, UploadedFile, Customer, CustomerTag, Event, EventExpense, EventEmailCampaign, EventSMSCampaign, TicketOrder, Ticket, Venue, Market,
     CustomField, CustomFieldOption, EventCustomFieldValue, IncomeSource, EventIncome,
     SurveyQuestion, SurveyQuestionOption, SurveyInvitation, SurveyResponse, SurveyAnswer, SurveyAnswerOption,
     DEFAULT_SURVEY_SUBJECT, SURVEY_SEND_OFFSET_CHOICES,
@@ -49,11 +49,11 @@ from .models import (
     ScannerSession, generate_unique_scanner_pin, TrackingLink, _generate_tracking_token,
     LoyaltyProgram, LoyaltyTier,
     EVENT_STATUS_DRAFT, EVENT_STATUS_LIVE, EVENT_STATUS_ENDED, EVENT_STATUS_CANCELLED,
-    TICKETING_TYPE_DIRECT,
+    TICKETING_TYPE_DIRECT, TICKETING_TYPE_EXTERNAL,
 )
 from .forms import (
     EventCSVUploadForm, EventExpenseForm, TicketPriceEntryForm, CSVFormatForm,
-    VenueForm, VenueChoiceField, EventForm, EventTalentFormSet, LoginForm,
+    VenueForm, VenueChoiceField, EventForm, LoginForm,
     CustomFieldForm, CustomFieldOptionFormSet,
     IncomeSourceForm, EventIncomeForm,
     OTPVerificationForm, MemberInviteForm, AttendeePhoneForm,
@@ -1447,6 +1447,7 @@ def org_required(request):
 def create_organization(request):
     """Create a new organization and assign the current user to it."""
     from .forms import OrganizationForm
+    from .services.org_onboarding import initialize_new_organization
     if not request.user.is_superuser:
         approved = OrganizerWaitlist.objects.filter(
             email=request.user.email,
@@ -1483,6 +1484,9 @@ def create_organization(request):
                 if profile.organization_id is None:
                     profile.organization = org
                 profile.save(update_fields=['organization', 'role', 'org_role'])
+            # Seed trial SMS credits after the org is committed (credit() locks the
+            # org row). Idempotent + non-fatal — see initialize_new_organization.
+            initialize_new_organization(org)
             clear_org_cache(request)
             request.session['_org_id'] = str(org.pk)
             messages.success(
@@ -1492,8 +1496,20 @@ def create_organization(request):
             )
             return redirect('tickets:home')
     else:
-        form = OrganizationForm()
-    return render(request, 'tickets/create_organization.html', {'form': form})
+        # Prefill the org name from the waitlist application so approved users
+        # confirm-and-create rather than re-entering info they already gave.
+        initial = {}
+        approved = OrganizerWaitlist.objects.filter(
+            email=request.user.email,
+            status=OrganizerWaitlist.Status.APPROVED,
+        ).order_by('-approved_at').first()
+        if approved and approved.organization_name:
+            initial['name'] = approved.organization_name
+        form = OrganizationForm(initial=initial)
+    return render(request, 'tickets/create_organization.html', {
+        'form': form,
+        'prefilled_from_waitlist': bool(initial.get('name')),
+    })
 
 
 @login_required
@@ -1749,56 +1765,100 @@ def invite_revoke(request, token):
     return redirect('tickets:member_list')
 
 
-def _onboarding_state(org):
+def _onboarding_state(org, has_customers):
     """Build the dashboard "Getting started" checklist for a new organizer.
 
-    Step completion is derived from existing data (no per-step flags). The card
-    hides once every step is complete or the org dismisses it.
+    Analytics-first: the guaranteed payoff is importing data to unlock customer
+    segments; SMS is a consent-gated later step (its CTA never points at a send
+    screen until there's an opted-in audience). Step completion is derived from
+    existing data (no per-step flags). The card hides once every step is complete
+    or the org dismisses it. ``has_customers`` is passed in from the home view's
+    already-computed customer count to avoid re-querying it here.
     """
+    empty = {'show': False, 'steps': [], 'complete_count': 0, 'total': 0,
+             'all_complete': False, 'has_sent_campaign': None}
     if org is None:
         # Only superusers can reach the dashboard without an org; nothing to onboard.
-        return {'show': False, 'steps': [], 'complete_count': 0, 'total': 0, 'all_complete': False}
+        return empty
+    # Dismissed orgs skip all predicate queries on every dashboard load.
+    if org.onboarding_dismissed_at:
+        return empty
 
-    org_events = Event.objects.filter(organization=org)
-    has_event = org_events.exists()
-    has_live_event = org_events.filter(status=EVENT_STATUS_LIVE).exists()
-    payouts_ready = bool(org.stripe_onboarding_complete)
+    from tickets.models import SMSCampaign
+
+    real_customers = Customer.objects.filter(organization=org).exclude(
+        email__endswith='@placeholder.local'
+    )
+    # Campaign audience is gated on consent + a phone (models.py); mirror it here.
+    has_eligible_audience = has_customers and real_customers.filter(
+        sms_opt_in=True).exclude(phone='').exists()
+    has_sent_campaign = SMSCampaign.objects.filter(
+        organization=org, status=SMSCampaign.Status.SENT
+    ).exists()
+    profile_set = bool(org.photo or org.description or org.website)
+
+    # SMS step is consent-gated: with no opted-in audience, the CTA leads to the
+    # customer list (where consent status lives), never a compose/blast screen.
+    if has_eligible_audience:
+        sms_step = {
+            'key': 'send_campaign',
+            'label': 'Send your first SMS campaign',
+            'description': 'Reach your opted-in customers with a text.',
+            'url': reverse('tickets:sms_campaign_create'),
+            'cta': 'Compose campaign',
+            'complete': has_sent_campaign,
+        }
+    else:
+        sms_step = {
+            'key': 'send_campaign',
+            'label': 'Send your first SMS campaign',
+            'description': 'Imported contacts need marketing consent before you can text them '
+                           '— map a consent column on import, or collect opt-ins.',
+            'url': reverse('tickets:customer_list') + '?focus=consent',
+            'cta': 'Review consent',
+            'complete': has_sent_campaign,
+        }
 
     steps = [
         {
-            'key': 'create_event',
-            'label': 'Create your first event',
-            'description': 'Set up an event and add ticket types to start selling on Cue.',
-            'url': reverse('tickets:event_create', args=[TICKETING_TYPE_DIRECT]),
-            'cta': 'Create event',
-            'complete': has_event,
+            'key': 'set_profile',
+            'label': 'Set up your organization profile',
+            'description': 'Add a logo, description, and website so customers recognize you.',
+            'url': reverse('tickets:org_profile'),
+            'cta': 'Edit profile',
+            'complete': profile_set,
         },
         {
-            'key': 'setup_payouts',
-            'label': 'Set up payouts so you can get paid',
-            'description': 'Connect a Stripe account to receive ticket revenue.',
-            'url': reverse('tickets:finance_overview'),
-            'cta': 'Set up payouts',
-            'complete': payouts_ready,
+            'key': 'import_data',
+            'label': 'Import an event report',
+            'description': 'Upload a sales report from a past event to see who your customers are.',
+            # Straight to the external (CSV) flow — skip the type chooser, which
+            # leads with Direct Ticketing and misreads as "sell tickets", not import.
+            'url': reverse('tickets:event_create', args=[TICKETING_TYPE_EXTERNAL]),
+            'cta': 'Import data',
+            'complete': has_customers,
         },
         {
-            'key': 'go_live',
-            'label': 'Publish your event',
-            'description': 'Take your event live so fans can find it and buy tickets.',
-            'url': reverse('tickets:event_list'),
-            'cta': 'Go to events',
-            'complete': has_live_event,
+            'key': 'review_segments',
+            'label': 'Review your customer segments',
+            'description': 'See your VIPs, regulars, and at-risk customers.',
+            'url': reverse('tickets:customer_segments'),
+            'cta': 'View segments',
+            'complete': has_customers,
         },
+        sms_step,
     ]
 
     complete_count = sum(1 for step in steps if step['complete'])
     all_complete = complete_count == len(steps)
     return {
-        'show': not org.onboarding_dismissed_at and not all_complete,
+        'show': not all_complete,
         'steps': steps,
         'complete_count': complete_count,
         'total': len(steps),
         'all_complete': all_complete,
+        # Surfaced so the direct-ticketing upsell can reuse it without re-querying.
+        'has_sent_campaign': has_sent_campaign,
     }
 
 
@@ -1812,6 +1872,68 @@ def dismiss_onboarding(request):
     org.onboarding_dismissed_at = django_tz.now()
     org.save(update_fields=['onboarding_dismissed_at'])
     return redirect('tickets:home')
+
+
+def _direct_ticketing_upsell(org, has_customers, has_sent_campaign=None):
+    """Whether to show the value-gated "sell through Cue" upsell card (D4/4A).
+
+    Shown only AFTER the org has seen value (imported customers or sent a
+    campaign), and only while direct ticketing isn't set up and the card hasn't
+    been dismissed. Kept quiet and dismissible — never a banner or modal.
+
+    ``has_sent_campaign`` may be passed in (the checklist already computes it) to
+    avoid a duplicate query; it's only looked up here when needed and unknown.
+    """
+    if org is None or org.directticketing_upsell_dismissed_at or org.stripe_onboarding_complete:
+        return False
+    if has_customers:
+        return True
+    if has_sent_campaign is None:
+        from tickets.models import SMSCampaign
+        has_sent_campaign = SMSCampaign.objects.filter(
+            organization=org, status=SMSCampaign.Status.SENT
+        ).exists()
+    return has_sent_campaign
+
+
+@login_required
+@require_org
+@require_organizer
+@require_http_methods(["POST"])
+def dismiss_directticketing_upsell(request):
+    """Permanently hide the direct-ticketing upsell card for the current org."""
+    org = get_organization(request)
+    org.directticketing_upsell_dismissed_at = django_tz.now()
+    org.save(update_fields=['directticketing_upsell_dismissed_at'])
+    return redirect('tickets:home')
+
+
+@login_required
+@require_org
+@require_organizer
+def sample_import_csv(request):
+    """Downloadable canonical sample CSV for first-time importers.
+
+    Shows the columns a ticket-order export should have, including the optional
+    SMS consent column that maps to Customer.sms_opt_in on import.
+    """
+    import csv as _csv
+    response = HttpResponse(content_type='text/csv')
+    response['Content-Disposition'] = 'attachment; filename="cue-sample-import.csv"'
+    writer = _csv.writer(response)
+    writer.writerow([
+        'order_date', 'customer_name', 'customer_email', 'customer_phone',
+        'ticket_type', 'total_amount', 'sms_opt_in',
+    ])
+    writer.writerow([
+        '2025-06-01', 'Jordan Rivera', 'jordan@example.com', '+15555550101',
+        'General Admission', '45.00', 'yes',
+    ])
+    writer.writerow([
+        '2025-06-01', 'Sam Chen', 'sam@example.com', '+15555550102',
+        'VIP', '90.00', 'no',
+    ])
+    return response
 
 
 @login_required
@@ -1900,7 +2022,13 @@ def home(request):
             '-created_at',
         )[:3]
     )
-    
+
+    # Reuse the already-computed customer count for the onboarding predicates so
+    # the checklist and the upsell don't re-query "does this org have customers"
+    # or "has it sent a campaign".
+    has_customers = total_customers > 0
+    onboarding = _onboarding_state(org, has_customers)
+
     context = {
         'page_obj': page_obj,
         'event_ids_show_warning': event_ids_show_warning,
@@ -1911,7 +2039,10 @@ def home(request):
         'total_revenue': total_revenue,
         'total_tickets': total_tickets,
         'ai_recommendations': ai_recommendations,
-        'onboarding': _onboarding_state(org),
+        'onboarding': onboarding,
+        'show_directticketing_upsell': _direct_ticketing_upsell(
+            org, has_customers, onboarding.get('has_sent_campaign')
+        ),
     }
     return render(request, 'tickets/home.html', context)
 
@@ -2788,6 +2919,9 @@ def customer_list(request):
         'segment_badge_colors': SEGMENT_BADGE_COLORS,
         'current_segment_definition': current_segment_definition,
         'org_tags': org_tags,
+        # Onboarding "Review consent" step lands here with ?focus=consent to
+        # explain how SMS consent works and where the controls are.
+        'show_consent_help': request.GET.get('focus') == 'consent',
     }
     context.update(market_context)
     return render(request, 'tickets/customer_list.html', context)
@@ -6673,21 +6807,13 @@ def event_create(request, ticketing_type):
             ticketing_type_locked=True,
             hide_ticket_link=False,
         )
-        talent_formset = EventTalentFormSet(request.POST, prefix='talent')
-        if form.is_valid() and talent_formset.is_valid():
+        if form.is_valid():
             event = form.save(commit=False)
             event.organization = org
             event.created_by = request.user
             event.status = EVENT_STATUS_LIVE
             MarketBuilder(org).assign_event(event, save=False)
             event.save()
-            instances = talent_formset.save(commit=False)
-            for obj in instances:
-                if obj.name and obj.name.strip():
-                    obj.event = event
-                    obj.save()
-            for obj in talent_formset.deleted_objects:
-                obj.delete()
             # Save custom field values for current org's dropdown custom fields only
             for cf in CustomField.objects.filter(field_type='dropdown', organization=org):
                 field_name = f'custom_field_{cf.id}'
@@ -6713,7 +6839,6 @@ def event_create(request, ticketing_type):
             hide_ticket_link=False,
             initial={'ticketing_type': ticketing_type},
         )
-        talent_formset = EventTalentFormSet(queryset=EventTalent.objects.none(), prefix='talent')
 
     venue_capacities = {
         str(v.id): v.capacity
@@ -6722,7 +6847,6 @@ def event_create(request, ticketing_type):
     }
     context = {
         'form': form,
-        'talent_formset': talent_formset,
         'venue_capacities_json': json.dumps(venue_capacities),
         'ticketing_type': ticketing_type,
         'google_maps_api_key': django_settings.GOOGLE_MAPS_API_KEY,
@@ -6790,20 +6914,12 @@ def event_edit(request, event_id):
     # External ticketing path
     if request.method == 'POST':
         form = EventForm(request.POST, instance=event, organization=org, ticketing_type_locked=True)
-        talent_formset = EventTalentFormSet(request.POST, prefix='talent')
-        if form.is_valid() and talent_formset.is_valid():
+        if form.is_valid():
             was_future = event.start_date >= date.today()
             event = form.save(commit=False)
             event.updated_by = request.user
             MarketBuilder(org).assign_event(event, save=False)
             event.save()
-            instances = talent_formset.save(commit=False)
-            for obj in instances:
-                if obj.name and obj.name.strip():
-                    obj.event = event
-                    obj.save()
-            for obj in talent_formset.deleted_objects:
-                obj.delete()
             # Save custom field values
             for cf in CustomField.objects.filter(field_type='dropdown', organization=org):
                 field_name = f'custom_field_{cf.id}'
@@ -6824,14 +6940,9 @@ def event_edit(request, event_id):
             return redirect('tickets:event_detail', event_id=event.id)
     else:
         form = EventForm(instance=event, organization=org, ticketing_type_locked=True)
-        talent_formset = EventTalentFormSet(
-            queryset=EventTalent.objects.filter(event=event).order_by('order', 'name'),
-            prefix='talent',
-        )
 
     context = {
         'form': form,
-        'talent_formset': talent_formset,
         'event': event,
         'ticketing_type': event.ticketing_type,
         'google_maps_api_key': django_settings.GOOGLE_MAPS_API_KEY,

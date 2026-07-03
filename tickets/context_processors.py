@@ -27,6 +27,10 @@ def organization_context(request):
         'is_org_admin': False,
         'is_org_host': False,
         'user_orgs': [],
+        # True when an authenticated attendee has been approved off the organizer
+        # waitlist but hasn't created their org yet — the nav points them straight
+        # to org creation instead of the (misleading) "Become an Organizer" form.
+        'organizer_waitlist_approved': False,
     }
     if request.user.is_authenticated:
         try:
@@ -65,6 +69,15 @@ def organization_context(request):
                 ctx['is_organizer'] = False
                 ctx['is_attendee'] = profile.is_attendee
                 ctx['view_mode'] = 'attendee'
+
+            # Approved-but-org-less attendees get a direct "Create your organization"
+            # nav link. One indexed .exists() only for non-organizers.
+            if not profile.is_organizer:
+                from .models import OrganizerWaitlist
+                ctx['organizer_waitlist_approved'] = OrganizerWaitlist.objects.filter(
+                    email=request.user.email,
+                    status=OrganizerWaitlist.Status.APPROVED,
+                ).exists()
         except Exception:
             pass
 

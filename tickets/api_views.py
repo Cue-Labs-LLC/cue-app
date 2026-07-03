@@ -969,6 +969,9 @@ def _ensure_organization_for_user(user):
         profile.role = UserProfile.Role.ORGANIZER
         profile.org_role = UserProfile.OrgRole.OWNER
         profile.save(update_fields=['organization', 'role', 'org_role'])
+    # Seed trial SMS credits after the org is committed (idempotent + non-fatal).
+    from .services.org_onboarding import initialize_new_organization
+    initialize_new_organization(org)
     return org
 
 
