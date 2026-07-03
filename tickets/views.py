@@ -1870,6 +1870,35 @@ def dismiss_onboarding(request):
     return redirect('tickets:home')
 
 
+def _direct_ticketing_upsell(org, has_customers):
+    """Whether to show the value-gated "sell through Cue" upsell card (D4/4A).
+
+    Shown only AFTER the org has seen value (imported customers or sent a
+    campaign), and only while direct ticketing isn't set up and the card hasn't
+    been dismissed. Kept quiet and dismissible — never a banner or modal.
+    """
+    if org is None or org.directticketing_upsell_dismissed_at or org.stripe_onboarding_complete:
+        return False
+    if has_customers:
+        return True
+    from tickets.models import SMSCampaign
+    return SMSCampaign.objects.filter(
+        organization=org, status=SMSCampaign.Status.SENT
+    ).exists()
+
+
+@login_required
+@require_org
+@require_organizer
+@require_http_methods(["POST"])
+def dismiss_directticketing_upsell(request):
+    """Permanently hide the direct-ticketing upsell card for the current org."""
+    org = get_organization(request)
+    org.directticketing_upsell_dismissed_at = django_tz.now()
+    org.save(update_fields=['directticketing_upsell_dismissed_at'])
+    return redirect('tickets:home')
+
+
 @login_required
 @require_org
 @require_organizer
@@ -1996,6 +2025,7 @@ def home(request):
         'total_tickets': total_tickets,
         'ai_recommendations': ai_recommendations,
         'onboarding': _onboarding_state(org),
+        'show_directticketing_upsell': _direct_ticketing_upsell(org, total_customers > 0),
     }
     return render(request, 'tickets/home.html', context)
 

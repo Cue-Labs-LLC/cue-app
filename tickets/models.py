@@ -263,6 +263,8 @@ class Organization(BaseModel):
     # The checklist's step completion is derived from existing data (events, Stripe
     # onboarding); this only records that the card should stay hidden.
     onboarding_dismissed_at = models.DateTimeField(null=True, blank=True)
+    # Same idea for the value-gated "sell through Cue" direct-ticketing upsell.
+    directticketing_upsell_dismissed_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         ordering = ['name']

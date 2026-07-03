@@ -16814,6 +16814,40 @@ class OnboardingChecklistTests(TestCase):
         resp = self.client.get(reverse('tickets:dismiss_onboarding'))
         self.assertEqual(resp.status_code, 405)
 
+    def _upsell_shown(self):
+        return self.client.get(reverse('tickets:home')).context['show_directticketing_upsell']
+
+    def test_upsell_hidden_before_any_value(self):
+        # Value-gated: nothing imported, no campaign → no upsell.
+        self.assertFalse(self._upsell_shown())
+
+    def test_upsell_shown_after_import(self):
+        self._add_customer()
+        self.assertTrue(self._upsell_shown())
+
+    def test_upsell_shown_after_campaign(self):
+        self._sent_campaign()
+        self.assertTrue(self._upsell_shown())
+
+    def test_upsell_hidden_when_stripe_onboarded(self):
+        self._add_customer()
+        self.org.stripe_onboarding_complete = True
+        self.org.save(update_fields=['stripe_onboarding_complete'])
+        self.assertFalse(self._upsell_shown())
+
+    def test_upsell_dismiss_persists(self):
+        self._add_customer()
+        self.assertTrue(self._upsell_shown())
+        resp = self.client.post(reverse('tickets:dismiss_directticketing_upsell'))
+        self.assertRedirects(resp, reverse('tickets:home'))
+        self.org.refresh_from_db()
+        self.assertIsNotNone(self.org.directticketing_upsell_dismissed_at)
+        self.assertFalse(self._upsell_shown())
+
+    def test_upsell_dismiss_requires_post(self):
+        resp = self.client.get(reverse('tickets:dismiss_directticketing_upsell'))
+        self.assertEqual(resp.status_code, 405)
+
     def test_zero_data_dashboard_shows_import_cta_and_empty_state(self):
         html = self.client.get(reverse('tickets:home')).content.decode()
         self.assertIn('Import an event report', html)      # primary CTA (D2/2A)

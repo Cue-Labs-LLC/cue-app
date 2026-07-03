@@ -91,6 +91,7 @@ urlpatterns = [
     path('', views.landing),
     path('dashboard/', views.home, name='home'),
     path('onboarding/dismiss/', views.dismiss_onboarding, name='dismiss_onboarding'),
+    path('onboarding/dismiss-upsell/', views.dismiss_directticketing_upsell, name='dismiss_directticketing_upsell'),
     path('actions/', views.action_center, name='action_center'),
     path('actions/<uuid:recommendation_id>/review/', views.ai_recommendation_review, name='ai_recommendation_review'),
     path('actions/<uuid:recommendation_id>/dismiss/', views.ai_recommendation_dismiss, name='ai_recommendation_dismiss'),
