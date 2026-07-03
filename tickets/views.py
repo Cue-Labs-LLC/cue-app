@@ -1812,7 +1812,7 @@ def _onboarding_state(org):
             'label': 'Send your first SMS campaign',
             'description': 'Imported contacts need marketing consent before you can text them '
                            '— map a consent column on import, or collect opt-ins.',
-            'url': reverse('tickets:customer_list'),
+            'url': reverse('tickets:customer_list') + '?focus=consent',
             'cta': 'Review consent',
             'complete': has_sent_campaign,
         }
@@ -2902,6 +2902,9 @@ def customer_list(request):
         'segment_badge_colors': SEGMENT_BADGE_COLORS,
         'current_segment_definition': current_segment_definition,
         'org_tags': org_tags,
+        # Onboarding "Review consent" step lands here with ?focus=consent to
+        # explain how SMS consent works and where the controls are.
+        'show_consent_help': request.GET.get('focus') == 'consent',
     }
     context.update(market_context)
     return render(request, 'tickets/customer_list.html', context)

@@ -16778,8 +16778,17 @@ class OnboardingChecklistTests(TestCase):
         self._add_customer()  # imported but no opt-in
         step = self._steps()['send_campaign']
         self.assertEqual(step['cta'], 'Review consent')
-        self.assertEqual(step['url'], reverse('tickets:customer_list'))
+        # Lands on the customer list with the consent explainer focused.
+        self.assertEqual(step['url'], reverse('tickets:customer_list') + '?focus=consent')
         self.assertFalse(step['complete'])
+
+    def test_consent_help_banner_shows_only_with_focus(self):
+        self._add_customer()
+        base = reverse('tickets:customer_list')
+        with_focus = self.client.get(base + '?focus=consent').content.decode()
+        without = self.client.get(base).content.decode()
+        self.assertIn('Getting an SMS-eligible audience', with_focus)
+        self.assertNotIn('Getting an SMS-eligible audience', without)
 
     def test_sms_step_points_to_compose_with_eligible_audience(self):
         self._add_customer(phone='+15551110001', sms_opt_in=True)
