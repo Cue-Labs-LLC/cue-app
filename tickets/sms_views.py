@@ -401,15 +401,21 @@ def sms_campaign_list(request):
         selected_market = ''
 
     visible = [r for r in series if not selected_market or r['market'] == selected_market]
-    by_market = {}
-    for r in visible:
-        by_market.setdefault(r['market'], []).append({
-            'x': r['sent_ms'],
-            'y': r['audience'],
-            'name': r['name'],
-            'channel': r['channel'],
-        })
-    market_order = sorted(by_market, key=lambda m: sum(p['y'] for p in by_market[m]), reverse=True)
+    if selected_market:
+        by_market = {}
+        for r in visible:
+            by_market.setdefault(r['market'], []).append({
+                'x': r['sent_ms'], 'y': r['audience'],
+                'name': r['name'], 'market': r['market'],
+            })
+        market_order = sorted(by_market, key=lambda m: sum(p['y'] for p in by_market[m]), reverse=True)
+    else:
+        all_pts = sorted(
+            [{'x': r['sent_ms'], 'y': r['audience'], 'name': r['name'], 'market': r['market']} for r in visible],
+            key=lambda p: p['x'],
+        )
+        by_market = {'All Markets': all_pts}
+        market_order = ['All Markets']
     audience_points = {'by_market': by_market, 'market_order': market_order}
 
     # By-market breakdown spans ALL markets (always-on comparison), independent of

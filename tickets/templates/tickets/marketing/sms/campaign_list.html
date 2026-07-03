@@ -247,10 +247,11 @@
             return {
                 label: market,
                 data: byMarket[market],
-                backgroundColor: color,
                 borderColor: color,
+                backgroundColor: color,
                 pointRadius: 5,
                 pointHoverRadius: 7,
+                borderWidth: 2,
                 fill: false,
                 tension: 0.25,
                 spanGaps: false,
@@ -280,8 +281,11 @@
                             title: function (items) { return items.length ? fmtDate(items[0].parsed.x) : ''; },
                             label: function (ctx) {
                                 var p = ctx.raw || {};
-                                var ch = p.channel === 'native' ? 'Native' : 'SlickText';
-                                return (p.name || '') + ' (' + ch + ') — ' + p.y + ' audience';
+                                var line = (p.name || ctx.dataset.label) + ' — ' + p.y + ' audience';
+                                if (p.market && ctx.dataset.label === 'All Markets') {
+                                    line += ' (' + p.market + ')';
+                                }
+                                return line;
                             }
                         }
                     }
