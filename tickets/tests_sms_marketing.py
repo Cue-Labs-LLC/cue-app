@@ -914,10 +914,20 @@ class SMSViewTests(TestCase):
     def test_campaign_list_ok_when_enabled(self):
         resp = self.client.get(reverse('tickets:sms_campaign_list'))
         self.assertEqual(resp.status_code, 200)
-        # Consolidated SMS home: shared Marketing nav + performance band + table.
+        # Default view is unified Campaigns tab (shows empty state when no sends).
         self.assertContains(resp, 'marketing-sectionnav')
-        self.assertContains(resp, 'Campaigns sent')   # native performance stat card
-        self.assertContains(resp, 'Your campaigns')    # campaign table section
+        self.assertContains(resp, 'marketing-subnav')              # SMS sub-view pills
+        self.assertContains(resp, 'No campaigns in this window')   # empty state
+        self.assertContains(resp, 'New Campaign')                  # native CTA in empty state + toolbar
+
+    def test_campaign_list_audience_view(self):
+        # The Audience sub-view renders the broadcast chart + by-market table.
+        resp = self.client.get(reverse('tickets:sms_campaign_list'), {'view': 'audience'})
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, 'Audience by market')
+        self.assertContains(resp, 'id="sms-audience-chart"')
+        # Campaigns empty state not rendered on the Audience view.
+        self.assertNotContains(resp, 'No campaigns in this window')
 
     def test_linked_sms_visible_when_native_disabled_but_slicktext_linked(self):
         # Native SMS off, but SlickText connected → the SMS tab/page stays
@@ -944,13 +954,17 @@ class SMSViewTests(TestCase):
 
         resp = self.client.get(reverse('tickets:sms_campaign_list'))
         self.assertEqual(resp.status_code, 200)
-        # Linked sections present...
-        self.assertContains(resp, 'SlickText (linked)')
-        self.assertContains(resp, 'Top SlickText broadcasts')
-        # ...native compose/send UI absent.
+        # Linked-only mode: unified Campaigns tab shows SlickText rows.
+        self.assertContains(resp, 'marketing-subnav')
+        self.assertContains(resp, 'SlickText')   # source label in table cell
+        self.assertContains(resp, '>Source<')    # unified table column header
+        # Native compose UI absent for linked-only orgs.
         self.assertNotContains(resp, 'New Campaign')
-        self.assertNotContains(resp, 'Campaigns sent')
-        self.assertNotContains(resp, 'Your campaigns')
+
+        # view=campaigns is the default and is always valid.
+        resp = self.client.get(reverse('tickets:sms_campaign_list'), {'view': 'campaigns'})
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, '>Source<')
 
     def test_sms_page_reachable_when_native_disabled_and_no_slicktext(self):
         # SMS tab is always available to hosts: the list page loads (200) even

@@ -20,6 +20,13 @@ The SMS Campaigns tab is gated exactly like the old sidebar sub-link.
            {% if marketing_section == 'overview' and active_tab == 'overview' %}aria-current="page"{% endif %}>
             <i class="bi bi-grid-1x2"></i><span>Overview</span>
         </a>
+        {% if sms_section_visible %}
+        <a href="{% url 'tickets:sms_campaign_list' %}"
+           class="marketing-sectionnav-link{% if marketing_section == 'sms' %} is-active{% endif %}"
+           {% if marketing_section == 'sms' %}aria-current="page"{% endif %}>
+            <i class="bi bi-chat-dots"></i><span>SMS</span>
+        </a>
+        {% endif %}
         <a href="{% url 'tickets:marketing_overview' %}?tab=email"
            class="marketing-sectionnav-link{% if marketing_section == 'overview' and active_tab == 'email' %} is-active{% endif %}"
            {% if marketing_section == 'overview' and active_tab == 'email' %}aria-current="page"{% endif %}>
@@ -30,12 +37,5 @@ The SMS Campaigns tab is gated exactly like the old sidebar sub-link.
            {% if marketing_section == 'overview' and active_tab == 'ads' %}aria-current="page"{% endif %}>
             <i class="bi bi-bullseye"></i><span>Paid Ads</span>
         </a>
-        {% if sms_section_visible %}
-        <a href="{% url 'tickets:sms_campaign_list' %}"
-           class="marketing-sectionnav-link{% if marketing_section == 'sms' %} is-active{% endif %}"
-           {% if marketing_section == 'sms' %}aria-current="page"{% endif %}>
-            <i class="bi bi-chat-dots"></i><span>SMS</span>
-        </a>
-        {% endif %}
     </nav>
 </div>

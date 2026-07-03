@@ -41,6 +41,8 @@ from tickets.models import (
     ExternalSurveyResponse,
     ExternalSurveyUpload,
     IncomeSource,
+    Market,
+    MARKET_GEOGRAPHY_CITY,
     OrderCounter,
     Organization,
     OrganizationMembership,
@@ -84,7 +86,7 @@ SURVEY_TEST_EVENT_NAME = "Survey Test Night — 1 sale, ended"
 SURVEY_TEST_CUSTOMER_EMAIL = OWNER_EMAIL
 
 
-def build_survey_test_event(org, venue, owner, *, when=None):
+def build_survey_test_event(org, venue, owner, *, when=None, market=None):
     """Idempotently create an ENDED direct-ticketing event with exactly one
     ticket sold. Returns the Event. Safe to call repeatedly (keyed on org+name).
 
@@ -98,6 +100,7 @@ def build_survey_test_event(org, venue, owner, *, when=None):
         defaults=dict(
             summary="Tiny fixture: one attendee, event over — ready to send a survey.",
             venue=venue,
+            market=market,
             start_date=(now - timedelta(days=3)).date(),
             end_date=(now - timedelta(days=3)).date(),
             start_time=now.time().replace(microsecond=0),
@@ -209,18 +212,26 @@ class Command(BaseCommand):
             org = self._create_org()
             owner, staff_users = self._create_users(org)
             venues = self._create_venues(org)
+            # Collect all cities (venue cities + market-trend cities) so every
+            # event can be attached to its market.
+            venue_cities = [city for _, city, *_ in [
+                ("The Echo", "Los Angeles"), ("Baby's All Right", "Brooklyn"), ("Mohawk", "Austin"),
+            ]]
+            trend_cities = [city for city, *_ in self.MARKET_TREND_SPECS]
+            all_cities = sorted(set(venue_cities + trend_cities))
+            markets = self._create_markets(org, all_cities)
             csv_formats = self._create_csv_formats(org, owner)
             uploads = self._create_uploads(org, csv_formats, owner)
             tags = self._create_tags(org)
             customers = self._create_customers(org, tags, rng)
-            events = self._create_events(org, venues, owner, today, rng)
+            events = self._create_events(org, venues, markets, owner, today, rng)
             promo_codes = self._create_promo_codes(org, events, now)
             # Direct-ticketing catalog must exist before orders so direct events
             # sell against their real SaleableTicketTypes (keeps quantity_sold and
             # the underlying Ticket rows consistent).
             self._create_direct_ticketing(events, now, rng)
             self._create_orders_and_tickets(events, customers, uploads, promo_codes, owner, today, rng)
-            self._create_market_trend_history(org, owner, today, rng)
+            self._create_market_trend_history(org, markets, owner, today, rng)
             self._create_stripe_sessions(org, events, customers, now, rng)
             self._create_tracking_links(org, events, rng)
             self._create_expenses_and_income(org, events, owner, rng)
@@ -229,7 +240,9 @@ class Command(BaseCommand):
             self._create_sms_broadcasts(org, events, customers, owner, now, rng)
 
             # Minimal fixture for exercising the survey-send flow end-to-end.
-            survey_test_event = build_survey_test_event(org, venues[0], owner, when=now)
+            survey_test_event = build_survey_test_event(
+                org, venues[0], owner, when=now, market=markets.get("Los Angeles"),
+            )
             self.stdout.write(self.style.SUCCESS(f"Survey test event: {survey_test_event.name}"))
 
             for customer in Customer.objects.filter(organization=org):
@@ -312,6 +325,20 @@ class Command(BaseCommand):
 
         self.stdout.write(self.style.SUCCESS(f"Users: 1 owner + {len(staff)} staff"))
         return owner, staff
+
+    def _create_markets(self, org, cities):
+        """Create one city-level Market per city name. Returns {city: Market}."""
+        markets = {}
+        for city in cities:
+            market = Market.objects.create(
+                organization=org,
+                name=city,
+                geography_level=MARKET_GEOGRAPHY_CITY,
+                geography_value=city,
+            )
+            markets[city] = market
+        self.stdout.write(self.style.SUCCESS(f"Markets: {len(markets)}"))
+        return markets
 
     def _create_venues(self, org):
         data = [
@@ -443,7 +470,7 @@ class Command(BaseCommand):
         self.stdout.write(self.style.SUCCESS(f"Customers: {len(customers)}"))
         return customers
 
-    def _create_events(self, org, venues, owner, today, rng):
+    def _create_events(self, org, venues, markets, owner, today, rng):
         specs = [
             # (name, days_offset, status, ticketing, capacity, summary)
             ("Late Bloom — Winter", -120, EVENT_STATUS_ENDED, TICKETING_TYPE_EXTERNAL, 320, "Sold out winter showcase."),
@@ -465,6 +492,7 @@ class Command(BaseCommand):
                 summary=summary,
                 description=f"{summary}\n\nFollow @familiar.faces for the lineup and last-minute drops.",
                 venue=venue,
+                market=markets.get(venue.city),
                 start_date=start_date,
                 end_date=start_date,
                 start_time=timezone.now().time().replace(microsecond=0),
@@ -706,7 +734,7 @@ class Command(BaseCommand):
     NPS_PASSIVE_P = 0.30
     NPS_RESPONSES_PER_EVENT = (8, 16)   # rng range
 
-    def _create_market_trend_history(self, org, owner, today, rng):
+    def _create_market_trend_history(self, org, markets, owner, today, rng):
         from tickets.models import (
             EVENT_STATUS_ENDED, TICKETING_TYPE_EXTERNAL,
             ExternalSurveyResponse, ExternalSurveyUpload,
@@ -750,6 +778,7 @@ class Command(BaseCommand):
                         name=f"{city} Nights — Q{qi + 1} #{ei + 1}",
                         summary=f"{city} show.",
                         venue=venue,
+                        market=markets.get(city),
                         start_date=start_date,
                         end_date=start_date,
                         start_time=timezone.now().time().replace(microsecond=0),

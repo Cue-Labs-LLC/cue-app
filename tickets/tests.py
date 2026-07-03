@@ -4456,11 +4456,12 @@ class SMSBroadcastAudienceTests(TestCase):
         response = self.client.get(self.url, {'market': 'Central Texas'})
         self.assertEqual(response.status_code, 200)
         points = json.loads(response.context['audience_points_json'])
-        self.assertEqual(len(points['native']), 1)
-        self.assertEqual(len(points['slicktext']), 1)
-        self.assertEqual(points['native'][0]['market'], 'Central Texas')
-        self.assertEqual(points['native'][0]['market_id'], str(self.market.id))
-        self.assertEqual(points['native'][0]['y'], 120)
+        # by_market groups all channels under the market name.
+        self.assertIn('Central Texas', points['by_market'])
+        ct_points = points['by_market']['Central Texas']
+        self.assertEqual(len(ct_points), 2)  # native + slicktext
+        audiences = {p['y'] for p in ct_points}
+        self.assertIn(120, audiences)  # native SMSCampaign audience
         self.assertEqual(response.context['selected_market'], 'Central Texas')
 
     def test_unknown_market_falls_back_to_all(self):

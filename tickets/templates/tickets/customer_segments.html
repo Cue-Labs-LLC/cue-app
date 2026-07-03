@@ -3,6 +3,69 @@
 
 {% block title %}Customer Segments{% endblock %}
 
+{% block extra_head %}
+<style>
+    /* Segments-by-market: collapsible panels keep the section compact even
+       with many markets. Collapsed rows show only the market name and customer
+       count; the per-segment breakdown appears on expand. */
+    .market-accordion { display: flex; flex-direction: column; }
+    .market-panel { border-top: 1px solid var(--border, rgba(0,0,0,.09)); }
+    .market-panel:first-child { border-top: 0; }
+
+    .market-panel__header {
+        display: grid;
+        grid-template-columns: 1.25rem 1fr auto;
+        align-items: center;
+        gap: 1rem;
+        width: 100%;
+        padding: .85rem 1.25rem;
+        background: transparent;
+        border: 0;
+        text-align: left;
+        color: var(--text-primary, inherit);
+        cursor: pointer;
+        transition: background-color .15s ease;
+    }
+    .market-panel__header:hover { background: var(--bg-inset, rgba(0,0,0,.03)); }
+    .market-panel__header:focus-visible {
+        outline: 2px solid var(--accent, #3A3835);
+        outline-offset: -2px;
+    }
+
+    .market-panel__chevron {
+        color: var(--text-tertiary, #9A9794);
+        font-size: .8rem;
+        transition: transform .2s ease;
+    }
+    .market-panel__header[aria-expanded="true"] .market-panel__chevron { transform: rotate(90deg); }
+
+    .market-panel__name {
+        font-weight: 600;
+        font-size: .95rem;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+
+    .market-panel__count {
+        font-variant-numeric: tabular-nums;
+        font-size: .85rem;
+        color: var(--text-secondary, #5C5A57);
+        white-space: nowrap;
+    }
+    .market-panel__count strong { color: var(--text-primary, inherit); font-weight: 600; }
+
+    .market-panel__body { padding: 0 1.25rem 1rem calc(1.25rem + 1.25rem + 1rem); }
+    .market-panel__body .table { margin-bottom: 0; }
+    .market-panel__body .table > :not(caption) > * > * { padding-top: .5rem; padding-bottom: .5rem; }
+
+    @media (max-width: 575.98px) {
+        .market-panel__header { gap: .6rem; }
+        .market-panel__body { padding-left: 1.25rem; }
+    }
+</style>
+{% endblock %}
+
 {% block content %}
 <div class="page-header">
     <h1>Customer Segments</h1>
@@ -121,46 +184,58 @@
 <div class="card mt-4">
     <div class="card-header">
         <h5 class="mb-0">Segments by Market</h5>
+        <span class="text-muted small">Select a market to see its full segment breakdown</span>
     </div>
     <div class="card-body p-0">
-        <div class="table-responsive">
-            <table class="table table-hover mb-0 align-middle">
-                <thead>
-                    <tr>
-                        <th>Market</th>
-                        <th>Segment</th>
-                        <th>Customers</th>
-                        <th style="min-width: 150px;">Share</th>
-                        <th>Avg LTV</th>
-                        <th>Avg orders</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {% for market in market_segment_breakdown %}
-                        {% for row in market.segments %}
-                        <tr>
-                            <td>{{ market.market_name }}</td>
-                            <td>
-                                <a href="{% url 'tickets:customer_list' %}?segment={{ row.segment|urlencode }}&market={{ market.market_id|urlencode }}">
-                                    <span class="badge bg-{{ row.badge_color }}">{{ row.segment }}</span>
-                                </a>
-                            </td>
-                            <td>{{ row.count|intcomma }}</td>
-                            <td>
-                                <div class="d-flex align-items-center gap-2">
-                                    <div class="progress flex-grow-1" style="height: 6px; min-width: 90px;">
-                                        <div class="progress-bar bg-{{ row.badge_color }}" role="progressbar" style="width: {{ row.pct }}%;" aria-valuenow="{{ row.pct }}" aria-valuemin="0" aria-valuemax="100"></div>
-                                    </div>
-                                    <span class="text-muted small" style="min-width: 3.5em;">{{ row.pct }}%</span>
-                                </div>
-                            </td>
-                            <td><span class="revenue">${{ row.avg_ltv|currency }}</span></td>
-                            <td>{{ row.avg_orders }}</td>
-                        </tr>
-                        {% endfor %}
-                    {% endfor %}
-                </tbody>
-            </table>
+        <div class="market-accordion">
+            {% for market in market_segment_breakdown %}
+            <div class="market-panel">
+                <button class="market-panel__header" type="button" data-bs-toggle="collapse" data-bs-target="#market-panel-{{ forloop.counter }}" aria-expanded="false" aria-controls="market-panel-{{ forloop.counter }}">
+                    <i class="bi bi-chevron-right market-panel__chevron" aria-hidden="true"></i>
+                    <span class="market-panel__name">{{ market.market_name }}</span>
+                    <span class="market-panel__count"><strong>{{ market.total_customers|intcomma }}</strong> customer{{ market.total_customers|pluralize }}</span>
+                </button>
+                <div id="market-panel-{{ forloop.counter }}" class="collapse">
+                    <div class="market-panel__body">
+                        <div class="table-responsive">
+                            <table class="table table-hover mb-0 align-middle">
+                                <thead>
+                                    <tr>
+                                        <th>Segment</th>
+                                        <th>Customers</th>
+                                        <th style="min-width: 150px;">Share</th>
+                                        <th>Avg LTV</th>
+                                        <th>Avg orders</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {% for row in market.segments %}
+                                    <tr style="cursor: pointer;" onclick="window.location='{% url 'tickets:customer_list' %}?segment={{ row.segment|urlencode }}&market={{ market.market_id|urlencode }}'">
+                                        <td>
+                                            <a href="{% url 'tickets:customer_list' %}?segment={{ row.segment|urlencode }}&market={{ market.market_id|urlencode }}">
+                                                <span class="badge bg-{{ row.badge_color }}">{{ row.segment }}</span>
+                                            </a>
+                                        </td>
+                                        <td>{{ row.count|intcomma }}</td>
+                                        <td>
+                                            <div class="d-flex align-items-center gap-2">
+                                                <div class="progress flex-grow-1" style="height: 6px; min-width: 90px;">
+                                                    <div class="progress-bar bg-{{ row.badge_color }}" role="progressbar" style="width: {{ row.pct }}%;" aria-valuenow="{{ row.pct }}" aria-valuemin="0" aria-valuemax="100"></div>
+                                                </div>
+                                                <span class="text-muted small" style="min-width: 3.5em;">{{ row.pct }}%</span>
+                                            </div>
+                                        </td>
+                                        <td><span class="revenue">${{ row.avg_ltv|currency }}</span></td>
+                                        <td>{{ row.avg_orders }}</td>
+                                    </tr>
+                                    {% endfor %}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            {% endfor %}
         </div>
     </div>
 </div>
