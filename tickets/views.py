@@ -1873,6 +1873,34 @@ def dismiss_onboarding(request):
 @login_required
 @require_org
 @require_organizer
+def sample_import_csv(request):
+    """Downloadable canonical sample CSV for first-time importers.
+
+    Shows the columns a ticket-order export should have, including the optional
+    SMS consent column that maps to Customer.sms_opt_in on import.
+    """
+    import csv as _csv
+    response = HttpResponse(content_type='text/csv')
+    response['Content-Disposition'] = 'attachment; filename="cue-sample-import.csv"'
+    writer = _csv.writer(response)
+    writer.writerow([
+        'order_date', 'customer_name', 'customer_email', 'customer_phone',
+        'ticket_type', 'total_amount', 'sms_opt_in',
+    ])
+    writer.writerow([
+        '2025-06-01', 'Jordan Rivera', 'jordan@example.com', '+15555550101',
+        'General Admission', '45.00', 'yes',
+    ])
+    writer.writerow([
+        '2025-06-01', 'Sam Chen', 'sam@example.com', '+15555550102',
+        'VIP', '90.00', 'no',
+    ])
+    return response
+
+
+@login_required
+@require_org
+@require_organizer
 def home(request):
     """Home/dashboard page with overview statistics."""
     org = get_organization(request)
@@ -6729,21 +6757,13 @@ def event_create(request, ticketing_type):
             ticketing_type_locked=True,
             hide_ticket_link=False,
         )
-        talent_formset = EventTalentFormSet(request.POST, prefix='talent')
-        if form.is_valid() and talent_formset.is_valid():
+        if form.is_valid():
             event = form.save(commit=False)
             event.organization = org
             event.created_by = request.user
             event.status = EVENT_STATUS_LIVE
             MarketBuilder(org).assign_event(event, save=False)
             event.save()
-            instances = talent_formset.save(commit=False)
-            for obj in instances:
-                if obj.name and obj.name.strip():
-                    obj.event = event
-                    obj.save()
-            for obj in talent_formset.deleted_objects:
-                obj.delete()
             # Save custom field values for current org's dropdown custom fields only
             for cf in CustomField.objects.filter(field_type='dropdown', organization=org):
                 field_name = f'custom_field_{cf.id}'
@@ -6769,7 +6789,6 @@ def event_create(request, ticketing_type):
             hide_ticket_link=False,
             initial={'ticketing_type': ticketing_type},
         )
-        talent_formset = EventTalentFormSet(queryset=EventTalent.objects.none(), prefix='talent')
 
     venue_capacities = {
         str(v.id): v.capacity
@@ -6778,7 +6797,6 @@ def event_create(request, ticketing_type):
     }
     context = {
         'form': form,
-        'talent_formset': talent_formset,
         'venue_capacities_json': json.dumps(venue_capacities),
         'ticketing_type': ticketing_type,
         'google_maps_api_key': django_settings.GOOGLE_MAPS_API_KEY,

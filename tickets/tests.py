@@ -1332,6 +1332,123 @@ class NewOrgInitializationTests(TestCase):
         self.assertEqual(org.sms_credit_balance_cents, self._expected_trial_cents())
 
 
+class BuiltinFormatsAndTalentRemovalTests(TestCase):
+    """Eventbrite + POSH built-ins available; Talent Lineup removed from create/import."""
+
+    def setUp(self):
+        self.client = Client()
+        self.org = Organization.objects.create(
+            name='Fmt Org', slug='fmt-org', external_events_enabled=True,
+        )
+        self.user = User.objects.create_user(
+            username='fmtorg', email='fmt@test.com', password='pass12345',
+        )
+        UserProfile.objects.create(
+            user=self.user, organization=self.org,
+            role=UserProfile.Role.ORGANIZER, org_role=UserProfile.OrgRole.OWNER,
+        )
+        OrganizationMembership.objects.create(
+            user=self.user, organization=self.org, org_role=UserProfile.OrgRole.OWNER,
+        )
+        self.venue = Venue.objects.create(organization=self.org, name='V', city='C')
+        self.client.login(username='fmt@test.com', password='pass12345')
+        self.client.get(reverse('tickets:home'))  # seed session org
+
+    def test_builtin_formats_include_posh_and_eventbrite(self):
+        names = set(CSVFormat.available_for(self.org).values_list('name', flat=True))
+        self.assertIn('POSH', names)
+        self.assertIn('Eventbrite', names)
+
+    def test_eventbrite_orders_export_imports_end_to_end(self):
+        # Real Eventbrite "Orders" export headers (order-level, no ticket-class
+        # column) — must import via the Event name fallback for ticket_type, and
+        # book revenue from Net sales.
+        import io
+        from decimal import Decimal
+        eventbrite = CSVFormat.objects.get(name='Eventbrite', is_system=True)
+        upload = UploadedFile.objects.create(
+            organization=self.org, csv_format=eventbrite,
+            filename='eventbrite.csv', status='pending',
+            metadata={'event_name': 'Familiar Faces Day Party', 'event_start_date': '2026-04-25'},
+        )
+        csv_body = (
+            "Order ID,Order date,Buyer first name,Buyer last name,Buyer email,"
+            "Phone number,Ticket quantity,Net sales,Event name,Event location\n"
+            "14572631913,2026-03-30 16:01:14,John,Frye,john@createdpodcast.com,,1,8,Familiar Faces Day Party,Lot 613\n"
+            "14572638553,2026-03-30 16:02:29,Love,Guillette,lovevguillette@gmail.com,,4,32,Familiar Faces Day Party,Lot 613\n"
+        )
+        from tickets.csv_processor import CSVProcessor
+        results = CSVProcessor(upload, eventbrite).process_and_save(
+            io.BytesIO(csv_body.encode('utf-8'))
+        )
+        self.assertEqual(results['success_count'], 2)
+
+        john = Customer.objects.get(organization=self.org, email='john@createdpodcast.com')
+        self.assertEqual(john.name, 'John Frye')
+        order = TicketOrder.objects.get(customer=john)
+        self.assertEqual(order.total_amount, Decimal('8'))
+        # No ticket-class column → ticket_type falls back to the event name.
+        self.assertEqual(order.tickets.first().ticket_type, 'Familiar Faces Day Party')
+
+    def test_eventbrite_attendee_export_multi_ticket_buyer(self):
+        # Attendee report: one row per ticket. A 4-ticket order becomes 4 rows
+        # with the SAME Order ID but unique Barcodes. order_number maps to Barcode
+        # so the tickets don't collapse; all credit the Buyer (not the attendee).
+        import io
+        from decimal import Decimal
+        eventbrite = CSVFormat.objects.get(name='Eventbrite', is_system=True)
+        upload = UploadedFile.objects.create(
+            organization=self.org, csv_format=eventbrite,
+            filename='eventbrite_attendees.csv', status='pending',
+            metadata={'event_name': 'Familiar Faces Day Party', 'event_start_date': '2026-04-25'},
+        )
+        header = (
+            "Order ID,Order date,Buyer first name,Buyer last name,Buyer email,"
+            "Phone number,Ticket type,Ticket quantity,Ticket price,Barcode number,"
+            "Event name,Event location\n"
+        )
+        rows = "".join(
+            f"14572638553,2026-03-30 16:02:29,Love,Guillette,lovevguillette@gmail.com,,"
+            f"entry before 5:30pm,1,8.00,BC-{i},Familiar Faces Day Party,Lot 613\n"
+            for i in range(1, 5)  # 4 tickets, same order, 4 barcodes
+        )
+        from tickets.csv_processor import CSVProcessor
+        results = CSVProcessor(upload, eventbrite).process_and_save(
+            io.BytesIO((header + rows).encode('utf-8'))
+        )
+        self.assertEqual(results['success_count'], 4)
+
+        love = Customer.objects.get(organization=self.org, email='lovevguillette@gmail.com')
+        self.assertEqual(love.name, 'Love Guillette')
+        love_orders = TicketOrder.objects.filter(customer=love)
+        self.assertEqual(love_orders.count(), 4)  # barcode de-dup kept all 4
+        self.assertEqual(sum(o.total_amount for o in love_orders), Decimal('32'))
+        self.assertEqual(love_orders.first().tickets.first().ticket_type, 'entry before 5:30pm')
+
+    def test_import_page_has_no_talent_lineup(self):
+        html = self.client.get(
+            reverse('tickets:event_create', args=['external'])
+        ).content.decode()
+        self.assertNotIn('Talent Lineup', html)
+
+    def test_external_event_create_works_without_talent_fields(self):
+        resp = self.client.post(reverse('tickets:event_create', args=['external']), {
+            'name': 'No Talent Show',
+            'ticketing_type': 'external',
+            'venue': str(self.venue.id),
+            'start_date': '2025-03-10',
+            'start_time': '20:00',
+            'end_date': '2025-03-10',
+            'end_time': '22:00',
+            'timezone': 'America/Chicago',
+            'ticket_link': '',
+        })
+        self.assertEqual(resp.status_code, 302)
+        self.assertTrue(
+            Event.objects.filter(organization=self.org, name='No Talent Show').exists()
+        )
+
+
 class VenueAdminScopeTests(TestCase):
     def test_venue_admin_queryset_is_scoped_for_non_superusers(self):
         from django.contrib import admin
@@ -16696,6 +16813,27 @@ class OnboardingChecklistTests(TestCase):
     def test_dismiss_requires_post(self):
         resp = self.client.get(reverse('tickets:dismiss_onboarding'))
         self.assertEqual(resp.status_code, 405)
+
+    def test_zero_data_dashboard_shows_import_cta_and_empty_state(self):
+        html = self.client.get(reverse('tickets:home')).content.decode()
+        self.assertIn('Import an event report', html)      # primary CTA (D2/2A)
+        self.assertIn('No customers yet', html)            # empty state (D3/3A)
+        self.assertIn(reverse('tickets:sample_import_csv'), html)
+
+    def test_dashboard_with_customers_shows_stats_not_empty_state(self):
+        self._add_customer()
+        html = self.client.get(reverse('tickets:home')).content.decode()
+        self.assertIn('Total Customers', html)
+        self.assertNotIn('No customers yet', html)
+
+    def test_sample_import_csv_download(self):
+        resp = self.client.get(reverse('tickets:sample_import_csv'))
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp['Content-Type'], 'text/csv')
+        self.assertIn('attachment', resp['Content-Disposition'])
+        body = resp.content.decode()
+        self.assertIn('sms_opt_in', body)          # consent column documented
+        self.assertIn('customer_email', body)
 
 
 class VenueCreateInlineTests(TestCase):

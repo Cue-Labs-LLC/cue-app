@@ -98,6 +98,7 @@ urlpatterns = [
     path('actions/<uuid:recommendation_id>/unconfirmed-matches/', views.ai_recommendation_unconfirmed_matches, name='ai_recommendation_unconfirmed_matches'),
 
     # CSV Upload (price entry and results used when uploading from an event)
+    path('sample-import.csv', views.sample_import_csv, name='sample_import_csv'),
     path('upload/price-entry/<uuid:file_id>/', views.price_entry, name='price_entry'),
     path('upload/results/<uuid:file_id>/', views.upload_results, name='upload_results'),
     path('upload/<uuid:file_id>/delete/', views.upload_delete, name='upload_delete'),

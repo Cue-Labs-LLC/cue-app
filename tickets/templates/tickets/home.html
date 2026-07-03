@@ -10,9 +10,18 @@
         <p class="page-header-subtitle">Overview of your events and customers</p>
     </div>
     <div class="page-header-actions">
+        {% if total_customers %}
         <a href="{% url 'tickets:event_type_select' %}" class="btn btn-primary d-block d-sm-inline-flex justify-content-center">
             <i class="bi bi-plus-lg"></i> Create Event
         </a>
+        {% else %}
+        <a href="{% url 'tickets:event_create' 'external' %}" class="btn btn-primary d-block d-sm-inline-flex justify-content-center">
+            <i class="bi bi-upload"></i> Import an event report
+        </a>
+        <a href="{% url 'tickets:event_type_select' %}" class="btn btn-outline-secondary d-block d-sm-inline-flex justify-content-center">
+            <i class="bi bi-plus-lg"></i> Create Event
+        </a>
+        {% endif %}
     </div>
 </div>
 
@@ -55,6 +64,7 @@
 </div>
 {% endif %}
 
+{% if total_customers %}
 <div class="stats-grid">
     <div class="stat-card stat-card--accent">
         <div class="stat-label">Total Customers</div>
@@ -74,6 +84,21 @@
         <div class="stat-value">{{ total_tickets|default:0|intcomma }}</div>
     </div>
 </div>
+{% else %}
+<div class="card mb-4">
+    <div class="card-body">
+        <div class="empty-state">
+            <i class="bi bi-people d-block"></i>
+            <p class="fw-semibold mb-1">No customers yet</p>
+            <p class="text-body-secondary mb-3">Upload a sales report from your last event to see who your customers are — their lifetime value, segments, and more.</p>
+            <a href="{% url 'tickets:event_create' 'external' %}" class="btn btn-primary">
+                <i class="bi bi-upload"></i> Import an event report
+            </a>
+            <div><a href="{% url 'tickets:sample_import_csv' %}" class="small d-inline-block mt-2">Download sample CSV</a></div>
+        </div>
+    </div>
+</div>
+{% endif %}
 
 {% if ai_recommendations %}
 <div class="card mb-4">
