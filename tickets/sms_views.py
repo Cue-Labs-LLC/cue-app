@@ -7,6 +7,7 @@ org-scoped and gated behind the per-org ``sms_marketing_enabled`` flag.
 import logging
 import re
 import uuid
+from datetime import datetime, timedelta, timezone as stdlib_tz
 from decimal import Decimal
 from functools import wraps
 
@@ -28,6 +29,7 @@ from django.views.decorators.http import require_POST, require_http_methods
 from .models import (
     SMSCampaign, SMSMessageRecipient, PhoneSuppression, Event,
     Customer, TrackingLink, StripeCheckoutSession, Ticket,
+    EventSMSCampaign,
     TICKETING_TYPE_DIRECT, EVENT_STATUS_LIVE,
     _generate_tracking_token,
 )
@@ -328,17 +330,63 @@ def sms_campaign_list(request):
         get_cached_marketing_metrics, WINDOW_CHOICES, resolve_window, DEFAULT_WINDOW,
     )
     org = get_organization(request)
-    campaigns = _annotate_counts(
-        SMSCampaign.objects.filter(organization=org, deleted_at__isnull=True)
-        .select_related('event')
-    ).order_by('-created_at')
-    paginator = Paginator(campaigns, 25)
-    page_obj = paginator.get_page(request.GET.get('page'))
+    native = org.sms_marketing_enabled
 
     # Consolidated SMS performance band — reuses the Marketing analytics plumbing
     # (same cache/window as the Overview page) so all SMS lives on one page.
     window_key, window_days, window_label = resolve_window(request.GET.get('window', DEFAULT_WINDOW))
     metrics = get_cached_marketing_metrics(org, window_days, window_key)
+    now = timezone.now()
+
+    # Build unified campaigns list: native Cue sends + external (SlickText etc.)
+    # Both are window-filtered for consistency.
+    native_qs = _annotate_counts(
+        SMSCampaign.objects.filter(
+            organization=org, deleted_at__isnull=True, status=SMSCampaign.Status.SENT,
+        ).select_related('event')
+    )
+    if window_days:
+        native_qs = native_qs.filter(sent_at__gte=now - timedelta(days=window_days))
+
+    external_qs = EventSMSCampaign.objects.filter(
+        event__organization=org, send_time__isnull=False,
+    ).select_related('event')
+    if window_days:
+        external_qs = external_qs.filter(send_time__gte=now - timedelta(days=window_days))
+
+    unified_campaigns = []
+    for c in native_qs:
+        unified_campaigns.append({
+            'source_label': 'Cue',
+            'source_key': 'cue',
+            'name': c.name,
+            'detail_url': reverse('tickets:sms_campaign_detail', args=[c.id]),
+            'event': c.event,
+            'audience': c.audience_size or 0,
+            'clicks': c.unique_clicks,
+            'orders': None,
+            'revenue': None,
+            'when': c.sent_at or c.scheduled_at,
+        })
+    for c in external_qs:
+        label = (c.source or 'slicktext').replace('_', ' ').title()
+        unified_campaigns.append({
+            'source_label': label,
+            'source_key': (c.source or 'slicktext'),
+            'name': c.name or 'Untitled',
+            'detail_url': None,
+            'event': c.event,
+            'audience': c.effective_audience,
+            'clicks': c.effective_clicks,
+            'orders': c.effective_orders,
+            'revenue': c.effective_revenue,
+            'when': c.send_time,
+        })
+
+    _epoch = datetime.min.replace(tzinfo=stdlib_tz.utc)
+    unified_campaigns.sort(key=lambda b: b['when'] or _epoch, reverse=True)
+    paginator = Paginator(unified_campaigns, 25)
+    campaigns_page = paginator.get_page(request.GET.get('page'))
 
     # Broadcast audience over time + by market. The cached series is
     # market-independent; the market filter is applied here in Python.
@@ -353,17 +401,16 @@ def sms_campaign_list(request):
         selected_market = ''
 
     visible = [r for r in series if not selected_market or r['market'] == selected_market]
-    audience_points = {'native': [], 'slicktext': []}
+    by_market = {}
     for r in visible:
-        audience_points[r['channel']].append({
+        by_market.setdefault(r['market'], []).append({
             'x': r['sent_ms'],
             'y': r['audience'],
             'name': r['name'],
-            'market_id': r.get('market_id', ''),
-            'market_name': r.get('market_name') or r['market'],
-            'market_label': r.get('market_label') or r['market'],
-            'market': r['market'],
+            'channel': r['channel'],
         })
+    market_order = sorted(by_market, key=lambda m: sum(p['y'] for p in by_market[m]), reverse=True)
+    audience_points = {'by_market': by_market, 'market_order': market_order}
 
     # By-market breakdown spans ALL markets (always-on comparison), independent of
     # the chart's market filter.
@@ -385,17 +432,14 @@ def sms_campaign_list(request):
     for agg in market_breakdown:
         agg['avg_audience'] = round(agg['total_audience'] / agg['broadcasts']) if agg['broadcasts'] else 0
 
-    # Sub-views (pill nav): Campaigns / Performance / Audience. Campaigns is
-    # native-only, so SlickText-linked orgs get just Performance / Audience.
-    native = org.sms_marketing_enabled
-    sms_views = ['campaigns', 'performance', 'audience'] if native else ['performance', 'audience']
-    default_view = 'campaigns' if native else 'performance'
-    view = request.GET.get('view', default_view).lower()
+    # Sub-views: Campaigns (unified) + Audience — same for all orgs.
+    sms_views = ['campaigns', 'audience']
+    view = request.GET.get('view', 'campaigns').lower()
     if view not in sms_views:
-        view = default_view
+        view = 'campaigns'
 
     return render(request, 'tickets/marketing/sms/campaign_list.html', {
-        'page_obj': page_obj,
+        'campaigns_page': campaigns_page,
         'balance_cents': org.sms_credit_balance_cents,
         'sms_native_enabled': native,
         'marketing_section': 'sms',

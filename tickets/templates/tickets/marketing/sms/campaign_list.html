@@ -33,34 +33,17 @@
 .sms-section-head {
     display: flex; align-items: center; justify-content: space-between;
     gap: 12px; margin: 1.75rem 0 0.85rem;
+    position: relative; z-index: 100;
 }
 .sms-section-head:first-child { margin-top: 0.25rem; }
 .sms-section-head h2 { font-size: 1.05rem; margin: 0; }
 
-/* Slim native performance strip — replaces six large stat cards */
-.sms-metrics {
-    display: flex; flex-wrap: wrap; gap: 12px 34px;
-    padding: 14px 20px; margin-bottom: 1.25rem;
-    background: var(--bg-surface); border: 1px solid var(--border); border-radius: 10px;
-}
-.sms-metrics .metric { display: flex; flex-direction: column; gap: 2px; min-width: 62px; }
-.sms-metrics .metric-label {
-    font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-tertiary);
-}
-.sms-metrics .metric-value {
-    font-family: 'Outfit', system-ui, sans-serif; font-size: 1.35rem; font-weight: 600; line-height: 1.1;
-}
-.sms-metrics .metric-sub { font-size: 11px; color: var(--text-tertiary); }
 
-/* Compact SlickText revenue summary line */
-.sms-slicktext-summary {
-    display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 24px; margin-bottom: 1.25rem;
-}
-.sms-slicktext-summary .st-headline {
-    font-family: 'Outfit', system-ui, sans-serif; font-size: 1.6rem; font-weight: 600; line-height: 1.1;
-}
-.sms-slicktext-summary .st-meta { color: var(--text-secondary); font-size: 0.9rem; }
-.sms-slicktext-summary .st-meta b { color: var(--text-primary); font-weight: 600; }
+/* Source badges for unified Campaigns table */
+.source-badge { font-weight: 500; font-size: 11px; border-radius: 4px; padding: 2px 7px; }
+.source-badge--cue { background: rgba(79,124,255,0.12); color: #4f7cff; }
+/* #33c481 matches the chart PALETTE green used in the Audience tab */
+.source-badge--slicktext { background: rgba(51,196,129,0.12); color: #33c481; }
 </style>
 {% endblock %}
 
@@ -95,176 +78,80 @@
 
 {# ── Sub-view pill nav ───────────────────────────────────────────────── #}
 <nav class="marketing-subnav" role="tablist" aria-label="SMS views">
-    {% if 'campaigns' in sms_views %}
     <a class="marketing-subnav-btn{% if view == 'campaigns' %} active{% endif %}"
        href="?view=campaigns&window={{ window_key }}{% if selected_market %}&market={{ selected_market|urlencode }}{% endif %}"
        {% if view == 'campaigns' %}aria-current="page"{% endif %}>Campaigns</a>
-    {% endif %}
-    <a class="marketing-subnav-btn{% if view == 'performance' %} active{% endif %}"
-       href="?view=performance&window={{ window_key }}{% if selected_market %}&market={{ selected_market|urlencode }}{% endif %}"
-       {% if view == 'performance' %}aria-current="page"{% endif %}>Performance</a>
     <a class="marketing-subnav-btn{% if view == 'audience' %} active{% endif %}"
        href="?view=audience&window={{ window_key }}{% if selected_market %}&market={{ selected_market|urlencode }}{% endif %}"
        {% if view == 'audience' %}aria-current="page"{% endif %}>Audience</a>
 </nav>
 
-{# ── Campaigns view (native sends) ───────────────────────────────────── #}
+{# ── Campaigns view (unified: native Cue + external SlickText/etc.) ─────── #}
 {% if view == 'campaigns' %}
-<div class="sms-metrics" id="sms-perf">
-    <div class="metric">
-        <span class="metric-label">Campaigns</span>
-        <span class="metric-value">{{ native_sms.campaigns_sent }}</span>
-    </div>
-    <div class="metric">
-        <span class="metric-label">Messages</span>
-        <span class="metric-value">{{ native_sms.messages_sent }}</span>
-    </div>
-    <div class="metric">
-        <span class="metric-label">Delivered</span>
-        <span class="metric-value">{{ native_sms.messages_delivered }}</span>
-        <span class="metric-sub">{{ native_sms.delivery_rate|floatformat:2 }} rate</span>
-    </div>
-    <div class="metric">
-        <span class="metric-label">Clicks</span>
-        <span class="metric-value">{{ native_sms.unique_clicks }}</span>
-        <span class="metric-sub">{{ native_sms.total_clicks }} total</span>
-    </div>
-    <div class="metric">
-        <span class="metric-label">Failed</span>
-        <span class="metric-value">{{ native_sms.messages_failed }}</span>
-    </div>
-    <div class="metric">
-        <span class="metric-label">Unsubs</span>
-        <span class="metric-value">{{ native_sms.unsubscribes }}</span>
-    </div>
-</div>
-
-<div class="sms-section-head"><h2>Your campaigns</h2></div>
 <div class="card">
     <div class="card-body p-0">
-        {% if page_obj.object_list %}
-        <div class="table-responsive">
-            <table class="table table-hover mb-0 align-middle">
-                <thead>
-                    <tr>
-                        <th>Campaign</th>
-                        <th>Status</th>
-                        <th>Event</th>
-                        <th class="text-end">Audience</th>
-                        <th class="text-end">Sent</th>
-                        <th class="text-end">Delivered</th>
-                        <th class="text-end">Clicks</th>
-                        <th class="text-end">Unsubs</th>
-                        <th class="text-end">Failed</th>
-                        <th>When</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {% for c in page_obj.object_list %}
-                    <tr>
-                        <td><a href="{% url 'tickets:sms_campaign_detail' pk=c.id %}">{{ c.name }}</a></td>
-                        <td>
-                            {% if c.status == 'sent' %}<span class="badge bg-success">Sent</span>
-                            {% elif c.status == 'scheduled' %}<span class="badge bg-info">Scheduled</span>
-                            {% elif c.status == 'sending' %}<span class="badge bg-warning">Sending</span>
-                            {% elif c.status == 'canceled' %}<span class="badge bg-secondary">Canceled</span>
-                            {% elif c.status == 'failed' %}<span class="badge bg-danger">Failed</span>
-                            {% else %}<span class="badge bg-light text-dark">Draft</span>{% endif %}
-                        </td>
-                        <td>
-                            {% if c.event %}
-                            <a href="{% url 'tickets:event_detail' c.event.id %}"><i class="bi bi-ticket-perforated"></i> {{ c.event.name }}</a>
-                            <button type="button" class="btn btn-link btn-sm p-0 ms-1 align-baseline"
-                                    data-bs-toggle="modal" data-bs-target="#linkEventModal"
-                                    data-campaign-pk="{{ c.id }}" data-campaign-name="{{ c.name }}"
-                                    data-current-event="{{ c.event.id }}" data-next="{{ request.get_full_path }}">Change</button>
-                            {% else %}
-                            <button type="button" class="btn btn-outline-secondary btn-sm"
-                                    data-bs-toggle="modal" data-bs-target="#linkEventModal"
-                                    data-campaign-pk="{{ c.id }}" data-campaign-name="{{ c.name }}"
-                                    data-current-event="" data-next="{{ request.get_full_path }}">
-                                <i class="bi bi-link-45deg"></i> Link to event</button>
-                            {% endif %}
-                        </td>
-                        <td class="text-end">{{ c.audience_size }}</td>
-                        <td class="text-end">{{ c.sent_count }}</td>
-                        <td class="text-end">{{ c.delivered_count }}</td>
-                        <td class="text-end">{% if c.link_url %}{{ c.unique_clicks }}{% else %}<span class="text-muted">&mdash;</span>{% endif %}</td>
-                        <td class="text-end">{{ c.unsub_count }}</td>
-                        <td class="text-end">{{ c.failed_count }}</td>
-                        <td class="text-muted small">
-                            {% if c.status == 'scheduled' %}{{ c.scheduled_at|date:"M d, Y g:i A" }}
-                            {% elif c.sent_at %}{{ c.sent_at|date:"M d, Y g:i A" }}
-                            {% else %}{{ c.created_at|date:"M d, Y" }}{% endif %}
-                        </td>
-                    </tr>
-                    {% endfor %}
-                </tbody>
-            </table>
-        </div>
-        {% else %}
-        <div class="empty-state">
-            <i class="bi bi-chat-dots"></i>
-            <p>No SMS campaigns yet.</p>
-            <a href="{% url 'tickets:sms_campaign_create' %}" class="btn btn-primary btn-sm">Create your first campaign</a>
-        </div>
-        {% endif %}
-    </div>
-</div>
-
-{% if page_obj.has_other_pages %}
-<nav class="mt-3"><ul class="pagination justify-content-center">
-    {% if page_obj.has_previous %}<li class="page-item"><a class="page-link" href="?page={{ page_obj.previous_page_number }}&window={{ window_key }}&view=campaigns">Previous</a></li>{% endif %}
-    <li class="page-item disabled"><span class="page-link">Page {{ page_obj.number }} of {{ page_obj.paginator.num_pages }}</span></li>
-    {% if page_obj.has_next %}<li class="page-item"><a class="page-link" href="?page={{ page_obj.next_page_number }}&window={{ window_key }}&view=campaigns">Next</a></li>{% endif %}
-</ul></nav>
-{% endif %}
-
-{# ── Performance view (SlickText results) ────────────────────────────── #}
-{% elif view == 'performance' %}
-<div class="sms-slicktext-summary">
-    <span class="st-headline">${{ sms_channel.revenue|currency }}</span>
-    <span class="st-meta">
-        Audience <b>{{ sms_channel.audience }}</b> &nbsp;·&nbsp;
-        Broadcasts <b>{{ sms_channel.campaigns }}</b> &nbsp;·&nbsp;
-        Clicks <b>{{ sms_channel.clicks }}</b> &nbsp;·&nbsp;
-        Unsubs <b>{{ sms_channel.unsubscribes }}</b> &nbsp;·&nbsp;
-        Orders <b>{{ sms_channel.orders }}</b>
-    </span>
-</div>
-
-<div class="sms-section-head"><h2>Top SlickText broadcasts</h2></div>
-<div class="card">
-    <div class="card-body p-0">
-        {% if top_sms_campaigns %}
+        {% if campaigns_page.object_list %}
         <div class="table-responsive">
             <table class="table table-hover align-middle mb-0">
                 <thead>
                     <tr>
-                        <th>Broadcast</th>
+                        <th>Campaign</th>
+                        <th>Source</th>
                         <th>Event</th>
                         <th class="text-end">Audience</th>
                         <th class="text-end">Clicks</th>
                         <th class="text-end">Orders</th>
                         <th class="text-end">Revenue</th>
+                        <th>When</th>
                     </tr>
                 </thead>
                 <tbody>
-                    {% for row in top_sms_campaigns %}
+                    {% for row in campaigns_page.object_list %}
                     <tr>
-                        <td><span class="fw-semibold">{{ row.name }}</span></td>
-                        <td><a href="{% url 'tickets:event_detail' event_id=row.event_id %}?tab=marketing">{{ row.event_name }}</a></td>
-                        <td class="text-end">{{ row.sends }}</td>
-                        <td class="text-end">{{ row.clicks }}<span class="text-tertiary small d-block">{{ row.click_rate|floatformat:2 }}</span></td>
-                        <td class="text-end">{{ row.orders }}</td>
-                        <td class="text-end">${{ row.revenue|currency }}</td>
+                        <td>
+                            {% if row.detail_url %}<a href="{{ row.detail_url }}">{{ row.name }}</a>
+                            {% else %}{{ row.name }}{% endif %}
+                        </td>
+                        <td><span class="badge source-badge source-badge--{{ row.source_key }}">{{ row.source_label }}</span></td>
+                        <td>
+                            {% if row.event %}<a href="{% url 'tickets:event_detail' event_id=row.event.id %}?tab=marketing">{{ row.event.name }}</a>
+                            {% else %}<span class="text-muted">—</span>{% endif %}
+                        </td>
+                        <td class="text-end">{{ row.audience }}</td>
+                        <td class="text-end">{% if row.clicks is not None %}{{ row.clicks }}{% else %}<span class="text-muted">—</span>{% endif %}</td>
+                        <td class="text-end">{% if row.orders is not None %}{{ row.orders }}{% else %}<span class="text-muted">—</span>{% endif %}</td>
+                        <td class="text-end">{% if row.revenue is not None %}${{ row.revenue|currency }}{% else %}<span class="text-muted">—</span>{% endif %}</td>
+                        <td class="text-muted small">{% if row.when %}{{ row.when|date:"M d, Y" }}{% endif %}</td>
                     </tr>
                     {% endfor %}
                 </tbody>
             </table>
         </div>
+        {% if campaigns_page.has_other_pages %}
+        <nav aria-label="Campaign pagination" class="d-flex justify-content-center py-3">
+            <ul class="pagination pagination-sm mb-0">
+                {% if campaigns_page.has_previous %}
+                <li class="page-item"><a class="page-link" href="?view=campaigns&window={{ window_key }}&page={{ campaigns_page.previous_page_number }}{% if selected_market %}&market={{ selected_market|urlencode }}{% endif %}">&lsaquo;</a></li>
+                {% else %}
+                <li class="page-item disabled"><span class="page-link">&lsaquo;</span></li>
+                {% endif %}
+                <li class="page-item disabled"><span class="page-link">{{ campaigns_page.number }} / {{ campaigns_page.paginator.num_pages }}</span></li>
+                {% if campaigns_page.has_next %}
+                <li class="page-item"><a class="page-link" href="?view=campaigns&window={{ window_key }}&page={{ campaigns_page.next_page_number }}{% if selected_market %}&market={{ selected_market|urlencode }}{% endif %}">&rsaquo;</a></li>
+                {% else %}
+                <li class="page-item disabled"><span class="page-link">&rsaquo;</span></li>
+                {% endif %}
+            </ul>
+        </nav>
+        {% endif %}
         {% else %}
-        <div class="empty-state"><p>No SlickText broadcasts matched in this window.</p></div>
+        <div class="empty-state">
+            <i class="bi bi-chat-dots" style="font-size:2rem;opacity:.35;"></i>
+            <p>No campaigns in this window.</p>
+            {% if sms_native_enabled %}
+            <a href="{% url 'tickets:sms_campaign_create' %}" class="btn btn-sm btn-primary">New Campaign</a>
+            {% endif %}
+        </div>
         {% endif %}
     </div>
 </div>
@@ -272,7 +159,7 @@
 {# ── Audience view (reach: chart + by-market) ────────────────────────── #}
 {% elif view == 'audience' %}
 <div class="sms-section-head">
-    <h2>Broadcast audience over time</h2>
+    <h2>Campaign audiences over time</h2>
     <div class="window-selector">
         <div class="dropdown">
             <button class="window-selector-btn dropdown-toggle" type="button" data-bs-toggle="dropdown" aria-expanded="false">
@@ -339,24 +226,39 @@
         var grid = isDark ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.06)';
         var tick = isDark ? 'rgba(255,255,255,0.7)' : 'rgba(0,0,0,0.65)';
         var points = JSON.parse(document.getElementById('sms-audience-data').textContent);
+        var byMarket = points.by_market;
+        var order = points.market_order;
         // No points (no broadcasts, or the selected market has none): show an empty
         // state instead of an empty linear axis, which would render epoch-0 ("Dec 31, 1969") ticks.
-        if (!points.native.length && !points.slicktext.length) {
+        if (!order.length) {
             var wrap = el.parentNode;
             wrap.innerHTML = '<div class="empty-state"><p>No broadcasts with an audience in this window.</p></div>';
             return;
         }
+        var PALETTE = [
+            '#4f7cff','#33c481','#f59e0b','#ef4444','#a855f7',
+            '#ec4899','#06b6d4','#84cc16','#f97316','#6366f1','#14b8a6','#e11d48'
+        ];
         var fmtDate = function (ms) {
             return new Date(ms).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
         };
+        var datasets = order.map(function (market, i) {
+            var color = PALETTE[i % PALETTE.length];
+            return {
+                label: market,
+                data: byMarket[market],
+                backgroundColor: color,
+                borderColor: color,
+                pointRadius: 5,
+                pointHoverRadius: 7,
+                fill: false,
+                tension: 0.25,
+                spanGaps: false,
+            };
+        });
         new Chart(el, {
             type: 'line',
-            data: {
-                datasets: [
-                    { label: 'Native', data: points.native, backgroundColor: '#4f7cff', borderColor: '#4f7cff', pointRadius: 5, pointHoverRadius: 7, fill: false, tension: 0.25, spanGaps: true },
-                    { label: 'SlickText', data: points.slicktext, backgroundColor: '#33c481', borderColor: '#33c481', pointRadius: 5, pointHoverRadius: 7, fill: false, tension: 0.25, spanGaps: true }
-                ]
-            },
+            data: { datasets: datasets },
             options: {
                 responsive: true, maintainAspectRatio: false,
                 scales: {
@@ -378,7 +280,8 @@
                             title: function (items) { return items.length ? fmtDate(items[0].parsed.x) : ''; },
                             label: function (ctx) {
                                 var p = ctx.raw || {};
-                                return (p.name || '') + ' — ' + (p.market || '') + ' — ' + p.y + ' audience';
+                                var ch = p.channel === 'native' ? 'Native' : 'SlickText';
+                                return (p.name || '') + ' (' + ch + ') — ' + p.y + ' audience';
                             }
                         }
                     }
