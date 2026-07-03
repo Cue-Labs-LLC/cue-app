@@ -400,26 +400,8 @@ def sms_campaign_list(request):
     if selected_market and selected_market not in market_choices:
         selected_market = ''
 
-    visible = [r for r in series if not selected_market or r['market'] == selected_market]
-    if selected_market:
-        by_market = {}
-        for r in visible:
-            by_market.setdefault(r['market'], []).append({
-                'x': r['sent_ms'], 'y': r['audience'],
-                'name': r['name'], 'market': r['market'],
-            })
-        market_order = sorted(by_market, key=lambda m: sum(p['y'] for p in by_market[m]), reverse=True)
-    else:
-        all_pts = sorted(
-            [{'x': r['sent_ms'], 'y': r['audience'], 'name': r['name'], 'market': r['market']} for r in visible],
-            key=lambda p: p['x'],
-        )
-        by_market = {'All Markets': all_pts}
-        market_order = ['All Markets']
-    audience_points = {'by_market': by_market, 'market_order': market_order}
-
-    # By-market breakdown spans ALL markets (always-on comparison), independent of
-    # the chart's market filter.
+    # By-market breakdown spans ALL markets, independent of the chart filter.
+    # Computed first so auto-selection can use avg_audience.
     breakdown = {}
     for r in series:
         agg = breakdown.setdefault(
@@ -437,6 +419,29 @@ def sms_campaign_list(request):
     market_breakdown = sorted(breakdown.values(), key=lambda a: a['total_audience'], reverse=True)
     for agg in market_breakdown:
         agg['avg_audience'] = round(agg['total_audience'] / agg['broadcasts']) if agg['broadcasts'] else 0
+
+    # Default to the market with the highest avg audience when none is explicitly
+    # chosen. An explicit ?market= (empty string) opts into the "All Markets" view.
+    if 'market' not in request.GET and market_breakdown:
+        selected_market = max(market_breakdown, key=lambda a: a['avg_audience'])['market']
+
+    visible = [r for r in series if not selected_market or r['market'] == selected_market]
+    if selected_market:
+        by_market = {}
+        for r in visible:
+            by_market.setdefault(r['market'], []).append({
+                'x': r['sent_ms'], 'y': r['audience'],
+                'name': r['name'], 'market': r['market'],
+            })
+        market_order = sorted(by_market, key=lambda m: sum(p['y'] for p in by_market[m]), reverse=True)
+    else:
+        all_pts = sorted(
+            [{'x': r['sent_ms'], 'y': r['audience'], 'name': r['name'], 'market': r['market']} for r in visible],
+            key=lambda p: p['x'],
+        )
+        by_market = {'All Markets': all_pts}
+        market_order = ['All Markets']
+    audience_points = {'by_market': by_market, 'market_order': market_order}
 
     # Sub-views: Campaigns (unified) + Audience — same for all orgs.
     sms_views = ['campaigns', 'audience']

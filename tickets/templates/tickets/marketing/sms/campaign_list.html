@@ -39,11 +39,13 @@
 .sms-section-head h2 { font-size: 1.05rem; margin: 0; }
 
 
+/* Clickable market breakdown rows */
+.market-breakdown-table tbody tr { cursor: pointer; }
+
 /* Source badges for unified Campaigns table */
-.source-badge { font-weight: 500; font-size: 11px; border-radius: 4px; padding: 2px 7px; }
-.source-badge--cue { background: rgba(79,124,255,0.12); color: #4f7cff; }
-/* #33c481 matches the chart PALETTE green used in the Audience tab */
-.source-badge--slicktext { background: rgba(51,196,129,0.12); color: #33c481; }
+/* Blue is the default for all external providers; Cue is green. */
+.source-badge { font-weight: 500; font-size: 11px; border-radius: 4px; padding: 2px 7px; background: rgba(79,124,255,0.12); color: #4f7cff; }
+.source-badge--cue { background: rgba(51,196,129,0.12); color: #33c481; }
 </style>
 {% endblock %}
 
@@ -166,7 +168,7 @@
                 <i class="bi bi-geo-alt"></i> {% if selected_market %}{{ selected_market }}{% else %}All markets{% endif %}
             </button>
             <ul class="dropdown-menu dropdown-menu-end">
-                <li><a class="dropdown-item{% if not selected_market %} active{% endif %}" href="?window={{ window_key }}&view=audience">All markets</a></li>
+                <li><a class="dropdown-item{% if not selected_market %} active{% endif %}" href="?window={{ window_key }}&view=audience&market=">All markets</a></li>
                 {% for m in market_choices %}
                 <li><a class="dropdown-item{% if m == selected_market %} active{% endif %}" href="?window={{ window_key }}&view=audience&market={{ m|urlencode }}">{{ m }}</a></li>
                 {% endfor %}
@@ -183,7 +185,7 @@
     <div class="card-body p-0">
         {% if market_breakdown %}
         <div class="table-responsive">
-            <table class="table table-hover align-middle mb-0">
+            <table class="table table-hover align-middle mb-0 market-breakdown-table">
                 <thead>
                     <tr>
                         <th>Market</th>
@@ -193,7 +195,8 @@
                 </thead>
                 <tbody>
                     {% for row in market_breakdown %}
-                    <tr>
+                    <tr class="{% if row.market == selected_market %}table-active{% endif %}"
+                        onclick="window.location='?window={{ window_key }}&view=audience&market={{ row.market|urlencode }}'">
                         <td><span class="fw-semibold">{{ row.market }}</span></td>
                         <td class="text-end">{{ row.broadcasts }}</td>
                         <td class="text-end">{{ row.avg_audience }}</td>
