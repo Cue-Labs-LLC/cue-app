@@ -49,7 +49,7 @@ from .models import (
     ScannerSession, generate_unique_scanner_pin, TrackingLink, _generate_tracking_token,
     LoyaltyProgram, LoyaltyTier,
     EVENT_STATUS_DRAFT, EVENT_STATUS_LIVE, EVENT_STATUS_ENDED, EVENT_STATUS_CANCELLED,
-    TICKETING_TYPE_DIRECT,
+    TICKETING_TYPE_DIRECT, TICKETING_TYPE_EXTERNAL,
 )
 from .forms import (
     EventCSVUploadForm, EventExpenseForm, TicketPriceEntryForm, CSVFormatForm,
@@ -1768,49 +1768,89 @@ def invite_revoke(request, token):
 def _onboarding_state(org):
     """Build the dashboard "Getting started" checklist for a new organizer.
 
-    Step completion is derived from existing data (no per-step flags). The card
-    hides once every step is complete or the org dismisses it.
+    Analytics-first: the guaranteed payoff is importing data to unlock customer
+    segments; SMS is a consent-gated later step (its CTA never points at a send
+    screen until there's an opted-in audience). Step completion is derived from
+    existing data (no per-step flags). The card hides once every step is complete
+    or the org dismisses it.
     """
+    empty = {'show': False, 'steps': [], 'complete_count': 0, 'total': 0, 'all_complete': False}
     if org is None:
         # Only superusers can reach the dashboard without an org; nothing to onboard.
-        return {'show': False, 'steps': [], 'complete_count': 0, 'total': 0, 'all_complete': False}
+        return empty
+    # Dismissed orgs skip all predicate queries on every dashboard load.
+    if org.onboarding_dismissed_at:
+        return empty
 
-    org_events = Event.objects.filter(organization=org)
-    has_event = org_events.exists()
-    has_live_event = org_events.filter(status=EVENT_STATUS_LIVE).exists()
-    payouts_ready = bool(org.stripe_onboarding_complete)
+    from tickets.models import SMSCampaign
+
+    real_customers = Customer.objects.filter(organization=org).exclude(
+        email__endswith='@placeholder.local'
+    )
+    has_customers = real_customers.exists()
+    # Campaign audience is gated on consent + a phone (models.py); mirror it here.
+    has_eligible_audience = real_customers.filter(sms_opt_in=True).exclude(phone='').exists()
+    has_sent_campaign = SMSCampaign.objects.filter(
+        organization=org, status=SMSCampaign.Status.SENT
+    ).exists()
+    profile_set = bool(org.photo or org.description or org.website)
+
+    # SMS step is consent-gated: with no opted-in audience, the CTA leads to the
+    # customer list (where consent status lives), never a compose/blast screen.
+    if has_eligible_audience:
+        sms_step = {
+            'key': 'send_campaign',
+            'label': 'Send your first SMS campaign',
+            'description': 'Reach your opted-in customers with a text.',
+            'url': reverse('tickets:sms_campaign_create'),
+            'cta': 'Compose campaign',
+            'complete': has_sent_campaign,
+        }
+    else:
+        sms_step = {
+            'key': 'send_campaign',
+            'label': 'Send your first SMS campaign',
+            'description': 'Imported contacts need marketing consent before you can text them '
+                           '— map a consent column on import, or collect opt-ins.',
+            'url': reverse('tickets:customer_list'),
+            'cta': 'Review consent',
+            'complete': has_sent_campaign,
+        }
 
     steps = [
         {
-            'key': 'create_event',
-            'label': 'Create your first event',
-            'description': 'Set up an event and add ticket types to start selling on Cue.',
-            'url': reverse('tickets:event_create', args=[TICKETING_TYPE_DIRECT]),
-            'cta': 'Create event',
-            'complete': has_event,
+            'key': 'set_profile',
+            'label': 'Set up your organization profile',
+            'description': 'Add a logo, description, and website so customers recognize you.',
+            'url': reverse('tickets:org_profile'),
+            'cta': 'Edit profile',
+            'complete': profile_set,
         },
         {
-            'key': 'setup_payouts',
-            'label': 'Set up payouts so you can get paid',
-            'description': 'Connect a Stripe account to receive ticket revenue.',
-            'url': reverse('tickets:finance_overview'),
-            'cta': 'Set up payouts',
-            'complete': payouts_ready,
+            'key': 'import_data',
+            'label': 'Import an event report',
+            'description': 'Upload a sales report from a past event to see who your customers are.',
+            # Straight to the external (CSV) flow — skip the type chooser, which
+            # leads with Direct Ticketing and misreads as "sell tickets", not import.
+            'url': reverse('tickets:event_create', args=[TICKETING_TYPE_EXTERNAL]),
+            'cta': 'Import data',
+            'complete': has_customers,
         },
         {
-            'key': 'go_live',
-            'label': 'Publish your event',
-            'description': 'Take your event live so fans can find it and buy tickets.',
-            'url': reverse('tickets:event_list'),
-            'cta': 'Go to events',
-            'complete': has_live_event,
+            'key': 'review_segments',
+            'label': 'Review your customer segments',
+            'description': 'See your VIPs, regulars, and at-risk customers.',
+            'url': reverse('tickets:customer_segments'),
+            'cta': 'View segments',
+            'complete': has_customers,
         },
+        sms_step,
     ]
 
     complete_count = sum(1 for step in steps if step['complete'])
     all_complete = complete_count == len(steps)
     return {
-        'show': not org.onboarding_dismissed_at and not all_complete,
+        'show': not all_complete,
         'steps': steps,
         'complete_count': complete_count,
         'total': len(steps),

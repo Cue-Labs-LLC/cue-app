@@ -16590,12 +16590,9 @@ class SurveyHubTests(TestCase):
 
 
 class OnboardingChecklistTests(TestCase):
-    """Dashboard 'Getting started' checklist for new organizers."""
+    """Dashboard 'Getting started' checklist (analytics-first) for new organizers."""
 
     def setUp(self):
-        from .models import EVENT_STATUS_LIVE, EVENT_STATUS_DRAFT
-        self.EVENT_STATUS_LIVE = EVENT_STATUS_LIVE
-        self.EVENT_STATUS_DRAFT = EVENT_STATUS_DRAFT
         self.client = Client()
         self.org = Organization.objects.create(name='Onboarding Org', slug='onboarding-org')
         self.user = User.objects.create_user(
@@ -16613,55 +16610,88 @@ class OnboardingChecklistTests(TestCase):
     def _onboarding(self):
         return self.client.get(reverse('tickets:home')).context['onboarding']
 
-    def _make_event(self, status=None):
-        venue = Venue.objects.create(organization=self.org, name='Venue', city='City')
-        return Event.objects.create(
-            organization=self.org, name='Event', venue=venue,
-            start_date=date(2026, 6, 15), start_time=time(19, 0, 0),
-            ticketing_type=TICKETING_TYPE_DIRECT,
-            status=status or self.EVENT_STATUS_DRAFT,
+    def _steps(self):
+        return {s['key']: s for s in self._onboarding()['steps']}
+
+    def _add_customer(self, email='c@example.com', **kw):
+        return Customer.objects.create(organization=self.org, email=email, name='C', **kw)
+
+    def _sent_campaign(self):
+        from .models import SMSCampaign
+        return SMSCampaign.objects.create(
+            organization=self.org, name='Blast', body='hi',
+            status=SMSCampaign.Status.SENT,
         )
 
-    def test_new_org_shows_checklist_with_incomplete_steps(self):
+    def test_new_org_shows_four_incomplete_steps(self):
         onboarding = self._onboarding()
         self.assertTrue(onboarding['show'])
+        self.assertEqual(onboarding['total'], 4)
         self.assertEqual(onboarding['complete_count'], 0)
-        self.assertEqual(onboarding['total'], 3)
-        steps = {s['key']: s for s in onboarding['steps']}
-        self.assertFalse(steps['create_event']['complete'])
+        self.assertEqual(
+            set(self._steps()),
+            {'set_profile', 'import_data', 'review_segments', 'send_campaign'},
+        )
 
-    def test_create_event_step_completes(self):
-        self._make_event()
-        steps = {s['key']: s for s in self._onboarding()['steps']}
-        self.assertTrue(steps['create_event']['complete'])
-        self.assertFalse(steps['go_live']['complete'])
+    def test_profile_step_completes(self):
+        self.org.description = 'We throw great shows'
+        self.org.save(update_fields=['description'])
+        self.assertTrue(self._steps()['set_profile']['complete'])
 
-    def test_go_live_step_completes_when_event_live(self):
-        self._make_event(status=self.EVENT_STATUS_LIVE)
-        steps = {s['key']: s for s in self._onboarding()['steps']}
-        self.assertTrue(steps['create_event']['complete'])
-        self.assertTrue(steps['go_live']['complete'])
+    def test_import_step_routes_straight_to_external_flow(self):
+        # Must skip the type chooser (which leads with Direct Ticketing) and go
+        # directly to the external/CSV create flow.
+        from .models import TICKETING_TYPE_EXTERNAL
+        self.assertEqual(
+            self._steps()['import_data']['url'],
+            reverse('tickets:event_create', args=[TICKETING_TYPE_EXTERNAL]),
+        )
 
-    def test_payouts_step_completes(self):
-        self.org.stripe_onboarding_complete = True
-        self.org.save(update_fields=['stripe_onboarding_complete'])
-        steps = {s['key']: s for s in self._onboarding()['steps']}
-        self.assertTrue(steps['setup_payouts']['complete'])
+    def test_import_and_segments_complete_with_real_customer(self):
+        self._add_customer()
+        steps = self._steps()
+        self.assertTrue(steps['import_data']['complete'])
+        self.assertTrue(steps['review_segments']['complete'])
 
-    def test_all_complete_hides_card_without_dismissal(self):
-        self._make_event(status=self.EVENT_STATUS_LIVE)
-        self.org.stripe_onboarding_complete = True
-        self.org.save(update_fields=['stripe_onboarding_complete'])
+    def test_placeholder_customer_does_not_complete_import(self):
+        self._add_customer(email='in-person-%s@placeholder.local' % self.org.id)
+        self.assertFalse(self._steps()['import_data']['complete'])
+
+    def test_sms_step_consent_gated_with_no_audience(self):
+        self._add_customer()  # imported but no opt-in
+        step = self._steps()['send_campaign']
+        self.assertEqual(step['cta'], 'Review consent')
+        self.assertEqual(step['url'], reverse('tickets:customer_list'))
+        self.assertFalse(step['complete'])
+
+    def test_sms_step_points_to_compose_with_eligible_audience(self):
+        self._add_customer(phone='+15551110001', sms_opt_in=True)
+        step = self._steps()['send_campaign']
+        self.assertEqual(step['cta'], 'Compose campaign')
+        self.assertEqual(step['url'], reverse('tickets:sms_campaign_create'))
+
+    def test_sms_step_completes_on_sent_campaign(self):
+        self._add_customer(phone='+15551110001', sms_opt_in=True)
+        self._sent_campaign()
+        self.assertTrue(self._steps()['send_campaign']['complete'])
+
+    def test_all_complete_hides_card(self):
+        self.org.description = 'x'
+        self.org.save(update_fields=['description'])
+        self._add_customer(phone='+15551110001', sms_opt_in=True)
+        self._sent_campaign()
         onboarding = self._onboarding()
         self.assertTrue(onboarding['all_complete'])
         self.assertFalse(onboarding['show'])
 
-    def test_dismiss_hides_card(self):
+    def test_dismiss_hides_card_and_skips_predicates(self):
         resp = self.client.post(reverse('tickets:dismiss_onboarding'))
         self.assertRedirects(resp, reverse('tickets:home'))
         self.org.refresh_from_db()
         self.assertIsNotNone(self.org.onboarding_dismissed_at)
-        self.assertFalse(self._onboarding()['show'])
+        onboarding = self._onboarding()
+        self.assertFalse(onboarding['show'])
+        self.assertEqual(onboarding['steps'], [])
 
     def test_dismiss_requires_post(self):
         resp = self.client.get(reverse('tickets:dismiss_onboarding'))
