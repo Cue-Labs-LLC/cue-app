@@ -6,12 +6,61 @@
 {% block extra_head %}
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js" defer></script>
 <style>
+.sms-toolbar {
+    display: flex; flex-wrap: wrap; gap: 12px;
+    align-items: center; justify-content: space-between; margin-bottom: 1.1rem;
+}
 .sms-actions .btn { white-space: nowrap; }
+
+/* Pill sub-nav (Campaigns / Performance / Audience). Mirrors the segmented
+   control on Event Detail → Marketing, but rendered as links, not buttons. */
+.marketing-subnav {
+    display: inline-flex; gap: 2px; margin-bottom: 22px;
+    background: var(--bg-inset); border: 1px solid var(--border);
+    border-radius: 999px; padding: 3px;
+}
+.marketing-subnav-btn {
+    display: inline-flex; align-items: center; text-decoration: none;
+    font-family: var(--font-mono); font-size: 11.5px; font-weight: 500;
+    letter-spacing: 0.05em; text-transform: uppercase; color: var(--text-secondary);
+    padding: 7px 18px; border-radius: 999px;
+    transition: background 0.12s, color 0.12s;
+}
+.marketing-subnav-btn:hover { color: var(--text-primary); }
+.marketing-subnav-btn.active,
+.marketing-subnav-btn.active:hover { background: var(--accent); color: var(--text-inverse); }
+
 .sms-section-head {
     display: flex; align-items: center; justify-content: space-between;
     gap: 12px; margin: 1.75rem 0 0.85rem;
 }
+.sms-section-head:first-child { margin-top: 0.25rem; }
 .sms-section-head h2 { font-size: 1.05rem; margin: 0; }
+
+/* Slim native performance strip — replaces six large stat cards */
+.sms-metrics {
+    display: flex; flex-wrap: wrap; gap: 12px 34px;
+    padding: 14px 20px; margin-bottom: 1.25rem;
+    background: var(--bg-surface); border: 1px solid var(--border); border-radius: 10px;
+}
+.sms-metrics .metric { display: flex; flex-direction: column; gap: 2px; min-width: 62px; }
+.sms-metrics .metric-label {
+    font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-tertiary);
+}
+.sms-metrics .metric-value {
+    font-family: 'Outfit', system-ui, sans-serif; font-size: 1.35rem; font-weight: 600; line-height: 1.1;
+}
+.sms-metrics .metric-sub { font-size: 11px; color: var(--text-tertiary); }
+
+/* Compact SlickText revenue summary line */
+.sms-slicktext-summary {
+    display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 24px; margin-bottom: 1.25rem;
+}
+.sms-slicktext-summary .st-headline {
+    font-family: 'Outfit', system-ui, sans-serif; font-size: 1.6rem; font-weight: 600; line-height: 1.1;
+}
+.sms-slicktext-summary .st-meta { color: var(--text-secondary); font-size: 0.9rem; }
+.sms-slicktext-summary .st-meta b { color: var(--text-primary); font-weight: 600; }
 </style>
 {% endblock %}
 
@@ -22,8 +71,8 @@
 {% include 'tickets/marketing/_marketing_nav.html' with marketing_section='sms' subtitle='Track results from SlickText broadcasts linked to your events.' %}
 {% endif %}
 
-{# ── Actions + window ────────────────────────────────────────────────── #}
-<div class="d-flex flex-wrap gap-2 align-items-center justify-content-between mb-3">
+{# ── Toolbar: window + primary actions ───────────────────────────────── #}
+<div class="sms-toolbar">
     <div class="window-selector">
         <div class="dropdown">
             <button class="window-selector-btn dropdown-toggle" type="button" data-bs-toggle="dropdown" aria-expanded="false">
@@ -31,7 +80,7 @@
             </button>
             <ul class="dropdown-menu">
                 {% for key, info in window_choices.items %}
-                <li><a class="dropdown-item{% if key == window_key %} active{% endif %}" href="?window={{ key }}">{{ info.label }}</a></li>
+                <li><a class="dropdown-item{% if key == window_key %} active{% endif %}" href="?window={{ key }}&view={{ view }}{% if selected_market %}&market={{ selected_market|urlencode }}{% endif %}">{{ info.label }}</a></li>
                 {% endfor %}
             </ul>
         </div>
@@ -44,166 +93,53 @@
     {% endif %}
 </div>
 
-{# ── Performance band (native only) ──────────────────────────────────── #}
-{% if sms_native_enabled %}
-<div class="stats-grid">
-    <div class="stat-card stat-card--success">
-        <div class="stat-label">Campaigns sent</div>
-        <div class="stat-value">{{ native_sms.campaigns_sent }}</div>
-    </div>
-    <div class="stat-card">
-        <div class="stat-label">Messages sent</div>
-        <div class="stat-value">{{ native_sms.messages_sent }}</div>
-    </div>
-    <div class="stat-card stat-card--success">
-        <div class="stat-label">Delivered</div>
-        <div class="stat-value">{{ native_sms.messages_delivered }}</div>
-        <div class="stat-label mt-1" style="margin-bottom:0;">{{ native_sms.delivery_rate|floatformat:2 }} rate</div>
-    </div>
-    <div class="stat-card stat-card--info">
-        <div class="stat-label">Unique clicks</div>
-        <div class="stat-value">{{ native_sms.unique_clicks }}</div>
-        <div class="stat-label mt-1" style="margin-bottom:0;">{{ native_sms.total_clicks }} total</div>
-    </div>
-    <div class="stat-card stat-card--danger">
-        <div class="stat-label">Failed</div>
-        <div class="stat-value">{{ native_sms.messages_failed }}</div>
-    </div>
-    <div class="stat-card stat-card--warning">
-        <div class="stat-label">Unsubscribes</div>
-        <div class="stat-value">{{ native_sms.unsubscribes }}</div>
-    </div>
-</div>
-{% endif %}
-
-{# ── SlickText linked card (+ native clicks chart when native is on) ──── #}
-{% if sms_native_enabled %}
-<div class="marketing-grid-two">
-    <div class="chart-card">
-        <h2>Native SMS clicks by month</h2>
-        <div class="chart-canvas-wrap"><canvas id="sms-engagement-chart"></canvas></div>
-    </div>
-    <div class="channel-card channel-card--sms" style="margin-bottom:0;">
-        <div class="channel-card-title">SMS &middot; SlickText (linked)</div>
-        <div class="channel-card-headline">${{ sms_channel.revenue|currency }}</div>
-        <div class="channel-card-meta">
-            <span>Audience <b>{{ sms_channel.audience }}</b></span>
-            <span>Broadcasts <b>{{ sms_channel.campaigns }}</b></span>
-            <span>Clicks <b>{{ sms_channel.clicks }}</b></span>
-            <span>Unsubs <b>{{ sms_channel.unsubscribes }}</b></span>
-            <span>Orders <b>{{ sms_channel.orders }}</b></span>
-        </div>
-    </div>
-</div>
-{% else %}
-<div class="channel-card channel-card--sms">
-    <div class="channel-card-title">SMS &middot; SlickText (linked)</div>
-    <div class="channel-card-headline">${{ sms_channel.revenue|currency }}</div>
-    <div class="channel-card-meta">
-        <span>Audience <b>{{ sms_channel.audience }}</b></span>
-        <span>Broadcasts <b>{{ sms_channel.campaigns }}</b></span>
-        <span>Clicks <b>{{ sms_channel.clicks }}</b></span>
-        <span>Unsubs <b>{{ sms_channel.unsubscribes }}</b></span>
-        <span>Orders <b>{{ sms_channel.orders }}</b></span>
-    </div>
-</div>
-{% endif %}
-
-{# ── Broadcast audience over time + by market (native + SlickText) ───── #}
-<div class="chart-card">
-    <div class="sms-section-head">
-        <h2>Broadcast audience over time</h2>
-        <div class="window-selector">
-            <div class="dropdown">
-                <button class="window-selector-btn dropdown-toggle" type="button" data-bs-toggle="dropdown" aria-expanded="false">
-                    <i class="bi bi-geo-alt"></i> {% if selected_market %}{{ selected_market }}{% else %}All markets{% endif %}
-                </button>
-                <ul class="dropdown-menu dropdown-menu-end">
-                    <li><a class="dropdown-item{% if not selected_market %} active{% endif %}" href="?window={{ window_key }}">All markets</a></li>
-                    {% for m in market_choices %}
-                    <li><a class="dropdown-item{% if m == selected_market %} active{% endif %}" href="?window={{ window_key }}&market={{ m|urlencode }}">{{ m }}</a></li>
-                    {% endfor %}
-                </ul>
-            </div>
-        </div>
-    </div>
-    <div class="chart-canvas-wrap"><canvas id="sms-audience-chart"></canvas></div>
-</div>
-
-<div class="sms-section-head"><h2>Audience by market</h2></div>
-<div class="card">
-    <div class="card-body p-0">
-        {% if market_breakdown %}
-        <div class="table-responsive">
-            <table class="table table-hover align-middle mb-0">
-                <thead>
-                    <tr>
-                        <th>Market</th>
-                        <th class="text-end">Broadcasts</th>
-                        <th class="text-end">Total audience</th>
-                        <th class="text-end">Avg audience</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {% for row in market_breakdown %}
-                    <tr>
-                        <td><span class="fw-semibold">{{ row.market }}</span></td>
-                        <td class="text-end">{{ row.broadcasts }}</td>
-                        <td class="text-end">{{ row.total_audience }}</td>
-                        <td class="text-end">{{ row.avg_audience }}</td>
-                    </tr>
-                    {% endfor %}
-                </tbody>
-            </table>
-        </div>
-        {% else %}
-        <div class="empty-state"><p>No broadcasts with an audience in this window.</p></div>
-        {% endif %}
-    </div>
-</div>
-
-<div class="chart-card">
-    <h2>Top SlickText broadcasts</h2>
-    {% with sms_rows=top_sms_campaigns %}
-    {% if sms_rows %}
-    <div class="table-responsive">
-        <table class="table table-hover align-middle mb-0">
-            <thead>
-                <tr>
-                    <th>Broadcast</th>
-                    <th>Event</th>
-                    <th class="text-end">Audience</th>
-                    <th class="text-end">Clicks</th>
-                    <th class="text-end">Orders</th>
-                    <th class="text-end">Revenue</th>
-                </tr>
-            </thead>
-            <tbody>
-                {% for row in sms_rows %}
-                <tr>
-                    <td><span class="fw-semibold">{{ row.name }}</span></td>
-                    <td><a href="{% url 'tickets:event_detail' event_id=row.event_id %}?tab=marketing">{{ row.event_name }}</a></td>
-                    <td class="text-end">{{ row.sends }}</td>
-                    <td class="text-end">{{ row.clicks }}<span class="text-tertiary small d-block">{{ row.click_rate|floatformat:2 }}</span></td>
-                    <td class="text-end">{{ row.orders }}</td>
-                    <td class="text-end">${{ row.revenue|currency }}</td>
-                </tr>
-                {% endfor %}
-            </tbody>
-        </table>
-    </div>
-    {% else %}
-    <div class="empty-state"><p>No SlickText broadcasts matched in this window.</p></div>
+{# ── Sub-view pill nav ───────────────────────────────────────────────── #}
+<nav class="marketing-subnav" role="tablist" aria-label="SMS views">
+    {% if 'campaigns' in sms_views %}
+    <a class="marketing-subnav-btn{% if view == 'campaigns' %} active{% endif %}"
+       href="?view=campaigns&window={{ window_key }}{% if selected_market %}&market={{ selected_market|urlencode }}{% endif %}"
+       {% if view == 'campaigns' %}aria-current="page"{% endif %}>Campaigns</a>
     {% endif %}
-    {% endwith %}
+    <a class="marketing-subnav-btn{% if view == 'performance' %} active{% endif %}"
+       href="?view=performance&window={{ window_key }}{% if selected_market %}&market={{ selected_market|urlencode }}{% endif %}"
+       {% if view == 'performance' %}aria-current="page"{% endif %}>Performance</a>
+    <a class="marketing-subnav-btn{% if view == 'audience' %} active{% endif %}"
+       href="?view=audience&window={{ window_key }}{% if selected_market %}&market={{ selected_market|urlencode }}{% endif %}"
+       {% if view == 'audience' %}aria-current="page"{% endif %}>Audience</a>
+</nav>
+
+{# ── Campaigns view (native sends) ───────────────────────────────────── #}
+{% if view == 'campaigns' %}
+<div class="sms-metrics" id="sms-perf">
+    <div class="metric">
+        <span class="metric-label">Campaigns</span>
+        <span class="metric-value">{{ native_sms.campaigns_sent }}</span>
+    </div>
+    <div class="metric">
+        <span class="metric-label">Messages</span>
+        <span class="metric-value">{{ native_sms.messages_sent }}</span>
+    </div>
+    <div class="metric">
+        <span class="metric-label">Delivered</span>
+        <span class="metric-value">{{ native_sms.messages_delivered }}</span>
+        <span class="metric-sub">{{ native_sms.delivery_rate|floatformat:2 }} rate</span>
+    </div>
+    <div class="metric">
+        <span class="metric-label">Clicks</span>
+        <span class="metric-value">{{ native_sms.unique_clicks }}</span>
+        <span class="metric-sub">{{ native_sms.total_clicks }} total</span>
+    </div>
+    <div class="metric">
+        <span class="metric-label">Failed</span>
+        <span class="metric-value">{{ native_sms.messages_failed }}</span>
+    </div>
+    <div class="metric">
+        <span class="metric-label">Unsubs</span>
+        <span class="metric-value">{{ native_sms.unsubscribes }}</span>
+    </div>
 </div>
 
-{# ── Campaigns (native only) ─────────────────────────────────────────── #}
-{% if sms_native_enabled %}
-<div class="sms-section-head">
-    <h2>Your campaigns</h2>
-</div>
-
+<div class="sms-section-head"><h2>Your campaigns</h2></div>
 <div class="card">
     <div class="card-body p-0">
         {% if page_obj.object_list %}
@@ -278,56 +214,129 @@
 
 {% if page_obj.has_other_pages %}
 <nav class="mt-3"><ul class="pagination justify-content-center">
-    {% if page_obj.has_previous %}<li class="page-item"><a class="page-link" href="?page={{ page_obj.previous_page_number }}&window={{ window_key }}">Previous</a></li>{% endif %}
+    {% if page_obj.has_previous %}<li class="page-item"><a class="page-link" href="?page={{ page_obj.previous_page_number }}&window={{ window_key }}&view=campaigns">Previous</a></li>{% endif %}
     <li class="page-item disabled"><span class="page-link">Page {{ page_obj.number }} of {{ page_obj.paginator.num_pages }}</span></li>
-    {% if page_obj.has_next %}<li class="page-item"><a class="page-link" href="?page={{ page_obj.next_page_number }}&window={{ window_key }}">Next</a></li>{% endif %}
+    {% if page_obj.has_next %}<li class="page-item"><a class="page-link" href="?page={{ page_obj.next_page_number }}&window={{ window_key }}&view=campaigns">Next</a></li>{% endif %}
 </ul></nav>
 {% endif %}
 
+{# ── Performance view (SlickText results) ────────────────────────────── #}
+{% elif view == 'performance' %}
+<div class="sms-slicktext-summary">
+    <span class="st-headline">${{ sms_channel.revenue|currency }}</span>
+    <span class="st-meta">
+        Audience <b>{{ sms_channel.audience }}</b> &nbsp;·&nbsp;
+        Broadcasts <b>{{ sms_channel.campaigns }}</b> &nbsp;·&nbsp;
+        Clicks <b>{{ sms_channel.clicks }}</b> &nbsp;·&nbsp;
+        Unsubs <b>{{ sms_channel.unsubscribes }}</b> &nbsp;·&nbsp;
+        Orders <b>{{ sms_channel.orders }}</b>
+    </span>
+</div>
+
+<div class="sms-section-head"><h2>Top SlickText broadcasts</h2></div>
+<div class="card">
+    <div class="card-body p-0">
+        {% if top_sms_campaigns %}
+        <div class="table-responsive">
+            <table class="table table-hover align-middle mb-0">
+                <thead>
+                    <tr>
+                        <th>Broadcast</th>
+                        <th>Event</th>
+                        <th class="text-end">Audience</th>
+                        <th class="text-end">Clicks</th>
+                        <th class="text-end">Orders</th>
+                        <th class="text-end">Revenue</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for row in top_sms_campaigns %}
+                    <tr>
+                        <td><span class="fw-semibold">{{ row.name }}</span></td>
+                        <td><a href="{% url 'tickets:event_detail' event_id=row.event_id %}?tab=marketing">{{ row.event_name }}</a></td>
+                        <td class="text-end">{{ row.sends }}</td>
+                        <td class="text-end">{{ row.clicks }}<span class="text-tertiary small d-block">{{ row.click_rate|floatformat:2 }}</span></td>
+                        <td class="text-end">{{ row.orders }}</td>
+                        <td class="text-end">${{ row.revenue|currency }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% else %}
+        <div class="empty-state"><p>No SlickText broadcasts matched in this window.</p></div>
+        {% endif %}
+    </div>
+</div>
+
+{# ── Audience view (reach: chart + by-market) ────────────────────────── #}
+{% elif view == 'audience' %}
+<div class="sms-section-head">
+    <h2>Broadcast audience over time</h2>
+    <div class="window-selector">
+        <div class="dropdown">
+            <button class="window-selector-btn dropdown-toggle" type="button" data-bs-toggle="dropdown" aria-expanded="false">
+                <i class="bi bi-geo-alt"></i> {% if selected_market %}{{ selected_market }}{% else %}All markets{% endif %}
+            </button>
+            <ul class="dropdown-menu dropdown-menu-end">
+                <li><a class="dropdown-item{% if not selected_market %} active{% endif %}" href="?window={{ window_key }}&view=audience">All markets</a></li>
+                {% for m in market_choices %}
+                <li><a class="dropdown-item{% if m == selected_market %} active{% endif %}" href="?window={{ window_key }}&view=audience&market={{ m|urlencode }}">{{ m }}</a></li>
+                {% endfor %}
+            </ul>
+        </div>
+    </div>
+</div>
+<div class="chart-card">
+    <div class="chart-canvas-wrap"><canvas id="sms-audience-chart"></canvas></div>
+</div>
+
+<div class="sms-section-head"><h2>Audience by market</h2></div>
+<div class="card">
+    <div class="card-body p-0">
+        {% if market_breakdown %}
+        <div class="table-responsive">
+            <table class="table table-hover align-middle mb-0">
+                <thead>
+                    <tr>
+                        <th>Market</th>
+                        <th class="text-end">Broadcasts</th>
+                        <th class="text-end">Total audience</th>
+                        <th class="text-end">Avg audience</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for row in market_breakdown %}
+                    <tr>
+                        <td><span class="fw-semibold">{{ row.market }}</span></td>
+                        <td class="text-end">{{ row.broadcasts }}</td>
+                        <td class="text-end">{{ row.total_audience }}</td>
+                        <td class="text-end">{{ row.avg_audience }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% else %}
+        <div class="empty-state"><p>No broadcasts with an audience in this window.</p></div>
+        {% endif %}
+    </div>
+</div>
+{% endif %}
+
+{% if sms_native_enabled %}
 {% include 'tickets/marketing/sms/_link_event_modal.html' %}
 {% endif %}
 {% endblock %}
 
 {% block extra_js %}
-<script type="application/json" id="sms-engagement-data">{{ engagement_chart_json|safe }}</script>
-<script>
-(function () {
-    document.addEventListener('DOMContentLoaded', function () {
-        if (typeof Chart === 'undefined') { return; }
-        var el = document.getElementById('sms-engagement-chart');
-        if (!el) { return; }
-        var isDark = document.documentElement.getAttribute('data-theme') === 'dark';
-        var grid = isDark ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.06)';
-        var tick = isDark ? 'rgba(255,255,255,0.7)' : 'rgba(0,0,0,0.65)';
-        var data = JSON.parse(document.getElementById('sms-engagement-data').textContent);
-        new Chart(el, {
-            type: 'line',
-            data: {
-                labels: data.labels,
-                datasets: [
-                    { label: 'Clicks', data: data.sms_clicks, borderColor: '#33c481', backgroundColor: 'rgba(51,196,129,0.12)', tension: 0.3, fill: true }
-                ]
-            },
-            options: {
-                responsive: true, maintainAspectRatio: false,
-                scales: {
-                    x: { grid: { color: grid }, ticks: { color: tick } },
-                    y: { beginAtZero: true, grid: { color: grid }, ticks: { color: tick } }
-                },
-                plugins: { legend: { labels: { color: tick } } }
-            }
-        });
-    });
-})();
-</script>
-
 <script type="application/json" id="sms-audience-data">{{ audience_points_json|safe }}</script>
 <script>
 (function () {
     document.addEventListener('DOMContentLoaded', function () {
         if (typeof Chart === 'undefined') { return; }
         var el = document.getElementById('sms-audience-chart');
-        if (!el) { return; }
+        if (!el) { return; }  // no-op on the Campaigns / Performance views
         var isDark = document.documentElement.getAttribute('data-theme') === 'dark';
         var grid = isDark ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.06)';
         var tick = isDark ? 'rgba(255,255,255,0.7)' : 'rgba(0,0,0,0.65)';

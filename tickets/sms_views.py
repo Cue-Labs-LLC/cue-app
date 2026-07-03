@@ -339,10 +339,6 @@ def sms_campaign_list(request):
     # (same cache/window as the Overview page) so all SMS lives on one page.
     window_key, window_days, window_label = resolve_window(request.GET.get('window', DEFAULT_WINDOW))
     metrics = get_cached_marketing_metrics(org, window_days, window_key)
-    engagement_chart = {
-        'labels': [row['month'] for row in metrics['engagement_trends']],
-        'sms_clicks': [row['sms_clicks'] for row in metrics['engagement_trends']],
-    }
 
     # Broadcast audience over time + by market. The cached series is
     # market-independent; the market filter is applied here in Python.
@@ -389,18 +385,28 @@ def sms_campaign_list(request):
     for agg in market_breakdown:
         agg['avg_audience'] = round(agg['total_audience'] / agg['broadcasts']) if agg['broadcasts'] else 0
 
+    # Sub-views (pill nav): Campaigns / Performance / Audience. Campaigns is
+    # native-only, so SlickText-linked orgs get just Performance / Audience.
+    native = org.sms_marketing_enabled
+    sms_views = ['campaigns', 'performance', 'audience'] if native else ['performance', 'audience']
+    default_view = 'campaigns' if native else 'performance'
+    view = request.GET.get('view', default_view).lower()
+    if view not in sms_views:
+        view = default_view
+
     return render(request, 'tickets/marketing/sms/campaign_list.html', {
         'page_obj': page_obj,
         'balance_cents': org.sms_credit_balance_cents,
-        'sms_native_enabled': org.sms_marketing_enabled,
+        'sms_native_enabled': native,
         'marketing_section': 'sms',
+        'sms_views': sms_views,
+        'view': view,
         'window_choices': WINDOW_CHOICES,
         'window_key': window_key,
         'window_label': window_label,
         'native_sms': metrics['native_sms'],
         'sms_channel': metrics['channels']['sms'],
         'top_sms_campaigns': metrics['top_sms_campaigns'],
-        'engagement_chart_json': json.dumps(engagement_chart),
         'selected_market': selected_market,
         'market_choices': market_choices,
         'market_breakdown': market_breakdown,
