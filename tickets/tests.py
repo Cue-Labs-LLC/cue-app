@@ -1179,6 +1179,159 @@ class MarketEntityReportingTests(TestCase):
         self.assertEqual(event.market, self.market)
 
 
+class CSVImportSMSConsentTests(TestCase):
+    """CSV import maps a consent column to Customer.sms_opt_in (T1).
+
+    Imported contacts must NOT be textable unless the source data says they
+    opted in AND they have a phone. Import grants consent, never revokes it.
+    """
+
+    def setUp(self):
+        # CSV import auto-creates external events, which is gated on this flag
+        # (csv_processor.py). Once T2 flips the model default to True this is the
+        # norm for new orgs; set it explicitly here so the fixture is unambiguous.
+        self.org = Organization.objects.create(
+            name='Consent Org', slug='consent-org', external_events_enabled=True,
+        )
+        self.csv_format = CSVFormat.objects.create(
+            organization=self.org,
+            name='Consent Import Format',
+            column_mapping={
+                'order_date': ['order_date'],
+                'customer_email': ['customer_email'],
+                'customer_name': ['customer_name'],
+                'customer_phone': ['customer_phone'],
+                'ticket_type': ['ticket_type'],
+                'customer_sms_opt_in': ['consent'],
+            },
+        )
+
+    def _import(self, csv_body):
+        import io
+        upload = UploadedFile.objects.create(
+            organization=self.org,
+            csv_format=self.csv_format,
+            filename='consent.csv',
+            status='pending',
+            metadata={'event_name': 'Consent Show', 'event_start_date': '2025-06-01'},
+        )
+        from tickets.csv_processor import CSVProcessor
+        return CSVProcessor(upload, self.csv_format).process_and_save(
+            io.BytesIO(csv_body.encode('utf-8'))
+        )
+
+    def _customer(self, email):
+        return Customer.objects.get(organization=self.org, email=email)
+
+    def test_consent_column_maps_to_sms_opt_in(self):
+        csv_body = (
+            "order_date,customer_email,customer_name,customer_phone,ticket_type,consent\n"
+            "2025-06-01,yes@example.com,Yes Buyer,+15551110001,GA,Yes\n"
+            "2025-06-01,no@example.com,No Buyer,+15551110002,GA,No\n"
+            "2025-06-01,nophone@example.com,NoPhone Buyer,,GA,Yes\n"
+        )
+        results = self._import(csv_body)
+        self.assertEqual(results['success_count'], 3)
+
+        opted_in = self._customer('yes@example.com')
+        self.assertTrue(opted_in.sms_opt_in)
+        self.assertIsNotNone(opted_in.sms_opt_in_date)
+
+        # Explicit "No" stays opted out.
+        self.assertFalse(self._customer('no@example.com').sms_opt_in)
+        # Consent "Yes" but no phone cannot be texted, so must not opt in.
+        self.assertFalse(self._customer('nophone@example.com').sms_opt_in)
+
+        # Only the genuinely-consented, phone-bearing contact is campaign-eligible.
+        eligible = (
+            Customer.objects.filter(organization=self.org, sms_opt_in=True)
+            .exclude(phone='')
+            .values_list('email', flat=True)
+        )
+        self.assertEqual(list(eligible), ['yes@example.com'])
+
+    def test_import_never_revokes_existing_consent(self):
+        Customer.objects.create(
+            organization=self.org, email='vip@example.com', name='VIP',
+            phone='+15551110009', sms_opt_in=True,
+        )
+        # A later import row says consent=No; existing opt-in must be preserved.
+        csv_body = (
+            "order_date,customer_email,customer_name,customer_phone,ticket_type,consent\n"
+            "2025-06-02,vip@example.com,VIP,+15551110009,GA,No\n"
+        )
+        self._import(csv_body)
+        self.assertTrue(self._customer('vip@example.com').sms_opt_in)
+
+
+class NewOrgInitializationTests(TestCase):
+    """T2/T3: new-org flag defaults + idempotent trial-credit seeding."""
+
+    def test_new_org_has_flags_on_by_default(self):
+        org = Organization.objects.create(name='Fresh Org', slug='fresh-org')
+        self.assertTrue(org.external_events_enabled)
+        self.assertTrue(org.sms_marketing_enabled)
+
+    def _expected_trial_cents(self):
+        from tickets.services.org_onboarding import TRIAL_SMS_CREDIT_TOKENS
+        from tickets.services.sms_credits import price_per_segment_cents
+        return int(TRIAL_SMS_CREDIT_TOKENS * price_per_segment_cents())
+
+    def test_initialize_seeds_one_trial_credit_row(self):
+        from tickets.services.org_onboarding import initialize_new_organization
+        from tickets.models import SMSCreditTransaction
+
+        org = Organization.objects.create(name='Seed Org', slug='seed-org')
+        initialize_new_organization(org)
+
+        org.refresh_from_db()
+        self.assertEqual(org.sms_credit_balance_cents, self._expected_trial_cents())
+        rows = SMSCreditTransaction.objects.filter(
+            organization=org, kind=SMSCreditTransaction.Kind.ADJUSTMENT,
+        )
+        self.assertEqual(rows.count(), 1)
+
+    def test_initialize_is_idempotent(self):
+        from tickets.services.org_onboarding import initialize_new_organization
+        from tickets.models import SMSCreditTransaction
+
+        org = Organization.objects.create(name='Idem Org', slug='idem-org')
+        initialize_new_organization(org)
+        initialize_new_organization(org)  # second call must be a no-op
+
+        org.refresh_from_db()
+        self.assertEqual(org.sms_credit_balance_cents, self._expected_trial_cents())
+        self.assertEqual(
+            SMSCreditTransaction.objects.filter(organization=org).count(), 1
+        )
+
+    def test_initialize_is_non_fatal_when_wallet_raises(self):
+        from unittest.mock import patch
+        from tickets.services.org_onboarding import initialize_new_organization
+
+        org = Organization.objects.create(name='Fail Org', slug='fail-org')
+        with patch('tickets.services.sms_credits.credit', side_effect=RuntimeError('boom')):
+            # Must not raise — org creation already succeeded.
+            initialize_new_organization(org)
+        org.refresh_from_db()
+        self.assertEqual(org.sms_credit_balance_cents, 0)
+
+    def test_api_org_creation_path_seeds_flags_and_credits(self):
+        # _ensure_organization_for_user is the mobile/Stripe path that a naive
+        # inline-init would have missed; assert it seeds flags + trial credits.
+        from tickets.api_views import _ensure_organization_for_user
+
+        user = User.objects.create_user(username='mobile-organizer')
+        UserProfile.objects.create(user=user, organization=None)
+
+        org = _ensure_organization_for_user(user)
+
+        self.assertTrue(org.external_events_enabled)
+        self.assertTrue(org.sms_marketing_enabled)
+        org.refresh_from_db()
+        self.assertEqual(org.sms_credit_balance_cents, self._expected_trial_cents())
+
+
 class VenueAdminScopeTests(TestCase):
     def test_venue_admin_queryset_is_scoped_for_non_superusers(self):
         from django.contrib import admin
@@ -16576,7 +16729,11 @@ class ExternalEventsFeatureFlagTests(TestCase):
 
     def setUp(self):
         self.client = Client()
-        self.org = Organization.objects.create(name='Flag Org', slug='flag-org')
+        # The model default is now True (external-first onboarding); this class
+        # exercises the gate itself, so force the flag OFF for the "when off" cases.
+        self.org = Organization.objects.create(
+            name='Flag Org', slug='flag-org', external_events_enabled=False,
+        )
         self.user = User.objects.create_user(
             username='flaguser', email='flag@test.com', password='pass12345'
         )
@@ -16606,8 +16763,10 @@ class ExternalEventsFeatureFlagTests(TestCase):
         self.org.external_events_enabled = True
         self.org.save(update_fields=['external_events_enabled'])
 
-    def test_default_flag_off(self):
-        self.assertFalse(self.org.external_events_enabled)
+    def test_default_flag_on_for_new_org(self):
+        # External-first onboarding: a brand-new org has the flag on by default.
+        fresh = Organization.objects.create(name='Fresh Flag Org', slug='fresh-flag-org')
+        self.assertTrue(fresh.external_events_enabled)
 
     def test_type_select_redirects_to_direct_when_off(self):
         resp = self.client.get(reverse('tickets:event_type_select'))

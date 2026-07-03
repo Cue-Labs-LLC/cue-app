@@ -1447,6 +1447,7 @@ def org_required(request):
 def create_organization(request):
     """Create a new organization and assign the current user to it."""
     from .forms import OrganizationForm
+    from .services.org_onboarding import initialize_new_organization
     if not request.user.is_superuser:
         approved = OrganizerWaitlist.objects.filter(
             email=request.user.email,
@@ -1483,6 +1484,9 @@ def create_organization(request):
                 if profile.organization_id is None:
                     profile.organization = org
                 profile.save(update_fields=['organization', 'role', 'org_role'])
+            # Seed trial SMS credits after the org is committed (credit() locks the
+            # org row). Idempotent + non-fatal — see initialize_new_organization.
+            initialize_new_organization(org)
             clear_org_cache(request)
             request.session['_org_id'] = str(org.pk)
             messages.success(
@@ -1492,8 +1496,20 @@ def create_organization(request):
             )
             return redirect('tickets:home')
     else:
-        form = OrganizationForm()
-    return render(request, 'tickets/create_organization.html', {'form': form})
+        # Prefill the org name from the waitlist application so approved users
+        # confirm-and-create rather than re-entering info they already gave.
+        initial = {}
+        approved = OrganizerWaitlist.objects.filter(
+            email=request.user.email,
+            status=OrganizerWaitlist.Status.APPROVED,
+        ).order_by('-approved_at').first()
+        if approved and approved.organization_name:
+            initial['name'] = approved.organization_name
+        form = OrganizationForm(initial=initial)
+    return render(request, 'tickets/create_organization.html', {
+        'form': form,
+        'prefilled_from_waitlist': bool(initial.get('name')),
+    })
 
 
 @login_required

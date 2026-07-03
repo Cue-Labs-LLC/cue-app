@@ -509,6 +509,7 @@ select.mapping-select:focus   { border-color: rgba(255,255,255,0.22); outline: n
         <tr class="fmt-section-lbl"><td colspan="2">Optional</td></tr>
         {% include "tickets/_mapping_row.html" with field_key="quantity"            label="Quantity"            required=False note="" only %}
         {% include "tickets/_mapping_row.html" with field_key="customer_phone"      label="Customer Phone"      required=False note="" only %}
+        {% include "tickets/_mapping_row.html" with field_key="customer_sms_opt_in" label="SMS Marketing Consent" required=False note="Boolean: true / yes / 1 / subscribed = the customer opted in to marketing texts. Only opted-in contacts with a phone become SMS-eligible; consent is never revoked on import." only %}
         {% include "tickets/_mapping_row.html" with field_key="processed_in_person" label="Processed In Person" required=False note="Boolean: true / yes / 1 = in-person sale" only %}
 
       </tbody>

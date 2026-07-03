@@ -166,9 +166,15 @@
                     </li>
                     {% if user_role == 'attendee' %}
                     <li>
+                        {% if organizer_waitlist_approved %}
+                        <a href="{% url 'tickets:create_organization' %}" class="sidebar-link{% if '/create-organization/' in request.path %} active{% endif %}">
+                            <i class="bi bi-gear"></i> Set up organization
+                        </a>
+                        {% else %}
                         <a href="{% url 'tickets:become_organizer' %}" class="sidebar-link{% if '/become-organizer/' in request.path %} active{% endif %}">
                             <i class="bi bi-briefcase"></i> Become an Organizer
                         </a>
+                        {% endif %}
                     </li>
                     {% endif %}
                 </ul>

@@ -67,6 +67,13 @@ class CSVProcessor:
             logger.error(f"CSV validation error: {str(e)}")
             return False, f"Error validating CSV: {str(e)}"
     
+    # Values (lower-cased) that count as "true" for boolean flag columns such as
+    # processed_in_person and customer_sms_opt_in. Kept lenient so common consent
+    # exports ("Subscribed", "Opted In", "Y") are recognized.
+    _TRUTHY_FLAG_VALUES = (
+        'true', 'yes', '1', 'y', 't', 'subscribed', 'opted in', 'opt-in', 'opted-in',
+    )
+
     def map_columns(self, row: Dict) -> Dict:
         """Map CSV column names to internal field names using format configuration."""
         mapped = {}
@@ -90,7 +97,7 @@ class CSVProcessor:
                     if value:
                         name_parts.append(value)
                 mapped[internal_field] = ' '.join(name_parts) if name_parts else None
-            elif internal_field == 'processed_in_person':
+            elif internal_field in ('processed_in_person', 'customer_sms_opt_in'):
                 # Optional: map CSV column(s) and normalize to boolean
                 value = None
                 for csv_col in csv_columns:
@@ -105,7 +112,7 @@ class CSVProcessor:
                         break
                 if value is not None:
                     s = str(value).strip().lower()
-                    mapped[internal_field] = s in ('true', 'yes', '1')
+                    mapped[internal_field] = s in self._TRUTHY_FLAG_VALUES
                 else:
                     mapped[internal_field] = False
             else:
@@ -666,6 +673,11 @@ class CSVProcessor:
                                     phone=mapped_row.get('customer_phone', ''),
                                     **({'organization': org} if org is not None else {}),
                                 )
+                                # Consent is only granted, never revoked, on import. SMS
+                                # needs a phone, so opt-in requires one (mirrors set_sms_opt_in).
+                                if mapped_row.get('customer_sms_opt_in') and customer.phone:
+                                    customer.sms_opt_in = True
+                                    customer.sms_opt_in_date = timezone.now()
                                 customers_to_create.append(customer)
                                 existing_customers[customer_email] = customer
                             else:
@@ -678,6 +690,12 @@ class CSVProcessor:
                             customers_to_update.append(customer)
                         if mapped_row.get('customer_phone') and customer.phone != mapped_row.get('customer_phone'):
                             customer.phone = mapped_row.get('customer_phone')
+                            customers_to_update.append(customer)
+                        # Grant SMS consent if the source says so; never revoke on import.
+                        if (mapped_row.get('customer_sms_opt_in') and customer.phone
+                                and not customer.sms_opt_in):
+                            customer.sms_opt_in = True
+                            customer.sms_opt_in_date = timezone.now()
                             customers_to_update.append(customer)
                 
                 results['customer_ids'].add(customer.id if customer.id else customer_email)
@@ -955,7 +973,9 @@ class CSVProcessor:
                     results['customer_ids'].add(customer.id)
         
         if customers_to_update:
-            Customer.objects.bulk_update(customers_to_update, ['name', 'phone'])
+            Customer.objects.bulk_update(
+                customers_to_update, ['name', 'phone', 'sms_opt_in', 'sms_opt_in_date']
+            )
         if events_to_create:
             Event.objects.bulk_create(events_to_create, ignore_conflicts=True)
             # Refetch created events to get their IDs
