@@ -1,0 +1,229 @@
+"""Tests for the AI SMS Campaign Strategist: plan generation, gating, org scoping,
+token metering, and launching a step into the composer."""
+
+from datetime import date, timedelta
+from unittest.mock import MagicMock, patch
+
+from django.contrib.auth.models import User
+from django.test import TestCase, Client, override_settings
+from django.urls import reverse
+
+from .models import (
+    Organization, UserProfile, Customer, CustomerTag,
+    SMSCampaign, SMSCampaignPlan, SMSMessageRecipient, AITokenUsage,
+    Venue, Event,
+)
+from .services.sms_strategist import (
+    CampaignPlan, PlanStep, generate_campaign_plan,
+    _top_prior_campaigns, _recent_campaign_bodies,
+)
+
+
+def _fake_plan():
+    return CampaignPlan(
+        strategy_summary='Three touches ramping to the event.',
+        steps=[
+            PlanStep(purpose='announcement', audience='All subscribers', timing='T-14 days',
+                     message='Tickets are live for the show. Grab yours: https://cue.test/t/abc/',
+                     rationale='Seed awareness early.'),
+            PlanStep(purpose='reminder', audience='All subscribers', timing='T-3 days',
+                     message='Only a few days left — get your tickets now.',
+                     rationale='Nudge fence-sitters.'),
+            PlanStep(purpose='last_chance', audience='All subscribers', timing='Day of · 4pm',
+                     message='Doors soon! Last chance for tickets.',
+                     rationale='Capture last-minute buyers.'),
+        ],
+    )
+
+
+def _fake_structured_llm():
+    """Return a MagicMock ChatOpenAI whose structured invoke returns raw/parsed/error."""
+    raw = MagicMock()
+    raw.usage_metadata = {'input_tokens': 120, 'output_tokens': 60, 'total_tokens': 180}
+
+    structured = MagicMock()
+    structured.invoke.return_value = {'raw': raw, 'parsed': _fake_plan(), 'parsing_error': None}
+
+    llm = MagicMock()
+    llm.with_structured_output.return_value = structured
+    return llm
+
+
+@override_settings(OPENAI_API_KEY='test-key', OPENAI_MODEL='gpt-4o')
+class SMSStrategistViewTests(TestCase):
+    def setUp(self):
+        self.client = Client()
+        self.org = Organization.objects.create(
+            name='Org', slug='org-strat', sms_marketing_enabled=True,
+            ai_sms_strategist_enabled=True, sms_credit_balance_cents=5000,
+        )
+        self.user = User.objects.create_user('u', 'u@test.com', 'pw')
+        UserProfile.objects.create(user=self.user, organization=self.org,
+                                   org_role=UserProfile.OrgRole.OWNER)
+        self.client.login(username='u@test.com', password='pw')
+        self.client.get(reverse('tickets:home'))  # prime session org cache
+
+        self.venue = Venue.objects.create(organization=self.org, name='Hall', city='Austin')
+        self.event = Event.objects.create(
+            organization=self.org, venue=self.venue, name='Big Show',
+            start_date=date.today() + timedelta(days=20),
+        )
+        Customer.objects.create(organization=self.org, email='v@x.com', name='V',
+                                phone='+13105550001', sms_opt_in=True, rfm_segment='VIP')
+
+    @patch('langchain_openai.ChatOpenAI')
+    def test_generate_event_plan_saves_and_meters(self, mock_openai):
+        mock_openai.return_value = _fake_structured_llm()
+        resp = self.client.post(reverse('tickets:sms_plan_create'), {'event': str(self.event.id)})
+
+        plan = SMSCampaignPlan.objects.get(organization=self.org)
+        self.assertRedirects(resp, reverse('tickets:sms_plan_detail', kwargs={'pk': plan.id}))
+        self.assertEqual(plan.event_id, self.event.id)
+        self.assertEqual(len(plan.steps), 3)
+        # Every step carries a computed segment count + event audience criteria.
+        for step in plan.steps:
+            self.assertGreaterEqual(step['segments'], 1)
+            self.assertEqual(step['audience_criteria'], {'event_id': str(self.event.id)})
+        # Billable usage recorded under the new feature; SMS wallet untouched.
+        usage = AITokenUsage.objects.get(organization=self.org)
+        self.assertEqual(usage.feature, AITokenUsage.FEATURE_SMS_PLAN)
+        self.assertEqual(usage.total_tokens, 180)
+        self.org.refresh_from_db()
+        self.assertEqual(self.org.sms_credit_balance_cents, 5000)
+
+    @patch('langchain_openai.ChatOpenAI')
+    def test_generate_segment_plan(self, mock_openai):
+        mock_openai.return_value = _fake_structured_llm()
+        resp = self.client.post(reverse('tickets:sms_plan_create'), {'rfm_segment': ['VIP']})
+        plan = SMSCampaignPlan.objects.get(organization=self.org)
+        self.assertRedirects(resp, reverse('tickets:sms_plan_detail', kwargs={'pk': plan.id}))
+        self.assertIsNone(plan.event_id)
+        self.assertEqual(plan.filter_criteria, {'rfm_segment': ['VIP']})
+
+    def test_empty_audience_is_rejected(self):
+        resp = self.client.post(reverse('tickets:sms_plan_create'), {})
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(SMSCampaignPlan.objects.count(), 0)
+
+    @patch('langchain_openai.ChatOpenAI')
+    def test_gated_by_flag(self, mock_openai):
+        mock_openai.return_value = _fake_structured_llm()
+        self.org.ai_sms_strategist_enabled = False
+        self.org.save(update_fields=['ai_sms_strategist_enabled'])
+        get = self.client.get(reverse('tickets:sms_plan_create'))
+        self.assertEqual(get.status_code, 404)
+        post = self.client.post(reverse('tickets:sms_plan_create'), {'event': str(self.event.id)})
+        self.assertEqual(post.status_code, 404)
+        self.assertEqual(SMSCampaignPlan.objects.count(), 0)
+
+    @patch('langchain_openai.ChatOpenAI')
+    def test_plan_detail_org_scoped(self, mock_openai):
+        mock_openai.return_value = _fake_structured_llm()
+        self.client.post(reverse('tickets:sms_plan_create'), {'event': str(self.event.id)})
+        plan = SMSCampaignPlan.objects.get(organization=self.org)
+
+        # A different org's user cannot see this plan.
+        other = Organization.objects.create(name='Other', slug='other', sms_marketing_enabled=True,
+                                             ai_sms_strategist_enabled=True)
+        ouser = User.objects.create_user('o', 'o@test.com', 'pw')
+        UserProfile.objects.create(user=ouser, organization=other, org_role=UserProfile.OrgRole.OWNER)
+        oclient = Client()
+        oclient.login(username='o@test.com', password='pw')
+        oclient.get(reverse('tickets:home'))
+        resp = oclient.get(reverse('tickets:sms_plan_detail', kwargs={'pk': plan.id}))
+        self.assertEqual(resp.status_code, 404)
+
+    @patch('langchain_openai.ChatOpenAI')
+    def test_launch_step_prefills_composer_and_marks_launched(self, mock_openai):
+        mock_openai.return_value = _fake_structured_llm()
+        self.client.post(reverse('tickets:sms_plan_create'), {'event': str(self.event.id)})
+        plan = SMSCampaignPlan.objects.get(organization=self.org)
+
+        resp = self.client.post(
+            reverse('tickets:sms_plan_launch_step', kwargs={'pk': plan.id, 'step': 0}),
+        )
+        # Redirects into the composer, pinned to the event.
+        self.assertEqual(resp.status_code, 302)
+        self.assertIn(reverse('tickets:sms_campaign_create'), resp.url)
+        self.assertIn(f'event={self.event.id}', resp.url)
+        # Session prefill carries the written body + audience.
+        prefill = self.client.session['sms_compose_prefill']
+        self.assertEqual(prefill['body'], plan.steps[0]['body'])
+        self.assertEqual(prefill['event_id'], str(self.event.id))
+        # Step is marked launched.
+        plan.refresh_from_db()
+        self.assertIn('launched_at', plan.steps[0])
+
+    @patch('langchain_openai.ChatOpenAI')
+    def test_launched_body_prefills_composer_form(self, mock_openai):
+        mock_openai.return_value = _fake_structured_llm()
+        self.client.post(reverse('tickets:sms_plan_create'), {'rfm_segment': ['VIP']})
+        plan = SMSCampaignPlan.objects.get(organization=self.org)
+        self.client.post(reverse('tickets:sms_plan_launch_step', kwargs={'pk': plan.id, 'step': 0}))
+        # The composer GET renders the prefilled body into the form.
+        resp = self.client.get(reverse('tickets:sms_campaign_create'))
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, plan.steps[0]['body'])
+
+
+@override_settings(OPENAI_API_KEY='test-key', OPENAI_MODEL='gpt-4o')
+class TopPriorCampaignsTests(TestCase):
+    def test_prior_campaigns_org_scoped_and_handles_empty(self):
+        org = Organization.objects.create(name='A', slug='a', sms_marketing_enabled=True)
+        other = Organization.objects.create(name='B', slug='b', sms_marketing_enabled=True)
+        self.assertEqual(_top_prior_campaigns(org), [])
+
+        mine = SMSCampaign.objects.create(
+            organization=org, name='Mine', body='hi', status=SMSCampaign.Status.SENT,
+        )
+        SMSMessageRecipient.objects.create(
+            campaign=mine, phone='+13105550001', status=SMSMessageRecipient.Status.DELIVERED,
+        )
+        theirs = SMSCampaign.objects.create(
+            organization=other, name='Theirs', body='yo', status=SMSCampaign.Status.SENT,
+        )
+        SMSMessageRecipient.objects.create(
+            campaign=theirs, phone='+13105550002', status=SMSMessageRecipient.Status.DELIVERED,
+        )
+
+        rows = _top_prior_campaigns(org)
+        self.assertEqual([r['body'] for r in rows], ['hi'])
+
+
+@override_settings(OPENAI_API_KEY='test-key', OPENAI_MODEL='gpt-4o')
+class BrandVoiceTests(TestCase):
+    def setUp(self):
+        self.org = Organization.objects.create(name='Voice', slug='voice', sms_marketing_enabled=True)
+        self.other = Organization.objects.create(name='Other', slug='voice-other', sms_marketing_enabled=True)
+
+    def _sent(self, org, body, when):
+        return SMSCampaign.objects.create(
+            organization=org, name='c', body=body,
+            status=SMSCampaign.Status.SENT, sent_at=when,
+        )
+
+    def test_recent_bodies_org_scoped_recent_first_deduped(self):
+        from django.utils import timezone
+        now = timezone.now()
+        self._sent(self.org, 'oldest', now - timedelta(days=3))
+        self._sent(self.org, 'newest', now - timedelta(days=1))
+        self._sent(self.org, 'newest', now)                 # exact duplicate body
+        self._sent(self.other, 'not mine', now)             # different org
+        bodies = _recent_campaign_bodies(self.org)
+        self.assertEqual(bodies, ['newest', 'oldest'])       # recency order, deduped, scoped
+
+    @patch('langchain_openai.ChatOpenAI')
+    def test_generate_passes_brand_voice_into_prompt(self, mock_openai):
+        from django.utils import timezone
+        distinctive = "yo fam!! doors 9pm, dont sleep on this one"
+        self._sent(self.org, distinctive, timezone.now())
+        llm = _fake_structured_llm()
+        mock_openai.return_value = llm
+
+        generate_campaign_plan(self.org, criteria={'all_subscribers': True}, objective='sell out')
+
+        structured = llm.with_structured_output.return_value
+        messages = structured.invoke.call_args[0][0]
+        user_content = messages[1]['content']
+        self.assertIn(distinctive, user_content)
+        self.assertIn('brand_voice_samples', user_content)

@@ -27,14 +27,14 @@ from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_POST, require_http_methods
 
 from .models import (
-    SMSCampaign, SMSMessageRecipient, PhoneSuppression, Event,
-    Customer, TrackingLink, StripeCheckoutSession, Ticket,
+    SMSCampaign, SMSCampaignPlan, SMSMessageRecipient, PhoneSuppression, Event,
+    Customer, CustomerTag, TrackingLink, StripeCheckoutSession, Ticket,
     EventSMSCampaign,
     TICKETING_TYPE_DIRECT, EVENT_STATUS_LIVE,
     _generate_tracking_token,
 )
-from .forms import SMSCampaignForm
-from .services.customer_filters import filter_customers, _valid_uuids
+from .forms import SMSCampaignForm, SMS_SEGMENT_CHOICES
+from .services.customer_filters import filter_customers, _valid_uuids, market_filter_options, NO_MARKET_VALUE
 from .services.sms_consent import set_sms_opt_in
 from .services.tagging import tag_customers
 from .sms import (
@@ -493,14 +493,19 @@ def sms_campaign_create(request):
     confirm_cost_tokens = None
     insufficient_credits = False
     prefill = None
+    strategist_prefill = None
     manual_include_ids = []
 
     # Customer-list bulk SMS starts as a session handoff on GET, then persists
-    # through review/confirm via a hidden field on POST.
+    # through review/confirm via a hidden field on POST. The AI strategist reuses
+    # the same handoff but carries a written body + audience criteria (no manual ids).
     if request.method == 'GET':
-        prefill = request.session.pop('sms_compose_prefill', None)
-        if prefill:
-            manual_include_ids = list(prefill.get('ids') or [])
+        handoff = request.session.pop('sms_compose_prefill', None)
+        if handoff and handoff.get('ids'):
+            prefill = handoff
+            manual_include_ids = list(handoff.get('ids') or [])
+        elif handoff:
+            strategist_prefill = handoff
     else:
         raw_manual_ids = request.POST.get('manual_include_ids', '')
         manual_include_ids = _valid_uuids(raw_manual_ids.split(','))
@@ -668,7 +673,22 @@ def sms_campaign_create(request):
                             )
                         return redirect('tickets:sms_campaign_detail', pk=campaign.id)
     else:
-        if prefill:
+        if strategist_prefill:
+            # AI plan step: prefill the written body + audience selection so the
+            # organizer only has to review, confirm cost, and send.
+            initial = {
+                'name': strategist_prefill.get('name') or (event.name if event else 'SMS'),
+                'body': strategist_prefill.get('body', ''),
+            }
+            criteria = strategist_prefill.get('criteria') or {}
+            if not event:
+                if criteria.get('rfm_segment'):
+                    initial['rfm_segment'] = criteria['rfm_segment']
+                if criteria.get('tag_ids'):
+                    initial['tag_ids'] = criteria['tag_ids']
+                if criteria.get('market_id'):
+                    initial['market_id'] = criteria['market_id']
+        elif prefill:
             initial = {'name': f'SMS - {prefill["label"]}'}
         elif event:
             initial = {'name': event.name}
@@ -1261,3 +1281,254 @@ def sms_credits_remove_card(request):
     )
     messages.success(request, 'Saved card removed.')
     return redirect('tickets:sms_credits')
+
+
+# ---------------------------------------------------------------------------
+# AI Campaign Strategist (plan recommendations)
+# ---------------------------------------------------------------------------
+
+# Purpose -> display label + Bootstrap color for the plan timeline badges.
+PLAN_PURPOSE_LABELS = {
+    'announcement': ('Announcement', 'primary'),
+    'early_bird': ('Early bird', 'info'),
+    'social_proof': ('Social proof', 'success'),
+    'reminder': ('Reminder', 'secondary'),
+    'last_chance': ('Last chance', 'danger'),
+    'thank_you': ('Thank you', 'success'),
+    're_engagement': ('Re-engagement', 'warning'),
+}
+
+
+def _plan_criteria_from_post(post):
+    """Segment audience for a plan (no event-scope collapse — event is separate)."""
+    criteria = {}
+    segments = [s for s in post.getlist('rfm_segment') if s]
+    if segments:
+        criteria['rfm_segment'] = segments
+    tag_ids = _valid_uuids([t for t in post.getlist('tag_ids') if t])
+    if tag_ids:
+        criteria['tag_ids'] = tag_ids
+    market_id = (post.get('market_id') or '').strip()
+    if market_id:
+        criteria['market_id'] = market_id
+    return criteria
+
+
+def _plan_form_context(org, event=None, selected_criteria=None):
+    """Shared context for the plan generate form (segments/tags/markets/events)."""
+    markets, has_no_market = market_filter_options(org)
+    market_choices = [(str(m.id), m.name) for m in markets]
+    if has_no_market:
+        market_choices.append((NO_MARKET_VALUE, 'No market'))
+    # Recent + upcoming events the organizer might plan for.
+    events = list(
+        Event.objects.filter(organization=org, deleted_at__isnull=True)
+        .select_related('venue').order_by('-start_date')[:100]
+    )
+    sel = selected_criteria or {}
+    return {
+        'event': event,
+        'plan_events': events,
+        'segment_choices': [c[0] for c in SMS_SEGMENT_CHOICES],
+        'selected_segments': sel.get('rfm_segment') or [],
+        'tags': list(CustomerTag.objects.filter(organization=org).order_by('name')),
+        'selected_tag_ids': [str(t) for t in (sel.get('tag_ids') or [])],
+        'market_choices': market_choices,
+        'selected_market_id': sel.get('market_id') or '',
+    }
+
+
+def _event_ticket_url(request, org, event):
+    """Best-effort tracked ticket URL for a live direct event (else '')."""
+    if event is None or event.ticketing_type != TICKETING_TYPE_DIRECT:
+        return ''
+    if event.effective_status != EVENT_STATUS_LIVE:
+        return ''
+    link, _ = TrackingLink.objects.get_or_create(
+        organization=org, event=event, name='SMS',
+        defaults={'token': _generate_tracking_token()},
+    )
+    path = reverse('tickets:track_link_redirect', kwargs={'token': link.token})
+    site_url = getattr(settings, 'SITE_URL', '').rstrip('/')
+    return f"{site_url}{path}" if site_url else request.build_absolute_uri(path)
+
+
+@login_required
+@require_org
+@require_host
+@require_sms_feature
+@require_http_methods(['GET', 'POST'])
+def sms_plan_create(request):
+    """Generate an AI campaign plan for an event or a customer segment.
+
+    GET renders the generate form; POST calls the strategist, persists an
+    SMSCampaignPlan, and redirects to its detail page.
+    """
+    from django.core.cache import cache as django_cache
+
+    org = get_organization(request)
+    if not org.ai_sms_strategist_enabled:
+        raise Http404()
+
+    event = None
+    event_id = request.POST.get('event') or request.GET.get('event')
+    if event_id:
+        event = get_object_or_404(
+            Event.objects.filter(organization=org, deleted_at__isnull=True)
+            .select_related('venue'),
+            id=event_id,
+        )
+
+    if request.method == 'POST':
+        objective = (request.POST.get('objective') or '').strip()[:300]
+        criteria = {} if event is not None else _plan_criteria_from_post(request.POST)
+
+        if event is None and not criteria:
+            messages.error(request, 'Pick an event, or choose at least one segment, tag, or market.')
+            return render(request, 'tickets/marketing/sms/plan_form.html',
+                          _plan_form_context(org, event, criteria))
+
+        # Rate limit: 20 successful generations per org per hour (ceiling check only).
+        rate_key = f"sms_plan_ratelimit:{org.id}"
+        try:
+            if (django_cache.get(rate_key, 0) or 0) >= 20:
+                messages.error(request, 'Too many plans generated in the last hour. Please try again later.')
+                return render(request, 'tickets/marketing/sms/plan_form.html',
+                              _plan_form_context(org, event, criteria))
+        except Exception:
+            pass
+
+        from .services.sms_strategist import generate_campaign_plan, SMSStrategistError
+        ticket_url = _event_ticket_url(request, org, event) if event is not None else ''
+        try:
+            result = generate_campaign_plan(
+                org, event=event, criteria=criteria or None,
+                objective=objective, ticket_url=ticket_url, user=request.user,
+            )
+        except SMSStrategistError as exc:
+            messages.error(request, str(exc))
+            return render(request, 'tickets/marketing/sms/plan_form.html',
+                          _plan_form_context(org, event, criteria))
+
+        if event is not None:
+            name = f'Plan · {event.name}'
+        else:
+            tmp = SMSCampaign(organization=org, filter_criteria=criteria)
+            name = f'Plan · {tmp.audience_summary(org)}'
+
+        plan = SMSCampaignPlan.objects.create(
+            organization=org, created_by=request.user, event=event,
+            filter_criteria=criteria, name=name[:200], objective=objective,
+            strategy_summary=result['strategy_summary'], model_name=result['model_name'],
+            steps=result['steps'],
+        )
+
+        # Count only successful generations against the hourly budget.
+        try:
+            current = django_cache.get(rate_key, 0) or 0
+            django_cache.set(rate_key, current + 1, timeout=3600)
+        except Exception:
+            pass
+
+        return redirect('tickets:sms_plan_detail', pk=plan.id)
+
+    # GET: optionally prefill a segment audience from query params (e.g. from the
+    # segments page: ?segment=VIP&market=<id>).
+    selected = None
+    if event is None:
+        seg_criteria = {}
+        segs = [s for s in request.GET.getlist('segment') if s]
+        if segs:
+            seg_criteria['rfm_segment'] = segs
+        market = (request.GET.get('market') or '').strip()
+        if market:
+            seg_criteria['market_id'] = market
+        selected = seg_criteria or None
+    return render(request, 'tickets/marketing/sms/plan_form.html',
+                  _plan_form_context(org, event, selected))
+
+
+def _decorate_plan_steps(steps):
+    """Attach display labels/colors to each step for the timeline template."""
+    out = []
+    for step in steps or []:
+        label, color = PLAN_PURPOSE_LABELS.get(
+            step.get('purpose'), (step.get('purpose', 'Message').replace('_', ' ').title(), 'secondary'),
+        )
+        out.append({**step, 'purpose_label': label, 'purpose_color': color})
+    return out
+
+
+@login_required
+@require_org
+@require_host
+@require_sms_feature
+def sms_plan_detail(request, pk):
+    """Render a saved plan: strategy summary + the sequence timeline."""
+    org = get_organization(request)
+    if not org.ai_sms_strategist_enabled:
+        raise Http404()
+    plan = get_object_or_404(
+        SMSCampaignPlan.objects.filter(organization=org).select_related('event'),
+        id=pk,
+    )
+    return render(request, 'tickets/marketing/sms/plan_detail.html', {
+        'plan': plan,
+        'steps': _decorate_plan_steps(plan.steps),
+    })
+
+
+@login_required
+@require_org
+@require_host
+@require_sms_feature
+def sms_plan_list(request):
+    """List the org's past AI campaign plans."""
+    org = get_organization(request)
+    if not org.ai_sms_strategist_enabled:
+        raise Http404()
+    plans = (
+        SMSCampaignPlan.objects.filter(organization=org)
+        .select_related('event').order_by('-created_at')
+    )
+    page = Paginator(plans, 25).get_page(request.GET.get('page'))
+    return render(request, 'tickets/marketing/sms/plan_list.html', {'page_obj': page})
+
+
+@login_required
+@require_org
+@require_host
+@require_sms_feature
+@require_POST
+def sms_plan_launch_step(request, pk, step):
+    """Hand one plan step to the composer (prefilled body + audience) and mark it launched."""
+    org = get_organization(request)
+    if not org.ai_sms_strategist_enabled:
+        raise Http404()
+    plan = get_object_or_404(SMSCampaignPlan.objects.filter(organization=org), id=pk)
+
+    steps = plan.steps or []
+    if step < 0 or step >= len(steps):
+        raise Http404()
+    target = steps[step]
+
+    criteria = target.get('audience_criteria') or {}
+    event_id = criteria.get('event_id') or (str(plan.event_id) if plan.event_id else None)
+    # Prefill payload consumed by sms_campaign_create on the next GET.
+    request.session['sms_compose_prefill'] = {
+        'body': target.get('body', ''),
+        'criteria': criteria,
+        'event_id': event_id,
+        'name': f"{plan.name} · {target.get('purpose_label') or target.get('purpose') or 'Message'}"[:200],
+    }
+    request.session.modified = True
+
+    # Mark this step launched (in-place JSON update).
+    steps[step] = {**target, 'launched_at': timezone.now().isoformat()}
+    plan.steps = steps
+    plan.save(update_fields=['steps', 'updated_at'])
+
+    base = reverse('tickets:sms_campaign_create')
+    if event_id:
+        return redirect(f"{base}?event={event_id}")
+    return redirect(base)

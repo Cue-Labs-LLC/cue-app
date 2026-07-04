@@ -282,6 +282,11 @@ urlpatterns = [
     path('marketing/sms/audience-preview/', sms_views.sms_audience_preview, name='sms_audience_preview'),
     path('marketing/sms/ticket-link/', sms_views.sms_ticket_link, name='sms_ticket_link'),
 
+    path('marketing/sms/plans/', sms_views.sms_plan_list, name='sms_plan_list'),
+    path('marketing/sms/plan/new/', sms_views.sms_plan_create, name='sms_plan_create'),
+    path('marketing/sms/plan/<uuid:pk>/', sms_views.sms_plan_detail, name='sms_plan_detail'),
+    path('marketing/sms/plan/<uuid:pk>/step/<int:step>/launch/', sms_views.sms_plan_launch_step, name='sms_plan_launch_step'),
+
     # Forecast Tool
     path('forecast/', views.forecast_tool, name='forecast_tool'),
     path('forecast/api/', views.forecast_api, name='forecast_api'),
