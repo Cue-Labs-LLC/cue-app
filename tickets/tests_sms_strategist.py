@@ -84,7 +84,7 @@ class SMSStrategistViewTests(TestCase):
         for step in plan.steps:
             self.assertGreaterEqual(step['segments'], 1)
             self.assertEqual(step['audience_criteria'], {'all_subscribers': True})
-            self.assertEqual(step['audience_label'], 'All subscribers')
+            self.assertEqual(step['audience_label'], 'All SMS subscribers')
         # Billable usage recorded under the new feature; SMS wallet untouched.
         usage = AITokenUsage.objects.get(organization=self.org)
         self.assertEqual(usage.feature, AITokenUsage.FEATURE_SMS_PLAN)
@@ -208,6 +208,8 @@ class SMSStrategistViewTests(TestCase):
             {'audience_mode': 'event'},
         )
         self.assertEqual(resp.status_code, 200)
+        # Label uses the composer's wording ("Ticket buyers for {event}").
+        self.assertEqual(resp.json()['audience_label'], f'Ticket buyers for {self.event.name}')
         plan.refresh_from_db()
         self.assertEqual(plan.steps[0]['audience_criteria'], {'event_id': str(self.event.id)})
         # Launching it opens the composer scoped to ticket buyers.
@@ -274,7 +276,7 @@ class SMSStrategistViewTests(TestCase):
         plan = SMSCampaignPlan.objects.get(organization=self.org)
         # An unedited event step targets all subscribers, and its label says so — matching
         # what the composer will show (no more "All subscribers" vs "Ticket buyers" mismatch).
-        self.assertEqual(plan.steps[0]['audience_label'], 'All subscribers')
+        self.assertEqual(plan.steps[0]['audience_label'], 'All SMS subscribers')
         # Launch keeps the event link (for attribution) but opens on the All-subscribers scope.
         resp = self.client.post(reverse('tickets:sms_plan_launch_step', kwargs={'pk': plan.id, 'step': 0}))
         self.assertIn(f'event={self.event.id}', resp.url)

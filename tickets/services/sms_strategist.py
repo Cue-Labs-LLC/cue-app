@@ -243,6 +243,23 @@ def _build_step_criteria(base_criteria, event):
     return dict(base_criteria or {})
 
 
+def plan_audience_label(organization, criteria):
+    """Audience label for a plan step, in the SAME wording the composer uses so the plan
+    view and the New Campaign page stay consistent ('All SMS subscribers', 'Ticket buyers
+    for {event}', or a segment/tag/market summary)."""
+    from tickets.models import Event, SMSCampaign
+
+    criteria = criteria or {}
+    if criteria.get('all_subscribers'):
+        return 'All SMS subscribers'
+    event_id = criteria.get('event_id')
+    if event_id:
+        ev = Event.objects.filter(organization=organization, id=event_id).first()
+        return f'Ticket buyers for {ev.name}' if ev else 'Ticket buyers for this event'
+    label = SMSCampaign(organization=organization, filter_criteria=criteria).audience_summary(organization)
+    return label if label and label != 'No audience' else 'All SMS subscribers'
+
+
 def generate_campaign_plan(organization, *, event=None, criteria=None, objective='',
                            ticket_url='', user=None):
     """Generate a structured multi-touch SMS plan. Returns a dict:
@@ -323,25 +340,18 @@ def generate_campaign_plan(organization, *, event=None, criteria=None, objective
 
     base_criteria = _build_step_criteria(criteria, event)
     # Label the audience from the ACTUAL criteria the composer will use — not the LLM's
-    # free-text guess — so the plan page and the launched composer always agree.
-    from tickets.models import SMSCampaign
-    if base_criteria.get('all_subscribers'):
-        base_label = 'All subscribers'
-    else:
-        base_label = (
-            SMSCampaign(organization=organization, filter_criteria=base_criteria)
-            .audience_summary(organization)
-        )
+    # free-text guess — using the composer's terminology so the plan view and the New
+    # Campaign page always agree.
+    base_label = plan_audience_label(organization, base_criteria)
     org_tz = organization.get_timezone()
     steps = []
     for i, step in enumerate(result.steps):
         encoding, segments = sms_segment_info(with_stop_footer(step.message))
         send_at, timing_label = _compute_step_schedule(step, event, org_tz)
-        audience_label = base_label if base_label and base_label != 'No audience' else step.audience
         steps.append({
             'order': i,
             'purpose': step.purpose,
-            'audience_label': audience_label,
+            'audience_label': base_label,
             'audience_criteria': base_criteria,
             'offset_days': max(0, int(step.offset_days or 0)),
             'send_time': step.send_time,

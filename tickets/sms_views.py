@@ -1490,11 +1490,12 @@ def _decorate_plan_steps(steps, tz):
 
 
 def _audience_label_for(org, criteria):
-    """Human label for an audience criteria dict (used after an inline audience edit)."""
-    if criteria.get('all_subscribers'):
-        return 'All subscribers'
-    label = SMSCampaign(organization=org, filter_criteria=criteria).audience_summary(org)
-    return label if label and label != 'No audience' else 'All subscribers'
+    """Human label for an audience criteria dict (used after an inline audience edit).
+
+    Delegates to the strategist helper so the label wording matches the composer.
+    """
+    from .services.sms_strategist import plan_audience_label
+    return plan_audience_label(org, criteria)
 
 
 @login_required
