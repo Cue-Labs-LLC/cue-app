@@ -132,6 +132,51 @@ class SMSStrategistViewTests(TestCase):
         self.assertEqual(plan.steps[0]['send_time'], '09:30')
 
     @patch('langchain_openai.ChatOpenAI')
+    def test_org_timezone_used_in_labels(self, mock_openai):
+        mock_openai.return_value = _fake_structured_llm()
+        self.org.timezone = 'America/New_York'
+        self.org.save(update_fields=['timezone'])
+        self.client.post(reverse('tickets:sms_plan_create'), {'event': str(self.event.id)})
+        plan = SMSCampaignPlan.objects.get(organization=self.org)
+        # Eastern time → label ends in EDT/EST, and the stored offset reflects ET.
+        self.assertRegex(plan.steps[0]['timing_label'], r'E[DS]T$')
+        self.assertTrue(plan.steps[0]['send_at'].endswith(('-04:00', '-05:00')))
+
+    @patch('langchain_openai.ChatOpenAI')
+    def test_launch_prefills_composer_schedule(self, mock_openai):
+        mock_openai.return_value = _fake_structured_llm()
+        # Event far enough out that all suggested sends are in the future.
+        self.event.start_date = date.today() + timedelta(days=40)
+        self.event.save(update_fields=['start_date'])
+        self.client.post(reverse('tickets:sms_plan_create'), {'event': str(self.event.id)})
+        plan = SMSCampaignPlan.objects.get(organization=self.org)
+
+        self.client.post(reverse('tickets:sms_plan_launch_step', kwargs={'pk': plan.id, 'step': 0}))
+        prefill = self.client.session['sms_compose_prefill']
+        self.assertTrue(prefill['scheduled_at'])  # a future datetime-local string
+        # Composer GET pre-selects "Schedule for later" with that time.
+        resp = self.client.get(reverse('tickets:sms_campaign_create'))
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.context['form'].initial.get('send_mode'),
+                         resp.context['form'].SEND_SCHEDULE)
+        self.assertEqual(resp.context['form'].initial.get('scheduled_at'), prefill['scheduled_at'])
+
+    @patch('langchain_openai.ChatOpenAI')
+    def test_launch_skips_past_schedule(self, mock_openai):
+        from django.utils import timezone
+        mock_openai.return_value = _fake_structured_llm()
+        self.client.post(reverse('tickets:sms_plan_create'), {'event': str(self.event.id)})
+        plan = SMSCampaignPlan.objects.get(organization=self.org)
+        # Force this step's suggested send into the past → composer schedule not prefilled.
+        steps = plan.steps
+        steps[0]['send_at'] = (timezone.now() - timedelta(days=2)).isoformat()
+        plan.steps = steps
+        plan.save(update_fields=['steps'])
+
+        self.client.post(reverse('tickets:sms_plan_launch_step', kwargs={'pk': plan.id, 'step': 0}))
+        self.assertEqual(self.client.session['sms_compose_prefill']['scheduled_at'], '')
+
+    @patch('langchain_openai.ChatOpenAI')
     def test_update_schedule_rejects_bad_datetime(self, mock_openai):
         mock_openai.return_value = _fake_structured_llm()
         self.client.post(reverse('tickets:sms_plan_create'), {'event': str(self.event.id)})

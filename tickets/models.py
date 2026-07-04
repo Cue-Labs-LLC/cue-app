@@ -240,6 +240,15 @@ class Organization(BaseModel):
         default=True,
         help_text='Show the AI SMS Campaign Strategist (plan recommendations) entry points.',
     )
+    timezone = models.CharField(
+        max_length=64,
+        blank=True,
+        default='',
+        help_text=(
+            'IANA timezone (e.g. America/New_York) used when showing scheduled send '
+            'times. Blank falls back to the site default.'
+        ),
+    )
     external_events_enabled = models.BooleanField(
         default=True,
         help_text=(
@@ -275,6 +284,18 @@ class Organization(BaseModel):
 
     def __str__(self):
         return self.name
+
+    def get_timezone(self):
+        """Return the org's tzinfo, falling back to the site default TIME_ZONE."""
+        import zoneinfo
+        from django.conf import settings
+        for name in (self.timezone, getattr(settings, 'TIME_ZONE', 'UTC')):
+            if name:
+                try:
+                    return zoneinfo.ZoneInfo(name)
+                except Exception:
+                    continue
+        return zoneinfo.ZoneInfo('UTC')
 
 
 class OrderCounter(models.Model):

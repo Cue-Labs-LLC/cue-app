@@ -80,17 +80,39 @@ class OrgDisplayPreferencesForm(forms.ModelForm):
 
     class Meta:
         model = Organization
-        fields = ['ai_event_summary_enabled']
+        fields = ['ai_event_summary_enabled', 'timezone']
         widgets = {
             'ai_event_summary_enabled': forms.CheckboxInput(
                 attrs={'class': 'form-check-input', 'role': 'switch'}
             ),
+            'timezone': forms.Select(attrs={'class': 'form-select'}),
         }
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.helper = FormHelper()
         self.helper.form_tag = False
+        # A curated shortlist of common zones keeps the dropdown usable; the blank
+        # option means "use the site default".
+        import zoneinfo
+        from django.conf import settings
+        common = [
+            'America/New_York', 'America/Chicago', 'America/Denver', 'America/Phoenix',
+            'America/Los_Angeles', 'America/Anchorage', 'Pacific/Honolulu',
+            'America/Toronto', 'America/Mexico_City', 'Europe/London', 'Europe/Paris',
+            'Europe/Berlin', 'Europe/Madrid', 'Australia/Sydney', 'UTC',
+        ]
+        default = getattr(settings, 'TIME_ZONE', 'UTC')
+        available = zoneinfo.available_timezones()
+        names = [z for z in common if z in available]
+        # Include the org's current value even if it's outside the shortlist.
+        current = (self.instance and self.instance.timezone) or ''
+        if current and current not in names and current in available:
+            names.append(current)
+        choices = [('', f'Site default ({default})')] + [(z, z.replace('_', ' ')) for z in names]
+        self.fields['timezone'].widget.choices = choices
+        self.fields['timezone'].choices = choices
+        self.fields['timezone'].required = False
 
 
 class SegmentTuningForm(forms.ModelForm):

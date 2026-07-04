@@ -320,12 +320,11 @@ def generate_campaign_plan(organization, *, event=None, criteria=None, objective
             result = CampaignPlan.parse_obj(result)
 
     base_criteria = _build_step_criteria(criteria, event)
-    from django.utils import timezone
-    today = timezone.localdate()
+    org_tz = organization.get_timezone()
     steps = []
     for i, step in enumerate(result.steps):
         encoding, segments = sms_segment_info(with_stop_footer(step.message))
-        send_at, timing_label = _compute_step_schedule(step, event, today)
+        send_at, timing_label = _compute_step_schedule(step, event, org_tz)
         steps.append({
             'order': i,
             'purpose': step.purpose,
@@ -360,16 +359,18 @@ def format_send_label(dt):
     return formats.date_format(dt, SCHEDULE_LABEL_FORMAT)
 
 
-def _compute_step_schedule(step, event, today):
+def _compute_step_schedule(step, event, tz):
     """Turn a step's structured offset + send time into an absolute datetime + label.
 
-    Event plans anchor on the event date (offset = days before); segment plans anchor
-    on today (offset = days after campaign start). Returns (iso_datetime, display_label)
-    e.g. ('2026-07-06T18:00:00-07:00', 'Mon, Jul 6 · 6:00 PM PDT').
+    ``tz`` is the org's timezone. Event plans anchor on the event date (offset = days
+    before); segment plans anchor on today (offset = days after campaign start).
+    Returns (iso_datetime, display_label) e.g.
+    ('2026-07-06T18:00:00-07:00', 'Mon, Jul 6 · 6:00 PM PDT').
     """
     from datetime import datetime, time as dtime, timedelta
     from django.utils import timezone
 
+    today = timezone.now().astimezone(tz).date()
     try:
         hh, mm = (step.send_time or '').split(':')
         send_time = dtime(int(hh), int(mm))
@@ -384,8 +385,7 @@ def _compute_step_schedule(step, event, today):
     else:
         send_date = today + timedelta(days=offset)
 
-    tz = timezone.get_current_timezone()
-    dt = timezone.make_aware(datetime.combine(send_date, send_time), tz)
+    dt = datetime.combine(send_date, send_time, tzinfo=tz)
     return dt.isoformat(), format_send_label(dt)
 
 

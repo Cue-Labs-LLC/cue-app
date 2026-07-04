@@ -688,6 +688,11 @@ def sms_campaign_create(request):
                     initial['tag_ids'] = criteria['tag_ids']
                 if criteria.get('market_id'):
                     initial['market_id'] = criteria['market_id']
+            # Pre-select "Schedule for later" with the step's suggested send time.
+            scheduled_at = strategist_prefill.get('scheduled_at')
+            if scheduled_at:
+                initial['send_mode'] = SMSCampaignForm.SEND_SCHEDULE
+                initial['scheduled_at'] = scheduled_at
         elif prefill:
             initial = {'name': f'SMS - {prefill["label"]}'}
         elif event:
@@ -1448,22 +1453,20 @@ def sms_plan_create(request):
                   _plan_form_context(org, event, selected))
 
 
-def _decorate_plan_steps(steps):
-    """Attach display labels/colors to each step for the timeline template."""
+def _decorate_plan_steps(steps, tz):
+    """Attach display labels/colors + org-local send time to each step for the template."""
     out = []
     for step in steps or []:
         label, color = PLAN_PURPOSE_LABELS.get(
             step.get('purpose'), (step.get('purpose', 'Message').replace('_', ' ').title(), 'secondary'),
         )
-        # Local "YYYY-MM-DDTHH:MM" for the datetime-local editor (empty for legacy
+        # Org-local "YYYY-MM-DDTHH:MM" for the datetime-local editor (empty for legacy
         # plans that predate structured scheduling).
         send_local = ''
         raw = step.get('send_at')
         if raw:
             try:
-                send_local = timezone.localtime(
-                    datetime.fromisoformat(raw)
-                ).strftime('%Y-%m-%dT%H:%M')
+                send_local = datetime.fromisoformat(raw).astimezone(tz).strftime('%Y-%m-%dT%H:%M')
             except (ValueError, TypeError):
                 send_local = ''
         out.append({**step, 'purpose_label': label, 'purpose_color': color,
@@ -1486,7 +1489,7 @@ def sms_plan_detail(request, pk):
     )
     return render(request, 'tickets/marketing/sms/plan_detail.html', {
         'plan': plan,
-        'steps': _decorate_plan_steps(plan.steps),
+        'steps': _decorate_plan_steps(plan.steps, org.get_timezone()),
     })
 
 
@@ -1581,13 +1584,14 @@ def sms_plan_update_schedule(request, pk, step):
     except ValueError:
         return JsonResponse({'ok': False, 'error': 'Enter a valid date and time.'}, status=400)
 
-    dt = timezone.make_aware(naive, timezone.get_current_timezone())
+    org_tz = org.get_timezone()
+    dt = naive.replace(tzinfo=org_tz)
     # Keep offset_days in sync with the chosen date (informational; anchored on the
-    # event date for event plans, else on today).
+    # event date for event plans, else on today in the org's timezone).
     if plan.event_id and plan.event and plan.event.start_date:
         offset_days = max(0, (plan.event.start_date - dt.date()).days)
     else:
-        offset_days = max(0, (dt.date() - timezone.localdate()).days)
+        offset_days = max(0, (dt.date() - timezone.now().astimezone(org_tz).date()).days)
 
     steps[step] = {
         **steps[step],
@@ -1631,11 +1635,24 @@ def sms_plan_launch_step(request, pk, step):
 
     criteria = target.get('audience_criteria') or {}
     event_id = criteria.get('event_id') or (str(plan.event_id) if plan.event_id else None)
+    # Carry the step's suggested send time into the composer's schedule field — but
+    # only if it's still in the future (a past suggestion would fail the composer's
+    # "must be in the future" check), formatted in the org's timezone.
+    scheduled_local = ''
+    raw_send_at = target.get('send_at')
+    if raw_send_at:
+        try:
+            send_dt = datetime.fromisoformat(raw_send_at)
+            if send_dt > timezone.now():
+                scheduled_local = send_dt.astimezone(org.get_timezone()).strftime('%Y-%m-%dT%H:%M')
+        except (ValueError, TypeError):
+            scheduled_local = ''
     # Prefill payload consumed by sms_campaign_create on the next GET.
     request.session['sms_compose_prefill'] = {
         'body': target.get('body', ''),
         'criteria': criteria,
         'event_id': event_id,
+        'scheduled_at': scheduled_local,
         'name': f"{plan.name} · {target.get('purpose_label') or target.get('purpose') or 'Message'}"[:200],
     }
     request.session.modified = True

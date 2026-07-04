@@ -29,6 +29,17 @@
                 letting you generate an AI analysis of the event's performance.
             </p>
 
+            <hr class="my-4">
+
+            <div class="mb-2" style="max-width: 360px;">
+                <label class="form-label mb-1" for="{{ form.timezone.id_for_label }}">Timezone</label>
+                {{ form.timezone }}
+            </div>
+            <p class="text-muted" style="font-size: 0.85rem;">
+                Used when showing scheduled send times — for example, the suggested send
+                dates on AI campaign plans.
+            </p>
+
             <div class="mt-3">
                 <button type="submit" class="btn btn-primary">Save preferences</button>
             </div>
