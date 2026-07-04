@@ -11,7 +11,7 @@ from django.urls import reverse
 from .models import (
     Organization, UserProfile, Customer, CustomerTag,
     SMSCampaign, SMSCampaignPlan, SMSMessageRecipient, AITokenUsage,
-    Venue, Event,
+    Venue, Event, EventSMSCampaign,
 )
 from .services.sms_strategist import (
     CampaignPlan, PlanStep, generate_campaign_plan,
@@ -500,6 +500,15 @@ class BrandVoiceTests(TestCase):
             status=SMSCampaign.Status.SENT, sent_at=when,
         )
 
+    def _slicktext(self, org, message, when, **kwargs):
+        venue = Venue.objects.create(organization=org, name='V', city='A')
+        event = Event.objects.create(organization=org, venue=venue, name='Show',
+                                     start_date=date.today())
+        return EventSMSCampaign.objects.create(
+            event=event, source='slicktext', external_id=message[:20],
+            name='ext', message=message, send_time=when, **kwargs,
+        )
+
     def test_recent_bodies_org_scoped_recent_first_deduped(self):
         from django.utils import timezone
         now = timezone.now()
@@ -509,6 +518,26 @@ class BrandVoiceTests(TestCase):
         self._sent(self.other, 'not mine', now)             # different org
         bodies = _recent_campaign_bodies(self.org)
         self.assertEqual(bodies, ['newest', 'oldest'])       # recency order, deduped, scoped
+
+    def test_recent_bodies_include_slicktext_history(self):
+        from django.utils import timezone
+        now = timezone.now()
+        self._sent(self.org, 'native older', now - timedelta(days=5))
+        self._slicktext(self.org, 'hii we outside tmrw?? lock in!', now - timedelta(days=1))
+        self._slicktext(self.other, 'not my slicktext', now)   # different org
+        bodies = _recent_campaign_bodies(self.org)
+        # SlickText message is included and (being more recent) ranks first; org-scoped.
+        self.assertEqual(bodies[0], 'hii we outside tmrw?? lock in!')
+        self.assertIn('native older', bodies)
+        self.assertNotIn('not my slicktext', bodies)
+
+    def test_top_prior_includes_slicktext(self):
+        from django.utils import timezone
+        self._slicktext(self.org, 'slick winner', timezone.now(),
+                        audience_size=1000, unique_clicks=300, orders=5)
+        rows = _top_prior_campaigns(self.org)
+        bodies = [r['body'] for r in rows]
+        self.assertIn('slick winner', bodies)
 
     @patch('langchain_openai.ChatOpenAI')
     def test_generate_passes_brand_voice_into_prompt(self, mock_openai):

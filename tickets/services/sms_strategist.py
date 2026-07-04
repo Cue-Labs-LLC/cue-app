@@ -122,9 +122,12 @@ def _top_prior_campaigns(organization, limit=5):
     Ranked by click-through, then attributed orders. Degrades to [] when there's no
     history. Reuses ``_sms_buy_stats`` for first-party order/revenue attribution.
     """
-    from tickets.models import SMSCampaign, SMSMessageRecipient
+    from tickets.models import SMSCampaign, SMSMessageRecipient, EventSMSCampaign
     from tickets.sms_views import _sms_buy_stats
 
+    rows = []
+
+    # Native Cue sends.
     campaigns = list(
         SMSCampaign.objects
         .filter(organization=organization, deleted_at__isnull=True,
@@ -140,8 +143,6 @@ def _top_prior_campaigns(organization, limit=5):
         )
         .order_by('-sent_at')[:40]
     )
-
-    rows = []
     for c in campaigns:
         sent = c.sent_count or 0
         clicks = c.click_count or 0
@@ -158,29 +159,63 @@ def _top_prior_campaigns(organization, limit=5):
             'orders': int(buy.get('orders') or 0),
         })
 
+    # External SlickText broadcasts — often the bulk of an org's history.
+    externals = list(
+        EventSMSCampaign.objects
+        .filter(event__organization=organization, deleted_at__isnull=True)
+        .exclude(message='')
+        .select_related('event')
+        .order_by('-send_time')[:40]
+    )
+    for c in externals:
+        audience = c.effective_audience or 0
+        clicks = c.effective_clicks or 0
+        ctr = round(clicks / audience, 3) if audience else 0.0
+        rows.append({
+            'body': c.message,
+            'audience': f"SlickText · {c.event.name}",
+            'sent': audience,
+            'ctr': ctr,
+            'orders': int(c.effective_orders or 0),
+        })
+
     rows.sort(key=lambda r: (r['ctr'], r['orders']), reverse=True)
     return rows[:limit]
 
 
 def _recent_campaign_bodies(organization, limit=8):
-    """Recent SENT campaign message bodies — the organizer's brand voice samples.
+    """Recent campaign message bodies — the organizer's brand voice samples.
 
-    Ranked by recency (not performance) so the model mirrors how the org writes *now*.
-    Deduped on exact body; returns [] when there's no history.
+    Pulls from BOTH native Cue sends (SMSCampaign) and external SlickText broadcasts
+    (EventSMSCampaign) — many orgs' entire history lives in SlickText, so ignoring it
+    would leave the model with nothing to mirror. Ranked by recency (not performance) so
+    the model matches how the org writes *now*. Deduped on exact text; [] when no history.
     """
-    from tickets.models import SMSCampaign
+    from tickets.models import SMSCampaign, EventSMSCampaign
 
-    bodies = (
+    # (sort_key, text) tuples; sort_key is a POSIX timestamp (0.0 when unknown) so we can
+    # order across the two sources without comparing None datetimes.
+    items = []
+    for body, sent_at in (
         SMSCampaign.objects
         .filter(organization=organization, deleted_at__isnull=True,
                 status=SMSCampaign.Status.SENT)
         .exclude(body='')
-        .order_by('-sent_at', '-created_at')
-        .values_list('body', flat=True)[:40]
-    )
+        .values_list('body', 'sent_at')[:60]
+    ):
+        items.append((sent_at.timestamp() if sent_at else 0.0, body))
+    for message, send_time in (
+        EventSMSCampaign.objects
+        .filter(event__organization=organization, deleted_at__isnull=True)
+        .exclude(message='')
+        .values_list('message', 'send_time')[:60]
+    ):
+        items.append((send_time.timestamp() if send_time else 0.0, message))
+
+    items.sort(key=lambda x: x[0], reverse=True)
     seen = set()
     out = []
-    for body in bodies:
+    for _, body in items:
         key = (body or '').strip()
         if not key or key in seen:
             continue
