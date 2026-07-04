@@ -71,6 +71,13 @@
     font-size: 11px; font-weight: 500; border-radius: 999px; padding: 3px 10px;
     background: rgba(51,196,129,0.12); color: #33c481;
 }
+.plan-step-remove { margin-left: auto; }
+.plan-step-remove-btn {
+    border: 0; background: transparent; color: var(--text-secondary);
+    cursor: pointer; padding: 4px 6px; border-radius: 6px; line-height: 1;
+    opacity: 0.55; transition: opacity 0.12s, color 0.12s, background 0.12s;
+}
+.plan-step-remove-btn:hover { opacity: 1; color: #e5484d; background: rgba(229,72,77,0.1); }
 </style>
 {% endblock %}
 
@@ -117,6 +124,13 @@
                     </span>
                 </span>
                 {% if step.launched_at %}<span class="launched-pill"><i class="bi bi-check2"></i> Launched</span>{% endif %}
+                <form method="post" action="{% url 'tickets:sms_plan_remove_step' pk=plan.id step=step.order %}"
+                      class="plan-step-remove m-0" onsubmit="return confirm('Remove this message from the plan?');">
+                    {% csrf_token %}
+                    <button type="submit" class="plan-step-remove-btn" title="Remove from plan" aria-label="Remove from plan">
+                        <i class="bi bi-trash"></i>
+                    </button>
+                </form>
             </div>
             <div class="plan-step-audience"><i class="bi bi-people"></i> {{ step.audience_label }}</div>
             <textarea class="plan-step-message" data-step="{{ step.order }}"

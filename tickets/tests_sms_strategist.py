@@ -177,6 +177,43 @@ class SMSStrategistViewTests(TestCase):
         self.assertEqual(self.client.session['sms_compose_prefill']['scheduled_at'], '')
 
     @patch('langchain_openai.ChatOpenAI')
+    def test_remove_step_drops_it_and_reindexes(self, mock_openai):
+        mock_openai.return_value = _fake_structured_llm()
+        self.client.post(reverse('tickets:sms_plan_create'), {'event': str(self.event.id)})
+        plan = SMSCampaignPlan.objects.get(organization=self.org)
+        self.assertEqual(len(plan.steps), 3)
+        middle_body = plan.steps[1]['body']
+        last_body = plan.steps[2]['body']
+
+        resp = self.client.post(
+            reverse('tickets:sms_plan_remove_step', kwargs={'pk': plan.id, 'step': 1}),
+        )
+        self.assertRedirects(resp, reverse('tickets:sms_plan_detail', kwargs={'pk': plan.id}))
+        plan.refresh_from_db()
+        # The middle message is gone; the last one shifts up and orders stay 0..n-1.
+        self.assertEqual(len(plan.steps), 2)
+        bodies = [s['body'] for s in plan.steps]
+        self.assertNotIn(middle_body, bodies)
+        self.assertEqual(plan.steps[1]['body'], last_body)
+        self.assertEqual([s['order'] for s in plan.steps], [0, 1])
+
+    @patch('langchain_openai.ChatOpenAI')
+    def test_remove_step_org_scoped_and_gated(self, mock_openai):
+        mock_openai.return_value = _fake_structured_llm()
+        self.client.post(reverse('tickets:sms_plan_create'), {'event': str(self.event.id)})
+        plan = SMSCampaignPlan.objects.get(organization=self.org)
+
+        # Gated off → 404, plan untouched.
+        self.org.ai_sms_strategist_enabled = False
+        self.org.save(update_fields=['ai_sms_strategist_enabled'])
+        resp = self.client.post(
+            reverse('tickets:sms_plan_remove_step', kwargs={'pk': plan.id, 'step': 0}),
+        )
+        self.assertEqual(resp.status_code, 404)
+        plan.refresh_from_db()
+        self.assertEqual(len(plan.steps), 3)
+
+    @patch('langchain_openai.ChatOpenAI')
     def test_update_schedule_rejects_bad_datetime(self, mock_openai):
         mock_openai.return_value = _fake_structured_llm()
         self.client.post(reverse('tickets:sms_plan_create'), {'event': str(self.event.id)})

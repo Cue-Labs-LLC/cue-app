@@ -1666,3 +1666,32 @@ def sms_plan_launch_step(request, pk, step):
     if event_id:
         return redirect(f"{base}?event={event_id}")
     return redirect(base)
+
+
+@login_required
+@require_org
+@require_host
+@require_sms_feature
+@require_POST
+def sms_plan_remove_step(request, pk, step):
+    """Remove one campaign (step) from a plan's sequence, then re-index the rest.
+
+    ``order`` must stay equal to the list index because the per-step endpoints key
+    off it, so the remaining steps are renumbered after the removal.
+    """
+    org = get_organization(request)
+    if not org.ai_sms_strategist_enabled:
+        raise Http404()
+    plan = get_object_or_404(SMSCampaignPlan.objects.filter(organization=org), id=pk)
+
+    steps = plan.steps or []
+    if step < 0 or step >= len(steps):
+        raise Http404()
+
+    steps.pop(step)
+    for i, s in enumerate(steps):
+        s['order'] = i
+    plan.steps = steps
+    plan.save(update_fields=['steps', 'updated_at'])
+    messages.success(request, 'Removed the message from this plan.')
+    return redirect('tickets:sms_plan_detail', pk=plan.id)
