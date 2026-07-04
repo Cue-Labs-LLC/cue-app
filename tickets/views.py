@@ -10770,9 +10770,16 @@ def promo_code_delete(request, event_id, promo_code_id):
 # ---------------------------------------------------------------------------
 
 def track_link_redirect(request, token):
-    """Public redirect that records a click and forwards to the event buy page."""
+    """Public redirect that records a click and forwards to the ticket page.
+
+    Off-site (external ticket page) when the link has a target_url; otherwise the event's
+    Cue buy page. Clicks are counted either way; the buy-page path also stashes the ref so
+    a resulting checkout attributes back to this link.
+    """
     link = get_object_or_404(TrackingLink.objects.select_related('event'), token=token)
     TrackingLink.objects.filter(pk=link.pk).update(click_count=models.F('click_count') + 1)
+    if link.target_url:
+        return redirect(link.target_url)
     request.session[f'tracking_ref_{link.event_id}'] = token
     return redirect(f"/e/{link.event.public_id}/?ref={token}")
 

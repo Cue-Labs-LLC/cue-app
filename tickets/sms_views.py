@@ -31,7 +31,7 @@ from .models import (
     SMSCampaign, SMSCampaignPlan, SMSMessageRecipient, PhoneSuppression, Event,
     Customer, CustomerTag, TrackingLink, StripeCheckoutSession, Ticket,
     EventSMSCampaign,
-    TICKETING_TYPE_DIRECT, EVENT_STATUS_LIVE,
+    TICKETING_TYPE_DIRECT, TICKETING_TYPE_EXTERNAL, EVENT_STATUS_LIVE,
     _generate_tracking_token,
 )
 from .forms import SMSCampaignForm, SMS_SEGMENT_CHOICES
@@ -726,16 +726,18 @@ def sms_campaign_create(request):
             has_manual_includes=has_manual,
         )
 
-    # Live direct-ticketing events whose buy page is on sale — offered in the
-    # composer's "Add a ticket link" dropdown. effective_status is a property, so
-    # filter the (small) set of live direct events in Python.
+    # Events offered in the composer's "Add a ticket link" dropdown: live direct events
+    # (buy page) plus imported events that have a third-party ticket link set. Narrow in
+    # the DB, then finalize with _event_is_ticketable (effective_status is a property).
     ticket_link_events = [
         {'id': str(ev.id), 'name': ev.name, 'start_date': ev.start_date}
         for ev in Event.objects.filter(
             organization=org, deleted_at__isnull=True,
-            ticketing_type=TICKETING_TYPE_DIRECT, status=EVENT_STATUS_LIVE,
+        ).filter(
+            Q(ticketing_type=TICKETING_TYPE_DIRECT, status=EVENT_STATUS_LIVE)
+            | (Q(ticketing_type=TICKETING_TYPE_EXTERNAL) & ~Q(ticket_link=''))
         ).order_by('-start_date')
-        if ev.effective_status == EVENT_STATUS_LIVE
+        if _event_is_ticketable(ev)
     ]
 
     # Initial meter values match billing: segments are counted on the body plus
@@ -770,29 +772,23 @@ def sms_campaign_create(request):
 @require_sms_feature
 @require_POST
 def sms_ticket_link(request):
-    """JSON: get-or-create a shared 'SMS' tracking link for a direct, live event and
-    return its absolute /t/<token>/ URL for insertion into a campaign body."""
+    """JSON: get-or-create a shared 'SMS' tracking link for an event and return its
+    absolute /t/<token>/ URL for insertion into a campaign body.
+
+    Works for live direct events (redirects to the Cue buy page) and for imported
+    events that have a third-party ticket link set (redirects off-site). Either way the
+    link counts clicks. Uses SITE_URL so the stored link resolves for recipients rather
+    than baking in the composer's host."""
     org = get_organization(request)
     event = get_object_or_404(
-        Event.objects.filter(
-            organization=org, deleted_at__isnull=True,
-            ticketing_type=TICKETING_TYPE_DIRECT,
-        ),
+        Event.objects.filter(organization=org, deleted_at__isnull=True),
         id=request.POST.get('event'),
     )
-    if event.effective_status != EVENT_STATUS_LIVE:
-        return JsonResponse({'error': 'This event is not on sale.'}, status=400)
-    link, _ = TrackingLink.objects.get_or_create(
-        organization=org, event=event, name='SMS',
-        defaults={'token': _generate_tracking_token()},
-    )
-    # Use SITE_URL (the public/tunnel host the send pipeline uses) so the link
-    # stored in the body resolves for recipients — request.build_absolute_uri
-    # would bake in the composer's host (e.g. localhost). Falls back to the
-    # request host only when SITE_URL is unset.
-    path = reverse('tickets:track_link_redirect', kwargs={'token': link.token})
-    site_url = getattr(settings, 'SITE_URL', '').rstrip('/')
-    url = f"{site_url}{path}" if site_url else request.build_absolute_uri(path)
+    if not _event_is_ticketable(event):
+        return JsonResponse(
+            {'error': 'This event has no ticket link to send.'}, status=400,
+        )
+    url = _event_ticket_url(request, org, event)
     return JsonResponse({'url': url, 'name': event.name})
 
 
@@ -822,6 +818,7 @@ def _mint_campaign_tracking_link(org, campaign):
     new_link = TrackingLink.objects.create(
         organization=org, event=src.event,
         name=f'SMS · {campaign.name}'[:100], token=_generate_tracking_token(),
+        target_url=src.target_url,  # preserve off-site redirect for external ticket links
     )
     # Replace the exact path as it appears in the body (handles both the
     # canonical /t/ and the legacy /track/ prefix).
@@ -1383,19 +1380,43 @@ def _plan_form_context(org, event=None, selected_criteria=None):
     }
 
 
-def _event_ticket_url(request, org, event):
-    """Best-effort tracked ticket URL for a live direct event (else '')."""
-    if event is None or event.ticketing_type != TICKETING_TYPE_DIRECT:
-        return ''
-    if event.effective_status != EVENT_STATUS_LIVE:
-        return ''
-    link, _ = TrackingLink.objects.get_or_create(
-        organization=org, event=event, name='SMS',
-        defaults={'token': _generate_tracking_token()},
-    )
+def _tracking_link_absolute_url(request, link):
+    """Absolute /t/<token>/ URL, using SITE_URL so it resolves for recipients off-site."""
     path = reverse('tickets:track_link_redirect', kwargs={'token': link.token})
     site_url = getattr(settings, 'SITE_URL', '').rstrip('/')
     return f"{site_url}{path}" if site_url else request.build_absolute_uri(path)
+
+
+def _event_is_ticketable(event):
+    """True when an event can offer a tracked SMS ticket link: a live direct event, or an
+    imported/external event that has a third-party ticket page set."""
+    if event is None:
+        return False
+    if event.ticketing_type == TICKETING_TYPE_DIRECT:
+        return event.effective_status == EVENT_STATUS_LIVE
+    return event.ticketing_type == TICKETING_TYPE_EXTERNAL and bool(event.ticket_link)
+
+
+def _event_ticket_url(request, org, event):
+    """Best-effort tracked ticket URL for an event, or '' when none applies.
+
+    Direct+live events point at the Cue buy page; external events with a ticket_link get a
+    short /t/ link that redirects off-site to that page (both track clicks)."""
+    if not _event_is_ticketable(event):
+        return ''
+    external = event.ticketing_type == TICKETING_TYPE_EXTERNAL
+    link, _ = TrackingLink.objects.get_or_create(
+        organization=org, event=event, name='SMS',
+        defaults={
+            'token': _generate_tracking_token(),
+            'target_url': event.ticket_link if external else '',
+        },
+    )
+    # Keep the target current if the organizer later edited the event's ticket link.
+    if external and link.target_url != event.ticket_link:
+        link.target_url = event.ticket_link
+        link.save(update_fields=['target_url'])
+    return _tracking_link_absolute_url(request, link)
 
 
 @login_required

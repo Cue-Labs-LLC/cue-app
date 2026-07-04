@@ -11,7 +11,8 @@ from django.urls import reverse
 from .models import (
     Organization, UserProfile, Customer, CustomerTag,
     SMSCampaign, SMSCampaignPlan, SMSMessageRecipient, AITokenUsage,
-    Venue, Event, EventSMSCampaign,
+    Venue, Event, EventSMSCampaign, TrackingLink,
+    TICKETING_TYPE_EXTERNAL,
 )
 from .services.sms_strategist import (
     CampaignPlan, PlanStep, generate_campaign_plan,
@@ -554,3 +555,87 @@ class BrandVoiceTests(TestCase):
         user_content = messages[1]['content']
         self.assertIn(distinctive, user_content)
         self.assertIn('brand_voice_samples', user_content)
+
+
+@override_settings(SITE_URL='https://cue.test')
+class ExternalTicketLinkTests(TestCase):
+    """Imported (external) events can include a trackable ticket link in plan messages."""
+
+    def setUp(self):
+        self.org = Organization.objects.create(name='Ext', slug='ext', sms_marketing_enabled=True)
+        self.venue = Venue.objects.create(organization=self.org, name='V', city='A')
+        self.event = Event.objects.create(
+            organization=self.org, venue=self.venue, name='Imported Show',
+            start_date=date.today() + timedelta(days=10),
+            ticketing_type=TICKETING_TYPE_EXTERNAL, ticket_link='https://tix.example.com/e/123',
+        )
+
+    def test_event_ticket_url_creates_targeted_link(self):
+        from tickets.sms_views import _event_ticket_url
+        url = _event_ticket_url(None, self.org, self.event)
+        self.assertTrue(url.startswith('https://cue.test/t/'))
+        link = TrackingLink.objects.get(organization=self.org, event=self.event, name='SMS')
+        self.assertEqual(link.target_url, 'https://tix.example.com/e/123')
+        self.assertIn(link.token, url)
+
+    def test_event_ticket_url_refreshes_target_when_link_changes(self):
+        from tickets.sms_views import _event_ticket_url
+        _event_ticket_url(None, self.org, self.event)
+        self.event.ticket_link = 'https://tix.example.com/e/999'
+        self.event.save(update_fields=['ticket_link'])
+        _event_ticket_url(None, self.org, self.event)
+        link = TrackingLink.objects.get(organization=self.org, event=self.event, name='SMS')
+        self.assertEqual(link.target_url, 'https://tix.example.com/e/999')
+
+    def test_external_event_without_link_returns_empty(self):
+        from tickets.sms_views import _event_ticket_url
+        self.event.ticket_link = ''
+        self.event.save(update_fields=['ticket_link'])
+        self.assertEqual(_event_ticket_url(None, self.org, self.event), '')
+
+    def test_redirect_records_click_and_forwards_offsite(self):
+        link = TrackingLink.objects.create(
+            organization=self.org, event=self.event, name='SMS',
+            token='exttok123456', target_url='https://tix.example.com/e/123',
+        )
+        resp = Client().get(reverse('tickets:track_link_redirect', kwargs={'token': link.token}))
+        self.assertEqual(resp.status_code, 302)
+        self.assertEqual(resp.url, 'https://tix.example.com/e/123')
+        link.refresh_from_db()
+        self.assertEqual(link.click_count, 1)
+
+    def test_mint_campaign_link_preserves_target(self):
+        from tickets.sms_views import _mint_campaign_tracking_link
+        src = TrackingLink.objects.create(
+            organization=self.org, event=self.event, name='SMS',
+            token='srctok123456', target_url='https://tix.example.com/e/123',
+        )
+        campaign = SMSCampaign(
+            organization=self.org, name='C',
+            body='Grab tix https://cue.test/t/srctok123456/',
+            link_url='https://cue.test/t/srctok123456/',
+        )
+        _mint_campaign_tracking_link(self.org, campaign)
+        # A fresh per-campaign link was minted and still redirects off-site.
+        minted = TrackingLink.objects.exclude(pk=src.pk).get(organization=self.org)
+        self.assertEqual(minted.target_url, 'https://tix.example.com/e/123')
+        self.assertIn(minted.token, campaign.link_url)
+
+    @override_settings(OPENAI_API_KEY='test-key', OPENAI_MODEL='gpt-4o')
+    @patch('langchain_openai.ChatOpenAI')
+    def test_plan_generation_threads_ticket_link_into_prompt(self, mock_openai):
+        llm = _fake_structured_llm()
+        mock_openai.return_value = llm
+        self.org.ai_sms_strategist_enabled = True
+        self.org.save(update_fields=['ai_sms_strategist_enabled'])
+        user = User.objects.create_user('e', 'e@test.com', 'pw')
+        UserProfile.objects.create(user=user, organization=self.org,
+                                   org_role=UserProfile.OrgRole.OWNER)
+        c = Client()
+        c.login(username='e@test.com', password='pw')
+        c.get(reverse('tickets:home'))
+        c.post(reverse('tickets:sms_plan_create'), {'event': str(self.event.id)})
+
+        user_content = llm.with_structured_output.return_value.invoke.call_args[0][0][1]['content']
+        link = TrackingLink.objects.get(organization=self.org, event=self.event, name='SMS')
+        self.assertIn(f'cue.test/t/{link.token}/', user_content)
