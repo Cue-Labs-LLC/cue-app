@@ -23,13 +23,13 @@ def _fake_plan():
     return CampaignPlan(
         strategy_summary='Three touches ramping to the event.',
         steps=[
-            PlanStep(purpose='announcement', audience='All subscribers', timing='T-14 days',
+            PlanStep(purpose='announcement', audience='All subscribers', offset_days=14, send_time='18:00',
                      message='Tickets are live for the show. Grab yours: https://cue.test/t/abc/',
                      rationale='Seed awareness early.'),
-            PlanStep(purpose='reminder', audience='All subscribers', timing='T-3 days',
+            PlanStep(purpose='reminder', audience='All subscribers', offset_days=3, send_time='17:30',
                      message='Only a few days left — get your tickets now.',
                      rationale='Nudge fence-sitters.'),
-            PlanStep(purpose='last_chance', audience='All subscribers', timing='Day of · 4pm',
+            PlanStep(purpose='last_chance', audience='All subscribers', offset_days=0, send_time='16:00',
                      message='Doors soon! Last chance for tickets.',
                      rationale='Capture last-minute buyers.'),
         ],
@@ -90,6 +90,22 @@ class SMSStrategistViewTests(TestCase):
         self.assertEqual(usage.total_tokens, 180)
         self.org.refresh_from_db()
         self.assertEqual(self.org.sms_credit_balance_cents, 5000)
+
+    @patch('langchain_openai.ChatOpenAI')
+    def test_event_steps_have_absolute_send_dates(self, mock_openai):
+        mock_openai.return_value = _fake_structured_llm()
+        self.client.post(reverse('tickets:sms_plan_create'), {'event': str(self.event.id)})
+        plan = SMSCampaignPlan.objects.get(organization=self.org)
+
+        from datetime import datetime, timedelta
+        # offset_days in _fake_plan are 14 / 3 / 0 before the event date.
+        expected = {14: self.event.start_date - timedelta(days=14),
+                    3: self.event.start_date - timedelta(days=3),
+                    0: self.event.start_date}
+        for step in plan.steps:
+            self.assertNotIn('T-', step['timing_label'])          # no more relative "T-days"
+            got = datetime.fromisoformat(step['send_at']).date()
+            self.assertEqual(got, expected[step['offset_days']])
 
     @patch('langchain_openai.ChatOpenAI')
     def test_generate_segment_plan(self, mock_openai):
