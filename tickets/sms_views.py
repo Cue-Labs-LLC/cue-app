@@ -533,8 +533,10 @@ def sms_campaign_create(request):
 
     # Event-mode audience scope. Read outside form handling (and normalized) so the
     # re-rendered confirm page can keep the chosen chip checked — otherwise the
-    # selection silently resets to 'event' between review and confirm.
-    audience_scope = request.POST.get('audience_scope') or 'event'
+    # selection silently resets to 'event' between review and confirm. Also honored
+    # from the query string so a launched plan step can preselect the right chip
+    # (e.g. an "all subscribers" step opens on the All SMS subscribers scope).
+    audience_scope = request.POST.get('audience_scope') or request.GET.get('audience_scope') or 'event'
     if audience_scope not in ('event', 'all', 'tag'):
         audience_scope = 'event'
 
@@ -1599,7 +1601,9 @@ def sms_plan_update_audience(request, pk, step):
         raise Http404()
 
     mode = request.POST.get('audience_mode') or 'custom'
-    if mode == 'event' and plan.event_id:
+    if mode == 'all' and plan.event_id:
+        criteria = {'all_subscribers': True}
+    elif mode == 'event' and plan.event_id:
         criteria = {'event_id': str(plan.event_id)}
     else:
         criteria = _plan_criteria_from_post(request.POST)
@@ -1695,10 +1699,19 @@ def sms_plan_launch_step(request, pk, step):
         steps[step] = target
 
     criteria = target.get('audience_criteria') or {}
-    # Drive event vs. segment mode off the STEP's own audience, not the plan's event —
-    # otherwise a step whose audience was edited to a segment would still open the
-    # composer in event mode and silently target the event's attendees instead.
-    event_id = criteria.get('event_id')
+    # Map the step's audience to the composer entry point. Event-mode scopes let us keep
+    # the campaign linked to the event while targeting ticket buyers ('event') or the
+    # whole list ('all'); a segment/tag/market audience opens the plain (non-event)
+    # composer. Driven off the STEP's own criteria so an edited audience is honored.
+    plan_event_id = str(plan.event_id) if plan.event_id else None
+    event_id = None
+    audience_scope = None
+    if criteria.get('event_id'):
+        event_id = criteria['event_id']
+        audience_scope = 'event'
+    elif criteria.get('all_subscribers') and plan_event_id:
+        event_id = plan_event_id
+        audience_scope = 'all'
     # Carry the step's suggested send time into the composer's schedule field — but
     # only if it's still in the future (a past suggestion would fail the composer's
     # "must be in the future" check), formatted in the org's timezone.
@@ -1728,7 +1741,10 @@ def sms_plan_launch_step(request, pk, step):
 
     base = reverse('tickets:sms_campaign_create')
     if event_id:
-        return redirect(f"{base}?event={event_id}")
+        url = f"{base}?event={event_id}"
+        if audience_scope:
+            url += f"&audience_scope={audience_scope}"
+        return redirect(url)
     return redirect(base)
 
 

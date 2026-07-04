@@ -80,10 +80,11 @@ class SMSStrategistViewTests(TestCase):
         self.assertRedirects(resp, reverse('tickets:sms_plan_detail', kwargs={'pk': plan.id}))
         self.assertEqual(plan.event_id, self.event.id)
         self.assertEqual(len(plan.steps), 3)
-        # Every step carries a computed segment count + event audience criteria.
+        # Event plans default every step to all subscribers (sell to the whole list).
         for step in plan.steps:
             self.assertGreaterEqual(step['segments'], 1)
-            self.assertEqual(step['audience_criteria'], {'event_id': str(self.event.id)})
+            self.assertEqual(step['audience_criteria'], {'all_subscribers': True})
+            self.assertEqual(step['audience_label'], 'All subscribers')
         # Billable usage recorded under the new feature; SMS wallet untouched.
         usage = AITokenUsage.objects.get(organization=self.org)
         self.assertEqual(usage.feature, AITokenUsage.FEATURE_SMS_PLAN)
@@ -181,8 +182,8 @@ class SMSStrategistViewTests(TestCase):
         mock_openai.return_value = _fake_structured_llm()
         self.client.post(reverse('tickets:sms_plan_create'), {'event': str(self.event.id)})
         plan = SMSCampaignPlan.objects.get(organization=self.org)
-        # Steps start targeting the event's attendees.
-        self.assertEqual(plan.steps[0]['audience_criteria'], {'event_id': str(self.event.id)})
+        # Steps start targeting all subscribers.
+        self.assertEqual(plan.steps[0]['audience_criteria'], {'all_subscribers': True})
 
         resp = self.client.post(
             reverse('tickets:sms_plan_update_audience', kwargs={'pk': plan.id, 'step': 0}),
@@ -195,7 +196,23 @@ class SMSStrategistViewTests(TestCase):
         plan.refresh_from_db()
         self.assertEqual(plan.steps[0]['audience_criteria'], {'rfm_segment': ['VIP', 'Loyal']})
         # Other steps are untouched.
-        self.assertEqual(plan.steps[1]['audience_criteria'], {'event_id': str(self.event.id)})
+        self.assertEqual(plan.steps[1]['audience_criteria'], {'all_subscribers': True})
+
+    @patch('langchain_openai.ChatOpenAI')
+    def test_update_audience_to_ticket_buyers(self, mock_openai):
+        mock_openai.return_value = _fake_structured_llm()
+        self.client.post(reverse('tickets:sms_plan_create'), {'event': str(self.event.id)})
+        plan = SMSCampaignPlan.objects.get(organization=self.org)
+        resp = self.client.post(
+            reverse('tickets:sms_plan_update_audience', kwargs={'pk': plan.id, 'step': 0}),
+            {'audience_mode': 'event'},
+        )
+        self.assertEqual(resp.status_code, 200)
+        plan.refresh_from_db()
+        self.assertEqual(plan.steps[0]['audience_criteria'], {'event_id': str(self.event.id)})
+        # Launching it opens the composer scoped to ticket buyers.
+        resp = self.client.post(reverse('tickets:sms_plan_launch_step', kwargs={'pk': plan.id, 'step': 0}))
+        self.assertIn('audience_scope=event', resp.url)
 
     @patch('langchain_openai.ChatOpenAI')
     def test_update_audience_back_to_event(self, mock_openai):
@@ -251,15 +268,21 @@ class SMSStrategistViewTests(TestCase):
         self.assertEqual(composer.context['form'].initial.get('rfm_segment'), ['VIP'])
 
     @patch('langchain_openai.ChatOpenAI')
-    def test_unedited_event_step_launches_in_event_mode(self, mock_openai):
+    def test_unedited_event_step_launches_all_subscribers(self, mock_openai):
         mock_openai.return_value = _fake_structured_llm()
         self.client.post(reverse('tickets:sms_plan_create'), {'event': str(self.event.id)})
         plan = SMSCampaignPlan.objects.get(organization=self.org)
-        # An unedited event step still targets the event → composer opens in event mode.
+        # An unedited event step targets all subscribers, and its label says so — matching
+        # what the composer will show (no more "All subscribers" vs "Ticket buyers" mismatch).
+        self.assertEqual(plan.steps[0]['audience_label'], 'All subscribers')
+        # Launch keeps the event link (for attribution) but opens on the All-subscribers scope.
         resp = self.client.post(reverse('tickets:sms_plan_launch_step', kwargs={'pk': plan.id, 'step': 0}))
         self.assertIn(f'event={self.event.id}', resp.url)
-        # And its audience label reflects the real criteria (the event), not "All subscribers".
-        self.assertIn(self.event.name, plan.steps[0]['audience_label'])
+        self.assertIn('audience_scope=all', resp.url)
+        # The composer renders that scope selected.
+        composer = self.client.get(f"{reverse('tickets:sms_campaign_create')}?event={self.event.id}&audience_scope=all")
+        self.assertEqual(composer.status_code, 200)
+        self.assertEqual(composer.context['audience_scope'], 'all')
 
     @patch('langchain_openai.ChatOpenAI')
     def test_remove_step_drops_it_and_reindexes(self, mock_openai):

@@ -232,12 +232,14 @@ def _event_context(event):
 def _build_step_criteria(base_criteria, event):
     """The filter_criteria a launched step should prefill the composer with.
 
-    v1: reuse the plan's base audience for every step. (The model's per-step ``audience``
-    label is advisory; the organizer can still narrow the audience in the composer.)
-    Event plans resolve to the event's attendees.
+    Event plans default to ALL of the org's SMS subscribers — an event campaign exists to
+    sell tickets to the whole list, not just to people who already bought (the event stays
+    linked for attribution + the ticket link). The organizer can narrow any step to the
+    event's ticket buyers or a segment via the audience editor. Segment plans reuse the
+    plan's base audience.
     """
     if event is not None:
-        return {'event_id': str(event.id)}
+        return {'all_subscribers': True}
     return dict(base_criteria or {})
 
 
@@ -323,10 +325,13 @@ def generate_campaign_plan(organization, *, event=None, criteria=None, objective
     # Label the audience from the ACTUAL criteria the composer will use — not the LLM's
     # free-text guess — so the plan page and the launched composer always agree.
     from tickets.models import SMSCampaign
-    base_label = (
-        SMSCampaign(organization=organization, filter_criteria=base_criteria)
-        .audience_summary(organization)
-    )
+    if base_criteria.get('all_subscribers'):
+        base_label = 'All subscribers'
+    else:
+        base_label = (
+            SMSCampaign(organization=organization, filter_criteria=base_criteria)
+            .audience_summary(organization)
+        )
     org_tz = organization.get_timezone()
     steps = []
     for i, step in enumerate(result.steps):

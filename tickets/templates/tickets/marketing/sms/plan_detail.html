@@ -210,8 +210,12 @@
             <div class="modal-body">
                 {% if plan.event %}
                 <div class="form-check mb-2">
+                    <input class="form-check-input" type="radio" name="aud_mode" id="aud_mode_all" value="all">
+                    <label class="form-check-label" for="aud_mode_all">All SMS subscribers</label>
+                </div>
+                <div class="form-check mb-2">
                     <input class="form-check-input" type="radio" name="aud_mode" id="aud_mode_event" value="event">
-                    <label class="form-check-label" for="aud_mode_event">Attendees of {{ plan.event.name }}</label>
+                    <label class="form-check-label" for="aud_mode_event">Ticket buyers for {{ plan.event.name }}</label>
                 </div>
                 {% endif %}
                 <div class="form-check mb-1">
@@ -377,7 +381,10 @@ document.addEventListener('DOMContentLoaded', function () {
                 audError.hidden = true;
 
                 var eventRadio = document.getElementById('aud_mode_event');
-                if (criteria.event_id && eventRadio) {
+                var allRadio = document.getElementById('aud_mode_all');
+                if (criteria.all_subscribers && allRadio) {
+                    allRadio.checked = true;
+                } else if (criteria.event_id && eventRadio) {
                     eventRadio.checked = true;
                 } else {
                     document.getElementById('aud_mode_custom').checked = true;
