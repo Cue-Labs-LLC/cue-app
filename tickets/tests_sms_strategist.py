@@ -604,6 +604,27 @@ class ExternalTicketLinkTests(TestCase):
         link.refresh_from_db()
         self.assertEqual(link.click_count, 1)
 
+    def test_campaign_detail_shows_external_hint_and_hides_revenue(self):
+        user = User.objects.create_user('h', 'h@test.com', 'pw')
+        UserProfile.objects.create(user=user, organization=self.org,
+                                   org_role=UserProfile.OrgRole.OWNER)
+        c = Client()
+        c.login(username='h@test.com', password='pw')
+        c.get(reverse('tickets:home'))
+        link = TrackingLink.objects.create(
+            organization=self.org, event=self.event, name='SMS',
+            token='dettok123456', target_url='https://tix.example.com/e/123',
+        )
+        campaign = SMSCampaign.objects.create(
+            organization=self.org, name='C', body='Grab tix https://cue.test/t/dettok123456/',
+            link_url='https://cue.test/t/dettok123456/', status=SMSCampaign.Status.SENT,
+        )
+        resp = c.get(reverse('tickets:sms_campaign_detail', kwargs={'pk': campaign.id}))
+        self.assertEqual(resp.status_code, 200)
+        self.assertTrue(resp.context['external_ticket_link'])
+        self.assertContains(resp, 'ticket sales and revenue are not')
+        self.assertNotContains(resp, 'Tickets bought')   # revenue/ticket cards suppressed
+
     def test_mint_campaign_link_preserves_target(self):
         from tickets.sms_views import _mint_campaign_tracking_link
         src = TrackingLink.objects.create(

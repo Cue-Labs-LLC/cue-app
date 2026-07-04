@@ -852,6 +852,19 @@ def _sms_buy_stats(org, campaign):
     return {'tickets': tickets, 'revenue': Decimal(rev_cents) / 100, 'orders': completed.count()}
 
 
+def _campaign_link_is_external(org, campaign):
+    """True when the campaign's tracked ticket link redirects off-site (imported event).
+
+    Cue can't see third-party sales, so orders/revenue aren't attributable for these —
+    only clicks. Used to swap the buy-stat cards for an explanatory hint on the detail page.
+    """
+    match = _TRACK_TOKEN_RE.search(campaign.link_url or '')
+    if not match:
+        return False
+    link = TrackingLink.objects.filter(organization=org, token=match.group(1)).first()
+    return bool(link and link.target_url)
+
+
 @login_required
 @require_org
 @require_host
@@ -875,6 +888,7 @@ def sms_campaign_detail(request, pk):
         'campaign': campaign,
         'audience_summary': campaign.audience_summary(org),
         'buy_stats': _sms_buy_stats(org, campaign),
+        'external_ticket_link': _campaign_link_is_external(org, campaign),
         'page_obj': page_obj,
         'link_events': _org_events_for_picker(org),
     })
