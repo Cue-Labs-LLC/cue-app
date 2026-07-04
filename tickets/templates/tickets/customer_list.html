@@ -546,7 +546,9 @@
                                 <span class="customer-card-segment-empty">No segment</span>
                                 {% endif %}
                                 <span class="customer-card-ltv">${{ customer.lifetime_value|currency }}</span>
-                                {% if customer.sms_opt_in %}
+                                {% if customer.sms_suppressed %}
+                                <span class="customer-card-sms text-danger"><i class="bi bi-slash-circle-fill"></i> STOP</span>
+                                {% elif customer.sms_opt_in %}
                                 <span class="customer-card-sms text-success"><i class="bi bi-check-circle-fill"></i> SMS</span>
                                 {% endif %}
                             </div>
@@ -554,7 +556,9 @@
                         <td>{{ customer.email }}</td>
                         <td class="d-none d-sm-table-cell">{{ customer.phone|default:"-" }}</td>
                         <td class="d-none d-sm-table-cell">
-                            {% if customer.sms_opt_in %}
+                            {% if customer.sms_suppressed %}
+                            <span class="text-danger" title="Opted out via STOP — can only re-subscribe by texting START"><i class="bi bi-slash-circle-fill"></i> STOP</span>
+                            {% elif customer.sms_opt_in %}
                             <span class="text-success" title="Subscribed{% if customer.sms_opt_in_date %} {{ customer.sms_opt_in_date|date:'M d, Y' }}{% endif %}"><i class="bi bi-check-circle-fill"></i></span>
                             {% else %}
                             <span class="text-muted">&mdash;</span>

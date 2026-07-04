@@ -282,6 +282,14 @@ SMS_PRICE_PER_SEGMENT_CENTS = Decimal(os.environ.get('SMS_PRICE_PER_SEGMENT_CENT
 # Messaging Service still enforces STOP. Confirm against your registered 10DLC/toll-free
 # campaign terms before lowering.
 SMS_FOOTER_DISCLOSURE_DAYS = int(os.environ.get('SMS_FOOTER_DISCLOSURE_DAYS', '30'))
+# E.164 calling-code prefixes eligible for marketing SMS, comma-separated. Recipients
+# whose number doesn't start with one are dropped before a campaign is scheduled —
+# they'd be blocked by Twilio Geo Permissions (Error 21408) and can't be billed anyway.
+# Default US/CA ('+1'). Must mirror the destinations enabled in your Twilio Geo
+# Permissions; set to an empty string to allow all countries.
+SMS_ALLOWED_COUNTRY_PREFIXES = tuple(
+    p.strip() for p in os.environ.get('SMS_ALLOWED_COUNTRY_PREFIXES', '+1').split(',') if p.strip()
+)
 E2E_TEST_MODE = os.environ.get('E2E_TEST_MODE', 'False') == 'True'
 
 # Absolute URL for building links in emails (survey invitations, etc.)

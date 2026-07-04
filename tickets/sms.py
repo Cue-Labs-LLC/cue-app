@@ -30,6 +30,29 @@ def extract_first_url(text: str) -> str:
     return match.group(0).rstrip('.,!?;:)\'"')
 
 
+# Twilio error codes meaning the recipient is opted out (on the carrier/Twilio STOP
+# list). Treated as a suppression signal: mirror into PhoneSuppression so the number
+# is never re-attempted. The inbound OptOutType webhook can miss opt-outs (legacy STOPs
+# from before suppression tracking existed, or a dropped/failed callback), and Twilio
+# then blocks each retry — dinging the account's Compliance score. Consumed by
+# send_sms_chunk_task and twilio_sms_status_webhook. Compare as strings.
+TWILIO_OPT_OUT_ERROR_CODES = frozenset({'21610'})
+
+
+def sms_country_allowed(phone: str) -> bool:
+    """True if `phone` (E.164) is in a country enabled for marketing SMS.
+
+    Guards against Twilio Geo-Permission blocks (Error 21408) and non-billable sends to
+    countries we don't serve. Configured via SMS_ALLOWED_COUNTRY_PREFIXES (E.164
+    calling-code prefixes, default US/CA '+1'); an empty setting allows all countries.
+    Expects an already-normalized E.164 number (see normalize_phone).
+    """
+    prefixes = getattr(settings, 'SMS_ALLOWED_COUNTRY_PREFIXES', ('+1',))
+    if not prefixes:
+        return True
+    return any((phone or '').startswith(p) for p in prefixes)
+
+
 def normalize_phone(raw: str) -> str:
     """Normalize a phone number string to E.164 (+1XXXXXXXXXX for US numbers).
 
@@ -112,18 +135,21 @@ def sms_segment_info(body: str):
 def send_sms(to: str, body: str, status_callback: str | None = None):
     """Send a marketing SMS via the configured Twilio Messaging Service.
 
-    Returns (ok, message_sid). In E2E test mode no Twilio call is made.
+    Returns (ok, message_sid, error_code). error_code is the Twilio error code (as a
+    string) when the send is rejected — notably '21610' for an opted-out recipient,
+    which the caller mirrors into PhoneSuppression. None when there's no Twilio code.
+    In E2E test mode no Twilio call is made.
     """
     if getattr(settings, 'E2E_TEST_MODE', False):
         logger.info("E2E test mode: pretending to send SMS to %s", to)
-        return True, 'E2E_FAKE_SID'
+        return True, 'E2E_FAKE_SID', None
     messaging_service_sid = getattr(settings, 'TWILIO_MESSAGING_SERVICE_SID', '')
     from_number = getattr(settings, 'TWILIO_SMS_FROM', '')
     if not messaging_service_sid and not from_number:
         logger.error(
             "Cannot send SMS: set TWILIO_MESSAGING_SERVICE_SID (preferred) or TWILIO_SMS_FROM."
         )
-        return False, None
+        return False, None, None
     try:
         from twilio.rest import Client
         client = Client(settings.TWILIO_ACCOUNT_SID, settings.TWILIO_AUTH_TOKEN)
@@ -136,10 +162,14 @@ def send_sms(to: str, body: str, status_callback: str | None = None):
         if status_callback:
             kwargs['status_callback'] = status_callback
         message = client.messages.create(**kwargs)
-        return True, message.sid
+        return True, message.sid, None
     except Exception as exc:
+        # An opted-out recipient (21610) surfaces synchronously here, not via the status
+        # callback, so return the code for the caller to act on. TwilioRestException
+        # exposes .code (int); anything else has no code.
+        code = getattr(exc, 'code', None)
         logger.error("SMS send failed for %s: %s", to, exc)
-        return False, None
+        return False, None, str(code) if code is not None else None
 
 
 def validate_twilio_request(request) -> bool:

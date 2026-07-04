@@ -219,6 +219,7 @@ Event.objects.all()
 | `SMS_CAMPAIGN_MAX_RECIPIENTS` | Optional | Hard cap on recipients per marketing-SMS campaign (default 5000) |
 | `SMS_PRICE_PER_SEGMENT_CENTS` | Optional | Price charged to an org per SMS segment, in cents (Decimal, default 3). Debited from the prepaid credit wallet at send time |
 | `SMS_FOOTER_DISCLOSURE_DAYS` | Optional | Days between required "Reply STOP" footer disclosures to the same phone (default 30). Footer is included on the first message + once a prior disclosure ages past this window; omitted in between. Twilio Advanced Opt-Out still enforces STOP regardless |
+| `SMS_ALLOWED_COUNTRY_PREFIXES` | Optional | Comma-separated E.164 calling-code prefixes eligible for marketing SMS (default `+1` = US/CA). Recipients outside these are dropped in `SMSCampaign.materialize()` before scheduling/charging, avoiding Twilio Geo-Permission blocks (Error 21408). Must mirror your Twilio Geo Permissions; empty string = allow all |
 
 ---
 
