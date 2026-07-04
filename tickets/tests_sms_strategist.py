@@ -177,6 +177,73 @@ class SMSStrategistViewTests(TestCase):
         self.assertEqual(self.client.session['sms_compose_prefill']['scheduled_at'], '')
 
     @patch('langchain_openai.ChatOpenAI')
+    def test_update_audience_to_segments(self, mock_openai):
+        mock_openai.return_value = _fake_structured_llm()
+        self.client.post(reverse('tickets:sms_plan_create'), {'event': str(self.event.id)})
+        plan = SMSCampaignPlan.objects.get(organization=self.org)
+        # Steps start targeting the event's attendees.
+        self.assertEqual(plan.steps[0]['audience_criteria'], {'event_id': str(self.event.id)})
+
+        resp = self.client.post(
+            reverse('tickets:sms_plan_update_audience', kwargs={'pk': plan.id, 'step': 0}),
+            {'audience_mode': 'custom', 'rfm_segment': ['VIP', 'Loyal']},
+        )
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertTrue(data['ok'])
+        self.assertIn('VIP', data['audience_label'])
+        plan.refresh_from_db()
+        self.assertEqual(plan.steps[0]['audience_criteria'], {'rfm_segment': ['VIP', 'Loyal']})
+        # Other steps are untouched.
+        self.assertEqual(plan.steps[1]['audience_criteria'], {'event_id': str(self.event.id)})
+
+    @patch('langchain_openai.ChatOpenAI')
+    def test_update_audience_back_to_event(self, mock_openai):
+        mock_openai.return_value = _fake_structured_llm()
+        self.client.post(reverse('tickets:sms_plan_create'), {'event': str(self.event.id)})
+        plan = SMSCampaignPlan.objects.get(organization=self.org)
+        # First narrow to a segment, then switch back to event attendees.
+        self.client.post(
+            reverse('tickets:sms_plan_update_audience', kwargs={'pk': plan.id, 'step': 0}),
+            {'audience_mode': 'custom', 'rfm_segment': ['VIP']},
+        )
+        resp = self.client.post(
+            reverse('tickets:sms_plan_update_audience', kwargs={'pk': plan.id, 'step': 0}),
+            {'audience_mode': 'event'},
+        )
+        self.assertEqual(resp.status_code, 200)
+        plan.refresh_from_db()
+        self.assertEqual(plan.steps[0]['audience_criteria'], {'event_id': str(self.event.id)})
+
+    @patch('langchain_openai.ChatOpenAI')
+    def test_update_audience_rejects_empty_custom(self, mock_openai):
+        mock_openai.return_value = _fake_structured_llm()
+        self.client.post(reverse('tickets:sms_plan_create'), {'event': str(self.event.id)})
+        plan = SMSCampaignPlan.objects.get(organization=self.org)
+        original = plan.steps[0]['audience_criteria']
+        resp = self.client.post(
+            reverse('tickets:sms_plan_update_audience', kwargs={'pk': plan.id, 'step': 0}),
+            {'audience_mode': 'custom'},  # nothing selected
+        )
+        self.assertEqual(resp.status_code, 400)
+        plan.refresh_from_db()
+        self.assertEqual(plan.steps[0]['audience_criteria'], original)
+
+    @patch('langchain_openai.ChatOpenAI')
+    def test_edited_audience_launches_into_composer(self, mock_openai):
+        mock_openai.return_value = _fake_structured_llm()
+        self.client.post(reverse('tickets:sms_plan_create'), {'event': str(self.event.id)})
+        plan = SMSCampaignPlan.objects.get(organization=self.org)
+        self.client.post(
+            reverse('tickets:sms_plan_update_audience', kwargs={'pk': plan.id, 'step': 0}),
+            {'audience_mode': 'custom', 'rfm_segment': ['VIP']},
+        )
+        # Launching the step prefills the composer with the chosen segment.
+        self.client.post(reverse('tickets:sms_plan_launch_step', kwargs={'pk': plan.id, 'step': 0}))
+        prefill = self.client.session['sms_compose_prefill']
+        self.assertEqual(prefill['criteria'], {'rfm_segment': ['VIP']})
+
+    @patch('langchain_openai.ChatOpenAI')
     def test_remove_step_drops_it_and_reindexes(self, mock_openai):
         mock_openai.return_value = _fake_structured_llm()
         self.client.post(reverse('tickets:sms_plan_create'), {'event': str(self.event.id)})

@@ -48,7 +48,21 @@
 .plan-timing-display:hover .plan-timing-pencil { opacity: 0.6; }
 .plan-timing-editor { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .plan-timing-input { width: auto; min-width: 210px; font-family: var(--font-mono); }
-.plan-step-audience { font-size: 12.5px; color: var(--text-secondary); }
+.plan-step-audience { font-size: 12.5px; color: var(--text-secondary); display: flex; align-items: center; gap: 4px; }
+.plan-audience-edit {
+    border: 0; background: transparent; color: var(--text-secondary);
+    cursor: pointer; padding: 2px 5px; border-radius: 6px; line-height: 1;
+    opacity: 0; font-size: 11px; transition: opacity 0.12s, background 0.12s, color 0.12s;
+}
+.plan-step-card:hover .plan-audience-edit { opacity: 0.6; }
+.plan-audience-edit:hover { opacity: 1; color: var(--text-primary); background: var(--bg-inset); }
+.aud-chip-row { display: flex; flex-wrap: wrap; gap: 6px; }
+.seg-chip {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 5px 11px; border: 1px solid var(--border); border-radius: 999px;
+    cursor: pointer; user-select: none; font-size: 13px; margin: 0;
+}
+.seg-chip input { margin: 0; }
 .plan-step-message {
     display: block; width: 100%; box-sizing: border-box;
     white-space: pre-wrap; word-break: break-word; overflow: hidden;
@@ -133,7 +147,16 @@
                     </button>
                 </form>
             </div>
-            <div class="plan-step-audience"><i class="bi bi-people"></i> {{ step.audience_label }}</div>
+            <div class="plan-step-audience">
+                <i class="bi bi-people"></i>
+                <span data-audience-label>{{ step.audience_label }}</span>
+                <button type="button" class="plan-audience-edit" data-audience-trigger
+                        data-update-url="{% url 'tickets:sms_plan_update_audience' pk=plan.id step=step.order %}"
+                        data-criteria="{{ step.audience_criteria_json }}"
+                        title="Change who this is sent to" aria-label="Change audience">
+                    <i class="bi bi-pencil"></i>
+                </button>
+            </div>
             <textarea class="plan-step-message" data-step="{{ step.order }}"
                       data-update-url="{% url 'tickets:sms_plan_update_step' pk=plan.id step=step.order %}"
                       maxlength="1600" rows="1" aria-label="Message text (editable)">{{ step.body }}</textarea>
@@ -172,6 +195,58 @@
             <div class="modal-footer">
                 <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
                 <button type="button" class="btn btn-danger" id="removeStepConfirm">Remove</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="modal fade" id="audienceModal" tabindex="-1" aria-labelledby="audienceModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="audienceModalLabel">Who should this go to?</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                {% if plan.event %}
+                <div class="form-check mb-2">
+                    <input class="form-check-input" type="radio" name="aud_mode" id="aud_mode_event" value="event">
+                    <label class="form-check-label" for="aud_mode_event">Attendees of {{ plan.event.name }}</label>
+                </div>
+                {% endif %}
+                <div class="form-check mb-1">
+                    <input class="form-check-input" type="radio" name="aud_mode" id="aud_mode_custom" value="custom">
+                    <label class="form-check-label" for="aud_mode_custom">Specific segments, tags, or market</label>
+                </div>
+
+                <div id="aud-custom" class="mt-2">
+                    <label class="form-label mb-1">Segments</label>
+                    <div class="aud-chip-row">
+                        {% for seg in segment_choices %}
+                        <label class="seg-chip"><input type="checkbox" class="aud-seg" value="{{ seg }}"> {{ seg }}</label>
+                        {% endfor %}
+                    </div>
+                    {% if tags %}
+                    <label class="form-label mb-1 mt-3">Tags</label>
+                    <div class="aud-chip-row">
+                        {% for tag in tags %}
+                        <label class="seg-chip"><input type="checkbox" class="aud-tag" value="{{ tag.id }}"> {{ tag.name }}</label>
+                        {% endfor %}
+                    </div>
+                    {% endif %}
+                    <label class="form-label mb-1 mt-3" for="aud-market">Market</label>
+                    <select class="form-select aud-market" id="aud-market">
+                        <option value="">All markets</option>
+                        {% for value, name in market_choices %}
+                        <option value="{{ value }}">{{ name }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <div class="aud-error text-danger small mt-2" hidden></div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-primary" id="audienceSave">Save audience</button>
             </div>
         </div>
     </div>
@@ -270,6 +345,84 @@ document.addEventListener('DOMContentLoaded', function () {
         });
         document.getElementById('removeStepConfirm').addEventListener('click', function () {
             if (pendingForm) pendingForm.submit();
+        });
+    }
+
+    // Audience editing via a shared Bootstrap modal.
+    var audModalEl = document.getElementById('audienceModal');
+    if (audModalEl && window.bootstrap) {
+        var audModal = new bootstrap.Modal(audModalEl);
+        var audPending = null;                 // { url, labelEl }
+        var audCustom = document.getElementById('aud-custom');
+        var audMarket = audModalEl.querySelector('.aud-market');
+        var audError = audModalEl.querySelector('.aud-error');
+
+        function audSyncMode() {
+            var checked = audModalEl.querySelector('input[name="aud_mode"]:checked');
+            audCustom.style.display = (checked && checked.value === 'custom') ? '' : 'none';
+        }
+        audModalEl.querySelectorAll('input[name="aud_mode"]').forEach(function (r) {
+            r.addEventListener('change', audSyncMode);
+        });
+
+        document.querySelectorAll('[data-audience-trigger]').forEach(function (btn) {
+            btn.addEventListener('click', function () {
+                var labelEl = btn.closest('.plan-step-audience').querySelector('[data-audience-label]');
+                audPending = {url: btn.dataset.updateUrl, labelEl: labelEl};
+                var criteria = {};
+                try { criteria = JSON.parse(btn.dataset.criteria || '{}'); } catch (e) {}
+
+                audModalEl.querySelectorAll('.aud-seg, .aud-tag').forEach(function (c) { c.checked = false; });
+                if (audMarket) audMarket.value = '';
+                audError.hidden = true;
+
+                var eventRadio = document.getElementById('aud_mode_event');
+                if (criteria.event_id && eventRadio) {
+                    eventRadio.checked = true;
+                } else {
+                    document.getElementById('aud_mode_custom').checked = true;
+                    (criteria.rfm_segment || []).forEach(function (s) {
+                        var el = audModalEl.querySelector('.aud-seg[value="' + CSS.escape(s) + '"]');
+                        if (el) el.checked = true;
+                    });
+                    (criteria.tag_ids || []).forEach(function (t) {
+                        var el = audModalEl.querySelector('.aud-tag[value="' + CSS.escape(String(t)) + '"]');
+                        if (el) el.checked = true;
+                    });
+                    if (criteria.market_id && audMarket) audMarket.value = criteria.market_id;
+                }
+                audSyncMode();
+                audModal.show();
+            });
+        });
+
+        document.getElementById('audienceSave').addEventListener('click', async function () {
+            if (!audPending) return;
+            var checked = audModalEl.querySelector('input[name="aud_mode"]:checked');
+            var mode = checked ? checked.value : 'custom';
+            var params = new URLSearchParams();
+            params.set('audience_mode', mode);
+            if (mode === 'custom') {
+                audModalEl.querySelectorAll('.aud-seg:checked').forEach(function (c) { params.append('rfm_segment', c.value); });
+                audModalEl.querySelectorAll('.aud-tag:checked').forEach(function (c) { params.append('tag_ids', c.value); });
+                if (audMarket && audMarket.value) params.set('market_id', audMarket.value);
+            }
+            var data;
+            try {
+                var resp = await fetch(audPending.url, {
+                    method: 'POST',
+                    headers: {'X-CSRFToken': CSRF, 'Content-Type': 'application/x-www-form-urlencoded'},
+                    body: params,
+                });
+                data = await resp.json();
+                if (!resp.ok || !data.ok) {
+                    audError.textContent = (data && data.error) || 'Could not save.';
+                    audError.hidden = false;
+                    return;
+                }
+            } catch (e) { return; }
+            audPending.labelEl.textContent = data.audience_label;
+            audModal.hide();
         });
     }
 

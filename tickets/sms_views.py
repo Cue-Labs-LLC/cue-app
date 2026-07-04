@@ -4,6 +4,7 @@ Kept out of the (very large) views.py for cohesion. Every authenticated view is
 org-scoped and gated behind the per-org ``sms_marketing_enabled`` flag.
 """
 
+import json
 import logging
 import re
 import uuid
@@ -1319,12 +1320,23 @@ def _plan_criteria_from_post(post):
     return criteria
 
 
-def _plan_form_context(org, event=None, selected_criteria=None):
-    """Shared context for the plan generate form (segments/tags/markets/events)."""
+def _audience_option_lists(org):
+    """The org's audience building blocks (segments/tags/markets) for pickers."""
     markets, has_no_market = market_filter_options(org)
     market_choices = [(str(m.id), m.name) for m in markets]
     if has_no_market:
         market_choices.append((NO_MARKET_VALUE, 'No market'))
+    return {
+        'segment_choices': [c[0] for c in SMS_SEGMENT_CHOICES],
+        'tags': list(CustomerTag.objects.filter(organization=org).order_by('name')),
+        'market_choices': market_choices,
+    }
+
+
+def _plan_form_context(org, event=None, selected_criteria=None):
+    """Shared context for the plan generate form (segments/tags/markets/events)."""
+    opts = _audience_option_lists(org)
+    market_choices = opts['market_choices']
     # Recent + upcoming events the organizer might plan for.
     events = list(
         Event.objects.filter(organization=org, deleted_at__isnull=True)
@@ -1334,9 +1346,9 @@ def _plan_form_context(org, event=None, selected_criteria=None):
     return {
         'event': event,
         'plan_events': events,
-        'segment_choices': [c[0] for c in SMS_SEGMENT_CHOICES],
+        'segment_choices': opts['segment_choices'],
         'selected_segments': sel.get('rfm_segment') or [],
-        'tags': list(CustomerTag.objects.filter(organization=org).order_by('name')),
+        'tags': opts['tags'],
         'selected_tag_ids': [str(t) for t in (sel.get('tag_ids') or [])],
         'market_choices': market_choices,
         'selected_market_id': sel.get('market_id') or '',
@@ -1470,8 +1482,17 @@ def _decorate_plan_steps(steps, tz):
             except (ValueError, TypeError):
                 send_local = ''
         out.append({**step, 'purpose_label': label, 'purpose_color': color,
-                    'send_local': send_local})
+                    'send_local': send_local,
+                    'audience_criteria_json': json.dumps(step.get('audience_criteria') or {})})
     return out
+
+
+def _audience_label_for(org, criteria):
+    """Human label for an audience criteria dict (used after an inline audience edit)."""
+    if criteria.get('all_subscribers'):
+        return 'All subscribers'
+    label = SMSCampaign(organization=org, filter_criteria=criteria).audience_summary(org)
+    return label if label and label != 'No audience' else 'All subscribers'
 
 
 @login_required
@@ -1487,10 +1508,12 @@ def sms_plan_detail(request, pk):
         SMSCampaignPlan.objects.filter(organization=org).select_related('event'),
         id=pk,
     )
-    return render(request, 'tickets/marketing/sms/plan_detail.html', {
+    context = {
         'plan': plan,
         'steps': _decorate_plan_steps(plan.steps, org.get_timezone()),
-    })
+    }
+    context.update(_audience_option_lists(org))
+    return render(request, 'tickets/marketing/sms/plan_detail.html', context)
 
 
 @login_required
@@ -1553,6 +1576,44 @@ def sms_plan_update_step(request, pk, step):
         'segments': steps[step]['segments'],
         'encoding': steps[step]['encoding'],
     })
+
+
+@login_required
+@require_org
+@require_host
+@require_sms_feature
+@require_POST
+def sms_plan_update_audience(request, pk, step):
+    """Change which subscribers one plan step targets; return the new audience label.
+
+    ``audience_mode`` is 'event' (event plans → the event's attendees) or 'custom'
+    (a segment/tag/market selection, which must be non-empty).
+    """
+    org = get_organization(request)
+    if not org.ai_sms_strategist_enabled:
+        raise Http404()
+    plan = get_object_or_404(SMSCampaignPlan.objects.filter(organization=org), id=pk)
+
+    steps = plan.steps or []
+    if step < 0 or step >= len(steps):
+        raise Http404()
+
+    mode = request.POST.get('audience_mode') or 'custom'
+    if mode == 'event' and plan.event_id:
+        criteria = {'event_id': str(plan.event_id)}
+    else:
+        criteria = _plan_criteria_from_post(request.POST)
+        if not criteria:
+            return JsonResponse(
+                {'ok': False, 'error': 'Pick at least one segment, tag, or market.'},
+                status=400,
+            )
+
+    label = _audience_label_for(org, criteria)
+    steps[step] = {**steps[step], 'audience_criteria': criteria, 'audience_label': label}
+    plan.steps = steps
+    plan.save(update_fields=['steps', 'updated_at'])
+    return JsonResponse({'ok': True, 'audience_label': label})
 
 
 @login_required
