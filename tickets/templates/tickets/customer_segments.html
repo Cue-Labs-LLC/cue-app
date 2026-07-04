@@ -77,6 +77,9 @@
         {% if is_org_admin %}
         <a href="{% url 'tickets:settings_segment_tuning' %}" class="btn btn-outline-secondary"><i class="bi bi-sliders"></i> Settings</a>
         {% endif %}
+        {% if org.ai_sms_strategist_enabled and org.sms_marketing_enabled %}
+        <a href="{% url 'tickets:sms_plan_create' %}" class="btn btn-outline-primary"><i class="bi bi-stars"></i> Plan with AI</a>
+        {% endif %}
         <a href="{% url 'tickets:customer_list' %}" class="btn btn-outline-secondary"><i class="bi bi-people"></i> Customers</a>
     </div>
 </div>

@@ -20,7 +20,7 @@ from .models import (
     OAuthClient,
     OAuthAccessToken,
     FeatureFlagSettings,
-    SMSCampaign, SMSMessageRecipient, PhoneSuppression,
+    SMSCampaign, SMSCampaignPlan, SMSMessageRecipient, PhoneSuppression,
     SMSCreditTransaction,
     LoyaltyProgram, LoyaltyTier, LoyaltyPointsTransaction,
 )
@@ -1266,6 +1266,14 @@ class SMSCampaignAdmin(admin.ModelAdmin):
     list_filter = ['organization', 'status', 'created_at']
     search_fields = ['name', 'body']
     readonly_fields = ['id', 'started_at', 'sent_at', 'audience_size', 'created_at', 'updated_at']
+
+
+@admin.register(SMSCampaignPlan)
+class SMSCampaignPlanAdmin(admin.ModelAdmin):
+    list_display = ['name', 'organization', 'event', 'model_name', 'generated_at', 'created_at']
+    list_filter = ['organization', 'created_at']
+    search_fields = ['name', 'objective', 'strategy_summary']
+    readonly_fields = ['id', 'created_at', 'updated_at']
 
 
 @admin.register(SMSMessageRecipient)

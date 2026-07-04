@@ -1,0 +1,110 @@
+{% extends 'tickets/base.html' %}
+{% load tickets_extras %}
+
+{% block title %}{{ plan.name }}{% endblock %}
+
+{% block extra_head %}
+<style>
+.plan-summary {
+    background: var(--bg-inset); border: 1px solid var(--border);
+    border-radius: 12px; padding: 1.1rem 1.25rem; margin-bottom: 1.75rem;
+    color: var(--text-primary); line-height: 1.55;
+}
+.plan-summary .plan-summary-label {
+    font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.08em;
+    text-transform: uppercase; color: var(--text-secondary); margin-bottom: 0.4rem;
+}
+.plan-timeline { position: relative; margin-left: 6px; }
+.plan-step { position: relative; padding: 0 0 1.5rem 2rem; }
+.plan-step:not(:last-child)::before {
+    content: ''; position: absolute; left: 7px; top: 22px; bottom: 0;
+    width: 2px; background: var(--border);
+}
+.plan-step::after {
+    content: ''; position: absolute; left: 0; top: 6px;
+    width: 16px; height: 16px; border-radius: 50%;
+    background: var(--bg-primary); border: 3px solid var(--accent);
+}
+.plan-step.is-launched::after { background: var(--accent); }
+.plan-step-card {
+    border: 1px solid var(--border); border-radius: 12px;
+    padding: 1rem 1.15rem; background: var(--bg-primary);
+}
+.plan-step-head {
+    display: flex; align-items: center; flex-wrap: wrap; gap: 10px;
+    margin-bottom: 0.65rem;
+}
+.plan-step-timing {
+    font-family: var(--font-mono); font-size: 12px; color: var(--text-secondary);
+}
+.plan-step-audience { font-size: 12.5px; color: var(--text-secondary); }
+.plan-step-message {
+    white-space: pre-wrap; word-break: break-word;
+    background: var(--bg-inset); border: 1px solid var(--border);
+    border-radius: 10px; padding: 0.8rem 0.95rem; margin: 0.5rem 0 0.6rem;
+    font-size: 14.5px; line-height: 1.5;
+}
+.plan-step-rationale { font-size: 13px; color: var(--text-secondary); margin-bottom: 0.75rem; }
+.plan-step-foot { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.plan-step-segs { font-family: var(--font-mono); font-size: 11.5px; color: var(--text-secondary); }
+.launched-pill {
+    font-size: 11px; font-weight: 500; border-radius: 999px; padding: 3px 10px;
+    background: rgba(51,196,129,0.12); color: #33c481;
+}
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1 class="page-title">{{ plan.name }}</h1>
+        <p class="page-subtitle">
+            AI campaign plan · {{ plan.generated_at|date:'M d, Y' }}
+            {% if plan.event %} · for {{ plan.event.name }}{% endif %}
+        </p>
+    </div>
+    <a href="{% url 'tickets:sms_campaign_list' %}" class="btn btn-outline-secondary btn-sm"><i class="bi bi-arrow-left"></i> SMS</a>
+</div>
+
+{% if plan.objective %}
+<p class="text-secondary mb-3"><strong>Goal:</strong> {{ plan.objective }}</p>
+{% endif %}
+
+{% if plan.strategy_summary %}
+<div class="plan-summary">
+    <div class="plan-summary-label">Strategy</div>
+    {{ plan.strategy_summary }}
+</div>
+{% endif %}
+
+<div class="plan-timeline">
+    {% for step in steps %}
+    <div class="plan-step{% if step.launched_at %} is-launched{% endif %}">
+        <div class="plan-step-card">
+            <div class="plan-step-head">
+                <span class="badge text-bg-{{ step.purpose_color }}">{{ step.purpose_label }}</span>
+                <span class="plan-step-timing"><i class="bi bi-clock"></i> {{ step.timing_label }}</span>
+                {% if step.launched_at %}<span class="launched-pill"><i class="bi bi-check2"></i> Launched</span>{% endif %}
+            </div>
+            <div class="plan-step-audience"><i class="bi bi-people"></i> {{ step.audience_label }}</div>
+            <div class="plan-step-message">{{ step.body }}</div>
+            {% if step.rationale %}<div class="plan-step-rationale">{{ step.rationale }}</div>{% endif %}
+            <div class="plan-step-foot">
+                <span class="plan-step-segs">{{ step.segments }} segment{{ step.segments|pluralize }} · {{ step.encoding }}</span>
+                <form method="post" action="{% url 'tickets:sms_plan_launch_step' pk=plan.id step=step.order %}" class="m-0">
+                    {% csrf_token %}
+                    <button type="submit" class="btn btn-sm {% if step.launched_at %}btn-outline-secondary{% else %}btn-primary{% endif %}">
+                        <i class="bi bi-send"></i> {% if step.launched_at %}Send again{% else %}Review &amp; send{% endif %}
+                    </button>
+                </form>
+            </div>
+        </div>
+    </div>
+    {% empty %}
+    <div class="empty-state">
+        <i class="bi bi-inbox"></i>
+        <p>This plan has no steps.</p>
+    </div>
+    {% endfor %}
+</div>
+{% endblock %}

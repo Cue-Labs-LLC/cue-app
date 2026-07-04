@@ -236,6 +236,10 @@ class Organization(BaseModel):
         default=True,
         help_text='Show the AI Event Summary card on event detail pages.',
     )
+    ai_sms_strategist_enabled = models.BooleanField(
+        default=True,
+        help_text='Show the AI SMS Campaign Strategist (plan recommendations) entry points.',
+    )
     external_events_enabled = models.BooleanField(
         default=True,
         help_text=(
@@ -1952,6 +1956,58 @@ class SMSCampaign(AuditBaseModel):
         return " · ".join(parts) if parts else "No audience"
 
 
+class SMSCampaignPlan(BaseModel):
+    """An AI-generated multi-touch SMS campaign strategy for an event or segment.
+
+    The plan is advisory: it recommends a sequence of timed touches and writes each
+    message, but sends nothing itself. Each step is launched individually into the
+    existing composer (via the session prefill handoff), where the organizer reviews,
+    confirms cost, and sends through the normal SMSCampaign flow. ``steps`` is a JSON
+    list; per-step ``launched_campaign_id`` is filled in when a step is launched.
+    """
+    organization = models.ForeignKey(
+        Organization,
+        on_delete=models.CASCADE,
+        related_name='sms_campaign_plans',
+    )
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='sms_campaign_plans',
+    )
+    # Set for event-based plans; null for pure segment/audience plans.
+    event = models.ForeignKey(
+        Event,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='sms_campaign_plans',
+    )
+    # The segment/audience the plan targets (same schema as SMSCampaign.filter_criteria
+    # / filter_customers). Empty for a pure event plan.
+    filter_criteria = models.JSONField(default=dict, blank=True)
+    name = models.CharField(max_length=200)
+    objective = models.CharField(max_length=300, blank=True, default='')
+    strategy_summary = models.TextField(blank=True, default='')
+    model_name = models.CharField(max_length=100, blank=True, default='')
+    generated_at = models.DateTimeField(default=timezone.now)
+    # Ordered sequence. Each entry:
+    #   {order, purpose, audience_label, audience_criteria, timing_label, body,
+    #    rationale, segments, encoding, launched_campaign_id|null}
+    steps = models.JSONField(default=list, blank=True)
+
+    class Meta:
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['organization', '-created_at']),
+        ]
+
+    def __str__(self):
+        return f"SMS plan: {self.name}"
+
+
 class SMSMessageRecipient(BaseModel):
     """One outbound marketing text. Source of truth for delivery state.
 
@@ -2536,6 +2592,7 @@ class AITokenUsage(BaseModel):
     FEATURE_MARKETING_NARRATIVE = 'marketing_narrative'
     FEATURE_TYPEFORM_EVENT_MATCH = 'typeform_event_match'
     FEATURE_EVENT_SUMMARY = 'event_summary'
+    FEATURE_SMS_PLAN = 'sms_plan'
 
     FEATURE_CHOICES = [
         (FEATURE_CHAT_AGENT, 'Chat agent'),
@@ -2545,6 +2602,7 @@ class AITokenUsage(BaseModel):
         (FEATURE_MARKETING_NARRATIVE, 'Marketing narrative'),
         (FEATURE_TYPEFORM_EVENT_MATCH, 'Typeform event match'),
         (FEATURE_EVENT_SUMMARY, 'Event summary'),
+        (FEATURE_SMS_PLAN, 'SMS campaign plan'),
     ]
 
     organization = models.ForeignKey(
