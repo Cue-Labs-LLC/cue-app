@@ -27,6 +27,19 @@
 .seg-chip input { margin: 0; }
 .plan-section { margin-bottom: 1.5rem; }
 .plan-section > label.form-label { font-weight: 600; }
+.goal-suggest { margin-top: 0.6rem; line-height: 2.1; }
+.goal-suggest-label {
+    font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.06em;
+    text-transform: uppercase; color: var(--text-secondary); margin-right: 6px;
+}
+.goal-chip {
+    border: 1px solid var(--border); background: var(--bg-inset);
+    color: var(--text-secondary); border-radius: 999px;
+    padding: 5px 12px; margin: 0 6px 4px 0; font-size: 12.5px; cursor: pointer;
+    transition: border-color 0.12s, color 0.12s, background 0.12s;
+}
+.goal-chip:hover { border-color: var(--accent); color: var(--text-primary); background: var(--bg-primary); }
+.goal-chip.is-selected { border-color: var(--accent); color: var(--accent); }
 </style>
 {% endblock %}
 
@@ -103,6 +116,23 @@
                 <input type="text" class="form-control" id="planObjective" name="objective" maxlength="300"
                        placeholder="e.g. Sell out the remaining tickets, or win back lapsed customers"
                        value="{{ request.POST.objective|default:'' }}">
+                <div class="goal-suggest">
+                    <span class="goal-suggest-label">Try:</span>
+                    <span data-goals="event">
+                        <button type="button" class="goal-chip">Sell out the remaining tickets</button>
+                        <button type="button" class="goal-chip">Drive early-bird sales</button>
+                        <button type="button" class="goal-chip">Create last-minute urgency</button>
+                        <button type="button" class="goal-chip">Upsell to a premium tier</button>
+                        <button type="button" class="goal-chip">Bring back past attendees</button>
+                    </span>
+                    <span data-goals="segment" hidden>
+                        <button type="button" class="goal-chip">Win back lapsed customers</button>
+                        <button type="button" class="goal-chip">Reward and retain VIPs</button>
+                        <button type="button" class="goal-chip">Convert new subscribers to first purchase</button>
+                        <button type="button" class="goal-chip">Re-engage dormant fans</button>
+                        <button type="button" class="goal-chip">Reactivate big spenders</button>
+                    </span>
+                </div>
             </div>
 
             <button type="submit" class="btn btn-primary" id="planGenerateBtn">
@@ -122,6 +152,7 @@ document.addEventListener('DOMContentLoaded', function () {
     const eventPanel = document.querySelector('[data-panel="event"]');
     const segmentPanel = document.querySelector('[data-panel="segment"]');
     const eventSelect = document.getElementById('planEvent');
+    const goalGroups = document.querySelectorAll('[data-goals]');
 
     function setTarget(target) {
         buttons.forEach(b => b.classList.toggle('active', b.dataset.target === target));
@@ -131,10 +162,23 @@ document.addEventListener('DOMContentLoaded', function () {
         // Ensure only the active target submits its inputs.
         eventSelect.disabled = !isEvent;
         segmentPanel.querySelectorAll('input, select').forEach(el => { el.disabled = isEvent; });
+        // Swap the goal suggestions to match what's being planned for.
+        goalGroups.forEach(g => { g.hidden = g.dataset.goals !== target; });
     }
     buttons.forEach(b => b.addEventListener('click', () => setTarget(b.dataset.target)));
     // Initialize from server state.
     setTarget(toggle.querySelector('button.active')?.dataset.target || 'event');
+
+    // Quick-select goal chips fill the objective input (still editable).
+    const objectiveInput = document.getElementById('planObjective');
+    document.querySelectorAll('.goal-chip').forEach(chip => {
+        chip.addEventListener('click', function () {
+            objectiveInput.value = chip.textContent.trim();
+            document.querySelectorAll('.goal-chip').forEach(c => c.classList.remove('is-selected'));
+            chip.classList.add('is-selected');
+            objectiveInput.focus();
+        });
+    });
 
     // Loading state — generation can take a few seconds.
     const form = document.querySelector('form');
