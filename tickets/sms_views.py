@@ -4,6 +4,7 @@ Kept out of the (very large) views.py for cohesion. Every authenticated view is
 org-scoped and gated behind the per-org ``sms_marketing_enabled`` flag.
 """
 
+import json
 import logging
 import re
 import uuid
@@ -532,8 +533,10 @@ def sms_campaign_create(request):
 
     # Event-mode audience scope. Read outside form handling (and normalized) so the
     # re-rendered confirm page can keep the chosen chip checked — otherwise the
-    # selection silently resets to 'event' between review and confirm.
-    audience_scope = request.POST.get('audience_scope') or 'event'
+    # selection silently resets to 'event' between review and confirm. Also honored
+    # from the query string so a launched plan step can preselect the right chip
+    # (e.g. an "all subscribers" step opens on the All SMS subscribers scope).
+    audience_scope = request.POST.get('audience_scope') or request.GET.get('audience_scope') or 'event'
     if audience_scope not in ('event', 'all', 'tag'):
         audience_scope = 'event'
 
@@ -688,6 +691,11 @@ def sms_campaign_create(request):
                     initial['tag_ids'] = criteria['tag_ids']
                 if criteria.get('market_id'):
                     initial['market_id'] = criteria['market_id']
+            # Pre-select "Schedule for later" with the step's suggested send time.
+            scheduled_at = strategist_prefill.get('scheduled_at')
+            if scheduled_at:
+                initial['send_mode'] = SMSCampaignForm.SEND_SCHEDULE
+                initial['scheduled_at'] = scheduled_at
         elif prefill:
             initial = {'name': f'SMS - {prefill["label"]}'}
         elif event:
@@ -1314,12 +1322,23 @@ def _plan_criteria_from_post(post):
     return criteria
 
 
-def _plan_form_context(org, event=None, selected_criteria=None):
-    """Shared context for the plan generate form (segments/tags/markets/events)."""
+def _audience_option_lists(org):
+    """The org's audience building blocks (segments/tags/markets) for pickers."""
     markets, has_no_market = market_filter_options(org)
     market_choices = [(str(m.id), m.name) for m in markets]
     if has_no_market:
         market_choices.append((NO_MARKET_VALUE, 'No market'))
+    return {
+        'segment_choices': [c[0] for c in SMS_SEGMENT_CHOICES],
+        'tags': list(CustomerTag.objects.filter(organization=org).order_by('name')),
+        'market_choices': market_choices,
+    }
+
+
+def _plan_form_context(org, event=None, selected_criteria=None):
+    """Shared context for the plan generate form (segments/tags/markets/events)."""
+    opts = _audience_option_lists(org)
+    market_choices = opts['market_choices']
     # Recent + upcoming events the organizer might plan for.
     events = list(
         Event.objects.filter(organization=org, deleted_at__isnull=True)
@@ -1329,9 +1348,9 @@ def _plan_form_context(org, event=None, selected_criteria=None):
     return {
         'event': event,
         'plan_events': events,
-        'segment_choices': [c[0] for c in SMS_SEGMENT_CHOICES],
+        'segment_choices': opts['segment_choices'],
         'selected_segments': sel.get('rfm_segment') or [],
-        'tags': list(CustomerTag.objects.filter(organization=org).order_by('name')),
+        'tags': opts['tags'],
         'selected_tag_ids': [str(t) for t in (sel.get('tag_ids') or [])],
         'market_choices': market_choices,
         'selected_market_id': sel.get('market_id') or '',
@@ -1448,15 +1467,35 @@ def sms_plan_create(request):
                   _plan_form_context(org, event, selected))
 
 
-def _decorate_plan_steps(steps):
-    """Attach display labels/colors to each step for the timeline template."""
+def _decorate_plan_steps(steps, tz):
+    """Attach display labels/colors + org-local send time to each step for the template."""
     out = []
     for step in steps or []:
         label, color = PLAN_PURPOSE_LABELS.get(
             step.get('purpose'), (step.get('purpose', 'Message').replace('_', ' ').title(), 'secondary'),
         )
-        out.append({**step, 'purpose_label': label, 'purpose_color': color})
+        # Org-local "YYYY-MM-DDTHH:MM" for the datetime-local editor (empty for legacy
+        # plans that predate structured scheduling).
+        send_local = ''
+        raw = step.get('send_at')
+        if raw:
+            try:
+                send_local = datetime.fromisoformat(raw).astimezone(tz).strftime('%Y-%m-%dT%H:%M')
+            except (ValueError, TypeError):
+                send_local = ''
+        out.append({**step, 'purpose_label': label, 'purpose_color': color,
+                    'send_local': send_local,
+                    'audience_criteria_json': json.dumps(step.get('audience_criteria') or {})})
     return out
+
+
+def _audience_label_for(org, criteria):
+    """Human label for an audience criteria dict (used after an inline audience edit).
+
+    Delegates to the strategist helper so the label wording matches the composer.
+    """
+    from .services.sms_strategist import plan_audience_label
+    return plan_audience_label(org, criteria)
 
 
 @login_required
@@ -1472,10 +1511,12 @@ def sms_plan_detail(request, pk):
         SMSCampaignPlan.objects.filter(organization=org).select_related('event'),
         id=pk,
     )
-    return render(request, 'tickets/marketing/sms/plan_detail.html', {
+    context = {
         'plan': plan,
-        'steps': _decorate_plan_steps(plan.steps),
-    })
+        'steps': _decorate_plan_steps(plan.steps, org.get_timezone()),
+    }
+    context.update(_audience_option_lists(org))
+    return render(request, 'tickets/marketing/sms/plan_detail.html', context)
 
 
 @login_required
@@ -1495,6 +1536,145 @@ def sms_plan_list(request):
     return render(request, 'tickets/marketing/sms/plan_list.html', {'page_obj': page})
 
 
+def _apply_step_body(step_dict, body):
+    """Return a copy of a plan step with a new body + recomputed segment count/encoding.
+
+    Segments/encoding mirror the composer meter: counted on the body plus the
+    auto-appended STOP footer (worst case), so the number shown matches billing.
+    """
+    body = (body or '')[:1600]
+    encoding, segments = sms_segment_info(with_stop_footer(body))
+    return {**step_dict, 'body': body, 'segments': segments, 'encoding': encoding}
+
+
+@login_required
+@require_org
+@require_host
+@require_sms_feature
+@require_POST
+def sms_plan_update_step(request, pk, step):
+    """Persist an inline edit to one plan step's message; return the new segment info.
+
+    JSON endpoint used by the plan detail page as the organizer edits a message in
+    place, so the edit survives a refresh and the segment/token count stays truthful.
+    """
+    org = get_organization(request)
+    if not org.ai_sms_strategist_enabled:
+        raise Http404()
+    plan = get_object_or_404(SMSCampaignPlan.objects.filter(organization=org), id=pk)
+
+    steps = plan.steps or []
+    if step < 0 or step >= len(steps):
+        raise Http404()
+
+    body = (request.POST.get('body') or '').strip()
+    if not body:
+        return JsonResponse({'ok': False, 'error': 'Message cannot be empty.'}, status=400)
+
+    steps[step] = _apply_step_body(steps[step], body)
+    plan.steps = steps
+    plan.save(update_fields=['steps', 'updated_at'])
+    return JsonResponse({
+        'ok': True,
+        'segments': steps[step]['segments'],
+        'encoding': steps[step]['encoding'],
+    })
+
+
+@login_required
+@require_org
+@require_host
+@require_sms_feature
+@require_POST
+def sms_plan_update_audience(request, pk, step):
+    """Change which subscribers one plan step targets; return the new audience label.
+
+    ``audience_mode`` is 'event' (event plans → the event's attendees) or 'custom'
+    (a segment/tag/market selection, which must be non-empty).
+    """
+    org = get_organization(request)
+    if not org.ai_sms_strategist_enabled:
+        raise Http404()
+    plan = get_object_or_404(SMSCampaignPlan.objects.filter(organization=org), id=pk)
+
+    steps = plan.steps or []
+    if step < 0 or step >= len(steps):
+        raise Http404()
+
+    mode = request.POST.get('audience_mode') or 'custom'
+    if mode == 'all' and plan.event_id:
+        criteria = {'all_subscribers': True}
+    elif mode == 'event' and plan.event_id:
+        criteria = {'event_id': str(plan.event_id)}
+    else:
+        criteria = _plan_criteria_from_post(request.POST)
+        if not criteria:
+            return JsonResponse(
+                {'ok': False, 'error': 'Pick at least one segment, tag, or market.'},
+                status=400,
+            )
+
+    label = _audience_label_for(org, criteria)
+    steps[step] = {**steps[step], 'audience_criteria': criteria, 'audience_label': label}
+    plan.steps = steps
+    plan.save(update_fields=['steps', 'updated_at'])
+    return JsonResponse({'ok': True, 'audience_label': label})
+
+
+@login_required
+@require_org
+@require_host
+@require_sms_feature
+@require_POST
+def sms_plan_update_schedule(request, pk, step):
+    """Persist an edited send date/time for one plan step; return the new label.
+
+    Accepts a `send_at` datetime-local value ("YYYY-MM-DDTHH:MM", org-local). Stores the
+    aware datetime, recomputes the display label (with timezone) and the offset/time so
+    the step stays self-consistent for later launches.
+    """
+    from tickets.services.sms_strategist import format_send_label
+
+    org = get_organization(request)
+    if not org.ai_sms_strategist_enabled:
+        raise Http404()
+    plan = get_object_or_404(SMSCampaignPlan.objects.filter(organization=org), id=pk)
+
+    steps = plan.steps or []
+    if step < 0 or step >= len(steps):
+        raise Http404()
+
+    raw = (request.POST.get('send_at') or '').strip()
+    try:
+        naive = datetime.strptime(raw, '%Y-%m-%dT%H:%M')
+    except ValueError:
+        return JsonResponse({'ok': False, 'error': 'Enter a valid date and time.'}, status=400)
+
+    org_tz = org.get_timezone()
+    dt = naive.replace(tzinfo=org_tz)
+    # Keep offset_days in sync with the chosen date (informational; anchored on the
+    # event date for event plans, else on today in the org's timezone).
+    if plan.event_id and plan.event and plan.event.start_date:
+        offset_days = max(0, (plan.event.start_date - dt.date()).days)
+    else:
+        offset_days = max(0, (dt.date() - timezone.now().astimezone(org_tz).date()).days)
+
+    steps[step] = {
+        **steps[step],
+        'send_at': dt.isoformat(),
+        'send_time': dt.strftime('%H:%M'),
+        'offset_days': offset_days,
+        'timing_label': format_send_label(dt),
+    }
+    plan.steps = steps
+    plan.save(update_fields=['steps', 'updated_at'])
+    return JsonResponse({
+        'ok': True,
+        'timing_label': steps[step]['timing_label'],
+        'send_local': dt.strftime('%Y-%m-%dT%H:%M'),
+    })
+
+
 @login_required
 @require_org
 @require_host
@@ -1512,13 +1692,45 @@ def sms_plan_launch_step(request, pk, step):
         raise Http404()
     target = steps[step]
 
+    # An edit typed into the message box (and not yet blur-saved) is authoritative:
+    # apply + persist it so what launches is exactly what the organizer sees.
+    override_body = request.POST.get('body')
+    if override_body is not None and override_body.strip():
+        target = _apply_step_body(target, override_body.strip())
+        steps[step] = target
+
     criteria = target.get('audience_criteria') or {}
-    event_id = criteria.get('event_id') or (str(plan.event_id) if plan.event_id else None)
+    # Map the step's audience to the composer entry point. Event-mode scopes let us keep
+    # the campaign linked to the event while targeting ticket buyers ('event') or the
+    # whole list ('all'); a segment/tag/market audience opens the plain (non-event)
+    # composer. Driven off the STEP's own criteria so an edited audience is honored.
+    plan_event_id = str(plan.event_id) if plan.event_id else None
+    event_id = None
+    audience_scope = None
+    if criteria.get('event_id'):
+        event_id = criteria['event_id']
+        audience_scope = 'event'
+    elif criteria.get('all_subscribers') and plan_event_id:
+        event_id = plan_event_id
+        audience_scope = 'all'
+    # Carry the step's suggested send time into the composer's schedule field — but
+    # only if it's still in the future (a past suggestion would fail the composer's
+    # "must be in the future" check), formatted in the org's timezone.
+    scheduled_local = ''
+    raw_send_at = target.get('send_at')
+    if raw_send_at:
+        try:
+            send_dt = datetime.fromisoformat(raw_send_at)
+            if send_dt > timezone.now():
+                scheduled_local = send_dt.astimezone(org.get_timezone()).strftime('%Y-%m-%dT%H:%M')
+        except (ValueError, TypeError):
+            scheduled_local = ''
     # Prefill payload consumed by sms_campaign_create on the next GET.
     request.session['sms_compose_prefill'] = {
         'body': target.get('body', ''),
         'criteria': criteria,
         'event_id': event_id,
+        'scheduled_at': scheduled_local,
         'name': f"{plan.name} · {target.get('purpose_label') or target.get('purpose') or 'Message'}"[:200],
     }
     request.session.modified = True
@@ -1530,5 +1742,37 @@ def sms_plan_launch_step(request, pk, step):
 
     base = reverse('tickets:sms_campaign_create')
     if event_id:
-        return redirect(f"{base}?event={event_id}")
+        url = f"{base}?event={event_id}"
+        if audience_scope:
+            url += f"&audience_scope={audience_scope}"
+        return redirect(url)
     return redirect(base)
+
+
+@login_required
+@require_org
+@require_host
+@require_sms_feature
+@require_POST
+def sms_plan_remove_step(request, pk, step):
+    """Remove one campaign (step) from a plan's sequence, then re-index the rest.
+
+    ``order`` must stay equal to the list index because the per-step endpoints key
+    off it, so the remaining steps are renumbered after the removal.
+    """
+    org = get_organization(request)
+    if not org.ai_sms_strategist_enabled:
+        raise Http404()
+    plan = get_object_or_404(SMSCampaignPlan.objects.filter(organization=org), id=pk)
+
+    steps = plan.steps or []
+    if step < 0 or step >= len(steps):
+        raise Http404()
+
+    steps.pop(step)
+    for i, s in enumerate(steps):
+        s['order'] = i
+    plan.steps = steps
+    plan.save(update_fields=['steps', 'updated_at'])
+    messages.success(request, 'Removed the message from this plan.')
+    return redirect('tickets:sms_plan_detail', pk=plan.id)

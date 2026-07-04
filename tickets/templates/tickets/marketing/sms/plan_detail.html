@@ -37,20 +37,61 @@
 .plan-step-timing {
     font-family: var(--font-mono); font-size: 12px; color: var(--text-secondary);
 }
-.plan-step-audience { font-size: 12.5px; color: var(--text-secondary); }
+.plan-timing-display {
+    border: 0; background: transparent; color: inherit; font: inherit;
+    cursor: pointer; padding: 2px 6px; border-radius: 6px;
+    display: inline-flex; align-items: center; gap: 5px;
+    transition: background 0.12s, color 0.12s;
+}
+.plan-timing-display:hover { background: var(--bg-inset); color: var(--text-primary); }
+.plan-timing-pencil { opacity: 0; font-size: 11px; transition: opacity 0.12s; }
+.plan-timing-display:hover .plan-timing-pencil { opacity: 0.6; }
+.plan-timing-editor { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.plan-timing-input { width: auto; min-width: 210px; font-family: var(--font-mono); }
+.plan-step-audience { font-size: 12.5px; color: var(--text-secondary); display: flex; align-items: center; gap: 4px; }
+.plan-audience-edit {
+    border: 0; background: transparent; color: var(--text-secondary);
+    cursor: pointer; padding: 2px 5px; border-radius: 6px; line-height: 1;
+    opacity: 0; font-size: 11px; transition: opacity 0.12s, background 0.12s, color 0.12s;
+}
+.plan-step-card:hover .plan-audience-edit { opacity: 0.6; }
+.plan-audience-edit:hover { opacity: 1; color: var(--text-primary); background: var(--bg-inset); }
+.aud-chip-row { display: flex; flex-wrap: wrap; gap: 6px; }
+.seg-chip {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 5px 11px; border: 1px solid var(--border); border-radius: 999px;
+    cursor: pointer; user-select: none; font-size: 13px; margin: 0;
+}
+.seg-chip input { margin: 0; }
 .plan-step-message {
-    white-space: pre-wrap; word-break: break-word;
+    display: block; width: 100%; box-sizing: border-box;
+    white-space: pre-wrap; word-break: break-word; overflow: hidden;
     background: var(--bg-inset); border: 1px solid var(--border);
     border-radius: 10px; padding: 0.8rem 0.95rem; margin: 0.5rem 0 0.6rem;
-    font-size: 14.5px; line-height: 1.5;
+    font-size: 14.5px; line-height: 1.5; color: var(--text-primary);
+    font-family: inherit; resize: none;
+    transition: border-color 0.12s, background 0.12s, box-shadow 0.12s;
+}
+.plan-step-message:hover { border-color: var(--text-secondary); }
+.plan-step-message:focus {
+    outline: none; background: var(--bg-primary);
+    border-color: var(--accent); box-shadow: 0 0 0 3px rgba(79,124,255,0.15);
 }
 .plan-step-rationale { font-size: 13px; color: var(--text-secondary); margin-bottom: 0.75rem; }
 .plan-step-foot { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
-.plan-step-segs { font-family: var(--font-mono); font-size: 11.5px; color: var(--text-secondary); }
+.plan-step-segs { font-family: var(--font-mono); font-size: 11.5px; color: var(--text-secondary); display: inline-flex; align-items: center; gap: 8px; }
+.plan-step-saved { color: #33c481; }
 .launched-pill {
     font-size: 11px; font-weight: 500; border-radius: 999px; padding: 3px 10px;
     background: rgba(51,196,129,0.12); color: #33c481;
 }
+.plan-step-remove { margin-left: auto; }
+.plan-step-remove-btn {
+    border: 0; background: transparent; color: var(--text-secondary);
+    cursor: pointer; padding: 4px 6px; border-radius: 6px; line-height: 1;
+    opacity: 0.55; transition: opacity 0.12s, color 0.12s, background 0.12s;
+}
+.plan-step-remove-btn:hover { opacity: 1; color: #e5484d; background: rgba(229,72,77,0.1); }
 </style>
 {% endblock %}
 
@@ -83,16 +124,51 @@
         <div class="plan-step-card">
             <div class="plan-step-head">
                 <span class="badge text-bg-{{ step.purpose_color }}">{{ step.purpose_label }}</span>
-                <span class="plan-step-timing"><i class="bi bi-clock"></i> {{ step.timing_label }}</span>
+                <span class="plan-step-timing" data-step="{{ step.order }}"
+                      data-schedule-url="{% url 'tickets:sms_plan_update_schedule' pk=plan.id step=step.order %}">
+                    <button type="button" class="plan-timing-display" title="Click to edit send date &amp; time">
+                        <i class="bi bi-clock"></i> <span data-timing-label>{{ step.timing_label }}</span>
+                        <i class="bi bi-pencil plan-timing-pencil"></i>
+                    </button>
+                    <span class="plan-timing-editor" hidden>
+                        <input type="datetime-local" class="form-control form-control-sm plan-timing-input"
+                               value="{{ step.send_local }}">
+                        <button type="button" class="btn btn-sm btn-primary plan-timing-save">Save</button>
+                        <button type="button" class="btn btn-sm btn-outline-secondary plan-timing-cancel">Cancel</button>
+                    </span>
+                </span>
                 {% if step.launched_at %}<span class="launched-pill"><i class="bi bi-check2"></i> Launched</span>{% endif %}
+                <form method="post" action="{% url 'tickets:sms_plan_remove_step' pk=plan.id step=step.order %}"
+                      class="plan-step-remove m-0" data-remove-form>
+                    {% csrf_token %}
+                    <button type="button" class="plan-step-remove-btn" data-remove-trigger
+                            title="Remove from plan" aria-label="Remove from plan">
+                        <i class="bi bi-trash"></i>
+                    </button>
+                </form>
             </div>
-            <div class="plan-step-audience"><i class="bi bi-people"></i> {{ step.audience_label }}</div>
-            <div class="plan-step-message">{{ step.body }}</div>
+            <div class="plan-step-audience">
+                <i class="bi bi-people"></i>
+                <span data-audience-label>{{ step.audience_label }}</span>
+                <button type="button" class="plan-audience-edit" data-audience-trigger
+                        data-update-url="{% url 'tickets:sms_plan_update_audience' pk=plan.id step=step.order %}"
+                        data-criteria="{{ step.audience_criteria_json }}"
+                        title="Change who this is sent to" aria-label="Change audience">
+                    <i class="bi bi-pencil"></i>
+                </button>
+            </div>
+            <textarea class="plan-step-message" data-step="{{ step.order }}"
+                      data-update-url="{% url 'tickets:sms_plan_update_step' pk=plan.id step=step.order %}"
+                      maxlength="1600" rows="1" aria-label="Message text (editable)">{{ step.body }}</textarea>
             {% if step.rationale %}<div class="plan-step-rationale">{{ step.rationale }}</div>{% endif %}
             <div class="plan-step-foot">
-                <span class="plan-step-segs">{{ step.segments }} segment{{ step.segments|pluralize }} · {{ step.encoding }}</span>
-                <form method="post" action="{% url 'tickets:sms_plan_launch_step' pk=plan.id step=step.order %}" class="m-0">
+                <span class="plan-step-segs">
+                    <span data-segs-for="{{ step.order }}">{{ step.segments }} segment{{ step.segments|pluralize }} · {{ step.encoding }}</span>
+                    <span class="plan-step-saved" data-saved-for="{{ step.order }}" hidden><i class="bi bi-check2"></i> Saved</span>
+                </span>
+                <form method="post" action="{% url 'tickets:sms_plan_launch_step' pk=plan.id step=step.order %}" class="m-0 plan-launch-form" data-step="{{ step.order }}">
                     {% csrf_token %}
+                    <input type="hidden" name="body">
                     <button type="submit" class="btn btn-sm {% if step.launched_at %}btn-outline-secondary{% else %}btn-primary{% endif %}">
                         <i class="bi bi-send"></i> {% if step.launched_at %}Send again{% else %}Review &amp; send{% endif %}
                     </button>
@@ -107,4 +183,266 @@
     </div>
     {% endfor %}
 </div>
+
+<div class="modal fade" id="removeStepModal" tabindex="-1" aria-labelledby="removeStepModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="removeStepModalLabel">Remove message</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">Remove this message from the plan? This can't be undone.</div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-danger" id="removeStepConfirm">Remove</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="modal fade" id="audienceModal" tabindex="-1" aria-labelledby="audienceModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="audienceModalLabel">Who should this go to?</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                {% if plan.event %}
+                <div class="form-check mb-2">
+                    <input class="form-check-input" type="radio" name="aud_mode" id="aud_mode_all" value="all">
+                    <label class="form-check-label" for="aud_mode_all">All SMS subscribers</label>
+                </div>
+                <div class="form-check mb-2">
+                    <input class="form-check-input" type="radio" name="aud_mode" id="aud_mode_event" value="event">
+                    <label class="form-check-label" for="aud_mode_event">Ticket buyers for {{ plan.event.name }}</label>
+                </div>
+                {% endif %}
+                <div class="form-check mb-1">
+                    <input class="form-check-input" type="radio" name="aud_mode" id="aud_mode_custom" value="custom">
+                    <label class="form-check-label" for="aud_mode_custom">Specific segments, tags, or market</label>
+                </div>
+
+                <div id="aud-custom" class="mt-2">
+                    <label class="form-label mb-1">Segments</label>
+                    <div class="aud-chip-row">
+                        {% for seg in segment_choices %}
+                        <label class="seg-chip"><input type="checkbox" class="aud-seg" value="{{ seg }}"> {{ seg }}</label>
+                        {% endfor %}
+                    </div>
+                    {% if tags %}
+                    <label class="form-label mb-1 mt-3">Tags</label>
+                    <div class="aud-chip-row">
+                        {% for tag in tags %}
+                        <label class="seg-chip"><input type="checkbox" class="aud-tag" value="{{ tag.id }}"> {{ tag.name }}</label>
+                        {% endfor %}
+                    </div>
+                    {% endif %}
+                    <label class="form-label mb-1 mt-3" for="aud-market">Market</label>
+                    <select class="form-select aud-market" id="aud-market">
+                        <option value="">All markets</option>
+                        {% for value, name in market_choices %}
+                        <option value="{{ value }}">{{ name }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <div class="aud-error text-danger small mt-2" hidden></div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-primary" id="audienceSave">Save audience</button>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+document.addEventListener('DOMContentLoaded', function () {
+    const CSRF = '{{ csrf_token }}';
+
+    function autoGrow(ta) {
+        ta.style.height = 'auto';
+        ta.style.height = ta.scrollHeight + 'px';
+    }
+
+    async function saveStep(ta) {
+        const body = ta.value.trim();
+        // Don't persist an empty message or a no-op (unchanged since last save).
+        if (!body || body === ta.dataset.saved) return;
+        let data;
+        try {
+            const resp = await fetch(ta.dataset.updateUrl, {
+                method: 'POST',
+                headers: {'X-CSRFToken': CSRF, 'Content-Type': 'application/x-www-form-urlencoded'},
+                body: new URLSearchParams({body: body}),
+            });
+            if (!resp.ok) return;
+            data = await resp.json();
+        } catch (e) { return; }
+        if (!data || !data.ok) return;
+
+        ta.dataset.saved = body;
+        const step = ta.dataset.step;
+        const segs = document.querySelector('[data-segs-for="' + step + '"]');
+        if (segs) {
+            segs.textContent = data.segments + ' segment' + (data.segments === 1 ? '' : 's') + ' · ' + data.encoding;
+        }
+        const saved = document.querySelector('[data-saved-for="' + step + '"]');
+        if (saved) {
+            saved.hidden = false;
+            clearTimeout(saved._t);
+            saved._t = setTimeout(function () { saved.hidden = true; }, 1800);
+        }
+    }
+
+    document.querySelectorAll('.plan-step-message').forEach(function (ta) {
+        ta.dataset.saved = ta.value.trim();
+        autoGrow(ta);
+        ta.addEventListener('input', function () { autoGrow(ta); });
+        ta.addEventListener('blur', function () { saveStep(ta); });
+    });
+
+    // Inline send date/time editing.
+    document.querySelectorAll('.plan-step-timing').forEach(function (wrap) {
+        const display = wrap.querySelector('.plan-timing-display');
+        const editor = wrap.querySelector('.plan-timing-editor');
+        const input = wrap.querySelector('.plan-timing-input');
+        const labelEl = wrap.querySelector('[data-timing-label]');
+
+        function open() { display.hidden = true; editor.hidden = false; input.focus(); }
+        function close() { editor.hidden = true; display.hidden = false; }
+
+        display.addEventListener('click', open);
+        editor.querySelector('.plan-timing-cancel').addEventListener('click', close);
+
+        editor.querySelector('.plan-timing-save').addEventListener('click', async function () {
+            if (!input.value) { input.reportValidity(); return; }
+            let data;
+            try {
+                const resp = await fetch(wrap.dataset.scheduleUrl, {
+                    method: 'POST',
+                    headers: {'X-CSRFToken': CSRF, 'Content-Type': 'application/x-www-form-urlencoded'},
+                    body: new URLSearchParams({send_at: input.value}),
+                });
+                data = await resp.json();
+                if (!resp.ok || !data.ok) { input.setCustomValidity(data && data.error || 'Could not save'); input.reportValidity(); input.setCustomValidity(''); return; }
+            } catch (e) { return; }
+            labelEl.textContent = data.timing_label;
+            input.value = data.send_local;
+            close();
+        });
+    });
+
+    // Remove-message confirmation via a Bootstrap modal (native confirm() proved
+    // unreliable). The trash button opens the modal; "Remove" submits its form.
+    var removeModalEl = document.getElementById('removeStepModal');
+    if (removeModalEl && window.bootstrap) {
+        var removeModal = new bootstrap.Modal(removeModalEl);
+        var pendingForm = null;
+        document.querySelectorAll('[data-remove-trigger]').forEach(function (btn) {
+            btn.addEventListener('click', function () {
+                pendingForm = btn.closest('[data-remove-form]');
+                removeModal.show();
+            });
+        });
+        document.getElementById('removeStepConfirm').addEventListener('click', function () {
+            if (pendingForm) pendingForm.submit();
+        });
+    }
+
+    // Audience editing via a shared Bootstrap modal.
+    var audModalEl = document.getElementById('audienceModal');
+    if (audModalEl && window.bootstrap) {
+        var audModal = new bootstrap.Modal(audModalEl);
+        var audPending = null;                 // { url, labelEl }
+        var audCustom = document.getElementById('aud-custom');
+        var audMarket = audModalEl.querySelector('.aud-market');
+        var audError = audModalEl.querySelector('.aud-error');
+
+        function audSyncMode() {
+            var checked = audModalEl.querySelector('input[name="aud_mode"]:checked');
+            audCustom.style.display = (checked && checked.value === 'custom') ? '' : 'none';
+        }
+        audModalEl.querySelectorAll('input[name="aud_mode"]').forEach(function (r) {
+            r.addEventListener('change', audSyncMode);
+        });
+
+        document.querySelectorAll('[data-audience-trigger]').forEach(function (btn) {
+            btn.addEventListener('click', function () {
+                var labelEl = btn.closest('.plan-step-audience').querySelector('[data-audience-label]');
+                audPending = {url: btn.dataset.updateUrl, labelEl: labelEl};
+                var criteria = {};
+                try { criteria = JSON.parse(btn.dataset.criteria || '{}'); } catch (e) {}
+
+                audModalEl.querySelectorAll('.aud-seg, .aud-tag').forEach(function (c) { c.checked = false; });
+                if (audMarket) audMarket.value = '';
+                audError.hidden = true;
+
+                var eventRadio = document.getElementById('aud_mode_event');
+                var allRadio = document.getElementById('aud_mode_all');
+                if (criteria.all_subscribers && allRadio) {
+                    allRadio.checked = true;
+                } else if (criteria.event_id && eventRadio) {
+                    eventRadio.checked = true;
+                } else {
+                    document.getElementById('aud_mode_custom').checked = true;
+                    (criteria.rfm_segment || []).forEach(function (s) {
+                        var el = audModalEl.querySelector('.aud-seg[value="' + CSS.escape(s) + '"]');
+                        if (el) el.checked = true;
+                    });
+                    (criteria.tag_ids || []).forEach(function (t) {
+                        var el = audModalEl.querySelector('.aud-tag[value="' + CSS.escape(String(t)) + '"]');
+                        if (el) el.checked = true;
+                    });
+                    if (criteria.market_id && audMarket) audMarket.value = criteria.market_id;
+                }
+                audSyncMode();
+                audModal.show();
+            });
+        });
+
+        document.getElementById('audienceSave').addEventListener('click', async function () {
+            if (!audPending) return;
+            var checked = audModalEl.querySelector('input[name="aud_mode"]:checked');
+            var mode = checked ? checked.value : 'custom';
+            var params = new URLSearchParams();
+            params.set('audience_mode', mode);
+            if (mode === 'custom') {
+                audModalEl.querySelectorAll('.aud-seg:checked').forEach(function (c) { params.append('rfm_segment', c.value); });
+                audModalEl.querySelectorAll('.aud-tag:checked').forEach(function (c) { params.append('tag_ids', c.value); });
+                if (audMarket && audMarket.value) params.set('market_id', audMarket.value);
+            }
+            var data;
+            try {
+                var resp = await fetch(audPending.url, {
+                    method: 'POST',
+                    headers: {'X-CSRFToken': CSRF, 'Content-Type': 'application/x-www-form-urlencoded'},
+                    body: params,
+                });
+                data = await resp.json();
+                if (!resp.ok || !data.ok) {
+                    audError.textContent = (data && data.error) || 'Could not save.';
+                    audError.hidden = false;
+                    return;
+                }
+            } catch (e) { return; }
+            audPending.labelEl.textContent = data.audience_label;
+            audModal.hide();
+        });
+    }
+
+    // On launch, copy the (possibly just-edited) message into the form so the
+    // composer prefills exactly what the organizer sees — even without a blur-save.
+    document.querySelectorAll('.plan-launch-form').forEach(function (form) {
+        form.addEventListener('submit', function () {
+            const card = form.closest('.plan-step-card');
+            const ta = card ? card.querySelector('.plan-step-message') : null;
+            const hidden = form.querySelector('input[name="body"]');
+            if (ta && hidden) hidden.value = ta.value;
+        });
+    });
+});
+</script>
 {% endblock %}

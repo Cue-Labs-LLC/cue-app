@@ -23,13 +23,13 @@ def _fake_plan():
     return CampaignPlan(
         strategy_summary='Three touches ramping to the event.',
         steps=[
-            PlanStep(purpose='announcement', audience='All subscribers', timing='T-14 days',
+            PlanStep(purpose='announcement', audience='All subscribers', offset_days=14, send_time='18:00',
                      message='Tickets are live for the show. Grab yours: https://cue.test/t/abc/',
                      rationale='Seed awareness early.'),
-            PlanStep(purpose='reminder', audience='All subscribers', timing='T-3 days',
+            PlanStep(purpose='reminder', audience='All subscribers', offset_days=3, send_time='17:30',
                      message='Only a few days left — get your tickets now.',
                      rationale='Nudge fence-sitters.'),
-            PlanStep(purpose='last_chance', audience='All subscribers', timing='Day of · 4pm',
+            PlanStep(purpose='last_chance', audience='All subscribers', offset_days=0, send_time='16:00',
                      message='Doors soon! Last chance for tickets.',
                      rationale='Capture last-minute buyers.'),
         ],
@@ -80,16 +80,262 @@ class SMSStrategistViewTests(TestCase):
         self.assertRedirects(resp, reverse('tickets:sms_plan_detail', kwargs={'pk': plan.id}))
         self.assertEqual(plan.event_id, self.event.id)
         self.assertEqual(len(plan.steps), 3)
-        # Every step carries a computed segment count + event audience criteria.
+        # Event plans default every step to all subscribers (sell to the whole list).
         for step in plan.steps:
             self.assertGreaterEqual(step['segments'], 1)
-            self.assertEqual(step['audience_criteria'], {'event_id': str(self.event.id)})
+            self.assertEqual(step['audience_criteria'], {'all_subscribers': True})
+            self.assertEqual(step['audience_label'], 'All SMS subscribers')
         # Billable usage recorded under the new feature; SMS wallet untouched.
         usage = AITokenUsage.objects.get(organization=self.org)
         self.assertEqual(usage.feature, AITokenUsage.FEATURE_SMS_PLAN)
         self.assertEqual(usage.total_tokens, 180)
         self.org.refresh_from_db()
         self.assertEqual(self.org.sms_credit_balance_cents, 5000)
+
+    @patch('langchain_openai.ChatOpenAI')
+    def test_event_steps_have_absolute_send_dates(self, mock_openai):
+        mock_openai.return_value = _fake_structured_llm()
+        self.client.post(reverse('tickets:sms_plan_create'), {'event': str(self.event.id)})
+        plan = SMSCampaignPlan.objects.get(organization=self.org)
+
+        from datetime import datetime, timedelta
+        # offset_days in _fake_plan are 14 / 3 / 0 before the event date.
+        expected = {14: self.event.start_date - timedelta(days=14),
+                    3: self.event.start_date - timedelta(days=3),
+                    0: self.event.start_date}
+        for step in plan.steps:
+            self.assertNotIn('T-', step['timing_label'])          # no more relative "T-days"
+            # Label carries a timezone abbreviation (e.g. "... PM PDT").
+            self.assertRegex(step['timing_label'], r'[A-Z]{2,5}$')
+            got = datetime.fromisoformat(step['send_at']).date()
+            self.assertEqual(got, expected[step['offset_days']])
+
+    @patch('langchain_openai.ChatOpenAI')
+    def test_update_schedule_persists_and_returns_label(self, mock_openai):
+        mock_openai.return_value = _fake_structured_llm()
+        self.client.post(reverse('tickets:sms_plan_create'), {'event': str(self.event.id)})
+        plan = SMSCampaignPlan.objects.get(organization=self.org)
+
+        resp = self.client.post(
+            reverse('tickets:sms_plan_update_schedule', kwargs={'pk': plan.id, 'step': 0}),
+            {'send_at': '2026-07-15T09:30'},
+        )
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertTrue(data['ok'])
+        self.assertEqual(data['send_local'], '2026-07-15T09:30')
+        self.assertIn('Jul 15', data['timing_label'])
+        # Persisted onto the step.
+        plan.refresh_from_db()
+        from datetime import datetime
+        self.assertEqual(datetime.fromisoformat(plan.steps[0]['send_at']).strftime('%Y-%m-%d %H:%M'),
+                         '2026-07-15 09:30')
+        self.assertEqual(plan.steps[0]['send_time'], '09:30')
+
+    @patch('langchain_openai.ChatOpenAI')
+    def test_org_timezone_used_in_labels(self, mock_openai):
+        mock_openai.return_value = _fake_structured_llm()
+        self.org.timezone = 'America/New_York'
+        self.org.save(update_fields=['timezone'])
+        self.client.post(reverse('tickets:sms_plan_create'), {'event': str(self.event.id)})
+        plan = SMSCampaignPlan.objects.get(organization=self.org)
+        # Eastern time → label ends in EDT/EST, and the stored offset reflects ET.
+        self.assertRegex(plan.steps[0]['timing_label'], r'E[DS]T$')
+        self.assertTrue(plan.steps[0]['send_at'].endswith(('-04:00', '-05:00')))
+
+    @patch('langchain_openai.ChatOpenAI')
+    def test_launch_prefills_composer_schedule(self, mock_openai):
+        mock_openai.return_value = _fake_structured_llm()
+        # Event far enough out that all suggested sends are in the future.
+        self.event.start_date = date.today() + timedelta(days=40)
+        self.event.save(update_fields=['start_date'])
+        self.client.post(reverse('tickets:sms_plan_create'), {'event': str(self.event.id)})
+        plan = SMSCampaignPlan.objects.get(organization=self.org)
+
+        self.client.post(reverse('tickets:sms_plan_launch_step', kwargs={'pk': plan.id, 'step': 0}))
+        prefill = self.client.session['sms_compose_prefill']
+        self.assertTrue(prefill['scheduled_at'])  # a future datetime-local string
+        # Composer GET pre-selects "Schedule for later" with that time.
+        resp = self.client.get(reverse('tickets:sms_campaign_create'))
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.context['form'].initial.get('send_mode'),
+                         resp.context['form'].SEND_SCHEDULE)
+        self.assertEqual(resp.context['form'].initial.get('scheduled_at'), prefill['scheduled_at'])
+
+    @patch('langchain_openai.ChatOpenAI')
+    def test_launch_skips_past_schedule(self, mock_openai):
+        from django.utils import timezone
+        mock_openai.return_value = _fake_structured_llm()
+        self.client.post(reverse('tickets:sms_plan_create'), {'event': str(self.event.id)})
+        plan = SMSCampaignPlan.objects.get(organization=self.org)
+        # Force this step's suggested send into the past → composer schedule not prefilled.
+        steps = plan.steps
+        steps[0]['send_at'] = (timezone.now() - timedelta(days=2)).isoformat()
+        plan.steps = steps
+        plan.save(update_fields=['steps'])
+
+        self.client.post(reverse('tickets:sms_plan_launch_step', kwargs={'pk': plan.id, 'step': 0}))
+        self.assertEqual(self.client.session['sms_compose_prefill']['scheduled_at'], '')
+
+    @patch('langchain_openai.ChatOpenAI')
+    def test_update_audience_to_segments(self, mock_openai):
+        mock_openai.return_value = _fake_structured_llm()
+        self.client.post(reverse('tickets:sms_plan_create'), {'event': str(self.event.id)})
+        plan = SMSCampaignPlan.objects.get(organization=self.org)
+        # Steps start targeting all subscribers.
+        self.assertEqual(plan.steps[0]['audience_criteria'], {'all_subscribers': True})
+
+        resp = self.client.post(
+            reverse('tickets:sms_plan_update_audience', kwargs={'pk': plan.id, 'step': 0}),
+            {'audience_mode': 'custom', 'rfm_segment': ['VIP', 'Loyal']},
+        )
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertTrue(data['ok'])
+        self.assertIn('VIP', data['audience_label'])
+        plan.refresh_from_db()
+        self.assertEqual(plan.steps[0]['audience_criteria'], {'rfm_segment': ['VIP', 'Loyal']})
+        # Other steps are untouched.
+        self.assertEqual(plan.steps[1]['audience_criteria'], {'all_subscribers': True})
+
+    @patch('langchain_openai.ChatOpenAI')
+    def test_update_audience_to_ticket_buyers(self, mock_openai):
+        mock_openai.return_value = _fake_structured_llm()
+        self.client.post(reverse('tickets:sms_plan_create'), {'event': str(self.event.id)})
+        plan = SMSCampaignPlan.objects.get(organization=self.org)
+        resp = self.client.post(
+            reverse('tickets:sms_plan_update_audience', kwargs={'pk': plan.id, 'step': 0}),
+            {'audience_mode': 'event'},
+        )
+        self.assertEqual(resp.status_code, 200)
+        # Label uses the composer's wording ("Ticket buyers for {event}").
+        self.assertEqual(resp.json()['audience_label'], f'Ticket buyers for {self.event.name}')
+        plan.refresh_from_db()
+        self.assertEqual(plan.steps[0]['audience_criteria'], {'event_id': str(self.event.id)})
+        # Launching it opens the composer scoped to ticket buyers.
+        resp = self.client.post(reverse('tickets:sms_plan_launch_step', kwargs={'pk': plan.id, 'step': 0}))
+        self.assertIn('audience_scope=event', resp.url)
+
+    @patch('langchain_openai.ChatOpenAI')
+    def test_update_audience_back_to_event(self, mock_openai):
+        mock_openai.return_value = _fake_structured_llm()
+        self.client.post(reverse('tickets:sms_plan_create'), {'event': str(self.event.id)})
+        plan = SMSCampaignPlan.objects.get(organization=self.org)
+        # First narrow to a segment, then switch back to event attendees.
+        self.client.post(
+            reverse('tickets:sms_plan_update_audience', kwargs={'pk': plan.id, 'step': 0}),
+            {'audience_mode': 'custom', 'rfm_segment': ['VIP']},
+        )
+        resp = self.client.post(
+            reverse('tickets:sms_plan_update_audience', kwargs={'pk': plan.id, 'step': 0}),
+            {'audience_mode': 'event'},
+        )
+        self.assertEqual(resp.status_code, 200)
+        plan.refresh_from_db()
+        self.assertEqual(plan.steps[0]['audience_criteria'], {'event_id': str(self.event.id)})
+
+    @patch('langchain_openai.ChatOpenAI')
+    def test_update_audience_rejects_empty_custom(self, mock_openai):
+        mock_openai.return_value = _fake_structured_llm()
+        self.client.post(reverse('tickets:sms_plan_create'), {'event': str(self.event.id)})
+        plan = SMSCampaignPlan.objects.get(organization=self.org)
+        original = plan.steps[0]['audience_criteria']
+        resp = self.client.post(
+            reverse('tickets:sms_plan_update_audience', kwargs={'pk': plan.id, 'step': 0}),
+            {'audience_mode': 'custom'},  # nothing selected
+        )
+        self.assertEqual(resp.status_code, 400)
+        plan.refresh_from_db()
+        self.assertEqual(plan.steps[0]['audience_criteria'], original)
+
+    @patch('langchain_openai.ChatOpenAI')
+    def test_edited_audience_launches_into_composer(self, mock_openai):
+        mock_openai.return_value = _fake_structured_llm()
+        self.client.post(reverse('tickets:sms_plan_create'), {'event': str(self.event.id)})
+        plan = SMSCampaignPlan.objects.get(organization=self.org)
+        self.client.post(
+            reverse('tickets:sms_plan_update_audience', kwargs={'pk': plan.id, 'step': 0}),
+            {'audience_mode': 'custom', 'rfm_segment': ['VIP']},
+        )
+        # Launching a segment-edited step must open the composer in NON-event mode with
+        # that segment selected — not fall back to the plan's event (the old bug).
+        resp = self.client.post(reverse('tickets:sms_plan_launch_step', kwargs={'pk': plan.id, 'step': 0}))
+        self.assertNotIn('event=', resp.url)
+        prefill = self.client.session['sms_compose_prefill']
+        self.assertEqual(prefill['criteria'], {'rfm_segment': ['VIP']})
+        self.assertIsNone(prefill['event_id'])
+        composer = self.client.get(reverse('tickets:sms_campaign_create'))
+        self.assertEqual(composer.status_code, 200)
+        self.assertIsNone(composer.context['event'])
+        self.assertEqual(composer.context['form'].initial.get('rfm_segment'), ['VIP'])
+
+    @patch('langchain_openai.ChatOpenAI')
+    def test_unedited_event_step_launches_all_subscribers(self, mock_openai):
+        mock_openai.return_value = _fake_structured_llm()
+        self.client.post(reverse('tickets:sms_plan_create'), {'event': str(self.event.id)})
+        plan = SMSCampaignPlan.objects.get(organization=self.org)
+        # An unedited event step targets all subscribers, and its label says so — matching
+        # what the composer will show (no more "All subscribers" vs "Ticket buyers" mismatch).
+        self.assertEqual(plan.steps[0]['audience_label'], 'All SMS subscribers')
+        # Launch keeps the event link (for attribution) but opens on the All-subscribers scope.
+        resp = self.client.post(reverse('tickets:sms_plan_launch_step', kwargs={'pk': plan.id, 'step': 0}))
+        self.assertIn(f'event={self.event.id}', resp.url)
+        self.assertIn('audience_scope=all', resp.url)
+        # The composer renders that scope selected.
+        composer = self.client.get(f"{reverse('tickets:sms_campaign_create')}?event={self.event.id}&audience_scope=all")
+        self.assertEqual(composer.status_code, 200)
+        self.assertEqual(composer.context['audience_scope'], 'all')
+
+    @patch('langchain_openai.ChatOpenAI')
+    def test_remove_step_drops_it_and_reindexes(self, mock_openai):
+        mock_openai.return_value = _fake_structured_llm()
+        self.client.post(reverse('tickets:sms_plan_create'), {'event': str(self.event.id)})
+        plan = SMSCampaignPlan.objects.get(organization=self.org)
+        self.assertEqual(len(plan.steps), 3)
+        middle_body = plan.steps[1]['body']
+        last_body = plan.steps[2]['body']
+
+        resp = self.client.post(
+            reverse('tickets:sms_plan_remove_step', kwargs={'pk': plan.id, 'step': 1}),
+        )
+        self.assertRedirects(resp, reverse('tickets:sms_plan_detail', kwargs={'pk': plan.id}))
+        plan.refresh_from_db()
+        # The middle message is gone; the last one shifts up and orders stay 0..n-1.
+        self.assertEqual(len(plan.steps), 2)
+        bodies = [s['body'] for s in plan.steps]
+        self.assertNotIn(middle_body, bodies)
+        self.assertEqual(plan.steps[1]['body'], last_body)
+        self.assertEqual([s['order'] for s in plan.steps], [0, 1])
+
+    @patch('langchain_openai.ChatOpenAI')
+    def test_remove_step_org_scoped_and_gated(self, mock_openai):
+        mock_openai.return_value = _fake_structured_llm()
+        self.client.post(reverse('tickets:sms_plan_create'), {'event': str(self.event.id)})
+        plan = SMSCampaignPlan.objects.get(organization=self.org)
+
+        # Gated off → 404, plan untouched.
+        self.org.ai_sms_strategist_enabled = False
+        self.org.save(update_fields=['ai_sms_strategist_enabled'])
+        resp = self.client.post(
+            reverse('tickets:sms_plan_remove_step', kwargs={'pk': plan.id, 'step': 0}),
+        )
+        self.assertEqual(resp.status_code, 404)
+        plan.refresh_from_db()
+        self.assertEqual(len(plan.steps), 3)
+
+    @patch('langchain_openai.ChatOpenAI')
+    def test_update_schedule_rejects_bad_datetime(self, mock_openai):
+        mock_openai.return_value = _fake_structured_llm()
+        self.client.post(reverse('tickets:sms_plan_create'), {'event': str(self.event.id)})
+        plan = SMSCampaignPlan.objects.get(organization=self.org)
+        original = plan.steps[0]['send_at']
+        resp = self.client.post(
+            reverse('tickets:sms_plan_update_schedule', kwargs={'pk': plan.id, 'step': 0}),
+            {'send_at': 'not-a-date'},
+        )
+        self.assertEqual(resp.status_code, 400)
+        plan.refresh_from_db()
+        self.assertEqual(plan.steps[0]['send_at'], original)
 
     @patch('langchain_openai.ChatOpenAI')
     def test_generate_segment_plan(self, mock_openai):
@@ -164,6 +410,58 @@ class SMSStrategistViewTests(TestCase):
         resp = self.client.get(reverse('tickets:sms_campaign_create'))
         self.assertEqual(resp.status_code, 200)
         self.assertContains(resp, plan.steps[0]['body'])
+
+    @patch('langchain_openai.ChatOpenAI')
+    def test_update_step_persists_edit_and_returns_segments(self, mock_openai):
+        mock_openai.return_value = _fake_structured_llm()
+        self.client.post(reverse('tickets:sms_plan_create'), {'event': str(self.event.id)})
+        plan = SMSCampaignPlan.objects.get(organization=self.org)
+
+        new_body = 'Edited by the organizer — see you Friday!'
+        resp = self.client.post(
+            reverse('tickets:sms_plan_update_step', kwargs={'pk': plan.id, 'step': 1}),
+            {'body': new_body},
+        )
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertTrue(data['ok'])
+        self.assertGreaterEqual(data['segments'], 1)
+        # Persisted to the plan; other steps untouched.
+        plan.refresh_from_db()
+        self.assertEqual(plan.steps[1]['body'], new_body)
+        self.assertEqual(plan.steps[1]['segments'], data['segments'])
+        self.assertNotEqual(plan.steps[0]['body'], new_body)
+
+    @patch('langchain_openai.ChatOpenAI')
+    def test_update_step_rejects_empty_body(self, mock_openai):
+        mock_openai.return_value = _fake_structured_llm()
+        self.client.post(reverse('tickets:sms_plan_create'), {'event': str(self.event.id)})
+        plan = SMSCampaignPlan.objects.get(organization=self.org)
+        original = plan.steps[0]['body']
+        resp = self.client.post(
+            reverse('tickets:sms_plan_update_step', kwargs={'pk': plan.id, 'step': 0}),
+            {'body': '   '},
+        )
+        self.assertEqual(resp.status_code, 400)
+        plan.refresh_from_db()
+        self.assertEqual(plan.steps[0]['body'], original)
+
+    @patch('langchain_openai.ChatOpenAI')
+    def test_launch_uses_edited_body_override(self, mock_openai):
+        mock_openai.return_value = _fake_structured_llm()
+        self.client.post(reverse('tickets:sms_plan_create'), {'event': str(self.event.id)})
+        plan = SMSCampaignPlan.objects.get(organization=self.org)
+
+        edited = 'Last-minute tweak before sending!'
+        self.client.post(
+            reverse('tickets:sms_plan_launch_step', kwargs={'pk': plan.id, 'step': 0}),
+            {'body': edited},
+        )
+        # Override is authoritative: prefilled into the composer AND persisted.
+        self.assertEqual(self.client.session['sms_compose_prefill']['body'], edited)
+        plan.refresh_from_db()
+        self.assertEqual(plan.steps[0]['body'], edited)
+        self.assertIn('launched_at', plan.steps[0])
 
 
 @override_settings(OPENAI_API_KEY='test-key', OPENAI_MODEL='gpt-4o')

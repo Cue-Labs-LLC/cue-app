@@ -52,9 +52,12 @@ SYSTEM_PROMPT = (
     "If there are no voice samples, default to a warm, plainspoken tone and keep it "
     "brand-neutral.\n\n"
     "Best practices you MUST follow:\n"
-    "- Match cadence to the runway: space touches out when the event is far off, and "
-    "tighten them as it nears. Never recommend more touches than the timeline supports; "
-    "3-5 total is typical. Do not over-message.\n"
+    "- Match cadence to the runway using each step's 'offset_days' (see its schema): "
+    "space touches out when the event is far off, and tighten them as it nears. For event "
+    "plans, offset_days counts DOWN to the event and must never exceed the days remaining "
+    "(context gives 'days_until_event' and 'today'); order steps from the largest offset "
+    "to the smallest. Never recommend more touches than the timeline supports; 3-5 total "
+    "is typical. Do not over-message.\n"
     "- Give each touch a distinct job and angle (announce -> value/proof -> urgency), "
     "so no two messages feel repetitive.\n"
     "- One clear call-to-action per message. Always include the ticket link when one is "
@@ -79,10 +82,18 @@ class PlanStep(BaseModel):
     audience: str = Field(
         description="Short label for who this touch targets (e.g. 'VIP & Loyal', 'All subscribers')."
     )
-    timing: str = Field(
+    offset_days: int = Field(
         description=(
-            "Human-readable send timing relative to the event date or a segment cadence, "
-            "e.g. 'T-14 days', 'Day of · 5pm', '3 days after last purchase'."
+            "Whole days from the anchor, as an integer >= 0. For an EVENT plan this is days "
+            "BEFORE the event (0 = the day of the event, 14 = two weeks before) and must not "
+            "exceed the days remaining until the event. For a SEGMENT plan (no event date) "
+            "this is days AFTER the campaign starts (0 = send on day one, 3 = three days later)."
+        )
+    )
+    send_time: str = Field(
+        description=(
+            "Local send time in 24-hour HH:MM (e.g. '18:00'). Pick a sensible hour for the "
+            "audience — late afternoon or early evening usually works best for consumer events."
         )
     )
     message: str = Field(
@@ -221,13 +232,32 @@ def _event_context(event):
 def _build_step_criteria(base_criteria, event):
     """The filter_criteria a launched step should prefill the composer with.
 
-    v1: reuse the plan's base audience for every step. (The model's per-step ``audience``
-    label is advisory; the organizer can still narrow the audience in the composer.)
-    Event plans resolve to the event's attendees.
+    Event plans default to ALL of the org's SMS subscribers — an event campaign exists to
+    sell tickets to the whole list, not just to people who already bought (the event stays
+    linked for attribution + the ticket link). The organizer can narrow any step to the
+    event's ticket buyers or a segment via the audience editor. Segment plans reuse the
+    plan's base audience.
     """
     if event is not None:
-        return {'event_id': str(event.id)}
+        return {'all_subscribers': True}
     return dict(base_criteria or {})
+
+
+def plan_audience_label(organization, criteria):
+    """Audience label for a plan step, in the SAME wording the composer uses so the plan
+    view and the New Campaign page stay consistent ('All SMS subscribers', 'Ticket buyers
+    for {event}', or a segment/tag/market summary)."""
+    from tickets.models import Event, SMSCampaign
+
+    criteria = criteria or {}
+    if criteria.get('all_subscribers'):
+        return 'All SMS subscribers'
+    event_id = criteria.get('event_id')
+    if event_id:
+        ev = Event.objects.filter(organization=organization, id=event_id).first()
+        return f'Ticket buyers for {ev.name}' if ev else 'Ticket buyers for this event'
+    label = SMSCampaign(organization=organization, filter_criteria=criteria).audience_summary(organization)
+    return label if label and label != 'No audience' else 'All SMS subscribers'
 
 
 def generate_campaign_plan(organization, *, event=None, criteria=None, objective='',
@@ -244,6 +274,7 @@ def generate_campaign_plan(organization, *, event=None, criteria=None, objective
 
     model_name = getattr(settings, 'OPENAI_MODEL', 'gpt-4o')
 
+    from django.utils import timezone
     if event is not None:
         target = {'type': 'event', 'event': _event_context(event)}
     else:
@@ -251,6 +282,7 @@ def generate_campaign_plan(organization, *, event=None, criteria=None, objective
 
     context = {
         'organization': organization.name,
+        'today': str(timezone.localdate()),
         'target': target,
         'objective': objective or '(none stated)',
         'ticket_link': ticket_url or '(none — invite them to your ticket page)',
@@ -307,15 +339,24 @@ def generate_campaign_plan(organization, *, event=None, criteria=None, objective
             result = CampaignPlan.parse_obj(result)
 
     base_criteria = _build_step_criteria(criteria, event)
+    # Label the audience from the ACTUAL criteria the composer will use — not the LLM's
+    # free-text guess — using the composer's terminology so the plan view and the New
+    # Campaign page always agree.
+    base_label = plan_audience_label(organization, base_criteria)
+    org_tz = organization.get_timezone()
     steps = []
     for i, step in enumerate(result.steps):
         encoding, segments = sms_segment_info(with_stop_footer(step.message))
+        send_at, timing_label = _compute_step_schedule(step, event, org_tz)
         steps.append({
             'order': i,
             'purpose': step.purpose,
-            'audience_label': step.audience,
+            'audience_label': base_label,
             'audience_criteria': base_criteria,
-            'timing_label': step.timing,
+            'offset_days': max(0, int(step.offset_days or 0)),
+            'send_time': step.send_time,
+            'send_at': send_at,
+            'timing_label': timing_label,
             'body': step.message,
             'rationale': step.rationale,
             'segments': segments,
@@ -328,6 +369,47 @@ def generate_campaign_plan(organization, *, event=None, criteria=None, objective
         'steps': steps,
         'model_name': model_name,
     }
+
+
+# Django date-format string for a step's send datetime. The trailing "T" prints the
+# timezone abbreviation (e.g. PDT), so the organizer sees which zone the time is in.
+SCHEDULE_LABEL_FORMAT = "D, M j · g:i A T"
+
+
+def format_send_label(dt):
+    """Human label for a send datetime, including the timezone (e.g. 'Mon, Jul 6 · 6:00 PM PDT')."""
+    from django.utils import formats
+    return formats.date_format(dt, SCHEDULE_LABEL_FORMAT)
+
+
+def _compute_step_schedule(step, event, tz):
+    """Turn a step's structured offset + send time into an absolute datetime + label.
+
+    ``tz`` is the org's timezone. Event plans anchor on the event date (offset = days
+    before); segment plans anchor on today (offset = days after campaign start).
+    Returns (iso_datetime, display_label) e.g.
+    ('2026-07-06T18:00:00-07:00', 'Mon, Jul 6 · 6:00 PM PDT').
+    """
+    from datetime import datetime, time as dtime, timedelta
+    from django.utils import timezone
+
+    today = timezone.now().astimezone(tz).date()
+    try:
+        hh, mm = (step.send_time or '').split(':')
+        send_time = dtime(int(hh), int(mm))
+    except (ValueError, TypeError):
+        send_time = dtime(18, 0)
+
+    offset = max(0, int(step.offset_days or 0))
+    if event is not None:
+        send_date = event.start_date - timedelta(days=offset)
+        if send_date < today:  # runway shorter than the model assumed — don't schedule in the past
+            send_date = today
+    else:
+        send_date = today + timedelta(days=offset)
+
+    dt = datetime.combine(send_date, send_time, tzinfo=tz)
+    return dt.isoformat(), format_send_label(dt)
 
 
 def _json_default(value):
