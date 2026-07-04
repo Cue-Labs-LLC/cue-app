@@ -46,6 +46,7 @@ from tickets.models import (
     OrderCounter,
     Organization,
     OrganizationMembership,
+    PhoneSuppression,
     PromoCode,
     SaleableTicketType,
     SaleableTicketTypeTier,
@@ -238,6 +239,7 @@ class Command(BaseCommand):
             self._create_surveys(org, events, customers, owner, rng)
             self._create_external_survey_responses(org, events, owner, rng)
             self._create_sms_broadcasts(org, events, customers, owner, now, rng)
+            self._create_sms_compliance_fixtures(org)
 
             # Minimal fixture for exercising the survey-send flow end-to-end.
             survey_test_event = build_survey_test_event(
@@ -1257,6 +1259,58 @@ class Command(BaseCommand):
             f"SMS: {native_count} native campaigns, {slick_count} SlickText broadcasts"
         ))
 
+    def _create_sms_compliance_fixtures(self, org):
+        """Named fixtures for manually testing the SMS compliance/UX changes:
+
+        - Suppressed-but-opted-in customers → the red "Opted out (STOP)" badge on
+          the customer list + detail (suppression overrides the opt-in flag).
+        - A suppressed, opted-OUT customer → selecting them and hitting
+          "SMS status → Opt in to SMS" fires the "can only re-subscribe by texting
+          START" warning.
+        - An international (UK) opted-in customer → dropped from any campaign
+          audience by the country gate (SMS_ALLOWED_COUNTRY_PREFIXES), which is what
+          prevents Twilio Geo-Permission blocks (Error 21408).
+
+        Recognizable names/emails so they're easy to find via search. Idempotent
+        (get_or_create) so re-seeding with --force won't duplicate them.
+        """
+        specs = [
+            # (name, email, phone, opt_in, suppression) where suppression is
+            # None | 'global' | 'org'.
+            ("Simone Ashford (STOP demo)", "simone.stop@example.test",
+             "+12135550101", True, "global"),
+            ("Priya Nadar (org STOP demo)", "priya.stop@example.test",
+             "+12135550103", True, "org"),
+            ("Marcus Reed (re-opt-in demo)", "marcus.stop@example.test",
+             "+12135550102", False, "global"),
+            ("Liam Fox (UK / geo demo)", "liam.uk@example.test",
+             "+447700900123", True, None),
+        ]
+        for name, email, phone, opt_in, suppression in specs:
+            cust, _ = Customer.objects.get_or_create(
+                organization=org, email=email,
+                defaults={
+                    "name": name,
+                    "phone": phone,
+                    "sms_opt_in": opt_in,
+                    "sms_opt_in_date": timezone.now() if opt_in else None,
+                },
+            )
+            if suppression == "global":
+                PhoneSuppression.objects.get_or_create(
+                    phone=phone, organization=None,
+                    defaults={"reason": PhoneSuppression.Reason.TWILIO_STOP},
+                )
+            elif suppression == "org":
+                PhoneSuppression.objects.get_or_create(
+                    phone=phone, organization=org,
+                    defaults={"reason": PhoneSuppression.Reason.MANUAL},
+                )
+        self.stdout.write(self.style.SUCCESS(
+            f"SMS compliance fixtures: {len(specs)} named customers "
+            "(search 'demo' in the customer list)"
+        ))
+
     # ------------------------------------------------------------------
     # Output
     # ------------------------------------------------------------------
@@ -1276,5 +1330,12 @@ class Command(BaseCommand):
         self.stdout.write(f"  Email:  {OWNER_EMAIL}  /  {OWNER_PASSWORD}")
         self.stdout.write(f"  Phone:  {OWNER_PHONE}")
         self.stdout.write("  (Phone OTP needs E2E_TEST_MODE=True or real Twilio creds; test code is 000000.)")
+        self.stdout.write("")
+        self.stdout.write(self.style.WARNING("SMS compliance test data (search 'demo' in the customer list):"))
+        self.stdout.write("  Simone Ashford — opted in but STOP-suppressed → red 'Opted out (STOP)' badge")
+        self.stdout.write("  Priya Nadar    — org-level suppression → same badge (per-org opt-out)")
+        self.stdout.write("  Marcus Reed    — opted OUT + suppressed → select him, 'SMS status → Opt in to")
+        self.stdout.write("                   SMS' should warn 'can only re-subscribe by texting START'")
+        self.stdout.write("  Liam Fox (UK)  — +44 number → dropped from any campaign audience by the country gate")
         self.stdout.write("")
         self.stdout.write("Start the dev server: python manage.py runserver")

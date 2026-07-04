@@ -47,7 +47,7 @@ from .models import (
     ExternalSurveyUpload, ExternalSurveyResponse, TypeformFormSubscription, EventDailyPageView,
     WaitlistEntry, OrganizerWaitlist,
     ScannerSession, generate_unique_scanner_pin, TrackingLink, _generate_tracking_token,
-    LoyaltyProgram, LoyaltyTier,
+    LoyaltyProgram, LoyaltyTier, PhoneSuppression,
     EVENT_STATUS_DRAFT, EVENT_STATUS_LIVE, EVENT_STATUS_ENDED, EVENT_STATUS_CANCELLED,
     TICKETING_TYPE_DIRECT, TICKETING_TYPE_EXTERNAL,
 )
@@ -2871,6 +2871,25 @@ def customer_list(request):
     page_number = request.GET.get('page')
     page_obj = paginator.get_page(page_number)
 
+    # Flag rows whose phone replied STOP (on the suppression list). Suppression
+    # overrides sms_opt_in — these can't be texted until they text START — so the
+    # list shows an explicit "Opted out" state instead of a misleading green check.
+    # Scoped to the current page's phones so it's one small query, not per-row.
+    if org.sms_marketing_enabled:
+        from .sms import normalize_phone
+        page_customers = list(page_obj)
+        phones = {normalize_phone(c.phone) for c in page_customers if c.phone}
+        suppressed = set()
+        if phones:
+            suppressed = set(
+                PhoneSuppression.objects.filter(
+                    Q(organization=org) | Q(organization__isnull=True),
+                    phone__in=phones,
+                ).values_list('phone', flat=True)
+            )
+        for c in page_customers:
+            c.sms_suppressed = bool(c.phone) and normalize_phone(c.phone) in suppressed
+
     segment_choices = list(SEGMENT_BADGE_COLORS.keys())
     current_segment_definition = None
     if segment_filter:
@@ -4178,6 +4197,13 @@ def customer_detail(request, customer_id):
         failed=Count('id', filter=Q(status__in=['failed', 'undelivered'])),
         clicked=Count('id', filter=Q(first_clicked_at__isnull=False)),
     )
+    # Is this number on the SMS suppression list (replied STOP)? Suppression overrides
+    # sms_opt_in — an organizer can't re-consent on their behalf, only the recipient
+    # texting START can — so the consent badge must reflect it.
+    from .sms import normalize_phone
+    sms_suppressed = bool(customer.phone) and PhoneSuppression.is_suppressed(
+        normalize_phone(customer.phone), org
+    )
 
     context = {
         'customer': customer,
@@ -4200,6 +4226,7 @@ def customer_detail(request, customer_id):
         'org_tags': org_tags,
         'sms_page_obj': sms_page_obj,
         'sms_stats': sms_stats,
+        'sms_suppressed': sms_suppressed,
         'sms_marketing_enabled': org.sms_marketing_enabled,
     }
     return render(request, 'tickets/customer_detail.html', context)

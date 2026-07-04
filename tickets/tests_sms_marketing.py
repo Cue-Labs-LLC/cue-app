@@ -513,8 +513,8 @@ class SMSCampaignSendTests(TestCase):
 
         def fake_send(to, body, status_callback=None):
             if to == '+13105552001':
-                return False, None
-            return True, 'SM' + to[-4:]
+                return False, None, None
+            return True, 'SM' + to[-4:], None
 
         c = self._campaign()
         with patch('tickets.sms.send_sms', side_effect=fake_send):
@@ -572,7 +572,7 @@ class SMSConditionalFooterTests(TestCase):
 
         def fake(to, body, status_callback=None):
             sent[to] = body
-            return True, 'SM' + to[-4:]
+            return True, 'SM' + to[-4:], None
 
         from .tasks import send_sms_campaign_task
         with patch('tickets.sms.send_sms', side_effect=fake):
@@ -1124,6 +1124,51 @@ class SMSViewTests(TestCase):
         resp = self.client.get(reverse('tickets:sms_campaign_detail', kwargs={'pk': oc.id}))
         self.assertEqual(resp.status_code, 404)
 
+    # --- Suppression visibility UX (an opt-in can't override a STOP) ---
+
+    def test_bulk_opt_in_warns_when_selection_is_suppressed(self):
+        self.customer.sms_opt_in = False
+        self.customer.save(update_fields=['sms_opt_in'])
+        PhoneSuppression.objects.create(phone=self.customer.phone, organization=None)
+
+        resp = self.client.post(
+            reverse('tickets:customers_bulk_sms_status'),
+            {'customer_ids': [str(self.customer.id)], 'sms_status': 'opt_in'},
+            follow=True,
+        )
+        msgs = [m.message for m in resp.context['messages']]
+        self.assertTrue(any('texting START' in m for m in msgs), msgs)
+
+    def test_bulk_opt_in_no_warning_when_not_suppressed(self):
+        self.customer.sms_opt_in = False
+        self.customer.save(update_fields=['sms_opt_in'])
+        resp = self.client.post(
+            reverse('tickets:customers_bulk_sms_status'),
+            {'customer_ids': [str(self.customer.id)], 'sms_status': 'opt_in'},
+            follow=True,
+        )
+        msgs = [m.message for m in resp.context['messages']]
+        self.assertFalse(any('texting START' in m for m in msgs), msgs)
+
+    def test_customer_list_flags_suppressed_number(self):
+        PhoneSuppression.objects.create(phone=self.customer.phone, organization=None)
+        resp = self.client.get(reverse('tickets:customer_list'))
+        self.assertEqual(resp.status_code, 200)
+        rows = {c.id: c for c in resp.context['page_obj']}
+        self.assertTrue(rows[self.customer.id].sms_suppressed)
+        self.assertFalse(rows[self.other_customer.id].sms_suppressed)
+        self.assertContains(resp, 'texting START')
+
+    def test_customer_detail_shows_opted_out_badge(self):
+        self.customer.sms_opt_in = True
+        self.customer.save(update_fields=['sms_opt_in'])
+        PhoneSuppression.objects.create(phone=self.customer.phone, organization=None)
+        resp = self.client.get(reverse('tickets:customer_detail', args=[self.customer.id]))
+        self.assertEqual(resp.status_code, 200)
+        self.assertTrue(resp.context['sms_suppressed'])
+        # Suppression badge wins over the opted-in badge.
+        self.assertContains(resp, 'Opted out (STOP)')
+
 
 @override_settings(E2E_TEST_MODE=True)
 class SMSAnalyticsTests(TestCase):
@@ -1176,7 +1221,7 @@ class SMSLinkRewriteTests(TestCase):
 
         def capture(to, body, status_callback=None):
             sent_bodies.append(body)
-            return True, 'SID' + to[-4:]
+            return True, 'SID' + to[-4:], None
 
         with patch('tickets.sms.send_sms', side_effect=capture):
             send_sms_campaign_task.delay(str(c.id))
@@ -1195,7 +1240,7 @@ class SMSLinkRewriteTests(TestCase):
         from .tasks import send_sms_campaign_task
         c = self._campaign('Sale at https://shop.co/x now', 'https://shop.co/x')
         sent_bodies = []
-        with patch('tickets.sms.send_sms', side_effect=lambda to, body, status_callback=None: (sent_bodies.append(body), (True, 'SID'))[1]):
+        with patch('tickets.sms.send_sms', side_effect=lambda to, body, status_callback=None: (sent_bodies.append(body), (True, 'SID', None))[1]):
             send_sms_campaign_task.delay(str(c.id))
         self.assertFalse(SMSMessageRecipient.objects.filter(campaign=c).exclude(click_token__isnull=True).exists())
         self.assertTrue(all('https://shop.co/x' in b for b in sent_bodies))

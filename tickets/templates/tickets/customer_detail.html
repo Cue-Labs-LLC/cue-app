@@ -457,7 +457,10 @@
 
     <div class="cd-consent">
         <span class="cd-attr-label" style="padding-top:0;">SMS Consent</span>
-        {% if customer.sms_opt_in %}
+        {% if sms_suppressed %}
+        <span class="badge bg-danger">Opted out (STOP)</span>
+        <span class="cd-muted">can only re-subscribe by texting START</span>
+        {% elif customer.sms_opt_in %}
         <span class="badge bg-success">Opted in</span>
         {% if customer.sms_opt_in_date %}<span class="cd-muted">since {{ customer.sms_opt_in_date|date:"M d, Y" }}</span>{% endif %}
         {% else %}

@@ -40,7 +40,7 @@ from .services.sms_consent import set_sms_opt_in
 from .services.tagging import tag_customers
 from .sms import (
     normalize_phone, validate_twilio_request, sms_segment_info, send_sms, extract_first_url,
-    with_stop_footer,
+    with_stop_footer, TWILIO_OPT_OUT_ERROR_CODES,
 )
 from .tasks import send_sms_campaign_task
 from .utils import get_organization, require_org, require_host
@@ -266,6 +266,25 @@ def customers_bulk_sms_status(request):
         messages.info(request, 'No customers needed updating.')
     else:
         messages.success(request, f'{verb} {count} customer(s).')
+
+    # Opting in can't override a STOP: a number that replied STOP stays suppressed
+    # (Twilio + our mirror) and won't be texted until the person texts START — an
+    # organizer can't re-consent on their behalf. Flag any so the opt-in isn't a
+    # silent no-op. Counts distinct phones on the selection against the suppression
+    # list in one query.
+    if opt_in:
+        suppressed = PhoneSuppression.suppressed_phones(org)
+        if suppressed:
+            blocked = len({
+                normalize_phone(p) for p in customers.values_list('phone', flat=True)
+                if normalize_phone(p) in suppressed
+            })
+            if blocked:
+                messages.warning(
+                    request,
+                    f"{blocked} of these opted out via STOP and can only re-subscribe by "
+                    f"texting START — they won't receive messages until they do."
+                )
     return redirect(back)
 
 
@@ -965,6 +984,13 @@ def twilio_sms_status_webhook(request):
     if new_status in (SMSMessageRecipient.Status.FAILED, SMSMessageRecipient.Status.UNDELIVERED):
         recipient.error_code = request.POST.get('ErrorCode', '') or recipient.error_code
         recipient.error_message = request.POST.get('ErrorMessage', '') or recipient.error_message
+        # A carrier/Twilio opt-out block (21610) arriving via callback rather than the
+        # inbound OptOutType webhook: mirror it into suppression so we never re-attempt.
+        if recipient.error_code in TWILIO_OPT_OUT_ERROR_CODES and recipient.phone:
+            PhoneSuppression.objects.get_or_create(
+                phone=recipient.phone, organization=None,
+                defaults={'reason': PhoneSuppression.Reason.TWILIO_STOP},
+            )
     recipient.save(update_fields=[
         'status', 'delivered_at', 'error_code', 'error_message', 'updated_at',
     ])

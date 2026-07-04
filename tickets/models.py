@@ -1916,9 +1916,12 @@ class SMSCampaign(AuditBaseModel):
 
     def materialize(self, organization=None, cap=None):
         """Return deduped, non-suppressed recipients as a list of
-        {'customer_id', 'phone'} dicts (E.164). Dedupe + suppression are done in
-        Python so they work identically on SQLite (dev) and Postgres (prod)."""
-        from tickets.sms import normalize_phone
+        {'customer_id', 'phone'} dicts (E.164). Dedupe, suppression, and country
+        eligibility are done in Python so they work identically on SQLite (dev) and
+        Postgres (prod). Numbers outside SMS_ALLOWED_COUNTRY_PREFIXES are excluded here
+        — before scheduling/charging — since Twilio Geo Permissions would block them
+        (Error 21408) and they aren't billable."""
+        from tickets.sms import normalize_phone, sms_country_allowed
         org = organization or self.organization
         suppressed = PhoneSuppression.suppressed_phones(org)
         seen = set()
@@ -1926,6 +1929,8 @@ class SMSCampaign(AuditBaseModel):
         for customer in self.candidate_customers(org).only('id', 'phone'):
             phone = normalize_phone(customer.phone)
             if not phone or phone in seen or phone in suppressed:
+                continue
+            if not sms_country_allowed(phone):
                 continue
             seen.add(phone)
             out.append({'customer_id': str(customer.id), 'phone': phone})

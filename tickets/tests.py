@@ -7,7 +7,7 @@ from django.contrib.messages.storage.fallback import FallbackStorage
 from django.contrib.sessions.middleware import SessionMiddleware
 from django.core.management import call_command
 from django.db import IntegrityError, transaction
-from django.test import TestCase, Client, RequestFactory
+from django.test import TestCase, Client, RequestFactory, override_settings
 from django.urls import reverse
 from django.utils import timezone
 from decimal import Decimal
@@ -4468,6 +4468,121 @@ class SMSBroadcastAudienceTests(TestCase):
         response = self.client.get(self.url, {'market': 'Nowhere'})
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.context['selected_market'], '')
+
+
+class SMSComplianceGuardTests(TestCase):
+    """Guards that keep the Twilio Compliance subscore healthy: country gating
+    (avoids Geo-Permission blocks / Error 21408) and learning from opt-out blocks
+    (Error 21610) so a number Twilio rejected is never re-attempted."""
+
+    def setUp(self):
+        from .models import SMSCampaign, SMSMessageRecipient, PhoneSuppression
+        self.org = Organization.objects.create(
+            name='Compliance Org', slug='compliance-org', sms_marketing_enabled=True,
+        )
+
+    # --- Country gating (Error 21408) ---
+
+    def test_sms_country_allowed_defaults_to_us_ca(self):
+        from .sms import sms_country_allowed
+        self.assertTrue(sms_country_allowed('+15551234567'))
+        self.assertFalse(sms_country_allowed('+447700900000'))  # UK
+
+    @override_settings(SMS_ALLOWED_COUNTRY_PREFIXES=())
+    def test_sms_country_allowed_empty_setting_allows_all(self):
+        from .sms import sms_country_allowed
+        self.assertTrue(sms_country_allowed('+447700900000'))
+
+    def test_materialize_drops_non_allowed_country_numbers(self):
+        from .models import SMSCampaign
+        us = Customer.objects.create(
+            organization=self.org, email='us@example.com', name='US',
+            phone='+15551230000', sms_opt_in=True,
+        )
+        intl = Customer.objects.create(
+            organization=self.org, email='uk@example.com', name='UK',
+            phone='+447700900123', sms_opt_in=True,
+        )
+        campaign = SMSCampaign.objects.create(
+            organization=self.org, name='Blast', body='Tickets!',
+            manual_include_ids=[str(us.id), str(intl.id)],
+        )
+        recipients = campaign.materialize()
+        phones = {r['phone'] for r in recipients}
+        self.assertIn('+15551230000', phones)
+        self.assertNotIn('+447700900123', phones)
+
+    # --- Learning from opt-out blocks (Error 21610) ---
+
+    def test_chunk_task_suppresses_number_on_21610(self):
+        from .models import SMSCampaign, SMSMessageRecipient, PhoneSuppression
+        from .tasks import send_sms_chunk_task
+        campaign = SMSCampaign.objects.create(
+            organization=self.org, name='Blast', body='Tickets!',
+        )
+        recipient = SMSMessageRecipient.objects.create(
+            campaign=campaign, phone='+15559998888',
+            status=SMSMessageRecipient.Status.QUEUED, stop_disclosed=True,
+        )
+        # Twilio rejects an opted-out recipient synchronously via send_sms.
+        with patch('tickets.sms.send_sms', return_value=(False, None, '21610')):
+            send_sms_chunk_task.apply(args=(str(campaign.id), [str(recipient.id)]))
+
+        recipient.refresh_from_db()
+        self.assertEqual(recipient.status, SMSMessageRecipient.Status.FAILED)
+        self.assertEqual(recipient.error_code, '21610')
+        self.assertTrue(
+            PhoneSuppression.objects.filter(
+                phone='+15559998888', organization__isnull=True,
+            ).exists()
+        )
+
+    def test_chunk_task_does_not_suppress_on_transient_error(self):
+        from .models import SMSCampaign, SMSMessageRecipient, PhoneSuppression
+        from .tasks import send_sms_chunk_task
+        campaign = SMSCampaign.objects.create(
+            organization=self.org, name='Blast', body='Tickets!',
+        )
+        recipient = SMSMessageRecipient.objects.create(
+            campaign=campaign, phone='+15557776666',
+            status=SMSMessageRecipient.Status.QUEUED, stop_disclosed=True,
+        )
+        with patch('tickets.sms.send_sms', return_value=(False, None, '30001')):
+            send_sms_chunk_task.apply(args=(str(campaign.id), [str(recipient.id)]))
+
+        recipient.refresh_from_db()
+        self.assertEqual(recipient.status, SMSMessageRecipient.Status.FAILED)
+        self.assertFalse(
+            PhoneSuppression.objects.filter(phone='+15557776666').exists()
+        )
+
+    @override_settings(TWILIO_VALIDATE_WEBHOOKS=False)
+    def test_status_webhook_suppresses_number_on_21610(self):
+        from .models import SMSCampaign, SMSMessageRecipient, PhoneSuppression
+        campaign = SMSCampaign.objects.create(
+            organization=self.org, name='Blast', body='Tickets!',
+        )
+        recipient = SMSMessageRecipient.objects.create(
+            campaign=campaign, phone='+15551112222', twilio_sid='SM_test_21610',
+            status=SMSMessageRecipient.Status.SENT,
+        )
+        response = Client().post(
+            reverse('tickets:twilio_sms_status_webhook'),
+            {
+                'MessageSid': 'SM_test_21610',
+                'MessageStatus': 'failed',
+                'ErrorCode': '21610',
+                'ErrorMessage': 'Attempt to send to unsubscribed recipient',
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        recipient.refresh_from_db()
+        self.assertEqual(recipient.status, SMSMessageRecipient.Status.FAILED)
+        self.assertTrue(
+            PhoneSuppression.objects.filter(
+                phone='+15551112222', organization__isnull=True,
+            ).exists()
+        )
 
 
 class SMSCampaignLinkEventTests(TestCase):
