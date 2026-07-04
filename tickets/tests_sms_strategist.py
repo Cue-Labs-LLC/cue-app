@@ -238,10 +238,28 @@ class SMSStrategistViewTests(TestCase):
             reverse('tickets:sms_plan_update_audience', kwargs={'pk': plan.id, 'step': 0}),
             {'audience_mode': 'custom', 'rfm_segment': ['VIP']},
         )
-        # Launching the step prefills the composer with the chosen segment.
-        self.client.post(reverse('tickets:sms_plan_launch_step', kwargs={'pk': plan.id, 'step': 0}))
+        # Launching a segment-edited step must open the composer in NON-event mode with
+        # that segment selected — not fall back to the plan's event (the old bug).
+        resp = self.client.post(reverse('tickets:sms_plan_launch_step', kwargs={'pk': plan.id, 'step': 0}))
+        self.assertNotIn('event=', resp.url)
         prefill = self.client.session['sms_compose_prefill']
         self.assertEqual(prefill['criteria'], {'rfm_segment': ['VIP']})
+        self.assertIsNone(prefill['event_id'])
+        composer = self.client.get(reverse('tickets:sms_campaign_create'))
+        self.assertEqual(composer.status_code, 200)
+        self.assertIsNone(composer.context['event'])
+        self.assertEqual(composer.context['form'].initial.get('rfm_segment'), ['VIP'])
+
+    @patch('langchain_openai.ChatOpenAI')
+    def test_unedited_event_step_launches_in_event_mode(self, mock_openai):
+        mock_openai.return_value = _fake_structured_llm()
+        self.client.post(reverse('tickets:sms_plan_create'), {'event': str(self.event.id)})
+        plan = SMSCampaignPlan.objects.get(organization=self.org)
+        # An unedited event step still targets the event → composer opens in event mode.
+        resp = self.client.post(reverse('tickets:sms_plan_launch_step', kwargs={'pk': plan.id, 'step': 0}))
+        self.assertIn(f'event={self.event.id}', resp.url)
+        # And its audience label reflects the real criteria (the event), not "All subscribers".
+        self.assertIn(self.event.name, plan.steps[0]['audience_label'])
 
     @patch('langchain_openai.ChatOpenAI')
     def test_remove_step_drops_it_and_reindexes(self, mock_openai):

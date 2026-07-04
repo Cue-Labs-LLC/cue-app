@@ -1695,7 +1695,10 @@ def sms_plan_launch_step(request, pk, step):
         steps[step] = target
 
     criteria = target.get('audience_criteria') or {}
-    event_id = criteria.get('event_id') or (str(plan.event_id) if plan.event_id else None)
+    # Drive event vs. segment mode off the STEP's own audience, not the plan's event —
+    # otherwise a step whose audience was edited to a segment would still open the
+    # composer in event mode and silently target the event's attendees instead.
+    event_id = criteria.get('event_id')
     # Carry the step's suggested send time into the composer's schedule field — but
     # only if it's still in the future (a past suggestion would fail the composer's
     # "must be in the future" check), formatted in the org's timezone.

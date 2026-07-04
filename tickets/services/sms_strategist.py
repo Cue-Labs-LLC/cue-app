@@ -320,15 +320,23 @@ def generate_campaign_plan(organization, *, event=None, criteria=None, objective
             result = CampaignPlan.parse_obj(result)
 
     base_criteria = _build_step_criteria(criteria, event)
+    # Label the audience from the ACTUAL criteria the composer will use — not the LLM's
+    # free-text guess — so the plan page and the launched composer always agree.
+    from tickets.models import SMSCampaign
+    base_label = (
+        SMSCampaign(organization=organization, filter_criteria=base_criteria)
+        .audience_summary(organization)
+    )
     org_tz = organization.get_timezone()
     steps = []
     for i, step in enumerate(result.steps):
         encoding, segments = sms_segment_info(with_stop_footer(step.message))
         send_at, timing_label = _compute_step_schedule(step, event, org_tz)
+        audience_label = base_label if base_label and base_label != 'No audience' else step.audience
         steps.append({
             'order': i,
             'purpose': step.purpose,
-            'audience_label': step.audience,
+            'audience_label': audience_label,
             'audience_criteria': base_criteria,
             'offset_days': max(0, int(step.offset_days or 0)),
             'send_time': step.send_time,
