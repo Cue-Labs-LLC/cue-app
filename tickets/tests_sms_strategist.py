@@ -165,6 +165,58 @@ class SMSStrategistViewTests(TestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertContains(resp, plan.steps[0]['body'])
 
+    @patch('langchain_openai.ChatOpenAI')
+    def test_update_step_persists_edit_and_returns_segments(self, mock_openai):
+        mock_openai.return_value = _fake_structured_llm()
+        self.client.post(reverse('tickets:sms_plan_create'), {'event': str(self.event.id)})
+        plan = SMSCampaignPlan.objects.get(organization=self.org)
+
+        new_body = 'Edited by the organizer — see you Friday!'
+        resp = self.client.post(
+            reverse('tickets:sms_plan_update_step', kwargs={'pk': plan.id, 'step': 1}),
+            {'body': new_body},
+        )
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertTrue(data['ok'])
+        self.assertGreaterEqual(data['segments'], 1)
+        # Persisted to the plan; other steps untouched.
+        plan.refresh_from_db()
+        self.assertEqual(plan.steps[1]['body'], new_body)
+        self.assertEqual(plan.steps[1]['segments'], data['segments'])
+        self.assertNotEqual(plan.steps[0]['body'], new_body)
+
+    @patch('langchain_openai.ChatOpenAI')
+    def test_update_step_rejects_empty_body(self, mock_openai):
+        mock_openai.return_value = _fake_structured_llm()
+        self.client.post(reverse('tickets:sms_plan_create'), {'event': str(self.event.id)})
+        plan = SMSCampaignPlan.objects.get(organization=self.org)
+        original = plan.steps[0]['body']
+        resp = self.client.post(
+            reverse('tickets:sms_plan_update_step', kwargs={'pk': plan.id, 'step': 0}),
+            {'body': '   '},
+        )
+        self.assertEqual(resp.status_code, 400)
+        plan.refresh_from_db()
+        self.assertEqual(plan.steps[0]['body'], original)
+
+    @patch('langchain_openai.ChatOpenAI')
+    def test_launch_uses_edited_body_override(self, mock_openai):
+        mock_openai.return_value = _fake_structured_llm()
+        self.client.post(reverse('tickets:sms_plan_create'), {'event': str(self.event.id)})
+        plan = SMSCampaignPlan.objects.get(organization=self.org)
+
+        edited = 'Last-minute tweak before sending!'
+        self.client.post(
+            reverse('tickets:sms_plan_launch_step', kwargs={'pk': plan.id, 'step': 0}),
+            {'body': edited},
+        )
+        # Override is authoritative: prefilled into the composer AND persisted.
+        self.assertEqual(self.client.session['sms_compose_prefill']['body'], edited)
+        plan.refresh_from_db()
+        self.assertEqual(plan.steps[0]['body'], edited)
+        self.assertIn('launched_at', plan.steps[0])
+
 
 @override_settings(OPENAI_API_KEY='test-key', OPENAI_MODEL='gpt-4o')
 class TopPriorCampaignsTests(TestCase):

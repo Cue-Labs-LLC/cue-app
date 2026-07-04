@@ -1495,6 +1495,51 @@ def sms_plan_list(request):
     return render(request, 'tickets/marketing/sms/plan_list.html', {'page_obj': page})
 
 
+def _apply_step_body(step_dict, body):
+    """Return a copy of a plan step with a new body + recomputed segment count/encoding.
+
+    Segments/encoding mirror the composer meter: counted on the body plus the
+    auto-appended STOP footer (worst case), so the number shown matches billing.
+    """
+    body = (body or '')[:1600]
+    encoding, segments = sms_segment_info(with_stop_footer(body))
+    return {**step_dict, 'body': body, 'segments': segments, 'encoding': encoding}
+
+
+@login_required
+@require_org
+@require_host
+@require_sms_feature
+@require_POST
+def sms_plan_update_step(request, pk, step):
+    """Persist an inline edit to one plan step's message; return the new segment info.
+
+    JSON endpoint used by the plan detail page as the organizer edits a message in
+    place, so the edit survives a refresh and the segment/token count stays truthful.
+    """
+    org = get_organization(request)
+    if not org.ai_sms_strategist_enabled:
+        raise Http404()
+    plan = get_object_or_404(SMSCampaignPlan.objects.filter(organization=org), id=pk)
+
+    steps = plan.steps or []
+    if step < 0 or step >= len(steps):
+        raise Http404()
+
+    body = (request.POST.get('body') or '').strip()
+    if not body:
+        return JsonResponse({'ok': False, 'error': 'Message cannot be empty.'}, status=400)
+
+    steps[step] = _apply_step_body(steps[step], body)
+    plan.steps = steps
+    plan.save(update_fields=['steps', 'updated_at'])
+    return JsonResponse({
+        'ok': True,
+        'segments': steps[step]['segments'],
+        'encoding': steps[step]['encoding'],
+    })
+
+
 @login_required
 @require_org
 @require_host
@@ -1511,6 +1556,13 @@ def sms_plan_launch_step(request, pk, step):
     if step < 0 or step >= len(steps):
         raise Http404()
     target = steps[step]
+
+    # An edit typed into the message box (and not yet blur-saved) is authoritative:
+    # apply + persist it so what launches is exactly what the organizer sees.
+    override_body = request.POST.get('body')
+    if override_body is not None and override_body.strip():
+        target = _apply_step_body(target, override_body.strip())
+        steps[step] = target
 
     criteria = target.get('audience_criteria') or {}
     event_id = criteria.get('event_id') or (str(plan.event_id) if plan.event_id else None)

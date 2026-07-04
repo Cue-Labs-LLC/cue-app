@@ -39,14 +39,23 @@
 }
 .plan-step-audience { font-size: 12.5px; color: var(--text-secondary); }
 .plan-step-message {
-    white-space: pre-wrap; word-break: break-word;
+    display: block; width: 100%; box-sizing: border-box;
+    white-space: pre-wrap; word-break: break-word; overflow: hidden;
     background: var(--bg-inset); border: 1px solid var(--border);
     border-radius: 10px; padding: 0.8rem 0.95rem; margin: 0.5rem 0 0.6rem;
-    font-size: 14.5px; line-height: 1.5;
+    font-size: 14.5px; line-height: 1.5; color: var(--text-primary);
+    font-family: inherit; resize: none;
+    transition: border-color 0.12s, background 0.12s, box-shadow 0.12s;
+}
+.plan-step-message:hover { border-color: var(--text-secondary); }
+.plan-step-message:focus {
+    outline: none; background: var(--bg-primary);
+    border-color: var(--accent); box-shadow: 0 0 0 3px rgba(79,124,255,0.15);
 }
 .plan-step-rationale { font-size: 13px; color: var(--text-secondary); margin-bottom: 0.75rem; }
 .plan-step-foot { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
-.plan-step-segs { font-family: var(--font-mono); font-size: 11.5px; color: var(--text-secondary); }
+.plan-step-segs { font-family: var(--font-mono); font-size: 11.5px; color: var(--text-secondary); display: inline-flex; align-items: center; gap: 8px; }
+.plan-step-saved { color: #33c481; }
 .launched-pill {
     font-size: 11px; font-weight: 500; border-radius: 999px; padding: 3px 10px;
     background: rgba(51,196,129,0.12); color: #33c481;
@@ -87,12 +96,18 @@
                 {% if step.launched_at %}<span class="launched-pill"><i class="bi bi-check2"></i> Launched</span>{% endif %}
             </div>
             <div class="plan-step-audience"><i class="bi bi-people"></i> {{ step.audience_label }}</div>
-            <div class="plan-step-message">{{ step.body }}</div>
+            <textarea class="plan-step-message" data-step="{{ step.order }}"
+                      data-update-url="{% url 'tickets:sms_plan_update_step' pk=plan.id step=step.order %}"
+                      maxlength="1600" rows="1" aria-label="Message text (editable)">{{ step.body }}</textarea>
             {% if step.rationale %}<div class="plan-step-rationale">{{ step.rationale }}</div>{% endif %}
             <div class="plan-step-foot">
-                <span class="plan-step-segs">{{ step.segments }} segment{{ step.segments|pluralize }} · {{ step.encoding }}</span>
-                <form method="post" action="{% url 'tickets:sms_plan_launch_step' pk=plan.id step=step.order %}" class="m-0">
+                <span class="plan-step-segs">
+                    <span data-segs-for="{{ step.order }}">{{ step.segments }} segment{{ step.segments|pluralize }} · {{ step.encoding }}</span>
+                    <span class="plan-step-saved" data-saved-for="{{ step.order }}" hidden><i class="bi bi-check2"></i> Saved</span>
+                </span>
+                <form method="post" action="{% url 'tickets:sms_plan_launch_step' pk=plan.id step=step.order %}" class="m-0 plan-launch-form" data-step="{{ step.order }}">
                     {% csrf_token %}
+                    <input type="hidden" name="body">
                     <button type="submit" class="btn btn-sm {% if step.launched_at %}btn-outline-secondary{% else %}btn-primary{% endif %}">
                         <i class="bi bi-send"></i> {% if step.launched_at %}Send again{% else %}Review &amp; send{% endif %}
                     </button>
@@ -107,4 +122,65 @@
     </div>
     {% endfor %}
 </div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+document.addEventListener('DOMContentLoaded', function () {
+    const CSRF = '{{ csrf_token }}';
+
+    function autoGrow(ta) {
+        ta.style.height = 'auto';
+        ta.style.height = ta.scrollHeight + 'px';
+    }
+
+    async function saveStep(ta) {
+        const body = ta.value.trim();
+        // Don't persist an empty message or a no-op (unchanged since last save).
+        if (!body || body === ta.dataset.saved) return;
+        let data;
+        try {
+            const resp = await fetch(ta.dataset.updateUrl, {
+                method: 'POST',
+                headers: {'X-CSRFToken': CSRF, 'Content-Type': 'application/x-www-form-urlencoded'},
+                body: new URLSearchParams({body: body}),
+            });
+            if (!resp.ok) return;
+            data = await resp.json();
+        } catch (e) { return; }
+        if (!data || !data.ok) return;
+
+        ta.dataset.saved = body;
+        const step = ta.dataset.step;
+        const segs = document.querySelector('[data-segs-for="' + step + '"]');
+        if (segs) {
+            segs.textContent = data.segments + ' segment' + (data.segments === 1 ? '' : 's') + ' · ' + data.encoding;
+        }
+        const saved = document.querySelector('[data-saved-for="' + step + '"]');
+        if (saved) {
+            saved.hidden = false;
+            clearTimeout(saved._t);
+            saved._t = setTimeout(function () { saved.hidden = true; }, 1800);
+        }
+    }
+
+    document.querySelectorAll('.plan-step-message').forEach(function (ta) {
+        ta.dataset.saved = ta.value.trim();
+        autoGrow(ta);
+        ta.addEventListener('input', function () { autoGrow(ta); });
+        ta.addEventListener('blur', function () { saveStep(ta); });
+    });
+
+    // On launch, copy the (possibly just-edited) message into the form so the
+    // composer prefills exactly what the organizer sees — even without a blur-save.
+    document.querySelectorAll('.plan-launch-form').forEach(function (form) {
+        form.addEventListener('submit', function () {
+            const card = form.closest('.plan-step-card');
+            const ta = card ? card.querySelector('.plan-step-message') : null;
+            const hidden = form.querySelector('input[name="body"]');
+            if (ta && hidden) hidden.value = ta.value;
+        });
+    });
+});
+</script>
 {% endblock %}
