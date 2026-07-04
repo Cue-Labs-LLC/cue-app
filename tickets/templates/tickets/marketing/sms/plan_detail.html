@@ -125,9 +125,10 @@
                 </span>
                 {% if step.launched_at %}<span class="launched-pill"><i class="bi bi-check2"></i> Launched</span>{% endif %}
                 <form method="post" action="{% url 'tickets:sms_plan_remove_step' pk=plan.id step=step.order %}"
-                      class="plan-step-remove m-0" onsubmit="return confirm('Remove this message from the plan?');">
+                      class="plan-step-remove m-0" data-remove-form>
                     {% csrf_token %}
-                    <button type="submit" class="plan-step-remove-btn" title="Remove from plan" aria-label="Remove from plan">
+                    <button type="button" class="plan-step-remove-btn" data-remove-trigger
+                            title="Remove from plan" aria-label="Remove from plan">
                         <i class="bi bi-trash"></i>
                     </button>
                 </form>
@@ -158,6 +159,22 @@
         <p>This plan has no steps.</p>
     </div>
     {% endfor %}
+</div>
+
+<div class="modal fade" id="removeStepModal" tabindex="-1" aria-labelledby="removeStepModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="removeStepModalLabel">Remove message</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">Remove this message from the plan? This can't be undone.</div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-danger" id="removeStepConfirm">Remove</button>
+            </div>
+        </div>
+    </div>
 </div>
 {% endblock %}
 
@@ -238,6 +255,23 @@ document.addEventListener('DOMContentLoaded', function () {
             close();
         });
     });
+
+    // Remove-message confirmation via a Bootstrap modal (native confirm() proved
+    // unreliable). The trash button opens the modal; "Remove" submits its form.
+    var removeModalEl = document.getElementById('removeStepModal');
+    if (removeModalEl && window.bootstrap) {
+        var removeModal = new bootstrap.Modal(removeModalEl);
+        var pendingForm = null;
+        document.querySelectorAll('[data-remove-trigger]').forEach(function (btn) {
+            btn.addEventListener('click', function () {
+                pendingForm = btn.closest('[data-remove-form]');
+                removeModal.show();
+            });
+        });
+        document.getElementById('removeStepConfirm').addEventListener('click', function () {
+            if (pendingForm) pendingForm.submit();
+        });
+    }
 
     // On launch, copy the (possibly just-edited) message into the form so the
     // composer prefills exactly what the organizer sees — even without a blur-save.
