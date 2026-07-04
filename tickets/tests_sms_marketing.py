@@ -2223,14 +2223,22 @@ class SMSTicketLinkTests(TestCase):
         )
         self.url = reverse('tickets:sms_ticket_link')
 
-    def test_compose_lists_only_live_direct_events(self):
+    def test_compose_lists_live_direct_and_external_with_link(self):
+        # External event WITH a ticket link is now offered; without one it is not.
+        self.external.ticket_link = 'https://tix.example.com/e/42'
+        self.external.save(update_fields=['ticket_link'])
         resp = self.client.get(reverse('tickets:sms_campaign_create'))
         self.assertEqual(resp.status_code, 200)
         ids = [e['id'] for e in resp.context['ticket_link_events']]
         self.assertIn(str(self.live.id), ids)
+        self.assertIn(str(self.external.id), ids)
         self.assertNotIn(str(self.draft.id), ids)
-        self.assertNotIn(str(self.external.id), ids)
         self.assertContains(resp, 'id="ticketlink-section"')
+
+    def test_compose_excludes_external_without_link(self):
+        resp = self.client.get(reverse('tickets:sms_campaign_create'))
+        ids = [e['id'] for e in resp.context['ticket_link_events']]
+        self.assertNotIn(str(self.external.id), ids)   # no ticket_link set
 
     @override_settings(SITE_URL='https://example.ngrok.app')
     def test_endpoint_creates_and_returns_track_url(self):
@@ -2256,9 +2264,21 @@ class SMSTicketLinkTests(TestCase):
         resp = self.client.post(self.url, {'event': str(self.draft.id)})
         self.assertEqual(resp.status_code, 400)
 
-    def test_non_direct_event_404(self):
+    def test_external_event_without_link_400(self):
+        # External event with no ticket_link has nothing to send → 400 (not offered).
         resp = self.client.post(self.url, {'event': str(self.external.id)})
-        self.assertEqual(resp.status_code, 404)
+        self.assertEqual(resp.status_code, 400)
+
+    @override_settings(SITE_URL='https://example.ngrok.app')
+    def test_external_event_with_link_returns_tracked_url(self):
+        from .models import TrackingLink
+        self.external.ticket_link = 'https://tix.example.com/e/42'
+        self.external.save(update_fields=['ticket_link'])
+        resp = self.client.post(self.url, {'event': str(self.external.id)})
+        self.assertEqual(resp.status_code, 200)
+        link = TrackingLink.objects.get(organization=self.org, event=self.external, name='SMS')
+        self.assertEqual(link.target_url, 'https://tix.example.com/e/42')
+        self.assertEqual(resp.json()['url'], 'https://example.ngrok.app/t/' + link.token + '/')
 
     def test_foreign_event_404(self):
         from datetime import date

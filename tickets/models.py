@@ -2918,7 +2918,13 @@ def _generate_tracking_token():
 
 
 class TrackingLink(BaseModel):
-    """Named short link attached to a direct-ticketing event for click and purchase attribution."""
+    """Named short link attached to an event for click and purchase attribution.
+
+    Blank ``target_url`` → redirect to the event's Cue buy page (direct ticketing).
+    Set ``target_url`` → redirect off-site to a third-party ticket page (imported/
+    external events), while still counting clicks. Purchase/revenue attribution only
+    works for the buy-page case; external clicks are counted but not attributed to orders.
+    """
     organization = models.ForeignKey(
         Organization,
         on_delete=models.CASCADE,
@@ -2932,6 +2938,8 @@ class TrackingLink(BaseModel):
     name = models.CharField(max_length=100)
     token = models.CharField(max_length=12, unique=True, db_index=True)
     click_count = models.PositiveIntegerField(default=0)
+    # Off-site redirect target for external ticket links; blank = the Cue buy page.
+    target_url = models.URLField(max_length=500, blank=True, default='')
 
     class Meta:
         ordering = ['-created_at']
