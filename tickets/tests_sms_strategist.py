@@ -104,8 +104,46 @@ class SMSStrategistViewTests(TestCase):
                     0: self.event.start_date}
         for step in plan.steps:
             self.assertNotIn('T-', step['timing_label'])          # no more relative "T-days"
+            # Label carries a timezone abbreviation (e.g. "... PM PDT").
+            self.assertRegex(step['timing_label'], r'[A-Z]{2,5}$')
             got = datetime.fromisoformat(step['send_at']).date()
             self.assertEqual(got, expected[step['offset_days']])
+
+    @patch('langchain_openai.ChatOpenAI')
+    def test_update_schedule_persists_and_returns_label(self, mock_openai):
+        mock_openai.return_value = _fake_structured_llm()
+        self.client.post(reverse('tickets:sms_plan_create'), {'event': str(self.event.id)})
+        plan = SMSCampaignPlan.objects.get(organization=self.org)
+
+        resp = self.client.post(
+            reverse('tickets:sms_plan_update_schedule', kwargs={'pk': plan.id, 'step': 0}),
+            {'send_at': '2026-07-15T09:30'},
+        )
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertTrue(data['ok'])
+        self.assertEqual(data['send_local'], '2026-07-15T09:30')
+        self.assertIn('Jul 15', data['timing_label'])
+        # Persisted onto the step.
+        plan.refresh_from_db()
+        from datetime import datetime
+        self.assertEqual(datetime.fromisoformat(plan.steps[0]['send_at']).strftime('%Y-%m-%d %H:%M'),
+                         '2026-07-15 09:30')
+        self.assertEqual(plan.steps[0]['send_time'], '09:30')
+
+    @patch('langchain_openai.ChatOpenAI')
+    def test_update_schedule_rejects_bad_datetime(self, mock_openai):
+        mock_openai.return_value = _fake_structured_llm()
+        self.client.post(reverse('tickets:sms_plan_create'), {'event': str(self.event.id)})
+        plan = SMSCampaignPlan.objects.get(organization=self.org)
+        original = plan.steps[0]['send_at']
+        resp = self.client.post(
+            reverse('tickets:sms_plan_update_schedule', kwargs={'pk': plan.id, 'step': 0}),
+            {'send_at': 'not-a-date'},
+        )
+        self.assertEqual(resp.status_code, 400)
+        plan.refresh_from_db()
+        self.assertEqual(plan.steps[0]['send_at'], original)
 
     @patch('langchain_openai.ChatOpenAI')
     def test_generate_segment_plan(self, mock_openai):

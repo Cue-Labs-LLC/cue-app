@@ -1455,7 +1455,19 @@ def _decorate_plan_steps(steps):
         label, color = PLAN_PURPOSE_LABELS.get(
             step.get('purpose'), (step.get('purpose', 'Message').replace('_', ' ').title(), 'secondary'),
         )
-        out.append({**step, 'purpose_label': label, 'purpose_color': color})
+        # Local "YYYY-MM-DDTHH:MM" for the datetime-local editor (empty for legacy
+        # plans that predate structured scheduling).
+        send_local = ''
+        raw = step.get('send_at')
+        if raw:
+            try:
+                send_local = timezone.localtime(
+                    datetime.fromisoformat(raw)
+                ).strftime('%Y-%m-%dT%H:%M')
+            except (ValueError, TypeError):
+                send_local = ''
+        out.append({**step, 'purpose_label': label, 'purpose_color': color,
+                    'send_local': send_local})
     return out
 
 
@@ -1537,6 +1549,59 @@ def sms_plan_update_step(request, pk, step):
         'ok': True,
         'segments': steps[step]['segments'],
         'encoding': steps[step]['encoding'],
+    })
+
+
+@login_required
+@require_org
+@require_host
+@require_sms_feature
+@require_POST
+def sms_plan_update_schedule(request, pk, step):
+    """Persist an edited send date/time for one plan step; return the new label.
+
+    Accepts a `send_at` datetime-local value ("YYYY-MM-DDTHH:MM", org-local). Stores the
+    aware datetime, recomputes the display label (with timezone) and the offset/time so
+    the step stays self-consistent for later launches.
+    """
+    from tickets.services.sms_strategist import format_send_label
+
+    org = get_organization(request)
+    if not org.ai_sms_strategist_enabled:
+        raise Http404()
+    plan = get_object_or_404(SMSCampaignPlan.objects.filter(organization=org), id=pk)
+
+    steps = plan.steps or []
+    if step < 0 or step >= len(steps):
+        raise Http404()
+
+    raw = (request.POST.get('send_at') or '').strip()
+    try:
+        naive = datetime.strptime(raw, '%Y-%m-%dT%H:%M')
+    except ValueError:
+        return JsonResponse({'ok': False, 'error': 'Enter a valid date and time.'}, status=400)
+
+    dt = timezone.make_aware(naive, timezone.get_current_timezone())
+    # Keep offset_days in sync with the chosen date (informational; anchored on the
+    # event date for event plans, else on today).
+    if plan.event_id and plan.event and plan.event.start_date:
+        offset_days = max(0, (plan.event.start_date - dt.date()).days)
+    else:
+        offset_days = max(0, (dt.date() - timezone.localdate()).days)
+
+    steps[step] = {
+        **steps[step],
+        'send_at': dt.isoformat(),
+        'send_time': dt.strftime('%H:%M'),
+        'offset_days': offset_days,
+        'timing_label': format_send_label(dt),
+    }
+    plan.steps = steps
+    plan.save(update_fields=['steps', 'updated_at'])
+    return JsonResponse({
+        'ok': True,
+        'timing_label': steps[step]['timing_label'],
+        'send_local': dt.strftime('%Y-%m-%dT%H:%M'),
     })
 
 

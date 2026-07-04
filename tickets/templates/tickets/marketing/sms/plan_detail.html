@@ -37,6 +37,17 @@
 .plan-step-timing {
     font-family: var(--font-mono); font-size: 12px; color: var(--text-secondary);
 }
+.plan-timing-display {
+    border: 0; background: transparent; color: inherit; font: inherit;
+    cursor: pointer; padding: 2px 6px; border-radius: 6px;
+    display: inline-flex; align-items: center; gap: 5px;
+    transition: background 0.12s, color 0.12s;
+}
+.plan-timing-display:hover { background: var(--bg-inset); color: var(--text-primary); }
+.plan-timing-pencil { opacity: 0; font-size: 11px; transition: opacity 0.12s; }
+.plan-timing-display:hover .plan-timing-pencil { opacity: 0.6; }
+.plan-timing-editor { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.plan-timing-input { width: auto; min-width: 210px; font-family: var(--font-mono); }
 .plan-step-audience { font-size: 12.5px; color: var(--text-secondary); }
 .plan-step-message {
     display: block; width: 100%; box-sizing: border-box;
@@ -92,7 +103,19 @@
         <div class="plan-step-card">
             <div class="plan-step-head">
                 <span class="badge text-bg-{{ step.purpose_color }}">{{ step.purpose_label }}</span>
-                <span class="plan-step-timing"><i class="bi bi-clock"></i> {{ step.timing_label }}</span>
+                <span class="plan-step-timing" data-step="{{ step.order }}"
+                      data-schedule-url="{% url 'tickets:sms_plan_update_schedule' pk=plan.id step=step.order %}">
+                    <button type="button" class="plan-timing-display" title="Click to edit send date &amp; time">
+                        <i class="bi bi-clock"></i> <span data-timing-label>{{ step.timing_label }}</span>
+                        <i class="bi bi-pencil plan-timing-pencil"></i>
+                    </button>
+                    <span class="plan-timing-editor" hidden>
+                        <input type="datetime-local" class="form-control form-control-sm plan-timing-input"
+                               value="{{ step.send_local }}">
+                        <button type="button" class="btn btn-sm btn-primary plan-timing-save">Save</button>
+                        <button type="button" class="btn btn-sm btn-outline-secondary plan-timing-cancel">Cancel</button>
+                    </span>
+                </span>
                 {% if step.launched_at %}<span class="launched-pill"><i class="bi bi-check2"></i> Launched</span>{% endif %}
             </div>
             <div class="plan-step-audience"><i class="bi bi-people"></i> {{ step.audience_label }}</div>
@@ -169,6 +192,37 @@ document.addEventListener('DOMContentLoaded', function () {
         autoGrow(ta);
         ta.addEventListener('input', function () { autoGrow(ta); });
         ta.addEventListener('blur', function () { saveStep(ta); });
+    });
+
+    // Inline send date/time editing.
+    document.querySelectorAll('.plan-step-timing').forEach(function (wrap) {
+        const display = wrap.querySelector('.plan-timing-display');
+        const editor = wrap.querySelector('.plan-timing-editor');
+        const input = wrap.querySelector('.plan-timing-input');
+        const labelEl = wrap.querySelector('[data-timing-label]');
+
+        function open() { display.hidden = true; editor.hidden = false; input.focus(); }
+        function close() { editor.hidden = true; display.hidden = false; }
+
+        display.addEventListener('click', open);
+        editor.querySelector('.plan-timing-cancel').addEventListener('click', close);
+
+        editor.querySelector('.plan-timing-save').addEventListener('click', async function () {
+            if (!input.value) { input.reportValidity(); return; }
+            let data;
+            try {
+                const resp = await fetch(wrap.dataset.scheduleUrl, {
+                    method: 'POST',
+                    headers: {'X-CSRFToken': CSRF, 'Content-Type': 'application/x-www-form-urlencoded'},
+                    body: new URLSearchParams({send_at: input.value}),
+                });
+                data = await resp.json();
+                if (!resp.ok || !data.ok) { input.setCustomValidity(data && data.error || 'Could not save'); input.reportValidity(); input.setCustomValidity(''); return; }
+            } catch (e) { return; }
+            labelEl.textContent = data.timing_label;
+            input.value = data.send_local;
+            close();
+        });
     });
 
     // On launch, copy the (possibly just-edited) message into the form so the

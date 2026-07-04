@@ -349,15 +349,26 @@ def generate_campaign_plan(organization, *, event=None, criteria=None, objective
     }
 
 
+# Django date-format string for a step's send datetime. The trailing "T" prints the
+# timezone abbreviation (e.g. PDT), so the organizer sees which zone the time is in.
+SCHEDULE_LABEL_FORMAT = "D, M j · g:i A T"
+
+
+def format_send_label(dt):
+    """Human label for a send datetime, including the timezone (e.g. 'Mon, Jul 6 · 6:00 PM PDT')."""
+    from django.utils import formats
+    return formats.date_format(dt, SCHEDULE_LABEL_FORMAT)
+
+
 def _compute_step_schedule(step, event, today):
     """Turn a step's structured offset + send time into an absolute datetime + label.
 
     Event plans anchor on the event date (offset = days before); segment plans anchor
     on today (offset = days after campaign start). Returns (iso_datetime, display_label)
-    e.g. ('2026-07-06T18:00:00-07:00', 'Mon, Jul 6 · 6:00 PM').
+    e.g. ('2026-07-06T18:00:00-07:00', 'Mon, Jul 6 · 6:00 PM PDT').
     """
     from datetime import datetime, time as dtime, timedelta
-    from django.utils import timezone, formats
+    from django.utils import timezone
 
     try:
         hh, mm = (step.send_time or '').split(':')
@@ -375,7 +386,7 @@ def _compute_step_schedule(step, event, today):
 
     tz = timezone.get_current_timezone()
     dt = timezone.make_aware(datetime.combine(send_date, send_time), tz)
-    return dt.isoformat(), formats.date_format(dt, "D, M j · g:i A")
+    return dt.isoformat(), format_send_label(dt)
 
 
 def _json_default(value):
