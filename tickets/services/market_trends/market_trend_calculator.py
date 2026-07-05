@@ -38,6 +38,12 @@ NPS_SCALE = 100.0
 
 _VALID_METRICS = ('revenue', 'tickets', 'profitability', 'nps')
 
+# Synthetic "portfolio" row: every market's cells summed per period, pinned to the
+# top of the leaderboard. Its id is a sentinel (never a real Market PK) and its
+# label doubles as the JS/table key, so it must not collide with a real market name.
+ALL_MARKETS_ID = 'all'
+ALL_MARKETS_LABEL = 'All Markets'
+
 # Trailing time-window keys -> number of years to look back ('all' => no bound).
 # Bounds how far back the per-period trend reads, so the slope/diagnosis reflect
 # recent performance rather than all of an org's history.
@@ -273,12 +279,27 @@ class MarketTrendCalculator:
         }[self.metric]
         market_results.sort(key=lambda m: m[total_field], reverse=True)
 
+        # Summary counts reflect only real markets — computed before the aggregate
+        # row is prepended below.
         summary = {
             'markets_count': len(market_results),
             'declining_count': sum(1 for m in market_results if m['trend'] == 'declining'),
             'growing_count': sum(1 for m in market_results if m['trend'] == 'growing'),
             'stable_count': sum(1 for m in market_results if m['trend'] == 'stable'),
         }
+
+        # Portfolio row: aggregate every market's cells and run the same trend/
+        # diagnosis machinery, so "All Markets" behaves exactly like a market and
+        # sits pinned at index 0 regardless of the per-metric sort above. Skip when
+        # there's only one market (it would just duplicate that market).
+        if len(market_results) > 1:
+            agg = self._build_market(
+                ALL_MARKETS_ID, ALL_MARKETS_LABEL,
+                self._aggregate_all_markets(markets),
+            )
+            agg['is_aggregate'] = True
+            market_results.insert(0, agg)
+
         return {'period': self.period, 'window': self.window,
                 'markets': market_results, 'summary': summary}
 
@@ -290,6 +311,22 @@ class MarketTrendCalculator:
                 'expenses': 0.0, 'income': 0.0, 'fees': 0.0,
                 'new_count': 0, 'returning_count': 0,
                 'nps_responses': 0, 'promoters': 0, 'passives': 0, 'detractors': 0}
+
+    def _aggregate_all_markets(self, markets):
+        """Sum every market's per-period cells into one org-wide period map.
+
+        Every cell field is additive across markets within a period, including
+        new_count/returning_count: the "new to the org" flag is assigned globally
+        (a buyer is new at exactly one event across ALL markets), so summing the
+        per-market new-buyer counts in a period yields the correct org-wide count.
+        """
+        combined = {}
+        for period_map in markets.values():
+            for k, cell in period_map.items():
+                agg = combined.setdefault(k, self._empty_cell())
+                for field in cell:
+                    agg[field] += cell[field]
+        return combined
 
     def _new_returning_by_market_period(self, today, start_cutoff):
         """Yield (market_id, market_name, period_key, new_count, returning_count) tuples."""
@@ -543,9 +580,9 @@ class MarketTrendCalculator:
                 # Decline isn't cleanly attributable to one declining driver.
                 result['dominant_driver'] = None
                 result['diagnosis_text'] = (
-                    '{} in {} is trending down ~{}{} per {}, but no single driver '
+                    '{} {} is trending down ~{}{} per {}, but no single driver '
                     'stands out — worth a closer look.'.format(
-                        self._metric_noun(), result['city'],
+                        self._metric_noun(), self._location_phrase(result),
                         abs(result['norm_slope_pct']), self._change_unit(), self.period,
                     )
                 )
@@ -563,8 +600,8 @@ class MarketTrendCalculator:
             else:
                 result['dominant_driver'] = None
                 result['diagnosis_text'] = (
-                    '{} in {} is up ~{}{} per {} — keep doing what works here.'.format(
-                        self._metric_noun(), result['city'],
+                    '{} {} is up ~{}{} per {} — keep doing what works here.'.format(
+                        self._metric_noun(), self._location_phrase(result),
                         abs(result['norm_slope_pct']), self._change_unit(), self.period,
                     )
                 )
@@ -630,9 +667,16 @@ class MarketTrendCalculator:
     def _change_unit(self):
         return 'pts' if self.metric == 'nps' else '%'
 
+    def _location_phrase(self, result):
+        """Grammatical location phrase for the diagnosis text: the aggregate
+        portfolio row reads 'across all markets'; a real market reads 'in <name>'.
+        Detected via the sentinel market_id, which is set before _diagnose runs."""
+        if result.get('market_id') == ALL_MARKETS_ID:
+            return 'across all markets'
+        return 'in {}'.format(result['city'])
+
     def _diagnosis_text(self, result, dominant):
         drop = abs(result['norm_slope_pct'])
-        city = result['city']
         key = dominant['key']
         if key == 'events':
             phrase = 'fewer events on the calendar (about {} down to {} per {})'.format(
@@ -666,21 +710,22 @@ class MarketTrendCalculator:
             phrase = 'fewer returning buyers (repeat mix fell {}%→{}%)'.format(
                 dominant['first'], dominant['last'],
             )
-        return '{} in {} is down ~{}{} per {}, driven mainly by {}.'.format(
-            self._metric_noun(), city, drop, self._change_unit(), self.period, phrase,
+        return '{} {} is down ~{}{} per {}, driven mainly by {}.'.format(
+            self._metric_noun(), self._location_phrase(result), drop,
+            self._change_unit(), self.period, phrase,
         )
 
     def _growth_text(self, result, lead):
-        return '{} in {} is up ~{}{} per {}, led by {}.'.format(
-            self._metric_noun(), result['city'], abs(result['norm_slope_pct']),
+        return '{} {} is up ~{}{} per {}, led by {}.'.format(
+            self._metric_noun(), self._location_phrase(result), abs(result['norm_slope_pct']),
             self._change_unit(), self.period, self._boost_phrase(lead),
         )
 
     def _steady_text(self, result):
         lever = ('turning passives into promoters' if self.metric == 'nps'
                  else 'bringing in new buyers')
-        return '{} in {} is holding steady (~{}{} per {}). Best lever to grow: {}.'.format(
-            self._metric_noun(), result['city'], abs(result['norm_slope_pct']),
+        return '{} {} is holding steady (~{}{} per {}). Best lever to grow: {}.'.format(
+            self._metric_noun(), self._location_phrase(result), abs(result['norm_slope_pct']),
             self._change_unit(), self.period, lever,
         )
 

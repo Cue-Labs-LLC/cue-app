@@ -104,7 +104,7 @@
                 </thead>
                 <tbody>
                     {% for m in markets %}
-                    <tr class="market-row" data-city="{{ m.city }}" style="cursor:pointer;">
+                    <tr class="market-row{% if m.is_aggregate %} market-row--all{% endif %}" data-city="{{ m.city }}" style="cursor:pointer;">
                         <td class="fw-semibold">{{ m.city }}</td>
                         <td>
                             {% if m.trend == 'declining' %}<span class="badge bg-danger">Declining</span>

@@ -15790,10 +15790,49 @@ class MarketTrendCalculatorTests(TestCase):
         self._build_market('Boston', [50, 40, 30, 20])   # total 140, declining
         self._build_market('Dallas', [10, 20, 30, 40])   # total 100, growing
         result = MarketTrendCalculator(self.org, period='quarter', metric='tickets').calculate()
-        # Largest market by tickets sold leads, regardless of trend direction.
-        self.assertEqual([m['city'] for m in result['markets']], ['Boston', 'Dallas'])
+        # "All Markets" portfolio row is pinned first; real markets then follow
+        # largest-first (largest by tickets sold leads, regardless of trend).
+        self.assertEqual(result['markets'][0]['city'], 'All Markets')
+        self.assertTrue(result['markets'][0]['is_aggregate'])
+        self.assertEqual(
+            [m['city'] for m in result['markets'] if not m.get('is_aggregate')],
+            ['Boston', 'Dallas'],
+        )
+        # Summary counts real markets only — the aggregate row is excluded.
+        self.assertEqual(result['summary']['markets_count'], 2)
         self.assertEqual(result['summary']['declining_count'], 1)
         self.assertEqual(result['summary']['growing_count'], 1)
+
+    def test_all_markets_aggregate_row(self):
+        """The pinned 'All Markets' row aggregates every market's totals per period."""
+        from tickets.services.market_trends import MarketTrendCalculator
+        self._build_market('Boston', [50, 40, 30, 20])   # total 140
+        self._build_market('Dallas', [10, 20, 30, 40])   # total 100
+        result = MarketTrendCalculator(self.org, period='quarter', metric='tickets').calculate()
+        agg = result['markets'][0]
+        self.assertEqual(agg['city'], 'All Markets')
+        self.assertTrue(agg['is_aggregate'])
+        # Org-wide tickets sold = sum of both markets.
+        self.assertEqual(agg['total_sold'], 240)
+        # Each period sums across markets (Q1: 50 + 10 = 60, Q4: 20 + 40 = 60).
+        by_label = {p['period_label']: p for p in agg['periods']}
+        first_q = agg['periods'][0]
+        last_q = agg['periods'][-1]
+        self.assertEqual(first_q['sold'], 60)
+        self.assertEqual(last_q['sold'], 60)
+        self.assertEqual(len(by_label), 4)
+        # Diagnosis text reads "across all markets", not "in All Markets".
+        self.assertIn('across all markets', agg['diagnosis_text'])
+        self.assertNotIn('in All Markets', agg['diagnosis_text'])
+
+    def test_single_market_has_no_aggregate_row(self):
+        """With only one market, the aggregate would just duplicate it — so it's skipped."""
+        from tickets.services.market_trends import MarketTrendCalculator
+        self._build_market('Austin', [40, 30, 20, 10])
+        result = MarketTrendCalculator(self.org, period='quarter', metric='tickets').calculate()
+        self.assertEqual(len(result['markets']), 1)
+        self.assertFalse(result['markets'][0].get('is_aggregate'))
+        self.assertEqual(result['markets'][0]['city'], 'Austin')
 
     def test_view_smoke(self):
         self._build_market('Austin', [40, 30, 20, 10])
