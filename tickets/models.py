@@ -2003,7 +2003,14 @@ class SMSCampaignPlan(BaseModel):
     existing composer (via the session prefill handoff), where the organizer reviews,
     confirms cost, and sends through the normal SMSCampaign flow. ``steps`` is a JSON
     list; per-step ``launched_campaign_id`` is filled in when a step is launched.
+
+    ``status`` is an organizational label only (Draft = work-in-progress, Ready = the
+    organizer considers it done). It never gates sending — steps launch regardless.
     """
+    class Status(models.TextChoices):
+        DRAFT = 'draft', 'Draft'
+        READY = 'ready', 'Ready'
+
     organization = models.ForeignKey(
         Organization,
         on_delete=models.CASCADE,
@@ -2031,6 +2038,12 @@ class SMSCampaignPlan(BaseModel):
     objective = models.CharField(max_length=300, blank=True, default='')
     strategy_summary = models.TextField(blank=True, default='')
     model_name = models.CharField(max_length=100, blank=True, default='')
+    status = models.CharField(
+        max_length=12,
+        choices=Status.choices,
+        default=Status.DRAFT,
+        db_index=True,
+    )
     generated_at = models.DateTimeField(default=timezone.now)
     # Ordered sequence. Each entry:
     #   {order, purpose, audience_label, audience_criteria, timing_label, body,

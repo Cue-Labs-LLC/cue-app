@@ -12,6 +12,12 @@
     <a href="{% url 'tickets:sms_plan_create' %}" class="btn btn-primary btn-sm"><i class="bi bi-plus-lg"></i> New plan</a>
 </div>
 
+<div class="btn-group btn-group-sm mb-3" role="group" aria-label="Filter plans by status">
+    <a href="{% url 'tickets:sms_plan_list' %}" class="btn btn-outline-secondary{% if not status_filter %} active{% endif %}">All</a>
+    <a href="?status=draft" class="btn btn-outline-secondary{% if status_filter == 'draft' %} active{% endif %}">Drafts</a>
+    <a href="?status=ready" class="btn btn-outline-secondary{% if status_filter == 'ready' %} active{% endif %}">Ready</a>
+</div>
+
 <div class="card">
     <div class="card-body p-0">
         {% if page_obj.object_list %}
@@ -20,6 +26,7 @@
                 <thead>
                     <tr>
                         <th>Plan</th>
+                        <th>Status</th>
                         <th>Event</th>
                         <th class="text-end">Steps</th>
                         <th>Created</th>
@@ -29,6 +36,7 @@
                     {% for plan in page_obj.object_list %}
                     <tr role="button" tabindex="0" onclick="window.location='{% url 'tickets:sms_plan_detail' pk=plan.id %}'">
                         <td>{{ plan.name }}</td>
+                        <td>{% if plan.status == 'ready' %}<span class="badge bg-success">Ready</span>{% else %}<span class="badge bg-secondary">Draft</span>{% endif %}</td>
                         <td>{% if plan.event %}{{ plan.event.name }}{% else %}<span class="text-secondary">Segment</span>{% endif %}</td>
                         <td class="text-end">{{ plan.steps|length }}</td>
                         <td>{{ plan.created_at|date:'M d, Y' }}</td>
@@ -50,9 +58,9 @@
 {% if page_obj.has_other_pages %}
 <nav class="mt-3">
     <ul class="pagination pagination-sm">
-        {% if page_obj.has_previous %}<li class="page-item"><a class="page-link" href="?page={{ page_obj.previous_page_number }}">Previous</a></li>{% endif %}
+        {% if page_obj.has_previous %}<li class="page-item"><a class="page-link" href="?page={{ page_obj.previous_page_number }}{% if status_filter %}&status={{ status_filter }}{% endif %}">Previous</a></li>{% endif %}
         <li class="page-item disabled"><span class="page-link">Page {{ page_obj.number }} of {{ page_obj.paginator.num_pages }}</span></li>
-        {% if page_obj.has_next %}<li class="page-item"><a class="page-link" href="?page={{ page_obj.next_page_number }}">Next</a></li>{% endif %}
+        {% if page_obj.has_next %}<li class="page-item"><a class="page-link" href="?page={{ page_obj.next_page_number }}{% if status_filter %}&status={{ status_filter }}{% endif %}">Next</a></li>{% endif %}
     </ul>
 </nav>
 {% endif %}

@@ -85,6 +85,8 @@
     font-size: 11px; font-weight: 500; border-radius: 999px; padding: 3px 10px;
     background: rgba(51,196,129,0.12); color: #33c481;
 }
+.launched-pill--scheduled { background: rgba(79,124,255,0.14); color: #4f7cff; }
+.launched-pill--muted { background: var(--bg-inset); color: var(--text-secondary); }
 .plan-step-remove { margin-left: auto; }
 .plan-step-remove-btn {
     border: 0; background: transparent; color: var(--text-secondary);
@@ -110,13 +112,29 @@
 {% block content %}
 <div class="page-header">
     <div>
-        <h1 class="page-title">{{ plan.name }}</h1>
+        <h1 class="page-title">
+            {{ plan.name }}
+            {% if plan.status == 'ready' %}<span class="badge bg-success align-middle">Ready</span>
+            {% else %}<span class="badge bg-secondary align-middle">Draft</span>{% endif %}
+        </h1>
         <p class="page-subtitle">
             AI campaign plan · {{ plan.generated_at|date:'M d, Y' }}
             {% if plan.event %} · for {{ plan.event.name }}{% endif %}
         </p>
     </div>
-    <a href="{% url 'tickets:sms_campaign_list' %}" class="btn btn-outline-secondary btn-sm"><i class="bi bi-arrow-left"></i> SMS</a>
+    <div class="d-flex gap-2">
+        <form method="post" action="{% url 'tickets:sms_plan_set_status' pk=plan.id %}" class="m-0">
+            {% csrf_token %}
+            {% if plan.status == 'ready' %}
+            <input type="hidden" name="status" value="draft">
+            <button type="submit" class="btn btn-outline-secondary btn-sm"><i class="bi bi-pencil"></i> Move to draft</button>
+            {% else %}
+            <input type="hidden" name="status" value="ready">
+            <button type="submit" class="btn btn-outline-success btn-sm"><i class="bi bi-check2-circle"></i> Mark as ready</button>
+            {% endif %}
+        </form>
+        <a href="{% url 'tickets:sms_plan_list' %}" class="btn btn-outline-secondary btn-sm"><i class="bi bi-arrow-left"></i> Plans</a>
+    </div>
 </div>
 
 {% if plan.objective %}
@@ -149,7 +167,7 @@
                         <button type="button" class="btn btn-sm btn-outline-secondary plan-timing-cancel">Cancel</button>
                     </span>
                 </span>
-                {% if step.launched_at %}<span class="launched-pill"><i class="bi bi-check2"></i> Launched</span>{% endif %}
+                {% if step.launched_at %}<span class="launched-pill {{ step.launched_pill_class }}"><i class="bi {{ step.launched_icon|default:'bi-check2' }}"></i> {{ step.launched_label|default:'Launched' }}</span>{% endif %}
                 <form method="post" action="{% url 'tickets:sms_plan_remove_step' pk=plan.id step=step.order %}"
                       class="plan-step-remove m-0" data-remove-form>
                     {% csrf_token %}
@@ -503,7 +521,7 @@ document.addEventListener('DOMContentLoaded', function () {
     function tokensLabel(n) { return n + ' token' + (n === 1 ? '' : 's'); }
     function pluralR(n) { return n === 1 ? '' : 's'; }
 
-    function markLaunched(card, step, campaignUrl) {
+    function markLaunched(card, step, campaignUrl, scheduled) {
         const wrap = card.closest('.plan-step');
         if (wrap) wrap.classList.add('is-launched');
         const panel = card.querySelector('.plan-confirm-panel[data-panel-for="' + step + '"]');
@@ -515,8 +533,10 @@ document.addEventListener('DOMContentLoaded', function () {
         const head = card.querySelector('.plan-step-head');
         if (head && !head.querySelector('.launched-pill')) {
             const pill = document.createElement('span');
-            pill.className = 'launched-pill';
-            pill.innerHTML = '<i class="bi bi-check2"></i> Launched';
+            pill.className = 'launched-pill' + (scheduled ? ' launched-pill--scheduled' : '');
+            pill.innerHTML = scheduled
+                ? '<i class="bi bi-clock"></i> Scheduled'
+                : '<i class="bi bi-check2"></i> Sent';
             const timing = head.querySelector('.plan-step-timing');
             if (timing && timing.nextSibling) head.insertBefore(pill, timing.nextSibling);
             else head.appendChild(pill);
@@ -617,7 +637,7 @@ document.addEventListener('DOMContentLoaded', function () {
                 warnEl.hidden = false; goBtn.disabled = false;
                 return;
             }
-            markLaunched(card, step, data.campaign_url);
+            markLaunched(card, step, data.campaign_url, data.scheduled);
         }
 
         goBtn.addEventListener('click', function () {

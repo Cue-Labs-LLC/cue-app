@@ -433,7 +433,11 @@
 
 {% block content %}
 <div class="sms-compose">
+    {% if prefill_plan_id %}
+    <a href="{% url 'tickets:sms_plan_detail' pk=prefill_plan_id %}" class="sms-back sms-reveal sms-reveal-1"><i class="bi bi-arrow-left"></i> Back to plan</a>
+    {% else %}
     <a href="{% url 'tickets:sms_campaign_list' %}" class="sms-back sms-reveal sms-reveal-1"><i class="bi bi-arrow-left"></i> SMS Campaigns</a>
+    {% endif %}
     <div class="sms-head sms-reveal sms-reveal-1">
         <h1>New campaign</h1>
         <p>Compose a text, choose who gets it, then send now or schedule.</p>

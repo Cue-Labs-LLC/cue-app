@@ -593,6 +593,24 @@ class SMSStrategistViewTests(TestCase):
         self.assertIn('launched_at', plan.steps[0])
 
     @patch('langchain_openai.ChatOpenAI')
+    def test_launched_step_shows_scheduled_not_launched(self, mock_openai):
+        # A step confirmed with a future send time is scheduled — the plan must reflect
+        # "Scheduled", not a generic "Launched".
+        mock_openai.return_value = _fake_structured_llm()
+        plan = self._make_event_plan()   # step 0 send_at is ~14 days out (future)
+        self.client.post(
+            reverse('tickets:sms_plan_confirm_step', kwargs={'pk': plan.id, 'step': 0}),
+            {'idempotency_key': 'k'},
+        )
+        campaign = SMSCampaign.objects.get(organization=self.org)
+        self.assertEqual(campaign.status, SMSCampaign.Status.SCHEDULED)
+
+        resp = self.client.get(reverse('tickets:sms_plan_detail', kwargs={'pk': plan.id}))
+        self.assertContains(resp, 'Scheduled')
+        # The confirmed step is not mislabeled "Launched".
+        self.assertNotContains(resp, '> Launched</span>')
+
+    @patch('langchain_openai.ChatOpenAI')
     def test_plan_confirm_step_is_idempotent(self, mock_openai):
         mock_openai.return_value = _fake_structured_llm()
         plan = self._make_event_plan()
@@ -694,6 +712,82 @@ class SMSStrategistViewTests(TestCase):
         resp = self.client.get(reverse('tickets:sms_campaign_create'))
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp.context['form'].initial.get('market_id'), str(market.id))
+
+    @patch('langchain_openai.ChatOpenAI')
+    def test_full_editor_back_link_returns_to_plan(self, mock_openai):
+        # Opening a step in the full editor must offer a back link to the plan (so the
+        # organizer doesn't lose their place); a plain composer visit links to the SMS list.
+        mock_openai.return_value = _fake_structured_llm()
+        plan = self._make_event_plan()
+        self.client.post(reverse('tickets:sms_plan_launch_step', kwargs={'pk': plan.id, 'step': 0}))
+        resp = self.client.get(reverse('tickets:sms_campaign_create'))
+        self.assertContains(resp, reverse('tickets:sms_plan_detail', kwargs={'pk': plan.id}))
+        self.assertContains(resp, 'Back to plan')
+
+        # A direct composer visit (no plan prefill) keeps the SMS Campaigns back link.
+        plain = self.client.get(reverse('tickets:sms_campaign_create'))
+        self.assertNotContains(plain, 'Back to plan')
+        self.assertContains(plain, reverse('tickets:sms_campaign_list'))
+
+    # --- Draft / Ready status -------------------------------------------------
+
+    @patch('langchain_openai.ChatOpenAI')
+    def test_generated_plan_defaults_to_draft(self, mock_openai):
+        mock_openai.return_value = _fake_structured_llm()
+        plan = self._make_event_plan()
+        self.assertEqual(plan.status, SMSCampaignPlan.Status.DRAFT)
+
+    @patch('langchain_openai.ChatOpenAI')
+    def test_set_status_marks_ready_and_back(self, mock_openai):
+        mock_openai.return_value = _fake_structured_llm()
+        plan = self._make_event_plan()
+        url = reverse('tickets:sms_plan_set_status', kwargs={'pk': plan.id})
+        resp = self.client.post(url, {'status': 'ready'})
+        self.assertRedirects(resp, reverse('tickets:sms_plan_detail', kwargs={'pk': plan.id}))
+        plan.refresh_from_db()
+        self.assertEqual(plan.status, SMSCampaignPlan.Status.READY)
+        self.client.post(url, {'status': 'draft'})
+        plan.refresh_from_db()
+        self.assertEqual(plan.status, SMSCampaignPlan.Status.DRAFT)
+
+    @patch('langchain_openai.ChatOpenAI')
+    def test_set_status_rejects_bad_input_and_is_gated(self, mock_openai):
+        mock_openai.return_value = _fake_structured_llm()
+        plan = self._make_event_plan()
+        url = reverse('tickets:sms_plan_set_status', kwargs={'pk': plan.id})
+        self.assertEqual(self.client.post(url, {'status': 'bogus'}).status_code, 400)  # invalid value
+        self.assertEqual(self.client.get(url).status_code, 405)                         # POST-only
+        self.org.ai_sms_strategist_enabled = False
+        self.org.save(update_fields=['ai_sms_strategist_enabled'])
+        self.assertEqual(self.client.post(url, {'status': 'ready'}).status_code, 404)   # gated
+        plan.refresh_from_db()
+        self.assertEqual(plan.status, SMSCampaignPlan.Status.DRAFT)                      # unchanged
+
+    def test_plan_list_filters_by_status(self):
+        SMSCampaignPlan.objects.create(
+            organization=self.org, name='Draft plan', status=SMSCampaignPlan.Status.DRAFT)
+        SMSCampaignPlan.objects.create(
+            organization=self.org, name='Ready plan', status=SMSCampaignPlan.Status.READY)
+
+        def names(status=None):
+            params = {'status': status} if status else {}
+            resp = self.client.get(reverse('tickets:sms_plan_list'), params)
+            return [p.name for p in resp.context['page_obj'].object_list]
+
+        self.assertEqual(set(names('draft')) & {'Draft plan', 'Ready plan'}, {'Draft plan'})
+        self.assertEqual(set(names('ready')) & {'Draft plan', 'Ready plan'}, {'Ready plan'})
+        self.assertEqual(set(names()) & {'Draft plan', 'Ready plan'}, {'Draft plan', 'Ready plan'})
+
+    @patch('langchain_openai.ChatOpenAI')
+    def test_plan_detail_shows_status_control(self, mock_openai):
+        mock_openai.return_value = _fake_structured_llm()
+        plan = self._make_event_plan()
+        resp = self.client.get(reverse('tickets:sms_plan_detail', kwargs={'pk': plan.id}))
+        self.assertContains(resp, 'Mark as ready')        # draft → offers "Mark as ready"
+        plan.status = SMSCampaignPlan.Status.READY
+        plan.save(update_fields=['status'])
+        resp = self.client.get(reverse('tickets:sms_plan_detail', kwargs={'pk': plan.id}))
+        self.assertContains(resp, 'Move to draft')        # ready → offers "Move to draft"
 
 
 @override_settings(OPENAI_API_KEY='test-key', OPENAI_MODEL='gpt-4o')

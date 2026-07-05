@@ -19,7 +19,7 @@ from django.core.paginator import Paginator
 from django.db import transaction, IntegrityError
 from django.db.models import Count, Q, F, Sum
 from django.db.models.functions import Coalesce, Now
-from django.http import JsonResponse, HttpResponse, Http404
+from django.http import JsonResponse, HttpResponse, HttpResponseBadRequest, Http404
 from django.shortcuts import render, redirect, get_object_or_404
 from django.urls import reverse
 from django.utils import timezone
@@ -1504,7 +1504,7 @@ def sms_plan_create(request):
             organization=org, created_by=request.user, event=event,
             filter_criteria=criteria, name=name[:200], objective=objective,
             strategy_summary=result['strategy_summary'], model_name=result['model_name'],
-            steps=result['steps'],
+            steps=result['steps'], status=SMSCampaignPlan.Status.DRAFT,
         )
 
         # Count only successful generations against the hourly budget.
@@ -1554,6 +1554,40 @@ def _decorate_plan_steps(steps, tz):
     return out
 
 
+# Launched-campaign status → (pill label, extra CSS class, icon) so a launched step
+# reflects its campaign's real state (e.g. "Scheduled" for a future send) rather than a
+# generic "Launched". Falls back to "Launched" for an unknown/deleted campaign.
+_LAUNCHED_PILL = {
+    'scheduled': ('Scheduled', 'launched-pill--scheduled', 'bi-clock'),
+    'sending':   ('Sending',   '',                         'bi-arrow-repeat'),
+    'sent':      ('Sent',      '',                         'bi-check2'),
+    'canceled':  ('Canceled',  'launched-pill--muted',     'bi-x-circle'),
+    'failed':    ('Failed',    'launched-pill--muted',     'bi-exclamation-circle'),
+}
+
+
+def _annotate_launched_status(org, steps):
+    """Attach an accurate launched pill (label/class/icon) to each launched step by
+    resolving its campaign's current status in a single query."""
+    ids = [s['launched_campaign_id'] for s in steps if s.get('launched_campaign_id')]
+    status_by_id = {}
+    if ids:
+        status_by_id = {
+            str(cid): status for cid, status in
+            SMSCampaign.objects.filter(organization=org, id__in=ids).values_list('id', 'status')
+        }
+    for s in steps:
+        cid = s.get('launched_campaign_id')
+        if not cid:
+            continue
+        label, css, icon = _LAUNCHED_PILL.get(
+            status_by_id.get(str(cid)), ('Launched', '', 'bi-check2'),
+        )
+        s['launched_label'] = label
+        s['launched_pill_class'] = css
+        s['launched_icon'] = icon
+
+
 def _audience_label_for(org, criteria):
     """Human label for an audience criteria dict (used after an inline audience edit).
 
@@ -1576,10 +1610,9 @@ def sms_plan_detail(request, pk):
         SMSCampaignPlan.objects.filter(organization=org).select_related('event'),
         id=pk,
     )
-    context = {
-        'plan': plan,
-        'steps': _decorate_plan_steps(plan.steps, org.get_timezone()),
-    }
+    steps = _decorate_plan_steps(plan.steps, org.get_timezone())
+    _annotate_launched_status(org, steps)
+    context = {'plan': plan, 'steps': steps}
     context.update(_audience_option_lists(org))
     return render(request, 'tickets/marketing/sms/plan_detail.html', context)
 
@@ -1589,7 +1622,7 @@ def sms_plan_detail(request, pk):
 @require_host
 @require_sms_feature
 def sms_plan_list(request):
-    """List the org's past AI campaign plans."""
+    """List the org's past AI campaign plans, optionally filtered by status."""
     org = get_organization(request)
     if not org.ai_sms_strategist_enabled:
         raise Http404()
@@ -1597,8 +1630,37 @@ def sms_plan_list(request):
         SMSCampaignPlan.objects.filter(organization=org)
         .select_related('event').order_by('-created_at')
     )
+    status_filter = request.GET.get('status', '')
+    if status_filter in SMSCampaignPlan.Status.values:
+        plans = plans.filter(status=status_filter)
+    else:
+        status_filter = ''
     page = Paginator(plans, 25).get_page(request.GET.get('page'))
-    return render(request, 'tickets/marketing/sms/plan_list.html', {'page_obj': page})
+    return render(request, 'tickets/marketing/sms/plan_list.html', {
+        'page_obj': page,
+        'status_filter': status_filter,
+    })
+
+
+@login_required
+@require_org
+@require_host
+@require_sms_feature
+@require_POST
+def sms_plan_set_status(request, pk):
+    """Mark a plan as Draft or Ready (an organizational label; never gates sending)."""
+    org = get_organization(request)
+    if not org.ai_sms_strategist_enabled:
+        raise Http404()
+    plan = get_object_or_404(SMSCampaignPlan.objects.filter(organization=org), id=pk)
+
+    status = request.POST.get('status')
+    if status not in SMSCampaignPlan.Status.values:
+        return HttpResponseBadRequest('Invalid status.')
+    plan.status = status
+    plan.save(update_fields=['status', 'updated_at'])
+    messages.success(request, f'Plan marked {plan.get_status_display().lower()}.')
+    return redirect('tickets:sms_plan_detail', pk=plan.id)
 
 
 def _apply_step_body(step_dict, body):
