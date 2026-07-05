@@ -11,7 +11,8 @@ from django.urls import reverse
 from .models import (
     Organization, UserProfile, Customer, CustomerTag,
     SMSCampaign, SMSCampaignPlan, SMSMessageRecipient, AITokenUsage,
-    Venue, Event, EventSMSCampaign, TrackingLink,
+    Venue, Event, EventSMSCampaign, TrackingLink, Market,
+    MARKET_GEOGRAPHY_CITY,
     TICKETING_TYPE_EXTERNAL,
 )
 from .services.sms_strategist import (
@@ -94,6 +95,36 @@ class SMSStrategistViewTests(TestCase):
         self.assertEqual(self.org.sms_credit_balance_cents, 5000)
 
     @patch('langchain_openai.ChatOpenAI')
+    def test_event_plan_prioritizes_market_matching_venue_city(self, mock_openai):
+        # A city-level market covering the venue's city should be chosen over all subscribers.
+        market = Market.objects.create(
+            organization=self.org, name='Austin', geography_level=MARKET_GEOGRAPHY_CITY,
+            geography_value='Austin',
+        )
+        mock_openai.return_value = _fake_structured_llm()
+        self.client.post(reverse('tickets:sms_plan_create'), {'event': str(self.event.id)})
+
+        plan = SMSCampaignPlan.objects.get(organization=self.org)
+        for step in plan.steps:
+            self.assertEqual(step['audience_criteria'], {'market_ids': [str(market.id)]})
+            self.assertEqual(step['audience_label'], 'Markets: Austin')
+
+    @patch('langchain_openai.ChatOpenAI')
+    def test_event_plan_falls_back_to_all_subscribers_without_matching_market(self, mock_openai):
+        # A market in a different city must not be chosen for this venue.
+        Market.objects.create(
+            organization=self.org, name='Seattle', geography_level=MARKET_GEOGRAPHY_CITY,
+            geography_value='Seattle',
+        )
+        mock_openai.return_value = _fake_structured_llm()
+        self.client.post(reverse('tickets:sms_plan_create'), {'event': str(self.event.id)})
+
+        plan = SMSCampaignPlan.objects.get(organization=self.org)
+        for step in plan.steps:
+            self.assertEqual(step['audience_criteria'], {'all_subscribers': True})
+            self.assertEqual(step['audience_label'], 'All SMS subscribers')
+
+    @patch('langchain_openai.ChatOpenAI')
     def test_event_steps_have_absolute_send_dates(self, mock_openai):
         mock_openai.return_value = _fake_structured_llm()
         self.client.post(reverse('tickets:sms_plan_create'), {'event': str(self.event.id)})
@@ -110,6 +141,23 @@ class SMSStrategistViewTests(TestCase):
             self.assertRegex(step['timing_label'], r'[A-Z]{2,5}$')
             got = datetime.fromisoformat(step['send_at']).date()
             self.assertEqual(got, expected[step['offset_days']])
+
+    def test_step_send_time_never_in_the_past(self):
+        # A touch anchored on an event happening today, at a send time that has already
+        # passed, must be nudged into the future — never scheduled in the past.
+        from datetime import datetime
+        from django.utils import timezone
+        from .services.sms_strategist import _compute_step_schedule
+
+        tz = self.org.get_timezone()
+        now = timezone.now().astimezone(tz)
+        past_time = (now - timedelta(hours=2)).strftime('%H:%M')
+        step = PlanStep(purpose='announcement', audience='All subscribers', offset_days=0,
+                        send_time=past_time, message='Doors soon!', rationale='r')
+        self.event.start_date = now.date()
+
+        iso, label = _compute_step_schedule(step, self.event, tz)
+        self.assertGreater(datetime.fromisoformat(iso), now)
 
     @patch('langchain_openai.ChatOpenAI')
     def test_update_schedule_persists_and_returns_label(self, mock_openai):
