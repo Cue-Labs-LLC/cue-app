@@ -160,6 +160,28 @@ class SMSStrategistViewTests(TestCase):
         iso, label = _compute_step_schedule(step, self.event, tz)
         self.assertGreater(datetime.fromisoformat(iso), now)
 
+    def test_step_send_time_never_after_event_start(self):
+        # A day-of touch whose send time falls after the event's start time must be pulled
+        # back to before doors — a "doors open soon" text can't go out after doors.
+        from datetime import datetime, time as dtime, timedelta as td
+        from django.utils import timezone
+        from .services.sms_strategist import _compute_step_schedule, EVENT_START_LEAD_MINUTES
+
+        tz = self.org.get_timezone()
+        now = timezone.now().astimezone(tz)
+        # Event is a few days out at 3:00 PM local; the model picked a 4:00 PM send.
+        self.event.start_date = (now + td(days=3)).date()
+        self.event.start_time = dtime(15, 0)
+        step = PlanStep(purpose='last_chance', audience='All subscribers', offset_days=0,
+                        send_time='16:00', message='Doors open soon!', rationale='r')
+
+        iso, label = _compute_step_schedule(step, self.event, tz)
+        scheduled = datetime.fromisoformat(iso)
+        event_start = datetime.combine(self.event.start_date, dtime(15, 0), tzinfo=tz)
+        self.assertLess(scheduled, event_start)
+        # Pulled back to the configured lead before doors.
+        self.assertEqual(scheduled, event_start - td(minutes=EVENT_START_LEAD_MINUTES))
+
     @patch('langchain_openai.ChatOpenAI')
     def test_update_schedule_persists_and_returns_label(self, mock_openai):
         mock_openai.return_value = _fake_structured_llm()

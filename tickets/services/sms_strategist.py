@@ -93,7 +93,9 @@ class PlanStep(BaseModel):
     send_time: str = Field(
         description=(
             "Local send time in 24-hour HH:MM (e.g. '18:00'). Pick a sensible hour for the "
-            "audience — late afternoon or early evening usually works best for consumer events."
+            "audience — late afternoon or early evening usually works best for consumer events. "
+            "For a day-of-event touch (offset_days = 0), the send time MUST be before the "
+            "event's start_time — never schedule a reminder for after doors open."
         )
     )
     message: str = Field(
@@ -256,6 +258,7 @@ def _event_context(event):
     return {
         'name': event.name,
         'date': str(event.start_date),
+        'start_time': event.start_time.strftime('%H:%M') if event.start_time else None,
         'days_until_event': days_until,
         'venue': getattr(event.venue, 'name', '') if event.venue_id else '',
         'city': getattr(event.venue, 'city', '') if event.venue_id else '',
@@ -420,6 +423,11 @@ SCHEDULE_LABEL_FORMAT = "D, M j · g:i A T"
 # schedule lands this many minutes in the future rather than in the past.
 PAST_STEP_LEAD_MINUTES = 15
 
+# A step must never be scheduled at or after the event has started (e.g. a "doors open
+# soon" text landing after doors). When the computed send would fall at/after the event's
+# start time, pull it back to this many minutes before the event begins.
+EVENT_START_LEAD_MINUTES = 60
+
 
 def format_send_label(dt):
     """Human label for a send datetime, including the timezone (e.g. 'Mon, Jul 6 · 6:00 PM PDT')."""
@@ -455,6 +463,17 @@ def _compute_step_schedule(step, event, tz):
         send_date = today + timedelta(days=offset)
 
     dt = datetime.combine(send_date, send_time, tzinfo=tz)
+
+    # Never schedule a step at/after the event has started — a day-of "doors open soon"
+    # text sent after doors is worse than useless. When the event has a known start time
+    # and the computed send would land at/after it, pull the send back to a lead before
+    # doors so the message still goes out pre-event. Applied before the past guard so an
+    # already-started/imminent event still falls through to a sendable "now".
+    if event is not None and getattr(event, 'start_time', None):
+        event_start = datetime.combine(event.start_date, event.start_time, tzinfo=tz)
+        if dt >= event_start:
+            dt = event_start - timedelta(minutes=EVENT_START_LEAD_MINUTES)
+
     # Never schedule in the past. The date guard above keeps the day >= today, but a
     # plan generated in the evening for a near-term event can still land the send time
     # earlier today (e.g. a 4:00 PM touch built at 6:30 PM). Nudge those to a near-future
