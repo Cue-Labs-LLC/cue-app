@@ -16,7 +16,7 @@ class ExternalSurveyAnalytics:
     def __init__(self, organization):
         self.organization = organization
 
-    def calculate(self, market=None, city=None):
+    def calculate(self, market=None, city=None, event_from=None, event_to=None):
         from tickets.models import ExternalSurveyResponse
 
         qs = ExternalSurveyResponse.objects.filter(organization=self.organization)
@@ -31,6 +31,11 @@ class ExternalSurveyAnalytics:
                 qs = qs.filter(event__market_id=market)
         elif city:
             qs = qs.filter(Q(event__market__name=city) | Q(event__market__geography_value=city))
+
+        if event_from:
+            qs = qs.filter(event__start_date__gte=event_from)
+        if event_to:
+            qs = qs.filter(event__start_date__lte=event_to)
 
         total = qs.count()
 
@@ -104,7 +109,12 @@ class ExternalSurveyAnalytics:
         # Market NPS breakdown — one query
         city_rows = ExternalSurveyResponse.objects.filter(organization=self.organization).filter(
             event__isnull=False,
-        ).values('event__market_id', 'event__market__name').annotate(
+        )
+        if event_from:
+            city_rows = city_rows.filter(event__start_date__gte=event_from)
+        if event_to:
+            city_rows = city_rows.filter(event__start_date__lte=event_to)
+        city_rows = city_rows.values('event__market_id', 'event__market__name').annotate(
             total=Count('id'),
             nps_n=Count('id', filter=Q(nps_score__isnull=False)),
             promoters=Count('id', filter=Q(nps_score__gte=9)),

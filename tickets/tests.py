@@ -1050,6 +1050,55 @@ class MarketEntityReportingTests(TestCase):
         self.assertIn('No market', labels)
         self.assertNotIn('Austin', labels)
 
+    def test_survey_analytics_filters_by_event_date_range(self):
+        upload = ExternalSurveyUpload.objects.create(
+            organization=self.org,
+            filename='survey.csv',
+            status=ExternalSurveyUpload.Status.COMPLETED,
+            created_by=self.user,
+        )
+        # self.event is on 2025-01-10 (Central Texas); self.unassigned_event on 2025-02-10.
+        jan_resp = ExternalSurveyResponse.objects.create(
+            organization=self.org,
+            upload=upload,
+            event=self.event,
+            email='jan@example.com',
+            responded_at=timezone.make_aware(datetime(2025, 3, 1, 9, 0)),
+            nps_score=10,
+        )
+        ExternalSurveyResponse.objects.create(
+            organization=self.org,
+            upload=upload,
+            event=self.unassigned_event,
+            email='feb@example.com',
+            responded_at=timezone.make_aware(datetime(2025, 3, 2, 9, 0)),
+            nps_score=3,
+        )
+
+        # Window covering only the January event.
+        response = self.client.get(
+            reverse('tickets:survey_analytics'),
+            {'event_from': '2025-01-01', 'event_to': '2025-01-31'},
+        )
+
+        self.assertEqual(response.context['stats']['total'], 1)
+        self.assertEqual(response.context['event_from'], '2025-01-01')
+        self.assertEqual(response.context['event_to'], '2025-01-31')
+        # Responses list is scoped to the January event only.
+        page_ids = {r.id for r in response.context['page_obj']}
+        self.assertEqual(page_ids, {jan_resp.id})
+        # Market breakdown also respects the date window (Feb/no-market drops out).
+        labels = {row['city'] for row in response.context['stats']['city_breakdown']}
+        self.assertIn('Central Texas', labels)
+        self.assertNotIn('No market', labels)
+
+        # A malformed date is treated as no bound and does not 500.
+        bad = self.client.get(
+            reverse('tickets:survey_analytics'), {'event_from': 'not-a-date'},
+        )
+        self.assertEqual(bad.status_code, 200)
+        self.assertEqual(bad.context['stats']['total'], 2)
+
     def test_external_event_create_assigns_matching_market(self):
         response = self.client.post(reverse('tickets:event_create', args=['external']), {
             'name': 'Created Report Show',
