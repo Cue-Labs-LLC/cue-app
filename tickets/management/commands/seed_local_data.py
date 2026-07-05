@@ -750,6 +750,11 @@ class Command(BaseCommand):
         )
 
         markets_made = events_made = orders_made = expenses_made = nps_made = 0
+        # Running counter for unique trend-buyer phone numbers (415 area, distinct
+        # from the main pool's 213 numbers) so each market has an SMS-reachable
+        # audience — lets an AI campaign plan default to the venue's market instead
+        # of "All SMS subscribers" when tested on any market-backed event.
+        phone_seq = 0
         for city, venue_name, quarters in self.MARKET_TREND_SPECS:
             n_quarters = len(quarters)
             prom_start, prom_end = self.NPS_PROMOTER_TRAJECTORY.get(
@@ -800,10 +805,20 @@ class Command(BaseCommand):
                 new_buyers = []
                 for _ in range(new_target):
                     name = _gen_name(rng)
+                    # Mirror the main pool's opt-in/phone rates so ~a third of each
+                    # market's buyers are SMS-reachable (opted in + has a phone).
+                    sms_opt = rng.random() < 0.55
+                    phone = ""
+                    if rng.random() < 0.6:
+                        phone = f"+1415555{phone_seq:04d}"
+                        phone_seq += 1
                     cust = Customer.objects.create(
                         organization=org,
                         email=f"{slugify(city)}.{slugify(name)}.{cust_seq:04d}@example.test",
                         name=name,
+                        phone=phone,
+                        sms_opt_in=sms_opt,
+                        sms_opt_in_date=timezone.now() if sms_opt else None,
                     )
                     cust_seq += 1
                     new_buyers.append(cust)

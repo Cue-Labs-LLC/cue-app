@@ -264,16 +264,22 @@ def _event_context(event):
     }
 
 
-def _build_step_criteria(base_criteria, event):
+def _build_step_criteria(organization, base_criteria, event):
     """The filter_criteria a launched step should prefill the composer with.
 
-    Event plans default to ALL of the org's SMS subscribers — an event campaign exists to
-    sell tickets to the whole list, not just to people who already bought (the event stays
-    linked for attribution + the ticket link). The organizer can narrow any step to the
-    event's ticket buyers or a segment via the audience editor. Segment plans reuse the
-    plan's base audience.
+    Event plans default to the market covering the event's venue (city > state > country)
+    when one exists — a geographic campaign to everyone who's come to shows in that market
+    beats blasting the whole list for a local event. When no market matches the venue, fall
+    back to ALL of the org's SMS subscribers (the event stays linked for attribution + the
+    ticket link). The organizer can narrow any step to the event's ticket buyers or another
+    segment via the audience editor. Segment plans reuse the plan's base audience.
     """
     if event is not None:
+        from tickets.services.markets import MarketBuilder
+
+        market = MarketBuilder(organization).resolve_for_venue(getattr(event, 'venue', None))
+        if market is not None:
+            return {'market_ids': [str(market.id)]}
         return {'all_subscribers': True}
     return dict(base_criteria or {})
 
@@ -373,7 +379,7 @@ def generate_campaign_plan(organization, *, event=None, criteria=None, objective
         else:
             result = CampaignPlan.parse_obj(result)
 
-    base_criteria = _build_step_criteria(criteria, event)
+    base_criteria = _build_step_criteria(organization, criteria, event)
     # Label the audience from the ACTUAL criteria the composer will use — not the LLM's
     # free-text guess — using the composer's terminology so the plan view and the New
     # Campaign page always agree.
@@ -410,6 +416,10 @@ def generate_campaign_plan(organization, *, event=None, criteria=None, objective
 # timezone abbreviation (e.g. PDT), so the organizer sees which zone the time is in.
 SCHEDULE_LABEL_FORMAT = "D, M j · g:i A T"
 
+# Lead time used when a step's ideal send time has already passed today — the nudged
+# schedule lands this many minutes in the future rather than in the past.
+PAST_STEP_LEAD_MINUTES = 15
+
 
 def format_send_label(dt):
     """Human label for a send datetime, including the timezone (e.g. 'Mon, Jul 6 · 6:00 PM PDT')."""
@@ -428,7 +438,8 @@ def _compute_step_schedule(step, event, tz):
     from datetime import datetime, time as dtime, timedelta
     from django.utils import timezone
 
-    today = timezone.now().astimezone(tz).date()
+    now = timezone.now().astimezone(tz)
+    today = now.date()
     try:
         hh, mm = (step.send_time or '').split(':')
         send_time = dtime(int(hh), int(mm))
@@ -444,6 +455,13 @@ def _compute_step_schedule(step, event, tz):
         send_date = today + timedelta(days=offset)
 
     dt = datetime.combine(send_date, send_time, tzinfo=tz)
+    # Never schedule in the past. The date guard above keeps the day >= today, but a
+    # plan generated in the evening for a near-term event can still land the send time
+    # earlier today (e.g. a 4:00 PM touch built at 6:30 PM). Nudge those to a near-future
+    # slot so the first touch is always sendable; the organizer can adjust in the composer.
+    earliest = (now + timedelta(minutes=PAST_STEP_LEAD_MINUTES)).replace(second=0, microsecond=0)
+    if dt < earliest:
+        dt = earliest
     return dt.isoformat(), format_send_label(dt)
 
 
