@@ -1068,23 +1068,28 @@ class SMSViewTests(TestCase):
         self.assertContains(resp, 'name="market_id"')
 
     def test_empty_audience_rejected(self):
-        # No tag/segment and no event → form invalid, no campaign created.
+        # No market/tag/segment and no event → form invalid, no campaign created.
         resp = self.client.post(reverse('tickets:sms_campaign_create'), {
             'name': 'Promo', 'body': 'Hello', 'send_mode': 'now',
-        })
-        self.assertEqual(resp.status_code, 200)
-        self.assertEqual(SMSCampaign.objects.count(), 0)
-
-    # T3: market alone cannot be the sole audience selector
-    def test_market_only_audience_rejected(self):
-        resp = self.client.post(reverse('tickets:sms_campaign_create'), {
-            'name': 'Promo', 'body': 'Hello', 'send_mode': 'now',
-            'market_id': str(self.market.id),
         })
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(SMSCampaign.objects.count(), 0)
         errors = [str(e) for e in resp.context['form'].non_field_errors()]
-        self.assertIn('Choose at least one tag or segment.', errors)
+        self.assertIn('Choose a market, segment, or tag.', errors)
+
+    # A market alone is a valid standalone audience (matches the inline plan send).
+    def test_market_only_audience_allowed(self):
+        with self.captureOnCommitCallbacks(execute=True):
+            resp = self.client.post(reverse('tickets:sms_campaign_create'), {
+                'name': 'Promo', 'body': 'Hello', 'send_mode': 'now',
+                'market_id': str(self.market.id), 'confirm': '1',
+            })
+        self.assertEqual(resp.status_code, 302)
+        campaign = SMSCampaign.objects.get()
+        self.assertEqual(campaign.filter_criteria, {'market_id': str(self.market.id)})
+        self.assertIn('Markets: Austin', campaign.audience_summary(self.org))
+        # Resolved to the market's buyer (self.customer has an Austin order), not everyone.
+        self.assertEqual(campaign.audience_size, 1)
 
     def test_create_requires_confirm_before_send(self):
         # First POST without confirm: shows count, does NOT create.

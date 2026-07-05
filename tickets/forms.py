@@ -2014,12 +2014,13 @@ class SMSCampaignForm(forms.ModelForm):
         if cleaned.get('market_id'):
             criteria['market_id'] = cleaned['market_id']
         self.filter_criteria = criteria
-        # T3: Audience must have at least one tag or segment (market alone is not
-        # sufficient — a single-market org sending market-only would reach everyone,
-        # bypassing the fail-safe). Event mode supplies event_id in the view.
-        non_market = {k: v for k, v in criteria.items() if k != 'market_id'}
-        if not non_market and self.event is None and not self.has_manual_includes:
-            self.add_error(None, 'Choose at least one tag or segment.')
+        # A specific market is a valid standalone audience — it resolves to that market's
+        # buyers (a real subset), matching the inline plan send. Only block a completely
+        # empty selection; the empty-criteria fail-safe in SMSCampaign.candidate_customers
+        # still returns nobody, so "All markets + nothing" can't blast the whole list.
+        # Event mode supplies event_id in the view.
+        if not criteria and self.event is None and not self.has_manual_includes:
+            self.add_error(None, 'Choose a market, segment, or tag.')
         if cleaned.get('send_mode') == self.SEND_SCHEDULE:
             scheduled = cleaned.get('scheduled_at')
             if not scheduled:
