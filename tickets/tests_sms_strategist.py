@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch
 from django.contrib.auth.models import User
 from django.test import TestCase, Client, override_settings
 from django.urls import reverse
+from django.utils import timezone
 
 from .models import (
     Organization, UserProfile, Customer, CustomerTag,
@@ -429,7 +430,7 @@ class SMSStrategistViewTests(TestCase):
         self.assertEqual(resp.status_code, 404)
 
     @patch('langchain_openai.ChatOpenAI')
-    def test_launch_step_prefills_composer_and_marks_launched(self, mock_openai):
+    def test_launch_step_prefills_composer_without_marking_launched(self, mock_openai):
         mock_openai.return_value = _fake_structured_llm()
         self.client.post(reverse('tickets:sms_plan_create'), {'event': str(self.event.id)})
         plan = SMSCampaignPlan.objects.get(organization=self.org)
@@ -441,13 +442,16 @@ class SMSStrategistViewTests(TestCase):
         self.assertEqual(resp.status_code, 302)
         self.assertIn(reverse('tickets:sms_campaign_create'), resp.url)
         self.assertIn(f'event={self.event.id}', resp.url)
-        # Session prefill carries the written body + audience.
+        # Session prefill carries the written body + audience + plan linkage.
         prefill = self.client.session['sms_compose_prefill']
         self.assertEqual(prefill['body'], plan.steps[0]['body'])
         self.assertEqual(prefill['event_id'], str(self.event.id))
-        # Step is marked launched.
+        self.assertEqual(prefill['plan_id'], str(plan.id))
+        self.assertEqual(prefill['step'], 0)
+        # Opening the editor is NOT a send: the step must not be marked launched.
         plan.refresh_from_db()
-        self.assertIn('launched_at', plan.steps[0])
+        self.assertNotIn('launched_at', plan.steps[0])
+        self.assertIsNone(plan.steps[0].get('launched_campaign_id'))
 
     @patch('langchain_openai.ChatOpenAI')
     def test_launched_body_prefills_composer_form(self, mock_openai):
@@ -510,7 +514,145 @@ class SMSStrategistViewTests(TestCase):
         self.assertEqual(self.client.session['sms_compose_prefill']['body'], edited)
         plan.refresh_from_db()
         self.assertEqual(plan.steps[0]['body'], edited)
+        # Opening the editor doesn't mark launched, even with a body override.
+        self.assertNotIn('launched_at', plan.steps[0])
+
+    # --- Inline confirm & send (from the plan page, no composer) ---------------
+
+    def _make_event_plan(self):
+        self.client.post(reverse('tickets:sms_plan_create'), {'event': str(self.event.id)})
+        return SMSCampaignPlan.objects.get(organization=self.org)
+
+    @patch('langchain_openai.ChatOpenAI')
+    def test_plan_preview_step_returns_count_cost_and_key(self, mock_openai):
+        mock_openai.return_value = _fake_structured_llm()
+        plan = self._make_event_plan()
+
+        resp = self.client.post(
+            reverse('tickets:sms_plan_preview_step', kwargs={'pk': plan.id, 'step': 0}),
+        )
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertTrue(data['ok'])
+        self.assertEqual(data['recipient_count'], 1)      # the one opted-in customer
+        self.assertGreaterEqual(data['cost_tokens'], 1)
+        self.assertFalse(data['insufficient'])
+        self.assertTrue(data['scheduled'])                # step 0 is ~14 days out
+        self.assertIn('idempotency_key', data)
+        self.assertFalse(data['already_launched'])
+
+    @patch('langchain_openai.ChatOpenAI')
+    def test_plan_confirm_step_creates_campaign_charges_and_marks_launched(self, mock_openai):
+        mock_openai.return_value = _fake_structured_llm()
+        plan = self._make_event_plan()
+        self.org.refresh_from_db()
+        start_balance = self.org.sms_credit_balance_cents
+
+        resp = self.client.post(
+            reverse('tickets:sms_plan_confirm_step', kwargs={'pk': plan.id, 'step': 0}),
+            {'idempotency_key': 'abc123'},
+        )
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertTrue(data['ok'])
+        c = SMSCampaign.objects.get(organization=self.org)
+        self.assertEqual(str(c.id), data['campaign_id'])
+        self.assertEqual(c.status, SMSCampaign.Status.SCHEDULED)
+        self.assertEqual(c.audience_size, 1)
+        # all_subscribers on an event plan keeps the campaign linked to the event.
+        self.assertEqual(c.event_id, self.event.id)
+        self.assertEqual(SMSMessageRecipient.objects.filter(campaign=c).count(), 1)
+        # The wallet was debited.
+        self.org.refresh_from_db()
+        self.assertLess(self.org.sms_credit_balance_cents, start_balance)
+        # The step is stamped launched + linked to the new campaign.
+        plan.refresh_from_db()
+        self.assertEqual(plan.steps[0]['launched_campaign_id'], str(c.id))
         self.assertIn('launched_at', plan.steps[0])
+
+    @patch('langchain_openai.ChatOpenAI')
+    def test_plan_confirm_step_is_idempotent(self, mock_openai):
+        mock_openai.return_value = _fake_structured_llm()
+        plan = self._make_event_plan()
+        url = reverse('tickets:sms_plan_confirm_step', kwargs={'pk': plan.id, 'step': 0})
+        self.client.post(url, {'idempotency_key': 'k1'})
+        self.org.refresh_from_db()
+        after_first = self.org.sms_credit_balance_cents
+        # A second confirm (step already launched) must not create or charge again.
+        resp = self.client.post(url, {'idempotency_key': 'k2'})
+        self.assertEqual(resp.status_code, 200)
+        self.assertTrue(resp.json().get('already_launched'))
+        self.assertEqual(SMSCampaign.objects.filter(organization=self.org).count(), 1)
+        self.org.refresh_from_db()
+        self.assertEqual(self.org.sms_credit_balance_cents, after_first)
+
+    @patch('langchain_openai.ChatOpenAI')
+    def test_plan_confirm_step_insufficient_credits_blocks(self, mock_openai):
+        mock_openai.return_value = _fake_structured_llm()
+        plan = self._make_event_plan()
+        self.org.sms_credit_balance_cents = 0
+        self.org.save(update_fields=['sms_credit_balance_cents'])
+
+        resp = self.client.post(
+            reverse('tickets:sms_plan_confirm_step', kwargs={'pk': plan.id, 'step': 0}),
+            {'idempotency_key': 'k'},
+        )
+        self.assertEqual(resp.status_code, 400)
+        self.assertFalse(resp.json()['ok'])
+        self.assertEqual(SMSCampaign.objects.filter(organization=self.org).count(), 0)
+        plan.refresh_from_db()
+        self.assertIsNone(plan.steps[0].get('launched_campaign_id'))
+
+    @patch('langchain_openai.ChatOpenAI')
+    def test_plan_confirm_step_past_time_sends_now(self, mock_openai):
+        mock_openai.return_value = _fake_structured_llm()
+        plan = self._make_event_plan()
+        # Force the step's suggested time into the past.
+        steps = plan.steps
+        steps[0]['send_at'] = (timezone.now() - timedelta(days=1)).isoformat()
+        plan.steps = steps
+        plan.save(update_fields=['steps'])
+
+        resp = self.client.post(
+            reverse('tickets:sms_plan_confirm_step', kwargs={'pk': plan.id, 'step': 0}),
+            {'idempotency_key': 'k'},
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertFalse(resp.json()['scheduled'])   # past -> send now, not scheduled
+        c = SMSCampaign.objects.get(organization=self.org)
+        self.assertLessEqual(c.scheduled_at, timezone.now() + timedelta(seconds=5))
+
+    @patch('langchain_openai.ChatOpenAI')
+    def test_plan_preview_confirm_scoped_and_gated(self, mock_openai):
+        mock_openai.return_value = _fake_structured_llm()
+        plan = self._make_event_plan()
+        preview = reverse('tickets:sms_plan_preview_step', kwargs={'pk': plan.id, 'step': 0})
+        # GET is not allowed on these POST-only endpoints.
+        self.assertEqual(self.client.get(preview).status_code, 405)
+        # Out-of-range step -> 404.
+        bad = reverse('tickets:sms_plan_preview_step', kwargs={'pk': plan.id, 'step': 9})
+        self.assertEqual(self.client.post(bad).status_code, 404)
+        # Feature gate off -> 404.
+        self.org.ai_sms_strategist_enabled = False
+        self.org.save(update_fields=['ai_sms_strategist_enabled'])
+        self.assertEqual(self.client.post(preview).status_code, 404)
+
+    @patch('langchain_openai.ChatOpenAI')
+    def test_full_editor_send_marks_origin_plan_step(self, mock_openai):
+        mock_openai.return_value = _fake_structured_llm()
+        plan = self._make_event_plan()
+        # Open in full editor — carries plan_id/step in the session prefill.
+        self.client.post(reverse('tickets:sms_plan_launch_step', kwargs={'pk': plan.id, 'step': 0}))
+        # Send from the composer, echoing the plan-linkage hidden fields.
+        resp = self.client.post(reverse('tickets:sms_campaign_create'), {
+            'name': 'From editor', 'body': 'Hello from the editor!',
+            'send_mode': 'now', 'event': str(self.event.id), 'audience_scope': 'all',
+            'confirm': '1', 'prefill_plan_id': str(plan.id), 'prefill_step': '0',
+        })
+        self.assertEqual(resp.status_code, 302)
+        c = SMSCampaign.objects.get(organization=self.org)
+        plan.refresh_from_db()
+        self.assertEqual(plan.steps[0]['launched_campaign_id'], str(c.id))
 
 
 @override_settings(OPENAI_API_KEY='test-key', OPENAI_MODEL='gpt-4o')
