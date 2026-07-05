@@ -800,6 +800,20 @@ a:hover {
     --bs-table-bg-type: rgba(255, 255, 255, 0.02);
 }
 
+/* Pinned "All Markets" portfolio row on the Market Trends leaderboard: a faint
+   accent tint plus a heavier divider so it reads as a summary above the
+   per-market rows rather than a peer market. */
+.market-row--all > td {
+    background-color: var(--accent-muted);
+    border-bottom: 2px solid var(--border);
+    font-weight: 600;
+}
+
+.table-hover > tbody > tr.market-row--all:hover > * {
+    background-color: var(--accent-muted-border);
+    --bs-table-bg-state: var(--accent-muted-border);
+}
+
 /* -- Buttons (Bootstrap Override) -------------- */
 .btn {
     font-family: var(--font-mono);
