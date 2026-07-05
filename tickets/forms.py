@@ -80,9 +80,12 @@ class OrgDisplayPreferencesForm(forms.ModelForm):
 
     class Meta:
         model = Organization
-        fields = ['ai_event_summary_enabled', 'timezone']
+        fields = ['ai_event_summary_enabled', 'ai_event_summary_auto_regenerate', 'timezone']
         widgets = {
             'ai_event_summary_enabled': forms.CheckboxInput(
+                attrs={'class': 'form-check-input', 'role': 'switch'}
+            ),
+            'ai_event_summary_auto_regenerate': forms.CheckboxInput(
                 attrs={'class': 'form-check-input', 'role': 'switch'}
             ),
             'timezone': forms.Select(attrs={'class': 'form-select'}),

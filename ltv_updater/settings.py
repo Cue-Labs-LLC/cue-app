@@ -290,6 +290,12 @@ SMS_FOOTER_DISCLOSURE_DAYS = int(os.environ.get('SMS_FOOTER_DISCLOSURE_DAYS', '3
 SMS_ALLOWED_COUNTRY_PREFIXES = tuple(
     p.strip() for p in os.environ.get('SMS_ALLOWED_COUNTRY_PREFIXES', '+1').split(',') if p.strip()
 )
+# Lookback window (days) for the daily AI event-summary auto-regeneration scan. Only
+# events that ended within this many days are re-examined for data changes; changes to
+# older events stop triggering regeneration. Bounds daily cost/work — widen if organizers
+# routinely edit long-past events.
+EVENT_SUMMARY_REGEN_LOOKBACK_DAYS = int(os.environ.get('EVENT_SUMMARY_REGEN_LOOKBACK_DAYS', '180'))
+
 E2E_TEST_MODE = os.environ.get('E2E_TEST_MODE', 'False') == 'True'
 
 # Absolute URL for building links in emails (survey invitations, etc.)

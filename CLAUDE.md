@@ -220,6 +220,7 @@ Event.objects.all()
 | `SMS_PRICE_PER_SEGMENT_CENTS` | Optional | Price charged to an org per SMS segment, in cents (Decimal, default 3). Debited from the prepaid credit wallet at send time |
 | `SMS_FOOTER_DISCLOSURE_DAYS` | Optional | Days between required "Reply STOP" footer disclosures to the same phone (default 30). Footer is included on the first message + once a prior disclosure ages past this window; omitted in between. Twilio Advanced Opt-Out still enforces STOP regardless |
 | `SMS_ALLOWED_COUNTRY_PREFIXES` | Optional | Comma-separated E.164 calling-code prefixes eligible for marketing SMS (default `+1` = US/CA). Recipients outside these are dropped in `SMSCampaign.materialize()` before scheduling/charging, avoiding Twilio Geo-Permission blocks (Error 21408). Must mirror your Twilio Geo Permissions; empty string = allow all |
+| `EVENT_SUMMARY_REGEN_LOOKBACK_DAYS` | Optional | Lookback window (days, default 180) for the daily AI event-summary auto-regeneration scan (`regenerate_event_summaries` cron → `regenerate_event_summary_task`). Only events that ended within this window are re-examined for data changes; regeneration is per-org opt-in (`Organization.ai_event_summary_auto_regenerate`), only touches events that already have a summary, and fires at most once/day when a fingerprint of the summary's input data changes |
 
 ---
 

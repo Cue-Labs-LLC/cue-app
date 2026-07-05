@@ -236,6 +236,14 @@ class Organization(BaseModel):
         default=True,
         help_text='Show the AI Event Summary card on event detail pages.',
     )
+    ai_event_summary_auto_regenerate = models.BooleanField(
+        default=True,
+        help_text=(
+            'Automatically regenerate an event\'s AI summary once a day when its '
+            'underlying data changes after the event ends. When off, summaries are '
+            'only (re)generated when someone clicks Generate.'
+        ),
+    )
     ai_sms_strategist_enabled = models.BooleanField(
         default=True,
         help_text='Show the AI SMS Campaign Strategist (plan recommendations) entry points.',
@@ -1147,6 +1155,11 @@ class Event(AuditBaseModel):
     summary = models.CharField(max_length=500, blank=True)
     ai_summary = models.TextField(blank=True, default='')
     ai_summary_generated_at = models.DateTimeField(blank=True, null=True)
+    # Fingerprint (hex digest) of the data that produced the current ai_summary.
+    # The daily auto-regeneration job compares a freshly computed fingerprint
+    # against this value to decide whether the underlying data changed and the
+    # summary needs regenerating. Set on every generation (manual or automatic).
+    ai_summary_input_hash = models.CharField(max_length=64, blank=True, default='')
     venue = models.ForeignKey(
         'Venue',
         on_delete=models.PROTECT,
