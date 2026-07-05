@@ -30,16 +30,26 @@
         </p>
     </div>
     <div class="d-flex gap-2 align-items-center flex-wrap">
-        {% if distinct_cities %}
-        <form method="get" class="d-flex gap-2 align-items-center">
+        <form method="get" class="d-flex gap-2 align-items-center flex-wrap">
+            {% if distinct_cities %}
             <select name="market" class="form-select form-select-sm" onchange="this.form.submit()" style="width:auto;">
                 <option value="">All markets</option>
                 {% for c in distinct_cities %}
                 <option value="{{ c.value }}" {% if market_filter == c.value %}selected{% endif %}>{{ c.label }}</option>
                 {% endfor %}
             </select>
+            {% endif %}
+            <label class="text-muted small mb-0" for="eventFrom">Event date</label>
+            <input type="date" id="eventFrom" name="event_from" value="{{ event_from }}"
+                   class="form-control form-control-sm" style="width:auto;" aria-label="Event date from">
+            <span class="text-muted small">to</span>
+            <input type="date" name="event_to" value="{{ event_to }}"
+                   class="form-control form-control-sm" style="width:auto;" aria-label="Event date to">
+            <button type="submit" class="btn btn-sm btn-outline-secondary">Apply</button>
+            {% if event_from or event_to %}
+            <a href="?{% if market_filter %}market={{ market_filter }}{% endif %}" class="btn btn-sm btn-link text-muted px-1">Clear dates</a>
+            {% endif %}
         </form>
-        {% endif %}
         <a href="{% url 'tickets:survey_upload_create' %}" class="btn btn-sm btn-primary">
             <i class="bi bi-upload"></i> Upload
         </a>
@@ -279,11 +289,11 @@
         </small>
         <div class="d-flex gap-1">
             {% if page_obj.has_previous %}
-            <a href="?{% if market_filter %}market={{ market_filter }}&{% endif %}page={{ page_obj.previous_page_number }}"
+            <a href="?{% if market_filter %}market={{ market_filter }}&{% endif %}{% if event_from %}event_from={{ event_from }}&{% endif %}{% if event_to %}event_to={{ event_to }}&{% endif %}page={{ page_obj.previous_page_number }}"
                class="btn btn-sm btn-outline-secondary">&laquo; Prev</a>
             {% endif %}
             {% if page_obj.has_next %}
-            <a href="?{% if market_filter %}market={{ market_filter }}&{% endif %}page={{ page_obj.next_page_number }}"
+            <a href="?{% if market_filter %}market={{ market_filter }}&{% endif %}{% if event_from %}event_from={{ event_from }}&{% endif %}{% if event_to %}event_to={{ event_to }}&{% endif %}page={{ page_obj.next_page_number }}"
                class="btn btn-sm btn-outline-secondary">Next &raquo;</a>
             {% endif %}
         </div>

@@ -13582,9 +13582,23 @@ def survey_analytics(request):
     market_filter = request.GET.get('market', '').strip() or None
     city_filter = request.GET.get('city', '').strip() or None
 
+    def _parse_event_date(raw):
+        raw = (raw or '').strip()
+        try:
+            return datetime.strptime(raw, '%Y-%m-%d').date() if raw else None
+        except ValueError:
+            return None
+
+    event_from_str = request.GET.get('event_from', '').strip()
+    event_to_str = request.GET.get('event_to', '').strip()
+    event_from = _parse_event_date(event_from_str)
+    event_to = _parse_event_date(event_to_str)
+
     from .services.external_survey.analytics import ExternalSurveyAnalytics
     from .services.external_survey.analytics import NO_MARKET_VALUE
-    stats = ExternalSurveyAnalytics(organization=org).calculate(market=market_filter, city=city_filter)
+    stats = ExternalSurveyAnalytics(organization=org).calculate(
+        market=market_filter, city=city_filter, event_from=event_from, event_to=event_to,
+    )
 
     feedback_qs = ExternalSurveyResponse.objects.filter(organization=org)
     if market_filter == NO_MARKET_VALUE:
@@ -13598,6 +13612,10 @@ def survey_analytics(request):
             feedback_qs = feedback_qs.filter(event__market_id=market_filter)
     elif city_filter:
         feedback_qs = feedback_qs.filter(Q(event__market__name=city_filter) | Q(event__market__geography_value=city_filter))
+    if event_from:
+        feedback_qs = feedback_qs.filter(event__start_date__gte=event_from)
+    if event_to:
+        feedback_qs = feedback_qs.filter(event__start_date__lte=event_to)
     feedback_qs = feedback_qs.select_related('event', 'event__venue', 'event__market').order_by('-responded_at')
     paginator = Paginator(feedback_qs, 25)
     page_obj = paginator.get_page(request.GET.get('page'))
@@ -13641,6 +13659,8 @@ def survey_analytics(request):
         'stats': stats,
         'city_filter': selected_market_label,
         'market_filter': market_filter or '',
+        'event_from': event_from_str,
+        'event_to': event_to_str,
         'distinct_cities': distinct_cities,
         'no_market_value': NO_MARKET_VALUE,
         'page_obj': page_obj,
