@@ -17184,3 +17184,120 @@ class EventEffectiveStatusTest(TestCase):
             end_date=ends.date(), end_time=ends.time(),
         )
         self.assertEqual(event.effective_status, 'live')
+
+
+class RegenerateEventSummaryTaskTests(TestCase):
+    """Change-detection and guard behavior for regenerate_event_summary_task."""
+
+    def setUp(self):
+        from django.core.cache import cache
+        cache.clear()  # _compute_event_stats caches per-event; keep tests isolated
+        self.org = Organization.objects.create(name='Regen Org', slug='regen-org')
+        self.venue = Venue.objects.create(organization=self.org, name='Regen Hall', city='Austin')
+
+    def _ended_event(self, **kwargs):
+        defaults = dict(
+            organization=self.org,
+            name='Past Event',
+            venue=self.venue,
+            start_date=date(2024, 1, 1),
+            start_time=time(19, 0),
+            ai_summary='Existing summary body.',
+        )
+        defaults.update(kwargs)
+        return Event.objects.create(**defaults)
+
+    def _current_fingerprint(self, event):
+        from tickets.views import _compute_event_stats
+        from tickets.services.event_summary import EventSummaryService
+        return EventSummaryService(self.org).input_fingerprint(
+            event, _compute_event_stats(event)
+        )
+
+    def _run(self, event):
+        from tickets.tasks import regenerate_event_summary_task
+        return regenerate_event_summary_task(str(event.id))
+
+    @patch('tickets.services.event_summary.EventSummaryService.generate_summary')
+    def test_unchanged_data_skips_regeneration(self, mock_generate):
+        event = self._ended_event()
+        event.ai_summary_input_hash = self._current_fingerprint(event)
+        event.save(update_fields=['ai_summary_input_hash'])
+
+        self.assertEqual(self._run(event), 'unchanged')
+        mock_generate.assert_not_called()
+
+    @patch('tickets.services.event_summary.EventSummaryService.generate_summary',
+           return_value='fresh summary')
+    def test_changed_data_regenerates(self, mock_generate):
+        event = self._ended_event(ai_summary_input_hash='stale-fingerprint')
+        self.assertEqual(self._run(event), 'regenerated')
+        mock_generate.assert_called_once()
+
+    @patch('tickets.services.event_summary.EventSummaryService.generate_summary')
+    def test_first_run_backfills_without_regenerating(self, mock_generate):
+        event = self._ended_event(ai_summary_input_hash='')
+        self.assertEqual(self._run(event), 'backfilled')
+        mock_generate.assert_not_called()
+        event.refresh_from_db()
+        self.assertNotEqual(event.ai_summary_input_hash, '')
+
+    @patch('tickets.services.event_summary.EventSummaryService.generate_summary')
+    def test_event_without_summary_is_skipped(self, mock_generate):
+        event = self._ended_event(ai_summary='', ai_summary_input_hash='stale')
+        self.assertEqual(self._run(event), 'no-summary')
+        mock_generate.assert_not_called()
+
+    @patch('tickets.services.event_summary.EventSummaryService.generate_summary')
+    def test_future_event_not_regenerated(self, mock_generate):
+        future = timezone.localdate() + timedelta(days=30)
+        event = self._ended_event(
+            start_date=future, ai_summary_input_hash='stale',
+        )
+        self.assertEqual(self._run(event), 'not-ended')
+        mock_generate.assert_not_called()
+
+    @patch('tickets.services.event_summary.EventSummaryService.generate_summary')
+    def test_auto_regenerate_disabled_is_skipped(self, mock_generate):
+        self.org.ai_event_summary_auto_regenerate = False
+        self.org.save(update_fields=['ai_event_summary_auto_regenerate'])
+        event = self._ended_event(ai_summary_input_hash='stale')
+        self.assertEqual(self._run(event), 'disabled')
+        mock_generate.assert_not_called()
+
+    @patch('tickets.services.event_summary.EventSummaryService.generate_summary')
+    def test_recently_generated_is_skipped(self, mock_generate):
+        event = self._ended_event(
+            ai_summary_input_hash='stale',
+            ai_summary_generated_at=timezone.now(),
+        )
+        self.assertEqual(self._run(event), 'recent')
+        mock_generate.assert_not_called()
+
+    def test_generate_summary_persists_hash_and_text(self):
+        """The non-streaming path stores the summary and its fingerprint."""
+        from tickets.services.event_summary import EventSummaryService
+        from tickets.views import _compute_event_stats
+
+        event = self._ended_event(ai_summary='old', ai_summary_input_hash='old-hash')
+        event_data = _compute_event_stats(event)
+
+        fake_message = MagicMock()
+        fake_message.content = 'A brand new summary.'
+        fake_message.usage_metadata = {
+            'input_tokens': 100, 'output_tokens': 40, 'total_tokens': 140,
+        }
+        with patch('langchain_openai.ChatOpenAI') as mock_llm_cls:
+            mock_llm_cls.return_value.invoke.return_value = fake_message
+            result = EventSummaryService(self.org).generate_summary(event, event_data)
+
+        self.assertEqual(result, 'A brand new summary.')
+        event.refresh_from_db()
+        self.assertEqual(event.ai_summary, 'A brand new summary.')
+        self.assertNotEqual(event.ai_summary_input_hash, 'old-hash')
+        self.assertIsNotNone(event.ai_summary_generated_at)
+        self.assertTrue(
+            AITokenUsage.objects.filter(
+                organization=self.org, feature=AITokenUsage.FEATURE_EVENT_SUMMARY
+            ).exists()
+        )

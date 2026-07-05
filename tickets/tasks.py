@@ -1059,3 +1059,83 @@ def _finalize_sms_campaign(campaign_id):
     SMSCampaign.objects.filter(id=campaign.id).update(
         status=SMSCampaign.Status.SENT, sent_at=tz.now()
     )
+
+
+# Regenerate at most once per ~day: skip an event whose summary was (re)generated
+# within this window, so a manual generation earlier today isn't immediately redone.
+_SUMMARY_REGEN_MIN_INTERVAL = timedelta(hours=20)
+
+
+@shared_task(bind=True, max_retries=2, default_retry_delay=30)
+def regenerate_event_summary_task(self, event_id):
+    """Regenerate an event's AI summary if its underlying data changed.
+
+    Runs from the daily scan. Only touches events that already have a summary
+    (regeneration, not first-time creation) and only after the event has ended.
+    Uses a fingerprint of the summary's input data to skip regeneration when
+    nothing changed, so unchanged events cost no LLM tokens. On the first run
+    for an event (no stored fingerprint), it backfills the fingerprint without
+    regenerating, establishing a baseline for future change detection.
+    """
+    from django.utils import timezone as tz
+
+    from tickets.models import Event
+    from tickets.services.event_summary import EventSummaryService
+    from tickets.views import _compute_event_stats
+
+    event = (
+        Event.objects.filter(id=event_id, deleted_at__isnull=True)
+        .select_related('organization', 'venue')
+        .first()
+    )
+    if event is None:
+        return 'missing'
+
+    org = event.organization
+    # Respect both the display toggle and the auto-regenerate opt-out.
+    if not org.ai_event_summary_enabled or not org.ai_event_summary_auto_regenerate:
+        return 'disabled'
+
+    # Only regenerate summaries that already exist — never auto-create a first one.
+    if not event.ai_summary:
+        return 'no-summary'
+
+    # Only after the event has actually ended (timezone-aware end).
+    if event.end_datetime() > tz.now():
+        return 'not-ended'
+
+    # Enforce "at most once a day": if it was regenerated very recently, wait.
+    if event.ai_summary_generated_at and (
+        tz.now() - event.ai_summary_generated_at
+    ) < _SUMMARY_REGEN_MIN_INTERVAL:
+        return 'recent'
+
+    try:
+        event_data = _compute_event_stats(event)
+        service = EventSummaryService(org)
+        fingerprint = service.input_fingerprint(event, event_data)
+
+        # First pass for a pre-existing summary: record the baseline fingerprint
+        # without spending tokens. Future changes are then detectable.
+        if not event.ai_summary_input_hash:
+            event.ai_summary_input_hash = fingerprint
+            event.save(update_fields=['ai_summary_input_hash'])
+            return 'backfilled'
+
+        # No change since last generation — nothing to do.
+        if fingerprint == event.ai_summary_input_hash:
+            return 'unchanged'
+
+        result = service.generate_summary(event, event_data)
+    except Exception as exc:
+        logger.exception("Event summary regeneration failed for event %s", event_id)
+        raise self.retry(exc=exc)
+
+    if result is None:
+        # Generation was attempted but produced nothing (e.g. missing API key).
+        # Don't retry — the fingerprint stays stale so a later run tries again.
+        logger.warning("Event summary regeneration produced no text for event %s", event_id)
+        return 'failed'
+
+    logger.info("Regenerated AI summary for event %s", event_id)
+    return 'regenerated'

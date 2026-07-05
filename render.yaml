@@ -129,6 +129,32 @@ services:
           type: redis
           property: connectionString
 
+  # Daily AI event-summary refresh. Enqueues one Celery task per candidate event;
+  # each task regenerates the summary only if the event ended and its underlying
+  # data changed since the last generation. 14:00 UTC = 6:00 AM PST (Render cron is
+  # UTC-only and doesn't observe DST, so this lands at 7:00 AM during PDT).
+  - type: cron
+    name: cue-event-summary-regenerator
+    runtime: python
+    schedule: "0 14 * * *"
+    branch: main
+    buildCommand: pip install -r requirements.txt
+    startCommand: python manage.py regenerate_event_summaries
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.0
+      - key: DJANGO_ENV
+        value: production
+      - key: SECRET_KEY
+        sync: false
+      - key: DATABASE_URL
+        sync: false
+      - key: CELERY_BROKER_URL
+        fromService:
+          name: ltv-updater-redis
+          type: redis
+          property: connectionString
+
   # Marketing SMS scheduler. Every 5 min: dispatch due scheduled campaigns and
   # recover any stuck mid-send. Only enqueues Celery tasks (sending runs on the
   # worker), so it needs DB + broker but not Twilio creds.

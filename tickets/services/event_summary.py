@@ -8,6 +8,7 @@ visible on the event detail page. Streams tokens via SSE, persists the result to
 Event.ai_summary, and records token usage for billing.
 """
 
+import hashlib
 import json
 import logging
 
@@ -156,18 +157,7 @@ class EventSummaryService:
 
         # Persist the summary and record token usage for billing
         if full_response.strip():
-            event.ai_summary = full_response
-            event.ai_summary_generated_at = timezone.now()
-            event.save(update_fields=['ai_summary', 'ai_summary_generated_at'])
-
-            record_ai_token_usage(
-                organization=self.organization,
-                feature=AITokenUsage.FEATURE_EVENT_SUMMARY,
-                model_name=model_name,
-                user=self.user,
-                usage=usage.total(),
-                metadata={'event_id': str(event.id)},
-            )
+            self._persist_summary(event, full_response, prompt, model_name, usage.total())
 
             # Count only successful generations against the hourly rate limit.
             if rate_limit_key:
@@ -177,6 +167,72 @@ class EventSummaryService:
                     django_cache.set(rate_limit_key, current + 1, timeout=3600)
                 except Exception:
                     pass
+
+    def generate_summary(self, event, event_data):
+        """Generate and persist an event summary without streaming.
+
+        Used by the daily auto-regeneration task, where there is no client to
+        stream to. Returns the summary text on success, or None if generation
+        failed (e.g. missing API key). Persists ai_summary, its timestamp, and
+        the input fingerprint, and records token usage for billing — mirroring
+        the streaming path.
+        """
+        from langchain_openai import ChatOpenAI
+
+        prompt = self._build_prompt(event, event_data)
+        model_name = getattr(settings, 'OPENAI_MODEL', 'gpt-4o')
+
+        try:
+            llm = ChatOpenAI(
+                model=model_name,
+                api_key=getattr(settings, 'OPENAI_API_KEY', ''),
+                temperature=0.3,
+            )
+            response = llm.invoke([{"role": "user", "content": prompt}])
+        except Exception as e:
+            logger.error("Event summary generation failed for event %s: %s", event.id, e)
+            return None
+
+        text = (response.content or "").strip()
+        if not text:
+            logger.warning("Event summary generation returned empty text for event %s", event.id)
+            return None
+
+        self._persist_summary(event, text, prompt, model_name, response)
+        return text
+
+    def input_fingerprint(self, event, event_data):
+        """Return a stable fingerprint of the data that feeds the summary.
+
+        The prompt string is a deterministic function of the event and its
+        computed stats, so hashing it captures exactly what the summary depends
+        on — and nothing else. The daily job compares this against the stored
+        Event.ai_summary_input_hash to detect whether the summary is stale.
+        """
+        prompt = self._build_prompt(event, event_data)
+        return self._fingerprint(prompt)
+
+    @staticmethod
+    def _fingerprint(prompt):
+        return hashlib.sha256(prompt.encode('utf-8')).hexdigest()
+
+    def _persist_summary(self, event, text, prompt, model_name, usage):
+        """Save a generated summary + its fingerprint and record token usage."""
+        event.ai_summary = text
+        event.ai_summary_generated_at = timezone.now()
+        event.ai_summary_input_hash = self._fingerprint(prompt)
+        event.save(update_fields=[
+            'ai_summary', 'ai_summary_generated_at', 'ai_summary_input_hash',
+        ])
+
+        record_ai_token_usage(
+            organization=self.organization,
+            feature=AITokenUsage.FEATURE_EVENT_SUMMARY,
+            model_name=model_name,
+            user=self.user,
+            usage=usage,
+            metadata={'event_id': str(event.id)},
+        )
 
     def _build_prompt(self, event, event_data):
         """Format the prompt template with event data."""

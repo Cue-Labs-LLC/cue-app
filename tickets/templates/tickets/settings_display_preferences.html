@@ -29,6 +29,19 @@
                 letting you generate an AI analysis of the event's performance.
             </p>
 
+            <div class="form-check form-switch mb-2 mt-3">
+                {{ form.ai_event_summary_auto_regenerate }}
+                <label class="form-check-label" for="{{ form.ai_event_summary_auto_regenerate.id_for_label }}">
+                    Auto-refresh summaries when event data changes
+                </label>
+            </div>
+            <p class="text-muted" style="font-size: 0.85rem; margin-left: 2.5em;">
+                When on, an event's summary is automatically regenerated at most once a day
+                after the event ends whenever its data changes (new orders, finances,
+                marketing results, or survey responses). Turn this off to only regenerate
+                summaries manually.
+            </p>
+
             <hr class="my-4">
 
             <div class="mb-2" style="max-width: 360px;">
