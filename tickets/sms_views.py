@@ -696,7 +696,12 @@ def sms_campaign_create(request):
                     initial['rfm_segment'] = criteria['rfm_segment']
                 if criteria.get('tag_ids'):
                     initial['tag_ids'] = criteria['tag_ids']
-                if criteria.get('market_id'):
+                # The composer's market field is single-select; a plan step targets one
+                # market but may store it under either key (market_ids from the auto plan,
+                # market_id from the plan audience editor) — accept both.
+                if criteria.get('market_ids'):
+                    initial['market_id'] = criteria['market_ids'][0]
+                elif criteria.get('market_id'):
                     initial['market_id'] = criteria['market_id']
             # Pre-select "Schedule for later" with the step's suggested send time.
             scheduled_at = strategist_prefill.get('scheduled_at')

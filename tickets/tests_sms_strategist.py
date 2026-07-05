@@ -676,6 +676,25 @@ class SMSStrategistViewTests(TestCase):
         plan.refresh_from_db()
         self.assertEqual(plan.steps[0]['launched_campaign_id'], str(c.id))
 
+    @patch('langchain_openai.ChatOpenAI')
+    def test_open_in_full_editor_prefills_market(self, mock_openai):
+        # A market-targeted step stores market_ids (plural); the composer's single market
+        # field must still pre-select that market when opened in the full editor — it must
+        # not silently reset to "All markets".
+        market = Market.objects.create(
+            organization=self.org, name='Austin', geography_level=MARKET_GEOGRAPHY_CITY,
+            geography_value='Austin',
+        )
+        mock_openai.return_value = _fake_structured_llm()
+        plan = self._make_event_plan()
+        self.assertEqual(plan.steps[0]['audience_criteria'], {'market_ids': [str(market.id)]})
+
+        # Open in full editor → prefill carries the market; composer GET pre-selects it.
+        self.client.post(reverse('tickets:sms_plan_launch_step', kwargs={'pk': plan.id, 'step': 0}))
+        resp = self.client.get(reverse('tickets:sms_campaign_create'))
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.context['form'].initial.get('market_id'), str(market.id))
+
 
 @override_settings(OPENAI_API_KEY='test-key', OPENAI_MODEL='gpt-4o')
 class TopPriorCampaignsTests(TestCase):
