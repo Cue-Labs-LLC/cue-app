@@ -2004,12 +2004,13 @@ class SMSCampaignPlan(BaseModel):
     confirms cost, and sends through the normal SMSCampaign flow. ``steps`` is a JSON
     list; per-step ``launched_campaign_id`` is filled in when a step is launched.
 
-    ``status`` is an organizational label only (Draft = work-in-progress, Ready = the
-    organizer considers it done). It never gates sending — steps launch regardless.
+    ``status`` is a derived label only: Draft until every step has been scheduled/launched,
+    then In progress. It's recomputed from the steps (see ``_save_plan_steps``) and never
+    gates sending — steps launch regardless.
     """
     class Status(models.TextChoices):
         DRAFT = 'draft', 'Draft'
-        READY = 'ready', 'Ready'
+        IN_PROGRESS = 'in_progress', 'In progress'
 
     organization = models.ForeignKey(
         Organization,

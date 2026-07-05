@@ -19,7 +19,7 @@ from django.core.paginator import Paginator
 from django.db import transaction, IntegrityError
 from django.db.models import Count, Q, F, Sum
 from django.db.models.functions import Coalesce, Now
-from django.http import JsonResponse, HttpResponse, HttpResponseBadRequest, Http404
+from django.http import JsonResponse, HttpResponse, Http404
 from django.shortcuts import render, redirect, get_object_or_404
 from django.urls import reverse
 from django.utils import timezone
@@ -1647,20 +1647,16 @@ def sms_plan_list(request):
 @require_host
 @require_sms_feature
 @require_POST
-def sms_plan_set_status(request, pk):
-    """Mark a plan as Draft or Ready (an organizational label; never gates sending)."""
+def sms_plan_delete(request, pk):
+    """Discard a whole plan. The plan is advisory, so this is a hard delete; any campaigns
+    already launched from its steps are separate SMSCampaign rows and are left untouched."""
     org = get_organization(request)
     if not org.ai_sms_strategist_enabled:
         raise Http404()
     plan = get_object_or_404(SMSCampaignPlan.objects.filter(organization=org), id=pk)
-
-    status = request.POST.get('status')
-    if status not in SMSCampaignPlan.Status.values:
-        return HttpResponseBadRequest('Invalid status.')
-    plan.status = status
-    plan.save(update_fields=['status', 'updated_at'])
-    messages.success(request, f'Plan marked {plan.get_status_display().lower()}.')
-    return redirect('tickets:sms_plan_detail', pk=plan.id)
+    plan.delete()
+    messages.success(request, 'Plan deleted.')
+    return redirect('tickets:sms_plan_list')
 
 
 def _apply_step_body(step_dict, body):
@@ -1903,6 +1899,28 @@ def _resolve_step_send_at(step, org):
     return False, timezone.now()
 
 
+def _plan_all_scheduled(steps):
+    """True when the plan has at least one step and every step has been scheduled/launched
+    (each step carries a launched_campaign_id)."""
+    steps = steps or []
+    return bool(steps) and all(s.get('launched_campaign_id') for s in steps)
+
+
+def _save_plan_steps(plan, steps):
+    """Persist ``plan.steps`` and keep the derived status in sync: In progress once every
+    step is scheduled/launched, else Draft. One save; writes status only when it changes.
+    Recompute-based, so it advances on the last launch and never spuriously reverts a
+    fully-scheduled plan (steps can't be un-launched)."""
+    plan.steps = steps
+    fields = ['steps', 'updated_at']
+    desired = (SMSCampaignPlan.Status.IN_PROGRESS if _plan_all_scheduled(steps)
+               else SMSCampaignPlan.Status.DRAFT)
+    if plan.status != desired:
+        plan.status = desired
+        fields.append('status')
+    plan.save(update_fields=fields)
+
+
 def _mark_plan_step_launched(org, plan_id, step, campaign_id):
     """Idempotently stamp a plan step launched + linked to its campaign.
 
@@ -1910,7 +1928,8 @@ def _mark_plan_step_launched(org, plan_id, step, campaign_id):
     duplicate confirm (or a composer send that replays an idempotent campaign) never
     double-stamps. Keying the guard on ``launched_campaign_id`` (not ``launched_at``)
     means a legacy step that predates this feature — marked launched by the old
-    redirect-only behavior but never actually sent — can still be confirmed.
+    redirect-only behavior but never actually sent — can still be confirmed. Advances the
+    plan to In progress once this makes every step scheduled.
     """
     plan = SMSCampaignPlan.objects.filter(organization=org, id=plan_id).first()
     if not plan:
@@ -1925,8 +1944,7 @@ def _mark_plan_step_launched(org, plan_id, step, campaign_id):
         'launched_at': timezone.now().isoformat(),
         'launched_campaign_id': str(campaign_id),
     }
-    plan.steps = steps
-    plan.save(update_fields=['steps', 'updated_at'])
+    _save_plan_steps(plan, steps)
 
 
 def _plan_step_event(org, plan, criteria):
@@ -2121,7 +2139,7 @@ def sms_plan_remove_step(request, pk, step):
     steps.pop(step)
     for i, s in enumerate(steps):
         s['order'] = i
-    plan.steps = steps
-    plan.save(update_fields=['steps', 'updated_at'])
+    # Recompute status: removing the last un-scheduled step advances the plan to In progress.
+    _save_plan_steps(plan, steps)
     messages.success(request, 'Removed the message from this plan.')
     return redirect('tickets:sms_plan_detail', pk=plan.id)

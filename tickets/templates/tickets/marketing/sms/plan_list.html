@@ -9,13 +9,16 @@
         <h1 class="page-title"><i class="bi bi-stars"></i> AI campaign plans</h1>
         <p class="page-subtitle">Saved AI-recommended SMS sequences.</p>
     </div>
-    <a href="{% url 'tickets:sms_plan_create' %}" class="btn btn-primary btn-sm"><i class="bi bi-plus-lg"></i> New plan</a>
+    <div class="d-flex gap-2">
+        <a href="{% url 'tickets:sms_campaign_list' %}" class="btn btn-outline-secondary btn-sm"><i class="bi bi-arrow-left"></i> SMS</a>
+        <a href="{% url 'tickets:sms_plan_create' %}" class="btn btn-primary btn-sm"><i class="bi bi-plus-lg"></i> New plan</a>
+    </div>
 </div>
 
 <div class="btn-group btn-group-sm mb-3" role="group" aria-label="Filter plans by status">
     <a href="{% url 'tickets:sms_plan_list' %}" class="btn btn-outline-secondary{% if not status_filter %} active{% endif %}">All</a>
     <a href="?status=draft" class="btn btn-outline-secondary{% if status_filter == 'draft' %} active{% endif %}">Drafts</a>
-    <a href="?status=ready" class="btn btn-outline-secondary{% if status_filter == 'ready' %} active{% endif %}">Ready</a>
+    <a href="?status=in_progress" class="btn btn-outline-secondary{% if status_filter == 'in_progress' %} active{% endif %}">In progress</a>
 </div>
 
 <div class="card">
@@ -30,16 +33,24 @@
                         <th>Event</th>
                         <th class="text-end">Steps</th>
                         <th>Created</th>
+                        <th class="text-end"></th>
                     </tr>
                 </thead>
                 <tbody>
                     {% for plan in page_obj.object_list %}
                     <tr role="button" tabindex="0" onclick="window.location='{% url 'tickets:sms_plan_detail' pk=plan.id %}'">
                         <td>{{ plan.name }}</td>
-                        <td>{% if plan.status == 'ready' %}<span class="badge bg-success">Ready</span>{% else %}<span class="badge bg-secondary">Draft</span>{% endif %}</td>
+                        <td>{% if plan.status == 'in_progress' %}<span class="badge bg-info">In progress</span>{% else %}<span class="badge bg-secondary">Draft</span>{% endif %}</td>
                         <td>{% if plan.event %}{{ plan.event.name }}{% else %}<span class="text-secondary">Segment</span>{% endif %}</td>
                         <td class="text-end">{{ plan.steps|length }}</td>
                         <td>{{ plan.created_at|date:'M d, Y' }}</td>
+                        <td class="text-end" onclick="event.stopPropagation()">
+                            <form method="post" action="{% url 'tickets:sms_plan_delete' pk=plan.id %}" class="m-0 d-inline" data-plan-delete-form>
+                                {% csrf_token %}
+                                <button type="button" class="btn btn-sm btn-link text-danger p-0 plan-delete-trigger" data-plan-delete-trigger
+                                        title="Delete plan" aria-label="Delete plan"><i class="bi bi-trash"></i></button>
+                            </form>
+                        </td>
                     </tr>
                     {% endfor %}
                 </tbody>
@@ -64,4 +75,41 @@
     </ul>
 </nav>
 {% endif %}
+
+<div class="modal fade" id="deletePlanModal" tabindex="-1" aria-labelledby="deletePlanModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="deletePlanModalLabel">Delete plan</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">Delete this plan? Campaigns you already launched from it are unaffected. This can't be undone.</div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-danger" id="deletePlanConfirm">Delete</button>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+document.addEventListener('DOMContentLoaded', function () {
+    var modalEl = document.getElementById('deletePlanModal');
+    if (modalEl && window.bootstrap) {
+        var modal = new bootstrap.Modal(modalEl);
+        var pendingForm = null;
+        document.querySelectorAll('[data-plan-delete-trigger]').forEach(function (btn) {
+            btn.addEventListener('click', function () {
+                pendingForm = btn.closest('[data-plan-delete-form]');
+                modal.show();
+            });
+        });
+        document.getElementById('deletePlanConfirm').addEventListener('click', function () {
+            if (pendingForm) pendingForm.submit();
+        });
+    }
+});
+</script>
 {% endblock %}
