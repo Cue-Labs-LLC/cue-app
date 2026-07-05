@@ -91,6 +91,9 @@ tr.campaign-row { cursor: pointer; }
     <a class="marketing-subnav-btn{% if view == 'audience' %} active{% endif %}"
        href="?view=audience&window={{ window_key }}{% if selected_market %}&market={{ selected_market|urlencode }}{% endif %}"
        {% if view == 'audience' %}aria-current="page"{% endif %}>Audience</a>
+    {% if org.ai_sms_strategist_enabled %}
+    <a class="marketing-subnav-btn" href="{% url 'tickets:sms_plan_list' %}">Plans</a>
+    {% endif %}
 </nav>
 
 {# ── Campaigns view (unified: native Cue + external SlickText/etc.) ─────── #}
