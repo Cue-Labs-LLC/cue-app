@@ -445,6 +445,10 @@
         {% if manual_include_ids_csv %}
         <input type="hidden" name="manual_include_ids" value="{{ manual_include_ids_csv }}">
         {% endif %}
+        {% if prefill_plan_id %}
+        <input type="hidden" name="prefill_plan_id" value="{{ prefill_plan_id }}">
+        <input type="hidden" name="prefill_step" value="{{ prefill_step }}">
+        {% endif %}
         {% if event %}
         <input type="hidden" name="event" value="{{ event.id }}">
         <div class="sms-event-banner sms-reveal sms-reveal-1">

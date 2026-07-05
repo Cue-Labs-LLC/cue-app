@@ -92,6 +92,18 @@
     opacity: 0.55; transition: opacity 0.12s, color 0.12s, background 0.12s;
 }
 .plan-step-remove-btn:hover { opacity: 1; color: #e5484d; background: rgba(229,72,77,0.1); }
+.plan-step-actions { display: inline-flex; align-items: center; gap: 8px; }
+.plan-step-launched-link { text-decoration: none; }
+.plan-confirm-panel {
+    margin-top: 0.75rem; padding: 0.85rem 0.95rem;
+    border: 1px solid var(--border); border-radius: 10px; background: var(--bg-inset);
+}
+.plan-confirm-headline { font-size: 14px; color: var(--text-primary); margin-bottom: 0.15rem; }
+.plan-confirm-headline b { font-weight: 600; }
+.plan-confirm-meta { font-family: var(--font-mono); font-size: 11.5px; color: var(--text-secondary); }
+.plan-confirm-warn { margin-top: 0.5rem; }
+.plan-confirm-buttons { display: flex; gap: 8px; margin-top: 0.7rem; }
+.plan-confirm-loading { font-size: 13px; color: var(--text-secondary); }
 </style>
 {% endblock %}
 
@@ -166,14 +178,39 @@
                     <span data-segs-for="{{ step.order }}">{{ step.segments }} segment{{ step.segments|pluralize }} · {{ step.encoding }}</span>
                     <span class="plan-step-saved" data-saved-for="{{ step.order }}" hidden><i class="bi bi-check2"></i> Saved</span>
                 </span>
-                <form method="post" action="{% url 'tickets:sms_plan_launch_step' pk=plan.id step=step.order %}" class="m-0 plan-launch-form" data-step="{{ step.order }}">
-                    {% csrf_token %}
-                    <input type="hidden" name="body">
-                    <button type="submit" class="btn btn-sm {% if step.launched_at %}btn-outline-secondary{% else %}btn-primary{% endif %}">
-                        <i class="bi bi-send"></i> {% if step.launched_at %}Send again{% else %}Review &amp; send{% endif %}
+                <div class="plan-step-actions" data-actions-for="{{ step.order }}">
+                    {% if step.launched_campaign_id %}
+                    <a href="{% url 'tickets:sms_campaign_detail' pk=step.launched_campaign_id %}" class="btn btn-sm btn-outline-secondary plan-step-launched-link">
+                        <i class="bi bi-check2-circle"></i> View campaign
+                    </a>
+                    {% else %}
+                    <form method="post" action="{% url 'tickets:sms_plan_launch_step' pk=plan.id step=step.order %}" class="m-0 plan-launch-form" data-step="{{ step.order }}">
+                        {% csrf_token %}
+                        <input type="hidden" name="body">
+                        <button type="submit" class="btn btn-sm btn-outline-secondary">Open in full editor</button>
+                    </form>
+                    <button type="button" class="btn btn-sm btn-primary plan-confirm-open" data-step="{{ step.order }}"
+                            data-preview-url="{% url 'tickets:sms_plan_preview_step' pk=plan.id step=step.order %}"
+                            data-confirm-url="{% url 'tickets:sms_plan_confirm_step' pk=plan.id step=step.order %}">
+                        <i class="bi bi-send"></i> Confirm &amp; Schedule
                     </button>
-                </form>
+                    {% endif %}
+                </div>
             </div>
+            {% if not step.launched_campaign_id %}
+            <div class="plan-confirm-panel" data-panel-for="{{ step.order }}" hidden>
+                <div class="plan-confirm-loading" data-confirm-loading>Checking recipients…</div>
+                <div data-confirm-body hidden>
+                    <div class="plan-confirm-headline" data-confirm-headline></div>
+                    <div class="plan-confirm-meta" data-confirm-meta></div>
+                    <div class="plan-confirm-warn text-danger small" data-confirm-warn hidden></div>
+                    <div class="plan-confirm-buttons">
+                        <button type="button" class="btn btn-sm btn-primary" data-confirm-go disabled>Confirm &amp; send</button>
+                        <button type="button" class="btn btn-sm btn-outline-secondary" data-confirm-cancel>Cancel</button>
+                    </div>
+                </div>
+            </div>
+            {% endif %}
         </div>
     </div>
     {% empty %}
@@ -251,6 +288,22 @@
             <div class="modal-footer">
                 <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
                 <button type="button" class="btn btn-primary" id="audienceSave">Save audience</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="modal fade" id="confirmNowModal" tabindex="-1" aria-labelledby="confirmNowModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="confirmNowModalLabel">Send now?</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body" id="confirmNowBody">This message's scheduled time has passed. Send it now?</div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-primary" id="confirmNowGo">Send now</button>
             </div>
         </div>
     </div>
@@ -441,6 +494,144 @@ document.addEventListener('DOMContentLoaded', function () {
             const ta = card ? card.querySelector('.plan-step-message') : null;
             const hidden = form.querySelector('input[name="body"]');
             if (ta && hidden) hidden.value = ta.value;
+        });
+    });
+
+    // Inline "Review & send": confirm recipients + schedule and actually send/schedule
+    // the message right here, without the full composer. A past/unset send time asks for
+    // an explicit "send now" confirmation first.
+    function tokensLabel(n) { return n + ' token' + (n === 1 ? '' : 's'); }
+    function pluralR(n) { return n === 1 ? '' : 's'; }
+
+    function markLaunched(card, step, campaignUrl) {
+        const wrap = card.closest('.plan-step');
+        if (wrap) wrap.classList.add('is-launched');
+        const panel = card.querySelector('.plan-confirm-panel[data-panel-for="' + step + '"]');
+        if (panel) panel.hidden = true;
+        const actions = card.querySelector('[data-actions-for="' + step + '"]');
+        if (actions) {
+            actions.innerHTML = '<a href="' + campaignUrl + '" class="btn btn-sm btn-outline-secondary plan-step-launched-link"><i class="bi bi-check2-circle"></i> View campaign</a>';
+        }
+        const head = card.querySelector('.plan-step-head');
+        if (head && !head.querySelector('.launched-pill')) {
+            const pill = document.createElement('span');
+            pill.className = 'launched-pill';
+            pill.innerHTML = '<i class="bi bi-check2"></i> Launched';
+            const timing = head.querySelector('.plan-step-timing');
+            if (timing && timing.nextSibling) head.insertBefore(pill, timing.nextSibling);
+            else head.appendChild(pill);
+        }
+    }
+
+    const confirmNowEl = document.getElementById('confirmNowModal');
+    const confirmNowModal = (confirmNowEl && window.bootstrap) ? new bootstrap.Modal(confirmNowEl) : null;
+    const confirmNowBody = document.getElementById('confirmNowBody');
+    let pendingSend = null;
+    if (confirmNowEl) {
+        document.getElementById('confirmNowGo').addEventListener('click', function () {
+            if (confirmNowModal) confirmNowModal.hide();
+            const fn = pendingSend; pendingSend = null;
+            if (fn) fn();
+        });
+    }
+
+    document.querySelectorAll('.plan-confirm-open').forEach(function (openBtn) {
+        const card = openBtn.closest('.plan-step-card');
+        const step = openBtn.dataset.step;
+        const panel = card.querySelector('.plan-confirm-panel[data-panel-for="' + step + '"]');
+        if (!panel) return;
+        const loadingEl = panel.querySelector('[data-confirm-loading]');
+        const bodyEl = panel.querySelector('[data-confirm-body]');
+        const headlineEl = panel.querySelector('[data-confirm-headline]');
+        const metaEl = panel.querySelector('[data-confirm-meta]');
+        const warnEl = panel.querySelector('[data-confirm-warn]');
+        const goBtn = panel.querySelector('[data-confirm-go]');
+        const cancelBtn = panel.querySelector('[data-confirm-cancel]');
+        const ta = card.querySelector('.plan-step-message');
+        const state = {idempotency_key: null, scheduled: false, count: 0, sendable: false};
+
+        function currentBody() { return ta ? ta.value : ''; }
+        cancelBtn.addEventListener('click', function () { panel.hidden = true; });
+
+        openBtn.addEventListener('click', async function () {
+            if (!panel.hidden) { panel.hidden = true; return; }   // toggle closed
+            panel.hidden = false;
+            loadingEl.textContent = 'Checking recipients…';
+            loadingEl.hidden = false;
+            bodyEl.hidden = true;
+            warnEl.hidden = true;
+            let data;
+            try {
+                const resp = await fetch(openBtn.dataset.previewUrl, {
+                    method: 'POST',
+                    headers: {'X-CSRFToken': CSRF, 'Content-Type': 'application/x-www-form-urlencoded'},
+                    body: new URLSearchParams({body: currentBody()}),
+                });
+                data = await resp.json();
+                if (!resp.ok || !data.ok) throw new Error();
+            } catch (e) {
+                loadingEl.textContent = 'Could not load recipients. Try again.';
+                return;
+            }
+            loadingEl.hidden = true;
+            bodyEl.hidden = false;
+            state.idempotency_key = data.idempotency_key;
+            state.scheduled = data.scheduled;
+            state.count = data.recipient_count;
+
+            headlineEl.innerHTML = 'Send to <b>' + data.recipient_count + '</b> recipient' +
+                pluralR(data.recipient_count) + ' for <b>' + tokensLabel(data.cost_tokens) + '</b>';
+            const when = data.scheduled ? ('Scheduled for ' + data.schedule_label) : 'Sends immediately';
+            metaEl.textContent = when + ' · balance ' + tokensLabel(data.balance_tokens);
+            goBtn.textContent = data.scheduled ? 'Confirm & schedule' : 'Confirm & send';
+
+            let problem = '';
+            if (data.recipient_count === 0) problem = 'This audience has no contactable recipients.';
+            else if (data.exceeds_cap) problem = 'This audience is larger than the ' + data.cap + ' recipient cap. Narrow it first.';
+            else if (data.insufficient) problem = 'Not enough SMS tokens. Top up to send.';
+            if (problem) {
+                warnEl.textContent = problem; warnEl.hidden = false;
+                goBtn.disabled = true; state.sendable = false;
+            } else {
+                goBtn.disabled = false; state.sendable = true;
+            }
+        });
+
+        async function doConfirm() {
+            goBtn.disabled = true;
+            let data;
+            try {
+                const resp = await fetch(openBtn.dataset.confirmUrl, {
+                    method: 'POST',
+                    headers: {'X-CSRFToken': CSRF, 'Content-Type': 'application/x-www-form-urlencoded'},
+                    body: new URLSearchParams({idempotency_key: state.idempotency_key || '', body: currentBody()}),
+                });
+                data = await resp.json();
+                if (!resp.ok || !data.ok) {
+                    warnEl.textContent = (data && data.error) || 'Could not send. Try again.';
+                    warnEl.hidden = false; goBtn.disabled = false;
+                    return;
+                }
+            } catch (e) {
+                warnEl.textContent = 'Could not send. Try again.';
+                warnEl.hidden = false; goBtn.disabled = false;
+                return;
+            }
+            markLaunched(card, step, data.campaign_url);
+        }
+
+        goBtn.addEventListener('click', function () {
+            if (!state.sendable) return;
+            if (state.scheduled) { doConfirm(); return; }
+            // Past/unset send time (D1): explicit "send now" confirmation.
+            if (confirmNowModal) {
+                confirmNowBody.textContent = 'This message will send immediately to ' + state.count +
+                    ' recipient' + pluralR(state.count) + '. Its scheduled time has already passed. Send now?';
+                pendingSend = doConfirm;
+                confirmNowModal.show();
+            } else {
+                doConfirm();
+            }
         });
     });
 });

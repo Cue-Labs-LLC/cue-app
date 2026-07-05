@@ -289,6 +289,8 @@ urlpatterns = [
     path('marketing/sms/plan/<uuid:pk>/step/<int:step>/schedule/', sms_views.sms_plan_update_schedule, name='sms_plan_update_schedule'),
     path('marketing/sms/plan/<uuid:pk>/step/<int:step>/audience/', sms_views.sms_plan_update_audience, name='sms_plan_update_audience'),
     path('marketing/sms/plan/<uuid:pk>/step/<int:step>/launch/', sms_views.sms_plan_launch_step, name='sms_plan_launch_step'),
+    path('marketing/sms/plan/<uuid:pk>/step/<int:step>/preview/', sms_views.sms_plan_preview_step, name='sms_plan_preview_step'),
+    path('marketing/sms/plan/<uuid:pk>/step/<int:step>/confirm/', sms_views.sms_plan_confirm_step, name='sms_plan_confirm_step'),
     path('marketing/sms/plan/<uuid:pk>/step/<int:step>/remove/', sms_views.sms_plan_remove_step, name='sms_plan_remove_step'),
 
     # Forecast Tool

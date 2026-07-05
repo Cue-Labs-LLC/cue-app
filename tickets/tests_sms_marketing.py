@@ -941,6 +941,33 @@ class SMSViewTests(TestCase):
         self.assertIn('Native hello world', html)   # native message in data-message
         self.assertIn('SlickText promo text', html)  # external message in data-message
 
+    def test_campaign_list_shows_scheduled_but_not_sent_campaigns(self):
+        # Scheduled (unsent) campaigns surface in an "Upcoming/Scheduled" band above the
+        # sent list, even though the sent list itself is SENT-only.
+        from tickets.models import SMSCampaign
+        SMSCampaign.objects.create(
+            organization=self.org, name='Queued Blast', body='Coming soon',
+            status=SMSCampaign.Status.SCHEDULED,
+            scheduled_at=timezone.now() + timedelta(days=2), audience_size=15,
+        )
+        resp = self.client.get(reverse('tickets:sms_campaign_list'))
+        self.assertEqual(resp.status_code, 200)
+        html = resp.content.decode()
+        self.assertIn('>Scheduled<', html)
+        self.assertIn('Queued Blast', html)
+        # Its detail page (with the cancel action) is linked from the row.
+        self.assertIn(reverse('tickets:sms_campaign_detail', args=[
+            SMSCampaign.objects.get(name='Queued Blast').id]), html)
+
+    def test_campaign_list_no_scheduled_band_when_none_scheduled(self):
+        from tickets.models import SMSCampaign
+        SMSCampaign.objects.create(
+            organization=self.org, name='Sent Only', body='Done',
+            status=SMSCampaign.Status.SENT, sent_at=timezone.now(), audience_size=5,
+        )
+        resp = self.client.get(reverse('tickets:sms_campaign_list'))
+        self.assertNotContains(resp, '>Scheduled<')
+
     def test_campaign_list_audience_view(self):
         # The Audience sub-view renders the broadcast chart + by-market table.
         resp = self.client.get(reverse('tickets:sms_campaign_list'), {'view': 'audience'})

@@ -412,6 +412,16 @@ def sms_campaign_list(request):
     paginator = Paginator(unified_campaigns, 25)
     campaigns_page = paginator.get_page(request.GET.get('page'))
 
+    # Upcoming band: native campaigns that are scheduled but not yet sent, soonest first.
+    # Not window-filtered — future sends should always be visible regardless of the
+    # analytics window — so the organizer can find (and cancel) a queued send.
+    scheduled_campaigns = list(
+        SMSCampaign.objects.filter(
+            organization=org, deleted_at__isnull=True,
+            status=SMSCampaign.Status.SCHEDULED,
+        ).select_related('event').order_by('scheduled_at')
+    )
+
     # Broadcast audience over time + by market. The cached series is
     # market-independent; the market filter is applied here in Python.
     series = metrics['broadcast_audience']
@@ -475,6 +485,7 @@ def sms_campaign_list(request):
 
     return render(request, 'tickets/marketing/sms/campaign_list.html', {
         'campaigns_page': campaigns_page,
+        'scheduled_campaigns': scheduled_campaigns,
         'balance_cents': org.sms_credit_balance_cents,
         'sms_native_enabled': native,
         'marketing_section': 'sms',
@@ -595,13 +606,12 @@ def sms_campaign_create(request):
             elif confirm_count == 0:
                 form.add_error(None, 'This audience has no contactable recipients.')
             else:
-                from .services.sms_credits import (
-                    plan_campaign_footers, charge, InsufficientCreditsError,
-                )
+                from .services.sms_credits import plan_campaign_footers, InsufficientCreditsError
                 # Anchor the per-recipient footer/disclosure decision (and therefore the
                 # cost) on the actual send time: a far-future scheduled send must re-disclose
                 # phones that will have aged out of the window by then. Computed once here
-                # and reused for both the displayed cost and the charge → displayed == charged.
+                # for the confirm-panel display; finalize_campaign_send recomputes the same
+                # way for the charge → displayed == charged.
                 scheduled = form.cleaned_data.get('send_mode') == SMSCampaignForm.SEND_SCHEDULE
                 send_at = form.cleaned_data['scheduled_at'] if scheduled else timezone.now()
                 confirm_cost_cents, footer_plan = plan_campaign_footers(
@@ -621,79 +631,57 @@ def sms_campaign_create(request):
                         'Not enough SMS tokens to send this campaign. Top up to continue.',
                     )
                 elif request.POST.get('confirm'):
-                    # Idempotency: if this exact confirm already produced a campaign,
-                    # return it instead of charging/sending again.
-                    existing = SMSCampaign.objects.filter(
-                        organization=org, idempotency_key=idem_key,
-                    ).first()
-                    if existing:
-                        return redirect('tickets:sms_campaign_detail', pk=existing.id)
-
-                    # Always persist as SCHEDULED (send-now → scheduled for now). The
-                    # */5 cron is then a safety net: if the immediate dispatch is
-                    # dropped, the campaign is still picked up and sent (no lost money).
-                    # `scheduled` / `send_at` were resolved above (they anchor the cost).
+                    from .services.sms_campaigns import (
+                        finalize_campaign_send, AudienceEmptyError, AudienceTooLargeError,
+                    )
                     try:
-                        with transaction.atomic():
-                            campaign = form.save(commit=False)
-                            campaign.organization = org
-                            campaign.created_by = request.user
-                            campaign.event = event
-                            campaign.filter_criteria = criteria
-                            campaign.manual_include_ids = manual_include_ids
-                            campaign.link_url = extract_first_url(campaign.body)
-                            # Per-campaign attribution: swap any shared event ticket
-                            # link for one unique to this campaign (mutates body/link_url).
-                            _mint_campaign_tracking_link(org, campaign)
-                            campaign.idempotency_key = idem_key
-                            campaign.status = SMSCampaign.Status.SCHEDULED
-                            campaign.scheduled_at = send_at
-                            campaign.audience_size = len(recipients)
-                            campaign.save()
-                            # Freeze the audience now so charged == what sends. The
-                            # orchestrator reuses these rows (it only re-resolves when
-                            # none exist) and re-checks opt-out per recipient at send.
-                            SMSMessageRecipient.objects.bulk_create([
-                                SMSMessageRecipient(
-                                    campaign=campaign, customer_id=r['customer_id'], phone=r['phone'],
-                                    stop_disclosed=footer_plan[r['phone']][0],
-                                    segments=footer_plan[r['phone']][1],
-                                ) for r in recipients
-                            ], batch_size=500)
-                            # Charge inside the same transaction — campaign + snapshot +
-                            # debit are all-or-nothing (no uncharged campaign can exist).
-                            charge(org.id, confirm_cost_cents, campaign=campaign,
-                                   description=f'Campaign: {campaign.name}',
-                                   created_by=request.user)
+                        result = finalize_campaign_send(
+                            org, name=form.cleaned_data['name'],
+                            body=form.cleaned_data['body'], criteria=criteria,
+                            manual_include_ids=manual_include_ids, event=event,
+                            scheduled=scheduled, send_at=send_at, user=request.user,
+                            idempotency_key=idem_key, cap=cap,
+                        )
                     except InsufficientCreditsError:
                         insufficient_credits = True
                         form.add_error(
                             None,
                             'Not enough SMS tokens to send this campaign. Top up to continue.',
                         )
-                    except IntegrityError:
-                        # Concurrent duplicate confirm (same idempotency_key) — the other
-                        # request won; return that campaign.
-                        existing = SMSCampaign.objects.filter(
-                            organization=org, idempotency_key=idem_key,
-                        ).first()
-                        if existing:
-                            return redirect('tickets:sms_campaign_detail', pk=existing.id)
-                        raise
+                    except AudienceEmptyError:
+                        form.add_error(None, 'This audience has no contactable recipients.')
+                    except AudienceTooLargeError:
+                        form.add_error(
+                            None,
+                            f'This audience resolves to more than {cap} recipients. '
+                            f'Narrow the audience before sending.',
+                        )
                     else:
-                        if not scheduled:
-                            transaction.on_commit(
-                                lambda cid=str(campaign.id): send_sms_campaign_task.delay(cid)
-                            )
+                        # A send that originated from an AI plan step marks that step
+                        # launched + links it to the new campaign — only on a real send.
+                        if result.created:
+                            plan_id = request.POST.get('prefill_plan_id')
+                            step_raw = request.POST.get('prefill_step')
+                            if plan_id and step_raw not in (None, ''):
+                                try:
+                                    _mark_plan_step_launched(
+                                        org, plan_id, int(step_raw), result.campaign.id,
+                                    )
+                                except (ValueError, TypeError):
+                                    pass
+                        else:
+                            return redirect('tickets:sms_campaign_detail', pk=result.campaign.id)
+                        if not result.scheduled:
                             messages.success(
-                                request, f'Sending "{campaign.name}" to {len(recipients)} recipients.',
+                                request,
+                                f'Sending "{result.campaign.name}" to {result.recipient_count} recipients.',
                             )
                         else:
                             messages.success(
                                 request,
-                                f'Campaign scheduled for {campaign.scheduled_at:%b %d, %Y %I:%M %p}.',
+                                f'Campaign scheduled for {result.campaign.scheduled_at:%b %d, %Y %I:%M %p}.',
                             )
-                        return redirect('tickets:sms_campaign_detail', pk=campaign.id)
+                        return redirect('tickets:sms_campaign_detail', pk=result.campaign.id)
     else:
         if strategist_prefill:
             # AI plan step: prefill the written body + audience selection so the
@@ -745,6 +733,15 @@ def sms_campaign_create(request):
     encoding, segments = sms_segment_info(
         with_stop_footer(request.POST.get('body', '') if request.method == 'POST' else '')
     )
+    # When the composer was opened from an AI plan step, carry the plan/step through
+    # review→confirm (hidden fields) so a real send stamps that step launched + linked.
+    if request.method == 'GET':
+        prefill_plan_id = (strategist_prefill or {}).get('plan_id') or ''
+        _prefill_step = (strategist_prefill or {}).get('step')
+        prefill_step = '' if _prefill_step is None else str(_prefill_step)
+    else:
+        prefill_plan_id = request.POST.get('prefill_plan_id', '')
+        prefill_step = request.POST.get('prefill_step', '')
     return render(request, 'tickets/marketing/sms/campaign_form.html', {
         'form': form,
         'audience_scope': audience_scope,
@@ -761,6 +758,8 @@ def sms_campaign_create(request):
         'insufficient_credits': insufficient_credits,
         'idempotency_key': idem_key,
         'prefill': prefill,
+        'prefill_plan_id': prefill_plan_id,
+        'prefill_step': prefill_step,
         'manual_include_ids_csv': ','.join(manual_include_ids),
         'footer_disclosure_days': getattr(settings, 'SMS_FOOTER_DISCLOSURE_DAYS', 30),
     })
@@ -1742,7 +1741,12 @@ def sms_plan_update_schedule(request, pk, step):
 @require_sms_feature
 @require_POST
 def sms_plan_launch_step(request, pk, step):
-    """Hand one plan step to the composer (prefilled body + audience) and mark it launched."""
+    """Open one plan step in the full composer (prefilled body + audience + schedule).
+
+    This is the "Open in full editor" escape hatch. It does NOT mark the step launched —
+    merely opening the editor isn't a send. The origin plan/step is carried in the prefill
+    so the composer stamps this step launched only when it actually creates the campaign.
+    """
     org = get_organization(request)
     if not org.ai_sms_strategist_enabled:
         raise Http404()
@@ -1755,10 +1759,12 @@ def sms_plan_launch_step(request, pk, step):
 
     # An edit typed into the message box (and not yet blur-saved) is authoritative:
     # apply + persist it so what launches is exactly what the organizer sees.
+    body_changed = False
     override_body = request.POST.get('body')
     if override_body is not None and override_body.strip():
         target = _apply_step_body(target, override_body.strip())
         steps[step] = target
+        body_changed = True
 
     criteria = target.get('audience_criteria') or {}
     # Map the step's audience to the composer entry point. Event-mode scopes let us keep
@@ -1786,20 +1792,24 @@ def sms_plan_launch_step(request, pk, step):
                 scheduled_local = send_dt.astimezone(org.get_timezone()).strftime('%Y-%m-%dT%H:%M')
         except (ValueError, TypeError):
             scheduled_local = ''
-    # Prefill payload consumed by sms_campaign_create on the next GET.
+    # Prefill payload consumed by sms_campaign_create on the next GET. plan_id/step let
+    # the composer stamp this step launched + linked once it actually sends.
     request.session['sms_compose_prefill'] = {
         'body': target.get('body', ''),
         'criteria': criteria,
         'event_id': event_id,
         'scheduled_at': scheduled_local,
         'name': f"{plan.name} · {target.get('purpose_label') or target.get('purpose') or 'Message'}"[:200],
+        'plan_id': str(plan.id),
+        'step': step,
     }
     request.session.modified = True
 
-    # Mark this step launched (in-place JSON update).
-    steps[step] = {**target, 'launched_at': timezone.now().isoformat()}
-    plan.steps = steps
-    plan.save(update_fields=['steps', 'updated_at'])
+    # Persist a just-typed body edit so the composer prefill matches, but do NOT mark
+    # launched here — that happens only on an actual send.
+    if body_changed:
+        plan.steps = steps
+        plan.save(update_fields=['steps', 'updated_at'])
 
     base = reverse('tickets:sms_campaign_create')
     if event_id:
@@ -1808,6 +1818,217 @@ def sms_plan_launch_step(request, pk, step):
             url += f"&audience_scope={audience_scope}"
         return redirect(url)
     return redirect(base)
+
+
+def _resolve_step_send_at(step, org):
+    """Inline-confirm scheduling rule: a future ``send_at`` schedules for it; a past or
+    missing one sends now. Unlike the composer form (which rejects past times), inline
+    confirm treats a lapsed suggestion as "send now". Returns ``(scheduled: bool, send_at)``.
+    """
+    raw = step.get('send_at')
+    if raw:
+        try:
+            dt = datetime.fromisoformat(raw)
+            if dt > timezone.now():
+                return True, dt
+        except (ValueError, TypeError):
+            pass
+    return False, timezone.now()
+
+
+def _mark_plan_step_launched(org, plan_id, step, campaign_id):
+    """Idempotently stamp a plan step launched + linked to its campaign.
+
+    No-op if the plan/step is gone or the step is already linked to a campaign, so a
+    duplicate confirm (or a composer send that replays an idempotent campaign) never
+    double-stamps. Keying the guard on ``launched_campaign_id`` (not ``launched_at``)
+    means a legacy step that predates this feature — marked launched by the old
+    redirect-only behavior but never actually sent — can still be confirmed.
+    """
+    plan = SMSCampaignPlan.objects.filter(organization=org, id=plan_id).first()
+    if not plan:
+        return
+    steps = plan.steps or []
+    if step is None or step < 0 or step >= len(steps):
+        return
+    if steps[step].get('launched_campaign_id'):
+        return
+    steps[step] = {
+        **steps[step],
+        'launched_at': timezone.now().isoformat(),
+        'launched_campaign_id': str(campaign_id),
+    }
+    plan.steps = steps
+    plan.save(update_fields=['steps', 'updated_at'])
+
+
+def _plan_step_event(org, plan, criteria):
+    """The Event a step's campaign should link to (for attribution), from its criteria.
+
+    An ``event_id`` audience (ticket buyers) links to that event; an ``all_subscribers``
+    step on an event plan links to the plan's event; otherwise no event link.
+    """
+    if criteria.get('event_id'):
+        return Event.objects.filter(
+            organization=org, deleted_at__isnull=True, id=criteria['event_id'],
+        ).first()
+    if criteria.get('all_subscribers') and plan.event_id:
+        return plan.event
+    return None
+
+
+@login_required
+@require_org
+@require_host
+@require_sms_feature
+@require_POST
+def sms_plan_preview_step(request, pk, step):
+    """JSON: resolved recipient count + token cost + wallet balance + schedule label for
+    one plan step, so the plan page can show an inline confirm panel before sending.
+
+    Never writes. ``count == 0`` / ``exceeds_cap`` still return ``ok: True`` (the panel
+    disables confirm and explains) — they're valid preview states, not errors.
+    """
+    from tickets.services.sms_strategist import format_send_label
+    from .services.sms_credits import plan_campaign_footers
+
+    org = get_organization(request)
+    if not org.ai_sms_strategist_enabled:
+        raise Http404()
+    plan = get_object_or_404(
+        SMSCampaignPlan.objects.filter(organization=org).select_related('event'), id=pk,
+    )
+
+    steps = plan.steps or []
+    if step < 0 or step >= len(steps):
+        raise Http404()
+    target = steps[step]
+
+    override_body = request.POST.get('body')
+    body = override_body.strip() if (override_body and override_body.strip()) else target.get('body', '')
+    criteria = target.get('audience_criteria') or {}
+    cap = getattr(settings, 'SMS_CAMPAIGN_MAX_RECIPIENTS', 5000)
+    scheduled, send_at = _resolve_step_send_at(target, org)
+
+    recipients = SMSCampaign(
+        organization=org, filter_criteria=criteria,
+    ).materialize(org, cap=cap + 1)
+    count = len(recipients)
+    exceeds_cap = count > cap
+
+    cost_cents, footer_plan = plan_campaign_footers(
+        org, body, [r['phone'] for r in recipients], as_of=send_at,
+    )
+    cost_tokens = sum(footer_plan[r['phone']][1] for r in recipients)
+    balance_cents = org.sms_credit_balance_cents
+    # Balance shown in tokens, formatted exactly like the composer's confirm panel.
+    from tickets.templatetags.tickets_extras import tokens as _tokens
+    balance_tokens = _tokens(balance_cents)
+    launched_id = target.get('launched_campaign_id')
+
+    return JsonResponse({
+        'ok': True,
+        'recipient_count': min(count, cap),
+        'exceeds_cap': exceeds_cap,
+        'cap': cap,
+        'cost_cents': cost_cents,
+        'cost_tokens': cost_tokens,
+        'balance_cents': balance_cents,
+        'balance_tokens': balance_tokens,
+        'insufficient': cost_cents > balance_cents,
+        'scheduled': scheduled,
+        'schedule_label': format_send_label(send_at) if scheduled else 'now',
+        # Fresh per-preview token echoed back on confirm so a double-click can't
+        # create two campaigns.
+        'idempotency_key': uuid.uuid4().hex,
+        'already_launched': bool(launched_id),
+        'launched_campaign_url': (
+            reverse('tickets:sms_campaign_detail', args=[launched_id]) if launched_id else None
+        ),
+    })
+
+
+@login_required
+@require_org
+@require_host
+@require_sms_feature
+@require_POST
+def sms_plan_confirm_step(request, pk, step):
+    """Create + charge + send/schedule one plan step's campaign inline, then mark the
+    step launched + linked. Idempotent: an already-launched step (or a duplicate confirm
+    with the same key) returns the existing campaign without charging again.
+    """
+    org = get_organization(request)
+    if not org.ai_sms_strategist_enabled:
+        raise Http404()
+    plan = get_object_or_404(
+        SMSCampaignPlan.objects.filter(organization=org).select_related('event'), id=pk,
+    )
+
+    steps = plan.steps or []
+    if step < 0 or step >= len(steps):
+        raise Http404()
+    target = steps[step]
+
+    # Already sent → return the existing campaign; do not re-charge.
+    existing_id = target.get('launched_campaign_id')
+    if existing_id:
+        return JsonResponse({
+            'ok': True, 'already_launched': True, 'campaign_id': existing_id,
+            'campaign_url': reverse('tickets:sms_campaign_detail', args=[existing_id]),
+        })
+
+    # A just-typed (unsaved) body edit is authoritative: apply + persist it so what
+    # sends is exactly what the organizer sees.
+    override_body = request.POST.get('body')
+    if override_body is not None and override_body.strip():
+        target = _apply_step_body(target, override_body.strip())
+        steps[step] = target
+        plan.steps = steps
+        plan.save(update_fields=['steps', 'updated_at'])
+
+    criteria = target.get('audience_criteria') or {}
+    event = _plan_step_event(org, plan, criteria)
+    scheduled, send_at = _resolve_step_send_at(target, org)
+    name = f"{plan.name} · {target.get('purpose_label') or target.get('purpose') or 'Message'}"[:200]
+    idem_key = request.POST.get('idempotency_key') or uuid.uuid4().hex
+    cap = getattr(settings, 'SMS_CAMPAIGN_MAX_RECIPIENTS', 5000)
+
+    from .services.sms_campaigns import (
+        finalize_campaign_send, AudienceEmptyError, AudienceTooLargeError,
+    )
+    from .services.sms_credits import InsufficientCreditsError
+    try:
+        result = finalize_campaign_send(
+            org, name=name, body=target.get('body', ''), criteria=criteria,
+            manual_include_ids=[], event=event, scheduled=scheduled, send_at=send_at,
+            user=request.user, idempotency_key=idem_key, cap=cap,
+        )
+    except AudienceEmptyError:
+        return JsonResponse(
+            {'ok': False, 'error': 'This audience has no contactable recipients.'}, status=400,
+        )
+    except AudienceTooLargeError as exc:
+        return JsonResponse(
+            {'ok': False,
+             'error': f'This audience resolves to more than {exc.cap} recipients. '
+                      'Narrow it before sending.'},
+            status=400,
+        )
+    except InsufficientCreditsError:
+        return JsonResponse(
+            {'ok': False,
+             'error': 'Not enough SMS tokens to send this campaign. Top up to continue.'},
+            status=400,
+        )
+
+    _mark_plan_step_launched(org, plan.id, step, result.campaign.id)
+    return JsonResponse({
+        'ok': True,
+        'campaign_id': str(result.campaign.id),
+        'campaign_url': reverse('tickets:sms_campaign_detail', args=[result.campaign.id]),
+        'scheduled': result.scheduled,
+    })
 
 
 @login_required
