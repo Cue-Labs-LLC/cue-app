@@ -23,6 +23,7 @@ from .models import (
     SurveyQuestionOption, SurveyAnswerOption,
     ExternalSurveyUpload, ExternalSurveyResponse, EventDailyPageView,
     LoyaltyProgram, LoyaltyTier, LoyaltyPointsTransaction,
+    PhoneSuppression, SMSConsentRecord,
     TICKETING_TYPE_DIRECT,
 )
 from .utils import extract_fee_from_display_cents
@@ -8497,6 +8498,17 @@ class MarketingOverviewViewTests(TestCase):
         response = self.client.get(reverse('tickets:marketing_overview') + '?window=banana')
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.context['window_key'], '90')
+
+    def test_overview_shows_shareable_subscribe_link(self):
+        response = self.client.get(reverse('tickets:marketing_overview'))
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.context['subscribe_url'],
+            f"http://testserver/subscribe/{self.org.slug}/",
+        )
+        self.assertContains(response, f'/subscribe/{self.org.slug}/')
+        self.assertContains(response, 'Grow your audience')
+        self.assertContains(response, 'subscribeLinkCopy')
 
 
 class MarketingAINarrativeTests(TestCase):
@@ -17389,3 +17401,170 @@ class RegenerateEventSummaryTaskTests(TestCase):
                 organization=self.org, feature=AITokenUsage.FEATURE_EVENT_SUMMARY
             ).exists()
         )
+
+
+@override_settings(E2E_TEST_MODE=True)
+class SubscribePageTests(TestCase):
+    """Public /subscribe/<org>/ flow: form -> OTP -> accountless Customer + consent."""
+
+    OTP = '000000'  # tickets.sms.E2E_OTP_CODE
+
+    def setUp(self):
+        from django.core.cache import cache
+        cache.clear()  # rate-limit counters are process-global
+        self.client = Client()
+        self.org = Organization.objects.create(
+            name='After Hours', slug='after-hours', sms_marketing_enabled=True,
+        )
+        self.url = reverse('tickets:subscribe', args=[self.org.slug])
+        self.verify_url = reverse('tickets:subscribe_verify', args=[self.org.slug])
+
+    def _valid_post(self, **over):
+        data = {'name': 'Sam Fan', 'email': 'sam@example.com',
+                'phone': '415-555-0100', 'sms_consent': 'on'}
+        data.update(over)
+        return self.client.post(self.url, data)
+
+    # --- GET / gating ---
+    def test_get_renders_form(self):
+        r = self.client.get(self.url)
+        self.assertEqual(r.status_code, 200)
+        self.assertContains(r, 'After Hours')
+        self.assertContains(r, 'Get text updates')
+
+    def test_unknown_org_404(self):
+        self.assertEqual(self.client.get(reverse('tickets:subscribe', args=['nope'])).status_code, 404)
+
+    def test_sms_marketing_disabled_shows_unavailable(self):
+        self.org.sms_marketing_enabled = False
+        self.org.save(update_fields=['sms_marketing_enabled'])
+        r = self.client.get(self.url)
+        self.assertContains(r, "isn't accepting")
+
+    # --- validation ---
+    def test_consent_unchecked_rejected_no_otp(self):
+        with patch('tickets.sms.start_phone_verification') as m:
+            r = self.client.post(self.url, {'name': 'A', 'email': 'a@b.com', 'phone': '4155550100'})
+        m.assert_not_called()
+        self.assertEqual(SMSConsentRecord.objects.count(), 0)
+        self.assertContains(r, 'agree to receive')
+
+    def test_missing_email_rejected(self):
+        r = self._valid_post(email='')
+        self.assertEqual(SMSConsentRecord.objects.count(), 0)
+        self.assertContains(r, 'Get text updates')  # still on form
+
+    def test_bad_phone_rejected(self):
+        r = self._valid_post(phone='123')
+        self.assertEqual(SMSConsentRecord.objects.count(), 0)
+        self.assertContains(r, 'valid mobile number')
+
+    # --- send + pending record ---
+    def test_valid_post_sends_code_and_writes_pending_record(self):
+        r = self._valid_post()
+        self.assertContains(r, 'texted a 6-digit code')
+        rec = SMSConsentRecord.objects.get()
+        self.assertEqual(rec.phone, '+14155550100')
+        self.assertEqual(rec.email, 'sam@example.com')
+        self.assertIsNone(rec.verified_at)  # pending until OTP
+        self.assertTrue(rec.consent_given)
+        self.assertIn('After Hours', rec.consent_text)
+
+    def test_send_failure_shows_retry_no_record(self):
+        with patch('tickets.sms.start_phone_verification', return_value=False):
+            r = self._valid_post()
+        self.assertEqual(SMSConsentRecord.objects.count(), 0)
+        self.assertContains(r, "send a code to that number")
+
+    # --- verify -> customer + consent ---
+    def test_verify_creates_customer_and_verifies_consent(self):
+        self._valid_post()
+        r = self.client.post(self.verify_url, {'otp_code': self.OTP})
+        self.assertContains(r, "You're in")
+        c = Customer.objects.get(organization=self.org, email='sam@example.com')
+        self.assertIsNone(c.user)  # accountless
+        self.assertTrue(c.sms_opt_in)
+        self.assertIsNotNone(c.sms_opt_in_date)
+        self.assertEqual(c.phone, '+14155550100')
+        rec = SMSConsentRecord.objects.get()
+        self.assertIsNotNone(rec.verified_at)
+        self.assertEqual(rec.customer_id, c.id)
+        self.assertFalse(rec.pending_start)
+
+    def test_wrong_code_keeps_record_unverified(self):
+        self._valid_post()
+        r = self.client.post(self.verify_url, {'otp_code': '999999'})
+        self.assertContains(r, "Try again or resend")
+        self.assertIsNone(SMSConsentRecord.objects.get().verified_at)
+        self.assertFalse(Customer.objects.filter(email='sam@example.com').exists())
+
+    def test_verify_without_session_restarts(self):
+        r = self.client.post(self.verify_url, {'otp_code': self.OTP})
+        self.assertContains(r, 'start again')
+
+    # --- identity: merges by email, never splits ---
+    def test_existing_customer_reused_not_clobbered(self):
+        existing = Customer.objects.create(
+            organization=self.org, email='sam@example.com', name='Real Name',
+            lifetime_value=Decimal('250.00'),
+        )
+        self._valid_post()
+        self.client.post(self.verify_url, {'otp_code': self.OTP})
+        existing.refresh_from_db()
+        self.assertTrue(existing.sms_opt_in)
+        self.assertEqual(existing.name, 'Real Name')            # not clobbered
+        self.assertEqual(existing.lifetime_value, Decimal('250.00'))
+        self.assertEqual(Customer.objects.filter(email='sam@example.com').count(), 1)
+
+    def test_double_submit_one_customer(self):
+        for _ in range(2):
+            self._valid_post()
+            self.client.post(self.verify_url, {'otp_code': self.OTP})
+        self.assertEqual(Customer.objects.filter(organization=self.org, email='sam@example.com').count(), 1)
+
+    # --- suppression reconciliation ---
+    def test_per_org_stop_cleared_on_consent(self):
+        PhoneSuppression.objects.create(
+            phone='+14155550100', organization=self.org,
+            reason=PhoneSuppression.Reason.MANUAL,
+        )
+        self._valid_post()
+        self.client.post(self.verify_url, {'otp_code': self.OTP})
+        self.assertFalse(PhoneSuppression.objects.filter(
+            phone='+14155550100', organization=self.org).exists())
+        self.assertFalse(SMSConsentRecord.objects.get().pending_start)
+
+    def test_global_stop_sets_pending_start_and_keeps_suppression(self):
+        PhoneSuppression.objects.create(
+            phone='+14155550100', organization=None,
+            reason=PhoneSuppression.Reason.TWILIO_STOP,
+        )
+        self._valid_post()
+        r = self.client.post(self.verify_url, {'otp_code': self.OTP})
+        self.assertContains(r, 'reply')  # START instruction
+        self.assertTrue(SMSConsentRecord.objects.get().pending_start)
+        self.assertTrue(PhoneSuppression.objects.filter(
+            phone='+14155550100', organization__isnull=True).exists())  # NOT cleared
+
+    def test_inbound_start_clears_pending_start(self):
+        self.test_global_stop_sets_pending_start_and_keeps_suppression()
+        with patch('tickets.sms_views.validate_twilio_request', return_value=True):
+            self.client.post(reverse('tickets:twilio_sms_inbound_webhook'),
+                             {'From': '+14155550100', 'OptOutType': 'START'})
+        self.assertFalse(SMSConsentRecord.objects.get().pending_start)
+
+    # --- rate limit (fail-closed, per-phone cap of 3) ---
+    def test_per_phone_rate_limit(self):
+        for _ in range(3):
+            self.assertContains(self._valid_post(), 'texted a 6-digit code')
+        blocked = self._valid_post()
+        self.assertContains(blocked, 'wait a bit')
+
+    # --- ledger immutability ---
+    def test_consent_record_proof_field_immutable(self):
+        from django.core.exceptions import ValidationError
+        self._valid_post()
+        rec = SMSConsentRecord.objects.get()
+        rec.consent_text = 'tampered'
+        with self.assertRaises(ValidationError):
+            rec.save()

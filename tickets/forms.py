@@ -2028,3 +2028,36 @@ class SMSCampaignForm(forms.ModelForm):
             elif scheduled <= timezone.now():
                 self.add_error('scheduled_at', 'Scheduled time must be in the future.')
         return cleaned
+
+
+class SubscribeForm(forms.Form):
+    """Public subscribe-to-an-organizer form: name + email + phone + SMS consent.
+
+    Email is REQUIRED so subscriber identity keys on (organization, email) like
+    the rest of the app (checkout/CSV) — see the audience-subscribe design doc.
+    Rendered manually in subscribe.html with float-labels (no crispy helper).
+    """
+    name = forms.CharField(
+        max_length=200,
+        widget=forms.TextInput(attrs={'autocomplete': 'name', 'data-testid': 'subscribe-name'}),
+    )
+    email = forms.EmailField(
+        widget=forms.EmailInput(attrs={'autocomplete': 'email', 'data-testid': 'subscribe-email'}),
+    )
+    phone = forms.CharField(
+        max_length=20,
+        widget=forms.TextInput(attrs={'type': 'tel', 'autocomplete': 'tel', 'data-testid': 'subscribe-phone'}),
+    )
+    sms_consent = forms.BooleanField(
+        required=True,
+        error_messages={'required': 'Please agree to receive texts to continue.'},
+    )
+
+    def clean_email(self):
+        return self.cleaned_data['email'].lower().strip()
+
+    def clean_phone(self):
+        phone = _normalize_phone(self.cleaned_data['phone'])
+        if not _re.match(r'^\+[1-9]\d{6,14}$', phone):
+            raise forms.ValidationError('Enter a valid mobile number.')
+        return phone

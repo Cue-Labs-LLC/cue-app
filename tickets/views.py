@@ -47,7 +47,7 @@ from .models import (
     ExternalSurveyUpload, ExternalSurveyResponse, TypeformFormSubscription, EventDailyPageView,
     WaitlistEntry, OrganizerWaitlist,
     ScannerSession, generate_unique_scanner_pin, TrackingLink, _generate_tracking_token,
-    LoyaltyProgram, LoyaltyTier, PhoneSuppression,
+    LoyaltyProgram, LoyaltyTier, PhoneSuppression, SMSConsentRecord,
     EVENT_STATUS_DRAFT, EVENT_STATUS_LIVE, EVENT_STATUS_ENDED, EVENT_STATUS_CANCELLED,
     TICKETING_TYPE_DIRECT, TICKETING_TYPE_EXTERNAL,
 )
@@ -56,7 +56,7 @@ from .forms import (
     VenueForm, VenueChoiceField, EventForm, LoginForm,
     CustomFieldForm, CustomFieldOptionFormSet,
     IncomeSourceForm, EventIncomeForm,
-    OTPVerificationForm, MemberInviteForm, AttendeePhoneForm,
+    OTPVerificationForm, MemberInviteForm, AttendeePhoneForm, SubscribeForm,
     ProfileCompletionForm, EmailLoginForm, EmailProfileCompletionForm,
     SaleableTicketTypeForm, SaleableTicketTypeTierFormSet, PublicTicketPurchaseForm,
     DirectEventForm, DirectTicketTypeFormSet,
@@ -3395,6 +3395,16 @@ def marketing_overview(request):
         'sms_clicks': [row['sms_clicks'] for row in metrics['engagement_trends']],
     }
 
+    # Public subscribe link the organizer shares (Linktree, flyers, socials) to
+    # grow their SMS audience. Built absolute so copy/QR work off-dashboard.
+    import base64
+    from .utils import generate_qr_png_bytes
+    subscribe_url = request.build_absolute_uri(reverse('tickets:subscribe', args=[org.slug]))
+    _qr_png = generate_qr_png_bytes(subscribe_url)
+    subscribe_qr = (
+        'data:image/png;base64,' + base64.b64encode(_qr_png).decode() if _qr_png else ''
+    )
+
     context = {
         'metrics': metrics,
         'recommendations': recommendations,
@@ -3405,6 +3415,8 @@ def marketing_overview(request):
         'trend_chart_json': json.dumps(trend_chart),
         'engagement_chart_json': json.dumps(engagement_chart),
         'org_sms_marketing_enabled': org.sms_marketing_enabled,
+        'subscribe_url': subscribe_url,
+        'subscribe_qr': subscribe_qr,
         'marketing_section': 'overview',
     }
     return render(request, 'tickets/marketing_overview.html', context)
@@ -12281,6 +12293,184 @@ def attendee_verify_otp_view(request, org_slug):
         'org': org,
         "masked_phone": f"***{phone[-4:]}",
     })
+
+
+# ---------------------------------------------------------------------------
+# Public "subscribe to an organizer" flow (accountless Customer + SMS consent).
+# Design doc: audience-subscribe-page. Email-keyed identity (merges with
+# checkout/CSV), provable SMSConsentRecord ledger, suppression-aware,
+# fail-closed rate limit, single minimal template across all steps.
+# ---------------------------------------------------------------------------
+
+SUBSCRIBE_OTP_PURPOSE = 'subscribe'
+
+
+def _subscribe_client_ip(request):
+    """Proxy-safe client IP (Render sits behind a proxy → REMOTE_ADDR is the proxy).
+    Returns '' when the resolved value isn't a valid IP (prevents inet save errors)."""
+    xff = request.META.get('HTTP_X_FORWARDED_FOR', request.META.get('REMOTE_ADDR', ''))
+    ip = (xff or '').split(',')[0].strip()
+    try:
+        from django.core.validators import validate_ipv46_address
+        validate_ipv46_address(ip)
+        return ip
+    except Exception:
+        return ''
+
+
+def _subscribe_consent_text(org):
+    """The exact SMS-consent disclosure shown on the page AND frozen on the record."""
+    return (
+        f"I agree to receive recurring automated marketing text messages from "
+        f"{org.name} at the number provided. Consent is not a condition of purchase. "
+        f"Message frequency varies. Msg & data rates may apply. Reply STOP to opt out, "
+        f"HELP for help."
+    )
+
+
+def _subscribe_rate_ok(org, ip, phone):
+    """Per-IP AND per-phone limiter for the OTP send. FAIL CLOSED (design F8): a
+    public endpoint that spends real money on each send must not fail open, so a
+    cache-backend outage denies rather than allows."""
+    try:
+        ip_key = f"subscribe_rl_ip:{org.id}:{ip}"
+        ph_key = f"subscribe_rl_ph:{org.id}:{phone}"
+        ip_n = django_cache.get(ip_key, 0) or 0
+        ph_n = django_cache.get(ph_key, 0) or 0
+        if ip_n >= 15 or ph_n >= 3:
+            return False
+        django_cache.set(ip_key, ip_n + 1, 3600)
+        django_cache.set(ph_key, ph_n + 1, 3600)
+        return True
+    except Exception:
+        return False  # fail closed
+
+
+def _subscribe_render(request, org, step, **extra):
+    ctx = {'org': org, 'step': step, 'consent_text': _subscribe_consent_text(org)}
+    ctx.update(extra)
+    return render(request, 'tickets/subscribe.html', ctx)
+
+
+def subscribe_view(request, org_slug):
+    """Public. Step 1: capture name/email/phone + SMS consent, send the OTP."""
+    from .sms import otp_start
+    org = get_object_or_404(Organization, slug=org_slug)
+    if not org.sms_marketing_enabled:
+        return _subscribe_render(request, org, step='unavailable')
+
+    if request.method != 'POST':
+        return _subscribe_render(request, org, step='form', form=SubscribeForm())
+
+    form = SubscribeForm(request.POST)
+    if not form.is_valid():
+        return _subscribe_render(request, org, step='form', form=form)
+
+    name = form.cleaned_data['name']
+    email = form.cleaned_data['email']
+    phone = form.cleaned_data['phone']
+    ip = _subscribe_client_ip(request)
+
+    if not _subscribe_rate_ok(org, ip, phone):
+        return _subscribe_render(
+            request, org, step='form', form=form,
+            send_error="You've tried a few times. Please wait a bit and try again.",
+        )
+
+    if not otp_start(request, phone, purpose=SUBSCRIBE_OTP_PURPOSE):
+        # start swallows all errors to False (bad number OR Twilio down) — generic retry.
+        return _subscribe_render(
+            request, org, step='form', form=form,
+            send_error="We couldn't send a code to that number. Check it and try again.",
+        )
+
+    # OTP sent — only now write the pending record (keeps failed sends out of the ledger).
+    record = SMSConsentRecord.objects.create(
+        organization=org, phone=phone, email=email, name=name,
+        consent_given=True, consent_text=_subscribe_consent_text(org),
+        consent_url=request.path, ip_address=ip or None,
+        user_agent=request.META.get('HTTP_USER_AGENT', '')[:2000],
+        source=SMSConsentRecord.Source.SUBSCRIBE_PAGE,
+    )
+    request.session['subscribe_flow'] = {
+        'org_id': str(org.id), 'record_id': str(record.id), 'phone': phone,
+    }
+    return _subscribe_render(request, org, step='code', masked_phone=phone[-4:])
+
+
+def subscribe_verify_view(request, org_slug):
+    """Public. Step 2: verify the OTP → upsert Customer (email-keyed), mark consent
+    verified, reconcile suppression, show success."""
+    from .sms import otp_start, otp_check, otp_clear, resolve_sms_sender_number
+    from django.db import transaction
+    org = get_object_or_404(Organization, slug=org_slug)
+
+    flow = request.session.get('subscribe_flow')
+    if not flow or flow.get('org_id') != str(org.id):
+        return _subscribe_render(request, org, step='form', form=SubscribeForm(),
+                                 send_error='Your session expired. Please start again.')
+    masked = flow['phone'][-4:]
+
+    if request.method != 'POST':
+        return _subscribe_render(request, org, step='code', masked_phone=masked)
+
+    if request.POST.get('resend'):
+        # Re-send the code — same fail-closed limiter so resend can't be abused.
+        if not _subscribe_rate_ok(org, _subscribe_client_ip(request), flow['phone']):
+            return _subscribe_render(request, org, step='code', masked_phone=masked,
+                                     code_error='Too many code requests. Please wait a bit.')
+        otp_start(request, flow['phone'], purpose=SUBSCRIBE_OTP_PURPOSE)
+        return _subscribe_render(request, org, step='code', masked_phone=masked, resent=True)
+
+    form = OTPVerificationForm(request.POST)
+    if not form.is_valid():
+        return _subscribe_render(request, org, step='code', masked_phone=masked,
+                                 code_error='Enter the 6-digit code we texted you.')
+
+    ok, phone = otp_check(request, form.cleaned_data['otp_code'], purpose=SUBSCRIBE_OTP_PURPOSE)
+    if not ok or not phone:
+        return _subscribe_render(request, org, step='code', masked_phone=masked,
+                                 code_error="That code didn't match. Try again or resend.")
+
+    record = SMSConsentRecord.objects.filter(id=flow['record_id'], organization=org).first()
+    if record is None:
+        return _subscribe_render(request, org, step='form', form=SubscribeForm(),
+                                 send_error='Your session expired. Please start again.')
+
+    with transaction.atomic():
+        # Email-keyed identity — merges with checkout/CSV (design decision A).
+        customer, _created = Customer.objects.get_or_create(
+            organization=org, email=record.email,
+            defaults={'name': record.name, 'phone': phone},
+        )
+        if not customer.phone:
+            customer.phone = phone
+        customer.sms_opt_in = True
+        customer.sms_opt_in_date = django_tz.now()
+        customer.save(update_fields=['phone', 'sms_opt_in', 'sms_opt_in_date', 'updated_at'])
+
+        # Suppression reconciliation.
+        # Per-org unsubscribe: fresh express consent overrides it → delete.
+        PhoneSuppression.objects.filter(
+            phone=phone, organization=org,
+            reason__in=[PhoneSuppression.Reason.MANUAL, PhoneSuppression.Reason.BOUNCE],
+        ).delete()
+        # Global Twilio STOP: cannot clear server-side → consented but unreachable.
+        pending_start = PhoneSuppression.objects.filter(
+            phone=phone, organization__isnull=True,
+        ).exists()
+
+        record.customer = customer
+        record.verified_at = django_tz.now()
+        record.pending_start = pending_start
+        record.save(update_fields=['customer', 'verified_at', 'pending_start', 'updated_at'])
+
+    otp_clear(request, purpose=SUBSCRIBE_OTP_PURPOSE)
+    request.session.pop('subscribe_flow', None)
+
+    start_number = resolve_sms_sender_number() if pending_start else ''
+    return _subscribe_render(request, org, step='done',
+                             pending_start=pending_start, start_number=start_number)
 
 
 def phone_login_view(request):

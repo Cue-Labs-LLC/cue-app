@@ -71,6 +71,9 @@ urlpatterns = [
     # Public attendee paths (no auth required)
     path('join/<slug:org_slug>/', views.attendee_signup_view, name='attendee_signup'),
     path('join/<slug:org_slug>/verify/', views.attendee_verify_otp_view, name='attendee_verify_otp'),
+    # Public "subscribe to an organizer" (accountless Customer + SMS consent)
+    path('subscribe/<slug:org_slug>/', views.subscribe_view, name='subscribe'),
+    path('subscribe/<slug:org_slug>/verify/', views.subscribe_verify_view, name='subscribe_verify'),
     # Old phone login - redirect to unified login
     path('login/phone/', RedirectView.as_view(pattern_name='tickets:login', permanent=False), name='phone_login'),
     path('login/phone/verify/', RedirectView.as_view(pattern_name='tickets:login', permanent=False), name='phone_login_verify'),

@@ -380,3 +380,83 @@
 **Context:** Deferred from the onboarding design review (D5/6B) and the "Review consent" UX fix (2026-07-03). The manual/import paths exist today: `set_sms_opt_in` (tickets/services/sms_consent.py), `customers_bulk_sms_status` (tickets/sms_views.py), and CSV consent mapping (`customer_sms_opt_in` in csv_processor.py / the "SMS Marketing Consent" format row). Consent state lives on `Customer.sms_opt_in` / `sms_opt_in_date`; campaign audiences gate on it (models.py). A public opt-in surface is the missing piece.
 
 **Depends on:** —
+
+---
+
+## Subscribe: Phone-only signups (customer-identity workstream)
+
+**What:** Allow the public subscribe page to accept phone-only signups (no email) without splitting one person into two `Customer` rows. Requires: normalize `phone` to E.164 in `Customer.save()` + backfill existing rows; a `(organization, phone)` partial-unique constraint migration preceded by a dup-phone audit/cleanup; and a shared `resolve_customer(org, email, phone)` helper that checkout (`views.py:10890`), webhook fulfillment (`views.py:11763`), and CSV import (`csv_processor.py:492`) all route through, deduping by email OR normalized phone.
+
+**Why:** The subscribe MVP requires email (eng-review decision A) because the app keys `Customer` identity on `(org, email)` everywhere; phone-only would fork identity. This is the deliberate way to get the original phone-first wedge back once signup volume justifies it.
+
+**Pros:** Unlocks phone-only audience capture (lower signup friction); centralizes customer identity behind one idempotent resolver (matches the `two-org-creation-paths` learning).
+
+**Cons:** Reaches into money-path code (checkout); the `(org,phone)` migration can fail on existing duplicate phones; needs its own review. ~1 week.
+
+**Context:** Deferred from /plan-eng-review of the subscribe page (2026-07-05). Codex outside voice flagged customer identity as the biggest risk. `Customer.save()` normalizes email but NOT phone (models.py:106); no merge utility exists. Design doc: owenbarton-obarton-audience-subscribe-page-design-20260705-192530.md.
+
+**Depends on:** Subscribe page (email-keyed) shipped.
+
+---
+
+## Consent: Backfill checkout SMS consent into SMSConsentRecord ledger
+
+**What:** Have ticket checkout write an `SMSConsentRecord` when it flips `sms_opt_in=True` (`views.py:10896`, `11769`), so the provable-consent ledger covers every origination surface, not just `/subscribe/`.
+
+**Why:** After the subscribe page ships, consent proof is inconsistent: subscribe has an immutable record (IP, user-agent, exact disclosure), checkout still flips a boolean with no record. A TCPA audit wants one consistent proof model. (Codex outside-voice Finding 4.)
+
+**Pros:** Uniform, defensible consent audit trail across the app; reuses the `SMSConsentRecord` model.
+
+**Cons:** Touches the checkout/payment path; must capture the checkout consent disclosure text + IP at that point.
+
+**Context:** Raised in /plan-eng-review of the subscribe page (2026-07-05). The `SMSConsentRecord` model + `source` field are designed to accept a `checkout` source with no schema change.
+
+**Depends on:** `SMSConsentRecord` model (subscribe page) shipped.
+
+---
+
+## Subscribe: CAPTCHA abuse escalation
+
+**What:** Add a CAPTCHA (hCaptcha / Cloudflare Turnstile) to the subscribe form as a second abuse layer above rate-limiting + Twilio Fraud Guard.
+
+**Why:** The public OTP endpoint spends real money per send; rate-limit + Fraud Guard is the MVP floor, CAPTCHA is the escalation if bot traffic appears. (Eng-review decision 2A.)
+
+**Pros:** Strong bot mitigation on a paid endpoint.
+
+**Cons:** Friction on the funnel; a JS dependency; premature before any observed abuse.
+
+**Context:** Deferred from /plan-eng-review of the subscribe page (2026-07-05), gated on observing real abuse in the rate-limit metrics.
+
+**Depends on:** Subscribe page shipped + abuse observed.
+
+---
+
+## Subscribe: Preference / manage-subscriptions center
+
+**What:** A page where a subscriber can view and update their SMS (and later email) preferences without having to text STOP — e.g. a tokenized `/preferences/<token>/` link.
+
+**Why:** Turns the consent ledger into a real audience primitive and gives subscribers a self-serve opt-down path (better than all-or-nothing STOP).
+
+**Pros:** Better subscriber UX; supports future email channel; builds on the `SMSConsentRecord` + `opted_out_at` lifecycle already in the model.
+
+**Cons:** Not needed until there is an audience to manage; needs secure tokenized access.
+
+**Context:** Deferred from /plan-eng-review of the subscribe page (2026-07-05). `SMSConsentRecord.opted_out_at` is already carried for this.
+
+**Depends on:** Subscribe page shipped.
+
+---
+
+## Design: Create a DESIGN.md via /design-consultation
+
+**What:** Run /design-consultation to produce a real DESIGN.md — a named design system (typography scale, color tokens, spacing, component vocabulary, motion) for Cue.
+
+**Why:** No DESIGN.md exists today. The subscribe page had to calibrate against implicit CLAUDE.md conventions (dashboard.css, Outfit/Sora, dark mode, the DISTILLED_AESTHETICS_PROMPT). A named system makes every future design review faster and more consistent, and gives implementers exact tokens instead of vibes.
+
+**Pros:** Consistency across pages; faster design reviews; concrete tokens for implementers.
+
+**Cons:** Time to run the consultation; someone must own keeping DESIGN.md current.
+
+**Context:** Flagged in /plan-design-review of the subscribe page (2026-07-05), which rated design-system alignment 8/10 only because it leaned on implicit conventions. Existing references: dashboard.css, base.html, public_org_profile.html.
+
+**Depends on:** —
