@@ -1,5 +1,6 @@
 {% extends 'tickets/base.html' %}
 {% load tickets_extras %}
+{% load tz %}
 
 {% block title %}{{ event.name }} - Event Details{% endblock %}
 
@@ -1321,7 +1322,7 @@ document.addEventListener('DOMContentLoaded', function() {
                         <td class="d-none d-sm-table-cell">{% if a.rfm_segment %}<span class="badge bg-{{ segment_badge_colors|get_item:a.rfm_segment }}">{{ a.rfm_segment }}</span>{% else %}<span class="text-body-secondary">—</span>{% endif %}</td>
                         <td class="text-end{% if a.events_count >= 2 %} fw-semibold{% endif %}">{{ a.events_count }}</td>
                         <td class="text-end"><span class="revenue">${{ a.lifetime_value|currency }}</span></td>
-                        <td class="d-none d-md-table-cell">{% if a.event_checked_in_at %}{{ a.event_checked_in_at|date:"M j, g:i a" }}{% else %}—{% endif %}</td>
+                        <td class="d-none d-md-table-cell">{% if a.event_checked_in_at %}{% timezone event.timezone %}{{ a.event_checked_in_at|date:"M j, g:i a" }}{% endtimezone %}{% else %}—{% endif %}</td>
                     </tr>
                     {% endfor %}
                 </tbody>
