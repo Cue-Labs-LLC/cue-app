@@ -1822,6 +1822,86 @@ class PhoneSuppression(BaseModel):
         ).exists()
 
 
+class SMSConsentRecord(AuditBaseModel):
+    """Provable record of marketing-SMS consent captured at a self-serve
+    origination surface (the public /subscribe/ page).
+
+    Cue historically only *imported* already-consented data (CSV, SlickText), so
+    consent lived as booleans on Customer. This is the first surface where Cue
+    *originates* consent directly, so it needs a defensible audit trail: the exact
+    disclosure text shown, the IP and user-agent, and the timestamp. The proof
+    fields are frozen once written (see save()); only lifecycle fields
+    (verified_at, pending_start, opted_out_at, customer) may change afterward.
+
+    A record only counts as consent when ``verified_at`` is set (OTP passed).
+    Unverified rows are pending/abandoned signups and must be excluded everywhere.
+    """
+    class Source(models.TextChoices):
+        SUBSCRIBE_PAGE = 'subscribe_page', 'Subscribe page'
+        TEXT_JOIN = 'text_join', 'Text to join'  # forward-compat (Phase 2)
+
+    organization = models.ForeignKey(
+        Organization, on_delete=models.CASCADE, related_name='sms_consent_records',
+    )
+    customer = models.ForeignKey(
+        'Customer', null=True, blank=True, on_delete=models.SET_NULL,
+        related_name='sms_consent_records',
+        help_text='Linked after the Customer upsert on verification.',
+    )
+    # Contact info is denormalized (copied, not read through customer) so the
+    # ledger freezes exactly what was disclosed at consent time.
+    phone = models.CharField(max_length=20, db_index=True)  # E.164
+    email = models.EmailField(blank=True)
+    name = models.CharField(max_length=200, blank=True)
+    consent_given = models.BooleanField(default=False)
+    consent_text = models.TextField(help_text='The exact disclosure the subscriber agreed to.')
+    consent_url = models.CharField(max_length=200, blank=True)
+    ip_address = models.GenericIPAddressField(null=True, blank=True)
+    user_agent = models.TextField(blank=True)
+    source = models.CharField(
+        max_length=20, choices=Source.choices, default=Source.SUBSCRIBE_PAGE, db_index=True,
+    )
+    verified_at = models.DateTimeField(
+        null=True, blank=True,
+        help_text='Set on OTP success; only verified records count as consent.',
+    )
+    pending_start = models.BooleanField(
+        default=False,
+        help_text='Phone was globally Twilio-suppressed at consent time; consented '
+                  'but unreachable until they text START. Cleared by the inbound webhook.',
+    )
+    opted_out_at = models.DateTimeField(null=True, blank=True)
+
+    # Frozen once written — mutating any of these raises. Lifecycle fields
+    # (verified_at, pending_start, opted_out_at, customer, version) stay mutable.
+    _FROZEN_FIELDS = (
+        'phone', 'email', 'name', 'consent_given', 'consent_text',
+        'consent_url', 'ip_address', 'user_agent', 'source',
+    )
+
+    class Meta:
+        indexes = [
+            models.Index(fields=['organization', 'phone']),
+            models.Index(fields=['organization', '-created_at']),
+        ]
+
+    def __str__(self):
+        state = 'verified' if self.verified_at else 'pending'
+        return f"consent {self.phone} ({self.source}, {state})"
+
+    def save(self, *args, **kwargs):
+        """Freeze proof fields after the row exists (append-only ledger)."""
+        if not self._state.adding:
+            old = type(self).objects.filter(pk=self.pk).only(*self._FROZEN_FIELDS).first()
+            if old is not None:
+                for field in self._FROZEN_FIELDS:
+                    if getattr(old, field) != getattr(self, field):
+                        raise ValidationError(
+                            f"SMSConsentRecord.{field} is immutable once written."
+                        )
+        super().save(*args, **kwargs)
+
+
 class SMSCampaign(AuditBaseModel):
     """A native marketing-SMS broadcast.
 

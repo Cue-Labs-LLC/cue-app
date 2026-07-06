@@ -231,6 +231,76 @@ def check_phone_verification(phone: str, code: str) -> bool:
         return False
 
 
+# ---------------------------------------------------------------------------
+# Thin OTP session helpers — the shared mechanic behind the public /join/ and
+# /subscribe/ flows. Attempt/expiry limits live inside Twilio Verify (NOT the
+# PhoneOTP model), so these only wrap start/check + stash the pending phone in
+# the session. Each view keeps its own terminal write (User vs Customer+consent).
+# ---------------------------------------------------------------------------
+
+def otp_start(request, phone: str, *, purpose: str) -> bool:
+    """Send a Verify code and stash the pending phone in the session.
+
+    Returns True if the code was sent. `purpose` namespaces the session key so
+    concurrent flows (e.g. signup vs subscribe) don't collide.
+    """
+    if start_phone_verification(phone):
+        request.session[f'otp_pending_phone:{purpose}'] = phone
+        return True
+    return False
+
+
+def otp_check(request, code: str, *, purpose: str):
+    """Verify `code` against the phone stashed by :func:`otp_start`.
+
+    Returns ``(ok, phone)``. `phone` is '' when there is no pending verification
+    for this purpose (session expired / step reached out of order).
+    """
+    phone = request.session.get(f'otp_pending_phone:{purpose}', '')
+    if not phone:
+        return False, ''
+    return check_phone_verification(phone, code), phone
+
+
+def otp_clear(request, *, purpose: str) -> None:
+    """Drop the pending-phone session key for a purpose (call after success)."""
+    request.session.pop(f'otp_pending_phone:{purpose}', None)
+
+
+def resolve_sms_sender_number() -> str:
+    """Best-effort resolution of the number a user should text 'START' to.
+
+    Marketing sends go through a Twilio Messaging Service (no single fixed
+    number), so this prefers the explicit TWILIO_SMS_FROM; otherwise it looks up
+    the first phone number on the Messaging Service (cached for an hour). Returns
+    '' when nothing resolves — callers then show a generic "reply START to any
+    message from us" instead of a wrong number.
+    """
+    from_number = getattr(settings, 'TWILIO_SMS_FROM', '')
+    if from_number:
+        return from_number
+    if getattr(settings, 'E2E_TEST_MODE', False):
+        return ''
+    msid = getattr(settings, 'TWILIO_MESSAGING_SERVICE_SID', '')
+    if not msid:
+        return ''
+    from django.core.cache import cache
+    cached = cache.get('sms_sender_number')
+    if cached is not None:
+        return cached
+    resolved = ''
+    try:
+        from twilio.rest import Client
+        client = Client(settings.TWILIO_ACCOUNT_SID, settings.TWILIO_AUTH_TOKEN)
+        numbers = client.messaging.v1.services(msid).phone_numbers.list(limit=5)
+        if numbers:
+            resolved = numbers[0].phone_number or ''
+    except Exception as exc:
+        logger.error("Could not resolve SMS sender number: %s", exc)
+    cache.set('sms_sender_number', resolved, 3600)
+    return resolved
+
+
 def start_email_verification(email: str) -> bool:
     """Start a Twilio Verify verification for the given email address.
 

@@ -21,6 +21,7 @@ from .models import (
     OAuthAccessToken,
     FeatureFlagSettings,
     SMSCampaign, SMSCampaignPlan, SMSMessageRecipient, PhoneSuppression,
+    SMSConsentRecord,
     SMSCreditTransaction,
     LoyaltyProgram, LoyaltyTier, LoyaltyPointsTransaction,
 )
@@ -1290,6 +1291,26 @@ class PhoneSuppressionAdmin(admin.ModelAdmin):
     list_filter = ['reason', 'organization']
     search_fields = ['phone']
     readonly_fields = ['id', 'created_at', 'updated_at']
+
+
+@admin.register(SMSConsentRecord)
+class SMSConsentRecordAdmin(admin.ModelAdmin):
+    """Consent ledger is view-only in admin — it is legal proof, never edited."""
+    list_display = ['phone', 'email', 'organization', 'source', 'verified_at', 'pending_start', 'created_at']
+    list_filter = ['source', 'pending_start', 'organization']
+    search_fields = ['phone', 'email', 'name']
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+    def get_readonly_fields(self, request, obj=None):
+        return [f.name for f in self.model._meta.fields]
 
 
 @admin.register(SMSCreditTransaction)

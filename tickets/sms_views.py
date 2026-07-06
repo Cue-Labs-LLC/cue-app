@@ -28,7 +28,7 @@ from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_POST, require_http_methods
 
 from .models import (
-    SMSCampaign, SMSCampaignPlan, SMSMessageRecipient, PhoneSuppression, Event,
+    SMSCampaign, SMSCampaignPlan, SMSMessageRecipient, PhoneSuppression, SMSConsentRecord, Event,
     Customer, CustomerTag, TrackingLink, StripeCheckoutSession, Ticket,
     EventSMSCampaign,
     TICKETING_TYPE_DIRECT, TICKETING_TYPE_EXTERNAL, EVENT_STATUS_LIVE,
@@ -1039,6 +1039,11 @@ def twilio_sms_inbound_webhook(request):
             recent.save(update_fields=['opted_out_at', 'updated_at'])
     elif from_phone and opt_out_type == 'START':
         PhoneSuppression.objects.filter(phone=from_phone, organization__isnull=True).delete()
+        # A subscriber who consented while globally STOP'd is now reachable —
+        # clear the pending_start lifecycle flag so the org's audience reflects it.
+        SMSConsentRecord.objects.filter(
+            phone=from_phone, pending_start=True,
+        ).update(pending_start=False)
     # HELP / normal inbound → no-op (Twilio replies). Empty TwiML.
     return HttpResponse('<?xml version="1.0" encoding="UTF-8"?><Response></Response>',
                         content_type='text/xml')
