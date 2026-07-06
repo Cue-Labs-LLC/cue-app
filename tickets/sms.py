@@ -125,24 +125,32 @@ _EMOJI_RE = re.compile(
     "["
     "\U0001F000-\U0001FAFF"      # emoji & pictographs (incl. 🎶 🎤 🌸)
     "\U00002600-\U000027BF"      # misc symbols & dingbats (☀ ✨ ✔ …)
-    "\U00002B00-\U00002BFF"      # misc symbols & arrows
+    "\U00002B00-\U00002BFF"      # misc symbols & arrows (⭐ …)
     "\U0001F1E6-\U0001F1FF"      # regional indicators (flags)
     "\U0000FE00-\U0000FE0F"      # variation selectors
-    "\U00002190-\U000021FF"      # arrows
-    "\U00002300-\U000023FF"      # technical (⌚ ⏰ …)
     "\U0000200D"                 # zero-width joiner (emoji sequences)
     "]+",
     flags=re.UNICODE,
 )
+# NOTE: the generic Arrows (U+2190–21FF) and Miscellaneous Technical (U+2300–23FF)
+# blocks are deliberately EXCLUDED — they hold everyday punctuation like → and ⌘ that
+# organizers use as plain text, not emoji. Including them made contains_emoji() treat a
+# lone arrow as emoji (disabling emoji-stripping for the whole plan) and made strip_emoji
+# delete legitimate arrows from copy.
 
-# A model-authored opt-out footer at the END of a message ("... Reply STOP to opt out.").
-# The compliance footer is appended automatically by apply_stop_footer; when the copy
-# writes its own we strip it so it isn't baked into stored/sent bodies (it wastes the
-# segment budget and disobeys the strategist instructions). Anchored to end-of-string so
-# a mid-message mention is left alone.
+# A model-authored opt-out footer as the TRAILING clause of a message
+# ("... Reply STOP to opt out."). The compliance footer is appended automatically by
+# apply_stop_footer; when the copy writes its own we strip it so it isn't baked into
+# stored/sent bodies (it wastes the segment budget and disobeys the strategist
+# instructions). Requires BOTH the "reply/text/send STOP" phrasing AND explicit opt-out
+# context (opt out / unsubscribe / cancel / stop receiving), and must sit at end-of-string
+# within a single sentence ([^.\n]* — never crosses a period or newline). This keeps it
+# from eating legitimate copy: "Text STOP by the merch booth for a sticker!" and
+# "Reply STOP to opt out. See you there!" are both left untouched.
 _AUTHORED_FOOTER_RE = re.compile(
-    r'[\s\-–—]*(?:reply|text|send)\s+["“]?stop\b.*$',
-    re.IGNORECASE | re.DOTALL,
+    r'[\s\-–—]*(?:reply|text|send)\s+["“]?stop["”]?\b[^.\n]*?'
+    r'(?:opt[\s-]?out|unsubscrib\w*|cancel|stop receiving)[^.\n]*\.?\s*$',
+    re.IGNORECASE,
 )
 
 

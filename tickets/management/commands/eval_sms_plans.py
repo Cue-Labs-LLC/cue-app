@@ -38,7 +38,11 @@ from django.core.management.base import BaseCommand, CommandError
 from django.utils import timezone
 
 from tickets.models import Event, Organization
-from tickets.sms import normalize_to_gsm7, sms_segment_info, strip_emoji, with_stop_footer
+from tickets.sms import sms_segment_info, strip_emoji, with_stop_footer
+
+# The compliance footer as appended by apply_stop_footer, used to measure a body's
+# segment count "as written" (before GSM-7 normalization) without re-normalizing it.
+_PLAIN_FOOTER = '\n\nReply STOP to opt out'
 
 
 # The quick-select goals, verbatim from templates/tickets/marketing/sms/plan_form.html.
@@ -182,9 +186,12 @@ def grade_plan(plan, *, event, ticket_url, tz, now):
         # If `lean` is still multi-segment the copy is genuinely too long (edit it). If
         # only `norm` is, an emoji is forcing UCS-2 (drop the emoji). If only `raw` is,
         # smart punctuation inflated it and send-time normalization already fixes it.
-        raw_enc, raw_seg = sms_segment_info(with_stop_footer(body))
-        norm_enc, norm_seg = sms_segment_info(with_stop_footer(normalize_to_gsm7(body)))
-        lean_enc, lean_seg = sms_segment_info(with_stop_footer(strip_emoji(normalize_to_gsm7(body))))
+        # `raw` must measure the body AS WRITTEN — appended with a plain footer, NOT via
+        # with_stop_footer (which normalizes internally), or raw would equal norm and the
+        # punctuation-inflation branch below could never fire.
+        raw_enc, raw_seg = sms_segment_info(body + _PLAIN_FOOTER)
+        norm_enc, norm_seg = sms_segment_info(with_stop_footer(body))
+        lean_enc, lean_seg = sms_segment_info(with_stop_footer(strip_emoji(body)))
         if lean_seg > 2:
             g.fail(f'{label}: {lean_seg} segments even as plain GSM-7 (genuinely long)', body)
         elif lean_seg == 2:
@@ -233,6 +240,10 @@ def grade_plan(plan, *, event, ticket_url, tz, now):
             except ValueError:
                 g.fail(f'{label}: unparseable send_at {send_at!r}')
         if dt is not None:
+            # A dump hand-edited to a naive timestamp would otherwise raise TypeError when
+            # compared to the tz-aware `now`; assume the report's timezone for such values.
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=now.tzinfo)
             if dt < now:
                 g.fail(f'{label}: scheduled in the past ({step.get("timing_label")})')
             if event_start and dt >= event_start:
@@ -304,6 +315,7 @@ class Command(BaseCommand):
         from tickets.services.sms_strategist import generate_campaign_plan, SMSStrategistError
 
         dump = []
+        worst = []  # (goal, note, message) for the worst-offenders section
         for kind, goal, ev, criteria in scenarios:
             grades = []
             raw_plans = []
@@ -328,6 +340,9 @@ class Command(BaseCommand):
                          'ticket_url': opts['ticket_url'] if ev is not None else '',
                          'criteria': criteria, 'plans': raw_plans})
             self._report_scenario(kind, goal, grades, errors)
+            # Reuse the grades just computed rather than re-grading in _print_worst.
+            for g in grades:
+                worst.extend((goal, note, msg) for sev, note, msg in g.examples if sev == 'FAIL')
 
         if opts['judge']:
             self._run_judge(org, dump)
@@ -337,7 +352,7 @@ class Command(BaseCommand):
                 json.dump(dump, fh, indent=2, default=str)
             self.stdout.write(self.style.SUCCESS(f"\nRaw plans written to {opts['json_out']}"))
 
-        self._print_worst(dump, tz, now)
+        self._print_worst(worst)
 
     # ── scenario reporting ────────────────────────────────────────────────────
     def _report_scenario(self, kind, goal, grades, errors):
@@ -366,19 +381,12 @@ class Command(BaseCommand):
                     self.stdout.write(f"        {self.style.ERROR('FAIL')} {f}")
 
     # ── worst offenders ───────────────────────────────────────────────────────
-    def _print_worst(self, dump, tz, now):
-        rows = []
-        for row in dump:
-            ev = Event.objects.filter(id=row['event_id']).first() if row['event_id'] else None
-            for plan in row['plans']:
-                g = grade_plan(plan, event=ev, ticket_url=row['ticket_url'], tz=tz, now=now)
-                for sev, note, msg in g.examples:
-                    if sev == 'FAIL':
-                        rows.append((row['goal'], note, msg))
-        if not rows:
+    def _print_worst(self, worst):
+        """Print the FAIL example messages collected during grading (no re-grading)."""
+        if not worst:
             return
         self.stdout.write(self.style.HTTP_INFO("\n── Sample failing messages (eyeball these) ──"))
-        for goal, note, msg in rows[:12]:
+        for goal, note, msg in worst[:12]:
             self.stdout.write(f"  {self.style.ERROR(note)}  [{goal[:28]}]")
             self.stdout.write(f"     {msg!r}")
 
@@ -499,6 +507,7 @@ class Command(BaseCommand):
             dump = json.load(fh)
         mode = "re-grade + re-judge" if opts.get('judge') else "re-grade (no LLM calls)"
         self.stdout.write(self.style.MIGRATE_HEADING(f"\n=== {mode}: {path} ==="))
+        worst = []
         for row in dump:
             ev = Event.objects.filter(id=row['event_id']).first() if row.get('event_id') else None
             tz = ev.organization.get_timezone() if ev else timezone.get_current_timezone()
@@ -506,6 +515,9 @@ class Command(BaseCommand):
             grades = [grade_plan(p, event=ev, ticket_url=row.get('ticket_url') or '', tz=tz, now=now)
                       for p in row.get('plans', [])]
             self._report_scenario(row['kind'], row['goal'], grades, 0)
+            for g in grades:
+                worst.extend((row['goal'], note, msg) for sev, note, msg in g.examples if sev == 'FAIL')
+        self._print_worst(worst)
         if opts.get('judge'):
             # The judge needs the org for its brand-voice reference; prefer --org, else the
             # slug saved in the dump, else the default strategist-enabled org.

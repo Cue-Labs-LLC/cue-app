@@ -602,11 +602,38 @@ class SMSConditionalFooterTests(TestCase):
         # Emoji is a content choice, not accidental inflation — left untouched.
         self.assertEqual(normalize_to_gsm7('Bloom is back \U0001F338'), 'Bloom is back \U0001F338')
 
+    def test_gsm7_map_js_python_parity(self):
+        """The composer's live meter (campaign_form.html GSM7_MAP) MUST match the server's
+        _GSM7_TRANSLATIONS char-for-char, or the previewed segment count drifts from what
+        is actually billed/sent. Parse the JS map and assert it equals the Python one."""
+        import re
+        from pathlib import Path
+        import tickets
+        from .sms import _GSM7_TRANSLATIONS
+
+        tmpl = (Path(tickets.__file__).parent
+                / 'templates/tickets/marketing/sms/campaign_form.html').read_text(encoding='utf-8')
+        block = re.search(r'var GSM7_MAP = \{(.*?)\};', tmpl, re.S)
+        self.assertIsNotNone(block, "GSM7_MAP literal not found in campaign_form.html")
+        pairs = re.findall(
+            r"'\\u([0-9A-Fa-f]{4})'\s*:\s*('(?:[^'\\]|\\.)*'|\"(?:[^\"\\]|\\.)*\")",
+            block.group(1),
+        )
+        js_map = {int(code, 16): val[1:-1] for code, val in pairs}
+        self.assertEqual(js_map, dict(_GSM7_TRANSLATIONS),
+                         "JS GSM7_MAP has drifted from Python _GSM7_TRANSLATIONS")
+
     # --- strip_emoji / contains_emoji (pure) ---
     def test_strip_emoji_removes_and_tidies(self):
         from .sms import strip_emoji, contains_emoji, sms_segment_info, with_stop_footer
         self.assertTrue(contains_emoji('Hey! \U0001F3B6 Miss the vibe?'))
         self.assertFalse(contains_emoji('Hey! Miss the vibe?'))
+        # Plain arrows / technical symbols are NOT emoji — treating them as such would
+        # disable emoji-stripping for the whole plan (an org that uses '→') or delete
+        # legitimate copy. They must read as non-emoji and survive strip_emoji.
+        self.assertFalse(contains_emoji('Tap here →'))       # → RIGHTWARDS ARROW
+        self.assertFalse(contains_emoji('Limited ⌘ offer'))  # ⌘ PLACE OF INTEREST
+        self.assertEqual(strip_emoji('Doors open → tickets'), 'Doors open → tickets')
         # Emoji removed and the doubled space / space-before-punctuation cleaned up.
         self.assertEqual(strip_emoji('Hey! \U0001F3B6 Miss the vibe?'), 'Hey! Miss the vibe?')
         self.assertEqual(strip_emoji('Selling fast \U0001F3A4 !'), 'Selling fast!')
@@ -628,6 +655,20 @@ class SMSConditionalFooterTests(TestCase):
         )
         # No trailing opt-out clause → unchanged.
         self.assertEqual(strip_authored_stop_footer('Doors at 8. Grab tickets.'), 'Doors at 8. Grab tickets.')
+        # Must NOT over-strip: only a genuine TRAILING opt-out clause is removed, never
+        # legitimate copy that merely mentions "STOP", and never content after the footer.
+        self.assertEqual(
+            strip_authored_stop_footer('Text STOP by the merch booth for a free sticker!'),
+            'Text STOP by the merch booth for a free sticker!',
+        )
+        self.assertEqual(
+            strip_authored_stop_footer('Reply STOP to opt out. See you there!'),
+            'Reply STOP to opt out. See you there!',
+        )
+        self.assertEqual(
+            strip_authored_stop_footer('Doors 8pm. Grab tickets. Reply STOP to opt out.'),
+            'Doors 8pm. Grab tickets.',
+        )
 
     # --- apply_stop_footer (pure) ---
     def test_apply_stop_footer_branches(self):
