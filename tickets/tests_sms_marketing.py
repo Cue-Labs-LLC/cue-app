@@ -579,11 +579,104 @@ class SMSConditionalFooterTests(TestCase):
             send_sms_campaign_task.delay(str(campaign.id))
         return sent
 
+    # --- normalize_to_gsm7 (pure) ---
+    def test_normalize_to_gsm7_transliterates_punctuation(self):
+        from .sms import normalize_to_gsm7, sms_segment_info, with_stop_footer
+        # Em-dash + curly quotes + ellipsis all map to GSM-7 equivalents.
+        self.assertEqual(
+            normalize_to_gsm7('Bloom — Spring ‘Edition’ “now”…'),
+            "Bloom - Spring 'Edition' \"now\"...",
+        )
+        # A stray control char (record separator) that some models emit is dropped.
+        self.assertEqual(normalize_to_gsm7('Bloom \x1e Spring'), 'Bloom  Spring')
+        # Idempotent.
+        once = normalize_to_gsm7('A — B')
+        self.assertEqual(normalize_to_gsm7(once), once)
+        # The payoff: an em-dash message counts as one GSM-7 segment, not three UCS-2.
+        msg = "Today's the day! Bloom — Spring Edition @ The Echo. Doors 5pm. Tickets: https://cueup.co/t/X"
+        self.assertEqual(sms_segment_info(with_stop_footer(msg))[0], 'GSM-7')
+        self.assertEqual(sms_segment_info(with_stop_footer(msg))[1], 1)
+
+    def test_normalize_to_gsm7_keeps_deliberate_emoji(self):
+        from .sms import normalize_to_gsm7
+        # Emoji is a content choice, not accidental inflation — left untouched.
+        self.assertEqual(normalize_to_gsm7('Bloom is back \U0001F338'), 'Bloom is back \U0001F338')
+
+    def test_gsm7_map_js_python_parity(self):
+        """The composer's live meter (campaign_form.html GSM7_MAP) MUST match the server's
+        _GSM7_TRANSLATIONS char-for-char, or the previewed segment count drifts from what
+        is actually billed/sent. Parse the JS map and assert it equals the Python one."""
+        import re
+        from pathlib import Path
+        import tickets
+        from .sms import _GSM7_TRANSLATIONS
+
+        tmpl = (Path(tickets.__file__).parent
+                / 'templates/tickets/marketing/sms/campaign_form.html').read_text(encoding='utf-8')
+        block = re.search(r'var GSM7_MAP = \{(.*?)\};', tmpl, re.S)
+        self.assertIsNotNone(block, "GSM7_MAP literal not found in campaign_form.html")
+        pairs = re.findall(
+            r"'\\u([0-9A-Fa-f]{4})'\s*:\s*('(?:[^'\\]|\\.)*'|\"(?:[^\"\\]|\\.)*\")",
+            block.group(1),
+        )
+        js_map = {int(code, 16): val[1:-1] for code, val in pairs}
+        self.assertEqual(js_map, dict(_GSM7_TRANSLATIONS),
+                         "JS GSM7_MAP has drifted from Python _GSM7_TRANSLATIONS")
+
+    # --- strip_emoji / contains_emoji (pure) ---
+    def test_strip_emoji_removes_and_tidies(self):
+        from .sms import strip_emoji, contains_emoji, sms_segment_info, with_stop_footer
+        self.assertTrue(contains_emoji('Hey! \U0001F3B6 Miss the vibe?'))
+        self.assertFalse(contains_emoji('Hey! Miss the vibe?'))
+        # Plain arrows / technical symbols are NOT emoji — treating them as such would
+        # disable emoji-stripping for the whole plan (an org that uses '→') or delete
+        # legitimate copy. They must read as non-emoji and survive strip_emoji.
+        self.assertFalse(contains_emoji('Tap here →'))       # → RIGHTWARDS ARROW
+        self.assertFalse(contains_emoji('Limited ⌘ offer'))  # ⌘ PLACE OF INTEREST
+        self.assertEqual(strip_emoji('Doors open → tickets'), 'Doors open → tickets')
+        # Emoji removed and the doubled space / space-before-punctuation cleaned up.
+        self.assertEqual(strip_emoji('Hey! \U0001F3B6 Miss the vibe?'), 'Hey! Miss the vibe?')
+        self.assertEqual(strip_emoji('Selling fast \U0001F3A4 !'), 'Selling fast!')
+        # The payoff: dropping the emoji returns a short message to a single GSM-7 segment.
+        msg = "People are talking! \U0001F3A4 Our shows are selling fast - join the fun. Visit our ticket page now!"
+        self.assertEqual(sms_segment_info(with_stop_footer(msg))[0], 'UCS-2')
+        self.assertEqual(sms_segment_info(with_stop_footer(strip_emoji(msg))), ('GSM-7', 1))
+
+    # --- strip_authored_stop_footer (pure) ---
+    def test_strip_authored_stop_footer(self):
+        from .sms import strip_authored_stop_footer
+        self.assertEqual(
+            strip_authored_stop_footer('Thanks for being a VIP! Reply STOP to opt out.'),
+            'Thanks for being a VIP!',
+        )
+        self.assertEqual(
+            strip_authored_stop_footer('Early access - head over now. Text STOP anytime to unsubscribe'),
+            'Early access - head over now.',
+        )
+        # No trailing opt-out clause → unchanged.
+        self.assertEqual(strip_authored_stop_footer('Doors at 8. Grab tickets.'), 'Doors at 8. Grab tickets.')
+        # Must NOT over-strip: only a genuine TRAILING opt-out clause is removed, never
+        # legitimate copy that merely mentions "STOP", and never content after the footer.
+        self.assertEqual(
+            strip_authored_stop_footer('Text STOP by the merch booth for a free sticker!'),
+            'Text STOP by the merch booth for a free sticker!',
+        )
+        self.assertEqual(
+            strip_authored_stop_footer('Reply STOP to opt out. See you there!'),
+            'Reply STOP to opt out. See you there!',
+        )
+        self.assertEqual(
+            strip_authored_stop_footer('Doors 8pm. Grab tickets. Reply STOP to opt out.'),
+            'Doors 8pm. Grab tickets.',
+        )
+
     # --- apply_stop_footer (pure) ---
     def test_apply_stop_footer_branches(self):
         from .sms import apply_stop_footer
         self.assertEqual(apply_stop_footer('Hello', include=True), ('Hello\n\nReply STOP to opt out', True))
         self.assertEqual(apply_stop_footer('Hello', include=False), ('Hello', False))
+        # Normalization runs at this chokepoint: an em-dash body is sent/counted as GSM-7.
+        self.assertEqual(apply_stop_footer('A — B', include=False), ('A - B', False))
         # Explicit opt-out copy already in body: never appended, always a disclosure —
         # including when include=False (the key branch that makes stop_disclosed honest).
         self.assertEqual(apply_stop_footer('Reply STOP to cancel', include=True), ('Reply STOP to cancel', True))

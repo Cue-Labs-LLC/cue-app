@@ -22,7 +22,10 @@ from pydantic import BaseModel, Field
 
 from tickets.models import AITokenUsage
 from tickets.services.ai_metering import record_ai_token_usage
-from tickets.sms import sms_segment_info, with_stop_footer
+from tickets.sms import (
+    contains_emoji, sms_segment_info, strip_authored_stop_footer, strip_emoji,
+    with_stop_footer,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -65,11 +68,18 @@ SYSTEM_PROMPT = (
     "- Keep each message short — ideally a single GSM-7 segment (~160 chars) INCLUDING "
     "the 'Reply STOP' footer that is appended automatically, so leave room for it. Do "
     "NOT write the STOP footer yourself.\n"
+    "- Write in plain GSM-7 characters to stay one segment. Use a straight hyphen '-' "
+    "(never an em-dash '—' or en-dash '–'), straight quotes ' and \" (never curly "
+    "quotes ' ' \" \"), and three dots '...' (never the '…' character). Fancy "
+    "punctuation silently forces the whole message into UCS-2 encoding, which halves the "
+    "per-segment budget to 70 chars and can TRIPLE the send cost of a short message.\n"
     "- Tailor tone to the audience (VIPs vs. new subscribers vs. lapsed customers), but "
     "always within the organizer's established brand voice.\n"
-    "- No emojis, UNLESS the organizer's own voice samples use them — then match their "
-    "usage. Never invent facts — only use the dates, prices, names, and links "
-    "provided. If a detail is missing, write around it rather than guessing.\n"
+    "- Do NOT use emojis unless the organizer's own brand_voice_samples visibly contain "
+    "emojis — then match their usage. Emojis force UCS-2 encoding and cost extra, so "
+    "never add them on your own initiative. Never invent facts — only use the dates, "
+    "prices, names, and links provided. If a detail is missing, write around it rather "
+    "than guessing.\n"
     "- Personalize with the audience's context, but do not fabricate personal data.\n"
 )
 
@@ -388,9 +398,23 @@ def generate_campaign_plan(organization, *, event=None, criteria=None, objective
     # Campaign page always agree.
     base_label = plan_audience_label(organization, base_criteria)
     org_tz = organization.get_timezone()
+
+    # Only allow emoji in the drafts if the org's OWN recent messages use them; otherwise
+    # strip them, enforcing the org's voice and keeping messages in cheap GSM-7. The
+    # samples degrade to a placeholder string when there's no history — treat that as
+    # no-emoji.
+    samples = context['brand_voice_samples']
+    voice_uses_emoji = isinstance(samples, list) and any(contains_emoji(s) for s in samples)
+
     steps = []
     for i, step in enumerate(result.steps):
-        encoding, segments = sms_segment_info(with_stop_footer(step.message))
+        # Clean the drafted copy before storing/counting: drop any self-authored
+        # 'Reply STOP…' footer (the real one is appended at send time) and, unless the
+        # brand voice uses emoji, remove emoji so the message stays one GSM-7 segment.
+        body = strip_authored_stop_footer(step.message)
+        if not voice_uses_emoji:
+            body = strip_emoji(body)
+        encoding, segments = sms_segment_info(with_stop_footer(body))
         send_at, timing_label = _compute_step_schedule(step, event, org_tz)
         steps.append({
             'order': i,
@@ -401,7 +425,7 @@ def generate_campaign_plan(organization, *, event=None, criteria=None, objective
             'send_time': step.send_time,
             'send_at': send_at,
             'timing_label': timing_label,
-            'body': step.message,
+            'body': body,
             'rationale': step.rationale,
             'segments': segments,
             'encoding': encoding,

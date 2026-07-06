@@ -79,10 +79,118 @@ def normalize_phone(raw: str) -> str:
 _OPT_OUT_RE = re.compile(r'\b(?:reply|text|send)\s+["“]?STOP\b', re.IGNORECASE)
 
 
+# Common non-GSM-7 characters mapped to GSM-7-safe equivalents. These substitutions are
+# semantically invisible (an em-dash reads the same as a hyphen) but keep a message in
+# GSM-7 encoding, where a segment holds 160 chars instead of UCS-2's 70 — a single stray
+# "smart quote" or em-dash otherwise TRIPLES the cost of a short message. Deliberate
+# non-GSM-7 content (emoji, non-Latin scripts) is intentionally left untouched: if an org
+# writes with emoji it accepts UCS-2; we only strip the *accidental* cost inflators.
+_GSM7_TRANSLATIONS = {
+    0x2010: '-', 0x2011: '-', 0x2012: '-', 0x2013: '-', 0x2014: '-', 0x2015: '-',  # dashes
+    0x2022: '-', 0x00B7: '-',                                                        # bullets
+    0x2018: "'", 0x2019: "'", 0x201A: "'", 0x2032: "'", 0x02BC: "'", 0x0060: "'",   # single quotes
+    0x201C: '"', 0x201D: '"', 0x201E: '"', 0x2033: '"', 0x00AB: '"', 0x00BB: '"',   # double quotes
+    0x2026: '...',                                                                   # ellipsis
+    0x00A0: ' ', 0x202F: ' ', 0x2009: ' ', 0x2007: ' ',                             # exotic spaces
+    0x200B: '', 0x200C: '', 0x200D: '', 0xFEFF: '',                                  # zero-width
+}
+
+
+def normalize_to_gsm7(body: str) -> str:
+    """Transliterate accidental non-GSM-7 punctuation to keep a message single-segment.
+
+    Maps smart quotes, em/en dashes, ellipses, and exotic whitespace to their GSM-7
+    equivalents, and drops stray control characters (which some models emit and which
+    force UCS-2). Idempotent. Leaves genuine non-GSM-7 content (emoji, non-Latin text)
+    in place, so an org that deliberately uses emoji still sends what it wrote.
+    """
+    if not body:
+        return body
+    text = body.translate(_GSM7_TRANSLATIONS)
+    # Drop control characters other than newlines (e.g. a stray \x1e that would force
+    # UCS-2 and render as garbage); normalize tabs to spaces.
+    out = []
+    for ch in text:
+        if ch in '\n\r' or ord(ch) >= 0x20:
+            out.append(ch)
+        elif ch == '\t':
+            out.append(' ')
+    return ''.join(out)
+
+
+# Emoji and pictographic symbol ranges. Emoji force a message into UCS-2 encoding
+# (70-char segments instead of 160), so a single emoji can triple the cost of a short
+# message — see strip_emoji. Kept deliberately broad but scoped to symbol planes.
+_EMOJI_RE = re.compile(
+    "["
+    "\U0001F000-\U0001FAFF"      # emoji & pictographs (incl. 🎶 🎤 🌸)
+    "\U00002600-\U000027BF"      # misc symbols & dingbats (☀ ✨ ✔ …)
+    "\U00002B00-\U00002BFF"      # misc symbols & arrows (⭐ …)
+    "\U0001F1E6-\U0001F1FF"      # regional indicators (flags)
+    "\U0000FE00-\U0000FE0F"      # variation selectors
+    "\U0000200D"                 # zero-width joiner (emoji sequences)
+    "]+",
+    flags=re.UNICODE,
+)
+# NOTE: the generic Arrows (U+2190–21FF) and Miscellaneous Technical (U+2300–23FF)
+# blocks are deliberately EXCLUDED — they hold everyday punctuation like → and ⌘ that
+# organizers use as plain text, not emoji. Including them made contains_emoji() treat a
+# lone arrow as emoji (disabling emoji-stripping for the whole plan) and made strip_emoji
+# delete legitimate arrows from copy.
+
+# A model-authored opt-out footer as the TRAILING clause of a message
+# ("... Reply STOP to opt out."). The compliance footer is appended automatically by
+# apply_stop_footer; when the copy writes its own we strip it so it isn't baked into
+# stored/sent bodies (it wastes the segment budget and disobeys the strategist
+# instructions). Requires BOTH the "reply/text/send STOP" phrasing AND explicit opt-out
+# context (opt out / unsubscribe / cancel / stop receiving), and must sit at end-of-string
+# within a single sentence ([^.\n]* — never crosses a period or newline). This keeps it
+# from eating legitimate copy: "Text STOP by the merch booth for a sticker!" and
+# "Reply STOP to opt out. See you there!" are both left untouched.
+_AUTHORED_FOOTER_RE = re.compile(
+    r'[\s\-–—]*(?:reply|text|send)\s+["“]?stop["”]?\b[^.\n]*?'
+    r'(?:opt[\s-]?out|unsubscrib\w*|cancel|stop receiving)[^.\n]*\.?\s*$',
+    re.IGNORECASE,
+)
+
+
+def contains_emoji(text: str) -> bool:
+    """True if the text contains any emoji / pictographic symbol."""
+    return bool(text) and bool(_EMOJI_RE.search(text))
+
+
+def strip_emoji(text: str) -> str:
+    """Remove emoji and tidy the whitespace/punctuation left behind.
+
+    Used to enforce an org's own no-emoji brand voice on AI-drafted copy, keeping the
+    message in GSM-7 (one segment) instead of the costlier UCS-2 an emoji forces.
+    """
+    if not text:
+        return text
+    out = _EMOJI_RE.sub('', text)
+    out = re.sub(r'[ \t]{2,}', ' ', out)          # collapse doubled spaces from removal
+    out = re.sub(r'[ \t]+([.!?,;:])', r'\1', out)  # no space before punctuation
+    return out.strip()
+
+
+def strip_authored_stop_footer(body: str) -> str:
+    """Drop a self-authored 'Reply STOP…' footer from the end of a message body.
+
+    Leaves the rest intact; the canonical footer is re-applied at send time by
+    apply_stop_footer. Returns the body unchanged when there's no trailing opt-out clause.
+    """
+    if not body:
+        return body
+    return _AUTHORED_FOOTER_RE.sub('', body).rstrip()
+
+
 def apply_stop_footer(body: str, *, include: bool = True):
     """Return ``(final_body, disclosure_present)``.
 
-    If the body already carries explicit opt-out phrasing it is left untouched and
+    The body is first normalized to GSM-7 (:func:`normalize_to_gsm7`) so the segment
+    count computed here matches what is actually sent — every send and every cost
+    estimate flows through this chokepoint. If the body already carries explicit
+    opt-out phrasing it is left untouched (aside from normalization) and
     ``disclosure_present`` is True (the copy itself discloses — never double-append).
     Otherwise the footer is appended only when ``include`` is True;
     ``disclosure_present`` mirrors whether the outgoing text carries a disclosure.
@@ -91,7 +199,8 @@ def apply_stop_footer(body: str, *, include: bool = True):
     first message to a phone and periodically after (see SMS_FOOTER_DISCLOSURE_DAYS),
     not on every message. Twilio's Messaging Service enforces STOP regardless of this
     text, so omitting it for an already-disclosed recipient does not break opt-out."""
-    if _OPT_OUT_RE.search(body or ''):
+    body = normalize_to_gsm7(body or '')
+    if _OPT_OUT_RE.search(body):
         return body, True
     if include:
         return f"{body}\n\nReply STOP to opt out", True
