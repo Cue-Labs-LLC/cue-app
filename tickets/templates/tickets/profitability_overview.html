@@ -21,17 +21,6 @@
         <div class="stat-label">Total Expenses</div>
         <div class="stat-value">${{ summary_expenses|currency }}</div>
     </div>
-    <div class="stat-card" style="border-left: 3px solid var(--warning, #ffc107);">
-        <div class="stat-label d-flex justify-content-between align-items-center">
-            Fees Paid
-            {% if show_fee_simulator %}
-            <button type="button" class="btn btn-link p-0 ms-2" style="font-size: 11px; color: var(--text-secondary);" data-bs-toggle="modal" data-bs-target="#feeSimulatorModal">
-                <i class="bi bi-sliders"></i> Simulate
-            </button>
-            {% endif %}
-        </div>
-        <div class="stat-value">${{ summary_fees|currency }}</div>
-    </div>
     <div class="stat-card stat-card--accent">
         <div class="stat-label">Net Revenue</div>
         <div class="stat-value">${{ summary_net_revenue|currency }}</div>
@@ -141,80 +130,6 @@
             <a href="{% url 'tickets:event_type_select' %}" class="btn btn-primary"><i class="bi bi-plus-lg"></i> Create Event</a>
         </div>
     </div>
-</div>
-{% endif %}
-
-{% if show_fee_simulator %}
-<div class="modal fade" id="feeSimulatorModal" tabindex="-1">
-  <div class="modal-dialog">
-    <div class="modal-content">
-      <div class="modal-header">
-        <h5 class="modal-title">Fee Structure Simulator</h5>
-        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
-      </div>
-      <div class="modal-body">
-        <p class="text-muted small mb-3">
-          Adjust the fee structure below to see how it would impact your P&amp;L based on the currently filtered events.
-        </p>
-        <div class="row g-3 mb-4">
-          <div class="col-6">
-            <label class="form-label small">Percentage Rate</label>
-            <div class="input-group input-group-sm">
-              <input type="number" id="simPct" class="form-control" value="10" min="0" max="100" step="0.1">
-              <span class="input-group-text">%</span>
-            </div>
-          </div>
-          <div class="col-6">
-            <label class="form-label small">Per-ticket Flat Fee</label>
-            <div class="input-group input-group-sm">
-              <span class="input-group-text">$</span>
-              <input type="number" id="simFlat" class="form-control" value="0.99" min="0" step="0.01">
-            </div>
-          </div>
-        </div>
-        <table class="table table-sm mb-0">
-          <thead>
-            <tr>
-              <th></th>
-              <th class="text-end">Current</th>
-              <th class="text-end">Simulated</th>
-              <th class="text-end">Change</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr>
-              <td class="text-muted small">Fees Paid</td>
-              <td class="text-end" id="simCurFees"></td>
-              <td class="text-end" id="simNewFees"></td>
-              <td class="text-end" id="simDeltaFees"></td>
-            </tr>
-            <tr>
-              <td class="text-muted small">Net Revenue</td>
-              <td class="text-end" id="simCurNetRev"></td>
-              <td class="text-end" id="simNewNetRev"></td>
-              <td class="text-end" id="simDeltaNetRev"></td>
-            </tr>
-            <tr>
-              <td class="text-muted small">Net Profit</td>
-              <td class="text-end" id="simCurProfit"></td>
-              <td class="text-end" id="simNewProfit"></td>
-              <td class="text-end" id="simDeltaProfit"></td>
-            </tr>
-            <tr>
-              <td class="text-muted small">Avg Margin</td>
-              <td class="text-end" id="simCurMargin"></td>
-              <td class="text-end" id="simNewMargin"></td>
-              <td class="text-end" id="simDeltaMargin"></td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-      <div class="modal-footer">
-        <button type="button" class="btn btn-outline-secondary btn-sm" id="simReset">Reset to Current</button>
-        <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Close</button>
-      </div>
-    </div>
-  </div>
 </div>
 {% endif %}
 {% endblock %}
@@ -387,80 +302,4 @@ document.addEventListener('DOMContentLoaded', function() {
     btnSortAsc.addEventListener('click', function() { applyMarketSort(true); });
 });
 </script>
-{% if show_fee_simulator %}
-<script type="application/json" id="simData">{
-  "paidTicketSum": {{ summary_paid_ticket_sum }},
-  "paidTicketCount": {{ summary_paid_ticket_count }},
-  "totalRevenue": {{ summary_revenue|floatformat:2 }},
-  "totalExpenses": {{ summary_expenses|floatformat:2 }},
-  "currentFees": {{ summary_fees|floatformat:2 }}
-}</script>
-<script>
-(function() {
-  var sdEl = document.getElementById('simData');
-  if (!sdEl) return;
-  var sd = JSON.parse(sdEl.textContent);
-  var curFees = sd.currentFees;
-  var curNetRev = sd.totalRevenue - curFees;
-  var curProfit = curNetRev - sd.totalExpenses;
-  var curMargin = curNetRev > 0 ? (curProfit / curNetRev * 100) : null;
-
-  function fmt(n) {
-    return '$' + Math.abs(n).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
-  }
-  function fmtSigned(n) {
-    return (n >= 0 ? '+$' : '-$') + Math.abs(n).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
-  }
-  function colorClass(n) { return n > 0 ? 'text-success' : n < 0 ? 'text-danger' : ''; }
-
-  function compute(pct, flat) {
-    var simFees = (sd.paidTicketSum * (pct / 100) + flat * sd.paidTicketCount) / (1 + pct / 100);
-    var simNetRev = sd.totalRevenue - simFees;
-    var simProfit = simNetRev - sd.totalExpenses;
-    var simMargin = simNetRev > 0 ? (simProfit / simNetRev * 100) : null;
-    return {fees: simFees, netRev: simNetRev, profit: simProfit, margin: simMargin};
-  }
-
-  function setCell(id, text, cls) {
-    var el = document.getElementById(id);
-    el.textContent = text;
-    el.className = 'text-end ' + (cls || '');
-  }
-
-  function update() {
-    var pct = parseFloat(document.getElementById('simPct').value) || 0;
-    var flat = parseFloat(document.getElementById('simFlat').value) || 0;
-    var sim = compute(pct, flat);
-
-    setCell('simCurFees', fmt(curFees));
-    setCell('simCurNetRev', fmt(curNetRev));
-    setCell('simCurProfit', (curProfit < 0 ? '-' : '') + fmt(curProfit));
-    setCell('simCurMargin', curMargin !== null ? curMargin.toFixed(1) + '%' : '\u2014');
-
-    setCell('simNewFees', fmt(sim.fees));
-    setCell('simNewNetRev', fmt(sim.netRev));
-    setCell('simNewProfit', (sim.profit < 0 ? '-' : '') + fmt(sim.profit));
-    setCell('simNewMargin', sim.margin !== null ? sim.margin.toFixed(1) + '%' : '\u2014');
-
-    var dFees = sim.fees - curFees;
-    var dNetRev = sim.netRev - curNetRev;
-    var dProfit = sim.profit - curProfit;
-    var dMargin = (sim.margin !== null && curMargin !== null) ? sim.margin - curMargin : null;
-    setCell('simDeltaFees', fmtSigned(dFees), colorClass(-dFees));
-    setCell('simDeltaNetRev', fmtSigned(dNetRev), colorClass(dNetRev));
-    setCell('simDeltaProfit', fmtSigned(dProfit), colorClass(dProfit));
-    setCell('simDeltaMargin', dMargin !== null ? (dMargin >= 0 ? '+' : '') + dMargin.toFixed(1) + '%' : '\u2014', dMargin !== null ? colorClass(dMargin) : '');
-  }
-
-  document.getElementById('simPct').addEventListener('input', update);
-  document.getElementById('simFlat').addEventListener('input', update);
-  document.getElementById('simReset').addEventListener('click', function() {
-    document.getElementById('simPct').value = '10';
-    document.getElementById('simFlat').value = '0.99';
-    update();
-  });
-  document.getElementById('feeSimulatorModal').addEventListener('show.bs.modal', update);
-})();
-</script>
-{% endif %}
 {% endblock %}

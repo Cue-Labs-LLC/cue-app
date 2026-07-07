@@ -8199,8 +8199,6 @@ def profitability_overview(request):
                 ),
                 Decimal('0.00'),
             ),
-            paid_ticket_sum=F('cached_paid_ticket_sum'),
-            paid_ticket_count=F('cached_paid_ticket_count'),
         )
         .select_related('venue', 'market')
         .order_by('-start_date')
@@ -8222,8 +8220,6 @@ def profitability_overview(request):
     summary_revenue = Decimal('0.00')
     summary_expenses = Decimal('0.00')
     summary_fees = Decimal('0.00')
-    summary_paid_ticket_sum = Decimal('0.00')
-    summary_paid_ticket_count = 0
     event_rows = []
     for e in events:
         total_revenue = e.computed_total_revenue
@@ -8243,8 +8239,6 @@ def profitability_overview(request):
         summary_revenue += total_revenue
         summary_expenses += e.total_expenses
         summary_fees += fees
-        summary_paid_ticket_sum += e.paid_ticket_sum
-        summary_paid_ticket_count += e.paid_ticket_count
 
     summary_net_revenue = summary_revenue - summary_fees
     summary_profit = summary_net_revenue - summary_expenses
@@ -8331,7 +8325,6 @@ def profitability_overview(request):
         'event_rows': event_rows,
         'summary_revenue': summary_revenue,
         'summary_expenses': summary_expenses,
-        'summary_fees': summary_fees,
         'summary_net_revenue': summary_net_revenue,
         'summary_profit': summary_profit,
         'summary_margin': summary_margin,
@@ -8339,9 +8332,6 @@ def profitability_overview(request):
         'event_chart_data_json': json.dumps(event_chart_data),
         'quarter_chart_data_json': json.dumps(quarter_chart_data),
         'market_chart_data_json': json.dumps(market_chart_data),
-        'summary_paid_ticket_sum': float(summary_paid_ticket_sum),
-        'summary_paid_ticket_count': summary_paid_ticket_count,
-        'show_fee_simulator': request.user.is_superuser,
         'active_window': active_window,
         'window_start': start_date or '',
         'window_end': end_date or '',
