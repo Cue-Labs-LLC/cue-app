@@ -12553,6 +12553,57 @@ class LoyaltyTierAssignmentTests(TestCase):
         # Only 1 live order -> below min_order_count=2 -> no tier.
         self.assertIsNone(cust.loyalty_tier)
 
+    def _make_scanned_customer(self, email, events, scanned_at=None, scanned=True):
+        """One free ($0) order per event, each with a single ticket.
+
+        ``scanned=True`` stamps ``Ticket.scanned_at`` (an attended check-in);
+        ``scanned=False`` leaves it null (a free-RSVP no-show).
+        """
+        customer = Customer.objects.create(
+            organization=self.org, email=email, name=email.split('@')[0],
+            lifetime_value=Decimal('0'), last_order_date=date(2026, 6, 1),
+        )
+        for i, event in enumerate(events):
+            order = TicketOrder.objects.create(
+                customer=customer, event=event, order_number=f'{email}-{i}',
+                order_date='2026-06-01 10:00:00', total_amount=Decimal('0'),
+            )
+            Ticket.objects.create(
+                ticket_order=order, price=Decimal('0'),
+                scanned_at=(scanned_at or timezone.now()) if scanned else None,
+            )
+        return customer
+
+    def test_events_attended_counts_only_scanned_tickets(self):
+        # min_events_attended must count door scans, not orders: a free-RSVP
+        # no-show who ordered 2 events but never scanned in stays out.
+        self.gold.delete(); self.silver.delete()
+        self.member.min_events_attended = 2
+        self.member.save()
+        e1, e2 = self._event('E1'), self._event('E2')
+        attendee = self._make_scanned_customer('went@x.com', [e1, e2], scanned=True)
+        noshow = self._make_scanned_customer('noshow@x.com', [e1, e2], scanned=False)
+        self._assign()
+        attendee.refresh_from_db(); noshow.refresh_from_db()
+        self.assertEqual(attendee.loyalty_tier, self.member)
+        self.assertIsNone(noshow.loyalty_tier)
+
+    def test_attendance_recency_rule(self):
+        # max_days_since_last_attended keys off the latest scan, not last order.
+        self.gold.delete(); self.silver.delete()
+        self.member.min_events_attended = 2
+        self.member.max_days_since_last_attended = 120
+        self.member.save()
+        e1, e2 = self._event('E1'), self._event('E2')
+        recent = self._make_scanned_customer('recent@x.com', [e1, e2], scanned_at=timezone.now())
+        lapsed = self._make_scanned_customer(
+            'lapsed@x.com', [e1, e2], scanned_at=timezone.now() - timedelta(days=200),
+        )
+        self._assign()
+        recent.refresh_from_db(); lapsed.refresh_from_db()
+        self.assertEqual(recent.loyalty_tier, self.member)
+        self.assertIsNone(lapsed.loyalty_tier)
+
 
 class LoyaltyViewTests(TestCase):
     """Access control, org-scoping, and the builder flow."""

@@ -3829,6 +3829,17 @@ class LoyaltyTier(BaseModel):
         null=True, blank=True,
         help_text="Minimum lifetime points earned to qualify.",
     )
+    # Attendance rules count only tickets actually scanned in at the door
+    # (Ticket.scanned_at), so free-RSVP no-shows never qualify — unlike the
+    # *_purchased rules above, which count every order regardless of attendance.
+    min_events_attended = models.PositiveIntegerField(
+        null=True, blank=True,
+        help_text="Minimum number of distinct events actually attended (checked in) to qualify.",
+    )
+    max_days_since_last_attended = models.PositiveIntegerField(
+        null=True, blank=True,
+        help_text="Must have attended an event within this many days to qualify (attendance recency).",
+    )
 
     class Meta:
         ordering = ['-rank', 'name']
@@ -3840,7 +3851,7 @@ class LoyaltyTier(BaseModel):
     def __str__(self):
         return f"{self.name} ({self.program.name})"
 
-    def qualifies(self, *, lifetime_value, order_count, events_purchased, tickets_purchased, days_since_last_order, lifetime_points=0):
+    def qualifies(self, *, lifetime_value, order_count, events_purchased, tickets_purchased, days_since_last_order, lifetime_points=0, events_attended=0, days_since_last_attended=None):
         """Return True if the given per-customer metrics meet every set rule."""
         if self.min_lifetime_value is not None and (lifetime_value or Decimal('0')) < self.min_lifetime_value:
             return False
@@ -3855,6 +3866,11 @@ class LoyaltyTier(BaseModel):
                 return False
         if self.min_lifetime_points is not None and (lifetime_points or 0) < self.min_lifetime_points:
             return False
+        if self.min_events_attended is not None and (events_attended or 0) < self.min_events_attended:
+            return False
+        if self.max_days_since_last_attended is not None:
+            if days_since_last_attended is None or days_since_last_attended > self.max_days_since_last_attended:
+                return False
         return True
 
     def has_no_rules(self):
@@ -3864,7 +3880,8 @@ class LoyaltyTier(BaseModel):
             for f in (
                 'min_lifetime_value', 'min_order_count', 'min_events_purchased',
                 'min_tickets_purchased', 'max_days_since_last_order',
-                'min_lifetime_points',
+                'min_lifetime_points', 'min_events_attended',
+                'max_days_since_last_attended',
             )
         )
 

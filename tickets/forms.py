@@ -1399,6 +1399,7 @@ class LoyaltyTierForm(forms.ModelForm):
             'name', 'rank', 'color', 'perks',
             'min_lifetime_value', 'min_order_count', 'min_events_purchased',
             'min_tickets_purchased', 'max_days_since_last_order', 'min_lifetime_points',
+            'min_events_attended', 'max_days_since_last_attended',
         ]
         widgets = {
             'name': forms.TextInput(attrs={'class': 'form-control', 'placeholder': 'e.g. Gold'}),
@@ -1411,11 +1412,14 @@ class LoyaltyTierForm(forms.ModelForm):
             'min_tickets_purchased': forms.NumberInput(attrs={'class': 'form-control', 'min': '0', 'placeholder': 'Any'}),
             'max_days_since_last_order': forms.NumberInput(attrs={'class': 'form-control', 'min': '0', 'placeholder': 'Any'}),
             'min_lifetime_points': forms.NumberInput(attrs={'class': 'form-control', 'min': '0', 'placeholder': 'Any'}),
+            'min_events_attended': forms.NumberInput(attrs={'class': 'form-control', 'min': '0', 'placeholder': 'Any'}),
+            'max_days_since_last_attended': forms.NumberInput(attrs={'class': 'form-control', 'min': '0', 'placeholder': 'Any'}),
         }
 
     RULE_FIELDS = (
         'min_lifetime_value', 'min_order_count', 'min_events_purchased',
         'min_tickets_purchased', 'max_days_since_last_order', 'min_lifetime_points',
+        'min_events_attended', 'max_days_since_last_attended',
     )
 
     def __init__(self, *args, **kwargs):
