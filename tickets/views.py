@@ -13631,8 +13631,51 @@ def recover_pending_payouts(request):
 @require_org
 def survey_upload_list(request):
     org = get_organization(request)
-    uploads = ExternalSurveyUpload.objects.filter(organization=org).order_by('-uploaded_at')
-    return render(request, 'tickets/survey_upload_list.html', {'uploads': uploads})
+
+    external_uploads = ExternalSurveyUpload.objects.filter(
+        organization=org
+    ).order_by('-uploaded_at')
+
+    # Native Cue surveys are stored per-response; group them by event so each
+    # event with responses becomes a single row in the unified list.
+    native_rows = (
+        SurveyResponse.objects.filter(organization=org)
+        .values('event_id', 'event__name')
+        .annotate(response_count=Count('id'), last_response=Max('submitted_at'))
+        .order_by('-last_response')
+    )
+
+    # Native and external surveys share one interface, distinguished by a source
+    # label. Build a combined, newest-first list the template renders as one table.
+    sources = []
+    for upload in external_uploads:
+        sources.append({
+            'kind': 'external',
+            'label': 'External upload',
+            'name': upload.filename,
+            'date': upload.uploaded_at,
+            'response_count': upload.row_count,
+            'status': upload.status,
+            'upload_id': upload.id,
+        })
+    for row in native_rows:
+        sources.append({
+            'kind': 'native',
+            'label': 'Cue survey',
+            'name': row['event__name'] or 'Survey',
+            'date': row['last_response'],
+            'response_count': row['response_count'],
+            'status': 'active',
+            'event_id': row['event_id'],
+        })
+    sources.sort(key=lambda s: s['date'], reverse=True)
+
+    has_external = any(s['kind'] == 'external' for s in sources)
+
+    return render(request, 'tickets/survey_upload_list.html', {
+        'sources': sources,
+        'has_external': has_external,
+    })
 
 
 @login_required
