@@ -155,7 +155,9 @@
         ['min_events_purchased', function (v) { return 'Events ≥ ' + v; }],
         ['min_tickets_purchased', function (v) { return 'Tickets ≥ ' + v; }],
         ['max_days_since_last_order', function (v) { return 'Within ' + v + 'd'; }],
-        ['min_lifetime_points', function (v) { return 'Points ≥ ' + v; }]
+        ['min_lifetime_points', function (v) { return 'Points ≥ ' + v; }],
+        ['min_events_attended', function (v) { return 'Attended ≥ ' + v; }],
+        ['max_days_since_last_attended', function (v) { return 'Attended ≤ ' + v + 'd'; }]
     ];
 
     function fieldEl(card, suffix) {

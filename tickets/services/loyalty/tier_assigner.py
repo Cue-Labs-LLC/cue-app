@@ -6,12 +6,16 @@ RFM streaming design in ``tickets/services/segmentation/rfm_calculator.py``:
 annotate the metrics each rule needs, stream customers in chunks, and
 ``bulk_update`` the denormalized ``Customer.loyalty_tier`` FK.
 
-Per-customer count metrics (order_count, events_attended, tickets_purchased)
-each use an isolated ``Subquery`` wrapped in ``Coalesce(..., 0)`` rather than
-joined ``Count`` aggregates, so the joins for one metric never inflate the
-rows counted for another (see CLAUDE.md "isolated Subqueries" rule).
+Per-customer count metrics (order_count, events_purchased, tickets_purchased,
+events_attended) each use an isolated ``Subquery`` wrapped in ``Coalesce(..., 0)``
+rather than joined ``Count`` aggregates, so the joins for one metric never inflate
+the rows counted for another (see CLAUDE.md "isolated Subqueries" rule).
+
+Note the *purchased* metrics count every live order, whereas *attended* metrics
+count only tickets that were scanned in at the door (``Ticket.scanned_at``), so a
+free-RSVP no-show raises events_purchased but not events_attended.
 """
-from django.db.models import Count, IntegerField, OuterRef, Subquery
+from django.db.models import Count, DateTimeField, IntegerField, Max, OuterRef, Subquery
 from django.db.models.functions import Coalesce
 from django.utils import timezone
 
@@ -59,6 +63,22 @@ class LoyaltyTierAssigner:
             ),
             'ticket_order__customer',
         )
+        # Attendance metrics: only tickets actually scanned in at the door.
+        attended_tickets = Ticket.objects.filter(
+            ticket_order__customer=OuterRef('pk'),
+            ticket_order__refunded_at__isnull=True,
+            ticket_order__deleted_at__isnull=True,
+            scanned_at__isnull=False,
+        )
+        events_attended = _count_subquery(
+            attended_tickets, 'ticket_order__customer', distinct_field='ticket_order__event',
+        )
+        last_attended_at = Subquery(
+            attended_tickets.values('ticket_order__customer')
+            .annotate(m=Max('scanned_at'))
+            .values('m'),
+            output_field=DateTimeField(),
+        )
         return (
             Customer.objects.filter(organization=self.organization)
             .exclude(email__endswith='@placeholder.local')
@@ -66,10 +86,13 @@ class LoyaltyTierAssigner:
                 order_count=order_count,
                 events_purchased=events_purchased,
                 tickets_purchased=tickets_purchased,
+                events_attended=events_attended,
+                last_attended_at=last_attended_at,
             )
             .values(
                 'id', 'lifetime_value', 'last_order_date', 'lifetime_points',
                 'order_count', 'events_purchased', 'tickets_purchased',
+                'events_attended', 'last_attended_at',
             )
         )
 
@@ -90,6 +113,8 @@ class LoyaltyTierAssigner:
         for row in self._base_queryset().iterator(chunk_size=CHUNK_SIZE):
             last_order_date = row['last_order_date']
             days_since = (now - last_order_date).days if last_order_date else None
+            last_attended_at = row['last_attended_at']
+            days_since_attended = (now - last_attended_at.date()).days if last_attended_at else None
             tier_id = None
             for tier in tiers:
                 if tier.qualifies(
@@ -99,6 +124,8 @@ class LoyaltyTierAssigner:
                     tickets_purchased=row['tickets_purchased'],
                     days_since_last_order=days_since,
                     lifetime_points=row['lifetime_points'],
+                    events_attended=row['events_attended'],
+                    days_since_last_attended=days_since_attended,
                 ):
                     tier_id = tier.id
                     break

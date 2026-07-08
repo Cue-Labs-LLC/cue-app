@@ -94,6 +94,16 @@ has validation errors; existing rows render collapsed.
                     <span class="rule__input">{{ tier_form.min_lifetime_points }}</span>
                     <button type="button" class="rule-remove" aria-label="Remove condition"><i class="bi bi-x-lg"></i></button>
                 </div>
+                <div class="rule{% if not tier_form.min_events_attended.value %} d-none{% endif %}" data-rule="events-attended">
+                    <label class="form-label" for="{{ tier_form.min_events_attended.id_for_label }}">Events attended</label>
+                    <span class="rule__input">{{ tier_form.min_events_attended }}</span>
+                    <button type="button" class="rule-remove" aria-label="Remove condition"><i class="bi bi-x-lg"></i></button>
+                </div>
+                <div class="rule{% if not tier_form.max_days_since_last_attended.value %} d-none{% endif %}" data-rule="days-attended">
+                    <label class="form-label" for="{{ tier_form.max_days_since_last_attended.id_for_label }}">Attended within <span class="rule__unit">days</span></label>
+                    <span class="rule__input">{{ tier_form.max_days_since_last_attended }}</span>
+                    <button type="button" class="rule-remove" aria-label="Remove condition"><i class="bi bi-x-lg"></i></button>
+                </div>
             </div>
             <div class="rule-add">
                 <button type="button" class="rule-add__btn"><i class="bi bi-plus-lg"></i> Add condition</button>
@@ -105,6 +115,8 @@ has validation errors; existing rows render collapsed.
                     <button type="button" class="rule-add__item" data-rule="tickets">Tickets</button>
                     <button type="button" class="rule-add__item" data-rule="days">Ordered within (days)</button>
                     <button type="button" class="rule-add__item" data-rule="points">Lifetime points</button>
+                    <button type="button" class="rule-add__item" data-rule="events-attended">Events attended</button>
+                    <button type="button" class="rule-add__item" data-rule="days-attended">Attended within (days)</button>
                 </div>
             </div>
         </div>
