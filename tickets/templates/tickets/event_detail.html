@@ -1188,8 +1188,24 @@ document.addEventListener('DOMContentLoaded', function() {
                 </thead>
                 <tbody>
                     {% for c in native_sms_campaigns %}
-                    <tr>
-                        <td><a href="{% url 'tickets:sms_campaign_detail' pk=c.id %}">{{ c.name }}</a></td>
+                    <tr class="sms-campaign-row" role="button" style="cursor: pointer;"
+                        data-bs-toggle="modal" data-bs-target="#smsCampaignModal"
+                        data-name="{{ c.name }}"
+                        data-status-key="{{ c.status }}"
+                        data-status-label="{{ c.get_status_display }}"
+                        data-body="{{ c.body }}"
+                        data-link-url="{{ c.link_url }}"
+                        data-audience="{{ c.audience_size }}"
+                        data-sent="{{ c.sent_count }}"
+                        data-delivered="{{ c.delivered_count }}"
+                        data-failed="{{ c.failed_count }}"
+                        data-unique-clicks="{{ c.unique_clicks }}"
+                        data-total-clicks="{{ c.total_clicks }}"
+                        data-unsubs="{{ c.unsub_count }}"
+                        data-when-label="{% if c.status == 'scheduled' %}Scheduled for{% elif c.sent_at %}Sent{% else %}Created{% endif %}"
+                        data-when="{% if c.status == 'scheduled' %}{{ c.scheduled_at|date:'M d, Y g:i A' }}{% elif c.sent_at %}{{ c.sent_at|date:'M d, Y' }}{% else %}{{ c.created_at|date:'M d, Y' }}{% endif %}"
+                        data-detail-url="{% url 'tickets:sms_campaign_detail' pk=c.id %}">
+                        <td class="fw-medium">{{ c.name }}</td>
                         <td>{{ c.get_status_display }}</td>
                         <td class="text-end">{{ c.sent_count }}</td>
                         <td class="text-end">{% if c.link_url %}{{ c.unique_clicks }}{% else %}<span class="text-body-secondary">—</span>{% endif %}</td>
@@ -1207,6 +1223,38 @@ document.addEventListener('DOMContentLoaded', function() {
         {% else %}
         <p class="text-body-secondary mb-0">Text this event's ticket buyers directly. No native SMS campaigns sent yet.</p>
         {% endif %}
+    </div>
+</div>
+
+<!-- SMS campaign detail modal (populated from the clicked row's data-* attributes) -->
+<div class="modal fade" id="smsCampaignModal" tabindex="-1" aria-labelledby="smsCampaignModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-lg modal-dialog-scrollable">
+        <div class="modal-content">
+            <div class="modal-header">
+                <div>
+                    <h5 class="modal-title" id="smsCampaignModalLabel">Campaign</h5>
+                    <div class="text-body-secondary small mt-1" id="smsCampaignModalWhen"></div>
+                </div>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <div class="row g-3 mb-3" id="smsCampaignModalStats"></div>
+                <div class="text-body-secondary small mb-1">Message</div>
+                <div class="card">
+                    <div class="card-body">
+                        <div id="smsCampaignModalBody" style="white-space: pre-wrap;"></div>
+                        <div class="mt-2 small text-body-secondary" id="smsCampaignModalLink" hidden>
+                            <i class="bi bi-link-45deg"></i> <span></span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <a href="#" class="btn btn-outline-primary btn-sm" id="smsCampaignModalDetailLink">
+                    <i class="bi bi-box-arrow-up-right"></i> Open full campaign
+                </a>
+            </div>
+        </div>
     </div>
 </div>
 </div><!-- /SMS view -->
@@ -2426,6 +2474,78 @@ if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', initSurveyResponseModal);
 } else {
     initSurveyResponseModal();
+}
+
+// Marketing SMS row → detail modal. All campaign data is already embedded in the
+// row's data-* attributes, so this just reads them and paints the modal on open.
+// Deferred to DOMContentLoaded so the (defer-loaded) Bootstrap bundle has run.
+function initSmsCampaignModal() {
+    var modalEl = document.getElementById('smsCampaignModal');
+    if (!modalEl || typeof bootstrap === 'undefined') return;
+
+    function esc(s) {
+        var d = document.createElement('div');
+        d.textContent = (s === null || s === undefined) ? '' : String(s);
+        return d.innerHTML;
+    }
+
+    var BADGE = {
+        sent: 'bg-success', scheduled: 'bg-info', sending: 'bg-warning',
+        canceled: 'bg-secondary', failed: 'bg-danger', draft: 'bg-light text-dark'
+    };
+
+    modalEl.addEventListener('show.bs.modal', function(ev) {
+        var row = ev.relatedTarget;
+        if (!row) return;
+        var d = row.dataset;
+        var hasLink = !!(d.linkUrl && d.linkUrl.length);
+
+        document.getElementById('smsCampaignModalLabel').textContent = d.name || 'Campaign';
+
+        var badgeClass = BADGE[d.statusKey] || 'bg-light text-dark';
+        var when = (d.whenLabel ? d.whenLabel + ' ' : '') + (d.when || '');
+        document.getElementById('smsCampaignModalWhen').innerHTML =
+            '<span class="badge ' + badgeClass + '">' + esc(d.statusLabel) + '</span> ' + esc(when.trim());
+
+        var cards = [
+            { label: 'Audience', value: d.audience, cls: 'stat-card--info' },
+            { label: 'Sent', value: d.sent, cls: 'stat-card--accent' },
+            { label: 'Delivered', value: d.delivered, cls: 'stat-card--success' },
+            { label: 'Failed', value: d.failed, cls: '' }
+        ];
+        if (hasLink) {
+            cards.push({ label: 'Clicks (unique)', value: d.uniqueClicks, cls: '', sub: (d.totalClicks || 0) + ' total' });
+        }
+        cards.push({ label: 'Unsubscribes', value: d.unsubs, cls: '' });
+
+        var statsHtml = '';
+        cards.forEach(function(c) {
+            statsHtml += '<div class="col-6 col-md-3"><div class="stat-card ' + c.cls + '">' +
+                '<div class="stat-card-label">' + esc(c.label) + '</div>' +
+                '<div class="stat-card-value">' + esc(c.value || 0) + '</div>' +
+                (c.sub ? '<div class="stat-card-label">' + esc(c.sub) + '</div>' : '') +
+                '</div></div>';
+        });
+        document.getElementById('smsCampaignModalStats').innerHTML = statsHtml;
+
+        document.getElementById('smsCampaignModalBody').textContent = d.body || '';
+
+        var linkWrap = document.getElementById('smsCampaignModalLink');
+        if (hasLink) {
+            linkWrap.querySelector('span').textContent = d.linkUrl;
+            linkWrap.hidden = false;
+        } else {
+            linkWrap.hidden = true;
+        }
+
+        var detailLink = document.getElementById('smsCampaignModalDetailLink');
+        detailLink.href = d.detailUrl || '#';
+    });
+}
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', initSmsCampaignModal);
+} else {
+    initSmsCampaignModal();
 }
 
 // Send-survey modal: fetch the recipient count fresh each time it opens. This
