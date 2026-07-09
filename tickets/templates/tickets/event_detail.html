@@ -2483,6 +2483,15 @@ function initSmsCampaignModal() {
     var modalEl = document.getElementById('smsCampaignModal');
     if (!modalEl || typeof bootstrap === 'undefined') return;
 
+    // The modal markup lives inside the marketing tab-pane, whose ancestors set
+    // `overflow-x: hidden` / `transform` — either establishes a containing block
+    // that traps a `position: fixed` modal, clipping it and letting the backdrop
+    // paint over it. Relocating it to <body> lets it size against the viewport.
+    // The data-bs-toggle triggers still resolve it by its #id selector.
+    if (modalEl.parentElement !== document.body) {
+        document.body.appendChild(modalEl);
+    }
+
     function esc(s) {
         var d = document.createElement('div');
         d.textContent = (s === null || s === undefined) ? '' : String(s);
