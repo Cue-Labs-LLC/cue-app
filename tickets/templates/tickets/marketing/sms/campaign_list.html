@@ -151,11 +151,12 @@ tr.campaign-row { cursor: pointer; }
                         <th>Campaign</th>
                         <th>Source</th>
                         <th>Event</th>
+                        <th>Event Date</th>
                         <th class="text-end">Audience</th>
                         <th class="text-end">Clicks</th>
                         <th class="text-end">Orders</th>
                         <th class="text-end">Revenue</th>
-                        <th>When</th>
+                        <th>Sent</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -179,6 +180,7 @@ tr.campaign-row { cursor: pointer; }
                             {% if row.event %}<a href="{% url 'tickets:event_detail' event_id=row.event.id %}?tab=marketing">{{ row.event.name }}</a>
                             {% else %}<span class="text-muted">—</span>{% endif %}
                         </td>
+                        <td class="text-muted small">{% if row.event %}{{ row.event.start_date|date:"M d, Y" }}{% else %}<span class="text-muted">—</span>{% endif %}</td>
                         <td class="text-end">{{ row.audience }}</td>
                         <td class="text-end">{% if row.clicks is not None %}{{ row.clicks }}{% else %}<span class="text-muted">—</span>{% endif %}</td>
                         <td class="text-end">{% if row.orders is not None %}{{ row.orders }}{% else %}<span class="text-muted">—</span>{% endif %}</td>
