@@ -3916,9 +3916,10 @@ class LoyaltyTier(BaseModel):
         null=True, blank=True,
         help_text="Minimum number of distinct events actually attended (checked in) to qualify.",
     )
-    max_days_since_last_attended = models.PositiveIntegerField(
+    attended_within_days = models.PositiveIntegerField(
         null=True, blank=True,
-        help_text="Must have attended an event within this many days to qualify (attendance recency).",
+        help_text="Only count events attended within this many days (attendance window). "
+                  "Leave blank to count attendance over all time.",
     )
 
     class Meta:
@@ -3931,8 +3932,18 @@ class LoyaltyTier(BaseModel):
     def __str__(self):
         return f"{self.name} ({self.program.name})"
 
-    def qualifies(self, *, lifetime_value, order_count, events_purchased, tickets_purchased, days_since_last_order, lifetime_points=0, events_attended=0, days_since_last_attended=None):
-        """Return True if the given per-customer metrics meet every set rule."""
+    def qualifies(self, *, lifetime_value, order_count, events_purchased, tickets_purchased, days_since_last_order, lifetime_points=0, events_attended=0, events_attended_in_window=0):
+        """Return True if the given per-customer metrics meet every set rule.
+
+        ``events_attended`` is the all-time distinct-events-attended count;
+        ``events_attended_in_window`` is that count restricted to
+        ``attended_within_days`` (the caller computes it against this tier's
+        window). The attendance rule is active when either ``min_events_attended``
+        or ``attended_within_days`` is set: the customer must have attended at
+        least ``min_events_attended`` (or 1 if only a window is set) distinct
+        events, counted within the window when one is set and over all time
+        otherwise.
+        """
         if self.min_lifetime_value is not None and (lifetime_value or Decimal('0')) < self.min_lifetime_value:
             return False
         if self.min_order_count is not None and (order_count or 0) < self.min_order_count:
@@ -3946,10 +3957,10 @@ class LoyaltyTier(BaseModel):
                 return False
         if self.min_lifetime_points is not None and (lifetime_points or 0) < self.min_lifetime_points:
             return False
-        if self.min_events_attended is not None and (events_attended or 0) < self.min_events_attended:
-            return False
-        if self.max_days_since_last_attended is not None:
-            if days_since_last_attended is None or days_since_last_attended > self.max_days_since_last_attended:
+        if self.min_events_attended is not None or self.attended_within_days is not None:
+            required = self.min_events_attended or 1
+            count = events_attended_in_window if self.attended_within_days is not None else events_attended
+            if (count or 0) < required:
                 return False
         return True
 
@@ -3961,7 +3972,7 @@ class LoyaltyTier(BaseModel):
                 'min_lifetime_value', 'min_order_count', 'min_events_purchased',
                 'min_tickets_purchased', 'max_days_since_last_order',
                 'min_lifetime_points', 'min_events_attended',
-                'max_days_since_last_attended',
+                'attended_within_days',
             )
         )
 

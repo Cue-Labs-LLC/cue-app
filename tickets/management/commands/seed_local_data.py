@@ -317,7 +317,7 @@ class Command(BaseCommand):
         )
         LoyaltyTier.objects.create(
             program=program, name="Legend", rank=2, color="red",
-            min_events_attended=2, max_days_since_last_attended=120,
+            min_events_attended=2, attended_within_days=120,
             perks="Comp +1 guest list, exclusive merch, first dibs on limited events.",
         )
         assigned = assign_loyalty_tiers(program)

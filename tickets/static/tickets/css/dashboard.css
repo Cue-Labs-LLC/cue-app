@@ -3410,6 +3410,17 @@ input.manage-copy__text {
     color: var(--text-tertiary);
     text-transform: none;
 }
+/* Connector text between the two inputs of the attendance (count + window) rule. */
+.loyalty-form .rule__joiner {
+    flex: 0 0 auto;
+    font-size: 12px;
+    color: var(--text-secondary);
+    white-space: nowrap;
+}
+/* Keep the paired attendance inputs compact so the row fits on one line. */
+.loyalty-form .rule[data-rule="events-attended"] .rule__input .form-control {
+    max-width: 72px;
+}
 .loyalty-form .rule-remove {
     flex: 0 0 auto;
     background: transparent;
