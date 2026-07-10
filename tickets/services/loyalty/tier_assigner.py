@@ -14,8 +14,15 @@ the rows counted for another (see CLAUDE.md "isolated Subqueries" rule).
 Note the *purchased* metrics count every live order, whereas *attended* metrics
 count only tickets that were scanned in at the door (``Ticket.scanned_at``), so a
 free-RSVP no-show raises events_purchased but not events_attended.
+
+Tiers may window the attendance count with ``attended_within_days`` ("attended N
+distinct events within the last D days"). We add one extra distinct-events
+Subquery per distinct window value present across the program's tiers, filtered
+to ``scanned_at >= now - D days``, and hand each tier the count for its own window.
 """
-from django.db.models import Count, DateTimeField, IntegerField, Max, OuterRef, Subquery
+from datetime import timedelta
+
+from django.db.models import Count, IntegerField, OuterRef, Subquery
 from django.db.models.functions import Coalesce
 from django.utils import timezone
 
@@ -23,6 +30,11 @@ from tickets.models import Customer, Ticket, TicketOrder
 
 CHUNK_SIZE = 2000
 UPDATE_FIELDS = ['loyalty_tier', 'loyalty_tier_updated_at']
+
+
+def _window_key(days):
+    """Annotation/row key for the distinct-events-attended count within ``days``."""
+    return f'events_attended_w{days}'
 
 
 def _count_subquery(queryset, group_field, distinct_field=None):
@@ -47,7 +59,7 @@ class LoyaltyTierAssigner:
         self.program = program
         self.organization = program.organization
 
-    def _base_queryset(self):
+    def _base_queryset(self, windows):
         # Count rules ignore refunded and soft-deleted orders so they stay
         # consistent with Customer.lifetime_value (which excludes refunds).
         live_orders = TicketOrder.objects.filter(
@@ -70,29 +82,29 @@ class LoyaltyTierAssigner:
             ticket_order__deleted_at__isnull=True,
             scanned_at__isnull=False,
         )
-        events_attended = _count_subquery(
-            attended_tickets, 'ticket_order__customer', distinct_field='ticket_order__event',
-        )
-        last_attended_at = Subquery(
-            attended_tickets.values('ticket_order__customer')
-            .annotate(m=Max('scanned_at'))
-            .values('m'),
-            output_field=DateTimeField(),
-        )
+        annotations = {
+            'order_count': order_count,
+            'events_purchased': events_purchased,
+            'tickets_purchased': tickets_purchased,
+            'events_attended': _count_subquery(
+                attended_tickets, 'ticket_order__customer', distinct_field='ticket_order__event',
+            ),
+        }
+        # One windowed distinct-events count per distinct attendance window in use.
+        now = timezone.now()
+        for days in windows:
+            cutoff = now - timedelta(days=days)
+            annotations[_window_key(days)] = _count_subquery(
+                attended_tickets.filter(scanned_at__gte=cutoff),
+                'ticket_order__customer', distinct_field='ticket_order__event',
+            )
         return (
             Customer.objects.filter(organization=self.organization)
             .exclude(email__endswith='@placeholder.local')
-            .annotate(
-                order_count=order_count,
-                events_purchased=events_purchased,
-                tickets_purchased=tickets_purchased,
-                events_attended=events_attended,
-                last_attended_at=last_attended_at,
-            )
+            .annotate(**annotations)
             .values(
                 'id', 'lifetime_value', 'last_order_date', 'lifetime_points',
-                'order_count', 'events_purchased', 'tickets_purchased',
-                'events_attended', 'last_attended_at',
+                *annotations.keys(),
             )
         )
 
@@ -107,16 +119,17 @@ class LoyaltyTierAssigner:
         updated_at = timezone.now()
         # Best tier first: highest rank wins when several tiers qualify.
         tiers = list(self.program.tiers.all().order_by('-rank', 'name'))
+        windows = sorted({t.attended_within_days for t in tiers if t.attended_within_days})
 
         assigned = 0
         chunk = []
-        for row in self._base_queryset().iterator(chunk_size=CHUNK_SIZE):
+        for row in self._base_queryset(windows).iterator(chunk_size=CHUNK_SIZE):
             last_order_date = row['last_order_date']
             days_since = (now - last_order_date).days if last_order_date else None
-            last_attended_at = row['last_attended_at']
-            days_since_attended = (now - last_attended_at.date()).days if last_attended_at else None
             tier_id = None
             for tier in tiers:
+                window = tier.attended_within_days
+                in_window = row[_window_key(window)] if window else 0
                 if tier.qualifies(
                     lifetime_value=row['lifetime_value'],
                     order_count=row['order_count'],
@@ -125,7 +138,7 @@ class LoyaltyTierAssigner:
                     days_since_last_order=days_since,
                     lifetime_points=row['lifetime_points'],
                     events_attended=row['events_attended'],
-                    days_since_last_attended=days_since_attended,
+                    events_attended_in_window=in_window,
                 ):
                     tier_id = tier.id
                     break

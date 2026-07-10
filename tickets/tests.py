@@ -12601,15 +12601,58 @@ class LoyaltyTierAssignmentTests(TestCase):
         self.assertIsNone(noshow.loyalty_tier)
 
     def test_attendance_recency_rule(self):
-        # max_days_since_last_attended keys off the latest scan, not last order.
+        # attended_within_days windows the attendance count: both events must fall
+        # inside the window, keyed off scan time (not last order).
         self.gold.delete(); self.silver.delete()
         self.member.min_events_attended = 2
-        self.member.max_days_since_last_attended = 120
+        self.member.attended_within_days = 120
         self.member.save()
         e1, e2 = self._event('E1'), self._event('E2')
         recent = self._make_scanned_customer('recent@x.com', [e1, e2], scanned_at=timezone.now())
         lapsed = self._make_scanned_customer(
             'lapsed@x.com', [e1, e2], scanned_at=timezone.now() - timedelta(days=200),
+        )
+        self._assign()
+        recent.refresh_from_db(); lapsed.refresh_from_db()
+        self.assertEqual(recent.loyalty_tier, self.member)
+        self.assertIsNone(lapsed.loyalty_tier)
+
+    def test_windowed_event_count_excludes_old_attendance(self):
+        # "Attended >= 2 events within 120 days" counts only in-window scans, so a
+        # customer with 2 events attended all-time but only 1 inside the window
+        # does NOT qualify (the whole point of windowing the count).
+        self.gold.delete(); self.silver.delete()
+        self.member.min_events_attended = 2
+        self.member.attended_within_days = 120
+        self.member.save()
+        e1, e2, e3, e4 = self._event('E1'), self._event('E2'), self._event('E3'), self._event('E4')
+        # 1 recent + 1 old distinct event -> only 1 in the window -> below 2.
+        edge = self._make_scanned_customer('edge@x.com', [e1], scanned_at=timezone.now())
+        old_order = TicketOrder.objects.create(
+            customer=edge, event=e2, order_number='edge-old',
+            order_date='2026-06-01 10:00:00', total_amount=Decimal('0'),
+        )
+        Ticket.objects.create(
+            ticket_order=old_order, price=Decimal('0'),
+            scanned_at=timezone.now() - timedelta(days=200),
+        )
+        # 2 distinct events both inside the window -> qualifies.
+        inside = self._make_scanned_customer('inside@x.com', [e3, e4], scanned_at=timezone.now())
+        self._assign()
+        edge.refresh_from_db(); inside.refresh_from_db()
+        self.assertIsNone(edge.loyalty_tier)
+        self.assertEqual(inside.loyalty_tier, self.member)
+
+    def test_window_only_rule_requires_one_in_window(self):
+        # A window with no explicit count means "attended >= 1 event within D days".
+        self.gold.delete(); self.silver.delete()
+        self.member.min_events_attended = None
+        self.member.attended_within_days = 120
+        self.member.save()
+        e1 = self._event('E1')
+        recent = self._make_scanned_customer('r1@x.com', [e1], scanned_at=timezone.now())
+        lapsed = self._make_scanned_customer(
+            'l1@x.com', [e1], scanned_at=timezone.now() - timedelta(days=200),
         )
         self._assign()
         recent.refresh_from_db(); lapsed.refresh_from_db()

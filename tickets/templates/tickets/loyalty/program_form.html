@@ -155,9 +155,8 @@
         ['min_events_purchased', function (v) { return 'Events ≥ ' + v; }],
         ['min_tickets_purchased', function (v) { return 'Tickets ≥ ' + v; }],
         ['max_days_since_last_order', function (v) { return 'Within ' + v + 'd'; }],
-        ['min_lifetime_points', function (v) { return 'Points ≥ ' + v; }],
-        ['min_events_attended', function (v) { return 'Attended ≥ ' + v; }],
-        ['max_days_since_last_attended', function (v) { return 'Attended ≤ ' + v + 'd'; }]
+        ['min_lifetime_points', function (v) { return 'Points ≥ ' + v; }]
+        // Attendance (count + optional window) is summarized separately below.
     ];
 
     function fieldEl(card, suffix) {
@@ -185,6 +184,14 @@
             var el = fieldEl(card, r[0]);
             if (el && el.value !== '' && el.value !== null) { parts.push(r[1](el.value)); }
         });
+        // Attendance: "Attended ≥ N events" with an optional "/ Dd" window.
+        var eaEl = fieldEl(card, 'min_events_attended');
+        var awEl = fieldEl(card, 'attended_within_days');
+        var eaV = eaEl && eaEl.value !== '' ? eaEl.value : null;
+        var awV = awEl && awEl.value !== '' ? awEl.value : null;
+        if (eaV || awV) {
+            parts.push('Attended ≥ ' + (eaV || '1') + (awV ? ' / ' + awV + 'd' : ''));
+        }
         if (summary) { summary.textContent = parts.length ? parts.join('  ·  ') : 'Includes everyone'; }
 
         // Colored left edge + header swatch follow the tier color.
@@ -294,8 +301,8 @@
         if (rm) {
             var card2 = rm.closest('.tier-card');
             var row2 = rm.closest('.rule');
-            var inp2 = row2.querySelector('input');
-            if (inp2) { inp2.value = ''; }
+            // A rule row may hold more than one input (e.g. attendance count + window).
+            row2.querySelectorAll('input').forEach(function (i) { i.value = ''; });
             row2.classList.add('d-none');
             syncRuleMenu(card2);
             refreshSummary(card2);
