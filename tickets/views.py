@@ -5809,6 +5809,7 @@ def event_detail(request, event_id):
     pacing_compare_json = 'null'
     pacing_candidate_list = []
     pacing_default_compare_id = None
+    pacing_today_days_before = None
     if show_pacing_card:
         from tickets.services.forecasting.sales_curve import SalesCurveCalculator
         calc = SalesCurveCalculator()
@@ -5820,6 +5821,9 @@ def event_detail(request, event_id):
             {'id': str(e.id), 'name': e.name, 'start_date': e.start_date}
             for e in pacing_candidates
         ]
+        # Days-before-event for "today", so the chart can mark where the current
+        # event stands on the shared pacing axis (positive = event still upcoming).
+        pacing_today_days_before = (event.start_date - django_tz.localdate()).days
 
     # Native marketing SMS campaigns linked to this event (surfaced on the Marketing
     # tab when the org has SMS marketing enabled). Local import avoids load-order cycles.
@@ -5933,6 +5937,7 @@ def event_detail(request, event_id):
         'pacing_compare_json': pacing_compare_json,
         'pacing_candidates': pacing_candidate_list,
         'pacing_default_compare_id': pacing_default_compare_id,
+        'pacing_today_days_before': pacing_today_days_before,
     }
     if event.ticketing_type != 'direct':
         context['upload_form'] = EventCSVUploadForm(organization=org)
