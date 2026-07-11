@@ -5150,6 +5150,28 @@ def _get_adjacent_event(org, event, direction):
     ).order_by('-start_date', '-sort_start_time', 'name').first()
 
 
+def _get_pacing_comparison_candidates(org, event, limit=20):
+    """Past events available to compare against for sales pacing.
+
+    Returns up to ``limit`` events that started before ``event`` (most recent
+    first), ordered so events at the same venue come first — the same venue is
+    the fairest pacing comparison. The caller uses the first item as the default
+    comparison event.
+    """
+    past = list(
+        Event.objects.filter(
+            organization=org,
+            start_date__lt=event.start_date,
+        )
+        .exclude(id=event.id)
+        .only('id', 'name', 'start_date', 'venue_id')
+        .order_by('-start_date')[:limit]
+    )
+    same_venue = [e for e in past if e.venue_id == event.venue_id]
+    other = [e for e in past if e.venue_id != event.venue_id]
+    return same_venue + other
+
+
 def _recompute_utm_attribution_for_event(org, event):
     """Best-effort local recompute of Cue-tracked campaign attribution. Never raises.
 
@@ -5779,6 +5801,26 @@ def event_detail(request, event_id):
     prev_event = _get_adjacent_event(org, event, 'prev')
     next_event = _get_adjacent_event(org, event, 'next')
 
+    # Sales pacing — compare this event's cumulative sales curve against a
+    # comparable past event, aligned on a days-before-event axis.
+    pacing_candidates = _get_pacing_comparison_candidates(org, event)
+    show_pacing_card = bool(total_orders) and bool(pacing_candidates)
+    pacing_current_json = 'null'
+    pacing_compare_json = 'null'
+    pacing_candidate_list = []
+    pacing_default_compare_id = None
+    if show_pacing_card:
+        from tickets.services.forecasting.sales_curve import SalesCurveCalculator
+        calc = SalesCurveCalculator()
+        default_compare = pacing_candidates[0]
+        pacing_default_compare_id = str(default_compare.id)
+        pacing_current_json = json.dumps(calc.get_pacing_series(event))
+        pacing_compare_json = json.dumps(calc.get_pacing_series(default_compare))
+        pacing_candidate_list = [
+            {'id': str(e.id), 'name': e.name, 'start_date': e.start_date}
+            for e in pacing_candidates
+        ]
+
     # Native marketing SMS campaigns linked to this event (surfaced on the Marketing
     # tab when the org has SMS marketing enabled). Local import avoids load-order cycles.
     from tickets.sms_views import _annotate_counts
@@ -5886,6 +5928,11 @@ def event_detail(request, event_id):
         'next_event_id': next_event.id if next_event else None,
         'prev_event_name': prev_event.name if prev_event else None,
         'next_event_name': next_event.name if next_event else None,
+        'show_pacing_card': show_pacing_card,
+        'pacing_current_json': pacing_current_json,
+        'pacing_compare_json': pacing_compare_json,
+        'pacing_candidates': pacing_candidate_list,
+        'pacing_default_compare_id': pacing_default_compare_id,
     }
     if event.ticketing_type != 'direct':
         context['upload_form'] = EventCSVUploadForm(organization=org)
@@ -6029,6 +6076,26 @@ def event_detail(request, event_id):
         context['rating_counts'] = []
 
     return render(request, 'tickets/event_detail.html', context)
+
+
+@login_required
+@require_org
+def event_pacing_api(request, event_id):
+    """Return the sales-pacing series for one event (used by the comparison dropdown).
+
+    ``event_id`` is the comparison event; it is org-scoped so pacing can never be
+    computed against another organization's event.
+    """
+    org = get_organization(request)
+    event = get_object_or_404(Event.objects.filter(organization=org), id=event_id)
+    from tickets.services.forecasting.sales_curve import SalesCurveCalculator
+    data = SalesCurveCalculator().get_pacing_series(event)
+    data.update({
+        'id': str(event.id),
+        'name': event.name,
+        'start_date': event.start_date.isoformat(),
+    })
+    return JsonResponse(data)
 
 
 @login_required
