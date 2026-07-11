@@ -8320,18 +8320,18 @@ def profitability_overview(request):
     market_rows = sorted(markets.values(), key=lambda m: m['profit'], reverse=True)
 
     # Market chart data - same array shape as the other granularities so the chart can
-    # render Revenue vs Expenses / Profit / Margin % grouped by market. Sorted high → low
-    # by profit as the initial order; the client re-sorts on demand. Cast Decimals to
-    # float/None so json.dumps can serialize them.
-    market_chart_events = [m for m in market_rows if m['revenue'] > 0 or m['expenses'] > 0]
+    # render Revenue vs Expenses / Profit / Margin % grouped by market. Includes every
+    # assigned market (plus "No market") sorted high → low by profit as the initial order;
+    # the client re-sorts on demand. Cast Decimals to float/None so json.dumps can
+    # serialize them.
     market_chart_data = {
-        'labels': [m['market_label'] for m in market_chart_events],
-        'revenue': [float(m['revenue']) for m in market_chart_events],
-        'expenses': [float(m['expenses']) for m in market_chart_events],
-        'profit': [float(m['profit']) for m in market_chart_events],
+        'labels': [m['market_label'] for m in market_rows],
+        'revenue': [float(m['revenue']) for m in market_rows],
+        'expenses': [float(m['expenses']) for m in market_rows],
+        'profit': [float(m['profit']) for m in market_rows],
         'margin': [
             float(_bucket_margin(m)) if _bucket_margin(m) is not None else None
-            for m in market_chart_events
+            for m in market_rows
         ],
     }
 
