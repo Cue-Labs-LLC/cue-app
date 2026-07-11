@@ -519,6 +519,9 @@ button.detail-meta-weather--severe:focus-visible {
 <!-- Tab navigation -->
 <nav class="nav nav-tabs" id="eventDetailTabs" role="tablist">
     <button class="nav-link active" id="tab-overview-btn" data-bs-toggle="tab" data-bs-target="#tab-overview" type="button" role="tab">Overview</button>
+    {% if show_pacing_card %}
+    <button class="nav-link" id="tab-analytics-btn" data-bs-toggle="tab" data-bs-target="#tab-analytics" type="button" role="tab">Analytics</button>
+    {% endif %}
     <button class="nav-link" id="tab-orders-btn" data-bs-toggle="tab" data-bs-target="#tab-orders" type="button" role="tab">Orders{% if total_orders %} ({{ total_orders }}){% endif %}</button>
     <button class="nav-link" id="tab-finance-btn" data-bs-toggle="tab" data-bs-target="#tab-finance" type="button" role="tab">Finance</button>
     <button class="nav-link" id="tab-marketing-btn" data-bs-toggle="tab" data-bs-target="#tab-marketing" type="button" role="tab">Marketing</button>
@@ -961,6 +964,61 @@ document.addEventListener('DOMContentLoaded', function() {
 {% endif %}
 
 </div><!-- /tab-overview -->
+
+<!-- ===== TAB: Analytics ===== -->
+{% if show_pacing_card %}
+<div class="tab-pane fade" id="tab-analytics" role="tabpanel">
+<style>
+.pacing-compare-select {
+    background: var(--bg-inset); border: 1px solid var(--border);
+    border-radius: var(--radius-sm); color: var(--text-primary);
+    font-size: 12px; padding: 4px 26px 4px 8px; font-family: inherit;
+    max-width: 240px; cursor: pointer;
+    appearance: none; -webkit-appearance: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='7' viewBox='0 0 10 7'%3E%3Cpath fill='%237A7672' d='M0 0h10L5 7z'/%3E%3C/svg%3E");
+    background-repeat: no-repeat; background-position: right 8px center;
+}
+.pacing-compare-select:focus { outline: none; border-color: var(--accent); }
+.pacing-compare-label {
+    font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em;
+    color: var(--text-tertiary);
+}
+</style>
+<div class="card mb-4" id="pacingCard"
+     data-pacing-url="{% url 'tickets:event_pacing_api' '00000000-0000-0000-0000-000000000000' %}"
+     data-current-name="{{ event.name }}">
+    <div class="card-header d-flex align-items-center justify-content-between flex-wrap gap-2">
+        <div class="d-flex flex-column">
+            <h5 class="mb-0">Sales Pacing</h5>
+            <small class="text-muted">Cumulative sales vs. a past event, by days before the event</small>
+        </div>
+        <div class="d-flex flex-wrap align-items-center gap-2">
+            <div class="chart-control-group" role="group" aria-label="Pacing metric">
+                <button type="button" class="chart-control-btn active" id="btnPaceTickets">Tickets</button>
+                <button type="button" class="chart-control-btn" id="btnPaceRevenue">Revenue</button>
+            </div>
+            <div class="chart-control-group" role="group" aria-label="Pacing scale">
+                <button type="button" class="chart-control-btn active" id="btnPaceAbs">Absolute</button>
+                <button type="button" class="chart-control-btn" id="btnPacePct">% Final</button>
+            </div>
+            <label class="d-flex align-items-center gap-2 mb-0">
+                <span class="pacing-compare-label">vs</span>
+                <select class="pacing-compare-select" id="pacingCompareSelect" aria-label="Comparison event">
+                    {% for c in pacing_candidates %}
+                    <option value="{{ c.id }}"{% if c.id == pacing_default_compare_id %} selected{% endif %}>{{ c.name }} &middot; {{ c.start_date|date:'M j, Y' }}</option>
+                    {% endfor %}
+                </select>
+            </label>
+        </div>
+    </div>
+    <div class="card-body" style="position: relative; height: 260px;">
+        <canvas id="pacingChart"></canvas>
+    </div>
+</div>
+<script type="application/json" id="pacing-current-data">{{ pacing_current_json|safe }}</script>
+<script type="application/json" id="pacing-compare-data">{{ pacing_compare_json|safe }}</script>
+</div><!-- /tab-analytics -->
+{% endif %}
 
 <!-- ===== TAB 2: Orders ===== -->
 <div class="tab-pane fade" id="tab-orders" role="tabpanel">
@@ -5556,5 +5614,195 @@ document.querySelectorAll('.event-survey-matcher').forEach(setupSurveyMatcher);
 })();
 </script>
 {% endif %}
+
+<script>
+// Sales Pacing — cumulative sales for this event vs. a comparison event, aligned
+// on a days-before-event axis. Metric (tickets/revenue) and scale (absolute/%)
+// are client-side transforms over one embedded payload; changing the comparison
+// event fetches its series from the pacing API.
+document.addEventListener('DOMContentLoaded', function () {
+    var canvas = document.getElementById('pacingChart');
+    if (!canvas) return;
+    var card = document.getElementById('pacingCard');
+
+    var currentData = JSON.parse(document.getElementById('pacing-current-data').textContent);
+    var compareData = JSON.parse(document.getElementById('pacing-compare-data').textContent);
+    var currentName = card.getAttribute('data-current-name') || 'This event';
+    var pacingUrlTemplate = card.getAttribute('data-pacing-url');
+
+    var rootStyle = getComputedStyle(document.documentElement);
+    function token(name, fallback) {
+        var v = (rootStyle.getPropertyValue(name) || '').trim();
+        return v || fallback;
+    }
+    var gridColor = token('--border-light', 'rgba(255,255,255,0.05)');
+    var labelColor = token('--text-tertiary', '#7A7672');
+    var currentColor = token('--accent', '#00FF87');
+    var compareColor = token('--info', '#7B8FBF');
+
+    var metric = 'tickets';   // 'tickets' | 'revenue'
+    var scale = 'abs';        // 'abs' | 'pct'
+
+    // Cumulative value at each axis label: sum of the metric for all days-before
+    // >= the label (axis is sorted descending, so cumulative grows toward day 0).
+    function cumulativeFor(series, axis, key) {
+        var sorted = series.slice().sort(function (a, b) { return b.d - a.d; });
+        var out = [], running = 0, idx = 0;
+        axis.forEach(function (label) {
+            while (idx < sorted.length && sorted[idx].d >= label) {
+                running += sorted[idx][key];
+                idx++;
+            }
+            out.push(running);
+        });
+        return out;
+    }
+
+    function labelFor(d) {
+        if (d === 0) return 'Event day';
+        return d > 0 ? (d + 'd before') : (Math.abs(d) + 'd after');
+    }
+
+    function buildConfig() {
+        var series = [currentData.series || []];
+        if (compareData) series.push(compareData.series || []);
+        var daySet = {};
+        series.forEach(function (s) { s.forEach(function (p) { daySet[p.d] = true; }); });
+        var axis = Object.keys(daySet).map(Number).sort(function (a, b) { return b - a; });
+        if (!axis.length) axis = [0];
+
+        var key = metric;   // 'tickets' | 'revenue'
+        function dataset(data, name, color, dashed) {
+            var values = cumulativeFor(data.series || [], axis, key);
+            if (scale === 'pct') {
+                var total = key === 'tickets' ? data.total_tickets : data.total_revenue;
+                values = values.map(function (v) { return total > 0 ? (v / total * 100) : 0; });
+            }
+            return {
+                label: name,
+                data: values,
+                borderColor: color,
+                backgroundColor: color,
+                borderWidth: 2,
+                borderDash: dashed ? [5, 4] : [],
+                pointRadius: 0,
+                pointHoverRadius: 4,
+                fill: false,
+                tension: 0.35,
+            };
+        }
+
+        var datasets = [dataset(currentData, currentName, currentColor, false)];
+        if (compareData) {
+            datasets.push(dataset(compareData, compareData.name || 'Comparison', compareColor, true));
+        }
+
+        var prefix = (metric === 'revenue' && scale === 'abs') ? '$' : '';
+        var suffix = scale === 'pct' ? '%' : '';
+        function fmt(v) {
+            var n = scale === 'pct' ? Math.round(v * 10) / 10 : Math.round(v);
+            return prefix + n.toLocaleString() + suffix;
+        }
+
+        return {
+            labels: axis.map(labelFor),
+            datasets: datasets,
+            prefix: prefix,
+            suffix: suffix,
+            fmt: fmt,
+        };
+    }
+
+    var chart = null;
+    function render() {
+        var cfg = buildConfig();
+        if (chart) {
+            chart.data.labels = cfg.labels;
+            chart.data.datasets = cfg.datasets;
+            chart.options.plugins.tooltip.callbacks.label = function (ctx) {
+                return ctx.dataset.label + ': ' + cfg.fmt(ctx.parsed.y);
+            };
+            chart.options.scales.y.ticks.callback = function (v) { return cfg.fmt(v); };
+            chart.update();
+            return;
+        }
+        chart = new Chart(canvas, {
+            type: 'line',
+            data: { labels: cfg.labels, datasets: cfg.datasets },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {
+                    legend: {
+                        display: true,
+                        position: 'bottom',
+                        labels: { color: labelColor, usePointStyle: true, boxWidth: 8, boxHeight: 8 }
+                    },
+                    tooltip: {
+                        mode: 'index',
+                        intersect: false,
+                        callbacks: { label: function (ctx) { return ctx.dataset.label + ': ' + cfg.fmt(ctx.parsed.y); } }
+                    }
+                },
+                interaction: { mode: 'index', intersect: false },
+                scales: {
+                    x: { grid: { display: false }, ticks: { color: labelColor, maxTicksLimit: 8 } },
+                    y: {
+                        beginAtZero: true,
+                        grid: { color: gridColor, drawBorder: false },
+                        ticks: { color: labelColor, maxTicksLimit: 5, callback: function (v) { return cfg.fmt(v); } }
+                    }
+                }
+            }
+        });
+    }
+
+    // Metric + scale toggles
+    function bindToggle(id, group, apply) {
+        var btn = document.getElementById(id);
+        if (!btn) return;
+        btn.addEventListener('click', function () {
+            group.forEach(function (o) { document.getElementById(o).classList.remove('active'); });
+            btn.classList.add('active');
+            apply();
+            render();
+        });
+    }
+    bindToggle('btnPaceTickets', ['btnPaceTickets', 'btnPaceRevenue'], function () { metric = 'tickets'; });
+    bindToggle('btnPaceRevenue', ['btnPaceTickets', 'btnPaceRevenue'], function () { metric = 'revenue'; });
+    bindToggle('btnPaceAbs', ['btnPaceAbs', 'btnPacePct'], function () { scale = 'abs'; });
+    bindToggle('btnPacePct', ['btnPaceAbs', 'btnPacePct'], function () { scale = 'pct'; });
+
+    // Comparison-event dropdown
+    var select = document.getElementById('pacingCompareSelect');
+    if (select) {
+        select.addEventListener('change', function () {
+            var id = select.value;
+            if (!id) return;
+            select.disabled = true;
+            fetch(pacingUrlTemplate.replace('00000000-0000-0000-0000-000000000000', id), {
+                headers: { 'X-Requested-With': 'XMLHttpRequest' }
+            })
+                .then(function (r) { if (!r.ok) throw new Error('pacing fetch failed'); return r.json(); })
+                .then(function (json) { compareData = json; render(); })
+                .catch(function (err) { console.error(err); })
+                .finally(function () { select.disabled = false; });
+        });
+    }
+
+    // The chart is created inside the (initially hidden) Analytics tab, so its
+    // canvas has no size until the tab is shown. Re-measure on first reveal.
+    var tabsEl = document.getElementById('eventDetailTabs');
+    if (tabsEl) {
+        tabsEl.addEventListener('shown.bs.tab', function (e) {
+            if (e.target.getAttribute('data-bs-target') === '#tab-analytics' && chart) {
+                chart.resize();
+            }
+        });
+    }
+
+    render();
+});
+</script>
 
 {% endblock %}

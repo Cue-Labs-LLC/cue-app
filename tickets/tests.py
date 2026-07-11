@@ -17717,3 +17717,105 @@ class SubscribePageTests(TestCase):
         rec.consent_text = 'tampered'
         with self.assertRaises(ValidationError):
             rec.save()
+
+
+class SalesPacingTests(TestCase):
+    """Sales pacing service, view context, and comparison API."""
+
+    def setUp(self):
+        self.client = Client()
+        self.org = Organization.objects.create(name='Pace Org', slug='pace-org')
+        self.other_org = Organization.objects.create(name='Other Org', slug='other-org')
+        self.user = User.objects.create_user(
+            username='paceuser', email='pace@test.com', password='pw123456',
+        )
+        UserProfile.objects.create(
+            user=self.user, organization=self.org, org_role=UserProfile.OrgRole.OWNER,
+        )
+        self.client.login(username='pace@test.com', password='pw123456')
+        self.client.get(reverse('tickets:home'))  # seed _org_id in session
+
+        self.venue = Venue.objects.create(organization=self.org, name='Pace Hall', city='San Diego')
+        # Current event (most recent) and a past event at the same venue.
+        self.event = Event.objects.create(
+            organization=self.org, name='Current Show', venue=self.venue,
+            start_date=date(2024, 6, 15),
+        )
+        self.past_event = Event.objects.create(
+            organization=self.org, name='Past Show', venue=self.venue,
+            start_date=date(2024, 3, 10),
+        )
+        self.customer = Customer.objects.create(
+            organization=self.org, email='c@example.com', name='C',
+        )
+
+    def _make_order(self, event, number, order_dt, tickets, amount):
+        order = TicketOrder.objects.create(
+            customer=self.customer, event=event, order_number=number,
+            order_date=timezone.make_aware(order_dt), total_amount=Decimal(amount),
+        )
+        for i in range(tickets):
+            Ticket.objects.create(ticket_order=order, ticket_type='GA', price=Decimal('50.00'))
+        return order
+
+    def test_get_pacing_series(self):
+        from tickets.services.forecasting.sales_curve import SalesCurveCalculator
+        # 14 days before (Jun 1) and 5 days before (Jun 10) the Jun 15 event.
+        self._make_order(self.event, 'P-1', datetime(2024, 6, 1, 12, 0), 2, '100.00')
+        self._make_order(self.event, 'P-2', datetime(2024, 6, 10, 12, 0), 3, '150.00')
+
+        data = SalesCurveCalculator().get_pacing_series(self.event)
+        self.assertEqual(data['total_tickets'], 5)
+        self.assertEqual(data['total_revenue'], 250.0)
+        # Sorted by days-before descending.
+        self.assertEqual([p['d'] for p in data['series']], [14, 5])
+        self.assertEqual(data['series'][0], {'d': 14, 'tickets': 2, 'revenue': 100.0})
+        self.assertEqual(data['series'][1], {'d': 5, 'tickets': 3, 'revenue': 150.0})
+
+    def test_get_pacing_series_empty(self):
+        from tickets.services.forecasting.sales_curve import SalesCurveCalculator
+        data = SalesCurveCalculator().get_pacing_series(self.event)
+        self.assertEqual(data, {'series': [], 'total_tickets': 0, 'total_revenue': 0.0})
+
+    def test_detail_shows_pacing_card_when_comparable_event_exists(self):
+        self._make_order(self.event, 'P-1', datetime(2024, 6, 1, 12, 0), 2, '100.00')
+        resp = self.client.get(reverse('tickets:event_detail', args=[self.event.id]))
+        self.assertEqual(resp.status_code, 200)
+        self.assertTrue(resp.context['show_pacing_card'])
+        self.assertEqual(resp.context['pacing_default_compare_id'], str(self.past_event.id))
+        self.assertNotEqual(resp.context['pacing_current_json'], 'null')
+        # The pacing card lives in a dedicated Analytics tab.
+        self.assertContains(resp, 'data-bs-target="#tab-analytics"')
+        self.assertContains(resp, 'id="tab-analytics"')
+
+    def test_detail_hides_pacing_card_without_past_event(self):
+        # An event with no prior event to compare against.
+        lone = Event.objects.create(
+            organization=self.org, name='Lone Show', venue=self.venue,
+            start_date=date(2020, 1, 1),
+        )
+        self._make_order(lone, 'L-1', datetime(2019, 12, 1, 12, 0), 1, '50.00')
+        resp = self.client.get(reverse('tickets:event_detail', args=[lone.id]))
+        self.assertEqual(resp.status_code, 200)
+        self.assertFalse(resp.context['show_pacing_card'])
+        # No Analytics tab when there's nothing to compare against.
+        self.assertNotContains(resp, 'data-bs-target="#tab-analytics"')
+
+    def test_pacing_api_returns_series(self):
+        self._make_order(self.past_event, 'PP-1', datetime(2024, 3, 1, 12, 0), 4, '200.00')
+        resp = self.client.get(reverse('tickets:event_pacing_api', args=[self.past_event.id]))
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertEqual(data['id'], str(self.past_event.id))
+        self.assertEqual(data['name'], 'Past Show')
+        self.assertEqual(data['total_tickets'], 4)
+        self.assertEqual(data['start_date'], '2024-03-10')
+
+    def test_pacing_api_scoped_to_org(self):
+        other_venue = Venue.objects.create(organization=self.other_org, name='X', city='LA')
+        other_event = Event.objects.create(
+            organization=self.other_org, name='Other Event', venue=other_venue,
+            start_date=date(2024, 5, 1),
+        )
+        resp = self.client.get(reverse('tickets:event_pacing_api', args=[other_event.id]))
+        self.assertEqual(resp.status_code, 404)
