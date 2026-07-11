@@ -969,16 +969,33 @@ document.addEventListener('DOMContentLoaded', function() {
 {% if show_pacing_card %}
 <div class="tab-pane fade" id="tab-analytics" role="tabpanel">
 <style>
-.pacing-compare-select {
+.pacing-combo { position: relative; }
+.pacing-compare-input {
     background: var(--bg-inset); border: 1px solid var(--border);
     border-radius: var(--radius-sm); color: var(--text-primary);
     font-size: 12px; padding: 4px 26px 4px 8px; font-family: inherit;
-    max-width: 240px; cursor: pointer;
-    appearance: none; -webkit-appearance: none;
+    width: 210px; max-width: 240px;
     background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='7' viewBox='0 0 10 7'%3E%3Cpath fill='%237A7672' d='M0 0h10L5 7z'/%3E%3C/svg%3E");
     background-repeat: no-repeat; background-position: right 8px center;
 }
-.pacing-compare-select:focus { outline: none; border-color: var(--accent); }
+.pacing-compare-input:focus { outline: none; border-color: var(--accent); }
+.pacing-compare-input:disabled { opacity: 0.6; cursor: progress; }
+.pacing-combo-list {
+    position: absolute; z-index: 1000; top: calc(100% + 4px); right: 0;
+    min-width: 220px; max-width: 320px; max-height: 240px; overflow-y: auto;
+    margin: 0; padding: 4px; list-style: none;
+    background: var(--bg-surface); border: 1px solid var(--border);
+    border-radius: var(--radius-sm); box-shadow: 0 8px 24px rgba(0, 0, 0, 0.22);
+}
+.pacing-combo-option {
+    padding: 6px 8px; font-size: 12px; color: var(--text-primary);
+    border-radius: var(--radius-sm); cursor: pointer; white-space: nowrap;
+    overflow: hidden; text-overflow: ellipsis;
+}
+.pacing-combo-option.is-active { background: var(--accent-muted); color: var(--accent); }
+.pacing-combo-option.is-selected { font-weight: 600; }
+.pacing-combo-option[hidden] { display: none; }
+.pacing-combo-empty { padding: 6px 8px; font-size: 12px; color: var(--text-tertiary); }
 .pacing-compare-label {
     font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em;
     color: var(--text-tertiary);
@@ -1004,11 +1021,21 @@ document.addEventListener('DOMContentLoaded', function() {
             </div>
             <label class="d-flex align-items-center gap-2 mb-0">
                 <span class="pacing-compare-label">vs</span>
-                <select class="pacing-compare-select" id="pacingCompareSelect" aria-label="Comparison event">
-                    {% for c in pacing_candidates %}
-                    <option value="{{ c.id }}"{% if c.id == pacing_default_compare_id %} selected{% endif %}>{{ c.name }} &middot; {{ c.start_date|date:'M j, Y' }}</option>
-                    {% endfor %}
-                </select>
+                <div class="pacing-combo" id="pacingCompare">
+                    <input type="text" class="pacing-compare-input" id="pacingCompareInput"
+                           role="combobox" aria-expanded="false" aria-controls="pacingCompareList"
+                           aria-autocomplete="list" autocomplete="off" spellcheck="false"
+                           placeholder="Search events&hellip;" aria-label="Comparison event">
+                    <ul class="pacing-combo-list" id="pacingCompareList" role="listbox" aria-label="Comparison event" hidden>
+                        {% for c in pacing_candidates %}
+                        <li class="pacing-combo-option{% if c.id == pacing_default_compare_id %} is-selected{% endif %}"
+                            role="option" id="pacingOpt-{{ forloop.counter }}"
+                            data-id="{{ c.id }}"
+                            data-label="{{ c.name }} &middot; {{ c.start_date|date:'M j, Y' }}"
+                            {% if c.id == pacing_default_compare_id %}aria-selected="true"{% endif %}>{{ c.name }} &middot; {{ c.start_date|date:'M j, Y' }}</li>
+                        {% endfor %}
+                    </ul>
+                </div>
             </label>
         </div>
     </div>
@@ -5839,22 +5866,98 @@ document.addEventListener('DOMContentLoaded', function () {
     bindToggle('btnPaceAbs', ['btnPaceAbs', 'btnPacePct'], function () { scale = 'abs'; });
     bindToggle('btnPacePct', ['btnPaceAbs', 'btnPacePct'], function () { scale = 'pct'; });
 
-    // Comparison-event dropdown
-    var select = document.getElementById('pacingCompareSelect');
-    if (select) {
-        select.addEventListener('change', function () {
-            var id = select.value;
+    // Comparison-event combobox: type to filter the past-event list.
+    (function () {
+        var combo = document.getElementById('pacingCompare');
+        if (!combo) return;
+        var input = document.getElementById('pacingCompareInput');
+        var list = document.getElementById('pacingCompareList');
+        var options = Array.prototype.slice.call(list.querySelectorAll('.pacing-combo-option'));
+        var selectedId = null, selectedLabel = '', activeIndex = -1, emptyEl = null;
+
+        var initial = options.filter(function (o) { return o.classList.contains('is-selected'); })[0] || options[0];
+        if (initial) { selectedId = initial.dataset.id; selectedLabel = initial.dataset.label; input.value = selectedLabel; }
+
+        function isOpen() { return !list.hidden; }
+        function open() { list.hidden = false; input.setAttribute('aria-expanded', 'true'); }
+        function close() { list.hidden = true; input.setAttribute('aria-expanded', 'false'); setActive(-1); }
+        function visible() { return options.filter(function (o) { return !o.hidden; }); }
+
+        function removeEmpty() { if (emptyEl) { emptyEl.remove(); emptyEl = null; } }
+        function showEmpty() {
+            if (emptyEl) return;
+            emptyEl = document.createElement('li');
+            emptyEl.className = 'pacing-combo-empty';
+            emptyEl.textContent = 'No matching events';
+            list.appendChild(emptyEl);
+        }
+        function filter(q) {
+            q = (q || '').trim().toLowerCase();
+            options.forEach(function (o) { o.hidden = !!q && o.dataset.label.toLowerCase().indexOf(q) === -1; });
+            removeEmpty();
+            if (q && !visible().length) showEmpty();
+        }
+        function setActive(i) {
+            var vis = visible();
+            activeIndex = i;
+            options.forEach(function (o) { o.classList.remove('is-active'); });
+            if (i >= 0 && i < vis.length) {
+                vis[i].classList.add('is-active');
+                input.setAttribute('aria-activedescendant', vis[i].id);
+                vis[i].scrollIntoView({ block: 'nearest' });
+            } else {
+                input.removeAttribute('aria-activedescendant');
+            }
+        }
+        function restore() { input.value = selectedLabel; filter(''); close(); }
+
+        function choose(opt) {
+            if (!opt) return;
+            if (opt.dataset.id === selectedId) { restore(); return; }
+            selectedId = opt.dataset.id;
+            selectedLabel = opt.dataset.label;
+            input.value = selectedLabel;
+            options.forEach(function (o) { o.classList.remove('is-selected'); o.removeAttribute('aria-selected'); });
+            opt.classList.add('is-selected'); opt.setAttribute('aria-selected', 'true');
+            close();
+            loadComparison(selectedId);
+        }
+
+        function loadComparison(id) {
             if (!id) return;
-            select.disabled = true;
+            input.disabled = true;
             fetch(pacingUrlTemplate.replace('00000000-0000-0000-0000-000000000000', id), {
                 headers: { 'X-Requested-With': 'XMLHttpRequest' }
             })
                 .then(function (r) { if (!r.ok) throw new Error('pacing fetch failed'); return r.json(); })
                 .then(function (json) { compareData = json; render(); })
                 .catch(function (err) { console.error(err); })
-                .finally(function () { select.disabled = false; });
+                .finally(function () { input.disabled = false; });
+        }
+
+        input.addEventListener('focus', function () { open(); filter(''); input.select(); });
+        input.addEventListener('input', function () { open(); filter(input.value); setActive(visible().length ? 0 : -1); });
+        input.addEventListener('keydown', function (e) {
+            if (e.key === 'ArrowDown') {
+                if (!isOpen()) { open(); filter(''); }
+                setActive(Math.min(activeIndex + 1, visible().length - 1)); e.preventDefault();
+            } else if (e.key === 'ArrowUp') {
+                setActive(Math.max(activeIndex - 1, 0)); e.preventDefault();
+            } else if (e.key === 'Enter') {
+                if (isOpen()) { choose(visible()[activeIndex]); e.preventDefault(); }
+            } else if (e.key === 'Escape') {
+                if (isOpen()) { restore(); e.preventDefault(); }
+            }
         });
-    }
+        // mousedown (not click) so we act before the input's blur fires.
+        list.addEventListener('mousedown', function (e) {
+            var opt = e.target.closest('.pacing-combo-option');
+            if (opt) { e.preventDefault(); choose(opt); }
+        });
+        input.addEventListener('blur', function () {
+            setTimeout(function () { if (!combo.contains(document.activeElement)) restore(); }, 120);
+        });
+    })();
 
     // The chart is created inside the (initially hidden) Analytics tab, so its
     // canvas has no size until the tab is shown. Re-measure on first reveal.

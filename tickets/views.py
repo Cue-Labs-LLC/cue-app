@@ -5150,13 +5150,13 @@ def _get_adjacent_event(org, event, direction):
     ).order_by('-start_date', '-sort_start_time', 'name').first()
 
 
-def _get_pacing_comparison_candidates(org, event, limit=20):
+def _get_pacing_comparison_candidates(org, event, limit=100):
     """Past events available to compare against for sales pacing.
 
     Returns up to ``limit`` events that started before ``event`` (most recent
     first), ordered so events at the same venue come first — the same venue is
     the fairest pacing comparison. The caller uses the first item as the default
-    comparison event.
+    comparison event and feeds the rest to the searchable comparison combobox.
     """
     past = list(
         Event.objects.filter(
