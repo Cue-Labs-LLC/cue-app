@@ -17787,6 +17787,10 @@ class SalesPacingTests(TestCase):
         # The pacing card lives in a dedicated Analytics tab.
         self.assertContains(resp, 'data-bs-target="#tab-analytics"')
         self.assertContains(resp, 'id="tab-analytics"')
+        # Comparison event is chosen via a searchable combobox.
+        self.assertContains(resp, 'id="pacingCompareInput"')
+        self.assertContains(resp, 'role="combobox"')
+        self.assertContains(resp, 'class="pacing-combo-option is-selected"')
 
     def test_pacing_today_marker_days_before(self):
         # Upcoming event 10 days out — the chart should mark "today" at 10d before.
