@@ -205,10 +205,14 @@ document.addEventListener('DOMContentLoaded', function() {
         };
     }
 
-    function buildConfigs(granularity) {
+    function buildConfigs(granularity, key) {
+        // For By Market, sort by the metric currently on screen so High → Low / Low → High
+        // orders the visible bars: revenue for Revenue vs Expenses, margin for Margin %,
+        // profit for Profit / Loss. Only configs[key] is rendered, so sorting by key is safe.
+        var marketSortField = key === 'revexp' ? 'revenue' : key === 'margin' ? 'margin' : 'profit';
         var d = granularity === 'event' ? eventData
             : granularity === 'quarter' ? quarterData
-            : granularity === 'market' ? getMarketData(marketSortAsc)
+            : granularity === 'market' ? getMarketData(marketSortAsc, marketSortField)
             : data;
         var labels = granularity === 'month' ? d.labels.map(fmtMonth) : d.labels;
         var suffix = granularity === 'event' ? 'by Event'
@@ -270,13 +274,19 @@ document.addEventListener('DOMContentLoaded', function() {
         };
     }
 
-    // Market parallel-arrays sorted together by profit so bars keep a stable order
-    // when toggling between metrics. Returns the same shape as the other granularities.
-    function getMarketData(ascending) {
+    // Market parallel-arrays sorted together by the given field (revenue/profit/margin)
+    // so the visible bars honor the High → Low / Low → High toggle. Null values (markets
+    // with no net revenue, for margin) sort to the end in both directions. Returns the
+    // same shape as the other granularities.
+    function getMarketData(ascending, sortField) {
+        var vals = mktData[sortField] || mktData.profit;
         var idx = mktData.labels.map(function(_, i) { return i; });
         idx.sort(function(a, b) {
-            return ascending ? mktData.profit[a] - mktData.profit[b]
-                             : mktData.profit[b] - mktData.profit[a];
+            var va = vals[a], vb = vals[b];
+            if (va == null && vb == null) return 0;
+            if (va == null) return 1;
+            if (vb == null) return -1;
+            return ascending ? va - vb : vb - va;
         });
         return {
             labels: idx.map(function(i) { return mktData.labels[i]; }),
@@ -288,7 +298,7 @@ document.addEventListener('DOMContentLoaded', function() {
     }
 
     function renderChart(key, granularity) {
-        var configs = buildConfigs(granularity);
+        var configs = buildConfigs(granularity, key);
         var cfg = configs[key];
         if (chart) { chart.destroy(); }
         chart = new Chart(canvas.getContext('2d'), { type: cfg.type, data: cfg.data, options: cfg.options });
