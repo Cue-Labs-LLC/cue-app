@@ -26,7 +26,7 @@ from django.db.models import Count, IntegerField, OuterRef, Subquery
 from django.db.models.functions import Coalesce
 from django.utils import timezone
 
-from tickets.models import Customer, Ticket, TicketOrder
+from tickets.models import Customer, LoyaltyTierTransition, Ticket, TicketOrder
 
 CHUNK_SIZE = 2000
 UPDATE_FIELDS = ['loyalty_tier', 'loyalty_tier_updated_at']
@@ -104,6 +104,7 @@ class LoyaltyTierAssigner:
             .annotate(**annotations)
             .values(
                 'id', 'lifetime_value', 'last_order_date', 'lifetime_points',
+                'loyalty_tier',
                 *annotations.keys(),
             )
         )
@@ -123,6 +124,11 @@ class LoyaltyTierAssigner:
 
         assigned = 0
         chunk = []
+        # Record tier changes so the customer timeline can show progression.
+        # Forward-only: we only capture changes observed against each customer's
+        # currently-stored tier, appending one immutable LoyaltyTierTransition
+        # per change and flushing on the same chunk cadence as the bulk_update.
+        transitions = []
         for row in self._base_queryset(windows).iterator(chunk_size=CHUNK_SIZE):
             last_order_date = row['last_order_date']
             days_since = (now - last_order_date).days if last_order_date else None
@@ -144,6 +150,15 @@ class LoyaltyTierAssigner:
                     break
             if tier_id is not None:
                 assigned += 1
+            old_tier_id = row['loyalty_tier']
+            if old_tier_id != tier_id:
+                transitions.append(LoyaltyTierTransition(
+                    customer_id=row['id'],
+                    organization=self.organization,
+                    from_tier_id=old_tier_id,
+                    to_tier_id=tier_id,
+                    changed_at=updated_at,
+                ))
             chunk.append(Customer(
                 id=row['id'],
                 loyalty_tier_id=tier_id,
@@ -152,6 +167,11 @@ class LoyaltyTierAssigner:
             if len(chunk) >= CHUNK_SIZE:
                 Customer.objects.bulk_update(chunk, UPDATE_FIELDS)
                 chunk = []
+            if len(transitions) >= CHUNK_SIZE:
+                LoyaltyTierTransition.objects.bulk_create(transitions)
+                transitions = []
         if chunk:
             Customer.objects.bulk_update(chunk, UPDATE_FIELDS)
+        if transitions:
+            LoyaltyTierTransition.objects.bulk_create(transitions)
         return assigned

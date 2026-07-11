@@ -4153,15 +4153,13 @@ def customer_detail(request, customer_id):
     last_order_date = order_stats['last_order_date']
     total_tickets = Ticket.objects.filter(ticket_order__customer=customer).count()
 
-    # Paginate orders — annotate net_amount so the template shows post-fee totals.
-    # select_related event__venue so the Venue column doesn't trigger an N+1.
+    # Orders feed the merged timeline. annotate net_amount so the template shows
+    # post-fee totals; select_related event__venue so the Venue label doesn't
+    # trigger an N+1. Paginated further down as part of the merged timeline list.
     orders = customer.ticket_orders.select_related('event', 'event__venue').annotate(
         tickets_count=Count('tickets'),
         net_amount=_net_amount,
-    ).order_by('-order_date')
-    paginator = Paginator(orders, 20)
-    page_number = request.GET.get('page')
-    page_obj = paginator.get_page(page_number)
+    )
 
     segment_badge_color = SEGMENT_BADGE_COLORS.get(
         (customer.rfm_segment or '').strip(), 'secondary'
@@ -4195,14 +4193,13 @@ def customer_detail(request, customer_id):
     # Org-scoped already since `customer` is org-scoped. select_related avoids an
     # N+1 on campaign.name in the template. SMS has no "opened" event, so the
     # closest engagement signal is the tracked link click (first_clicked_at).
+    # Only surfaced (in the header + timeline) when the org has SMS enabled.
+    sms_marketing_enabled = org.sms_marketing_enabled
     sms_messages = (
         customer.sms_message_recipients
         .select_related('campaign')
-        .order_by('-created_at')
     )
-    sms_paginator = Paginator(sms_messages, 20)
-    sms_page_obj = sms_paginator.get_page(request.GET.get('sms_page'))
-    # Single-pass summary counts for the tab's stat cards.
+    # Single-pass summary counts for the timeline header's stat rail.
     sms_stats = customer.sms_message_recipients.aggregate(
         total=Count('id'),
         delivered=Count('id', filter=Q(status='delivered')),
@@ -4216,6 +4213,53 @@ def customer_detail(request, customer_id):
     sms_suppressed = bool(customer.phone) and PhoneSuppression.is_suppressed(
         normalize_phone(customer.phone), org
     )
+
+    # Survey responses this customer submitted — one timeline entry each.
+    survey_responses = customer.survey_responses.select_related('event')
+
+    # Loyalty tier transitions — only when the org runs the loyalty feature.
+    loyalty_feature_enabled = org.loyalty_feature_enabled
+    tier_transitions = (
+        customer.tier_transitions.select_related('from_tier', 'to_tier')
+        if loyalty_feature_enabled else []
+    )
+
+    # ---- Merge every interaction into one reverse-chronological timeline. ----
+    # A single customer's interaction volume is small, so we assemble uniform
+    # {kind, ts, obj} items in Python and paginate the combined list (Django's
+    # Paginator accepts a plain list) rather than a DB-level UNION. All ts values
+    # are timezone-aware datetimes, so cross-type ordering is correct.
+    # Each item carries a `url` deep-linking to the underlying record so the
+    # timeline entry title is clickable (order/survey -> event, sms -> campaign,
+    # tier -> loyalty program). Related objects are already select_related, so
+    # building these URLs adds no extra queries.
+    timeline_items = []
+    for order in orders:
+        timeline_items.append({
+            'kind': 'order', 'ts': order.order_date or order.created_at, 'obj': order,
+            'url': reverse('tickets:event_detail', args=[order.event_id]),
+        })
+    if sms_marketing_enabled:
+        for msg in sms_messages:
+            timeline_items.append({
+                'kind': 'sms', 'ts': msg.sent_at or msg.created_at, 'obj': msg,
+                'url': reverse('tickets:sms_campaign_detail', args=[msg.campaign_id]),
+            })
+    for response in survey_responses:
+        timeline_items.append({
+            'kind': 'survey', 'ts': response.submitted_at, 'obj': response,
+            'url': reverse('tickets:event_detail', args=[response.event_id]),
+        })
+    for transition in tier_transitions:
+        tier = transition.to_tier or transition.from_tier
+        timeline_items.append({
+            'kind': 'tier', 'ts': transition.changed_at, 'obj': transition,
+            'url': (reverse('tickets:loyalty_program_detail', args=[tier.program_id])
+                    if tier else None),
+        })
+    timeline_items.sort(key=lambda i: i['ts'], reverse=True)
+    paginator = Paginator(timeline_items, 20)
+    page_obj = paginator.get_page(request.GET.get('page'))
 
     context = {
         'customer': customer,
@@ -4236,10 +4280,9 @@ def customer_detail(request, customer_id):
         'assigned_tags': assigned_tags,
         'available_tags': available_tags,
         'org_tags': org_tags,
-        'sms_page_obj': sms_page_obj,
         'sms_stats': sms_stats,
         'sms_suppressed': sms_suppressed,
-        'sms_marketing_enabled': org.sms_marketing_enabled,
+        'sms_marketing_enabled': sms_marketing_enabled,
     }
     return render(request, 'tickets/customer_detail.html', context)
 

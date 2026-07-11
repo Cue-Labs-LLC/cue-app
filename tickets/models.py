@@ -4047,3 +4047,55 @@ class LoyaltyPointsTransaction(BaseModel):
 
     def __str__(self):
         return f"{self.get_kind_display()} {self.amount} pts (customer={self.customer_id})"
+
+
+class LoyaltyTierTransition(BaseModel):
+    """Immutable record of a customer moving between loyalty tiers.
+
+    Written by ``LoyaltyTierAssigner`` whenever a customer's assigned tier
+    changes, so the customer timeline can show tier progression over time.
+    Forward-only: no history exists prior to this model being introduced, and
+    ``LoyaltyTierAssigner`` only records changes it observes on subsequent runs.
+
+    ``from_tier`` / ``to_tier`` are nullable — a customer can enter from "no
+    tier" or drop back to none — and use ``SET_NULL`` so deleting a
+    ``LoyaltyTier`` definition never erases the transition history.
+    """
+
+    customer = models.ForeignKey(
+        Customer,
+        on_delete=models.CASCADE,
+        related_name='tier_transitions',
+    )
+    organization = models.ForeignKey(
+        Organization,
+        on_delete=models.CASCADE,
+        related_name='tier_transitions',
+    )
+    from_tier = models.ForeignKey(
+        'LoyaltyTier',
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name='+',
+    )
+    to_tier = models.ForeignKey(
+        'LoyaltyTier',
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name='+',
+    )
+    changed_at = models.DateTimeField(db_index=True)
+
+    class Meta:
+        ordering = ['-changed_at']
+        indexes = [
+            models.Index(fields=['customer', '-changed_at']),
+        ]
+
+    def __str__(self):
+        return (
+            f"{self.from_tier_id or 'none'} -> {self.to_tier_id or 'none'} "
+            f"(customer={self.customer_id})"
+        )
