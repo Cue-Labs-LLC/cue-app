@@ -8215,6 +8215,16 @@ def event_income_delete(request, event_id, income_id):
     })
 
 
+def _bucket_margin(bucket):
+    """Profit margin % for a chart bucket, or None when net revenue is non-positive.
+
+    Uses net revenue (revenue - fees) as the denominator to stay consistent with
+    the per-event and summary margin figures.
+    """
+    net = bucket['net_revenue']
+    return (bucket['profit'] / net * 100) if net > 0 else None
+
+
 @login_required
 @require_org
 @require_host
@@ -8299,18 +8309,30 @@ def profitability_overview(request):
             'city': market_label,
             'revenue': Decimal('0.00'),
             'expenses': Decimal('0.00'), 'profit': Decimal('0.00'),
+            'net_revenue': Decimal('0.00'),
             'event_count': 0,
         })
         m['revenue'] += row['revenue']
         m['expenses'] += row['expenses']
         m['profit'] += row['profit']
+        m['net_revenue'] += row['net_revenue']
         m['event_count'] += 1
     market_rows = sorted(markets.values(), key=lambda m: m['profit'], reverse=True)
 
-    # Market chart data - sorted high → low by profit
+    # Market chart data - same array shape as the other granularities so the chart can
+    # render Revenue vs Expenses / Profit / Margin % grouped by market. Includes every
+    # assigned market (plus "No market") sorted high → low by profit as the initial order;
+    # the client re-sorts on demand. Cast Decimals to float/None so json.dumps can
+    # serialize them.
     market_chart_data = {
         'labels': [m['market_label'] for m in market_rows],
+        'revenue': [float(m['revenue']) for m in market_rows],
+        'expenses': [float(m['expenses']) for m in market_rows],
         'profit': [float(m['profit']) for m in market_rows],
+        'margin': [
+            float(_bucket_margin(m)) if _bucket_margin(m) is not None else None
+            for m in market_rows
+        ],
     }
 
     # Monthly aggregation for chart - bucket events by calendar month, ordered earliest → most recent
@@ -8318,16 +8340,18 @@ def profitability_overview(request):
     month_buckets_profit = {}
     for r in chart_events:
         key = r['event'].start_date.strftime('%Y-%m')
-        m = month_buckets_profit.setdefault(key, {'month': key, 'revenue': 0.0, 'expenses': 0.0, 'profit': 0.0})
+        m = month_buckets_profit.setdefault(key, {'month': key, 'revenue': 0.0, 'expenses': 0.0, 'profit': 0.0, 'net_revenue': 0.0})
         m['revenue'] += float(r['revenue'])
         m['expenses'] += float(r['expenses'])
         m['profit'] += float(r['profit'])
+        m['net_revenue'] += float(r['net_revenue'])
     monthly_profit_chart = sorted(month_buckets_profit.values(), key=lambda x: x['month'])
     chart_data = {
         'labels': [m['month'] for m in monthly_profit_chart],
         'revenue': [m['revenue'] for m in monthly_profit_chart],
         'expenses': [m['expenses'] for m in monthly_profit_chart],
         'profit': [m['profit'] for m in monthly_profit_chart],
+        'margin': [_bucket_margin(m) for m in monthly_profit_chart],
     }
 
     # Quarterly aggregation for chart - bucket events by calendar quarter
@@ -8339,17 +8363,19 @@ def profitability_overview(request):
         label = f'Q{q} {d.year}'
         m = quarter_buckets_profit.setdefault(sort_key, {
             'label': label, 'sort_key': sort_key,
-            'revenue': 0.0, 'expenses': 0.0, 'profit': 0.0,
+            'revenue': 0.0, 'expenses': 0.0, 'profit': 0.0, 'net_revenue': 0.0,
         })
         m['revenue'] += float(r['revenue'])
         m['expenses'] += float(r['expenses'])
         m['profit'] += float(r['profit'])
+        m['net_revenue'] += float(r['net_revenue'])
     quarterly_profit_chart = sorted(quarter_buckets_profit.values(), key=lambda x: x['sort_key'])
     quarter_chart_data = {
         'labels': [m['label'] for m in quarterly_profit_chart],
         'revenue': [m['revenue'] for m in quarterly_profit_chart],
         'expenses': [m['expenses'] for m in quarterly_profit_chart],
         'profit': [m['profit'] for m in quarterly_profit_chart],
+        'margin': [_bucket_margin(m) for m in quarterly_profit_chart],
     }
 
     # Per-event chart data - ordered earliest → most recent
@@ -8362,6 +8388,10 @@ def profitability_overview(request):
         'revenue': [float(r['revenue']) for r in event_chart_events],
         'expenses': [float(r['expenses']) for r in event_chart_events],
         'profit': [float(r['profit']) for r in event_chart_events],
+        'margin': [
+            float(r['margin']) if r['margin'] is not None else None
+            for r in event_chart_events
+        ],
     }
 
     context = {
