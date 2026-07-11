@@ -17788,6 +17788,18 @@ class SalesPacingTests(TestCase):
         self.assertContains(resp, 'data-bs-target="#tab-analytics"')
         self.assertContains(resp, 'id="tab-analytics"')
 
+    def test_pacing_today_marker_days_before(self):
+        # Upcoming event 10 days out — the chart should mark "today" at 10d before.
+        upcoming = Event.objects.create(
+            organization=self.org, name='Upcoming Show', venue=self.venue,
+            start_date=timezone.localdate() + timedelta(days=10),
+        )
+        self._make_order(upcoming, 'U-1', datetime(2024, 6, 1, 12, 0), 1, '50.00')
+        resp = self.client.get(reverse('tickets:event_detail', args=[upcoming.id]))
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.context['pacing_today_days_before'], 10)
+        self.assertContains(resp, 'data-today-days-before="10"')
+
     def test_detail_hides_pacing_card_without_past_event(self):
         # An event with no prior event to compare against.
         lone = Event.objects.create(
