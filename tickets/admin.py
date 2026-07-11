@@ -23,7 +23,7 @@ from .models import (
     SMSCampaign, SMSCampaignPlan, SMSMessageRecipient, PhoneSuppression,
     SMSConsentRecord,
     SMSCreditTransaction,
-    LoyaltyProgram, LoyaltyTier, LoyaltyPointsTransaction,
+    LoyaltyProgram, LoyaltyTier, LoyaltyPointsTransaction, LoyaltyTierTransition,
 )
 
 
@@ -1414,6 +1414,27 @@ class LoyaltyPointsTransactionAdmin(admin.ModelAdmin):
         'id', 'organization', 'customer', 'ticket_order', 'kind', 'amount',
         'balance_after', 'lifetime_after', 'description', 'created_by',
         'created_at', 'updated_at',
+    ]
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+
+@admin.register(LoyaltyTierTransition)
+class LoyaltyTierTransitionAdmin(admin.ModelAdmin):
+    """Read-only history — rows are written only by LoyaltyTierAssigner."""
+    list_display = ['customer', 'from_tier', 'to_tier', 'changed_at']
+    list_filter = ['organization']
+    search_fields = ['customer__email', 'customer__name']
+    readonly_fields = [
+        'id', 'organization', 'customer', 'from_tier', 'to_tier',
+        'changed_at', 'created_at', 'updated_at',
     ]
 
     def has_add_permission(self, request):

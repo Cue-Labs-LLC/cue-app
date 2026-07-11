@@ -4372,8 +4372,10 @@ class CustomerSegmentationViewTests(TestCase):
         self.assertContains(response, 'Average days between orders')
 
 
-class CustomerDetailMarketingTabTests(TestCase):
-    """The Marketing Activity tab surfaces per-customer native-SMS delivery state."""
+class CustomerDetailTimelineTests(TestCase):
+    """The consolidated Timeline merges orders, native-SMS delivery state, survey
+    responses, and loyalty tier transitions into one reverse-chronological feed,
+    keeping the SMS consent + delivery scoreboard as a header above it."""
 
     def setUp(self):
         self.client = Client()
@@ -4412,7 +4414,7 @@ class CustomerDetailMarketingTabTests(TestCase):
         defaults.update(kwargs)
         return SMSMessageRecipient.objects.create(**defaults)
 
-    def test_marketing_tab_lists_sms_activity(self):
+    def test_timeline_lists_sms_activity(self):
         self._make_message(first_clicked_at=timezone.now() - timedelta(hours=1), click_count=2)
 
         response = self.client.get(reverse('tickets:customer_detail', args=[self.customer.id]))
@@ -4421,25 +4423,78 @@ class CustomerDetailMarketingTabTests(TestCase):
         self.assertEqual(response.context['sms_stats']['total'], 1)
         self.assertEqual(response.context['sms_stats']['delivered'], 1)
         self.assertEqual(response.context['sms_stats']['clicked'], 1)
-        self.assertContains(response, 'Marketing Activity')
-        self.assertContains(response, 'Summer Promo')
+        self.assertContains(response, 'Timeline')
+        self.assertContains(response, 'SMS: Summer Promo')
         self.assertContains(response, 'Delivered')
 
-    def test_marketing_tab_empty_state(self):
+    def test_timeline_empty_state(self):
         response = self.client.get(reverse('tickets:customer_detail', args=[self.customer.id]))
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.context['sms_stats']['total'], 0)
-        self.assertContains(response, 'No marketing messages sent to this customer yet.')
+        self.assertContains(response, 'No activity yet.')
 
-    def test_marketing_tab_hidden_when_feature_disabled(self):
+    def test_sms_header_hidden_when_feature_disabled(self):
         self.org.sms_marketing_enabled = False
         self.org.save(update_fields=['sms_marketing_enabled'])
+        self._make_message()
 
         response = self.client.get(reverse('tickets:customer_detail', args=[self.customer.id]))
 
         self.assertEqual(response.status_code, 200)
-        self.assertNotContains(response, 'Marketing Activity')
+        # The SMS consent + delivery scoreboard header disappears, and SMS messages
+        # drop out of the timeline, when the org has SMS marketing disabled.
+        self.assertNotContains(response, 'SMS Consent')
+        self.assertNotContains(response, 'Messages Sent')
+        self.assertNotContains(response, 'SMS: Summer Promo')
+
+    def test_timeline_merges_interactions_reverse_chronologically(self):
+        from .models import (
+            Venue, Event, TicketOrder, Ticket, SurveyInvitation, SurveyResponse,
+            LoyaltyProgram, LoyaltyTier, LoyaltyTierTransition,
+        )
+        self.org.loyalty_feature_enabled = True
+        self.org.save(update_fields=['loyalty_feature_enabled'])
+
+        venue = Venue.objects.create(organization=self.org, name='The Hall', city='LA')
+        event = Event.objects.create(
+            organization=self.org, name='Night Show', venue=venue, start_date=date.today(),
+        )
+        program = LoyaltyProgram.objects.create(organization=self.org, name='Club')
+        gold = LoyaltyTier.objects.create(program=program, name='Gold', rank=2, color='red')
+
+        now = timezone.now()
+        # Create oldest -> newest across every interaction kind.
+        LoyaltyTierTransition.objects.create(
+            customer=self.customer, organization=self.org,
+            from_tier=None, to_tier=gold, changed_at=now - timedelta(days=10),
+        )
+        order = TicketOrder.objects.create(
+            customer=self.customer, event=event, order_number='TL-1',
+            order_date=now - timedelta(days=5), total_amount=Decimal('30.00'),
+        )
+        Ticket.objects.create(ticket_order=order, price=Decimal('30.00'))
+        self._make_message(
+            sent_at=now - timedelta(days=2), delivered_at=now - timedelta(days=2),
+        )
+        invitation = SurveyInvitation.objects.create(
+            event=event, customer=self.customer, organization=self.org,
+            email=self.customer.email,
+        )
+        SurveyResponse.objects.create(
+            invitation=invitation, event=event, customer=self.customer,
+            organization=self.org,
+        )  # submitted_at auto_now_add -> "now", the newest interaction
+
+        response = self.client.get(reverse('tickets:customer_detail', args=[self.customer.id]))
+
+        self.assertEqual(response.status_code, 200)
+        kinds = [item['kind'] for item in response.context['page_obj']]
+        self.assertEqual(kinds, ['survey', 'sms', 'order', 'tier'])
+        self.assertContains(response, 'Purchased 1 ticket')
+        self.assertContains(response, 'SMS: Summer Promo')
+        self.assertContains(response, 'Completed survey')
+        self.assertContains(response, 'Reached Gold tier')
 
 
 class SMSBroadcastAudienceTests(TestCase):
