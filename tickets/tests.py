@@ -17784,6 +17784,9 @@ class SalesPacingTests(TestCase):
         self.assertTrue(resp.context['show_pacing_card'])
         self.assertEqual(resp.context['pacing_default_compare_id'], str(self.past_event.id))
         self.assertNotEqual(resp.context['pacing_current_json'], 'null')
+        # The pacing card lives in a dedicated Analytics tab.
+        self.assertContains(resp, 'data-bs-target="#tab-analytics"')
+        self.assertContains(resp, 'id="tab-analytics"')
 
     def test_detail_hides_pacing_card_without_past_event(self):
         # An event with no prior event to compare against.
@@ -17795,6 +17798,8 @@ class SalesPacingTests(TestCase):
         resp = self.client.get(reverse('tickets:event_detail', args=[lone.id]))
         self.assertEqual(resp.status_code, 200)
         self.assertFalse(resp.context['show_pacing_card'])
+        # No Analytics tab when there's nothing to compare against.
+        self.assertNotContains(resp, 'data-bs-target="#tab-analytics"')
 
     def test_pacing_api_returns_series(self):
         self._make_order(self.past_event, 'PP-1', datetime(2024, 3, 1, 12, 0), 4, '200.00')
