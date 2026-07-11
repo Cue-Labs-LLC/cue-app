@@ -986,7 +986,8 @@ document.addEventListener('DOMContentLoaded', function() {
 </style>
 <div class="card mb-4" id="pacingCard"
      data-pacing-url="{% url 'tickets:event_pacing_api' '00000000-0000-0000-0000-000000000000' %}"
-     data-current-name="{{ event.name }}">
+     data-current-name="{{ event.name }}"
+     data-today-days-before="{% if pacing_today_days_before is not None %}{{ pacing_today_days_before }}{% endif %}">
     <div class="card-header d-flex align-items-center justify-content-between flex-wrap gap-2">
         <div class="d-flex flex-column">
             <h5 class="mb-0">Sales Pacing</h5>
@@ -5639,6 +5640,12 @@ document.addEventListener('DOMContentLoaded', function () {
     var labelColor = token('--text-tertiary', '#7A7672');
     var currentColor = token('--accent', '#00FF87');
     var compareColor = token('--info', '#7B8FBF');
+    var todayColor = token('--text-secondary', '#9A9691');
+
+    // "Today" on the days-before axis for the current event (blank = past event).
+    var rawToday = card.getAttribute('data-today-days-before');
+    var todayDaysBefore = rawToday === '' || rawToday === null ? null : Number(rawToday);
+    var currentAxis = [];   // day values behind the x labels, kept for the marker
 
     var metric = 'tickets';   // 'tickets' | 'revenue'
     var scale = 'abs';        // 'abs' | 'pct'
@@ -5670,6 +5677,7 @@ document.addEventListener('DOMContentLoaded', function () {
         series.forEach(function (s) { s.forEach(function (p) { daySet[p.d] = true; }); });
         var axis = Object.keys(daySet).map(Number).sort(function (a, b) { return b - a; });
         if (!axis.length) axis = [0];
+        currentAxis = axis;
 
         var key = metric;   // 'tickets' | 'revenue'
         function dataset(data, name, color, dashed) {
@@ -5713,6 +5721,62 @@ document.addEventListener('DOMContentLoaded', function () {
         };
     }
 
+    // Interpolate the x-pixel for an arbitrary days-before value across the
+    // category axis (labels only exist on days with sales, so "today" usually
+    // falls between two ticks). Returns null if it lies outside the drawn range.
+    function pixelForDay(chart, day) {
+        var axis = currentAxis, labels = chart.data.labels;
+        if (!axis.length) return null;
+        var xScale = chart.scales.x;
+        if (day > axis[0] || day < axis[axis.length - 1]) return null;   // off-scale
+        for (var i = 0; i < axis.length - 1; i++) {
+            var a = axis[i], b = axis[i + 1];   // descending: a > b
+            if (day <= a && day >= b) {
+                var t = a === b ? 0 : (a - day) / (a - b);
+                // Category scales resolve by label value, not numeric index.
+                var xa = xScale.getPixelForValue(labels[i]);
+                var xb = xScale.getPixelForValue(labels[i + 1]);
+                return xa + (xb - xa) * t;
+            }
+        }
+        return xScale.getPixelForValue(labels[axis.length - 1]);
+    }
+
+    var todayMarkerPlugin = {
+        id: 'pacingTodayMarker',
+        afterDatasetsDraw: function (chart) {
+            if (todayDaysBefore === null || isNaN(todayDaysBefore)) return;
+            var x = pixelForDay(chart, todayDaysBefore);
+            if (x === null) return;
+            var area = chart.chartArea, ctx = chart.ctx;
+            ctx.save();
+            ctx.beginPath();
+            ctx.setLineDash([4, 3]);
+            ctx.lineWidth = 1.5;
+            ctx.strokeStyle = todayColor;
+            ctx.moveTo(x, area.top);
+            ctx.lineTo(x, area.bottom);
+            ctx.stroke();
+            ctx.setLineDash([]);
+            // "Today" pill anchored to the top of the line.
+            var label = 'Today';
+            ctx.font = '600 10px Sora, sans-serif';
+            var padX = 5, w = ctx.measureText(label).width + padX * 2, h = 15;
+            var lx = Math.min(Math.max(x - w / 2, area.left), area.right - w);
+            ctx.fillStyle = todayColor;
+            if (ctx.roundRect) {
+                ctx.beginPath(); ctx.roundRect(lx, area.top - h - 2, w, h, 3); ctx.fill();
+            } else {
+                ctx.fillRect(lx, area.top - h - 2, w, h);
+            }
+            ctx.fillStyle = token('--text-inverse', '#0E0E0E');
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(label, lx + w / 2, area.top - h / 2 - 2);
+            ctx.restore();
+        }
+    };
+
     var chart = null;
     function render() {
         var cfg = buildConfig();
@@ -5728,10 +5792,12 @@ document.addEventListener('DOMContentLoaded', function () {
         }
         chart = new Chart(canvas, {
             type: 'line',
+            plugins: [todayMarkerPlugin],
             data: { labels: cfg.labels, datasets: cfg.datasets },
             options: {
                 responsive: true,
                 maintainAspectRatio: false,
+                layout: { padding: { top: 18 } },
                 plugins: {
                     legend: {
                         display: true,
