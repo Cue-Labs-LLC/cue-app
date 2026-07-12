@@ -5700,10 +5700,18 @@ document.addEventListener('DOMContentLoaded', function () {
     function buildConfig() {
         var series = [currentData.series || []];
         if (compareData) series.push(compareData.series || []);
-        var daySet = {};
-        series.forEach(function (s) { s.forEach(function (p) { daySet[p.d] = true; }); });
-        var axis = Object.keys(daySet).map(Number).sort(function (a, b) { return b - a; });
-        if (!axis.length) axis = [0];
+        // Continuous axis: every day from the earliest sale (largest days-before)
+        // down to the last day, so days with no sales aren't skipped.
+        var maxD = null, minD = null;
+        series.forEach(function (s) {
+            s.forEach(function (p) {
+                if (maxD === null || p.d > maxD) maxD = p.d;
+                if (minD === null || p.d < minD) minD = p.d;
+            });
+        });
+        var axis = [];
+        if (maxD === null) { axis = [0]; }
+        else { for (var d = maxD; d >= minD; d--) axis.push(d); }
         currentAxis = axis;
 
         var key = metric;   // 'tickets' | 'revenue'
