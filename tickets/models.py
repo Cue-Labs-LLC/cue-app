@@ -3976,6 +3976,36 @@ class LoyaltyTier(BaseModel):
             )
         )
 
+    def qualifying_rules(self):
+        """Human-readable summary of each qualifying rule that is set.
+
+        Returns a list of short strings (one per active rule) in the same order
+        ``qualifies()`` evaluates them, for display on the tier members page.
+        An empty list means the tier is a base/catch-all tier (see
+        ``has_no_rules()``).
+        """
+        rules = []
+        if self.min_lifetime_value is not None:
+            rules.append(f"Lifetime spend ≥ ${self.min_lifetime_value:,.2f}")
+        if self.min_order_count is not None:
+            rules.append(f"Orders ≥ {self.min_order_count}")
+        if self.min_events_purchased is not None:
+            rules.append(f"Events purchased ≥ {self.min_events_purchased}")
+        if self.min_tickets_purchased is not None:
+            rules.append(f"Tickets purchased ≥ {self.min_tickets_purchased}")
+        if self.max_days_since_last_order is not None:
+            rules.append(f"Ordered within {self.max_days_since_last_order} days")
+        if self.min_lifetime_points is not None:
+            rules.append(f"Lifetime points ≥ {self.min_lifetime_points}")
+        if self.min_events_attended is not None or self.attended_within_days is not None:
+            # Mirror qualifies(): a bare window still requires at least 1 event.
+            required = self.min_events_attended or 1
+            rule = f"Attended ≥ {required} event{'' if required == 1 else 's'}"
+            if self.attended_within_days is not None:
+                rule += f" within {self.attended_within_days} days"
+            rules.append(rule)
+        return rules
+
 
 class LoyaltyPointsTransaction(BaseModel):
     """Immutable ledger for customer loyalty points.
