@@ -1,5 +1,6 @@
 {% extends 'tickets/base.html' %}
 {% load humanize %}
+{% load tickets_extras %}
 
 {% block title %}{{ tier.name }} members{% endblock %}
 
@@ -16,6 +17,34 @@
     <h1>{{ tier.name }} members</h1>
     <div class="page-header-actions">
         <a href="{% url 'tickets:loyalty_program_detail' program.id %}" class="btn btn-outline-secondary"><i class="bi bi-arrow-left"></i> Back to program</a>
+    </div>
+</div>
+
+<div class="card mb-3">
+    <div class="card-body">
+        <div class="d-flex flex-wrap align-items-center gap-2 mb-3">
+            <span class="badge {{ tier.color|badge_class }} fs-6">{{ tier.name }}</span>
+            <span class="text-muted small">Rank {{ tier.rank }}</span>
+            <span class="text-muted small">&middot;</span>
+            <span class="text-muted small">{{ page_obj.paginator.count|intcomma }} member{{ page_obj.paginator.count|pluralize }}</span>
+        </div>
+
+        <div class="loyalty-eyebrow text-muted small text-uppercase mb-2">Qualifying rules</div>
+        {% if tier.has_no_rules %}
+        <p class="text-muted small mb-0">Base tier &mdash; includes everyone.</p>
+        {% else %}
+        <div class="d-flex flex-wrap gap-2">
+            {% for rule in tier.qualifying_rules %}
+            <span class="badge bg-light text-dark border">{{ rule }}</span>
+            {% endfor %}
+        </div>
+        <p class="text-muted small mb-0 mt-2">Members must meet <strong>all</strong> of these.</p>
+        {% endif %}
+
+        {% if tier.perks %}
+        <div class="loyalty-eyebrow text-muted small text-uppercase mt-3 mb-2">Perks</div>
+        <p class="small mb-0">{{ tier.perks }}</p>
+        {% endif %}
     </div>
 </div>
 
