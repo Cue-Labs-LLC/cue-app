@@ -12714,11 +12714,12 @@ class LoyaltyTierAssignmentTests(TestCase):
         self.assertEqual(recent.loyalty_tier, self.member)
         self.assertIsNone(lapsed.loyalty_tier)
 
-    def test_paid_orders_rule_excludes_free_orders(self):
-        # "Paid orders >= 2" counts only orders where money was paid (> $0): a
-        # customer with 2 free-RSVP orders stays out while a paying buyer qualifies.
+    def test_paid_events_rule_excludes_free_orders(self):
+        # "Paid events >= 2" counts distinct events with an order where money was
+        # paid (> $0): a customer with 2 free-RSVP orders stays out while a paying
+        # buyer across two events qualifies.
         self.gold.delete(); self.silver.delete()
-        self.member.min_paid_orders_recent = 2
+        self.member.min_paid_events_recent = 2
         self.member.save()
         e1, e2 = self._event('E1'), self._event('E2')
         buyer = self._make_customer('buyer@x.com', 100, [(e1, 50, 1), (e2, 50, 1)])
@@ -12728,13 +12729,28 @@ class LoyaltyTierAssignmentTests(TestCase):
         self.assertEqual(buyer.loyalty_tier, self.member)
         self.assertIsNone(freeloader.loyalty_tier)
 
-    def test_windowed_paid_orders_excludes_old_orders(self):
-        # "Paid orders >= 2 within 90 days" counts only paid orders placed inside
-        # the window, keyed off order_date: a buyer with 2 paid orders 200 days ago
-        # does NOT qualify, one with 2 paid orders 10 days ago does.
+    def test_paid_events_rule_counts_distinct_events(self):
+        # "Paid events >= 2" counts UNIQUE events, so several paid orders to the
+        # same event count once: a buyer with 3 paid orders all to one event does
+        # NOT qualify, while a buyer with paid orders across two events does.
         self.gold.delete(); self.silver.delete()
-        self.member.min_paid_orders_recent = 2
-        self.member.paid_orders_within_days = 90
+        self.member.min_paid_events_recent = 2
+        self.member.save()
+        e1, e2 = self._event('E1'), self._event('E2')
+        one_event = self._make_customer('one@x.com', 150, [(e1, 50, 1), (e1, 50, 1), (e1, 50, 1)])
+        two_events = self._make_customer('two@x.com', 100, [(e1, 50, 1), (e2, 50, 1)])
+        self._assign()
+        one_event.refresh_from_db(); two_events.refresh_from_db()
+        self.assertIsNone(one_event.loyalty_tier)
+        self.assertEqual(two_events.loyalty_tier, self.member)
+
+    def test_windowed_paid_events_excludes_old_orders(self):
+        # "Paid events >= 2 within 90 days" counts only paid events placed inside
+        # the window, keyed off order_date: a buyer across 2 events 200 days ago
+        # does NOT qualify, one across 2 events 10 days ago does.
+        self.gold.delete(); self.silver.delete()
+        self.member.min_paid_events_recent = 2
+        self.member.paid_events_within_days = 90
         self.member.save()
         e1, e2 = self._event('E1'), self._event('E2')
         now = timezone.now()
