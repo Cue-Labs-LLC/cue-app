@@ -1400,7 +1400,7 @@ class LoyaltyTierForm(forms.ModelForm):
             'min_lifetime_value', 'min_order_count', 'min_events_purchased',
             'min_tickets_purchased', 'max_days_since_last_order', 'min_lifetime_points',
             'min_events_attended', 'attended_within_days',
-            'min_paid_orders_recent', 'paid_orders_within_days',
+            'min_paid_events_recent', 'paid_events_within_days',
         ]
         widgets = {
             'name': forms.TextInput(attrs={'class': 'form-control', 'placeholder': 'e.g. Gold'}),
@@ -1415,15 +1415,15 @@ class LoyaltyTierForm(forms.ModelForm):
             'min_lifetime_points': forms.NumberInput(attrs={'class': 'form-control', 'min': '0', 'placeholder': 'Any'}),
             'min_events_attended': forms.NumberInput(attrs={'class': 'form-control', 'min': '0', 'placeholder': 'Any'}),
             'attended_within_days': forms.NumberInput(attrs={'class': 'form-control', 'min': '0', 'placeholder': 'All time'}),
-            'min_paid_orders_recent': forms.NumberInput(attrs={'class': 'form-control', 'min': '0', 'placeholder': 'Any'}),
-            'paid_orders_within_days': forms.NumberInput(attrs={'class': 'form-control', 'min': '0', 'placeholder': 'All time'}),
+            'min_paid_events_recent': forms.NumberInput(attrs={'class': 'form-control', 'min': '0', 'placeholder': 'Any'}),
+            'paid_events_within_days': forms.NumberInput(attrs={'class': 'form-control', 'min': '0', 'placeholder': 'All time'}),
         }
 
     RULE_FIELDS = (
         'min_lifetime_value', 'min_order_count', 'min_events_purchased',
         'min_tickets_purchased', 'max_days_since_last_order', 'min_lifetime_points',
         'min_events_attended', 'attended_within_days',
-        'min_paid_orders_recent', 'paid_orders_within_days',
+        'min_paid_events_recent', 'paid_events_within_days',
     )
 
     def __init__(self, *args, **kwargs):
