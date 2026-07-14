@@ -939,7 +939,7 @@ class PayoutAdmin(admin.ModelAdmin):
 
 @admin.register(UserProfile)
 class UserProfileAdmin(admin.ModelAdmin):
-    list_display = ['user', 'organization', 'role', 'phone_number', 'user_full_name']
+    list_display = ['user', 'organization', 'role', 'phone_number', 'user_full_name', 'impersonate_link']
     list_filter = ['role', 'organization']
     search_fields = ['user__username', 'user__first_name', 'user__last_name', 'user__email', 'phone_number']
     raw_id_fields = ['user']
@@ -948,6 +948,15 @@ class UserProfileAdmin(admin.ModelAdmin):
     def user_full_name(self, obj):
         return obj.user.get_full_name() if obj.user_id else ''
     user_full_name.short_description = 'Full Name'
+
+    def impersonate_link(self, obj):
+        # Mirror the view guardrail: never offer to impersonate a privileged account.
+        if not obj.user_id or obj.user.is_superuser or obj.user.is_staff:
+            return '—'
+        from django.urls import reverse
+        url = reverse('tickets:admin_impersonate_start', args=[obj.user_id])
+        return format_html('<a href="{}">Log in as</a>', url)
+    impersonate_link.short_description = 'Impersonate'
 
 
 @admin.register(OrganizationInvitation)

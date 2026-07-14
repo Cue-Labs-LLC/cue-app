@@ -35,6 +35,9 @@ urlpatterns = [
     path('login/email/verify-phone/', views.verify_phone_after_profile_view, name='verify_phone_after_profile'),
     path('login/email/resend-phone/', views.resend_phone_after_profile_view, name='resend_phone_after_profile'),
     path('logout/', views.logout_view, name='logout'),
+    # Admin impersonation ("Log in as") - superuser-only, triggered from Django admin
+    path('impersonate/<int:user_id>/start/', views.admin_impersonate_start, name='admin_impersonate_start'),
+    path('impersonate/stop/', views.admin_impersonate_stop, name='admin_impersonate_stop'),
     # Inline modal auth (JSON endpoints for checkout flow)
     path('auth/modal/start/', views.modal_auth_start, name='modal_auth_start'),
     path('auth/modal/verify/', views.modal_auth_verify, name='modal_auth_verify'),

@@ -17895,3 +17895,85 @@ class SalesPacingTests(TestCase):
         )
         resp = self.client.get(reverse('tickets:event_pacing_api', args=[other_event.id]))
         self.assertEqual(resp.status_code, 404)
+
+
+
+class AdminImpersonationTests(TestCase):
+    """Tests for the internal-admin "Log in as another user" flow."""
+
+    def setUp(self):
+        self.client = Client()
+        self.org = Organization.objects.create(name='Impersonate Org', slug='impersonate-org')
+
+        # Internal Cue admin.
+        self.admin = User.objects.create_superuser(
+            username='cueadmin', email='cueadmin@example.com', password='testpass123',
+        )
+
+        # Target customer account (an organizer so tickets:home renders).
+        self.target = User.objects.create_user(
+            username='customer', email='customer@example.com', password='targetpass123',
+        )
+        UserProfile.objects.create(
+            user=self.target, organization=self.org,
+            role=UserProfile.Role.ORGANIZER, org_role=UserProfile.OrgRole.OWNER,
+        )
+        OrganizationMembership.objects.create(
+            user=self.target, organization=self.org, org_role=UserProfile.OrgRole.OWNER,
+        )
+
+        # Another privileged account that must never be impersonable.
+        self.staff = User.objects.create_user(
+            username='staffer', email='staffer@example.com', password='staffpass123',
+            is_staff=True,
+        )
+
+    def _start_url(self, user):
+        return reverse('tickets:admin_impersonate_start', args=[user.id])
+
+    def test_superuser_can_start_impersonation(self):
+        self.client.login(username='cueadmin@example.com', password='testpass123')
+        response = self.client.get(self._start_url(self.target))
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.url, reverse('tickets:home'))
+        session = self.client.session
+        self.assertEqual(session['_impersonator_id'], self.admin.pk)
+        # The authenticated user is now the target.
+        self.assertEqual(int(session['_auth_user_id']), self.target.pk)
+
+    def test_impersonation_banner_shows(self):
+        self.client.login(username='cueadmin@example.com', password='testpass123')
+        self.client.get(self._start_url(self.target))
+        response = self.client.get(reverse('tickets:home'))
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.context['is_impersonating'])
+        self.assertContains(response, 'Impersonating')
+
+    def test_non_superuser_cannot_start(self):
+        self.client.login(username='customer@example.com', password='targetpass123')
+        response = self.client.get(self._start_url(self.target))
+        self.assertEqual(response.status_code, 403)
+
+    def test_cannot_impersonate_staff(self):
+        self.client.login(username='cueadmin@example.com', password='testpass123')
+        response = self.client.get(self._start_url(self.staff))
+        self.assertEqual(response.status_code, 302)
+        session = self.client.session
+        self.assertNotIn('_impersonator_id', session)
+        # Still authenticated as the admin, not the staff target.
+        self.assertEqual(int(session['_auth_user_id']), self.admin.pk)
+
+    def test_stop_restores_admin(self):
+        self.client.login(username='cueadmin@example.com', password='testpass123')
+        self.client.get(self._start_url(self.target))
+        response = self.client.post(reverse('tickets:admin_impersonate_stop'))
+        self.assertEqual(response.status_code, 302)
+        session = self.client.session
+        self.assertNotIn('_impersonator_id', session)
+        self.assertEqual(int(session['_auth_user_id']), self.admin.pk)
+
+    def test_stop_requires_post(self):
+        self.client.login(username='cueadmin@example.com', password='testpass123')
+        self.client.get(self._start_url(self.target))
+        response = self.client.get(reverse('tickets:admin_impersonate_stop'))
+        self.assertEqual(response.status_code, 405)
