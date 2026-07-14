@@ -37,6 +37,11 @@ def _window_key(days):
     return f'events_attended_w{days}'
 
 
+def _paid_window_key(days):
+    """Annotation/row key for the paid-orders count within ``days``."""
+    return f'paid_orders_w{days}'
+
+
 def _count_subquery(queryset, group_field, distinct_field=None):
     """Build a grouped per-customer COUNT subquery returning a single column."""
     count_kwargs = {'distinct': True} if distinct_field else {}
@@ -59,13 +64,16 @@ class LoyaltyTierAssigner:
         self.program = program
         self.organization = program.organization
 
-    def _base_queryset(self, windows):
+    def _base_queryset(self, windows, paid_windows):
         # Count rules ignore refunded and soft-deleted orders so they stay
         # consistent with Customer.lifetime_value (which excludes refunds).
         live_orders = TicketOrder.objects.filter(
             customer=OuterRef('pk'), refunded_at__isnull=True, deleted_at__isnull=True,
         )
         order_count = _count_subquery(live_orders, 'customer')
+        # Paid orders: live orders where money was actually paid (total > $0),
+        # so free-RSVP orders never count toward the "paid orders" rule.
+        paid_orders = live_orders.filter(total_amount__gt=0)
         events_purchased = _count_subquery(live_orders, 'customer', distinct_field='event')
         tickets_purchased = _count_subquery(
             Ticket.objects.filter(
@@ -89,6 +97,7 @@ class LoyaltyTierAssigner:
             'events_attended': _count_subquery(
                 attended_tickets, 'ticket_order__customer', distinct_field='ticket_order__event',
             ),
+            'paid_order_count': _count_subquery(paid_orders, 'customer'),
         }
         # One windowed distinct-events count per distinct attendance window in use.
         now = timezone.now()
@@ -97,6 +106,12 @@ class LoyaltyTierAssigner:
             annotations[_window_key(days)] = _count_subquery(
                 attended_tickets.filter(scanned_at__gte=cutoff),
                 'ticket_order__customer', distinct_field='ticket_order__event',
+            )
+        # One windowed paid-orders count per distinct paid-orders window in use.
+        for days in paid_windows:
+            cutoff = now - timedelta(days=days)
+            annotations[_paid_window_key(days)] = _count_subquery(
+                paid_orders.filter(order_date__gte=cutoff), 'customer',
             )
         return (
             Customer.objects.filter(organization=self.organization)
@@ -121,6 +136,7 @@ class LoyaltyTierAssigner:
         # Best tier first: highest rank wins when several tiers qualify.
         tiers = list(self.program.tiers.all().order_by('-rank', 'name'))
         windows = sorted({t.attended_within_days for t in tiers if t.attended_within_days})
+        paid_windows = sorted({t.paid_orders_within_days for t in tiers if t.paid_orders_within_days})
 
         assigned = 0
         chunk = []
@@ -129,13 +145,15 @@ class LoyaltyTierAssigner:
         # currently-stored tier, appending one immutable LoyaltyTierTransition
         # per change and flushing on the same chunk cadence as the bulk_update.
         transitions = []
-        for row in self._base_queryset(windows).iterator(chunk_size=CHUNK_SIZE):
+        for row in self._base_queryset(windows, paid_windows).iterator(chunk_size=CHUNK_SIZE):
             last_order_date = row['last_order_date']
             days_since = (now - last_order_date).days if last_order_date else None
             tier_id = None
             for tier in tiers:
                 window = tier.attended_within_days
                 in_window = row[_window_key(window)] if window else 0
+                paid_window = tier.paid_orders_within_days
+                paid_in_window = row[_paid_window_key(paid_window)] if paid_window else 0
                 if tier.qualifies(
                     lifetime_value=row['lifetime_value'],
                     order_count=row['order_count'],
@@ -145,6 +163,8 @@ class LoyaltyTierAssigner:
                     lifetime_points=row['lifetime_points'],
                     events_attended=row['events_attended'],
                     events_attended_in_window=in_window,
+                    paid_order_count=row['paid_order_count'],
+                    paid_order_count_in_window=paid_in_window,
                 ):
                     tier_id = tier.id
                     break
