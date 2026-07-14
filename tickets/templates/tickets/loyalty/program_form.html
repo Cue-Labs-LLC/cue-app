@@ -192,6 +192,14 @@
         if (eaV || awV) {
             parts.push('Attended ≥ ' + (eaV || '1') + (awV ? ' / ' + awV + 'd' : ''));
         }
+        // Paid orders: "Paid ≥ N" with an optional "/ Dd" window.
+        var poEl = fieldEl(card, 'min_paid_orders_recent');
+        var pwEl = fieldEl(card, 'paid_orders_within_days');
+        var poV = poEl && poEl.value !== '' ? poEl.value : null;
+        var pwV = pwEl && pwEl.value !== '' ? pwEl.value : null;
+        if (poV || pwV) {
+            parts.push('Paid ≥ ' + (poV || '1') + (pwV ? ' / ' + pwV + 'd' : ''));
+        }
         if (summary) { summary.textContent = parts.length ? parts.join('  ·  ') : 'Includes everyone'; }
 
         // Colored left edge + header swatch follow the tier color.

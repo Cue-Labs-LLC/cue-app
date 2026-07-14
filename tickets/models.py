@@ -3921,6 +3921,19 @@ class LoyaltyTier(BaseModel):
         help_text="Only count events attended within this many days (attendance window). "
                   "Leave blank to count attendance over all time.",
     )
+    # "Paid orders in the last N days": a paired count + window rule. Counts only
+    # non-refunded orders where money was actually paid (total_amount > 0), so
+    # free-RSVP orders never qualify — unlike min_order_count, which counts every
+    # live order. Mirrors the attendance pair above in shape.
+    min_paid_orders_recent = models.PositiveIntegerField(
+        null=True, blank=True,
+        help_text="Minimum number of paid orders (total > $0) within the window below to qualify.",
+    )
+    paid_orders_within_days = models.PositiveIntegerField(
+        null=True, blank=True,
+        help_text="Only count paid orders placed within this many days. "
+                  "Leave blank to count paid orders over all time.",
+    )
 
     class Meta:
         ordering = ['-rank', 'name']
@@ -3932,7 +3945,7 @@ class LoyaltyTier(BaseModel):
     def __str__(self):
         return f"{self.name} ({self.program.name})"
 
-    def qualifies(self, *, lifetime_value, order_count, events_purchased, tickets_purchased, days_since_last_order, lifetime_points=0, events_attended=0, events_attended_in_window=0):
+    def qualifies(self, *, lifetime_value, order_count, events_purchased, tickets_purchased, days_since_last_order, lifetime_points=0, events_attended=0, events_attended_in_window=0, paid_order_count=0, paid_order_count_in_window=0):
         """Return True if the given per-customer metrics meet every set rule.
 
         ``events_attended`` is the all-time distinct-events-attended count;
@@ -3943,6 +3956,11 @@ class LoyaltyTier(BaseModel):
         least ``min_events_attended`` (or 1 if only a window is set) distinct
         events, counted within the window when one is set and over all time
         otherwise.
+
+        ``paid_order_count`` / ``paid_order_count_in_window`` mirror the
+        attendance pair for the "paid orders in the last N days" rule (active
+        when either ``min_paid_orders_recent`` or ``paid_orders_within_days`` is
+        set); only orders with money paid (total_amount > 0) are counted.
         """
         if self.min_lifetime_value is not None and (lifetime_value or Decimal('0')) < self.min_lifetime_value:
             return False
@@ -3962,6 +3980,11 @@ class LoyaltyTier(BaseModel):
             count = events_attended_in_window if self.attended_within_days is not None else events_attended
             if (count or 0) < required:
                 return False
+        if self.min_paid_orders_recent is not None or self.paid_orders_within_days is not None:
+            required = self.min_paid_orders_recent or 1
+            count = paid_order_count_in_window if self.paid_orders_within_days is not None else paid_order_count
+            if (count or 0) < required:
+                return False
         return True
 
     def has_no_rules(self):
@@ -3972,7 +3995,8 @@ class LoyaltyTier(BaseModel):
                 'min_lifetime_value', 'min_order_count', 'min_events_purchased',
                 'min_tickets_purchased', 'max_days_since_last_order',
                 'min_lifetime_points', 'min_events_attended',
-                'attended_within_days',
+                'attended_within_days', 'min_paid_orders_recent',
+                'paid_orders_within_days',
             )
         )
 
@@ -4003,6 +4027,12 @@ class LoyaltyTier(BaseModel):
             rule = f"Attended ≥ {required} event{'' if required == 1 else 's'}"
             if self.attended_within_days is not None:
                 rule += f" within {self.attended_within_days} days"
+            rules.append(rule)
+        if self.min_paid_orders_recent is not None or self.paid_orders_within_days is not None:
+            required = self.min_paid_orders_recent or 1
+            rule = f"Paid orders ≥ {required}"
+            if self.paid_orders_within_days is not None:
+                rule += f" within {self.paid_orders_within_days} days"
             rules.append(rule)
         return rules
 

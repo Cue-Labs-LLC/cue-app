@@ -12714,6 +12714,50 @@ class LoyaltyTierAssignmentTests(TestCase):
         self.assertEqual(recent.loyalty_tier, self.member)
         self.assertIsNone(lapsed.loyalty_tier)
 
+    def test_paid_orders_rule_excludes_free_orders(self):
+        # "Paid orders >= 2" counts only orders where money was paid (> $0): a
+        # customer with 2 free-RSVP orders stays out while a paying buyer qualifies.
+        self.gold.delete(); self.silver.delete()
+        self.member.min_paid_orders_recent = 2
+        self.member.save()
+        e1, e2 = self._event('E1'), self._event('E2')
+        buyer = self._make_customer('buyer@x.com', 100, [(e1, 50, 1), (e2, 50, 1)])
+        freeloader = self._make_customer('free@x.com', 0, [(e1, 0, 1), (e2, 0, 1)])
+        self._assign()
+        buyer.refresh_from_db(); freeloader.refresh_from_db()
+        self.assertEqual(buyer.loyalty_tier, self.member)
+        self.assertIsNone(freeloader.loyalty_tier)
+
+    def test_windowed_paid_orders_excludes_old_orders(self):
+        # "Paid orders >= 2 within 90 days" counts only paid orders placed inside
+        # the window, keyed off order_date: a buyer with 2 paid orders 200 days ago
+        # does NOT qualify, one with 2 paid orders 10 days ago does.
+        self.gold.delete(); self.silver.delete()
+        self.member.min_paid_orders_recent = 2
+        self.member.paid_orders_within_days = 90
+        self.member.save()
+        e1, e2 = self._event('E1'), self._event('E2')
+        now = timezone.now()
+
+        def _paid_buyer(email, days_ago):
+            cust = Customer.objects.create(
+                organization=self.org, email=email, name=email.split('@')[0],
+                lifetime_value=Decimal('100'), last_order_date=now.date(),
+            )
+            for i, ev in enumerate([e1, e2]):
+                TicketOrder.objects.create(
+                    customer=cust, event=ev, order_number=f'{email}-{i}',
+                    order_date=now - timedelta(days=days_ago), total_amount=Decimal('50'),
+                )
+            return cust
+
+        recent = _paid_buyer('recent-paid@x.com', 10)
+        lapsed = _paid_buyer('lapsed-paid@x.com', 200)
+        self._assign()
+        recent.refresh_from_db(); lapsed.refresh_from_db()
+        self.assertEqual(recent.loyalty_tier, self.member)
+        self.assertIsNone(lapsed.loyalty_tier)
+
 
 class LoyaltyViewTests(TestCase):
     """Access control, org-scoping, and the builder flow."""
