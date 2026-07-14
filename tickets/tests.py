@@ -13014,6 +13014,41 @@ class LoyaltyHardeningTests(TestCase):
         self.assertContains(resp, 'Gilda')
         self.assertNotContains(resp, 'Basil')
 
+    # --- tier members market filter ---
+    def test_tier_members_market_filter(self):
+        from tickets.models import Market
+        venue = Venue.objects.create(organization=self.org, name='V', city='C')
+        austin = Market.objects.create(organization=self.org, name='Austin',
+                                       geography_level='city', geography_value='Austin')
+        dallas = Market.objects.create(organization=self.org, name='Dallas',
+                                       geography_level='city', geography_value='Dallas')
+        austin_event = Event.objects.create(organization=self.org, name='ATX', venue=venue,
+                                            market=austin, start_date=date(2026, 9, 1),
+                                            start_time=time(20, 0, 0))
+        dallas_event = Event.objects.create(organization=self.org, name='DAL', venue=venue,
+                                            market=dallas, start_date=date(2026, 9, 2),
+                                            start_time=time(20, 0, 0))
+        # Ada orders most in Austin; Della orders most in Dallas.
+        ada = Customer.objects.create(organization=self.org, email='ada@x.com', name='Ada',
+                                      loyalty_tier=self.base_tier)
+        della = Customer.objects.create(organization=self.org, email='del@x.com', name='Della',
+                                        loyalty_tier=self.base_tier)
+        for i in range(2):
+            TicketOrder.objects.create(customer=ada, event=austin_event, order_number=f'A{i}',
+                                       order_date=timezone.now(), total_amount=Decimal('10.00'))
+        TicketOrder.objects.create(customer=della, event=dallas_event, order_number='D0',
+                                   order_date=timezone.now(), total_amount=Decimal('10.00'))
+        self._login()
+        url = reverse('tickets:loyalty_tier_members', args=[self.program.id, self.base_tier.id])
+        # Unfiltered: both appear.
+        resp = self.client.get(url)
+        self.assertContains(resp, 'Ada')
+        self.assertContains(resp, 'Della')
+        # Filtered to Austin: only Ada (her most-frequented market).
+        resp = self.client.get(url, {'market': 'Austin'})
+        self.assertContains(resp, 'Ada')
+        self.assertNotContains(resp, 'Della')
+
     # --- same-org display guard (T2) ---
     def test_customer_detail_hides_foreign_tier(self):
         foreign_prog = LoyaltyProgram.objects.create(organization=self.other_org, name='Foreign Secret')
