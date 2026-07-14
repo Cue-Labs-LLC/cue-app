@@ -1138,6 +1138,82 @@ def logout_view(request):
     return LogoutView.as_view()(request)
 
 
+@login_required
+def admin_impersonate_start(request, user_id):
+    """Log an internal Cue admin (superuser) in as another user for debugging.
+
+    Reversible: the admin's own id is stashed in the session as
+    ``_impersonator_id`` so the banner can offer a one-click restore. Only
+    superusers may start impersonation, and privileged (staff/superuser)
+    accounts can never be targeted.
+    """
+    from django.contrib.auth import login as auth_login
+    from django.contrib.auth.models import User
+    from django.http import HttpResponseForbidden
+
+    if not request.user.is_superuser:
+        return HttpResponseForbidden('Access denied.')
+
+    target = get_object_or_404(User, pk=user_id)
+
+    if target.is_superuser or target.is_staff:
+        messages.error(request, 'Cannot impersonate an admin or staff account.')
+        return redirect('/admin/tickets/userprofile/')
+
+    if target == request.user:
+        return redirect('tickets:home')
+
+    admin_id = request.user.pk
+    logger.warning("Impersonation START: admin %s -> user %s", admin_id, target.pk)
+
+    # auth_login() flushes the session when switching to a different user, so
+    # set the impersonation marker *after* it. The flush also clears the stale
+    # _org_id, forcing get_organization() to re-resolve for the target.
+    auth_login(request, target, backend='tickets.backends.EmailBackend')
+    request.session['_impersonator_id'] = admin_id
+    clear_org_cache(request)
+
+    messages.warning(
+        request,
+        f'You are now impersonating {target.get_full_name() or target.email}.'
+    )
+    return redirect('tickets:home')
+
+
+@login_required
+@require_http_methods(["POST"])
+def admin_impersonate_stop(request):
+    """End an active impersonation and restore the original admin session.
+
+    Authorizes on the presence of the ``_impersonator_id`` session key rather
+    than on ``is_superuser`` — by this point request.user is the (non-superuser)
+    impersonated target, and that key can only have been set by
+    admin_impersonate_start().
+    """
+    from django.contrib.auth import login as auth_login, logout as auth_logout
+    from django.contrib.auth.models import User
+
+    impersonator_id = request.session.get('_impersonator_id')
+    if not impersonator_id:
+        return redirect('tickets:home')
+
+    try:
+        admin_user = User.objects.get(pk=impersonator_id)
+    except User.DoesNotExist:
+        auth_logout(request)
+        return redirect('tickets:login')
+
+    logger.warning(
+        "Impersonation STOP: admin %s <- user %s",
+        impersonator_id, request.user.pk,
+    )
+    # Logging back in as a different user flushes the session, which clears
+    # _impersonator_id along with it.
+    auth_login(request, admin_user, backend='tickets.backends.EmailBackend')
+    clear_org_cache(request)
+    return redirect('/admin/tickets/userprofile/')
+
+
 class PasswordResetView(auth_views.PasswordResetView):
     """Password reset request view."""
     template_name = 'tickets/auth/password_reset.html'
