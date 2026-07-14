@@ -3905,6 +3905,12 @@ def loyalty_tier_members(request, program_id, tier_id):
             Q(name__icontains=search_query) | Q(email__icontains=search_query)
         )
 
+    # Market filter — matches a member's most-frequented market (see annotation below).
+    market_filter = request.GET.get('market', '').strip()
+    market_choices = list(
+        Market.objects.filter(organization=org).order_by('name').values_list('name', flat=True)
+    )
+
     # Sorting — validate against an allowlist, default to highest lifetime value.
     allowed_sorts = {
         'name', '-name', 'email', '-email',
@@ -3925,33 +3931,29 @@ def loyalty_tier_members(request, program_id, tier_id):
         ordering = [sort_by, 'name']  # preserve the name tiebreak this page had
     else:
         ordering = [sort_by]
+    # Annotate each member with their most-frequented market — the market where
+    # they've placed the most orders — as a per-row subquery so the same value
+    # drives both the column display and the market filter. Customer has no direct
+    # market field; markets live on the Event a customer's orders belong to. Ties
+    # are broken by market name for a deterministic winner.
+    top_market_sq = (
+        TicketOrder.objects.filter(
+            customer=OuterRef('pk'),
+            event__market__isnull=False,
+        )
+        .values('event__market__name')
+        .annotate(order_count=Count('id'))
+        .order_by('-order_count', 'event__market__name')
+        .values('event__market__name')[:1]
+    )
+    members = members.annotate(top_market=Subquery(top_market_sq))
+    if market_filter:
+        members = members.filter(top_market=market_filter)
+
     members = members.order_by(*ordering)
 
     paginator = Paginator(members, 50)
     page_obj = paginator.get_page(request.GET.get('page'))
-
-    # Annotate each member on this page with their most-frequented market — the
-    # market where they've placed the most orders. Computed only for the 50 rows
-    # on the current page in a single grouped query (Customer has no direct market
-    # field; markets live on the Event a customer's orders belong to).
-    page_customers = list(page_obj.object_list)
-    top_market_by_customer = {}
-    if page_customers:
-        market_counts = (
-            TicketOrder.objects.filter(
-                customer__in=page_customers,
-                event__market__isnull=False,
-            )
-            .values('customer_id', 'event__market__name')
-            .annotate(order_count=Count('id'))
-            # Deterministic winner: highest order count, then market name.
-            .order_by('customer_id', '-order_count', 'event__market__name')
-        )
-        for row in market_counts:
-            # First row per customer wins thanks to the ordering above.
-            top_market_by_customer.setdefault(row['customer_id'], row['event__market__name'])
-    for customer in page_customers:
-        customer.top_market = top_market_by_customer.get(customer.id)
 
     return render(request, 'tickets/loyalty/tier_members.html', {
         'program': program,
@@ -3959,6 +3961,8 @@ def loyalty_tier_members(request, program_id, tier_id):
         'page_obj': page_obj,
         'search_query': search_query,
         'sort_by': sort_by,
+        'market_filter': market_filter,
+        'market_choices': market_choices,
     })
 
 
