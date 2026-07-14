@@ -86,6 +86,7 @@
                             </a>
                             {% endwith %}
                         </th>
+                        <th>Market</th>
                         <th class="text-end">
                             {% with asc='lifetime_value' desc='-lifetime_value' %}
                             <a href="?sort={% if sort_by == desc %}{{ asc }}{% else %}{{ desc }}{% endif %}&search={{ search_query }}">Lifetime value
@@ -111,6 +112,7 @@
                     <tr>
                         <td><a href="{% url 'tickets:customer_detail' customer.id %}" class="text-decoration-none">{{ customer.name }}</a></td>
                         <td class="text-muted">{{ customer.email }}</td>
+                        <td>{% if customer.top_market %}{{ customer.top_market }}{% else %}<span class="text-muted">&mdash;</span>{% endif %}</td>
                         <td class="text-end">${{ customer.lifetime_value|floatformat:2|intcomma }}</td>
                         <td class="text-end text-muted small">{% if customer.last_order_date %}{{ customer.last_order_date|date:"M d, Y" }}{% else %}&mdash;{% endif %}</td>
                     </tr>

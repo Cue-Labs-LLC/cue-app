@@ -3853,6 +3853,30 @@ def loyalty_tier_members(request, program_id, tier_id):
 
     paginator = Paginator(members, 50)
     page_obj = paginator.get_page(request.GET.get('page'))
+
+    # Annotate each member on this page with their most-frequented market — the
+    # market where they've placed the most orders. Computed only for the 50 rows
+    # on the current page in a single grouped query (Customer has no direct market
+    # field; markets live on the Event a customer's orders belong to).
+    page_customers = list(page_obj.object_list)
+    top_market_by_customer = {}
+    if page_customers:
+        market_counts = (
+            TicketOrder.objects.filter(
+                customer__in=page_customers,
+                event__market__isnull=False,
+            )
+            .values('customer_id', 'event__market__name')
+            .annotate(order_count=Count('id'))
+            # Deterministic winner: highest order count, then market name.
+            .order_by('customer_id', '-order_count', 'event__market__name')
+        )
+        for row in market_counts:
+            # First row per customer wins thanks to the ordering above.
+            top_market_by_customer.setdefault(row['customer_id'], row['event__market__name'])
+    for customer in page_customers:
+        customer.top_market = top_market_by_customer.get(customer.id)
+
     return render(request, 'tickets/loyalty/tier_members.html', {
         'program': program,
         'tier': tier,
