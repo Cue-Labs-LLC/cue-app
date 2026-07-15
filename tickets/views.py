@@ -4144,6 +4144,37 @@ def repeat_customers(request):
 @login_required
 @require_org
 @require_host
+def audience_analytics(request):
+    """Analytics page: total customer count over time, filterable by market."""
+    org = get_organization(request)
+    markets, has_no_market = market_filter_options(org)
+
+    selected = request.GET.get('market', '')
+    market_id, no_market = None, False
+    if selected == 'none' and has_no_market:
+        no_market = True
+    elif selected and any(str(m.id) == selected for m in markets):
+        market_id = selected
+    else:
+        selected = ''  # ignore stale/invalid ids, fall back to all markets
+
+    from tickets.services.audience_growth import AudienceGrowthCalculator
+    result = AudienceGrowthCalculator(
+        org, market_id=market_id, no_market=no_market
+    ).calculate()
+
+    return render(request, 'tickets/audience_analytics.html', {
+        'series_json': json.dumps(result['series'], default=str),
+        'summary': result['summary'],
+        'markets': markets,
+        'has_no_market': has_no_market,
+        'selected_market': selected,
+    })
+
+
+@login_required
+@require_org
+@require_host
 def market_trends(request):
     """Analytics page: per-market turnout trend, decline diagnosis, and next-step CTA."""
     org = get_organization(request)
