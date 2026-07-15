@@ -14,6 +14,11 @@
         <p class="page-header-subtitle">Total customers over time, based on each buyer's first order.</p>
     </div>
     <form method="get" class="d-flex align-items-center gap-2">
+        <input type="hidden" name="window" value="{{ active_window }}">
+        {% if active_window == 'custom' %}
+        <input type="hidden" name="start" value="{{ window_start }}">
+        <input type="hidden" name="end" value="{{ window_end }}">
+        {% endif %}
         <label for="market" class="text-muted small mb-0">Market</label>
         <select name="market" id="market" class="form-select form-select-sm" style="width:auto"
                 onchange="this.form.submit()">
@@ -28,7 +33,31 @@
     </form>
 </div>
 
-{% if summary.total_customers %}
+<div class="window-selector mb-3">
+  <div class="dropdown">
+    <button class="window-selector-btn dropdown-toggle" type="button" data-bs-toggle="dropdown" aria-expanded="false">
+      <i class="bi bi-calendar3"></i>
+      {% for label, key in window_choices %}{% if key == active_window %}{{ label }}{% endif %}{% endfor %}
+    </button>
+    <ul class="dropdown-menu">
+      {% for label, key in window_choices %}
+      <li><a class="dropdown-item{% if active_window == key %} active{% endif %}" href="?window={{ key }}{% if selected_market %}&amp;market={{ selected_market }}{% endif %}">{{ label }}</a></li>
+      {% endfor %}
+    </ul>
+  </div>
+  {% if active_window == 'custom' %}
+  <form class="d-flex flex-wrap align-items-center gap-2" method="get">
+    <input type="hidden" name="window" value="custom">
+    {% if selected_market %}<input type="hidden" name="market" value="{{ selected_market }}">{% endif %}
+    <input type="date" name="start" class="form-control form-control-sm" value="{{ window_start }}" style="width:auto">
+    <span class="text-muted small">to</span>
+    <input type="date" name="end" class="form-control form-control-sm" value="{{ window_end }}" style="width:auto">
+    <button type="submit" class="btn btn-sm btn-primary">Apply</button>
+  </form>
+  {% endif %}
+</div>
+
+{% if has_data %}
 <script type="application/json" id="series-data">{{ series_json|safe }}</script>
 
 <div class="row mb-4 g-3">
@@ -40,8 +69,8 @@
     </div>
     <div class="col-md-4">
         <div class="stat-card stat-card--success">
-            <div class="stat-label">New (Last 12 Months)</div>
-            <div class="stat-value">{{ summary.new_last_12_months|intcomma }}</div>
+            <div class="stat-label">New in Window</div>
+            <div class="stat-value">{{ summary.new_in_window|intcomma }}</div>
         </div>
     </div>
     <div class="col-md-4">
@@ -141,8 +170,13 @@ document.addEventListener('DOMContentLoaded', function() {
     <div class="card-body">
         <div class="empty-state">
             <i class="bi bi-people d-block"></i>
+            {% if summary.total_customers %}
+            <p>No customer activity in the selected window{% if selected_market %} for this market{% endif %}. Try a wider range.</p>
+            <a href="?{% if selected_market %}market={{ selected_market }}&amp;{% endif %}window=all" class="btn btn-primary"><i class="bi bi-calendar3"></i> View all time</a>
+            {% else %}
             <p>No customers yet{% if selected_market %} in this market{% endif %}. Upload ticket orders to see how your audience grows over time.</p>
             <a href="{% url 'tickets:event_list' %}" class="btn btn-primary"><i class="bi bi-calendar-event"></i> View Events</a>
+            {% endif %}
         </div>
     </div>
 </div>

@@ -25,19 +25,23 @@ class AudienceGrowthCalculator:
     Passing neither yields org-wide growth across all customers with orders.
     """
 
-    def __init__(self, organization, market_id=None, no_market=False):
+    def __init__(self, organization, market_id=None, no_market=False,
+                 start_date=None, end_date=None):
         self.organization = organization
         self.market_id = market_id
         self.no_market = no_market
+        # Display window. Trims which months are charted; the cumulative line
+        # still reflects the true all-time running total up to each shown month.
+        self.start_date = start_date
+        self.end_date = end_date
 
     def _empty(self):
         return {
             'series': [],
             'summary': {
                 'total_customers': 0,
-                'new_last_12_months': 0,
+                'new_in_window': 0,
                 'peak_month': '',
-                'first_month': '',
             },
         }
 
@@ -73,21 +77,32 @@ class AudienceGrowthCalculator:
         monthly = monthly.reindex(full_range, fill_value=0)
         cumulative = monthly.cumsum()
 
+        # Grand total = current audience size in scope, independent of the window.
+        grand_total = int(cumulative.iloc[-1])
+
+        # Trim to the display window. Cumulative values are preserved (already the
+        # true all-time running total), so a zoomed-in line "starts high" rather
+        # than resetting to zero.
+        win_new, win_cum = monthly, cumulative
+        if self.start_date is not None:
+            sel = win_new.index >= pd.Period(self.start_date, freq='M')
+            win_new, win_cum = win_new[sel], win_cum[sel]
+        if self.end_date is not None:
+            sel = win_new.index <= pd.Period(self.end_date, freq='M')
+            win_new, win_cum = win_new[sel], win_cum[sel]
+
         series = [
             {
                 'month': str(period),
                 'new_customers': int(new),
                 'cumulative': int(total),
             }
-            for period, new, total in zip(monthly.index, monthly.values, cumulative.values)
+            for period, new, total in zip(win_new.index, win_new.values, win_cum.values)
         ]
 
-        cutoff = pd.Period(timezone.localdate(), freq='M') - 11  # trailing 12 months
-        peak_period = monthly.idxmax()
         summary = {
-            'total_customers': int(cumulative.iloc[-1]),
-            'new_last_12_months': int(monthly[monthly.index >= cutoff].sum()),
-            'peak_month': str(peak_period),
-            'first_month': str(monthly.index.min()),
+            'total_customers': grand_total,
+            'new_in_window': int(win_new.sum()) if len(win_new) else 0,
+            'peak_month': str(win_new.idxmax()) if len(win_new) else '',
         }
         return {'series': series, 'summary': summary}

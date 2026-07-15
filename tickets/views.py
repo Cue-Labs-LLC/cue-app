@@ -4158,17 +4158,29 @@ def audience_analytics(request):
     else:
         selected = ''  # ignore stale/invalid ids, fall back to all markets
 
+    # Default to the all-time view so the full growth story shows on first load.
+    if 'window' in request.GET:
+        start_date, end_date, active_window = _parse_window(request)
+    else:
+        start_date, end_date, active_window = None, None, 'all'
+
     from tickets.services.audience_growth import AudienceGrowthCalculator
     result = AudienceGrowthCalculator(
-        org, market_id=market_id, no_market=no_market
+        org, market_id=market_id, no_market=no_market,
+        start_date=start_date, end_date=end_date,
     ).calculate()
 
     return render(request, 'tickets/audience_analytics.html', {
         'series_json': json.dumps(result['series'], default=str),
         'summary': result['summary'],
+        'has_data': bool(result['series']),
         'markets': markets,
         'has_no_market': has_no_market,
         'selected_market': selected,
+        'active_window': active_window,
+        'window_start': start_date or '',
+        'window_end': end_date or '',
+        'window_choices': WINDOW_CHOICES,
     })
 
 

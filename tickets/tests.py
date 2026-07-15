@@ -18087,6 +18087,9 @@ class AudienceAnalyticsViewTests(TestCase):
             url += f'?market={market}'
         return self.client.get(url)
 
+    def _get_q(self, query):
+        return self.client.get(reverse('tickets:audience_analytics') + '?' + query)
+
     def test_all_markets_counts_every_customer_once(self):
         resp = self._get()
         self.assertEqual(resp.status_code, 200)
@@ -18120,3 +18123,42 @@ class AudienceAnalyticsViewTests(TestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp.context['selected_market'], '')
         self.assertEqual(resp.context['summary']['total_customers'], 4)
+
+    def test_default_window_is_all_time(self):
+        resp = self._get()
+        self.assertEqual(resp.context['active_window'], 'all')
+        self.assertTrue(resp.context['has_data'])
+
+    def test_custom_window_trims_months_but_keeps_true_cumulative(self):
+        resp = self._get_q('window=custom&start=2024-02-01&end=2024-12-31')
+        self.assertEqual(resp.status_code, 200)
+        # Grand total is unaffected by the window.
+        self.assertEqual(resp.context['summary']['total_customers'], 4)
+        # New within the window: c2 (Feb) + c4 (Apr).
+        self.assertEqual(resp.context['summary']['new_in_window'], 2)
+        series = json.loads(resp.context['series_json'])
+        # First shown month is Feb, and the line "starts high": cumulative already
+        # includes the 2 customers acquired in Jan (before the window).
+        self.assertEqual(series[0]['month'], '2024-02')
+        self.assertEqual(series[0]['cumulative'], 3)
+
+    def test_window_and_market_combine(self):
+        resp = self._get_q(
+            f'market={self.austin.id}&window=custom&start=2024-03-01&end=2024-12-31'
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.context['selected_market'], str(self.austin.id))
+        # Austin scope: c1 (Jan), c2 (Feb), c3 (Mar) => grand total 3.
+        self.assertEqual(resp.context['summary']['total_customers'], 3)
+        # Window Mar+ shows only c3's Austin order as new.
+        self.assertEqual(resp.context['summary']['new_in_window'], 1)
+        series = json.loads(resp.context['series_json'])
+        self.assertEqual(series[0]['month'], '2024-03')
+        self.assertEqual(series[0]['cumulative'], 3)
+
+    def test_window_with_no_activity_shows_empty_but_keeps_total(self):
+        resp = self._get_q('window=custom&start=2025-01-01&end=2025-12-31')
+        self.assertEqual(resp.status_code, 200)
+        self.assertFalse(resp.context['has_data'])
+        self.assertEqual(resp.context['summary']['total_customers'], 4)
+        self.assertEqual(resp.context['summary']['new_in_window'], 0)
