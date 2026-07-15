@@ -145,7 +145,7 @@ from .services.marketing import (
     get_cached_marketing_metrics,
 )
 from .services.marketing.analytics import DEFAULT_WINDOW, resolve_window
-from .services.customer_filters import filter_customers, NO_MARKET_VALUE, market_filter_options
+from .services.customer_filters import filter_customers, NO_MARKET_VALUE, market_filter_options, _valid_uuids
 from .services.weather import get_event_weather_forecast, get_event_hourly_forecast
 from .utils import get_organization, require_org, require_organizer, require_host, require_admin, require_owner, clear_org_cache, next_order_number, generate_qr_b64, link_customer_to_buyer, ticket_qr_payload
 from .feature_flags import (
@@ -2783,19 +2783,29 @@ def upload_delete(request, file_id):
         return redirect('tickets:home')
 
 
-@login_required
-@require_org
-@require_host
-def customer_list(request):
-    """Display list of all customers with LTV and optional segment/tag filter."""
-    org = get_organization(request)
-    market_context = _customer_market_filter_context(org, request.GET.get('market', ''))
+def build_customer_queryset(org, params, *, for_export=False):
+    """Build the filtered/annotated/sorted ``Customer`` queryset for the list.
+
+    Single source of truth for the Customers page queryset, shared by
+    ``customer_list`` (paginated HTML) and ``customer_export_csv`` (streaming
+    CSV) so the two never drift on which rows/filters/sort they produce.
+
+    ``params`` is a mapping of the list's GET params (typically ``request.GET``).
+    ``for_export`` is accepted for caller clarity; ``order_count`` is annotated
+    unconditionally (the list has always shown it and the export outputs it).
+
+    Returns ``(queryset, meta)``. The queryset has NOT been paginated or given
+    ``prefetch_related`` — callers add those. ``meta`` carries the resolved
+    filter values, ``sort_by``, ``market_context``, ``has_market``,
+    ``filter_params_qs`` and ``has_active_filters`` for the templates.
+    """
+    market_context = _customer_market_filter_context(org, params.get('market', ''))
 
     # Segment filter
-    segment_filter = request.GET.get('segment', '').strip()
+    segment_filter = params.get('segment', '').strip()
 
     # Tag filter — validate UUID to avoid ValueError on bad input
-    tag_filter = request.GET.get('tag', '').strip()
+    tag_filter = params.get('tag', '').strip()
     if tag_filter:
         try:
             _uuid.UUID(tag_filter)
@@ -2803,15 +2813,15 @@ def customer_list(request):
             tag_filter = ''
 
     # Search
-    search_query = request.GET.get('search', '')
-    last_order_from = _customer_filter_date(request.GET.get('last_order_from', ''))
-    last_order_to = _customer_filter_date(request.GET.get('last_order_to', ''))
-    phone_filter = request.GET.get('phone_filter', '').strip()
-    sms_filter = request.GET.get('sms_filter', '').strip()   # '1', '0', or ''
-    min_ltv = request.GET.get('min_ltv', '').strip()
-    max_ltv = request.GET.get('max_ltv', '').strip()
-    min_orders = request.GET.get('min_orders', '').strip()
-    max_orders = request.GET.get('max_orders', '').strip()
+    search_query = params.get('search', '')
+    last_order_from = _customer_filter_date(params.get('last_order_from', ''))
+    last_order_to = _customer_filter_date(params.get('last_order_to', ''))
+    phone_filter = params.get('phone_filter', '').strip()
+    sms_filter = params.get('sms_filter', '').strip()   # '1', '0', or ''
+    min_ltv = params.get('min_ltv', '').strip()
+    max_ltv = params.get('max_ltv', '').strip()
+    min_orders = params.get('min_orders', '').strip()
+    max_orders = params.get('max_orders', '').strip()
     sms_opt_in_filter = True if sms_filter == '1' else (False if sms_filter == '0' else None)
     has_active_filters = any([
         search_query,
@@ -2922,7 +2932,7 @@ def customer_list(request):
     }
     if active_market:
         allowed_sorts |= {'market_ltv', '-market_ltv', 'market_last_order', '-market_last_order'}
-    sort_by = request.GET.get('sort', default_sort)
+    sort_by = params.get('sort', default_sort)
     if sort_by not in allowed_sorts:
         sort_by = default_sort
 
@@ -2938,6 +2948,53 @@ def customer_list(request):
         )
     else:
         customers = customers.order_by(sort_by)
+
+    _fp = {k: v for k, v in {
+        'search': search_query,
+        'segment': segment_filter,
+        'tag': tag_filter,
+        'market': market_context['market_filter'],
+        'last_order_from': last_order_from,
+        'last_order_to': last_order_to,
+        'phone_filter': phone_filter,
+        'sms_filter': sms_filter,
+        'min_ltv': min_ltv,
+        'max_ltv': max_ltv,
+        'min_orders': min_orders,
+        'max_orders': max_orders,
+    }.items() if v}
+
+    meta = {
+        'market_context': market_context,
+        'market_filter': market_context['market_filter'],
+        'has_market': bool(active_market),
+        'sort_by': sort_by,
+        'search_query': search_query,
+        'segment_filter': segment_filter,
+        'tag_filter': tag_filter,
+        'last_order_from': last_order_from,
+        'last_order_to': last_order_to,
+        'phone_filter': phone_filter,
+        'sms_filter': sms_filter,
+        'min_ltv': min_ltv,
+        'max_ltv': max_ltv,
+        'min_orders': min_orders,
+        'max_orders': max_orders,
+        'filter_params_qs': urlencode(_fp),
+        'has_active_filters': has_active_filters,
+    }
+    return customers, meta
+
+
+@login_required
+@require_org
+@require_host
+def customer_list(request):
+    """Display list of all customers with LTV and optional segment/tag filter."""
+    org = get_organization(request)
+    customers, meta = build_customer_queryset(org, request.GET)
+    market_context = meta['market_context']
+    segment_filter = meta['segment_filter']
 
     # prefetch_related must go AFTER the OR search chain to avoid Django dropping it
     customers = customers.prefetch_related('tags')
@@ -2978,38 +3035,23 @@ def customer_list(request):
             }
 
     org_tags = CustomerTag.objects.filter(organization=org)
-    _fp = {k: v for k, v in {
-        'search': search_query,
-        'segment': segment_filter,
-        'tag': tag_filter,
-        'market': market_context['market_filter'],
-        'last_order_from': last_order_from,
-        'last_order_to': last_order_to,
-        'phone_filter': phone_filter,
-        'sms_filter': sms_filter,
-        'min_ltv': min_ltv,
-        'max_ltv': max_ltv,
-        'min_orders': min_orders,
-        'max_orders': max_orders,
-    }.items() if v}
-    filter_params_qs = urlencode(_fp)
     context = {
         'page_obj': page_obj,
-        'search_query': search_query,
-        'sort_by': sort_by,
+        'search_query': meta['search_query'],
+        'sort_by': meta['sort_by'],
         'segment_filter': segment_filter,
-        'tag_filter': tag_filter,
+        'tag_filter': meta['tag_filter'],
         'market_filter': market_context['market_filter'],
-        'last_order_from': last_order_from,
-        'last_order_to': last_order_to,
-        'phone_filter': phone_filter,
-        'sms_filter': sms_filter,
-        'min_ltv': min_ltv,
-        'max_ltv': max_ltv,
-        'min_orders': min_orders,
-        'max_orders': max_orders,
-        'filter_params_qs': filter_params_qs,
-        'has_active_filters': has_active_filters,
+        'last_order_from': meta['last_order_from'],
+        'last_order_to': meta['last_order_to'],
+        'phone_filter': meta['phone_filter'],
+        'sms_filter': meta['sms_filter'],
+        'min_ltv': meta['min_ltv'],
+        'max_ltv': meta['max_ltv'],
+        'min_orders': meta['min_orders'],
+        'max_orders': meta['max_orders'],
+        'filter_params_qs': meta['filter_params_qs'],
+        'has_active_filters': meta['has_active_filters'],
         'segment_choices': segment_choices,
         'segment_badge_colors': SEGMENT_BADGE_COLORS,
         'current_segment_definition': current_segment_definition,
@@ -3020,6 +3062,102 @@ def customer_list(request):
     }
     context.update(market_context)
     return render(request, 'tickets/customer_list.html', context)
+
+
+class _Echo:
+    """File-like object whose ``write`` returns the value (Django streaming CSV)."""
+
+    def write(self, value):
+        return value
+
+
+def _csv_money(value):
+    """Render a Decimal/None money value as a plain fixed-point string for CSV.
+
+    ``None`` -> '' (empty cell); avoids scientific notation and the literal
+    string 'None' that ``str(Decimal)``/``csv`` would otherwise emit.
+    """
+    return format(value, 'f') if value is not None else ''
+
+
+@login_required
+@require_org
+@require_host
+def customer_export_csv(request):
+    """Stream the filtered Customers list as a CSV download.
+
+    Reuses ``build_customer_queryset`` so every filter and the sort order match
+    what the Customers page shows. Selection semantics:
+
+    * ``select_all=1`` (or no ids at all, e.g. the header "Export CSV" link with
+      ``mode=all``) -> export every customer matching the active filters.
+    * ``ids=<uuid>&ids=<uuid>...`` without ``select_all`` -> only those rows,
+      still org-scoped and filtered.
+
+    Streams via a server-side cursor (``.iterator(chunk_size=1000)``) so memory
+    stays flat for large (~100k) exports; a header row is yielded first for an
+    early first byte so intermediary proxies don't idle-timeout.
+    """
+    from django.http import StreamingHttpResponse
+
+    org = get_organization(request)
+    customers, meta = build_customer_queryset(org, request.GET, for_export=True)
+
+    # Selection: explicit ids unless "select all matching".
+    if request.GET.get('select_all') != '1':
+        ids = _valid_uuids(request.GET.getlist('ids'))
+        if ids:
+            customers = customers.filter(id__in=ids)
+        # else (mode=all / no selection): export everything matching the filters.
+
+    # OR-search and market-active joins can duplicate rows — dedupe before export.
+    customers = customers.distinct()
+
+    has_market = meta['has_market']
+    loyalty = org.loyalty_feature_enabled
+
+    header = ['Name', 'Email', 'Phone', 'SMS Opt-In', 'Segment', 'Lifetime Value']
+    if loyalty:
+        header.append('Points Balance')
+    header += ['Last Order Date', 'Total Orders']
+    if has_market:
+        header += ['Market LTV', 'Market Last Order']
+    header.append('Tags')
+
+    writer = csv.writer(_Echo())
+
+    def rows():
+        yield writer.writerow(header)
+        # chunk_size is required for prefetch_related to work with .iterator().
+        for c in customers.prefetch_related('tags').iterator(chunk_size=1000):
+            row = [
+                c.name or '',
+                c.email or '',
+                c.phone or '',
+                'Yes' if c.sms_opt_in else 'No',
+                c.rfm_segment or '',
+                _csv_money(c.lifetime_value),
+            ]
+            if loyalty:
+                row.append(c.points_balance if c.points_balance is not None else 0)
+            row += [
+                c.last_order_date.isoformat() if c.last_order_date else '',
+                getattr(c, 'order_count', '') if getattr(c, 'order_count', None) is not None else '',
+            ]
+            if has_market:
+                row += [
+                    _csv_money(getattr(c, 'market_ltv', None)),
+                    c.market_last_order.isoformat() if getattr(c, 'market_last_order', None) else '',
+                ]
+            row.append('; '.join(t.name for t in c.tags.all()))
+            yield writer.writerow(row)
+
+    ts = django_tz.localtime().strftime('%Y%m%d-%H%M')
+    response = StreamingHttpResponse(rows(), content_type='text/csv')
+    response['Content-Disposition'] = f'attachment; filename="customers-{ts}.csv"'
+    response['Cache-Control'] = 'no-cache'
+    response['X-Accel-Buffering'] = 'no'   # disable proxy buffering so bytes stream out
+    return response
 
 
 def _customer_filter_date(raw_date):
