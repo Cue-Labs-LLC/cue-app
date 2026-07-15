@@ -158,7 +158,11 @@
 {% block content %}
 <div class="page-header d-flex align-items-center justify-content-between">
     <h1>Customers</h1>
-    <a href="{% url 'tickets:customer_tag_list' %}" class="btn btn-outline-secondary btn-sm"><i class="bi bi-tags"></i> Manage Tags</a>
+    <div class="d-flex gap-2">
+        <a href="{% url 'tickets:customer_export_csv' %}?mode=all&sort={{ sort_by }}{% if filter_params_qs %}&{{ filter_params_qs }}{% endif %}"
+           class="btn btn-outline-secondary btn-sm" title="Export all customers matching the current filters"><i class="bi bi-download"></i> Export CSV</a>
+        <a href="{% url 'tickets:customer_tag_list' %}" class="btn btn-outline-secondary btn-sm"><i class="bi bi-tags"></i> Manage Tags</a>
+    </div>
 </div>
 
 {% if show_consent_help %}
@@ -216,7 +220,7 @@
 </div>
 {% endif %}
 
-{% if org.sms_marketing_enabled and is_org_host %}
+{% if is_org_host %}
 <!-- Selection action bar (revealed once at least one customer is checked) -->
 <form method="post" action="{% url 'tickets:customers_bulk_tag' %}" id="custActionBar" class="card mb-3 d-none">
     {% csrf_token %}
@@ -237,6 +241,17 @@
     <input type="hidden" name="sort" value="{{ sort_by }}">
     <div class="card-body customer-action-toolbar">
         <strong id="custSelectedCount">0 selected</strong>
+        {% comment %}
+        Export the current selection as CSV. Submits this form as GET to the
+        export view (whose param names match the hidden filters above); the
+        submit handler injects the checked ids as ?ids= unless "all matching".
+        {% endcomment %}
+        <button type="submit" name="export_selected" value="1"
+                class="btn btn-outline-secondary btn-sm"
+                formmethod="get" formaction="{% url 'tickets:customer_export_csv' %}">
+            <i class="bi bi-download"></i> Export selected
+        </button>
+        {% if org.sms_marketing_enabled %}
         <button type="submit" name="sms_compose" value="1"
                 class="btn btn-primary btn-sm customer-action-primary"
                 formaction="{% url 'tickets:customers_bulk_sms_compose' %}">
@@ -267,6 +282,7 @@
                 <button type="submit" class="btn btn-link text-danger text-decoration-none d-block" formaction="{% url 'tickets:customers_bulk_sms_status' %}" name="sms_status" value="opt_out">Opt out of SMS</button>
             </div>
         </div>
+        {% endif %}
     </div>
 </form>
 
@@ -290,7 +306,7 @@
             <table class="table table-hover mb-0 mobile-card-table customer-list-table">
                 <thead>
                     <tr>
-                        {% if org.sms_marketing_enabled and is_org_host %}
+                        {% if is_org_host %}
                         <th style="width: 44px;"><input type="checkbox" class="cust-check" id="custSelectAllRows" aria-label="Select all customers on this page"></th>
                         {% endif %}
                         <!-- Name: sort only; name+email search handled by top bar -->
@@ -533,7 +549,7 @@
                 <tbody>
                     {% for customer in page_obj %}
                     <tr style="cursor: pointer;" onclick="window.location='{% url 'tickets:customer_detail' customer.id %}'">
-                        {% if org.sms_marketing_enabled and is_org_host %}
+                        {% if is_org_host %}
                         <td onclick="event.stopPropagation()"><input type="checkbox" class="cust-checkbox cust-check" value="{{ customer.id }}" aria-label="Select {{ customer.name }}" onclick="event.stopPropagation()"></td>
                         {% endif %}
                         <td class="customer-card-cell">
@@ -662,9 +678,10 @@ function applyColFilter(newParams) {
     });
 })();
 </script>
-{% if org.sms_marketing_enabled and is_org_host %}
+{% if is_org_host %}
 <script>
-// Customer list: bulk-select customers and tag them.
+// Customer list: bulk-select customers, then export (all hosts) or, for
+// SMS-enabled orgs, tag / send SMS / change opt-in status.
 (function() {
     var form = document.getElementById('custActionBar');
     if (!form) return;
@@ -752,10 +769,12 @@ function applyColFilter(newParams) {
     });
 
     form.addEventListener('submit', function(e) {
+        var submitterName = e.submitter && e.submitter.name;
+        var isExport = submitterName === 'export_selected';
         // The SMS actions post to different endpoints and don't need a tag, so
-        // skip the tag-mode validation when one of them is the submitter.
-        var isSms = e.submitter && (e.submitter.name === 'sms_status' || e.submitter.name === 'sms_compose');
-        if (!isSms) {
+        // skip the tag-mode validation when they (or export) are the submitter.
+        var isSms = submitterName === 'sms_status' || submitterName === 'sms_compose';
+        if (!isExport && !isSms) {
             var mode = (document.querySelector('input[name="tag_mode"]:checked') || {}).value;
             if (mode === 'existing') {
                 if (!tagSelect || !tagSelect.value) { e.preventDefault(); return; }
@@ -766,13 +785,15 @@ function applyColFilter(newParams) {
             }
         }
         // Inject the current page's checked ids (skipped when "all matching" is
-        // active — the server resolves the full set from the filters).
+        // active — the server resolves the full set from the filters). The export
+        // view reads ?ids=, the bulk (tag/SMS) endpoints read customer_ids.
+        var idField = isExport ? 'ids' : 'customer_ids';
         form.querySelectorAll('input[data-cust-id]').forEach(function(n) { n.remove(); });
         if (!allMatchingSelected) {
             pageSelected().forEach(function(cb) {
                 var input = document.createElement('input');
                 input.type = 'hidden';
-                input.name = 'customer_ids';
+                input.name = idField;
                 input.value = cb.value;
                 input.setAttribute('data-cust-id', '1');
                 form.appendChild(input);

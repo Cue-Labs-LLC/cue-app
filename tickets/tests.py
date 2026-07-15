@@ -18162,3 +18162,244 @@ class AudienceAnalyticsViewTests(TestCase):
         self.assertFalse(resp.context['has_data'])
         self.assertEqual(resp.context['summary']['total_customers'], 4)
         self.assertEqual(resp.context['summary']['new_in_window'], 0)
+
+
+class CustomerExportCsvTests(TestCase):
+    """Streaming CSV export from the Customers page (customer_export_csv)."""
+
+    def setUp(self):
+        self.client = Client()
+        self.org = Organization.objects.create(name='Export Org', slug='export-org')
+        self.other_org = Organization.objects.create(name='Export Other', slug='export-other')
+        self.user = User.objects.create_user(
+            username='export-owner', email='export-owner@example.com', password='pw',
+        )
+        UserProfile.objects.create(
+            user=self.user, organization=self.org, org_role=UserProfile.OrgRole.OWNER,
+        )
+        OrganizationMembership.objects.create(
+            user=self.user, organization=self.org, org_role=UserProfile.OrgRole.OWNER,
+        )
+
+        # In-org customers spanning the filterable dimensions.
+        self.champ = Customer.objects.create(
+            organization=self.org, email='champ@example.com', name='Ada Champion',
+            lifetime_value=Decimal('500.00'), rfm_segment='Champions',
+            phone='+15551230000', sms_opt_in=True,
+            last_order_date=date(2026, 6, 1),
+        )
+        self.risk = Customer.objects.create(
+            organization=self.org, email='risk@example.com', name='Bob Risk',
+            lifetime_value=Decimal('25.00'), rfm_segment='At Risk',
+            phone='+15559990000', sms_opt_in=False,
+            last_order_date=date(2026, 1, 15),
+        )
+        # Placeholder-email customer (CSV import w/o real email) — never exported.
+        self.placeholder = Customer.objects.create(
+            organization=self.org, email='ghost@placeholder.local', name='Ghost',
+            lifetime_value=Decimal('10.00'),
+        )
+        # Foreign-org customer — must never leak.
+        self.foreign = Customer.objects.create(
+            organization=self.other_org, email='foreign@example.com', name='Foreign Fred',
+            lifetime_value=Decimal('999.00'),
+        )
+
+    def _login(self):
+        self.client.force_login(self.user)
+        self.client.get(reverse('tickets:home'))  # seed session org
+
+    def _rows(self, response):
+        import csv
+        body = b''.join(response.streaming_content).decode('utf-8')
+        return list(csv.reader(body.splitlines()))
+
+    def _url(self, **params):
+        from urllib.parse import urlencode
+        base = reverse('tickets:customer_export_csv')
+        return f'{base}?{urlencode(params, doseq=True)}' if params else base
+
+    # ── auth / scoping ────────────────────────────────────────────────
+    def test_requires_login(self):
+        response = self.client.get(reverse('tickets:customer_export_csv'))
+        self.assertEqual(response.status_code, 302)
+        self.assertIn('/login', response['Location'])
+
+    def test_org_scoped_and_excludes_placeholder(self):
+        self._login()
+        rows = self._rows(self.client.get(self._url(mode='all')))
+        emails = {r[1] for r in rows[1:]}
+        self.assertEqual(emails, {'champ@example.com', 'risk@example.com'})
+        self.assertNotIn('foreign@example.com', emails)
+        self.assertNotIn('ghost@placeholder.local', emails)
+
+    # ── response shape / headers ──────────────────────────────────────
+    def test_response_shape(self):
+        self._login()
+        response = self.client.get(self._url(mode='all'))
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response['Content-Type'], 'text/csv')
+        self.assertTrue(
+            response['Content-Disposition'].startswith('attachment; filename="customers-')
+        )
+
+    # ── columns ───────────────────────────────────────────────────────
+    def test_default_header_columns(self):
+        self._login()
+        header = self._rows(self.client.get(self._url(mode='all')))[0]
+        self.assertEqual(header, [
+            'Name', 'Email', 'Phone', 'SMS Opt-In', 'Segment', 'Lifetime Value',
+            'Last Order Date', 'Total Orders', 'Tags',
+        ])
+
+    def test_points_column_when_loyalty_enabled(self):
+        self.org.loyalty_feature_enabled = True
+        self.org.save(update_fields=['loyalty_feature_enabled'])
+        self._login()
+        header = self._rows(self.client.get(self._url(mode='all')))[0]
+        self.assertIn('Points Balance', header)
+
+    def test_market_columns_when_market_filter_active(self):
+        venue = Venue.objects.create(organization=self.org, name='Hall', city='Austin')
+        market = Market.objects.create(
+            organization=self.org, name='Austin', geography_level='city',
+            geography_value='Austin',
+        )
+        event = Event.objects.create(
+            organization=self.org, name='Austin Show', venue=venue,
+            start_date=date(2026, 5, 1), market=market,
+        )
+        TicketOrder.objects.create(
+            customer=self.champ, event=event, order_number='M-1',
+            order_date='2026-05-02 10:00:00', total_amount=Decimal('60.00'),
+        )
+        self._login()
+        header = self._rows(self.client.get(self._url(mode='all', market=str(market.id))))[0]
+        self.assertIn('Market LTV', header)
+        self.assertIn('Market Last Order', header)
+
+    # ── filters respected ─────────────────────────────────────────────
+    def test_segment_filter_respected(self):
+        self._login()
+        rows = self._rows(self.client.get(self._url(mode='all', segment='Champions')))
+        emails = {r[1] for r in rows[1:]}
+        self.assertEqual(emails, {'champ@example.com'})
+
+    def test_min_ltv_filter_respected(self):
+        # Regression guard: the min_ltv filter must be honored by the export
+        # (the older SMS bulk "select all" path dropped it).
+        self._login()
+        rows = self._rows(self.client.get(self._url(mode='all', min_ltv='100')))
+        emails = {r[1] for r in rows[1:]}
+        self.assertEqual(emails, {'champ@example.com'})
+
+    def test_sms_filter_respected(self):
+        self._login()
+        rows = self._rows(self.client.get(self._url(mode='all', sms_filter='1')))
+        emails = {r[1] for r in rows[1:]}
+        self.assertEqual(emails, {'champ@example.com'})
+
+    def test_phone_filter_respected(self):
+        self._login()
+        rows = self._rows(self.client.get(self._url(mode='all', phone_filter='5559990000')))
+        emails = {r[1] for r in rows[1:]}
+        self.assertEqual(emails, {'risk@example.com'})
+
+    def test_last_order_date_filter_respected(self):
+        self._login()
+        rows = self._rows(self.client.get(self._url(mode='all', last_order_from='2026-03-01')))
+        emails = {r[1] for r in rows[1:]}
+        self.assertEqual(emails, {'champ@example.com'})
+
+    # ── selection ─────────────────────────────────────────────────────
+    def test_selected_ids_subset(self):
+        self._login()
+        rows = self._rows(self.client.get(self._url(ids=[str(self.risk.id)])))
+        emails = {r[1] for r in rows[1:]}
+        self.assertEqual(emails, {'risk@example.com'})
+
+    def test_foreign_id_excluded_even_if_selected(self):
+        self._login()
+        rows = self._rows(self.client.get(self._url(ids=[str(self.foreign.id)])))
+        self.assertEqual(len(rows), 1)  # header only
+
+    def test_select_all_ignores_ids_and_exports_filtered_set(self):
+        self._login()
+        # select_all=1 with a segment filter -> full filtered set regardless of ids.
+        rows = self._rows(self.client.get(
+            self._url(select_all='1', segment='Champions', ids=[str(self.risk.id)])
+        ))
+        emails = {r[1] for r in rows[1:]}
+        self.assertEqual(emails, {'champ@example.com'})
+
+    # ── dedup ─────────────────────────────────────────────────────────
+    def test_or_search_does_not_duplicate_rows(self):
+        # Customer whose name and email both match the search term must appear once.
+        Customer.objects.create(
+            organization=self.org, email='match@example.com', name='match person',
+            lifetime_value=Decimal('5.00'),
+        )
+        self._login()
+        rows = self._rows(self.client.get(self._url(mode='all', search='match')))
+        self.assertEqual(len(rows) - 1, 1)
+
+    def test_market_join_does_not_duplicate_rows(self):
+        venue = Venue.objects.create(organization=self.org, name='Hall2', city='Dallas')
+        market = Market.objects.create(
+            organization=self.org, name='Dallas', geography_level='city',
+            geography_value='Dallas',
+        )
+        event = Event.objects.create(
+            organization=self.org, name='Dallas Show', venue=venue,
+            start_date=date(2026, 4, 1), market=market,
+        )
+        for i in range(3):
+            TicketOrder.objects.create(
+                customer=self.champ, event=event, order_number=f'D-{i}',
+                order_date='2026-04-02 10:00:00', total_amount=Decimal('20.00'),
+            )
+        self._login()
+        rows = self._rows(self.client.get(self._url(mode='all', market=str(market.id))))
+        emails = [r[1] for r in rows[1:]]
+        self.assertEqual(emails.count('champ@example.com'), 1)
+
+    # ── formatting ────────────────────────────────────────────────────
+    def test_value_formatting(self):
+        # Null last_order -> empty cell; bool -> Yes/No; tags joined.
+        tag_a = CustomerTag.objects.create(organization=self.org, name='VIP')
+        tag_b = CustomerTag.objects.create(organization=self.org, name='Press')
+        blank = Customer.objects.create(
+            organization=self.org, email='blank@example.com', name='Blank',
+            lifetime_value=Decimal('0.00'), last_order_date=None, sms_opt_in=False,
+        )
+        blank.tags.add(tag_a, tag_b)
+        self._login()
+        rows = self._rows(self.client.get(self._url(ids=[str(blank.id)])))
+        row = rows[1]
+        header = rows[0]
+        self.assertEqual(row[header.index('Last Order Date')], '')
+        self.assertEqual(row[header.index('SMS Opt-In')], 'No')
+        tags_cell = row[header.index('Tags')]
+        self.assertIn('VIP', tags_cell)
+        self.assertIn('Press', tags_cell)
+        self.assertIn(';', tags_cell)
+
+    def test_decimal_not_scientific(self):
+        self._login()
+        rows = self._rows(self.client.get(self._url(ids=[str(self.champ.id)])))
+        header, row = rows[0], rows[1]
+        self.assertEqual(row[header.index('Lifetime Value')], '500.00')
+
+    # ── scale sanity (chunked iterator + prefetch) ───────────────────
+    def test_bulk_export_streams_all_rows(self):
+        Customer.objects.bulk_create([
+            Customer(
+                organization=self.org, email=f'bulk{i}@example.com',
+                name=f'Bulk {i}', lifetime_value=Decimal('1.00'),
+            )
+            for i in range(2000)
+        ])
+        self._login()
+        rows = self._rows(self.client.get(self._url(mode='all')))
+        # 2000 bulk + champ + risk (placeholder excluded) + header.
+        self.assertEqual(len(rows), 2000 + 2 + 1)
