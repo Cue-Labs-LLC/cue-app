@@ -4144,6 +4144,49 @@ def repeat_customers(request):
 @login_required
 @require_org
 @require_host
+def audience_analytics(request):
+    """Analytics page: total customer count over time, filterable by market."""
+    org = get_organization(request)
+    markets, has_no_market = market_filter_options(org)
+
+    selected = request.GET.get('market', '')
+    market_id, no_market = None, False
+    if selected == 'none' and has_no_market:
+        no_market = True
+    elif selected and any(str(m.id) == selected for m in markets):
+        market_id = selected
+    else:
+        selected = ''  # ignore stale/invalid ids, fall back to all markets
+
+    # Default to the all-time view so the full growth story shows on first load.
+    if 'window' in request.GET:
+        start_date, end_date, active_window = _parse_window(request)
+    else:
+        start_date, end_date, active_window = None, None, 'all'
+
+    from tickets.services.audience_growth import AudienceGrowthCalculator
+    result = AudienceGrowthCalculator(
+        org, market_id=market_id, no_market=no_market,
+        start_date=start_date, end_date=end_date,
+    ).calculate()
+
+    return render(request, 'tickets/audience_analytics.html', {
+        'series_json': json.dumps(result['series'], default=str),
+        'summary': result['summary'],
+        'has_data': bool(result['series']),
+        'markets': markets,
+        'has_no_market': has_no_market,
+        'selected_market': selected,
+        'active_window': active_window,
+        'window_start': start_date or '',
+        'window_end': end_date or '',
+        'window_choices': WINDOW_CHOICES,
+    })
+
+
+@login_required
+@require_org
+@require_host
 def market_trends(request):
     """Analytics page: per-market turnout trend, decline diagnosis, and next-step CTA."""
     org = get_organization(request)

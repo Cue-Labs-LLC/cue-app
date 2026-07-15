@@ -18012,3 +18012,153 @@ class AdminImpersonationTests(TestCase):
         self.client.get(self._start_url(self.target))
         response = self.client.get(reverse('tickets:admin_impersonate_stop'))
         self.assertEqual(response.status_code, 405)
+
+
+class AudienceAnalyticsViewTests(TestCase):
+    """Tests for the audience_analytics view and AudienceGrowthCalculator."""
+
+    def setUp(self):
+        self.client = Client()
+        self.org = Organization.objects.create(name='Audience Org', slug='audience-org')
+        self.user = User.objects.create_user(
+            username='audhost', email='audhost@example.com', password='testpass123',
+        )
+        UserProfile.objects.create(
+            user=self.user, organization=self.org, org_role=UserProfile.OrgRole.HOST,
+        )
+        OrganizationMembership.objects.create(
+            user=self.user, organization=self.org, org_role=UserProfile.OrgRole.HOST,
+        )
+        self.client.login(username='audhost@example.com', password='testpass123')
+        self.client.get(reverse('tickets:home'))  # seed _org_id in session
+
+        # Two markets, one market-less event.
+        self.austin = Market.objects.create(
+            organization=self.org, name='Austin', geography_level='city', geography_value='austin',
+        )
+        self.dallas = Market.objects.create(
+            organization=self.org, name='Dallas', geography_level='city', geography_value='dallas',
+        )
+        venue = Venue.objects.create(organization=self.org, name='V', city='TX')
+        self.ev_austin = Event.objects.create(
+            organization=self.org, name='ATX', venue=venue, market=self.austin,
+            start_date=date(2024, 1, 10), start_time=time(19, 0),
+        )
+        self.ev_dallas = Event.objects.create(
+            organization=self.org, name='DAL', venue=venue, market=self.dallas,
+            start_date=date(2024, 1, 10), start_time=time(19, 0),
+        )
+        self.ev_nomarket = Event.objects.create(
+            organization=self.org, name='NM', venue=venue,
+            start_date=date(2024, 1, 10), start_time=time(19, 0),
+        )
+
+        self._n = 0
+        # c1: first order Austin Jan; c2: Austin Feb.
+        self.c1 = self._customer('c1')
+        self.c2 = self._customer('c2')
+        # c3: first order overall is Dallas Jan, plus an Austin order in Mar
+        # (must be counted under BOTH markets).
+        self.c3 = self._customer('c3')
+        # c4: only a market-less order in Apr.
+        self.c4 = self._customer('c4')
+
+        self._order(self.c1, self.ev_austin, '2024-01-05 10:00:00')
+        self._order(self.c2, self.ev_austin, '2024-02-05 10:00:00')
+        self._order(self.c3, self.ev_dallas, '2024-01-06 10:00:00')
+        self._order(self.c3, self.ev_austin, '2024-03-06 10:00:00')
+        self._order(self.c4, self.ev_nomarket, '2024-04-06 10:00:00')
+
+    def _customer(self, name):
+        return Customer.objects.create(
+            organization=self.org, email=f'{name}@example.com', name=name,
+        )
+
+    def _order(self, customer, event, order_date):
+        self._n += 1
+        return TicketOrder.objects.create(
+            customer=customer, event=event, order_number=f'AUD-{self._n}',
+            order_date=order_date, total_amount=Decimal('50.00'),
+        )
+
+    def _get(self, market=None):
+        url = reverse('tickets:audience_analytics')
+        if market is not None:
+            url += f'?market={market}'
+        return self.client.get(url)
+
+    def _get_q(self, query):
+        return self.client.get(reverse('tickets:audience_analytics') + '?' + query)
+
+    def test_all_markets_counts_every_customer_once(self):
+        resp = self._get()
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.context['summary']['total_customers'], 4)
+        series = json.loads(resp.context['series_json'])
+        self.assertTrue(series)
+        # cumulative is the running sum of new_customers, filling month gaps.
+        running = 0
+        for row in series:
+            running += row['new_customers']
+            self.assertEqual(row['cumulative'], running)
+        self.assertEqual(series[-1]['cumulative'], 4)
+
+    def test_market_filter_counts_cross_market_customer(self):
+        resp = self._get(market=self.austin.id)
+        self.assertEqual(resp.status_code, 200)
+        # c1, c2, and c3 (via their Austin order) => 3.
+        self.assertEqual(resp.context['summary']['total_customers'], 3)
+
+        resp_dal = self._get(market=self.dallas.id)
+        self.assertEqual(resp_dal.context['summary']['total_customers'], 1)
+
+    def test_no_market_option(self):
+        resp = self._get(market='none')
+        self.assertEqual(resp.status_code, 200)
+        self.assertTrue(resp.context['has_no_market'])
+        self.assertEqual(resp.context['summary']['total_customers'], 1)
+
+    def test_invalid_market_falls_back_to_all(self):
+        resp = self._get(market=str(uuid.uuid4()))
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.context['selected_market'], '')
+        self.assertEqual(resp.context['summary']['total_customers'], 4)
+
+    def test_default_window_is_all_time(self):
+        resp = self._get()
+        self.assertEqual(resp.context['active_window'], 'all')
+        self.assertTrue(resp.context['has_data'])
+
+    def test_custom_window_trims_months_but_keeps_true_cumulative(self):
+        resp = self._get_q('window=custom&start=2024-02-01&end=2024-12-31')
+        self.assertEqual(resp.status_code, 200)
+        # Grand total is unaffected by the window.
+        self.assertEqual(resp.context['summary']['total_customers'], 4)
+        # New within the window: c2 (Feb) + c4 (Apr).
+        self.assertEqual(resp.context['summary']['new_in_window'], 2)
+        series = json.loads(resp.context['series_json'])
+        # First shown month is Feb, and the line "starts high": cumulative already
+        # includes the 2 customers acquired in Jan (before the window).
+        self.assertEqual(series[0]['month'], '2024-02')
+        self.assertEqual(series[0]['cumulative'], 3)
+
+    def test_window_and_market_combine(self):
+        resp = self._get_q(
+            f'market={self.austin.id}&window=custom&start=2024-03-01&end=2024-12-31'
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.context['selected_market'], str(self.austin.id))
+        # Austin scope: c1 (Jan), c2 (Feb), c3 (Mar) => grand total 3.
+        self.assertEqual(resp.context['summary']['total_customers'], 3)
+        # Window Mar+ shows only c3's Austin order as new.
+        self.assertEqual(resp.context['summary']['new_in_window'], 1)
+        series = json.loads(resp.context['series_json'])
+        self.assertEqual(series[0]['month'], '2024-03')
+        self.assertEqual(series[0]['cumulative'], 3)
+
+    def test_window_with_no_activity_shows_empty_but_keeps_total(self):
+        resp = self._get_q('window=custom&start=2025-01-01&end=2025-12-31')
+        self.assertEqual(resp.status_code, 200)
+        self.assertFalse(resp.context['has_data'])
+        self.assertEqual(resp.context['summary']['total_customers'], 4)
+        self.assertEqual(resp.context['summary']['new_in_window'], 0)
