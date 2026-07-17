@@ -6175,6 +6175,8 @@ def event_detail(request, event_id):
         'meta_ads_pending_count': meta_ads_pending_count,
         'marketing_providers': marketing_providers(org),
         'category_labels': category_labels,
+        'expense_form': EventExpenseForm(initial={'expense_date': event.start_date}),
+        'event_income_form': EventIncomeForm(organization=org, auto_id='id_income_%s'),
         'additional_income_lines': additional_income_lines,
         'income_sources': IncomeSource.objects.filter(organization=org).order_by('order', 'name'),
         'page_obj': page_obj,
@@ -8310,16 +8312,64 @@ def _confirm_all_channel(request, event_id, model_cls, extra_filter, serialize_r
 
 
 
+def _expense_ajax_payload(event, expense):
+    """Build the JSON response body for an inline (AJAX) expense create.
+
+    Reuses _compute_event_stats() so the returned totals and category breakdown
+    match exactly what a full event_detail render would show. The expense-change
+    signal deletes the stats cache on save(), so this recomputes fresh.
+    """
+    stats = _compute_event_stats(event)
+    total_expenses = stats['total_expenses']
+    profit = stats['profit']
+    margin_pct = stats['margin_pct']
+    category_labels = dict(EventExpense.CATEGORY_CHOICES)
+    categories = [
+        {
+            'label': category_labels.get(row['category'], row['category']),
+            'total_display': f"{row['total']:,.2f}",
+        }
+        for row in stats['expenses_by_category']
+    ]
+    return {
+        'ok': True,
+        'expense': {
+            'id': str(expense.id),
+            'category_display': expense.get_category_display(),
+            'description': expense.description,
+            'amount_display': f"{expense.amount:,.2f}",
+            'expense_date_display': (
+                expense.expense_date.strftime('%b %d, %Y') if expense.expense_date else ''
+            ),
+            'edit_url': reverse('tickets:expense_edit', args=[event.id, expense.id]),
+            'delete_url': reverse('tickets:expense_delete', args=[event.id, expense.id]),
+        },
+        'totals': {
+            'total_expenses_display': f"{total_expenses:,.2f}",
+            'profit_display': f"{profit:,.2f}",
+            'profit_negative': profit < 0,
+            'margin_pct': (f"{margin_pct:.1f}" if margin_pct is not None else None),
+        },
+        'categories': categories,
+    }
+
+
 @login_required
 @require_org
 @require_admin
 @require_http_methods(["GET", "POST"])
 def expense_create(request, event_id):
-    """Add a new expense to an event."""
+    """Add a new expense to an event.
+
+    Supports both a full-page flow (renders expense_form.html / redirects) and an
+    inline AJAX flow from the event detail page (X-Requested-With header → JSON),
+    which lets the Expenses table update in place without a page reload.
+    """
     org = get_organization(request)
     event = get_object_or_404(Event.objects.filter(organization=org), id=event_id)
 
     if request.method == 'POST':
+        is_ajax = request.headers.get('X-Requested-With') == 'XMLHttpRequest'
         form = EventExpenseForm(request.POST)
         if form.is_valid():
             expense = form.save(commit=False)
@@ -8328,8 +8378,12 @@ def expense_create(request, event_id):
             expense.save()
             _invalidate_event_list_cache(org)
             _invalidate_marketing_cache(org)
+            if is_ajax:
+                return JsonResponse(_expense_ajax_payload(event, expense))
             messages.success(request, f'Expense "${expense.description}" added.')
             return redirect('tickets:event_detail', event_id=event.id)
+        elif is_ajax:
+            return JsonResponse({'ok': False, 'errors': form.errors.get_json_data()}, status=422)
     else:
         form = EventExpenseForm(initial={'expense_date': event.start_date})
 
@@ -8487,15 +8541,59 @@ def income_source_delete(request, source_id):
 # Event Additional Income Views
 # ---------------------------------------------------------------------------
 
+def _income_ajax_payload(event, income):
+    """Build the JSON response body for an inline (AJAX) additional-income create.
+
+    Reuses _compute_event_stats() so the returned revenue/profit figures match a
+    full event_detail render. The income-change signal refreshes stats on commit;
+    delete the cache key first so this recomputes deterministically inline.
+    """
+    django_cache.delete(_event_stats_cache_key(event.pk))
+    stats = _compute_event_stats(event)
+    total_revenue = stats['total_revenue']
+    net_ticket_revenue = stats['net_ticket_revenue']
+    total_additional_income = stats['total_additional_income']
+    profit = stats['profit']
+    margin_pct = stats['margin_pct']
+    return {
+        'ok': True,
+        'income': {
+            'id': str(income.id),
+            'source_name': income.income_source.name,
+            'amount_display': f"{income.amount:,.2f}",
+            'income_date_display': (
+                income.income_date.strftime('%b %d, %Y') if income.income_date else ''
+            ),
+            'edit_url': reverse('tickets:event_income_edit', args=[event.id, income.id]),
+            'delete_url': reverse('tickets:event_income_delete', args=[event.id, income.id]),
+        },
+        'totals': {
+            'total_revenue_display': f"{total_revenue:,.2f}",
+            'net_ticket_revenue_display': f"{net_ticket_revenue:,.2f}",
+            'total_additional_income_display': f"{total_additional_income:,.2f}",
+            'has_additional_income': total_additional_income > 0,
+            'profit_display': f"{profit:,.2f}",
+            'profit_negative': profit < 0,
+            'margin_pct': (f"{margin_pct:.1f}" if margin_pct is not None else None),
+        },
+    }
+
+
 @login_required
 @require_org
 @require_admin
 @require_http_methods(["GET", "POST"])
 def event_income_create(request, event_id):
-    """Add additional income to an event."""
+    """Add additional income to an event.
+
+    Supports a full-page flow (renders event_income_form.html / redirects) and an
+    inline AJAX flow from the event detail page (X-Requested-With header → JSON),
+    which lets the Additional Income table update in place without a page reload.
+    """
     org = get_organization(request)
     event = get_object_or_404(Event.objects.filter(organization=org), id=event_id)
     if request.method == 'POST':
+        is_ajax = request.headers.get('X-Requested-With') == 'XMLHttpRequest'
         form = EventIncomeForm(request.POST, organization=org)
         if form.is_valid():
             income = form.save(commit=False)
@@ -8504,8 +8602,12 @@ def event_income_create(request, event_id):
             income.save()
             _invalidate_event_list_cache(org)
             _invalidate_marketing_cache(org)
+            if is_ajax:
+                return JsonResponse(_income_ajax_payload(event, income))
             messages.success(request, f"Income '{income.income_source.name}' added.")
             return redirect('tickets:event_detail', event_id=event.id)
+        elif is_ajax:
+            return JsonResponse({'ok': False, 'errors': form.errors.get_json_data()}, status=422)
     else:
         form = EventIncomeForm(organization=org)
     return render(request, 'tickets/event_income_form.html', {

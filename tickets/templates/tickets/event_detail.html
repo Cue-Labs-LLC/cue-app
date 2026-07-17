@@ -586,18 +586,16 @@ button.detail-meta-weather--severe:focus-visible {
     <div class="stats-grid">
         <div class="stat-card stat-card--success">
             <div class="stat-label">Revenue</div>
-            <div class="stat-value">${{ total_revenue|currency }}</div>
-            {% if total_additional_income > 0 %}
-            <div class="stat-detail" style="font-size: 0.75rem; margin-top: 4px;">Tickets: ${{ net_ticket_revenue|currency }} + Other: ${{ total_additional_income|currency }}</div>
-            {% endif %}
+            <div class="stat-value" data-revenue-total>${{ total_revenue|currency }}</div>
+            <div class="stat-detail{% if not total_additional_income > 0 %} d-none{% endif %}" data-revenue-detail style="font-size: 0.75rem; margin-top: 4px;">Tickets: $<span data-revenue-tickets>{{ net_ticket_revenue|currency }}</span> + Other: $<span data-revenue-other>{{ total_additional_income|currency }}</span></div>
         </div>
         <div class="stat-card stat-card--danger">
             <div class="stat-label">Expenses</div>
-            <div class="stat-value">${{ total_expenses|currency }}</div>
+            <div class="stat-value" data-expenses-total>${{ total_expenses|currency }}</div>
         </div>
-        <div class="stat-card {% if profit >= 0 %}stat-card--success{% else %}stat-card--danger{% endif %}">
+        <div class="stat-card {% if profit >= 0 %}stat-card--success{% else %}stat-card--danger{% endif %}" data-profit-card>
             <div class="stat-label">Profit / Loss</div>
-            <div class="stat-value"{% if profit < 0 %} style="color: var(--danger);"{% endif %}>${{ profit|currency }}{% if margin_pct != None %} <small style="font-size:0.6em;">({{ margin_pct|floatformat:1 }}%)</small>{% endif %}</div>
+            <div class="stat-value"{% if profit < 0 %} style="color: var(--danger);"{% endif %} data-profit-value>${{ profit|currency }}{% if margin_pct != None %} <small style="font-size:0.6em;">({{ margin_pct|floatformat:1 }}%)</small>{% endif %}</div>
         </div>
     </div>
 </div>
@@ -1136,18 +1134,17 @@ document.addEventListener('DOMContentLoaded', function() {
 </div>
 {% endif %}
 
-<div class="card mb-4">
+<div class="card mb-4" id="incomeCard" data-income-add-url="{% url 'tickets:event_income_create' event.id %}">
     <div class="card-header d-flex justify-content-between align-items-center">
         <h5>Additional Income</h5>
         {% if income_sources %}
-        <a href="{% url 'tickets:event_income_create' event.id %}" class="btn btn-sm btn-primary"><i class="bi bi-plus-lg"></i> Add Income</a>
+        <button type="button" class="btn btn-sm btn-primary" data-income-toggle><i class="bi bi-plus-lg"></i> Add Income</button>
         {% else %}
         <a href="{% url 'tickets:income_source_list' %}" class="btn btn-sm btn-primary">Define income sources first</a>
         {% endif %}
     </div>
     <div class="card-body p-0">
-        {% if additional_income_lines %}
-        <div class="table-responsive">
+        <div class="table-responsive{% if not additional_income_lines %} d-none{% endif %}" data-income-table>
             <table class="table table-hover mb-0">
                 <thead>
                     <tr>
@@ -1157,7 +1154,7 @@ document.addEventListener('DOMContentLoaded', function() {
                         <th></th>
                     </tr>
                 </thead>
-                <tbody>
+                <tbody data-income-body>
                     {% for line in additional_income_lines %}
                     <tr>
                         <td>{{ line.income_source.name }}</td>
@@ -1174,29 +1171,56 @@ document.addEventListener('DOMContentLoaded', function() {
                 </tbody>
             </table>
         </div>
-        {% else %}
-        <div class="empty-state" style="padding: 32px;">
+        <div class="empty-state{% if additional_income_lines %} d-none{% endif %}" data-income-empty style="padding: 32px;">
             <p class="mb-2">No additional income (e.g. Bar Splits, Merch) recorded. Add income source types in <a href="{% url 'tickets:income_source_list' %}">Income Sources</a>, then add amounts here.</p>
         </div>
+        {% if income_sources %}
+        <form class="d-none px-3 pt-3 border-top pb-3" method="post" action="{% url 'tickets:event_income_create' event.id %}" data-income-form novalidate>
+            {% csrf_token %}
+            <div class="row g-2">
+                <div class="col-md-6">
+                    <label for="{{ event_income_form.income_source.id_for_label }}" class="form-label small mb-1">Source</label>
+                    {{ event_income_form.income_source }}
+                    <div class="invalid-feedback d-block" data-error-for="income_source"></div>
+                </div>
+                <div class="col-md-3">
+                    <label for="{{ event_income_form.amount.id_for_label }}" class="form-label small mb-1">Amount</label>
+                    {{ event_income_form.amount }}
+                    <div class="invalid-feedback d-block" data-error-for="amount"></div>
+                </div>
+                <div class="col-md-3">
+                    <label for="{{ event_income_form.income_date.id_for_label }}" class="form-label small mb-1">Date</label>
+                    {{ event_income_form.income_date }}
+                    <div class="invalid-feedback d-block" data-error-for="income_date"></div>
+                </div>
+                <div class="col-12">
+                    <label for="{{ event_income_form.notes.id_for_label }}" class="form-label small mb-1">Notes</label>
+                    {{ event_income_form.notes }}
+                    <div class="invalid-feedback d-block" data-error-for="notes"></div>
+                </div>
+            </div>
+            <div class="invalid-feedback d-block mt-1" data-error-for="__all__"></div>
+            <div class="d-flex gap-2 mt-2">
+                <button type="submit" class="btn btn-sm btn-primary" data-income-submit>Add Income</button>
+                <button type="button" class="btn btn-sm btn-outline-secondary" data-income-cancel>Cancel</button>
+            </div>
+        </form>
         {% endif %}
     </div>
 </div>
 
-<div class="card mb-4">
+<div class="card mb-4" id="expenseCard" data-expense-add-url="{% url 'tickets:expense_create' event.id %}">
     <div class="card-header d-flex justify-content-between align-items-center">
         <h5>Expenses</h5>
-        <a href="{% url 'tickets:expense_create' event.id %}" class="btn btn-sm btn-primary"><i class="bi bi-plus-lg"></i> Add Expense</a>
+        <button type="button" class="btn btn-sm btn-primary" data-expense-toggle><i class="bi bi-plus-lg"></i> Add Expense</button>
     </div>
     <div class="card-body p-0">
-        {% if expenses %}
-        {% if expenses_by_category %}
-        <div class="px-3 pt-3 pb-2">
+        <div class="px-3 pt-3 pb-2{% if not expenses_by_category %} d-none{% endif %}" data-expense-badges>
             {% for cat in expenses_by_category %}
             <span class="badge bg-secondary me-1 mb-1">{{ category_labels|get_item:cat.category }} &mdash; ${{ cat.total|currency }}</span>
             {% endfor %}
         </div>
-        {% endif %}
-        <div class="table-responsive">
+        <div class="table-responsive{% if not expenses %} d-none{% endif %}" data-expense-table>
             <table class="table table-hover mb-0">
                 <thead>
                     <tr>
@@ -1207,7 +1231,7 @@ document.addEventListener('DOMContentLoaded', function() {
                         <th></th>
                     </tr>
                 </thead>
-                <tbody>
+                <tbody data-expense-body>
                     {% for expense in expenses %}
                     <tr>
                         <td>{{ expense.get_category_display }}</td>
@@ -1225,11 +1249,44 @@ document.addEventListener('DOMContentLoaded', function() {
                 </tbody>
             </table>
         </div>
-        {% else %}
-        <div class="empty-state" style="padding: 32px;">
+        <div class="empty-state{% if expenses %} d-none{% endif %}" data-expense-empty style="padding: 32px;">
             <p class="mb-2">No expenses recorded for this event.</p>
         </div>
-        {% endif %}
+        <form class="d-none px-3 pt-3 border-top pb-3" method="post" action="{% url 'tickets:expense_create' event.id %}" data-expense-form novalidate>
+            {% csrf_token %}
+            <div class="row g-2">
+                <div class="col-md-4">
+                    <label for="{{ expense_form.category.id_for_label }}" class="form-label small mb-1">Category</label>
+                    {{ expense_form.category }}
+                    <div class="invalid-feedback d-block" data-error-for="category"></div>
+                </div>
+                <div class="col-md-4">
+                    <label for="{{ expense_form.amount.id_for_label }}" class="form-label small mb-1">Amount</label>
+                    {{ expense_form.amount }}
+                    <div class="invalid-feedback d-block" data-error-for="amount"></div>
+                </div>
+                <div class="col-md-4">
+                    <label for="{{ expense_form.expense_date.id_for_label }}" class="form-label small mb-1">Date</label>
+                    {{ expense_form.expense_date }}
+                    <div class="invalid-feedback d-block" data-error-for="expense_date"></div>
+                </div>
+                <div class="col-12">
+                    <label for="{{ expense_form.description.id_for_label }}" class="form-label small mb-1">Description</label>
+                    {{ expense_form.description }}
+                    <div class="invalid-feedback d-block" data-error-for="description"></div>
+                </div>
+                <div class="col-12">
+                    <label for="{{ expense_form.notes.id_for_label }}" class="form-label small mb-1">Notes</label>
+                    {{ expense_form.notes }}
+                    <div class="invalid-feedback d-block" data-error-for="notes"></div>
+                </div>
+            </div>
+            <div class="invalid-feedback d-block mt-1" data-error-for="__all__"></div>
+            <div class="d-flex gap-2 mt-2">
+                <button type="submit" class="btn btn-sm btn-primary" data-expense-submit>Add Expense</button>
+                <button type="button" class="btn btn-sm btn-outline-secondary" data-expense-cancel>Cancel</button>
+            </div>
+        </form>
     </div>
 </div>
 
@@ -5980,6 +6037,350 @@ document.addEventListener('DOMContentLoaded', function () {
 
     render();
 });
+</script>
+
+<script>
+// Inline "Add Expense" — post the form via fetch and drop the new row straight
+// into the Expenses table without navigating away or reloading the page.
+(function () {
+    var card = document.getElementById('expenseCard');
+    if (!card) return;
+
+    var form = card.querySelector('[data-expense-form]');
+    var toggleBtn = card.querySelector('[data-expense-toggle]');
+    var cancelBtn = card.querySelector('[data-expense-cancel]');
+    var submitBtn = card.querySelector('[data-expense-submit]');
+    var tbody = card.querySelector('[data-expense-body]');
+    var tableWrap = card.querySelector('[data-expense-table]');
+    var emptyState = card.querySelector('[data-expense-empty]');
+    var badges = card.querySelector('[data-expense-badges]');
+    var addUrl = card.getAttribute('data-expense-add-url');
+
+    var expensesTotalEl = document.querySelector('[data-expenses-total]');
+    var profitCardEl = document.querySelector('[data-profit-card]');
+    var profitValueEl = document.querySelector('[data-profit-value]');
+
+    function getCsrf() {
+        var m = document.cookie.match(/csrftoken=([^;]+)/);
+        if (m) return m[1];
+        var input = form.querySelector('[name=csrfmiddlewaretoken]');
+        return input ? input.value : '';
+    }
+
+    function clearErrors() {
+        form.querySelectorAll('[data-error-for]').forEach(function (el) { el.textContent = ''; });
+        form.querySelectorAll('.is-invalid').forEach(function (el) { el.classList.remove('is-invalid'); });
+    }
+
+    function showErrors(errors) {
+        Object.keys(errors || {}).forEach(function (field) {
+            var box = form.querySelector('[data-error-for="' + field + '"]');
+            var messages = errors[field];
+            var text = Array.isArray(messages)
+                ? messages.map(function (m) { return m.message || m; }).join(' ')
+                : String(messages);
+            if (box) box.textContent = text;
+            var input = form.querySelector('[name="' + field + '"]');
+            if (input) input.classList.add('is-invalid');
+        });
+    }
+
+    function openForm() {
+        form.classList.remove('d-none');
+        clearErrors();
+        form.scrollIntoView({ behavior: 'smooth', block: 'end' });
+        var first = form.querySelector('select, input, textarea');
+        if (first) first.focus({ preventScroll: true });
+    }
+
+    function closeForm() {
+        form.classList.add('d-none');
+        form.reset();
+        clearErrors();
+    }
+
+    function buildRow(exp) {
+        var tr = document.createElement('tr');
+
+        var tdCat = document.createElement('td');
+        tdCat.textContent = exp.category_display;
+        tr.appendChild(tdCat);
+
+        var tdDesc = document.createElement('td');
+        tdDesc.textContent = exp.description;
+        tr.appendChild(tdDesc);
+
+        var tdAmount = document.createElement('td');
+        var strong = document.createElement('strong');
+        strong.textContent = '$' + exp.amount_display;
+        tdAmount.appendChild(strong);
+        tr.appendChild(tdAmount);
+
+        var tdDate = document.createElement('td');
+        if (exp.expense_date_display) {
+            tdDate.textContent = exp.expense_date_display;
+        } else {
+            var muted = document.createElement('span');
+            muted.className = 'text-muted';
+            muted.innerHTML = '&mdash;';
+            tdDate.appendChild(muted);
+        }
+        tr.appendChild(tdDate);
+
+        var tdActions = document.createElement('td');
+        var group = document.createElement('div');
+        group.className = 'd-flex gap-1';
+        var edit = document.createElement('a');
+        edit.href = exp.edit_url;
+        edit.className = 'btn btn-sm btn-outline-secondary';
+        edit.innerHTML = '<i class="bi bi-pencil"></i>';
+        var del = document.createElement('a');
+        del.href = exp.delete_url;
+        del.className = 'btn btn-sm btn-outline-danger';
+        del.innerHTML = '<i class="bi bi-trash"></i>';
+        group.appendChild(edit);
+        group.appendChild(del);
+        tdActions.appendChild(group);
+        tr.appendChild(tdActions);
+
+        return tr;
+    }
+
+    function renderBadges(categories) {
+        badges.textContent = '';
+        (categories || []).forEach(function (cat) {
+            var span = document.createElement('span');
+            span.className = 'badge bg-secondary me-1 mb-1';
+            span.textContent = cat.label + ' — $' + cat.total_display;
+            badges.appendChild(span);
+        });
+        badges.classList.toggle('d-none', !(categories && categories.length));
+    }
+
+    function updateTotals(totals) {
+        if (expensesTotalEl) expensesTotalEl.textContent = '$' + totals.total_expenses_display;
+        if (profitCardEl) {
+            profitCardEl.classList.toggle('stat-card--success', !totals.profit_negative);
+            profitCardEl.classList.toggle('stat-card--danger', !!totals.profit_negative);
+        }
+        if (profitValueEl) {
+            profitValueEl.style.color = totals.profit_negative ? 'var(--danger)' : '';
+            var html = '$' + totals.profit_display;
+            if (totals.margin_pct !== null && totals.margin_pct !== undefined) {
+                html += ' <small style="font-size:0.6em;">(' + totals.margin_pct + '%)</small>';
+            }
+            profitValueEl.innerHTML = html;
+        }
+    }
+
+    if (toggleBtn) {
+        toggleBtn.addEventListener('click', function () {
+            if (form.classList.contains('d-none')) openForm(); else closeForm();
+        });
+    }
+    if (cancelBtn) cancelBtn.addEventListener('click', closeForm);
+
+    form.addEventListener('submit', function (e) {
+        e.preventDefault();
+        clearErrors();
+        if (submitBtn) submitBtn.disabled = true;
+        fetch(addUrl, {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: {
+                'X-Requested-With': 'XMLHttpRequest',
+                'X-CSRFToken': getCsrf(),
+            },
+            body: new FormData(form),
+        })
+        .then(function (r) { return r.json().then(function (d) { return { status: r.status, data: d }; }); })
+        .then(function (res) {
+            if (submitBtn) submitBtn.disabled = false;
+            if (res.status === 200 && res.data.ok) {
+                tbody.appendChild(buildRow(res.data.expense));
+                tableWrap.classList.remove('d-none');
+                emptyState.classList.add('d-none');
+                renderBadges(res.data.categories);
+                updateTotals(res.data.totals);
+                closeForm();
+                if (window.showCueToast) window.showCueToast('Expense added.', 'success');
+            } else {
+                showErrors(res.data.errors);
+            }
+        })
+        .catch(function () {
+            if (submitBtn) submitBtn.disabled = false;
+            if (window.showCueToast) window.showCueToast('Something went wrong. Please try again.', 'error');
+        });
+    });
+})();
+</script>
+
+<script>
+// Inline "Add Income" — post the form via fetch and drop the new row straight
+// into the Additional Income table without navigating away or reloading the page.
+(function () {
+    var card = document.getElementById('incomeCard');
+    if (!card) return;
+
+    var form = card.querySelector('[data-income-form]');
+    var toggleBtn = card.querySelector('[data-income-toggle]');
+    if (!form || !toggleBtn) return;
+    var cancelBtn = card.querySelector('[data-income-cancel]');
+    var submitBtn = card.querySelector('[data-income-submit]');
+    var tbody = card.querySelector('[data-income-body]');
+    var tableWrap = card.querySelector('[data-income-table]');
+    var emptyState = card.querySelector('[data-income-empty]');
+    var addUrl = card.getAttribute('data-income-add-url');
+
+    var revenueTotalEl = document.querySelector('[data-revenue-total]');
+    var revenueDetailEl = document.querySelector('[data-revenue-detail]');
+    var revenueTicketsEl = document.querySelector('[data-revenue-tickets]');
+    var revenueOtherEl = document.querySelector('[data-revenue-other]');
+    var profitCardEl = document.querySelector('[data-profit-card]');
+    var profitValueEl = document.querySelector('[data-profit-value]');
+
+    function getCsrf() {
+        var m = document.cookie.match(/csrftoken=([^;]+)/);
+        if (m) return m[1];
+        var input = form.querySelector('[name=csrfmiddlewaretoken]');
+        return input ? input.value : '';
+    }
+
+    function clearErrors() {
+        form.querySelectorAll('[data-error-for]').forEach(function (el) { el.textContent = ''; });
+        form.querySelectorAll('.is-invalid').forEach(function (el) { el.classList.remove('is-invalid'); });
+    }
+
+    function showErrors(errors) {
+        Object.keys(errors || {}).forEach(function (field) {
+            var box = form.querySelector('[data-error-for="' + field + '"]');
+            var messages = errors[field];
+            var text = Array.isArray(messages)
+                ? messages.map(function (m) { return m.message || m; }).join(' ')
+                : String(messages);
+            if (box) box.textContent = text;
+            var input = form.querySelector('[name="' + field + '"]');
+            if (input) input.classList.add('is-invalid');
+        });
+    }
+
+    function openForm() {
+        form.classList.remove('d-none');
+        clearErrors();
+        form.scrollIntoView({ behavior: 'smooth', block: 'end' });
+        var first = form.querySelector('select, input, textarea');
+        if (first) first.focus({ preventScroll: true });
+    }
+
+    function closeForm() {
+        form.classList.add('d-none');
+        form.reset();
+        clearErrors();
+    }
+
+    function buildRow(inc) {
+        var tr = document.createElement('tr');
+
+        var tdSource = document.createElement('td');
+        tdSource.textContent = inc.source_name;
+        tr.appendChild(tdSource);
+
+        var tdAmount = document.createElement('td');
+        var strong = document.createElement('strong');
+        strong.textContent = '$' + inc.amount_display;
+        tdAmount.appendChild(strong);
+        tr.appendChild(tdAmount);
+
+        var tdDate = document.createElement('td');
+        if (inc.income_date_display) {
+            tdDate.textContent = inc.income_date_display;
+        } else {
+            var muted = document.createElement('span');
+            muted.className = 'text-muted';
+            muted.innerHTML = '&mdash;';
+            tdDate.appendChild(muted);
+        }
+        tr.appendChild(tdDate);
+
+        var tdActions = document.createElement('td');
+        var group = document.createElement('div');
+        group.className = 'd-flex gap-1';
+        var edit = document.createElement('a');
+        edit.href = inc.edit_url;
+        edit.className = 'btn btn-sm btn-outline-secondary';
+        edit.innerHTML = '<i class="bi bi-pencil"></i>';
+        var del = document.createElement('a');
+        del.href = inc.delete_url;
+        del.className = 'btn btn-sm btn-outline-danger';
+        del.innerHTML = '<i class="bi bi-trash"></i>';
+        group.appendChild(edit);
+        group.appendChild(del);
+        tdActions.appendChild(group);
+        tr.appendChild(tdActions);
+
+        return tr;
+    }
+
+    function updateTotals(totals) {
+        if (revenueTotalEl) revenueTotalEl.textContent = '$' + totals.total_revenue_display;
+        if (revenueDetailEl) {
+            revenueDetailEl.classList.toggle('d-none', !totals.has_additional_income);
+            if (revenueTicketsEl) revenueTicketsEl.textContent = totals.net_ticket_revenue_display;
+            if (revenueOtherEl) revenueOtherEl.textContent = totals.total_additional_income_display;
+        }
+        if (profitCardEl) {
+            profitCardEl.classList.toggle('stat-card--success', !totals.profit_negative);
+            profitCardEl.classList.toggle('stat-card--danger', !!totals.profit_negative);
+        }
+        if (profitValueEl) {
+            profitValueEl.style.color = totals.profit_negative ? 'var(--danger)' : '';
+            var html = '$' + totals.profit_display;
+            if (totals.margin_pct !== null && totals.margin_pct !== undefined) {
+                html += ' <small style="font-size:0.6em;">(' + totals.margin_pct + '%)</small>';
+            }
+            profitValueEl.innerHTML = html;
+        }
+    }
+
+    toggleBtn.addEventListener('click', function () {
+        if (form.classList.contains('d-none')) openForm(); else closeForm();
+    });
+    if (cancelBtn) cancelBtn.addEventListener('click', closeForm);
+
+    form.addEventListener('submit', function (e) {
+        e.preventDefault();
+        clearErrors();
+        if (submitBtn) submitBtn.disabled = true;
+        fetch(addUrl, {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: {
+                'X-Requested-With': 'XMLHttpRequest',
+                'X-CSRFToken': getCsrf(),
+            },
+            body: new FormData(form),
+        })
+        .then(function (r) { return r.json().then(function (d) { return { status: r.status, data: d }; }); })
+        .then(function (res) {
+            if (submitBtn) submitBtn.disabled = false;
+            if (res.status === 200 && res.data.ok) {
+                tbody.appendChild(buildRow(res.data.income));
+                tableWrap.classList.remove('d-none');
+                emptyState.classList.add('d-none');
+                updateTotals(res.data.totals);
+                closeForm();
+                if (window.showCueToast) window.showCueToast('Income added.', 'success');
+            } else {
+                showErrors(res.data.errors);
+            }
+        })
+        .catch(function () {
+            if (submitBtn) submitBtn.disabled = false;
+            if (window.showCueToast) window.showCueToast('Something went wrong. Please try again.', 'error');
+        });
+    });
+})();
 </script>
 
 {% endblock %}

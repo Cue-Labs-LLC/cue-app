@@ -18598,3 +18598,245 @@ class CSVImportEmailValidationTests(TestCase):
                 organization=self.org, email='hide my email'
             ).exists()
         )
+
+
+class ExpenseInlineCreateTests(TestCase):
+    """AJAX (inline) add-expense flow on the event detail page."""
+
+    def setUp(self):
+        self.client = Client()
+        self.org = Organization.objects.create(
+            name='Inline Expense Org',
+            slug='inline-expense-org',
+        )
+        self.user = User.objects.create_user(
+            username='inline-expense-owner',
+            email='inline-expense-owner@example.com',
+            password='pw',
+        )
+        UserProfile.objects.create(
+            user=self.user,
+            organization=self.org,
+            org_role=UserProfile.OrgRole.OWNER,
+        )
+        OrganizationMembership.objects.create(
+            user=self.user,
+            organization=self.org,
+            org_role=UserProfile.OrgRole.OWNER,
+        )
+        self.client.force_login(self.user)
+        self.client.get(reverse('tickets:home'))
+        self.venue = Venue.objects.create(
+            organization=self.org,
+            name='Inline Expense Venue',
+            city='Austin',
+            state='TX',
+            country='US',
+        )
+        self.event = Event.objects.create(
+            organization=self.org,
+            name='Inline Expense Show',
+            venue=self.venue,
+            start_date=date(2025, 3, 1),
+            start_time=time(20, 0),
+            end_date=date(2025, 3, 1),
+            end_time=time(22, 0),
+        )
+        self.url = reverse('tickets:expense_create', args=[self.event.id])
+
+    def test_ajax_post_creates_expense_and_returns_json(self):
+        response = self.client.post(
+            self.url,
+            {
+                'category': 'production',
+                'description': 'Sound engineer',
+                'amount': '150.00',
+                'expense_date': '2025-03-01',
+                'notes': '',
+            },
+            HTTP_X_REQUESTED_WITH='XMLHttpRequest',
+        )
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertTrue(data['ok'])
+        self.assertEqual(data['expense']['description'], 'Sound engineer')
+        self.assertEqual(data['expense']['amount_display'], '150.00')
+        self.assertEqual(data['expense']['category_display'], 'Production / AV / Sound')
+        self.assertIn('edit_url', data['expense'])
+        self.assertIn('delete_url', data['expense'])
+        self.assertEqual(data['totals']['total_expenses_display'], '150.00')
+        self.assertTrue(
+            any(c['label'] == 'Production / AV / Sound' for c in data['categories'])
+        )
+        self.assertTrue(
+            EventExpense.objects.filter(
+                event=self.event, description='Sound engineer'
+            ).exists()
+        )
+
+    def test_ajax_post_invalid_returns_422_with_field_errors(self):
+        response = self.client.post(
+            self.url,
+            {
+                'category': 'production',
+                'description': 'Missing amount',
+                'amount': '',
+            },
+            HTTP_X_REQUESTED_WITH='XMLHttpRequest',
+        )
+        self.assertEqual(response.status_code, 422)
+        data = response.json()
+        self.assertFalse(data['ok'])
+        self.assertIn('amount', data['errors'])
+        self.assertFalse(
+            EventExpense.objects.filter(
+                event=self.event, description='Missing amount'
+            ).exists()
+        )
+
+    def test_event_detail_renders_inline_expense_form(self):
+        response = self.client.get(reverse('tickets:event_detail', args=[self.event.id]))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'data-expense-form')
+        self.assertContains(response, 'data-expense-body')
+        self.assertContains(response, 'data-expense-add-url')
+
+    def test_non_ajax_post_still_redirects(self):
+        response = self.client.post(
+            self.url,
+            {
+                'category': 'venue',
+                'description': 'Room rental',
+                'amount': '500.00',
+                'expense_date': '2025-03-01',
+            },
+        )
+        self.assertRedirects(
+            response,
+            reverse('tickets:event_detail', args=[self.event.id]),
+        )
+        self.assertTrue(
+            EventExpense.objects.filter(
+                event=self.event, description='Room rental'
+            ).exists()
+        )
+
+
+class EventIncomeInlineCreateTests(TestCase):
+    """AJAX (inline) add-income flow on the event detail page."""
+
+    def setUp(self):
+        from .models import IncomeSource, EventIncome
+        self.IncomeSource = IncomeSource
+        self.EventIncome = EventIncome
+        self.client = Client()
+        self.org = Organization.objects.create(
+            name='Inline Income Org',
+            slug='inline-income-org',
+        )
+        self.user = User.objects.create_user(
+            username='inline-income-owner',
+            email='inline-income-owner@example.com',
+            password='pw',
+        )
+        UserProfile.objects.create(
+            user=self.user,
+            organization=self.org,
+            org_role=UserProfile.OrgRole.OWNER,
+        )
+        OrganizationMembership.objects.create(
+            user=self.user,
+            organization=self.org,
+            org_role=UserProfile.OrgRole.OWNER,
+        )
+        self.client.force_login(self.user)
+        self.client.get(reverse('tickets:home'))
+        self.venue = Venue.objects.create(
+            organization=self.org,
+            name='Inline Income Venue',
+            city='Austin',
+            state='TX',
+            country='US',
+        )
+        self.event = Event.objects.create(
+            organization=self.org,
+            name='Inline Income Show',
+            venue=self.venue,
+            start_date=date(2025, 3, 1),
+            start_time=time(20, 0),
+            end_date=date(2025, 3, 1),
+            end_time=time(22, 0),
+        )
+        self.source = IncomeSource.objects.create(
+            organization=self.org, name='Bar Splits', order=0,
+        )
+        self.url = reverse('tickets:event_income_create', args=[self.event.id])
+
+    def test_ajax_post_creates_income_and_returns_json(self):
+        response = self.client.post(
+            self.url,
+            {
+                'income_source': str(self.source.id),
+                'amount': '500.00',
+                'income_date': '2025-03-01',
+                'notes': '',
+            },
+            HTTP_X_REQUESTED_WITH='XMLHttpRequest',
+        )
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertTrue(data['ok'])
+        self.assertEqual(data['income']['source_name'], 'Bar Splits')
+        self.assertEqual(data['income']['amount_display'], '500.00')
+        self.assertIn('edit_url', data['income'])
+        self.assertIn('delete_url', data['income'])
+        self.assertEqual(data['totals']['total_additional_income_display'], '500.00')
+        self.assertTrue(data['totals']['has_additional_income'])
+        self.assertTrue(
+            self.EventIncome.objects.filter(
+                event=self.event, income_source=self.source, amount=Decimal('500.00')
+            ).exists()
+        )
+
+    def test_ajax_post_invalid_returns_422_with_field_errors(self):
+        response = self.client.post(
+            self.url,
+            {
+                'income_source': str(self.source.id),
+                'amount': '',
+            },
+            HTTP_X_REQUESTED_WITH='XMLHttpRequest',
+        )
+        self.assertEqual(response.status_code, 422)
+        data = response.json()
+        self.assertFalse(data['ok'])
+        self.assertIn('amount', data['errors'])
+        self.assertFalse(
+            self.EventIncome.objects.filter(event=self.event).exists()
+        )
+
+    def test_event_detail_renders_inline_income_form(self):
+        response = self.client.get(reverse('tickets:event_detail', args=[self.event.id]))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'data-income-form')
+        self.assertContains(response, 'data-income-body')
+        self.assertContains(response, 'data-income-add-url')
+
+    def test_non_ajax_post_still_redirects(self):
+        response = self.client.post(
+            self.url,
+            {
+                'income_source': str(self.source.id),
+                'amount': '200.00',
+                'income_date': '2025-03-01',
+            },
+        )
+        self.assertRedirects(
+            response,
+            reverse('tickets:event_detail', args=[self.event.id]),
+        )
+        self.assertTrue(
+            self.EventIncome.objects.filter(
+                event=self.event, amount=Decimal('200.00')
+            ).exists()
+        )
