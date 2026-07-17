@@ -2042,19 +2042,13 @@ SUBSCRIBE_MARKET_LABEL_DEFAULT = 'Your area'
 
 
 class SubscribeForm(forms.Form):
-    """Public subscribe-to-an-organizer form: name + email + phone + SMS consent.
+    """Public subscribe-to-an-organizer form: phone + SMS consent (+ optional market).
 
-    Email is REQUIRED so subscriber identity keys on (organization, email) like
-    the rest of the app (checkout/CSV) — see the audience-subscribe design doc.
-    Rendered manually in subscribe.html with float-labels (no crispy helper).
+    Name and email are intentionally NOT collected — the subscribe page asks only for a
+    mobile number to minimize friction. Subscriber identity is keyed on phone; a later
+    purchase or import reconciles by phone and can backfill an email. Rendered manually
+    in subscribe.html with float-labels (no crispy helper).
     """
-    name = forms.CharField(
-        max_length=200,
-        widget=forms.TextInput(attrs={'autocomplete': 'name', 'data-testid': 'subscribe-name'}),
-    )
-    email = forms.EmailField(
-        widget=forms.EmailInput(attrs={'autocomplete': 'email', 'data-testid': 'subscribe-email'}),
-    )
     phone = forms.CharField(
         max_length=20,
         widget=forms.TextInput(attrs={'type': 'tel', 'autocomplete': 'tel', 'data-testid': 'subscribe-phone'}),
@@ -2086,9 +2080,6 @@ class SubscribeForm(forms.Form):
             )
         else:
             self.fields.pop('market', None)
-
-    def clean_email(self):
-        return self.cleaned_data['email'].lower().strip()
 
     def clean_phone(self):
         phone = _normalize_phone(self.cleaned_data['phone'])

@@ -15,8 +15,20 @@ import os
 from .models import (
     CSVFormat, UploadedFile, Customer, Event, TicketOrder, Ticket, TicketTier, Venue
 )
+from .sms import normalize_phone
 
 logger = logging.getLogger(__name__)
+
+# Matches a normalized E.164 number (used to decide whether to store the normalized
+# form and to gate phone-only-subscriber reconciliation).
+_E164_RE = re.compile(r'^\+[1-9]\d{6,14}$')
+
+
+def _e164_or_raw(raw):
+    """Normalize a phone to E.164 when it parses cleanly, else return it untouched
+    (never destroy an unparseable value)."""
+    norm = normalize_phone(raw or '')
+    return norm if _E164_RE.match(norm) else (raw or '')
 
 
 class CSVProcessor:
@@ -484,6 +496,9 @@ class CSVProcessor:
         
         customers_to_create = []
         customers_to_update = []
+        # Phones already used to adopt a phone-only subscriber this chunk, so two rows
+        # with the same phone but different emails don't both claim the same subscriber.
+        reconciled_phones = set()
         events_to_create = []
         events_to_update = []
         ticket_orders_to_create = []
@@ -674,33 +689,58 @@ class CSVProcessor:
                             # Remove from customers_to_create if it was added earlier in this chunk
                             customers_to_create = [c for c in customers_to_create if c.email != customer_email]
                         else:
-                            # Check if already in customers_to_create to avoid duplicates within chunk
-                            already_in_create = any(c.email == customer_email for c in customers_to_create)
-                            if not already_in_create:
-                                customer = Customer(
-                                    email=customer_email,
-                                    name=mapped_row.get('customer_name', ''),
-                                    phone=mapped_row.get('customer_phone', ''),
-                                    **({'organization': org} if org is not None else {}),
-                                )
-                                # Consent is only granted, never revoked, on import. SMS
-                                # needs a phone, so opt-in requires one (mirrors set_sms_opt_in).
-                                if mapped_row.get('customer_sms_opt_in') and customer.phone:
-                                    customer.sms_opt_in = True
-                                    customer.sms_opt_in_date = timezone.now()
-                                customers_to_create.append(customer)
+                            # Reconcile with an existing phone-only subscriber (email='')
+                            # by verified E.164 phone before creating a new row — a fan who
+                            # subscribed by SMS (no email) unifies with their imported order
+                            # instead of forking a duplicate Customer.
+                            norm_phone = normalize_phone(mapped_row.get('customer_phone', ''))
+                            reco = None
+                            if (org is not None and _E164_RE.match(norm_phone)
+                                    and norm_phone not in reconciled_phones):
+                                reco = (Customer.objects
+                                        .filter(organization=org, email='', phone=norm_phone)
+                                        .first())
+                            if reco is not None:
+                                reconciled_phones.add(norm_phone)
+                                reco.email = customer_email  # backfill → now email-keyed
+                                if mapped_row.get('customer_name') and not reco.name:
+                                    reco.name = mapped_row.get('customer_name')
+                                if mapped_row.get('customer_sms_opt_in') and not reco.sms_opt_in:
+                                    reco.sms_opt_in = True
+                                    reco.sms_opt_in_date = timezone.now()
+                                customer = reco
                                 existing_customers[customer_email] = customer
+                                customers_to_update.append(customer)
                             else:
-                                # Find the customer in customers_to_create
-                                customer = next(c for c in customers_to_create if c.email == customer_email)
+                                # Check if already in customers_to_create to avoid duplicates within chunk
+                                already_in_create = any(c.email == customer_email for c in customers_to_create)
+                                if not already_in_create:
+                                    customer = Customer(
+                                        email=customer_email,
+                                        name=mapped_row.get('customer_name', ''),
+                                        phone=_e164_or_raw(mapped_row.get('customer_phone', '')),
+                                        **({'organization': org} if org is not None else {}),
+                                    )
+                                    # Consent is only granted, never revoked, on import. SMS
+                                    # needs a phone, so opt-in requires one (mirrors set_sms_opt_in).
+                                    if mapped_row.get('customer_sms_opt_in') and customer.phone:
+                                        customer.sms_opt_in = True
+                                        customer.sms_opt_in_date = timezone.now()
+                                    customers_to_create.append(customer)
+                                    existing_customers[customer_email] = customer
+                                else:
+                                    # Find the customer in customers_to_create
+                                    customer = next(c for c in customers_to_create if c.email == customer_email)
                     else:
                         # Update customer info if needed
                         if mapped_row.get('customer_name') and customer.name != mapped_row.get('customer_name'):
                             customer.name = mapped_row.get('customer_name')
                             customers_to_update.append(customer)
-                        if mapped_row.get('customer_phone') and customer.phone != mapped_row.get('customer_phone'):
-                            customer.phone = mapped_row.get('customer_phone')
-                            customers_to_update.append(customer)
+                        if mapped_row.get('customer_phone'):
+                            new_phone = _e164_or_raw(mapped_row.get('customer_phone'))
+                            if new_phone and customer.phone != new_phone:
+                                customer.phone = new_phone
+                                customers_to_update.append(customer)
                         # Grant SMS consent if the source says so; never revoke on import.
                         if (mapped_row.get('customer_sms_opt_in') and customer.phone
                                 and not customer.sms_opt_in):
@@ -983,8 +1023,9 @@ class CSVProcessor:
                     results['customer_ids'].add(customer.id)
         
         if customers_to_update:
+            # 'email' included so a reconciled phone-only subscriber's backfilled email persists.
             Customer.objects.bulk_update(
-                customers_to_update, ['name', 'phone', 'sms_opt_in', 'sms_opt_in_date']
+                customers_to_update, ['name', 'phone', 'sms_opt_in', 'sms_opt_in_date', 'email']
             )
         if events_to_create:
             Event.objects.bulk_create(events_to_create, ignore_conflicts=True)

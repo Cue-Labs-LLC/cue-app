@@ -17664,8 +17664,8 @@ class SubscribePageTests(TestCase):
         self.verify_url = reverse('tickets:subscribe_verify', args=[self.org.slug])
 
     def _valid_post(self, **over):
-        data = {'name': 'Sam Fan', 'email': 'sam@example.com',
-                'phone': '415-555-0100', 'sms_consent': 'on'}
+        # Phone-only signup: name/email are no longer collected.
+        data = {'phone': '415-555-0100', 'sms_consent': 'on'}
         data.update(over)
         return self.client.post(self.url, data)
 
@@ -17675,6 +17675,11 @@ class SubscribePageTests(TestCase):
         self.assertEqual(r.status_code, 200)
         self.assertContains(r, 'After Hours')
         self.assertContains(r, 'Get text updates')
+
+    def test_no_name_email_fields_rendered(self):
+        r = self.client.get(self.url)
+        self.assertNotContains(r, 'name="name"')
+        self.assertNotContains(r, 'name="email"')
 
     def test_unknown_org_404(self):
         self.assertEqual(self.client.get(reverse('tickets:subscribe', args=['nope'])).status_code, 404)
@@ -17688,15 +17693,10 @@ class SubscribePageTests(TestCase):
     # --- validation ---
     def test_consent_unchecked_rejected_no_otp(self):
         with patch('tickets.sms.start_phone_verification') as m:
-            r = self.client.post(self.url, {'name': 'A', 'email': 'a@b.com', 'phone': '4155550100'})
+            r = self.client.post(self.url, {'phone': '4155550100'})
         m.assert_not_called()
         self.assertEqual(SMSConsentRecord.objects.count(), 0)
         self.assertContains(r, 'agree to receive')
-
-    def test_missing_email_rejected(self):
-        r = self._valid_post(email='')
-        self.assertEqual(SMSConsentRecord.objects.count(), 0)
-        self.assertContains(r, 'Get text updates')  # still on form
 
     def test_bad_phone_rejected(self):
         r = self._valid_post(phone='123')
@@ -17709,7 +17709,8 @@ class SubscribePageTests(TestCase):
         self.assertContains(r, 'texted a 6-digit code')
         rec = SMSConsentRecord.objects.get()
         self.assertEqual(rec.phone, '+14155550100')
-        self.assertEqual(rec.email, 'sam@example.com')
+        self.assertEqual(rec.email, '')  # no longer collected
+        self.assertEqual(rec.name, '')
         self.assertIsNone(rec.verified_at)  # pending until OTP
         self.assertTrue(rec.consent_given)
         self.assertIn('After Hours', rec.consent_text)
@@ -17725,11 +17726,12 @@ class SubscribePageTests(TestCase):
         self._valid_post()
         r = self.client.post(self.verify_url, {'otp_code': self.OTP})
         self.assertContains(r, "You're in")
-        c = Customer.objects.get(organization=self.org, email='sam@example.com')
+        c = Customer.objects.get(organization=self.org, phone='+14155550100')
         self.assertIsNone(c.user)  # accountless
+        self.assertEqual(c.email, '')  # phone-only subscriber
+        self.assertEqual(c.name, '')
         self.assertTrue(c.sms_opt_in)
         self.assertIsNotNone(c.sms_opt_in_date)
-        self.assertEqual(c.phone, '+14155550100')
         rec = SMSConsentRecord.objects.get()
         self.assertIsNotNone(rec.verified_at)
         self.assertEqual(rec.customer_id, c.id)
@@ -17740,31 +17742,34 @@ class SubscribePageTests(TestCase):
         r = self.client.post(self.verify_url, {'otp_code': '999999'})
         self.assertContains(r, "Try again or resend")
         self.assertIsNone(SMSConsentRecord.objects.get().verified_at)
-        self.assertFalse(Customer.objects.filter(email='sam@example.com').exists())
+        self.assertFalse(Customer.objects.filter(phone='+14155550100').exists())
 
     def test_verify_without_session_restarts(self):
         r = self.client.post(self.verify_url, {'otp_code': self.OTP})
         self.assertContains(r, 'start again')
 
-    # --- identity: merges by email, never splits ---
+    # --- identity: merges by phone, never splits ---
     def test_existing_customer_reused_not_clobbered(self):
+        # A customer already carrying this phone (e.g. a prior checkout) is merged into,
+        # not clobbered or duplicated.
         existing = Customer.objects.create(
             organization=self.org, email='sam@example.com', name='Real Name',
-            lifetime_value=Decimal('250.00'),
+            phone='+14155550100', lifetime_value=Decimal('250.00'),
         )
         self._valid_post()
         self.client.post(self.verify_url, {'otp_code': self.OTP})
         existing.refresh_from_db()
         self.assertTrue(existing.sms_opt_in)
         self.assertEqual(existing.name, 'Real Name')            # not clobbered
+        self.assertEqual(existing.email, 'sam@example.com')     # not clobbered
         self.assertEqual(existing.lifetime_value, Decimal('250.00'))
-        self.assertEqual(Customer.objects.filter(email='sam@example.com').count(), 1)
+        self.assertEqual(Customer.objects.filter(organization=self.org, phone='+14155550100').count(), 1)
 
     def test_double_submit_one_customer(self):
         for _ in range(2):
             self._valid_post()
             self.client.post(self.verify_url, {'otp_code': self.OTP})
-        self.assertEqual(Customer.objects.filter(organization=self.org, email='sam@example.com').count(), 1)
+        self.assertEqual(Customer.objects.filter(organization=self.org, phone='+14155550100').count(), 1)
 
     # --- suppression reconciliation ---
     def test_per_org_stop_cleared_on_consent(self):
@@ -17812,6 +17817,155 @@ class SubscribePageTests(TestCase):
         rec.consent_text = 'tampered'
         with self.assertRaises(ValidationError):
             rec.save()
+
+
+class PhoneSubscriberReconciliationTests(TestCase):
+    """A phone-only subscriber (email='') unifies with a later CSV import or checkout
+    purchase by phone, instead of forking a second Customer row."""
+
+    def setUp(self):
+        self.org = Organization.objects.create(
+            name='Reco Org', slug='reco-org', external_events_enabled=True,
+        )
+        self.csv_format = CSVFormat.objects.create(
+            organization=self.org, name='Reco Format',
+            column_mapping={
+                'order_date': ['order_date'],
+                'customer_email': ['customer_email'],
+                'customer_name': ['customer_name'],
+                'customer_phone': ['customer_phone'],
+                'ticket_type': ['ticket_type'],
+                'customer_sms_opt_in': ['consent'],
+            },
+        )
+
+    def _subscriber(self, phone):
+        # Mirrors a phone-only subscribe: opted-in Customer with no email/name.
+        return Customer.objects.create(
+            organization=self.org, email='', name='', phone=phone, sms_opt_in=True,
+        )
+
+    def _import(self, csv_body):
+        import io
+        upload = UploadedFile.objects.create(
+            organization=self.org, csv_format=self.csv_format, filename='reco.csv',
+            status='pending',
+            metadata={'event_name': 'Reco Show', 'event_start_date': '2025-06-01'},
+        )
+        from tickets.csv_processor import CSVProcessor
+        return CSVProcessor(upload, self.csv_format).process_and_save(
+            io.BytesIO(csv_body.encode('utf-8'))
+        )
+
+    # --- CSV import reconciliation ---
+    def test_import_adopts_phone_only_subscriber(self):
+        sub = self._subscriber('+13105550001')
+        # Raw phone in the CSV normalizes to the subscriber's E.164.
+        self._import(
+            "order_date,customer_email,customer_name,customer_phone,ticket_type,consent\n"
+            "2025-06-01,fan@example.com,Fan,(310) 555-0001,GA,Yes\n"
+        )
+        self.assertEqual(Customer.objects.filter(organization=self.org).count(), 1)
+        sub.refresh_from_db()
+        self.assertEqual(sub.email, 'fan@example.com')  # backfilled onto the subscriber
+        self.assertEqual(sub.phone, '+13105550001')     # kept E.164, not clobbered
+        self.assertTrue(sub.sms_opt_in)
+
+    def test_import_same_phone_two_emails_adopts_once(self):
+        sub = self._subscriber('+13105550002')
+        self._import(
+            "order_date,customer_email,customer_name,customer_phone,ticket_type,consent\n"
+            "2025-06-01,a@example.com,A,(310) 555-0002,GA,Yes\n"
+            "2025-06-01,b@example.com,B,(310) 555-0002,GA,Yes\n"
+        )
+        self.assertEqual(Customer.objects.filter(organization=self.org).count(), 2)
+        # First row adopts the subscriber; the second creates a fresh customer.
+        adopted = Customer.objects.get(organization=self.org, email='a@example.com')
+        self.assertEqual(adopted.pk, sub.pk)
+        self.assertTrue(Customer.objects.filter(organization=self.org, email='b@example.com')
+                        .exclude(pk=sub.pk).exists())
+
+    def test_import_no_subscriber_normalizes_phone(self):
+        self._import(
+            "order_date,customer_email,customer_name,customer_phone,ticket_type,consent\n"
+            "2025-06-01,solo@example.com,Solo,(310) 555-0003,GA,No\n"
+        )
+        c = Customer.objects.get(organization=self.org, email='solo@example.com')
+        self.assertEqual(c.phone, '+13105550003')  # stored E.164
+
+    # --- checkout reconciliation (get_or_create_customer_for_purchase) ---
+    def _buyer_account(self, email, phone):
+        user = User.objects.create_user(
+            username='buyer' + phone[-4:], email=email, password='pw123456',
+        )
+        UserProfile.objects.create(
+            user=user, organization=self.org, phone_number=phone,
+            role=UserProfile.Role.ATTENDEE,
+        )
+        return user
+
+    def test_purchase_adopts_phone_only_subscriber(self):
+        from tickets.utils import get_or_create_customer_for_purchase
+        sub = self._subscriber('+13105550055')
+        self._buyer_account('buyer@example.com', '+13105550055')
+        customer = get_or_create_customer_for_purchase(
+            self.org, email='buyer@example.com', name='Buyer',
+        )
+        self.assertEqual(customer.pk, sub.pk)          # merged, not forked
+        self.assertEqual(customer.email, 'buyer@example.com')
+        self.assertTrue(customer.sms_opt_in)           # preserved
+        self.assertEqual(Customer.objects.filter(organization=self.org).count(), 1)
+
+    def test_purchase_existing_email_customer_reused(self):
+        from tickets.utils import get_or_create_customer_for_purchase
+        existing = Customer.objects.create(
+            organization=self.org, email='e@example.com', name='E',
+        )
+        customer = get_or_create_customer_for_purchase(
+            self.org, email='e@example.com', name='Ignored',
+        )
+        self.assertEqual(customer.pk, existing.pk)
+        self.assertEqual(Customer.objects.filter(organization=self.org).count(), 1)
+
+    def test_purchase_no_subscriber_creates_customer(self):
+        from tickets.utils import get_or_create_customer_for_purchase
+        customer = get_or_create_customer_for_purchase(
+            self.org, email='new@example.com', name='New',
+        )
+        self.assertEqual(customer.email, 'new@example.com')
+        self.assertTrue(Customer.objects.filter(organization=self.org, email='new@example.com').exists())
+
+    def test_purchase_create_race_refetches_existing_customer(self):
+        from tickets.utils import get_or_create_customer_for_purchase
+
+        class FirstResult:
+            def __init__(self, result):
+                self.result = result
+
+            def first(self):
+                return self.result
+
+        existing = Customer.objects.create(
+            organization=self.org, email='race@example.com', name='Winner',
+        )
+        with patch.object(Customer.objects, 'filter',
+                          side_effect=[FirstResult(None), FirstResult(existing)]):
+            with patch.object(Customer.objects, 'create', side_effect=IntegrityError):
+                customer = get_or_create_customer_for_purchase(
+                    self.org, email='race@example.com', name='Race',
+                )
+        self.assertEqual(customer.pk, existing.pk)
+
+    def test_phone_only_subscribers_unique_per_org_phone(self):
+        self._subscriber('+13105550077')
+        with self.assertRaises(IntegrityError):
+            with transaction.atomic():
+                self._subscriber('+13105550077')
+        Customer.objects.create(
+            organization=self.org, email='with-email@example.com',
+            name='Email Buyer', phone='+13105550077',
+        )
+        self.assertEqual(Customer.objects.filter(organization=self.org, phone='+13105550077').count(), 2)
 
 
 class SalesPacingTests(TestCase):

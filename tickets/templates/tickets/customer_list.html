@@ -187,6 +187,25 @@
 </div>
 {% endif %}
 
+<!-- Audience filter: labels state the defining fact (bought? on SMS list?) -->
+<nav class="nav nav-tabs" aria-label="Audience filter">
+    {% url 'tickets:customer_list' as base_url %}
+    <a class="nav-link{% if not customer_type %} active{% endif %}"
+       href="{{ base_url }}{% if filter_params_qs_notype %}?{{ filter_params_qs_notype }}{% endif %}">Everyone <span class="ms-1 opacity-75">{{ total_count|intcomma }}</span></a>
+    <a class="nav-link{% if customer_type == 'customers' %} active{% endif %}"
+       href="{{ base_url }}?{% if filter_params_qs_notype %}{{ filter_params_qs_notype }}&{% endif %}type=customers">Ticket buyers <span class="ms-1 opacity-75">{{ customers_count|intcomma }}</span></a>
+    <a class="nav-link{% if customer_type == 'subscribers' %} active{% endif %}"
+       href="{{ base_url }}?{% if filter_params_qs_notype %}{{ filter_params_qs_notype }}&{% endif %}type=subscribers">SMS subscribers <span class="ms-1 opacity-75">{{ subscribers_count|intcomma }}</span></a>
+    <a class="nav-link{% if customer_type == 'contacts' %} active{% endif %}"
+       href="{{ base_url }}?{% if filter_params_qs_notype %}{{ filter_params_qs_notype }}&{% endif %}type=contacts">Not subscribed <span class="ms-1 opacity-75">{{ contacts_count|intcomma }}</span></a>
+</nav>
+<p class="text-secondary small mb-3" style="margin-top:-8px;">
+    {% if customer_type == 'customers' %}People who have bought at least one ticket.
+    {% elif customer_type == 'subscribers' %}On your SMS list — haven't bought a ticket yet.
+    {% elif customer_type == 'contacts' %}No tickets bought and not subscribed to your SMS list.
+    {% else %}Everyone in your audience — buyers, SMS subscribers, and other contacts.{% endif %}
+</p>
+
 <!-- Compact search + count bar -->
 <div class="d-flex align-items-center gap-2 mb-3 flex-wrap">
     <div class="input-group input-group-sm" style="max-width: 260px;">
@@ -209,7 +228,7 @@
         {% if has_active_filters %}{{ page_obj.paginator.count|intcomma }} matching {% else %}{{ page_obj.paginator.count|intcomma }} {% endif %}customer{{ page_obj.paginator.count|pluralize }}
     </span>
     {% if has_active_filters %}
-    <a href="{% url 'tickets:customer_list' %}" class="btn btn-sm btn-outline-secondary">Clear filters</a>
+    <a href="{% url 'tickets:customer_list' %}{% if customer_type %}?type={{ customer_type }}{% endif %}" class="btn btn-sm btn-outline-secondary">Clear filters</a>
     {% endif %}
 </div>
 
@@ -378,6 +397,11 @@
                                 </div>
                             </div>
                         </th>
+                        {% if customer_type == 'subscribers' or customer_type == 'contacts' %}
+                        <!-- Non-buyer columns: no purchase analytics to show -->
+                        <th class="d-none d-sm-table-cell"><div class="th-inner">{% if customer_type == 'contacts' %}Added{% else %}Joined{% endif %}</div></th>
+                        <th class="d-none d-sm-table-cell"><div class="th-inner">Home market</div></th>
+                        {% else %}
                         <!-- Segment: select from choices -->
                         <th>
                             <div class="th-inner">
@@ -513,6 +537,7 @@
                                 </div>
                             </div>
                         </th>
+                        {% endif %}
                         <!-- Tags: select from org_tags -->
                         <th class="d-none d-md-table-cell">
                             <div class="th-inner">
@@ -553,11 +578,15 @@
                         <td onclick="event.stopPropagation()"><input type="checkbox" class="cust-checkbox cust-check" value="{{ customer.id }}" aria-label="Select {{ customer.name }}" onclick="event.stopPropagation()"></td>
                         {% endif %}
                         <td class="customer-card-cell">
-                            <div class="customer-card-name"><strong>{{ customer.name }}</strong></div>
-                            <div class="customer-card-email">{{ customer.email }}</div>
+                            <div class="customer-card-name"><strong>{% if customer.name %}{{ customer.name }}{% else %}<span class="text-muted fst-italic">{% if customer.sms_opt_in %}SMS subscriber{% else %}No name{% endif %}</span>{% endif %}</strong></div>
+                            <div class="customer-card-email">{{ customer.email|default:customer.phone }}</div>
                             <div class="customer-card-meta">
                                 {% if customer.rfm_segment %}
                                 <span class="customer-card-segment"><span class="badge bg-{{ segment_badge_colors|get_item:customer.rfm_segment }}">{{ customer.rfm_segment }}</span></span>
+                                {% elif customer.order_count == 0 and customer.sms_opt_in %}
+                                <span class="customer-card-segment"><span class="badge bg-info-subtle text-info-emphasis">Subscriber</span></span>
+                                {% elif customer.order_count == 0 %}
+                                <span class="customer-card-segment"><span class="badge bg-secondary-subtle text-secondary-emphasis">Contact</span></span>
                                 {% else %}
                                 <span class="customer-card-segment-empty">No segment</span>
                                 {% endif %}
@@ -569,7 +598,7 @@
                                 {% endif %}
                             </div>
                         </td>
-                        <td>{{ customer.email }}</td>
+                        <td>{{ customer.email|default:"—" }}</td>
                         <td class="d-none d-sm-table-cell">{{ customer.phone|default:"-" }}</td>
                         <td class="d-none d-sm-table-cell">
                             {% if customer.sms_suppressed %}
@@ -580,9 +609,17 @@
                             <span class="text-muted">&mdash;</span>
                             {% endif %}
                         </td>
+                        {% if customer_type == 'subscribers' or customer_type == 'contacts' %}
+                        <td class="d-none d-sm-table-cell">{% if customer_type == 'contacts' %}{{ customer.created_at|date:"M d, Y"|default:"-" }}{% else %}{{ customer.sms_opt_in_date|date:"M d, Y"|default:"-" }}{% endif %}</td>
+                        <td class="d-none d-sm-table-cell">{{ customer.home_market.name|default:"—" }}</td>
+                        {% else %}
                         <td>
                             {% if customer.rfm_segment %}
                             <span class="badge bg-{{ segment_badge_colors|get_item:customer.rfm_segment }}">{{ customer.rfm_segment }}</span>
+                            {% elif customer.order_count == 0 and customer.sms_opt_in %}
+                            <span class="badge bg-info-subtle text-info-emphasis">Subscriber</span>
+                            {% elif customer.order_count == 0 %}
+                            <span class="badge bg-secondary-subtle text-secondary-emphasis">Contact</span>
                             {% else %}
                             <span class="text-muted">-</span>
                             {% endif %}
@@ -593,6 +630,7 @@
                         {% endif %}
                         <td class="d-none d-sm-table-cell">{{ customer.last_order_date|date:"M d, Y"|default:"-" }}</td>
                         <td class="d-none d-sm-table-cell">{{ customer.order_count }}</td>
+                        {% endif %}
                         <td class="d-none d-md-table-cell">
                             {% for tag in customer.tags.all %}
                             <span class="badge {% if tag.color == 'blue' %}bg-primary{% elif tag.color == 'green' %}bg-success{% elif tag.color == 'red' %}bg-danger{% elif tag.color == 'yellow' %}bg-warning text-dark{% elif tag.color == 'orange' %}bg-warning text-dark{% elif tag.color == 'purple' %}badge-purple{% else %}bg-secondary{% endif %} me-1">{{ tag.name }}</span>

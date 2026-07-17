@@ -888,8 +888,11 @@ class Customer(BaseModel):
         related_name='customer_profiles',
         help_text="Linked auth.User account, if the buyer has one. Null for CSV-imported customers without a backing account.",
     )
-    email = models.EmailField(db_index=True)
-    name = models.CharField(max_length=200)
+    # Blank email is allowed for phone-only subscribers (public subscribe page captures
+    # phone + consent only). Uniqueness is enforced only when email is present — see the
+    # partial UniqueConstraint in Meta. Identity for these rows is keyed on phone.
+    email = models.EmailField(db_index=True, blank=True)
+    name = models.CharField(max_length=200, blank=True)
     phone = models.CharField(max_length=50, blank=True)
     lifetime_value = models.DecimalField(
         max_digits=10,
@@ -948,11 +951,21 @@ class Customer(BaseModel):
             models.Index(fields=['email']),
             models.Index(fields=['lifetime_value']),
             models.Index(fields=['last_order_date']),
+            # Phone-keyed identity: subscribe merge + import/checkout reconciliation.
+            models.Index(fields=['organization', 'phone']),
         ]
         constraints = [
+            # Email is unique per org only when present; blank emails (phone-only
+            # subscribers) are exempt so many can coexist.
             models.UniqueConstraint(
                 fields=['organization', 'email'],
+                condition=~models.Q(email=''),
                 name='customer_org_email_unique',
+            ),
+            models.UniqueConstraint(
+                fields=['organization', 'phone'],
+                condition=models.Q(email='') & ~models.Q(phone=''),
+                name='customer_org_phone_phone_only_unique',
             ),
         ]
 
