@@ -9126,15 +9126,33 @@ def _parse_survey_answer(question, post_data):
     return {'question': question, 'star_rating': None, 'nps_score': None, 'text_answer': value}, None
 
 
+def _is_sendable_email(email):
+    """True if `email` is a deliverable address. Filters out blanks and junk like
+    the Apple 'Hide My Email' placeholder that can slip in via CSV import."""
+    from django.core.validators import validate_email
+    from django.core.exceptions import ValidationError
+    if not email:
+        return False
+    try:
+        validate_email(email)
+    except ValidationError:
+        return False
+    return True
+
+
 def _survey_recipients(event, org):
-    """Attendees with a ticket order for `event` who have NOT yet been sent a
-    survey invitation. Single source of truth for the count modal and send_survey."""
+    """Attendees with a ticket order for `event`, a usable email, and NO survey
+    invitation yet. Single source of truth for the count modal and send_survey.
+
+    Customers whose email is blank or unparseable are dropped in Python: a survey
+    invitation with no deliverable address would only fail at send time."""
     existing_customer_ids = SurveyInvitation.objects.filter(
         event=event
     ).values_list('customer_id', flat=True)
-    return Customer.objects.filter(
+    candidates = Customer.objects.filter(
         ticket_orders__event=event, organization=org
     ).distinct().exclude(id__in=existing_customer_ids)
+    return [c for c in candidates if _is_sendable_email(c.email)]
 
 
 def _event_tz(event):
@@ -9190,7 +9208,7 @@ def survey_recipient_count(request, event_id):
     """Count of attendees who would receive the survey if sent now. GET, JSON."""
     org = get_organization(request)
     event = get_object_or_404(Event.objects.filter(organization=org), id=event_id)
-    return JsonResponse({'count': _survey_recipients(event, org).count()})
+    return JsonResponse({'count': len(_survey_recipients(event, org))})
 
 
 @login_required
@@ -9246,7 +9264,7 @@ def send_survey(request, event_id):
     # Get attendees who don't already have an invitation for this event
     attendees = _survey_recipients(event, org)
 
-    if not attendees.exists():
+    if not attendees:
         messages.info(request, "All attendees have already been sent a survey for this event.")
         return redirect('tickets:event_detail', event_id=event_id)
 

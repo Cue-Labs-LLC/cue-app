@@ -3312,6 +3312,12 @@ class SurveyInvitation(BaseModel):
     )
     sent_at = models.DateTimeField(null=True, blank=True)
     completed_at = models.DateTimeField(null=True, blank=True)
+    send_failed_at = models.DateTimeField(
+        null=True, blank=True,
+        help_text="Set when a send permanently fails (invalid/refused recipient). "
+                  "Excludes the row from future send attempts.",
+    )
+    send_error = models.CharField(max_length=200, blank=True, default='')
 
     class Meta:
         unique_together = [['event', 'customer']]

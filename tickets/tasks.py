@@ -199,7 +199,11 @@ def send_survey_emails_task(self, event_id, organization_id):
     past, so scheduled invitations sit untouched until the send_due_survey_invitations
     cron dispatches them once due.
     """
+    import smtplib
+
     from django.core.mail import EmailMultiAlternatives
+    from django.core.exceptions import ValidationError
+    from django.core.validators import validate_email
     from django.conf import settings
     from django.db.models import Q
     from django.utils import timezone
@@ -215,6 +219,7 @@ def send_survey_emails_task(self, event_id, organization_id):
         event_id=event_id,
         organization_id=organization_id,
         sent_at__isnull=True,
+        send_failed_at__isnull=True,
     ).filter(
         Q(scheduled_send_at__isnull=True) | Q(scheduled_send_at__lte=timezone.now())
     )
@@ -223,7 +228,26 @@ def send_survey_emails_task(self, event_id, organization_id):
     from_email, reply_to = survey_sender_fields(event.organization)
     sent_count = 0
 
+    def mark_permanent_failure(invitation, reason):
+        """Mark an invitation as permanently unsendable so it drops out of the
+        eligibility query and is never retried."""
+        invitation.send_failed_at = timezone.now()
+        invitation.send_error = reason[:200]
+        invitation.save(update_fields=['send_failed_at', 'send_error'])
+
     for invitation in invitations:
+        # Reject obviously-invalid recipients (e.g. Apple "Hide My Email" placeholder
+        # text that slipped into the customer record) before hitting SMTP.
+        try:
+            validate_email(invitation.email)
+        except ValidationError:
+            logger.warning(
+                "Skipping survey invitation %s: invalid email %r for event %s",
+                invitation.id, invitation.email, event_id,
+            )
+            mark_permanent_failure(invitation, 'invalid_email')
+            continue
+
         survey_url = f"{site_url}/survey/{invitation.token}/"
         subject, text_body, html_body = build_survey_email(event, survey_url)
 
@@ -240,7 +264,29 @@ def send_survey_emails_task(self, event_id, organization_id):
             invitation.sent_at = timezone.now()
             invitation.save(update_fields=['sent_at'])
             sent_count += 1
+        except (smtplib.SMTPRecipientsRefused, smtplib.SMTPSenderRefused) as exc:
+            # smtplib raises these for ANY non-250 reply, including transient 4xx
+            # codes (421 rate limit, 450 greylisting). Only a 5xx reply means
+            # retrying will always fail — mark those rows so they stop looping;
+            # leave 4xx unsent for a future dispatch.
+            if isinstance(exc, smtplib.SMTPSenderRefused):
+                codes = [exc.smtp_code]
+            else:
+                codes = [code for code, _resp in exc.recipients.values()]
+            if codes and all(code >= 500 for code in codes):
+                logger.warning(
+                    "Survey email to %s for event %s permanently refused: %s",
+                    invitation.email, event_id, exc,
+                )
+                mark_permanent_failure(invitation, 'recipient_refused')
+            else:
+                logger.warning(
+                    "Survey email to %s for event %s temporarily refused, will retry: %s",
+                    invitation.email, event_id, exc,
+                )
         except Exception:
+            # Transient failure (SMTP timeout, connection reset, etc.) — log and leave
+            # the row unsent so a future dispatch can retry it.
             logger.exception(
                 "Failed to send survey email to %s for event %s",
                 invitation.email, event_id,
