@@ -2477,17 +2477,19 @@ class SubscribeMarketTagTests(TestCase):
             organization=self.org, name='Dallas', geography_level='city', geography_value='Dallas',
         )
 
+    PHONE = '+13105551234'
+
     def _subscribe(self, market_field=None):
-        """Run the two-step subscribe→verify flow; return the created Customer (or None
-        if signup was blocked, e.g. a required/invalid market)."""
+        """Run the two-step phone-only subscribe→verify flow; return the created Customer
+        (or None if signup was blocked, e.g. a required/invalid market)."""
         sub_url = reverse('tickets:subscribe', args=[self.org.slug])
-        post = {'name': 'Ada', 'email': 'ada@x.com', 'phone': '+13105551234', 'sms_consent': 'on'}
+        post = {'phone': self.PHONE, 'sms_consent': 'on'}
         if market_field is not None:
             post['market'] = market_field
         self.client.post(sub_url, post)
         self.client.post(reverse('tickets:subscribe_verify', args=[self.org.slug]),
                          {'otp_code': '000000'})
-        return Customer.objects.filter(organization=self.org, email='ada@x.com').first()
+        return Customer.objects.filter(organization=self.org, phone=self.PHONE).first()
 
     # -- selector visibility gate --
 
@@ -2530,13 +2532,11 @@ class SubscribeMarketTagTests(TestCase):
         # No market posted → form error, no OTP sent, no consent record, no customer.
         from .models import SMSConsentRecord
         sub_url = reverse('tickets:subscribe', args=[self.org.slug])
-        resp = self.client.post(sub_url, {
-            'name': 'Ada', 'email': 'ada@x.com', 'phone': '+13105551234', 'sms_consent': 'on',
-        })
+        resp = self.client.post(sub_url, {'phone': self.PHONE, 'sms_consent': 'on'})
         self.assertEqual(resp.status_code, 200)
         self.assertContains(resp, 'Please choose your area.')
         self.assertFalse(SMSConsentRecord.objects.filter(organization=self.org).exists())
-        self.assertFalse(Customer.objects.filter(organization=self.org, email='ada@x.com').exists())
+        self.assertFalse(Customer.objects.filter(organization=self.org, phone=self.PHONE).exists())
 
     def test_no_segmentation_leaves_home_market_null(self):
         self.org.sms_subscribe_segment_by_market = False

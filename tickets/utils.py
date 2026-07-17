@@ -278,6 +278,38 @@ def link_customer_to_buyer(customer, buyer_email):
         customer.save(update_fields=fields_to_update)
 
 
+def get_or_create_customer_for_purchase(org, *, email, name):
+    """Resolve the Customer for a purchase, preferring email identity.
+
+    If the email is new to this org, adopt an existing phone-only subscriber
+    (email='') matching the buyer's verified account phone (resolved email →
+    auth.User → UserProfile) and backfill the email, so a first purchase attaches to
+    the subscriber's record instead of forking a second row. Otherwise create a fresh
+    Customer (its phone is copied afterwards by link_customer_to_buyer).
+    """
+    from .models import Customer
+    from django.contrib.auth.models import User
+    email = (email or '').lower().strip()
+    if email:
+        existing = Customer.objects.filter(organization=org, email=email).first()
+        if existing:
+            return existing
+    user = (User.objects.filter(email__iexact=email).select_related('profile').first()
+            if email else None)
+    phone = getattr(getattr(user, 'profile', None), 'phone_number', '') or ''
+    if phone:
+        sub = Customer.objects.filter(organization=org, email='', phone=phone).first()
+        if sub is not None:
+            fields = ['email']
+            sub.email = email
+            if name and not sub.name:
+                sub.name = name
+                fields.append('name')
+            sub.save(update_fields=fields + ['updated_at'])
+            return sub
+    return Customer.objects.create(organization=org, email=email, name=name or '')
+
+
 def calculate_platform_fee_cents(subtotal_cents: int) -> int:
     """Platform service fee: 8% of subtotal + $0.99, in cents."""
     return round(subtotal_cents * 0.08) + 99

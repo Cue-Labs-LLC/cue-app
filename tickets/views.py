@@ -147,7 +147,7 @@ from .services.marketing import (
 from .services.marketing.analytics import DEFAULT_WINDOW, resolve_window
 from .services.customer_filters import filter_customers, NO_MARKET_VALUE, market_filter_options, _valid_uuids
 from .services.weather import get_event_weather_forecast, get_event_hourly_forecast
-from .utils import get_organization, require_org, require_organizer, require_host, require_admin, require_owner, clear_org_cache, next_order_number, generate_qr_b64, link_customer_to_buyer, ticket_qr_payload
+from .utils import get_organization, require_org, require_organizer, require_host, require_admin, require_owner, clear_org_cache, next_order_number, generate_qr_b64, link_customer_to_buyer, get_or_create_customer_for_purchase, ticket_qr_payload
 from .feature_flags import (
     smart_pricing_recommendations_enabled,
     browse_events_enabled,
@@ -11468,11 +11468,7 @@ def checkout_payment(request, public_id):
 
         with transaction.atomic():
             org = event.organization
-            customer, _ = Customer.objects.get_or_create(
-                email=buyer_email,
-                organization=org,
-                defaults={'name': buyer_name},
-            )
+            customer = get_or_create_customer_for_purchase(org, email=buyer_email, name=buyer_name)
             link_customer_to_buyer(customer, buyer_email)
             sms_opt_in = request.POST.get('sms_opt_in') == '1'
             if sms_opt_in and not customer.sms_opt_in:
@@ -12341,11 +12337,7 @@ def _fulfill_payment_intent(payment_intent):
         email = session_obj.buyer_email
         name = session_obj.buyer_name or email
 
-        customer, _ = Customer.objects.get_or_create(
-            email=email.lower(),
-            organization=org,
-            defaults={'name': name},
-        )
+        customer = get_or_create_customer_for_purchase(org, email=email, name=name)
         link_customer_to_buyer(customer, email)
         if session_obj.sms_opt_in and not customer.sms_opt_in:
             customer.sms_opt_in = True
@@ -12922,7 +12914,7 @@ def _subscribe_render(request, org, step, **extra):
 
 
 def subscribe_view(request, org_slug):
-    """Public. Step 1: capture name/email/phone + SMS consent, send the OTP."""
+    """Public. Step 1: capture phone + SMS consent (+ optional market), send the OTP."""
     from .sms import otp_start
     org = get_object_or_404(Organization, slug=org_slug)
     if not org.sms_marketing_enabled:
@@ -12936,8 +12928,6 @@ def subscribe_view(request, org_slug):
     if not form.is_valid():
         return _subscribe_render(request, org, step='form', form=form)
 
-    name = form.cleaned_data['name']
-    email = form.cleaned_data['email']
     phone = form.cleaned_data['phone']
     # '' when the org isn't segmenting by market (the field is popped). When shown, the
     # ChoiceField restricts the value to this org's markets; verify re-checks existence.
@@ -12958,8 +12948,9 @@ def subscribe_view(request, org_slug):
         )
 
     # OTP sent — only now write the pending record (keeps failed sends out of the ledger).
+    # email/name are left blank: the subscribe page no longer collects them.
     record = SMSConsentRecord.objects.create(
-        organization=org, phone=phone, email=email, name=name,
+        organization=org, phone=phone, email='', name='',
         consent_given=True, consent_text=_subscribe_consent_text(org),
         consent_url=request.path, ip_address=ip or None,
         user_agent=request.META.get('HTTP_USER_AGENT', '')[:2000],
@@ -13012,11 +13003,16 @@ def subscribe_verify_view(request, org_slug):
                                  send_error='Your session expired. Please start again.')
 
     with transaction.atomic():
-        # Email-keyed identity — merges with checkout/CSV (design decision A).
-        customer, _created = Customer.objects.get_or_create(
-            organization=org, email=record.email,
-            defaults={'name': record.name, 'phone': phone},
-        )
+        # Phone-keyed identity — the subscribe page collects no email. Merge into an
+        # existing customer that already has this phone (e.g. a prior checkout), else
+        # create a fresh phone-only subscriber. A later purchase/import reconciles by
+        # phone and can backfill an email onto this row.
+        customer = (Customer.objects.filter(organization=org, phone=phone)
+                    .exclude(phone='').first())
+        if customer is None:
+            customer = Customer.objects.create(
+                organization=org, email='', name='', phone=phone,
+            )
         if not customer.phone:
             customer.phone = phone
         customer.sms_opt_in = True

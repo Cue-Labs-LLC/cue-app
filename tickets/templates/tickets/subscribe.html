@@ -111,18 +111,6 @@
       {% if send_error %}<div class="banner" role="alert">{{ send_error }}</div>{% endif %}
       <form method="post" action="{% url 'tickets:subscribe' org.slug %}" novalidate>
         {% csrf_token %}
-        <div class="field {% if form.name.errors %}field--error{% endif %}">
-          <label class="form-label" for="id_name">Name</label>
-          <input class="form-control" type="text" id="id_name" name="name" autocomplete="name"
-                 value="{{ form.name.value|default:'' }}" required aria-describedby="err_name">
-          {% if form.name.errors %}<p class="err" id="err_name" aria-live="polite">{{ form.name.errors.0 }}</p>{% endif %}
-        </div>
-        <div class="field {% if form.email.errors %}field--error{% endif %}">
-          <label class="form-label" for="id_email">Email</label>
-          <input class="form-control" type="email" id="id_email" name="email" autocomplete="email"
-                 value="{{ form.email.value|default:'' }}" required aria-describedby="err_email">
-          {% if form.email.errors %}<p class="err" id="err_email" aria-live="polite">{{ form.email.errors.0 }}</p>{% endif %}
-        </div>
         <div class="field {% if form.phone.errors %}field--error{% endif %}">
           <label class="form-label" for="id_phone">Mobile number</label>
           <input class="form-control" type="tel" id="id_phone" name="phone" autocomplete="tel"
