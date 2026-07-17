@@ -3677,6 +3677,7 @@ def marketing_overview(request):
         'subscribe_url': subscribe_url,
         'subscribe_qr': subscribe_qr,
         'market_count': market_count,
+        'subscribe_title': org.sms_subscribe_title,
         'segment_by_market': org.sms_subscribe_segment_by_market,
         'market_label': org.sms_subscribe_market_label,
         'marketing_section': 'overview',
@@ -3689,13 +3690,16 @@ def marketing_overview(request):
 @require_admin
 @require_http_methods(["POST"])
 def marketing_subscribe_settings(request):
-    """Configure the public subscribe page's market segmentation. Small dedicated
-    endpoint so the heavy GET marketing_overview stays GET-only. Two independent
-    controls post here: the on/off switch, and the picker's custom label. Each only
-    touches its own field (presence of 'market_label' selects the label branch) so
-    saving one never clobbers the other."""
+    """Configure the public subscribe page's headline and market segmentation. Small
+    dedicated endpoint so the heavy GET marketing_overview stays GET-only. Independent
+    controls post here: the custom title, the on/off switch, and the picker's custom
+    label. Each only touches its own field (the presence of a field's key selects its
+    branch) so saving one never clobbers the others."""
     org = get_organization(request)
-    if 'market_label' in request.POST:
+    if 'subscribe_title' in request.POST:
+        org.sms_subscribe_title = request.POST.get('subscribe_title', '').strip()[:80]
+        org.save(update_fields=['sms_subscribe_title', 'updated_at'])
+    elif 'market_label' in request.POST:
         org.sms_subscribe_market_label = request.POST.get('market_label', '').strip()[:60]
         org.save(update_fields=['sms_subscribe_market_label', 'updated_at'])
     else:

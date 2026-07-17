@@ -144,6 +144,16 @@ class Organization(BaseModel):
             'orgs, so the SMS gate lives here.'
         ),
     )
+    sms_subscribe_title = models.CharField(
+        max_length=80,
+        blank=True,
+        default='',
+        help_text=(
+            "Optional header shown above the mobile number field on the public "
+            "subscribe page (e.g. 'Join the Tempo Global text list'). Blank shows "
+            "no header (the org name still appears as the page heading)."
+        ),
+    )
     sms_subscribe_segment_by_market = models.BooleanField(
         default=False,
         help_text=(

@@ -103,6 +103,16 @@
                         their name, email, and mobile, confirm a texted code, and join your SMS list.
                         No Cue account needed.
                     </p>
+                    <form method="post" action="{% url 'tickets:marketing_subscribe_settings' %}" class="mb-3">
+                        {% csrf_token %}
+                        <label class="form-label small text-secondary mb-1" for="subscribeTitleInput">Signup header (optional)</label>
+                        <div class="input-group input-group-sm" style="max-width:420px;">
+                            <input type="text" class="form-control" id="subscribeTitleInput" name="subscribe_title"
+                                   maxlength="80" value="{{ subscribe_title }}" placeholder="e.g. Join the text list">
+                            <button class="btn btn-outline-secondary" type="submit">Save</button>
+                        </div>
+                        <p class="text-secondary small mt-1 mb-0">Shown above the mobile number field on your subscribe page. Blank shows no header.</p>
+                    </form>
                     {% if market_count > 1 %}
                     <form method="post" action="{% url 'tickets:marketing_subscribe_settings' %}" class="mb-3">
                         {% csrf_token %}
