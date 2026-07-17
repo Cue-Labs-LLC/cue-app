@@ -93,6 +93,10 @@ def filter_customers(org, criteria):
     if segments:
         qs = qs.filter(rfm_segment__in=segments)
 
+    sources = _as_list(criteria.get('acquisition_source'))
+    if sources:
+        qs = qs.filter(acquisition_source__in=sources)
+
     profiles = _as_list(criteria.get('behavior_profile'))
     if profiles:
         qs = qs.filter(behavior_profile__in=profiles)

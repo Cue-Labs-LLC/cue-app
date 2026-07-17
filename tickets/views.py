@@ -2783,6 +2783,15 @@ def upload_delete(request, file_id):
         return redirect('tickets:home')
 
 
+# Bootstrap badge color per acquisition source. Blank/unknown falls back to secondary.
+ACQUISITION_SOURCE_BADGE_COLORS = {
+    'subscribe_form': 'info',
+    'ticket_purchase': 'success',
+    'import': 'secondary',
+    'manual': 'primary',
+}
+
+
 def build_customer_queryset(org, params, *, for_export=False):
     """Build the filtered/annotated/sorted ``Customer`` queryset for the list.
 
@@ -2803,6 +2812,12 @@ def build_customer_queryset(org, params, *, for_export=False):
 
     # Segment filter
     segment_filter = params.get('segment', '').strip()
+
+    # Acquisition source filter — validate against the model's choices so a bad
+    # query param can't inject an arbitrary lookup value.
+    source_filter = params.get('source', '').strip()
+    if source_filter not in Customer.AcquisitionSource.values:
+        source_filter = ''
 
     # Tag filter — validate UUID to avoid ValueError on bad input
     tag_filter = params.get('tag', '').strip()
@@ -2834,6 +2849,7 @@ def build_customer_queryset(org, params, *, for_export=False):
     has_active_filters = any([
         search_query,
         segment_filter,
+        source_filter,
         tag_filter,
         market_context['market_filter'],
         last_order_from,
@@ -2850,6 +2866,7 @@ def build_customer_queryset(org, params, *, for_export=False):
     # recipient lists) so filtering logic lives in one place.
     customers = filter_customers(org, {
         'rfm_segment': segment_filter or None,
+        'acquisition_source': source_filter or None,
         'tag_id': tag_filter or None,
         'search': search_query or None,
         'market_id': market_context['market_filter'] or None,
@@ -2949,6 +2966,7 @@ def build_customer_queryset(org, params, *, for_export=False):
         'lifetime_value', '-lifetime_value',
         'last_order_date', '-last_order_date',
         'rfm_segment', '-rfm_segment',
+        'acquisition_source', '-acquisition_source',
         'first_tag_name', '-first_tag_name',
         'points_balance', '-points_balance',
     }
@@ -2975,6 +2993,7 @@ def build_customer_queryset(org, params, *, for_export=False):
     _fp_notype = {k: v for k, v in {
         'search': search_query,
         'segment': segment_filter,
+        'source': source_filter,
         'tag': tag_filter,
         'market': market_context['market_filter'],
         'last_order_from': last_order_from,
@@ -2996,6 +3015,8 @@ def build_customer_queryset(org, params, *, for_export=False):
         'sort_by': sort_by,
         'search_query': search_query,
         'segment_filter': segment_filter,
+        'source_filter': source_filter,
+        'source_choices': Customer.AcquisitionSource.choices,
         'tag_filter': tag_filter,
         'last_order_from': last_order_from,
         'last_order_to': last_order_to,
@@ -3095,6 +3116,9 @@ def customer_list(request):
         'segment_choices': segment_choices,
         'segment_badge_colors': SEGMENT_BADGE_COLORS,
         'current_segment_definition': current_segment_definition,
+        'source_filter': meta['source_filter'],
+        'source_choices': meta['source_choices'],
+        'source_badge_colors': ACQUISITION_SOURCE_BADGE_COLORS,
         'org_tags': org_tags,
         # Onboarding "Review consent" step lands here with ?focus=consent to
         # explain how SMS consent works and where the controls are.
@@ -3156,7 +3180,7 @@ def customer_export_csv(request):
     has_market = meta['has_market']
     loyalty = org.loyalty_feature_enabled
 
-    header = ['Name', 'Email', 'Phone', 'SMS Opt-In', 'Segment', 'Lifetime Value']
+    header = ['Name', 'Email', 'Phone', 'SMS Opt-In', 'Segment', 'Source', 'Lifetime Value']
     if loyalty:
         header.append('Points Balance')
     header += ['Last Order Date', 'Total Orders']
@@ -3176,6 +3200,7 @@ def customer_export_csv(request):
                 c.phone or '',
                 'Yes' if c.sms_opt_in else 'No',
                 c.rfm_segment or '',
+                c.get_acquisition_source_display() if c.acquisition_source else '',
                 _csv_money(c.lifetime_value),
             ]
             if loyalty:
@@ -4525,6 +4550,9 @@ def customer_detail(request, customer_id):
     behavior_profile_badge_color = BEHAVIOR_PROFILE_BADGE_COLORS.get(
         (customer.behavior_profile or '').strip(), 'secondary'
     )
+    acquisition_source_badge_color = ACQUISITION_SOURCE_BADGE_COLORS.get(
+        (customer.acquisition_source or '').strip(), 'secondary'
+    )
     rfm_recency_label = RFM_RECENCY_LABELS.get(customer.rfm_recency_score)
     rfm_frequency_label = RFM_FREQUENCY_LABELS.get(customer.rfm_frequency_score)
     rfm_monetary_label = RFM_MONETARY_LABELS.get(customer.rfm_monetary_score)
@@ -4631,6 +4659,7 @@ def customer_detail(request, customer_id):
         'page_obj': page_obj,
         'segment_badge_color': segment_badge_color,
         'behavior_profile_badge_color': behavior_profile_badge_color,
+        'acquisition_source_badge_color': acquisition_source_badge_color,
         'rfm_recency_label': rfm_recency_label,
         'rfm_frequency_label': rfm_frequency_label,
         'rfm_monetary_label': rfm_monetary_label,
@@ -13058,6 +13087,7 @@ def subscribe_verify_view(request, org_slug):
                 with transaction.atomic():
                     customer = Customer.objects.create(
                         organization=org, email='', name='', phone=phone,
+                        acquisition_source=Customer.AcquisitionSource.SUBSCRIBE_FORM,
                     )
             except IntegrityError:
                 customer = (Customer.objects.filter(organization=org, phone=phone)

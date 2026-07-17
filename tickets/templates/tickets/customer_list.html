@@ -431,6 +431,35 @@
                                 </div>
                             </div>
                         </th>
+                        <!-- Source: acquisition channel, sortable + filterable -->
+                        <th>
+                            <div class="th-inner">
+                                {% with asc='acquisition_source' desc='-acquisition_source' %}
+                                <a href="?sort={% if sort_by == asc %}{{ desc }}{% else %}{{ asc }}{% endif %}&{{ filter_params_qs }}">Source
+                                    {% if sort_by == asc %}<i class="bi bi-arrow-up"></i>
+                                    {% elif sort_by == desc %}<i class="bi bi-arrow-down"></i>
+                                    {% else %}<i class="bi bi-arrow-down-up"></i>{% endif %}
+                                </a>
+                                {% endwith %}
+                                <div class="dropdown">
+                                    <button class="col-filter-btn{% if source_filter %} active{% endif %}"
+                                            type="button" data-bs-toggle="dropdown"
+                                            title="Filter by source">
+                                        <i class="bi bi-funnel{% if source_filter %}-fill{% endif %}"></i>
+                                    </button>
+                                    <div class="dropdown-menu p-3 col-filter-menu">
+                                        <span class="col-filter-label">Source</span>
+                                        <select class="form-select form-select-sm"
+                                                onchange="applyColFilter({source: this.value})">
+                                            <option value="" {% if not source_filter %}selected{% endif %}>All sources</option>
+                                            {% for value, label in source_choices %}
+                                            <option value="{{ value }}" {% if source_filter == value %}selected{% endif %}>{{ label }}</option>
+                                            {% endfor %}
+                                        </select>
+                                    </div>
+                                </div>
+                            </div>
+                        </th>
                         <!-- Lifetime Value: min/max number range -->
                         <th>
                             <div class="th-inner">
@@ -624,6 +653,13 @@
                             <span class="text-muted">-</span>
                             {% endif %}
                         </td>
+                        <td>
+                            {% if customer.acquisition_source %}
+                            <span class="badge bg-{{ source_badge_colors|get_item:customer.acquisition_source }}">{{ customer.get_acquisition_source_display }}</span>
+                            {% else %}
+                            <span class="text-muted">Unknown</span>
+                            {% endif %}
+                        </td>
                         <td><span class="revenue">${{ customer.lifetime_value|currency }}</span></td>
                         {% if loyalty_feature_enabled %}
                         <td class="d-none d-sm-table-cell">{{ customer.points_balance|intcomma }}</td>
@@ -639,7 +675,7 @@
                     </tr>
                     {% empty %}
                     <tr>
-                        <td colspan="10">
+                        <td colspan="11">
                             <div class="empty-state">
                                 <i class="bi bi-people d-block"></i>
                                 <p>No customers found.</p>
