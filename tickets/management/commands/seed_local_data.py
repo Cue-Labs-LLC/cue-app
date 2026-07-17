@@ -41,6 +41,8 @@ from tickets.models import (
     ExternalSurveyResponse,
     ExternalSurveyUpload,
     IncomeSource,
+    LoyaltyProgram,
+    LoyaltyTier,
     Market,
     MARKET_GEOGRAPHY_CITY,
     OrderCounter,
@@ -252,6 +254,9 @@ class Command(BaseCommand):
 
             recalculate_customer_segments(org)
 
+            # Loyalty last: tier assignment reads fresh lifetime_value + scans.
+            self._create_loyalty_program(org)
+
         self._print_summary(org)
 
     # ------------------------------------------------------------------
@@ -266,6 +271,7 @@ class Command(BaseCommand):
             website="https://cueup.co",
             waitlist_feature_enabled=True,
             sms_marketing_enabled=True,
+            loyalty_feature_enabled=True,
         )
         # Seed a prepaid SMS credit balance via the wallet service so the ledger
         # invariant holds (every balance change writes an SMSCreditTransaction).
@@ -278,6 +284,45 @@ class Command(BaseCommand):
         org.refresh_from_db(fields=["sms_credit_balance_cents"])
         self.stdout.write(self.style.SUCCESS(f"Org: {org.name}"))
         return org
+
+    def _create_loyalty_program(self, org):
+        """Seed "The Circle" — an attendance-based status program.
+
+        Tiers key on distinct events *attended* (scanned in), so free-RSVP
+        no-shows never earn status. Points stay off; status is the reward.
+        """
+        from tickets.services.loyalty import assign_loyalty_tiers
+
+        program = LoyaltyProgram.objects.create(
+            organization=org,
+            name="The Circle",
+            description="Attendance-based status program for Familiar Faces regulars.",
+            is_active=True,
+            points_enabled=False,
+        )
+        # Base tier (no rules) sits lowest; higher ranks need more events attended.
+        LoyaltyTier.objects.create(
+            program=program, name="Regular", rank=0, color="blue",
+            perks="Presale access to every FF drop, member-only lineup reveals, birthday shoutout.",
+        )
+        # Thresholds are demo-scaled to the seed's sparse attendance (customers
+        # attend at most ~2 distinct events) so all three tiers populate. Insider
+        # = attended at least once, which cleanly separates real attendees from
+        # RSVP-only no-shows. A real program would use higher bars (see the
+        # SP-T439 design doc: 3 / 6 events attended).
+        LoyaltyTier.objects.create(
+            program=program, name="Insider", rank=1, color="green",
+            min_events_attended=1,
+            perks="24h early-bird presale, standing discount code, skip-the-line entry.",
+        )
+        LoyaltyTier.objects.create(
+            program=program, name="Legend", rank=2, color="red",
+            min_events_attended=2, attended_within_days=120,
+            perks="Comp +1 guest list, exclusive merch, first dibs on limited events.",
+        )
+        assigned = assign_loyalty_tiers(program)
+        self.stdout.write(self.style.SUCCESS(f"Loyalty: {program.name} ({assigned} members assigned)"))
+        return program
 
     def _create_users(self, org):
         owner = User.objects.create_user(
@@ -618,6 +663,10 @@ class Command(BaseCommand):
                         ticket_order=order,
                         ticket_type=tt_name,
                         price=price,
+                        # Mirror the order's check-in onto each ticket so the
+                        # attendance-based loyalty tiers (which read scanned_at)
+                        # have data. Free-RSVP no-shows keep scanned_at=None.
+                        scanned_at=checked_in_at,
                     )
                     tickets_count += 1
                 if is_direct:

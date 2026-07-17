@@ -97,6 +97,10 @@ def organization_context(request):
             ).count()
         except Exception:
             pass
+
+    # True when an internal admin is currently logged in as this user via the
+    # "Log in as" flow — drives the impersonation banner in base.html.
+    ctx['is_impersonating'] = bool(request.session.get('_impersonator_id'))
     return ctx
 
 

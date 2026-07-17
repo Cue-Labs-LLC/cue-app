@@ -145,7 +145,7 @@ from .services.marketing import (
     get_cached_marketing_metrics,
 )
 from .services.marketing.analytics import DEFAULT_WINDOW, resolve_window
-from .services.customer_filters import filter_customers, NO_MARKET_VALUE, market_filter_options
+from .services.customer_filters import filter_customers, NO_MARKET_VALUE, market_filter_options, _valid_uuids
 from .services.weather import get_event_weather_forecast, get_event_hourly_forecast
 from .utils import get_organization, require_org, require_organizer, require_host, require_admin, require_owner, clear_org_cache, next_order_number, generate_qr_b64, link_customer_to_buyer, ticket_qr_payload
 from .feature_flags import (
@@ -1136,6 +1136,82 @@ class LogoutView(auth_views.LogoutView):
 def logout_view(request):
     """Logout view wrapper."""
     return LogoutView.as_view()(request)
+
+
+@login_required
+def admin_impersonate_start(request, user_id):
+    """Log an internal Cue admin (superuser) in as another user for debugging.
+
+    Reversible: the admin's own id is stashed in the session as
+    ``_impersonator_id`` so the banner can offer a one-click restore. Only
+    superusers may start impersonation, and privileged (staff/superuser)
+    accounts can never be targeted.
+    """
+    from django.contrib.auth import login as auth_login
+    from django.contrib.auth.models import User
+    from django.http import HttpResponseForbidden
+
+    if not request.user.is_superuser:
+        return HttpResponseForbidden('Access denied.')
+
+    target = get_object_or_404(User, pk=user_id)
+
+    if target.is_superuser or target.is_staff:
+        messages.error(request, 'Cannot impersonate an admin or staff account.')
+        return redirect('/admin/tickets/userprofile/')
+
+    if target == request.user:
+        return redirect('tickets:home')
+
+    admin_id = request.user.pk
+    logger.warning("Impersonation START: admin %s -> user %s", admin_id, target.pk)
+
+    # auth_login() flushes the session when switching to a different user, so
+    # set the impersonation marker *after* it. The flush also clears the stale
+    # _org_id, forcing get_organization() to re-resolve for the target.
+    auth_login(request, target, backend='tickets.backends.EmailBackend')
+    request.session['_impersonator_id'] = admin_id
+    clear_org_cache(request)
+
+    messages.warning(
+        request,
+        f'You are now impersonating {target.get_full_name() or target.email}.'
+    )
+    return redirect('tickets:home')
+
+
+@login_required
+@require_http_methods(["POST"])
+def admin_impersonate_stop(request):
+    """End an active impersonation and restore the original admin session.
+
+    Authorizes on the presence of the ``_impersonator_id`` session key rather
+    than on ``is_superuser`` — by this point request.user is the (non-superuser)
+    impersonated target, and that key can only have been set by
+    admin_impersonate_start().
+    """
+    from django.contrib.auth import login as auth_login, logout as auth_logout
+    from django.contrib.auth.models import User
+
+    impersonator_id = request.session.get('_impersonator_id')
+    if not impersonator_id:
+        return redirect('tickets:home')
+
+    try:
+        admin_user = User.objects.get(pk=impersonator_id)
+    except User.DoesNotExist:
+        auth_logout(request)
+        return redirect('tickets:login')
+
+    logger.warning(
+        "Impersonation STOP: admin %s <- user %s",
+        impersonator_id, request.user.pk,
+    )
+    # Logging back in as a different user flushes the session, which clears
+    # _impersonator_id along with it.
+    auth_login(request, admin_user, backend='tickets.backends.EmailBackend')
+    clear_org_cache(request)
+    return redirect('/admin/tickets/userprofile/')
 
 
 class PasswordResetView(auth_views.PasswordResetView):
@@ -2707,19 +2783,29 @@ def upload_delete(request, file_id):
         return redirect('tickets:home')
 
 
-@login_required
-@require_org
-@require_host
-def customer_list(request):
-    """Display list of all customers with LTV and optional segment/tag filter."""
-    org = get_organization(request)
-    market_context = _customer_market_filter_context(org, request.GET.get('market', ''))
+def build_customer_queryset(org, params, *, for_export=False):
+    """Build the filtered/annotated/sorted ``Customer`` queryset for the list.
+
+    Single source of truth for the Customers page queryset, shared by
+    ``customer_list`` (paginated HTML) and ``customer_export_csv`` (streaming
+    CSV) so the two never drift on which rows/filters/sort they produce.
+
+    ``params`` is a mapping of the list's GET params (typically ``request.GET``).
+    ``for_export`` is accepted for caller clarity; ``order_count`` is annotated
+    unconditionally (the list has always shown it and the export outputs it).
+
+    Returns ``(queryset, meta)``. The queryset has NOT been paginated or given
+    ``prefetch_related`` — callers add those. ``meta`` carries the resolved
+    filter values, ``sort_by``, ``market_context``, ``has_market``,
+    ``filter_params_qs`` and ``has_active_filters`` for the templates.
+    """
+    market_context = _customer_market_filter_context(org, params.get('market', ''))
 
     # Segment filter
-    segment_filter = request.GET.get('segment', '').strip()
+    segment_filter = params.get('segment', '').strip()
 
     # Tag filter — validate UUID to avoid ValueError on bad input
-    tag_filter = request.GET.get('tag', '').strip()
+    tag_filter = params.get('tag', '').strip()
     if tag_filter:
         try:
             _uuid.UUID(tag_filter)
@@ -2727,15 +2813,15 @@ def customer_list(request):
             tag_filter = ''
 
     # Search
-    search_query = request.GET.get('search', '')
-    last_order_from = _customer_filter_date(request.GET.get('last_order_from', ''))
-    last_order_to = _customer_filter_date(request.GET.get('last_order_to', ''))
-    phone_filter = request.GET.get('phone_filter', '').strip()
-    sms_filter = request.GET.get('sms_filter', '').strip()   # '1', '0', or ''
-    min_ltv = request.GET.get('min_ltv', '').strip()
-    max_ltv = request.GET.get('max_ltv', '').strip()
-    min_orders = request.GET.get('min_orders', '').strip()
-    max_orders = request.GET.get('max_orders', '').strip()
+    search_query = params.get('search', '')
+    last_order_from = _customer_filter_date(params.get('last_order_from', ''))
+    last_order_to = _customer_filter_date(params.get('last_order_to', ''))
+    phone_filter = params.get('phone_filter', '').strip()
+    sms_filter = params.get('sms_filter', '').strip()   # '1', '0', or ''
+    min_ltv = params.get('min_ltv', '').strip()
+    max_ltv = params.get('max_ltv', '').strip()
+    min_orders = params.get('min_orders', '').strip()
+    max_orders = params.get('max_orders', '').strip()
     sms_opt_in_filter = True if sms_filter == '1' else (False if sms_filter == '0' else None)
     has_active_filters = any([
         search_query,
@@ -2846,7 +2932,7 @@ def customer_list(request):
     }
     if active_market:
         allowed_sorts |= {'market_ltv', '-market_ltv', 'market_last_order', '-market_last_order'}
-    sort_by = request.GET.get('sort', default_sort)
+    sort_by = params.get('sort', default_sort)
     if sort_by not in allowed_sorts:
         sort_by = default_sort
 
@@ -2862,6 +2948,53 @@ def customer_list(request):
         )
     else:
         customers = customers.order_by(sort_by)
+
+    _fp = {k: v for k, v in {
+        'search': search_query,
+        'segment': segment_filter,
+        'tag': tag_filter,
+        'market': market_context['market_filter'],
+        'last_order_from': last_order_from,
+        'last_order_to': last_order_to,
+        'phone_filter': phone_filter,
+        'sms_filter': sms_filter,
+        'min_ltv': min_ltv,
+        'max_ltv': max_ltv,
+        'min_orders': min_orders,
+        'max_orders': max_orders,
+    }.items() if v}
+
+    meta = {
+        'market_context': market_context,
+        'market_filter': market_context['market_filter'],
+        'has_market': bool(active_market),
+        'sort_by': sort_by,
+        'search_query': search_query,
+        'segment_filter': segment_filter,
+        'tag_filter': tag_filter,
+        'last_order_from': last_order_from,
+        'last_order_to': last_order_to,
+        'phone_filter': phone_filter,
+        'sms_filter': sms_filter,
+        'min_ltv': min_ltv,
+        'max_ltv': max_ltv,
+        'min_orders': min_orders,
+        'max_orders': max_orders,
+        'filter_params_qs': urlencode(_fp),
+        'has_active_filters': has_active_filters,
+    }
+    return customers, meta
+
+
+@login_required
+@require_org
+@require_host
+def customer_list(request):
+    """Display list of all customers with LTV and optional segment/tag filter."""
+    org = get_organization(request)
+    customers, meta = build_customer_queryset(org, request.GET)
+    market_context = meta['market_context']
+    segment_filter = meta['segment_filter']
 
     # prefetch_related must go AFTER the OR search chain to avoid Django dropping it
     customers = customers.prefetch_related('tags')
@@ -2902,38 +3035,23 @@ def customer_list(request):
             }
 
     org_tags = CustomerTag.objects.filter(organization=org)
-    _fp = {k: v for k, v in {
-        'search': search_query,
-        'segment': segment_filter,
-        'tag': tag_filter,
-        'market': market_context['market_filter'],
-        'last_order_from': last_order_from,
-        'last_order_to': last_order_to,
-        'phone_filter': phone_filter,
-        'sms_filter': sms_filter,
-        'min_ltv': min_ltv,
-        'max_ltv': max_ltv,
-        'min_orders': min_orders,
-        'max_orders': max_orders,
-    }.items() if v}
-    filter_params_qs = urlencode(_fp)
     context = {
         'page_obj': page_obj,
-        'search_query': search_query,
-        'sort_by': sort_by,
+        'search_query': meta['search_query'],
+        'sort_by': meta['sort_by'],
         'segment_filter': segment_filter,
-        'tag_filter': tag_filter,
+        'tag_filter': meta['tag_filter'],
         'market_filter': market_context['market_filter'],
-        'last_order_from': last_order_from,
-        'last_order_to': last_order_to,
-        'phone_filter': phone_filter,
-        'sms_filter': sms_filter,
-        'min_ltv': min_ltv,
-        'max_ltv': max_ltv,
-        'min_orders': min_orders,
-        'max_orders': max_orders,
-        'filter_params_qs': filter_params_qs,
-        'has_active_filters': has_active_filters,
+        'last_order_from': meta['last_order_from'],
+        'last_order_to': meta['last_order_to'],
+        'phone_filter': meta['phone_filter'],
+        'sms_filter': meta['sms_filter'],
+        'min_ltv': meta['min_ltv'],
+        'max_ltv': meta['max_ltv'],
+        'min_orders': meta['min_orders'],
+        'max_orders': meta['max_orders'],
+        'filter_params_qs': meta['filter_params_qs'],
+        'has_active_filters': meta['has_active_filters'],
         'segment_choices': segment_choices,
         'segment_badge_colors': SEGMENT_BADGE_COLORS,
         'current_segment_definition': current_segment_definition,
@@ -2944,6 +3062,102 @@ def customer_list(request):
     }
     context.update(market_context)
     return render(request, 'tickets/customer_list.html', context)
+
+
+class _Echo:
+    """File-like object whose ``write`` returns the value (Django streaming CSV)."""
+
+    def write(self, value):
+        return value
+
+
+def _csv_money(value):
+    """Render a Decimal/None money value as a plain fixed-point string for CSV.
+
+    ``None`` -> '' (empty cell); avoids scientific notation and the literal
+    string 'None' that ``str(Decimal)``/``csv`` would otherwise emit.
+    """
+    return format(value, 'f') if value is not None else ''
+
+
+@login_required
+@require_org
+@require_host
+def customer_export_csv(request):
+    """Stream the filtered Customers list as a CSV download.
+
+    Reuses ``build_customer_queryset`` so every filter and the sort order match
+    what the Customers page shows. Selection semantics:
+
+    * ``select_all=1`` (or no ids at all, e.g. the header "Export CSV" link with
+      ``mode=all``) -> export every customer matching the active filters.
+    * ``ids=<uuid>&ids=<uuid>...`` without ``select_all`` -> only those rows,
+      still org-scoped and filtered.
+
+    Streams via a server-side cursor (``.iterator(chunk_size=1000)``) so memory
+    stays flat for large (~100k) exports; a header row is yielded first for an
+    early first byte so intermediary proxies don't idle-timeout.
+    """
+    from django.http import StreamingHttpResponse
+
+    org = get_organization(request)
+    customers, meta = build_customer_queryset(org, request.GET, for_export=True)
+
+    # Selection: explicit ids unless "select all matching".
+    if request.GET.get('select_all') != '1':
+        ids = _valid_uuids(request.GET.getlist('ids'))
+        if ids:
+            customers = customers.filter(id__in=ids)
+        # else (mode=all / no selection): export everything matching the filters.
+
+    # OR-search and market-active joins can duplicate rows — dedupe before export.
+    customers = customers.distinct()
+
+    has_market = meta['has_market']
+    loyalty = org.loyalty_feature_enabled
+
+    header = ['Name', 'Email', 'Phone', 'SMS Opt-In', 'Segment', 'Lifetime Value']
+    if loyalty:
+        header.append('Points Balance')
+    header += ['Last Order Date', 'Total Orders']
+    if has_market:
+        header += ['Market LTV', 'Market Last Order']
+    header.append('Tags')
+
+    writer = csv.writer(_Echo())
+
+    def rows():
+        yield writer.writerow(header)
+        # chunk_size is required for prefetch_related to work with .iterator().
+        for c in customers.prefetch_related('tags').iterator(chunk_size=1000):
+            row = [
+                c.name or '',
+                c.email or '',
+                c.phone or '',
+                'Yes' if c.sms_opt_in else 'No',
+                c.rfm_segment or '',
+                _csv_money(c.lifetime_value),
+            ]
+            if loyalty:
+                row.append(c.points_balance if c.points_balance is not None else 0)
+            row += [
+                c.last_order_date.isoformat() if c.last_order_date else '',
+                getattr(c, 'order_count', '') if getattr(c, 'order_count', None) is not None else '',
+            ]
+            if has_market:
+                row += [
+                    _csv_money(getattr(c, 'market_ltv', None)),
+                    c.market_last_order.isoformat() if getattr(c, 'market_last_order', None) else '',
+                ]
+            row.append('; '.join(t.name for t in c.tags.all()))
+            yield writer.writerow(row)
+
+    ts = django_tz.localtime().strftime('%Y%m%d-%H%M')
+    response = StreamingHttpResponse(rows(), content_type='text/csv')
+    response['Content-Disposition'] = f'attachment; filename="customers-{ts}.csv"'
+    response['Cache-Control'] = 'no-cache'
+    response['X-Accel-Buffering'] = 'no'   # disable proxy buffering so bytes stream out
+    return response
 
 
 def _customer_filter_date(raw_date):
@@ -3858,6 +4072,12 @@ def loyalty_tier_members(request, program_id, tier_id):
             Q(name__icontains=search_query) | Q(email__icontains=search_query)
         )
 
+    # Market filter — matches a member's most-frequented market (see annotation below).
+    market_filter = request.GET.get('market', '').strip()
+    market_choices = list(
+        Market.objects.filter(organization=org).order_by('name').values_list('name', flat=True)
+    )
+
     # Sorting — validate against an allowlist, default to highest lifetime value.
     allowed_sorts = {
         'name', '-name', 'email', '-email',
@@ -3878,16 +4098,38 @@ def loyalty_tier_members(request, program_id, tier_id):
         ordering = [sort_by, 'name']  # preserve the name tiebreak this page had
     else:
         ordering = [sort_by]
+    # Annotate each member with their most-frequented market — the market where
+    # they've placed the most orders — as a per-row subquery so the same value
+    # drives both the column display and the market filter. Customer has no direct
+    # market field; markets live on the Event a customer's orders belong to. Ties
+    # are broken by market name for a deterministic winner.
+    top_market_sq = (
+        TicketOrder.objects.filter(
+            customer=OuterRef('pk'),
+            event__market__isnull=False,
+        )
+        .values('event__market__name')
+        .annotate(order_count=Count('id'))
+        .order_by('-order_count', 'event__market__name')
+        .values('event__market__name')[:1]
+    )
+    members = members.annotate(top_market=Subquery(top_market_sq))
+    if market_filter:
+        members = members.filter(top_market=market_filter)
+
     members = members.order_by(*ordering)
 
     paginator = Paginator(members, 50)
     page_obj = paginator.get_page(request.GET.get('page'))
+
     return render(request, 'tickets/loyalty/tier_members.html', {
         'program': program,
         'tier': tier,
         'page_obj': page_obj,
         'search_query': search_query,
         'sort_by': sort_by,
+        'market_filter': market_filter,
+        'market_choices': market_choices,
     })
 
 
@@ -4069,6 +4311,49 @@ def repeat_customers(request):
 @login_required
 @require_org
 @require_host
+def audience_analytics(request):
+    """Analytics page: total customer count over time, filterable by market."""
+    org = get_organization(request)
+    markets, has_no_market = market_filter_options(org)
+
+    selected = request.GET.get('market', '')
+    market_id, no_market = None, False
+    if selected == 'none' and has_no_market:
+        no_market = True
+    elif selected and any(str(m.id) == selected for m in markets):
+        market_id = selected
+    else:
+        selected = ''  # ignore stale/invalid ids, fall back to all markets
+
+    # Default to the all-time view so the full growth story shows on first load.
+    if 'window' in request.GET:
+        start_date, end_date, active_window = _parse_window(request)
+    else:
+        start_date, end_date, active_window = None, None, 'all'
+
+    from tickets.services.audience_growth import AudienceGrowthCalculator
+    result = AudienceGrowthCalculator(
+        org, market_id=market_id, no_market=no_market,
+        start_date=start_date, end_date=end_date,
+    ).calculate()
+
+    return render(request, 'tickets/audience_analytics.html', {
+        'series_json': json.dumps(result['series'], default=str),
+        'summary': result['summary'],
+        'has_data': bool(result['series']),
+        'markets': markets,
+        'has_no_market': has_no_market,
+        'selected_market': selected,
+        'active_window': active_window,
+        'window_start': start_date or '',
+        'window_end': end_date or '',
+        'window_choices': WINDOW_CHOICES,
+    })
+
+
+@login_required
+@require_org
+@require_host
 def market_trends(request):
     """Analytics page: per-market turnout trend, decline diagnosis, and next-step CTA."""
     org = get_organization(request)
@@ -4182,15 +4467,13 @@ def customer_detail(request, customer_id):
     last_order_date = order_stats['last_order_date']
     total_tickets = Ticket.objects.filter(ticket_order__customer=customer).count()
 
-    # Paginate orders — annotate net_amount so the template shows post-fee totals.
-    # select_related event__venue so the Venue column doesn't trigger an N+1.
+    # Orders feed the merged timeline. annotate net_amount so the template shows
+    # post-fee totals; select_related event__venue so the Venue label doesn't
+    # trigger an N+1. Paginated further down as part of the merged timeline list.
     orders = customer.ticket_orders.select_related('event', 'event__venue').annotate(
         tickets_count=Count('tickets'),
         net_amount=_net_amount,
-    ).order_by('-order_date')
-    paginator = Paginator(orders, 20)
-    page_number = request.GET.get('page')
-    page_obj = paginator.get_page(page_number)
+    )
 
     segment_badge_color = SEGMENT_BADGE_COLORS.get(
         (customer.rfm_segment or '').strip(), 'secondary'
@@ -4224,14 +4507,13 @@ def customer_detail(request, customer_id):
     # Org-scoped already since `customer` is org-scoped. select_related avoids an
     # N+1 on campaign.name in the template. SMS has no "opened" event, so the
     # closest engagement signal is the tracked link click (first_clicked_at).
+    # Only surfaced (in the header + timeline) when the org has SMS enabled.
+    sms_marketing_enabled = org.sms_marketing_enabled
     sms_messages = (
         customer.sms_message_recipients
         .select_related('campaign')
-        .order_by('-created_at')
     )
-    sms_paginator = Paginator(sms_messages, 20)
-    sms_page_obj = sms_paginator.get_page(request.GET.get('sms_page'))
-    # Single-pass summary counts for the tab's stat cards.
+    # Single-pass summary counts for the timeline header's stat rail.
     sms_stats = customer.sms_message_recipients.aggregate(
         total=Count('id'),
         delivered=Count('id', filter=Q(status='delivered')),
@@ -4245,6 +4527,53 @@ def customer_detail(request, customer_id):
     sms_suppressed = bool(customer.phone) and PhoneSuppression.is_suppressed(
         normalize_phone(customer.phone), org
     )
+
+    # Survey responses this customer submitted — one timeline entry each.
+    survey_responses = customer.survey_responses.select_related('event')
+
+    # Loyalty tier transitions — only when the org runs the loyalty feature.
+    loyalty_feature_enabled = org.loyalty_feature_enabled
+    tier_transitions = (
+        customer.tier_transitions.select_related('from_tier', 'to_tier')
+        if loyalty_feature_enabled else []
+    )
+
+    # ---- Merge every interaction into one reverse-chronological timeline. ----
+    # A single customer's interaction volume is small, so we assemble uniform
+    # {kind, ts, obj} items in Python and paginate the combined list (Django's
+    # Paginator accepts a plain list) rather than a DB-level UNION. All ts values
+    # are timezone-aware datetimes, so cross-type ordering is correct.
+    # Each item carries a `url` deep-linking to the underlying record so the
+    # timeline entry title is clickable (order/survey -> event, sms -> campaign,
+    # tier -> loyalty program). Related objects are already select_related, so
+    # building these URLs adds no extra queries.
+    timeline_items = []
+    for order in orders:
+        timeline_items.append({
+            'kind': 'order', 'ts': order.order_date or order.created_at, 'obj': order,
+            'url': reverse('tickets:event_detail', args=[order.event_id]),
+        })
+    if sms_marketing_enabled:
+        for msg in sms_messages:
+            timeline_items.append({
+                'kind': 'sms', 'ts': msg.sent_at or msg.created_at, 'obj': msg,
+                'url': reverse('tickets:sms_campaign_detail', args=[msg.campaign_id]),
+            })
+    for response in survey_responses:
+        timeline_items.append({
+            'kind': 'survey', 'ts': response.submitted_at, 'obj': response,
+            'url': reverse('tickets:event_detail', args=[response.event_id]),
+        })
+    for transition in tier_transitions:
+        tier = transition.to_tier or transition.from_tier
+        timeline_items.append({
+            'kind': 'tier', 'ts': transition.changed_at, 'obj': transition,
+            'url': (reverse('tickets:loyalty_program_detail', args=[tier.program_id])
+                    if tier else None),
+        })
+    timeline_items.sort(key=lambda i: i['ts'], reverse=True)
+    paginator = Paginator(timeline_items, 20)
+    page_obj = paginator.get_page(request.GET.get('page'))
 
     context = {
         'customer': customer,
@@ -4265,10 +4594,9 @@ def customer_detail(request, customer_id):
         'assigned_tags': assigned_tags,
         'available_tags': available_tags,
         'org_tags': org_tags,
-        'sms_page_obj': sms_page_obj,
         'sms_stats': sms_stats,
         'sms_suppressed': sms_suppressed,
-        'sms_marketing_enabled': org.sms_marketing_enabled,
+        'sms_marketing_enabled': sms_marketing_enabled,
     }
     return render(request, 'tickets/customer_detail.html', context)
 
@@ -5136,6 +5464,28 @@ def _get_adjacent_event(org, event, direction):
     ).order_by('-start_date', '-sort_start_time', 'name').first()
 
 
+def _get_pacing_comparison_candidates(org, event, limit=100):
+    """Past events available to compare against for sales pacing.
+
+    Returns up to ``limit`` events that started before ``event`` (most recent
+    first), ordered so events at the same venue come first — the same venue is
+    the fairest pacing comparison. The caller uses the first item as the default
+    comparison event and feeds the rest to the searchable comparison combobox.
+    """
+    past = list(
+        Event.objects.filter(
+            organization=org,
+            start_date__lt=event.start_date,
+        )
+        .exclude(id=event.id)
+        .only('id', 'name', 'start_date', 'venue_id')
+        .order_by('-start_date')[:limit]
+    )
+    same_venue = [e for e in past if e.venue_id == event.venue_id]
+    other = [e for e in past if e.venue_id != event.venue_id]
+    return same_venue + other
+
+
 def _recompute_utm_attribution_for_event(org, event):
     """Best-effort local recompute of Cue-tracked campaign attribution. Never raises.
 
@@ -5765,6 +6115,30 @@ def event_detail(request, event_id):
     prev_event = _get_adjacent_event(org, event, 'prev')
     next_event = _get_adjacent_event(org, event, 'next')
 
+    # Sales pacing — compare this event's cumulative sales curve against a
+    # comparable past event, aligned on a days-before-event axis.
+    pacing_candidates = _get_pacing_comparison_candidates(org, event)
+    show_pacing_card = bool(total_orders) and bool(pacing_candidates)
+    pacing_current_json = 'null'
+    pacing_compare_json = 'null'
+    pacing_candidate_list = []
+    pacing_default_compare_id = None
+    pacing_today_days_before = None
+    if show_pacing_card:
+        from tickets.services.forecasting.sales_curve import SalesCurveCalculator
+        calc = SalesCurveCalculator()
+        default_compare = pacing_candidates[0]
+        pacing_default_compare_id = str(default_compare.id)
+        pacing_current_json = json.dumps(calc.get_pacing_series(event))
+        pacing_compare_json = json.dumps(calc.get_pacing_series(default_compare))
+        pacing_candidate_list = [
+            {'id': str(e.id), 'name': e.name, 'start_date': e.start_date}
+            for e in pacing_candidates
+        ]
+        # Days-before-event for "today", so the chart can mark where the current
+        # event stands on the shared pacing axis (positive = event still upcoming).
+        pacing_today_days_before = (event.start_date - django_tz.localdate()).days
+
     # Native marketing SMS campaigns linked to this event (surfaced on the Marketing
     # tab when the org has SMS marketing enabled). Local import avoids load-order cycles.
     from tickets.sms_views import _annotate_counts
@@ -5830,6 +6204,8 @@ def event_detail(request, event_id):
         'meta_ads_pending_count': meta_ads_pending_count,
         'marketing_providers': marketing_providers(org),
         'category_labels': category_labels,
+        'expense_form': EventExpenseForm(initial={'expense_date': event.start_date}),
+        'event_income_form': EventIncomeForm(organization=org, auto_id='id_income_%s'),
         'additional_income_lines': additional_income_lines,
         'income_sources': IncomeSource.objects.filter(organization=org).order_by('order', 'name'),
         'page_obj': page_obj,
@@ -5872,6 +6248,12 @@ def event_detail(request, event_id):
         'next_event_id': next_event.id if next_event else None,
         'prev_event_name': prev_event.name if prev_event else None,
         'next_event_name': next_event.name if next_event else None,
+        'show_pacing_card': show_pacing_card,
+        'pacing_current_json': pacing_current_json,
+        'pacing_compare_json': pacing_compare_json,
+        'pacing_candidates': pacing_candidate_list,
+        'pacing_default_compare_id': pacing_default_compare_id,
+        'pacing_today_days_before': pacing_today_days_before,
     }
     if event.ticketing_type != 'direct':
         context['upload_form'] = EventCSVUploadForm(organization=org)
@@ -6015,6 +6397,26 @@ def event_detail(request, event_id):
         context['rating_counts'] = []
 
     return render(request, 'tickets/event_detail.html', context)
+
+
+@login_required
+@require_org
+def event_pacing_api(request, event_id):
+    """Return the sales-pacing series for one event (used by the comparison dropdown).
+
+    ``event_id`` is the comparison event; it is org-scoped so pacing can never be
+    computed against another organization's event.
+    """
+    org = get_organization(request)
+    event = get_object_or_404(Event.objects.filter(organization=org), id=event_id)
+    from tickets.services.forecasting.sales_curve import SalesCurveCalculator
+    data = SalesCurveCalculator().get_pacing_series(event)
+    data.update({
+        'id': str(event.id),
+        'name': event.name,
+        'start_date': event.start_date.isoformat(),
+    })
+    return JsonResponse(data)
 
 
 @login_required
@@ -7939,16 +8341,64 @@ def _confirm_all_channel(request, event_id, model_cls, extra_filter, serialize_r
 
 
 
+def _expense_ajax_payload(event, expense):
+    """Build the JSON response body for an inline (AJAX) expense create.
+
+    Reuses _compute_event_stats() so the returned totals and category breakdown
+    match exactly what a full event_detail render would show. The expense-change
+    signal deletes the stats cache on save(), so this recomputes fresh.
+    """
+    stats = _compute_event_stats(event)
+    total_expenses = stats['total_expenses']
+    profit = stats['profit']
+    margin_pct = stats['margin_pct']
+    category_labels = dict(EventExpense.CATEGORY_CHOICES)
+    categories = [
+        {
+            'label': category_labels.get(row['category'], row['category']),
+            'total_display': f"{row['total']:,.2f}",
+        }
+        for row in stats['expenses_by_category']
+    ]
+    return {
+        'ok': True,
+        'expense': {
+            'id': str(expense.id),
+            'category_display': expense.get_category_display(),
+            'description': expense.description,
+            'amount_display': f"{expense.amount:,.2f}",
+            'expense_date_display': (
+                expense.expense_date.strftime('%b %d, %Y') if expense.expense_date else ''
+            ),
+            'edit_url': reverse('tickets:expense_edit', args=[event.id, expense.id]),
+            'delete_url': reverse('tickets:expense_delete', args=[event.id, expense.id]),
+        },
+        'totals': {
+            'total_expenses_display': f"{total_expenses:,.2f}",
+            'profit_display': f"{profit:,.2f}",
+            'profit_negative': profit < 0,
+            'margin_pct': (f"{margin_pct:.1f}" if margin_pct is not None else None),
+        },
+        'categories': categories,
+    }
+
+
 @login_required
 @require_org
 @require_admin
 @require_http_methods(["GET", "POST"])
 def expense_create(request, event_id):
-    """Add a new expense to an event."""
+    """Add a new expense to an event.
+
+    Supports both a full-page flow (renders expense_form.html / redirects) and an
+    inline AJAX flow from the event detail page (X-Requested-With header → JSON),
+    which lets the Expenses table update in place without a page reload.
+    """
     org = get_organization(request)
     event = get_object_or_404(Event.objects.filter(organization=org), id=event_id)
 
     if request.method == 'POST':
+        is_ajax = request.headers.get('X-Requested-With') == 'XMLHttpRequest'
         form = EventExpenseForm(request.POST)
         if form.is_valid():
             expense = form.save(commit=False)
@@ -7957,8 +8407,12 @@ def expense_create(request, event_id):
             expense.save()
             _invalidate_event_list_cache(org)
             _invalidate_marketing_cache(org)
+            if is_ajax:
+                return JsonResponse(_expense_ajax_payload(event, expense))
             messages.success(request, f'Expense "${expense.description}" added.')
             return redirect('tickets:event_detail', event_id=event.id)
+        elif is_ajax:
+            return JsonResponse({'ok': False, 'errors': form.errors.get_json_data()}, status=422)
     else:
         form = EventExpenseForm(initial={'expense_date': event.start_date})
 
@@ -8116,15 +8570,59 @@ def income_source_delete(request, source_id):
 # Event Additional Income Views
 # ---------------------------------------------------------------------------
 
+def _income_ajax_payload(event, income):
+    """Build the JSON response body for an inline (AJAX) additional-income create.
+
+    Reuses _compute_event_stats() so the returned revenue/profit figures match a
+    full event_detail render. The income-change signal refreshes stats on commit;
+    delete the cache key first so this recomputes deterministically inline.
+    """
+    django_cache.delete(_event_stats_cache_key(event.pk))
+    stats = _compute_event_stats(event)
+    total_revenue = stats['total_revenue']
+    net_ticket_revenue = stats['net_ticket_revenue']
+    total_additional_income = stats['total_additional_income']
+    profit = stats['profit']
+    margin_pct = stats['margin_pct']
+    return {
+        'ok': True,
+        'income': {
+            'id': str(income.id),
+            'source_name': income.income_source.name,
+            'amount_display': f"{income.amount:,.2f}",
+            'income_date_display': (
+                income.income_date.strftime('%b %d, %Y') if income.income_date else ''
+            ),
+            'edit_url': reverse('tickets:event_income_edit', args=[event.id, income.id]),
+            'delete_url': reverse('tickets:event_income_delete', args=[event.id, income.id]),
+        },
+        'totals': {
+            'total_revenue_display': f"{total_revenue:,.2f}",
+            'net_ticket_revenue_display': f"{net_ticket_revenue:,.2f}",
+            'total_additional_income_display': f"{total_additional_income:,.2f}",
+            'has_additional_income': total_additional_income > 0,
+            'profit_display': f"{profit:,.2f}",
+            'profit_negative': profit < 0,
+            'margin_pct': (f"{margin_pct:.1f}" if margin_pct is not None else None),
+        },
+    }
+
+
 @login_required
 @require_org
 @require_admin
 @require_http_methods(["GET", "POST"])
 def event_income_create(request, event_id):
-    """Add additional income to an event."""
+    """Add additional income to an event.
+
+    Supports a full-page flow (renders event_income_form.html / redirects) and an
+    inline AJAX flow from the event detail page (X-Requested-With header → JSON),
+    which lets the Additional Income table update in place without a page reload.
+    """
     org = get_organization(request)
     event = get_object_or_404(Event.objects.filter(organization=org), id=event_id)
     if request.method == 'POST':
+        is_ajax = request.headers.get('X-Requested-With') == 'XMLHttpRequest'
         form = EventIncomeForm(request.POST, organization=org)
         if form.is_valid():
             income = form.save(commit=False)
@@ -8133,8 +8631,12 @@ def event_income_create(request, event_id):
             income.save()
             _invalidate_event_list_cache(org)
             _invalidate_marketing_cache(org)
+            if is_ajax:
+                return JsonResponse(_income_ajax_payload(event, income))
             messages.success(request, f"Income '{income.income_source.name}' added.")
             return redirect('tickets:event_detail', event_id=event.id)
+        elif is_ajax:
+            return JsonResponse({'ok': False, 'errors': form.errors.get_json_data()}, status=422)
     else:
         form = EventIncomeForm(organization=org)
     return render(request, 'tickets/event_income_form.html', {
@@ -8201,6 +8703,16 @@ def event_income_delete(request, event_id, income_id):
     })
 
 
+def _bucket_margin(bucket):
+    """Profit margin % for a chart bucket, or None when net revenue is non-positive.
+
+    Uses net revenue (revenue - fees) as the denominator to stay consistent with
+    the per-event and summary margin figures.
+    """
+    net = bucket['net_revenue']
+    return (bucket['profit'] / net * 100) if net > 0 else None
+
+
 @login_required
 @require_org
 @require_host
@@ -8228,8 +8740,6 @@ def profitability_overview(request):
                 ),
                 Decimal('0.00'),
             ),
-            paid_ticket_sum=F('cached_paid_ticket_sum'),
-            paid_ticket_count=F('cached_paid_ticket_count'),
         )
         .select_related('venue', 'market')
         .order_by('-start_date')
@@ -8251,8 +8761,6 @@ def profitability_overview(request):
     summary_revenue = Decimal('0.00')
     summary_expenses = Decimal('0.00')
     summary_fees = Decimal('0.00')
-    summary_paid_ticket_sum = Decimal('0.00')
-    summary_paid_ticket_count = 0
     event_rows = []
     for e in events:
         total_revenue = e.computed_total_revenue
@@ -8272,8 +8780,6 @@ def profitability_overview(request):
         summary_revenue += total_revenue
         summary_expenses += e.total_expenses
         summary_fees += fees
-        summary_paid_ticket_sum += e.paid_ticket_sum
-        summary_paid_ticket_count += e.paid_ticket_count
 
     summary_net_revenue = summary_revenue - summary_fees
     summary_profit = summary_net_revenue - summary_expenses
@@ -8291,18 +8797,30 @@ def profitability_overview(request):
             'city': market_label,
             'revenue': Decimal('0.00'),
             'expenses': Decimal('0.00'), 'profit': Decimal('0.00'),
+            'net_revenue': Decimal('0.00'),
             'event_count': 0,
         })
         m['revenue'] += row['revenue']
         m['expenses'] += row['expenses']
         m['profit'] += row['profit']
+        m['net_revenue'] += row['net_revenue']
         m['event_count'] += 1
     market_rows = sorted(markets.values(), key=lambda m: m['profit'], reverse=True)
 
-    # Market chart data - sorted high → low by profit
+    # Market chart data - same array shape as the other granularities so the chart can
+    # render Revenue vs Expenses / Profit / Margin % grouped by market. Includes every
+    # assigned market (plus "No market") sorted high → low by profit as the initial order;
+    # the client re-sorts on demand. Cast Decimals to float/None so json.dumps can
+    # serialize them.
     market_chart_data = {
         'labels': [m['market_label'] for m in market_rows],
+        'revenue': [float(m['revenue']) for m in market_rows],
+        'expenses': [float(m['expenses']) for m in market_rows],
         'profit': [float(m['profit']) for m in market_rows],
+        'margin': [
+            float(_bucket_margin(m)) if _bucket_margin(m) is not None else None
+            for m in market_rows
+        ],
     }
 
     # Monthly aggregation for chart - bucket events by calendar month, ordered earliest → most recent
@@ -8310,16 +8828,18 @@ def profitability_overview(request):
     month_buckets_profit = {}
     for r in chart_events:
         key = r['event'].start_date.strftime('%Y-%m')
-        m = month_buckets_profit.setdefault(key, {'month': key, 'revenue': 0.0, 'expenses': 0.0, 'profit': 0.0})
+        m = month_buckets_profit.setdefault(key, {'month': key, 'revenue': 0.0, 'expenses': 0.0, 'profit': 0.0, 'net_revenue': 0.0})
         m['revenue'] += float(r['revenue'])
         m['expenses'] += float(r['expenses'])
         m['profit'] += float(r['profit'])
+        m['net_revenue'] += float(r['net_revenue'])
     monthly_profit_chart = sorted(month_buckets_profit.values(), key=lambda x: x['month'])
     chart_data = {
         'labels': [m['month'] for m in monthly_profit_chart],
         'revenue': [m['revenue'] for m in monthly_profit_chart],
         'expenses': [m['expenses'] for m in monthly_profit_chart],
         'profit': [m['profit'] for m in monthly_profit_chart],
+        'margin': [_bucket_margin(m) for m in monthly_profit_chart],
     }
 
     # Quarterly aggregation for chart - bucket events by calendar quarter
@@ -8331,17 +8851,19 @@ def profitability_overview(request):
         label = f'Q{q} {d.year}'
         m = quarter_buckets_profit.setdefault(sort_key, {
             'label': label, 'sort_key': sort_key,
-            'revenue': 0.0, 'expenses': 0.0, 'profit': 0.0,
+            'revenue': 0.0, 'expenses': 0.0, 'profit': 0.0, 'net_revenue': 0.0,
         })
         m['revenue'] += float(r['revenue'])
         m['expenses'] += float(r['expenses'])
         m['profit'] += float(r['profit'])
+        m['net_revenue'] += float(r['net_revenue'])
     quarterly_profit_chart = sorted(quarter_buckets_profit.values(), key=lambda x: x['sort_key'])
     quarter_chart_data = {
         'labels': [m['label'] for m in quarterly_profit_chart],
         'revenue': [m['revenue'] for m in quarterly_profit_chart],
         'expenses': [m['expenses'] for m in quarterly_profit_chart],
         'profit': [m['profit'] for m in quarterly_profit_chart],
+        'margin': [_bucket_margin(m) for m in quarterly_profit_chart],
     }
 
     # Per-event chart data - ordered earliest → most recent
@@ -8354,13 +8876,16 @@ def profitability_overview(request):
         'revenue': [float(r['revenue']) for r in event_chart_events],
         'expenses': [float(r['expenses']) for r in event_chart_events],
         'profit': [float(r['profit']) for r in event_chart_events],
+        'margin': [
+            float(r['margin']) if r['margin'] is not None else None
+            for r in event_chart_events
+        ],
     }
 
     context = {
         'event_rows': event_rows,
         'summary_revenue': summary_revenue,
         'summary_expenses': summary_expenses,
-        'summary_fees': summary_fees,
         'summary_net_revenue': summary_net_revenue,
         'summary_profit': summary_profit,
         'summary_margin': summary_margin,
@@ -8368,9 +8893,6 @@ def profitability_overview(request):
         'event_chart_data_json': json.dumps(event_chart_data),
         'quarter_chart_data_json': json.dumps(quarter_chart_data),
         'market_chart_data_json': json.dumps(market_chart_data),
-        'summary_paid_ticket_sum': float(summary_paid_ticket_sum),
-        'summary_paid_ticket_count': summary_paid_ticket_count,
-        'show_fee_simulator': request.user.is_superuser,
         'active_window': active_window,
         'window_start': start_date or '',
         'window_end': end_date or '',
@@ -8735,15 +9257,33 @@ def _parse_survey_answer(question, post_data):
     return {'question': question, 'star_rating': None, 'nps_score': None, 'text_answer': value}, None
 
 
+def _is_sendable_email(email):
+    """True if `email` is a deliverable address. Filters out blanks and junk like
+    the Apple 'Hide My Email' placeholder that can slip in via CSV import."""
+    from django.core.validators import validate_email
+    from django.core.exceptions import ValidationError
+    if not email:
+        return False
+    try:
+        validate_email(email)
+    except ValidationError:
+        return False
+    return True
+
+
 def _survey_recipients(event, org):
-    """Attendees with a ticket order for `event` who have NOT yet been sent a
-    survey invitation. Single source of truth for the count modal and send_survey."""
+    """Attendees with a ticket order for `event`, a usable email, and NO survey
+    invitation yet. Single source of truth for the count modal and send_survey.
+
+    Customers whose email is blank or unparseable are dropped in Python: a survey
+    invitation with no deliverable address would only fail at send time."""
     existing_customer_ids = SurveyInvitation.objects.filter(
         event=event
     ).values_list('customer_id', flat=True)
-    return Customer.objects.filter(
+    candidates = Customer.objects.filter(
         ticket_orders__event=event, organization=org
     ).distinct().exclude(id__in=existing_customer_ids)
+    return [c for c in candidates if _is_sendable_email(c.email)]
 
 
 def _event_tz(event):
@@ -8799,7 +9339,7 @@ def survey_recipient_count(request, event_id):
     """Count of attendees who would receive the survey if sent now. GET, JSON."""
     org = get_organization(request)
     event = get_object_or_404(Event.objects.filter(organization=org), id=event_id)
-    return JsonResponse({'count': _survey_recipients(event, org).count()})
+    return JsonResponse({'count': len(_survey_recipients(event, org))})
 
 
 @login_required
@@ -8855,7 +9395,7 @@ def send_survey(request, event_id):
     # Get attendees who don't already have an invitation for this event
     attendees = _survey_recipients(event, org)
 
-    if not attendees.exists():
+    if not attendees:
         messages.info(request, "All attendees have already been sent a survey for this event.")
         return redirect('tickets:event_detail', event_id=event_id)
 
@@ -13683,8 +14223,51 @@ def recover_pending_payouts(request):
 @require_org
 def survey_upload_list(request):
     org = get_organization(request)
-    uploads = ExternalSurveyUpload.objects.filter(organization=org).order_by('-uploaded_at')
-    return render(request, 'tickets/survey_upload_list.html', {'uploads': uploads})
+
+    external_uploads = ExternalSurveyUpload.objects.filter(
+        organization=org
+    ).order_by('-uploaded_at')
+
+    # Native Cue surveys are stored per-response; group them by event so each
+    # event with responses becomes a single row in the unified list.
+    native_rows = (
+        SurveyResponse.objects.filter(organization=org)
+        .values('event_id', 'event__name')
+        .annotate(response_count=Count('id'), last_response=Max('submitted_at'))
+        .order_by('-last_response')
+    )
+
+    # Native and external surveys share one interface, distinguished by a source
+    # label. Build a combined, newest-first list the template renders as one table.
+    sources = []
+    for upload in external_uploads:
+        sources.append({
+            'kind': 'external',
+            'label': 'External upload',
+            'name': upload.filename,
+            'date': upload.uploaded_at,
+            'response_count': upload.row_count,
+            'status': upload.status,
+            'upload_id': upload.id,
+        })
+    for row in native_rows:
+        sources.append({
+            'kind': 'native',
+            'label': 'Cue survey',
+            'name': row['event__name'] or 'Survey',
+            'date': row['last_response'],
+            'response_count': row['response_count'],
+            'status': 'active',
+            'event_id': row['event_id'],
+        })
+    sources.sort(key=lambda s: s['date'], reverse=True)
+
+    has_external = any(s['kind'] == 'external' for s in sources)
+
+    return render(request, 'tickets/survey_upload_list.html', {
+        'sources': sources,
+        'has_external': has_external,
+    })
 
 
 @login_required

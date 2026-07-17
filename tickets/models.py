@@ -3341,6 +3341,12 @@ class SurveyInvitation(BaseModel):
     )
     sent_at = models.DateTimeField(null=True, blank=True)
     completed_at = models.DateTimeField(null=True, blank=True)
+    send_failed_at = models.DateTimeField(
+        null=True, blank=True,
+        help_text="Set when a send permanently fails (invalid/refused recipient). "
+                  "Excludes the row from future send attempts.",
+    )
+    send_error = models.CharField(max_length=200, blank=True, default='')
 
     class Meta:
         unique_together = [['event', 'customer']]
@@ -3938,6 +3944,33 @@ class LoyaltyTier(BaseModel):
         null=True, blank=True,
         help_text="Minimum lifetime points earned to qualify.",
     )
+    # Attendance rules count only tickets actually scanned in at the door
+    # (Ticket.scanned_at), so free-RSVP no-shows never qualify — unlike the
+    # *_purchased rules above, which count every order regardless of attendance.
+    min_events_attended = models.PositiveIntegerField(
+        null=True, blank=True,
+        help_text="Minimum number of distinct events actually attended (checked in) to qualify.",
+    )
+    attended_within_days = models.PositiveIntegerField(
+        null=True, blank=True,
+        help_text="Only count events attended within this many days (attendance window). "
+                  "Leave blank to count attendance over all time.",
+    )
+    # "Paid events in the last N days": a paired count + window rule. Counts the
+    # distinct events for which the customer has a non-refunded order where money
+    # was actually paid (total_amount > 0), so free-RSVP orders never qualify and
+    # several paid orders to the same event count once. Mirrors the attendance
+    # pair above in shape.
+    min_paid_events_recent = models.PositiveIntegerField(
+        null=True, blank=True,
+        help_text="Minimum number of unique events with a paid order (total > $0) "
+                  "within the window below to qualify.",
+    )
+    paid_events_within_days = models.PositiveIntegerField(
+        null=True, blank=True,
+        help_text="Only count paid events placed within this many days. "
+                  "Leave blank to count paid events over all time.",
+    )
 
     class Meta:
         ordering = ['-rank', 'name']
@@ -3949,8 +3982,24 @@ class LoyaltyTier(BaseModel):
     def __str__(self):
         return f"{self.name} ({self.program.name})"
 
-    def qualifies(self, *, lifetime_value, order_count, events_purchased, tickets_purchased, days_since_last_order, lifetime_points=0):
-        """Return True if the given per-customer metrics meet every set rule."""
+    def qualifies(self, *, lifetime_value, order_count, events_purchased, tickets_purchased, days_since_last_order, lifetime_points=0, events_attended=0, events_attended_in_window=0, paid_event_count=0, paid_event_count_in_window=0):
+        """Return True if the given per-customer metrics meet every set rule.
+
+        ``events_attended`` is the all-time distinct-events-attended count;
+        ``events_attended_in_window`` is that count restricted to
+        ``attended_within_days`` (the caller computes it against this tier's
+        window). The attendance rule is active when either ``min_events_attended``
+        or ``attended_within_days`` is set: the customer must have attended at
+        least ``min_events_attended`` (or 1 if only a window is set) distinct
+        events, counted within the window when one is set and over all time
+        otherwise.
+
+        ``paid_event_count`` / ``paid_event_count_in_window`` mirror the
+        attendance pair for the "paid events in the last N days" rule (active
+        when either ``min_paid_events_recent`` or ``paid_events_within_days`` is
+        set); it counts the distinct events for which the customer has an order
+        with money paid (total_amount > 0).
+        """
         if self.min_lifetime_value is not None and (lifetime_value or Decimal('0')) < self.min_lifetime_value:
             return False
         if self.min_order_count is not None and (order_count or 0) < self.min_order_count:
@@ -3964,6 +4013,16 @@ class LoyaltyTier(BaseModel):
                 return False
         if self.min_lifetime_points is not None and (lifetime_points or 0) < self.min_lifetime_points:
             return False
+        if self.min_events_attended is not None or self.attended_within_days is not None:
+            required = self.min_events_attended or 1
+            count = events_attended_in_window if self.attended_within_days is not None else events_attended
+            if (count or 0) < required:
+                return False
+        if self.min_paid_events_recent is not None or self.paid_events_within_days is not None:
+            required = self.min_paid_events_recent or 1
+            count = paid_event_count_in_window if self.paid_events_within_days is not None else paid_event_count
+            if (count or 0) < required:
+                return False
         return True
 
     def has_no_rules(self):
@@ -3973,9 +4032,47 @@ class LoyaltyTier(BaseModel):
             for f in (
                 'min_lifetime_value', 'min_order_count', 'min_events_purchased',
                 'min_tickets_purchased', 'max_days_since_last_order',
-                'min_lifetime_points',
+                'min_lifetime_points', 'min_events_attended',
+                'attended_within_days', 'min_paid_events_recent',
+                'paid_events_within_days',
             )
         )
+
+    def qualifying_rules(self):
+        """Human-readable summary of each qualifying rule that is set.
+
+        Returns a list of short strings (one per active rule) in the same order
+        ``qualifies()`` evaluates them, for display on the tier members page.
+        An empty list means the tier is a base/catch-all tier (see
+        ``has_no_rules()``).
+        """
+        rules = []
+        if self.min_lifetime_value is not None:
+            rules.append(f"Lifetime spend ≥ ${self.min_lifetime_value:,.2f}")
+        if self.min_order_count is not None:
+            rules.append(f"Orders ≥ {self.min_order_count}")
+        if self.min_events_purchased is not None:
+            rules.append(f"Events purchased ≥ {self.min_events_purchased}")
+        if self.min_tickets_purchased is not None:
+            rules.append(f"Tickets purchased ≥ {self.min_tickets_purchased}")
+        if self.max_days_since_last_order is not None:
+            rules.append(f"Ordered within {self.max_days_since_last_order} days")
+        if self.min_lifetime_points is not None:
+            rules.append(f"Lifetime points ≥ {self.min_lifetime_points}")
+        if self.min_events_attended is not None or self.attended_within_days is not None:
+            # Mirror qualifies(): a bare window still requires at least 1 event.
+            required = self.min_events_attended or 1
+            rule = f"Attended ≥ {required} event{'' if required == 1 else 's'}"
+            if self.attended_within_days is not None:
+                rule += f" within {self.attended_within_days} days"
+            rules.append(rule)
+        if self.min_paid_events_recent is not None or self.paid_events_within_days is not None:
+            required = self.min_paid_events_recent or 1
+            rule = f"Paid events ≥ {required}"
+            if self.paid_events_within_days is not None:
+                rule += f" within {self.paid_events_within_days} days"
+            rules.append(rule)
+        return rules
 
 
 class LoyaltyPointsTransaction(BaseModel):
@@ -4048,3 +4145,55 @@ class LoyaltyPointsTransaction(BaseModel):
 
     def __str__(self):
         return f"{self.get_kind_display()} {self.amount} pts (customer={self.customer_id})"
+
+
+class LoyaltyTierTransition(BaseModel):
+    """Immutable record of a customer moving between loyalty tiers.
+
+    Written by ``LoyaltyTierAssigner`` whenever a customer's assigned tier
+    changes, so the customer timeline can show tier progression over time.
+    Forward-only: no history exists prior to this model being introduced, and
+    ``LoyaltyTierAssigner`` only records changes it observes on subsequent runs.
+
+    ``from_tier`` / ``to_tier`` are nullable — a customer can enter from "no
+    tier" or drop back to none — and use ``SET_NULL`` so deleting a
+    ``LoyaltyTier`` definition never erases the transition history.
+    """
+
+    customer = models.ForeignKey(
+        Customer,
+        on_delete=models.CASCADE,
+        related_name='tier_transitions',
+    )
+    organization = models.ForeignKey(
+        Organization,
+        on_delete=models.CASCADE,
+        related_name='tier_transitions',
+    )
+    from_tier = models.ForeignKey(
+        'LoyaltyTier',
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name='+',
+    )
+    to_tier = models.ForeignKey(
+        'LoyaltyTier',
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name='+',
+    )
+    changed_at = models.DateTimeField(db_index=True)
+
+    class Meta:
+        ordering = ['-changed_at']
+        indexes = [
+            models.Index(fields=['customer', '-changed_at']),
+        ]
+
+    def __str__(self):
+        return (
+            f"{self.from_tier_id or 'none'} -> {self.to_tier_id or 'none'} "
+            f"(customer={self.customer_id})"
+        )

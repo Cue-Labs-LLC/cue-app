@@ -5,6 +5,8 @@ import re
 from decimal import Decimal
 from datetime import datetime, timezone as dt_timezone
 from typing import Dict, List, Optional, Tuple
+from django.core.exceptions import ValidationError
+from django.core.validators import validate_email
 from django.db import transaction
 from django.utils import timezone
 from dateutil import parser as date_parser
@@ -642,6 +644,14 @@ class CSVProcessor:
                         results['errors'].append("Row validation error: In-person row but no organization context.")
                         continue
                     customer_email = mapped_row.get('customer_email', '').lower().strip()
+                    if customer_email:
+                        # Reject unparseable addresses (e.g. Apple "Hide My Email"
+                        # placeholder text) so they never reach the DB and later break
+                        # email sends. Treated the same as a missing email below.
+                        try:
+                            validate_email(customer_email)
+                        except ValidationError:
+                            customer_email = ''
                     if not customer_email and no_contact_customer is not None:
                         # Online order with no contact info — bucket it so its revenue counts.
                         customer = no_contact_customer

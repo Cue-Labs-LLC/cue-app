@@ -2,7 +2,8 @@ import json
 from django.contrib import admin, messages
 from django.utils.html import format_html
 from django.db import models
-from django.db.models import Sum, Count
+from django.db.models import Sum, Count, Subquery, OuterRef
+from django.db.models.functions import Coalesce
 from django import forms
 from .models import (
     Organization, UserProfile, OrganizationMembership, OrganizationInvitation, EmailOTP, PhoneOTP,
@@ -23,7 +24,7 @@ from .models import (
     SMSCampaign, SMSCampaignPlan, SMSMessageRecipient, PhoneSuppression,
     SMSConsentRecord,
     SMSCreditTransaction,
-    LoyaltyProgram, LoyaltyTier, LoyaltyPointsTransaction,
+    LoyaltyProgram, LoyaltyTier, LoyaltyPointsTransaction, LoyaltyTierTransition,
 )
 
 
@@ -204,6 +205,94 @@ class CustomerAdmin(admin.ModelAdmin):
             if profile and profile.organization_id:
                 obj.organization = profile.organization
         super().save_model(request, obj, form, change)
+
+    actions = ['delete_customers_with_ledger']
+
+    @admin.action(
+        description='Delete customer(s) and their loyalty ledger',
+        permissions=['delete'],
+    )
+    def delete_customers_with_ledger(self, request, queryset):
+        """Hard-delete customers along with their immutable loyalty ledger.
+
+        The loyalty points ledger admin forbids deletion (append-only), which
+        makes Django's normal cascade-delete refuse to remove a customer. This
+        action performs the delete in Python, where the DB-level CASCADE clears
+        the ledger without hitting that guard — the same ``customer.delete()``
+        path that ``_reconcile_customers_after_order_deletion`` uses. Runs behind
+        an intermediate confirmation page. Irreversible.
+        """
+        from django.contrib.admin import helpers
+        from django.db import transaction
+        from django.template.response import TemplateResponse
+
+        if request.POST.get('confirm'):
+            deleted = 0
+            # Deterministic lock order (mirrors the reconcile path) to avoid
+            # deadlocks when this races other order/points mutations.
+            customer_ids = list(queryset.order_by('id').values_list('id', flat=True))
+            for customer_id in customer_ids:
+                with transaction.atomic():
+                    # A concurrent path (e.g. order-deletion reconcile) may have
+                    # already removed this customer — skip rather than 500.
+                    locked = (
+                        Customer.objects.select_for_update()
+                        .filter(id=customer_id)
+                        .first()
+                    )
+                    if locked is None:
+                        continue
+                    locked.delete()
+                    deleted += 1
+            self.message_user(
+                request,
+                f'Deleted {deleted} customer{"" if deleted == 1 else "s"} and '
+                f'their loyalty ledger.',
+                level=messages.SUCCESS,
+            )
+            return None
+
+        # Isolated Subquery per stat (see event_list/home) — joining both
+        # tables at once would inflate rows to orders × ledger entries.
+        order_count_sq = Subquery(
+            TicketOrder.objects.filter(customer=OuterRef('pk'))
+            .values('customer')
+            .annotate(n=Count('id'))
+            .values('n')[:1],
+            output_field=models.IntegerField(),
+        )
+        ledger_count_sq = Subquery(
+            LoyaltyPointsTransaction.objects.filter(customer=OuterRef('pk'))
+            .values('customer')
+            .annotate(n=Count('id'))
+            .values('n')[:1],
+            output_field=models.IntegerField(),
+        )
+        # Re-query from a clean base queryset: the incoming changelist queryset
+        # already carries a join-based order_count annotation (get_queryset),
+        # and re-annotating over it leaves its join/grouping behind.
+        customers = list(
+            Customer.objects.filter(
+                id__in=list(queryset.values_list('id', flat=True))
+            )
+            .annotate(
+                order_count=Coalesce(order_count_sq, 0),
+                ledger_count=Coalesce(ledger_count_sq, 0),
+            )
+            .order_by('name')
+        )
+        context = {
+            **self.admin_site.each_context(request),
+            'title': 'Delete customers and loyalty ledger',
+            'customers': customers,
+            'queryset': queryset,
+            'action_checkbox_name': helpers.ACTION_CHECKBOX_NAME,
+            'opts': self.model._meta,
+            'media': self.media,
+        }
+        return TemplateResponse(
+            request, 'admin/delete_customers_with_ledger_confirm.html', context,
+        )
 
 
 @admin.register(CustomerTag)
@@ -939,7 +1028,7 @@ class PayoutAdmin(admin.ModelAdmin):
 
 @admin.register(UserProfile)
 class UserProfileAdmin(admin.ModelAdmin):
-    list_display = ['user', 'organization', 'role', 'phone_number', 'user_full_name']
+    list_display = ['user', 'organization', 'role', 'phone_number', 'user_full_name', 'impersonate_link']
     list_filter = ['role', 'organization']
     search_fields = ['user__username', 'user__first_name', 'user__last_name', 'user__email', 'phone_number']
     raw_id_fields = ['user']
@@ -948,6 +1037,15 @@ class UserProfileAdmin(admin.ModelAdmin):
     def user_full_name(self, obj):
         return obj.user.get_full_name() if obj.user_id else ''
     user_full_name.short_description = 'Full Name'
+
+    def impersonate_link(self, obj):
+        # Mirror the view guardrail: never offer to impersonate a privileged account.
+        if not obj.user_id or obj.user.is_superuser or obj.user.is_staff:
+            return '—'
+        from django.urls import reverse
+        url = reverse('tickets:admin_impersonate_start', args=[obj.user_id])
+        return format_html('<a href="{}">Log in as</a>', url)
+    impersonate_link.short_description = 'Impersonate'
 
 
 @admin.register(OrganizationInvitation)
@@ -1414,6 +1512,27 @@ class LoyaltyPointsTransactionAdmin(admin.ModelAdmin):
         'id', 'organization', 'customer', 'ticket_order', 'kind', 'amount',
         'balance_after', 'lifetime_after', 'description', 'created_by',
         'created_at', 'updated_at',
+    ]
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+
+@admin.register(LoyaltyTierTransition)
+class LoyaltyTierTransitionAdmin(admin.ModelAdmin):
+    """Read-only history — rows are written only by LoyaltyTierAssigner."""
+    list_display = ['customer', 'from_tier', 'to_tier', 'changed_at']
+    list_filter = ['organization']
+    search_fields = ['customer__email', 'customer__name']
+    readonly_fields = [
+        'id', 'organization', 'customer', 'from_tier', 'to_tier',
+        'changed_at', 'created_at', 'updated_at',
     ]
 
     def has_add_permission(self, request):

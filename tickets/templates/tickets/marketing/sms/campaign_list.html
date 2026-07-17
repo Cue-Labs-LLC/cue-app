@@ -30,6 +30,18 @@
 .marketing-subnav-btn.active,
 .marketing-subnav-btn.active:hover { background: var(--accent); color: var(--text-inverse); }
 
+/* Inline variant used in the audience chart header (no bottom margin, button
+   elements rather than links). */
+.marketing-subnav--inline { margin-bottom: 0; }
+.marketing-subnav--inline .marketing-subnav-btn {
+    border: 0; background: transparent; cursor: pointer;
+}
+.marketing-subnav--inline .marketing-subnav-btn.active,
+.marketing-subnav--inline .marketing-subnav-btn.active:hover {
+    background: var(--accent); color: var(--text-inverse);
+}
+.audience-head-controls { display: inline-flex; align-items: center; gap: 10px; }
+
 .sms-section-head {
     display: flex; align-items: center; justify-content: space-between;
     gap: 12px; margin: 1.75rem 0 0.85rem;
@@ -151,11 +163,12 @@ tr.campaign-row { cursor: pointer; }
                         <th>Campaign</th>
                         <th>Source</th>
                         <th>Event</th>
+                        <th>Event Date</th>
                         <th class="text-end">Audience</th>
                         <th class="text-end">Clicks</th>
                         <th class="text-end">Orders</th>
                         <th class="text-end">Revenue</th>
-                        <th>When</th>
+                        <th>Sent</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -179,6 +192,7 @@ tr.campaign-row { cursor: pointer; }
                             {% if row.event %}<a href="{% url 'tickets:event_detail' event_id=row.event.id %}?tab=marketing">{{ row.event.name }}</a>
                             {% else %}<span class="text-muted">—</span>{% endif %}
                         </td>
+                        <td class="text-muted small">{% if row.event %}{{ row.event.start_date|date:"M d, Y" }}{% else %}<span class="text-muted">—</span>{% endif %}</td>
                         <td class="text-end">{{ row.audience }}</td>
                         <td class="text-end">{% if row.clicks is not None %}{{ row.clicks }}{% else %}<span class="text-muted">—</span>{% endif %}</td>
                         <td class="text-end">{% if row.orders is not None %}{{ row.orders }}{% else %}<span class="text-muted">—</span>{% endif %}</td>
@@ -222,17 +236,23 @@ tr.campaign-row { cursor: pointer; }
 {% elif view == 'audience' %}
 <div class="sms-section-head">
     <h2>Campaign audiences over time</h2>
-    <div class="window-selector">
-        <div class="dropdown">
-            <button class="window-selector-btn dropdown-toggle" type="button" data-bs-toggle="dropdown" aria-expanded="false">
-                <i class="bi bi-geo-alt"></i> {% if selected_market %}{{ selected_market }}{% else %}All markets{% endif %}
-            </button>
-            <ul class="dropdown-menu dropdown-menu-end">
-                <li><a class="dropdown-item{% if not selected_market %} active{% endif %}" href="?window={{ window_key }}&view=audience&market=">All markets</a></li>
-                {% for m in market_choices %}
-                <li><a class="dropdown-item{% if m == selected_market %} active{% endif %}" href="?window={{ window_key }}&view=audience&market={{ m|urlencode }}">{{ m }}</a></li>
-                {% endfor %}
-            </ul>
+    <div class="audience-head-controls">
+        <div class="marketing-subnav marketing-subnav--inline" role="group" aria-label="Group audience chart by">
+            <button type="button" class="marketing-subnav-btn active" data-group="send" id="audience-group-send">By send date</button>
+            <button type="button" class="marketing-subnav-btn" data-group="month" id="audience-group-month">By month</button>
+        </div>
+        <div class="window-selector">
+            <div class="dropdown">
+                <button class="window-selector-btn dropdown-toggle" type="button" data-bs-toggle="dropdown" aria-expanded="false">
+                    <i class="bi bi-geo-alt"></i> {% if selected_market %}{{ selected_market }}{% else %}All markets{% endif %}
+                </button>
+                <ul class="dropdown-menu dropdown-menu-end">
+                    <li><a class="dropdown-item{% if not selected_market %} active{% endif %}" href="?window={{ window_key }}&view=audience&market=">All markets</a></li>
+                    {% for m in market_choices %}
+                    <li><a class="dropdown-item{% if m == selected_market %} active{% endif %}" href="?window={{ window_key }}&view=audience&market={{ m|urlencode }}">{{ m }}</a></li>
+                    {% endfor %}
+                </ul>
+            </div>
         </div>
     </div>
 </div>
@@ -335,34 +355,62 @@ tr.campaign-row { cursor: pointer; }
             '#4f7cff','#33c481','#f59e0b','#ef4444','#a855f7',
             '#ec4899','#06b6d4','#84cc16','#f97316','#6366f1','#14b8a6','#e11d48'
         ];
-        var fmtDate = function (ms) {
-            return new Date(ms).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+        // Group mode: 'send' (one point per broadcast) or 'month' (summed reach
+        // per calendar month). Persisted so it survives the page reloads that the
+        // market/window filters trigger.
+        var STORE_KEY = 'sms-audience-group';
+        var mode = localStorage.getItem(STORE_KEY) === 'month' ? 'month' : 'send';
+
+        var fmtDate = function (ms, m) {
+            var opts = (m === 'month')
+                ? { month: 'short', year: 'numeric' }
+                : { month: 'short', day: 'numeric', year: 'numeric' };
+            return new Date(ms).toLocaleDateString(undefined, opts);
         };
-        var datasets = order.map(function (market, i) {
-            var color = PALETTE[i % PALETTE.length];
-            return {
-                label: market,
-                data: byMarket[market],
-                borderColor: color,
-                backgroundColor: color,
-                pointRadius: 5,
-                pointHoverRadius: 7,
-                borderWidth: 2,
-                fill: false,
-                tension: 0.25,
-                spanGaps: false,
-            };
-        });
-        new Chart(el, {
+        // Sum audience per calendar month for one market's points.
+        var aggregateByMonth = function (pts) {
+            var buckets = {};
+            pts.forEach(function (p) {
+                var d = new Date(p.x);
+                var key = d.getFullYear() + '-' + d.getMonth();
+                var b = buckets[key];
+                if (!b) {
+                    b = buckets[key] = { x: new Date(d.getFullYear(), d.getMonth(), 1).getTime(), y: 0, count: 0 };
+                }
+                b.y += p.y;
+                b.count += 1;
+            });
+            return Object.keys(buckets)
+                .map(function (k) { return buckets[k]; })
+                .sort(function (a, b) { return a.x - b.x; });
+        };
+        var buildDatasets = function (m) {
+            return order.map(function (market, i) {
+                var color = PALETTE[i % PALETTE.length];
+                return {
+                    label: market,
+                    data: m === 'month' ? aggregateByMonth(byMarket[market]) : byMarket[market],
+                    borderColor: color,
+                    backgroundColor: color,
+                    pointRadius: 5,
+                    pointHoverRadius: 7,
+                    borderWidth: 2,
+                    fill: false,
+                    tension: 0.25,
+                    spanGaps: false,
+                };
+            });
+        };
+        var chart = new Chart(el, {
             type: 'line',
-            data: { datasets: datasets },
+            data: { datasets: buildDatasets(mode) },
             options: {
                 responsive: true, maintainAspectRatio: false,
                 scales: {
                     x: {
                         type: 'linear',
                         grid: { color: grid },
-                        ticks: { color: tick, maxRotation: 0, autoSkip: true, callback: function (v) { return fmtDate(v); } }
+                        ticks: { color: tick, maxRotation: 0, autoSkip: true, callback: function (v) { return fmtDate(v, mode); } }
                     },
                     y: {
                         beginAtZero: true,
@@ -374,9 +422,12 @@ tr.campaign-row { cursor: pointer; }
                     legend: { labels: { color: tick } },
                     tooltip: {
                         callbacks: {
-                            title: function (items) { return items.length ? fmtDate(items[0].parsed.x) : ''; },
+                            title: function (items) { return items.length ? fmtDate(items[0].parsed.x, mode) : ''; },
                             label: function (ctx) {
                                 var p = ctx.raw || {};
+                                if (mode === 'month') {
+                                    return p.count + (p.count === 1 ? ' broadcast' : ' broadcasts') + ' — ' + p.y + ' total audience';
+                                }
                                 var line = (p.name || ctx.dataset.label) + ' — ' + p.y + ' audience';
                                 if (p.market && ctx.dataset.label === 'All Markets') {
                                     line += ' (' + p.market + ')';
@@ -387,6 +438,26 @@ tr.campaign-row { cursor: pointer; }
                     }
                 }
             }
+        });
+
+        // Wire the "By send date / By month" segmented toggle.
+        var buttons = document.querySelectorAll('.marketing-subnav-btn[data-group]');
+        var syncButtons = function () {
+            buttons.forEach(function (btn) {
+                btn.classList.toggle('active', btn.dataset.group === mode);
+            });
+        };
+        syncButtons();
+        buttons.forEach(function (btn) {
+            btn.addEventListener('click', function () {
+                var next = btn.dataset.group;
+                if (next === mode) { return; }
+                mode = next;
+                localStorage.setItem(STORE_KEY, mode);
+                syncButtons();
+                chart.data.datasets = buildDatasets(mode);
+                chart.update();
+            });
         });
     });
 })();

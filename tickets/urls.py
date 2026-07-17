@@ -35,6 +35,9 @@ urlpatterns = [
     path('login/email/verify-phone/', views.verify_phone_after_profile_view, name='verify_phone_after_profile'),
     path('login/email/resend-phone/', views.resend_phone_after_profile_view, name='resend_phone_after_profile'),
     path('logout/', views.logout_view, name='logout'),
+    # Admin impersonation ("Log in as") - superuser-only, triggered from Django admin
+    path('impersonate/<int:user_id>/start/', views.admin_impersonate_start, name='admin_impersonate_start'),
+    path('impersonate/stop/', views.admin_impersonate_stop, name='admin_impersonate_stop'),
     # Inline modal auth (JSON endpoints for checkout flow)
     path('auth/modal/start/', views.modal_auth_start, name='modal_auth_start'),
     path('auth/modal/verify/', views.modal_auth_verify, name='modal_auth_verify'),
@@ -112,6 +115,7 @@ urlpatterns = [
 
     # Customers
     path('customers/', views.customer_list, name='customer_list'),
+    path('customers/export.csv', views.customer_export_csv, name='customer_export_csv'),
     path('customers/bulk-tag/', sms_views.customers_bulk_tag, name='customers_bulk_tag'),
     path('customers/bulk-sms-status/', sms_views.customers_bulk_sms_status, name='customers_bulk_sms_status'),
     path('customers/bulk-sms-compose/', sms_views.customers_bulk_sms_compose, name='customers_bulk_sms_compose'),
@@ -130,6 +134,7 @@ urlpatterns = [
     path('analytics/churn/bulk-tag/', views.churn_bulk_tag, name='churn_bulk_tag'),
     path('analytics/repeat-customers/', views.repeat_customers, name='repeat_customers'),
     path('analytics/cohort-retention/', views.cohort_retention, name='cohort_retention'),
+    path('analytics/audience/', views.audience_analytics, name='audience_analytics'),
     path('analytics/market-trends/', views.market_trends, name='market_trends'),
     path('analytics/profitability/', views.profitability_overview, name='profitability_overview'),
     path('analytics/expenses/', views.expense_analytics, name='expense_analytics'),
@@ -201,6 +206,7 @@ urlpatterns = [
     path('events/<uuid:event_id>/', views.event_detail, name='event_detail'),
     path('events/<uuid:event_id>/summary/stream/', views.event_summary_stream, name='event_summary_stream'),
     path('events/<uuid:event_id>/weather/hourly/', views.event_weather_hourly, name='event_weather_hourly'),
+    path('events/<uuid:event_id>/pacing/', views.event_pacing_api, name='event_pacing_api'),
     path('events/<uuid:event_id>/surveys/match/',  views.event_survey_match,  name='event_survey_match'),
     path('events/<uuid:event_id>/surveys/apply/',  views.event_survey_apply,  name='event_survey_apply'),
     path('events/<uuid:event_id>/surveys/unlink/', views.event_survey_unlink, name='event_survey_unlink'),

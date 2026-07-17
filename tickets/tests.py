@@ -4372,8 +4372,10 @@ class CustomerSegmentationViewTests(TestCase):
         self.assertContains(response, 'Average days between orders')
 
 
-class CustomerDetailMarketingTabTests(TestCase):
-    """The Marketing Activity tab surfaces per-customer native-SMS delivery state."""
+class CustomerDetailTimelineTests(TestCase):
+    """The consolidated Timeline merges orders, native-SMS delivery state, survey
+    responses, and loyalty tier transitions into one reverse-chronological feed,
+    keeping the SMS consent + delivery scoreboard as a header above it."""
 
     def setUp(self):
         self.client = Client()
@@ -4412,7 +4414,7 @@ class CustomerDetailMarketingTabTests(TestCase):
         defaults.update(kwargs)
         return SMSMessageRecipient.objects.create(**defaults)
 
-    def test_marketing_tab_lists_sms_activity(self):
+    def test_timeline_lists_sms_activity(self):
         self._make_message(first_clicked_at=timezone.now() - timedelta(hours=1), click_count=2)
 
         response = self.client.get(reverse('tickets:customer_detail', args=[self.customer.id]))
@@ -4421,25 +4423,78 @@ class CustomerDetailMarketingTabTests(TestCase):
         self.assertEqual(response.context['sms_stats']['total'], 1)
         self.assertEqual(response.context['sms_stats']['delivered'], 1)
         self.assertEqual(response.context['sms_stats']['clicked'], 1)
-        self.assertContains(response, 'Marketing Activity')
-        self.assertContains(response, 'Summer Promo')
+        self.assertContains(response, 'Timeline')
+        self.assertContains(response, 'SMS: Summer Promo')
         self.assertContains(response, 'Delivered')
 
-    def test_marketing_tab_empty_state(self):
+    def test_timeline_empty_state(self):
         response = self.client.get(reverse('tickets:customer_detail', args=[self.customer.id]))
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.context['sms_stats']['total'], 0)
-        self.assertContains(response, 'No marketing messages sent to this customer yet.')
+        self.assertContains(response, 'No activity yet.')
 
-    def test_marketing_tab_hidden_when_feature_disabled(self):
+    def test_sms_header_hidden_when_feature_disabled(self):
         self.org.sms_marketing_enabled = False
         self.org.save(update_fields=['sms_marketing_enabled'])
+        self._make_message()
 
         response = self.client.get(reverse('tickets:customer_detail', args=[self.customer.id]))
 
         self.assertEqual(response.status_code, 200)
-        self.assertNotContains(response, 'Marketing Activity')
+        # The SMS consent + delivery scoreboard header disappears, and SMS messages
+        # drop out of the timeline, when the org has SMS marketing disabled.
+        self.assertNotContains(response, 'SMS Consent')
+        self.assertNotContains(response, 'Messages Sent')
+        self.assertNotContains(response, 'SMS: Summer Promo')
+
+    def test_timeline_merges_interactions_reverse_chronologically(self):
+        from .models import (
+            Venue, Event, TicketOrder, Ticket, SurveyInvitation, SurveyResponse,
+            LoyaltyProgram, LoyaltyTier, LoyaltyTierTransition,
+        )
+        self.org.loyalty_feature_enabled = True
+        self.org.save(update_fields=['loyalty_feature_enabled'])
+
+        venue = Venue.objects.create(organization=self.org, name='The Hall', city='LA')
+        event = Event.objects.create(
+            organization=self.org, name='Night Show', venue=venue, start_date=date.today(),
+        )
+        program = LoyaltyProgram.objects.create(organization=self.org, name='Club')
+        gold = LoyaltyTier.objects.create(program=program, name='Gold', rank=2, color='red')
+
+        now = timezone.now()
+        # Create oldest -> newest across every interaction kind.
+        LoyaltyTierTransition.objects.create(
+            customer=self.customer, organization=self.org,
+            from_tier=None, to_tier=gold, changed_at=now - timedelta(days=10),
+        )
+        order = TicketOrder.objects.create(
+            customer=self.customer, event=event, order_number='TL-1',
+            order_date=now - timedelta(days=5), total_amount=Decimal('30.00'),
+        )
+        Ticket.objects.create(ticket_order=order, price=Decimal('30.00'))
+        self._make_message(
+            sent_at=now - timedelta(days=2), delivered_at=now - timedelta(days=2),
+        )
+        invitation = SurveyInvitation.objects.create(
+            event=event, customer=self.customer, organization=self.org,
+            email=self.customer.email,
+        )
+        SurveyResponse.objects.create(
+            invitation=invitation, event=event, customer=self.customer,
+            organization=self.org,
+        )  # submitted_at auto_now_add -> "now", the newest interaction
+
+        response = self.client.get(reverse('tickets:customer_detail', args=[self.customer.id]))
+
+        self.assertEqual(response.status_code, 200)
+        kinds = [item['kind'] for item in response.context['page_obj']]
+        self.assertEqual(kinds, ['survey', 'sms', 'order', 'tier'])
+        self.assertContains(response, 'Purchased 1 ticket')
+        self.assertContains(response, 'SMS: Summer Promo')
+        self.assertContains(response, 'Completed survey')
+        self.assertContains(response, 'Reached Gold tier')
 
 
 class SMSBroadcastAudienceTests(TestCase):
@@ -12565,6 +12620,160 @@ class LoyaltyTierAssignmentTests(TestCase):
         # Only 1 live order -> below min_order_count=2 -> no tier.
         self.assertIsNone(cust.loyalty_tier)
 
+    def _make_scanned_customer(self, email, events, scanned_at=None, scanned=True):
+        """One free ($0) order per event, each with a single ticket.
+
+        ``scanned=True`` stamps ``Ticket.scanned_at`` (an attended check-in);
+        ``scanned=False`` leaves it null (a free-RSVP no-show).
+        """
+        customer = Customer.objects.create(
+            organization=self.org, email=email, name=email.split('@')[0],
+            lifetime_value=Decimal('0'), last_order_date=date(2026, 6, 1),
+        )
+        for i, event in enumerate(events):
+            order = TicketOrder.objects.create(
+                customer=customer, event=event, order_number=f'{email}-{i}',
+                order_date='2026-06-01 10:00:00', total_amount=Decimal('0'),
+            )
+            Ticket.objects.create(
+                ticket_order=order, price=Decimal('0'),
+                scanned_at=(scanned_at or timezone.now()) if scanned else None,
+            )
+        return customer
+
+    def test_events_attended_counts_only_scanned_tickets(self):
+        # min_events_attended must count door scans, not orders: a free-RSVP
+        # no-show who ordered 2 events but never scanned in stays out.
+        self.gold.delete(); self.silver.delete()
+        self.member.min_events_attended = 2
+        self.member.save()
+        e1, e2 = self._event('E1'), self._event('E2')
+        attendee = self._make_scanned_customer('went@x.com', [e1, e2], scanned=True)
+        noshow = self._make_scanned_customer('noshow@x.com', [e1, e2], scanned=False)
+        self._assign()
+        attendee.refresh_from_db(); noshow.refresh_from_db()
+        self.assertEqual(attendee.loyalty_tier, self.member)
+        self.assertIsNone(noshow.loyalty_tier)
+
+    def test_attendance_recency_rule(self):
+        # attended_within_days windows the attendance count: both events must fall
+        # inside the window, keyed off scan time (not last order).
+        self.gold.delete(); self.silver.delete()
+        self.member.min_events_attended = 2
+        self.member.attended_within_days = 120
+        self.member.save()
+        e1, e2 = self._event('E1'), self._event('E2')
+        recent = self._make_scanned_customer('recent@x.com', [e1, e2], scanned_at=timezone.now())
+        lapsed = self._make_scanned_customer(
+            'lapsed@x.com', [e1, e2], scanned_at=timezone.now() - timedelta(days=200),
+        )
+        self._assign()
+        recent.refresh_from_db(); lapsed.refresh_from_db()
+        self.assertEqual(recent.loyalty_tier, self.member)
+        self.assertIsNone(lapsed.loyalty_tier)
+
+    def test_windowed_event_count_excludes_old_attendance(self):
+        # "Attended >= 2 events within 120 days" counts only in-window scans, so a
+        # customer with 2 events attended all-time but only 1 inside the window
+        # does NOT qualify (the whole point of windowing the count).
+        self.gold.delete(); self.silver.delete()
+        self.member.min_events_attended = 2
+        self.member.attended_within_days = 120
+        self.member.save()
+        e1, e2, e3, e4 = self._event('E1'), self._event('E2'), self._event('E3'), self._event('E4')
+        # 1 recent + 1 old distinct event -> only 1 in the window -> below 2.
+        edge = self._make_scanned_customer('edge@x.com', [e1], scanned_at=timezone.now())
+        old_order = TicketOrder.objects.create(
+            customer=edge, event=e2, order_number='edge-old',
+            order_date='2026-06-01 10:00:00', total_amount=Decimal('0'),
+        )
+        Ticket.objects.create(
+            ticket_order=old_order, price=Decimal('0'),
+            scanned_at=timezone.now() - timedelta(days=200),
+        )
+        # 2 distinct events both inside the window -> qualifies.
+        inside = self._make_scanned_customer('inside@x.com', [e3, e4], scanned_at=timezone.now())
+        self._assign()
+        edge.refresh_from_db(); inside.refresh_from_db()
+        self.assertIsNone(edge.loyalty_tier)
+        self.assertEqual(inside.loyalty_tier, self.member)
+
+    def test_window_only_rule_requires_one_in_window(self):
+        # A window with no explicit count means "attended >= 1 event within D days".
+        self.gold.delete(); self.silver.delete()
+        self.member.min_events_attended = None
+        self.member.attended_within_days = 120
+        self.member.save()
+        e1 = self._event('E1')
+        recent = self._make_scanned_customer('r1@x.com', [e1], scanned_at=timezone.now())
+        lapsed = self._make_scanned_customer(
+            'l1@x.com', [e1], scanned_at=timezone.now() - timedelta(days=200),
+        )
+        self._assign()
+        recent.refresh_from_db(); lapsed.refresh_from_db()
+        self.assertEqual(recent.loyalty_tier, self.member)
+        self.assertIsNone(lapsed.loyalty_tier)
+
+    def test_paid_events_rule_excludes_free_orders(self):
+        # "Paid events >= 2" counts distinct events with an order where money was
+        # paid (> $0): a customer with 2 free-RSVP orders stays out while a paying
+        # buyer across two events qualifies.
+        self.gold.delete(); self.silver.delete()
+        self.member.min_paid_events_recent = 2
+        self.member.save()
+        e1, e2 = self._event('E1'), self._event('E2')
+        buyer = self._make_customer('buyer@x.com', 100, [(e1, 50, 1), (e2, 50, 1)])
+        freeloader = self._make_customer('free@x.com', 0, [(e1, 0, 1), (e2, 0, 1)])
+        self._assign()
+        buyer.refresh_from_db(); freeloader.refresh_from_db()
+        self.assertEqual(buyer.loyalty_tier, self.member)
+        self.assertIsNone(freeloader.loyalty_tier)
+
+    def test_paid_events_rule_counts_distinct_events(self):
+        # "Paid events >= 2" counts UNIQUE events, so several paid orders to the
+        # same event count once: a buyer with 3 paid orders all to one event does
+        # NOT qualify, while a buyer with paid orders across two events does.
+        self.gold.delete(); self.silver.delete()
+        self.member.min_paid_events_recent = 2
+        self.member.save()
+        e1, e2 = self._event('E1'), self._event('E2')
+        one_event = self._make_customer('one@x.com', 150, [(e1, 50, 1), (e1, 50, 1), (e1, 50, 1)])
+        two_events = self._make_customer('two@x.com', 100, [(e1, 50, 1), (e2, 50, 1)])
+        self._assign()
+        one_event.refresh_from_db(); two_events.refresh_from_db()
+        self.assertIsNone(one_event.loyalty_tier)
+        self.assertEqual(two_events.loyalty_tier, self.member)
+
+    def test_windowed_paid_events_excludes_old_orders(self):
+        # "Paid events >= 2 within 90 days" counts only paid events placed inside
+        # the window, keyed off order_date: a buyer across 2 events 200 days ago
+        # does NOT qualify, one across 2 events 10 days ago does.
+        self.gold.delete(); self.silver.delete()
+        self.member.min_paid_events_recent = 2
+        self.member.paid_events_within_days = 90
+        self.member.save()
+        e1, e2 = self._event('E1'), self._event('E2')
+        now = timezone.now()
+
+        def _paid_buyer(email, days_ago):
+            cust = Customer.objects.create(
+                organization=self.org, email=email, name=email.split('@')[0],
+                lifetime_value=Decimal('100'), last_order_date=now.date(),
+            )
+            for i, ev in enumerate([e1, e2]):
+                TicketOrder.objects.create(
+                    customer=cust, event=ev, order_number=f'{email}-{i}',
+                    order_date=now - timedelta(days=days_ago), total_amount=Decimal('50'),
+                )
+            return cust
+
+        recent = _paid_buyer('recent-paid@x.com', 10)
+        lapsed = _paid_buyer('lapsed-paid@x.com', 200)
+        self._assign()
+        recent.refresh_from_db(); lapsed.refresh_from_db()
+        self.assertEqual(recent.loyalty_tier, self.member)
+        self.assertIsNone(lapsed.loyalty_tier)
+
 
 class LoyaltyViewTests(TestCase):
     """Access control, org-scoping, and the builder flow."""
@@ -12804,6 +13013,41 @@ class LoyaltyHardeningTests(TestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertContains(resp, 'Gilda')
         self.assertNotContains(resp, 'Basil')
+
+    # --- tier members market filter ---
+    def test_tier_members_market_filter(self):
+        from tickets.models import Market
+        venue = Venue.objects.create(organization=self.org, name='V', city='C')
+        austin = Market.objects.create(organization=self.org, name='Austin',
+                                       geography_level='city', geography_value='Austin')
+        dallas = Market.objects.create(organization=self.org, name='Dallas',
+                                       geography_level='city', geography_value='Dallas')
+        austin_event = Event.objects.create(organization=self.org, name='ATX', venue=venue,
+                                            market=austin, start_date=date(2026, 9, 1),
+                                            start_time=time(20, 0, 0))
+        dallas_event = Event.objects.create(organization=self.org, name='DAL', venue=venue,
+                                            market=dallas, start_date=date(2026, 9, 2),
+                                            start_time=time(20, 0, 0))
+        # Ada orders most in Austin; Della orders most in Dallas.
+        ada = Customer.objects.create(organization=self.org, email='ada@x.com', name='Ada',
+                                      loyalty_tier=self.base_tier)
+        della = Customer.objects.create(organization=self.org, email='del@x.com', name='Della',
+                                        loyalty_tier=self.base_tier)
+        for i in range(2):
+            TicketOrder.objects.create(customer=ada, event=austin_event, order_number=f'A{i}',
+                                       order_date=timezone.now(), total_amount=Decimal('10.00'))
+        TicketOrder.objects.create(customer=della, event=dallas_event, order_number='D0',
+                                   order_date=timezone.now(), total_amount=Decimal('10.00'))
+        self._login()
+        url = reverse('tickets:loyalty_tier_members', args=[self.program.id, self.base_tier.id])
+        # Unfiltered: both appear.
+        resp = self.client.get(url)
+        self.assertContains(resp, 'Ada')
+        self.assertContains(resp, 'Della')
+        # Filtered to Austin: only Ada (her most-frequented market).
+        resp = self.client.get(url, {'market': 'Austin'})
+        self.assertContains(resp, 'Ada')
+        self.assertNotContains(resp, 'Della')
 
     # --- same-org display guard (T2) ---
     def test_customer_detail_hides_foreign_tier(self):
@@ -17568,3 +17812,1031 @@ class SubscribePageTests(TestCase):
         rec.consent_text = 'tampered'
         with self.assertRaises(ValidationError):
             rec.save()
+
+
+class SalesPacingTests(TestCase):
+    """Sales pacing service, view context, and comparison API."""
+
+    def setUp(self):
+        self.client = Client()
+        self.org = Organization.objects.create(name='Pace Org', slug='pace-org')
+        self.other_org = Organization.objects.create(name='Other Org', slug='other-org')
+        self.user = User.objects.create_user(
+            username='paceuser', email='pace@test.com', password='pw123456',
+        )
+        UserProfile.objects.create(
+            user=self.user, organization=self.org, org_role=UserProfile.OrgRole.OWNER,
+        )
+        self.client.login(username='pace@test.com', password='pw123456')
+        self.client.get(reverse('tickets:home'))  # seed _org_id in session
+
+        self.venue = Venue.objects.create(organization=self.org, name='Pace Hall', city='San Diego')
+        # Current event (most recent) and a past event at the same venue.
+        self.event = Event.objects.create(
+            organization=self.org, name='Current Show', venue=self.venue,
+            start_date=date(2024, 6, 15),
+        )
+        self.past_event = Event.objects.create(
+            organization=self.org, name='Past Show', venue=self.venue,
+            start_date=date(2024, 3, 10),
+        )
+        self.customer = Customer.objects.create(
+            organization=self.org, email='c@example.com', name='C',
+        )
+
+    def _make_order(self, event, number, order_dt, tickets, amount):
+        order = TicketOrder.objects.create(
+            customer=self.customer, event=event, order_number=number,
+            order_date=timezone.make_aware(order_dt), total_amount=Decimal(amount),
+        )
+        for i in range(tickets):
+            Ticket.objects.create(ticket_order=order, ticket_type='GA', price=Decimal('50.00'))
+        return order
+
+    def test_get_pacing_series(self):
+        from tickets.services.forecasting.sales_curve import SalesCurveCalculator
+        # 14 days before (Jun 1) and 5 days before (Jun 10) the Jun 15 event.
+        self._make_order(self.event, 'P-1', datetime(2024, 6, 1, 12, 0), 2, '100.00')
+        self._make_order(self.event, 'P-2', datetime(2024, 6, 10, 12, 0), 3, '150.00')
+
+        data = SalesCurveCalculator().get_pacing_series(self.event)
+        self.assertEqual(data['total_tickets'], 5)
+        self.assertEqual(data['total_revenue'], 250.0)
+        # Sorted by days-before descending.
+        self.assertEqual([p['d'] for p in data['series']], [14, 5])
+        self.assertEqual(data['series'][0], {'d': 14, 'tickets': 2, 'revenue': 100.0})
+        self.assertEqual(data['series'][1], {'d': 5, 'tickets': 3, 'revenue': 150.0})
+
+    def test_get_pacing_series_empty(self):
+        from tickets.services.forecasting.sales_curve import SalesCurveCalculator
+        data = SalesCurveCalculator().get_pacing_series(self.event)
+        self.assertEqual(data, {'series': [], 'total_tickets': 0, 'total_revenue': 0.0})
+
+    def test_detail_shows_pacing_card_when_comparable_event_exists(self):
+        self._make_order(self.event, 'P-1', datetime(2024, 6, 1, 12, 0), 2, '100.00')
+        resp = self.client.get(reverse('tickets:event_detail', args=[self.event.id]))
+        self.assertEqual(resp.status_code, 200)
+        self.assertTrue(resp.context['show_pacing_card'])
+        self.assertEqual(resp.context['pacing_default_compare_id'], str(self.past_event.id))
+        self.assertNotEqual(resp.context['pacing_current_json'], 'null')
+        # The pacing card lives in a dedicated Analytics tab.
+        self.assertContains(resp, 'data-bs-target="#tab-analytics"')
+        self.assertContains(resp, 'id="tab-analytics"')
+        # Comparison event is chosen via a searchable combobox.
+        self.assertContains(resp, 'id="pacingCompareInput"')
+        self.assertContains(resp, 'role="combobox"')
+        self.assertContains(resp, 'class="pacing-combo-option is-selected"')
+
+    def test_pacing_today_marker_days_before(self):
+        # Upcoming event 10 days out — the chart should mark "today" at 10d before.
+        upcoming = Event.objects.create(
+            organization=self.org, name='Upcoming Show', venue=self.venue,
+            start_date=timezone.localdate() + timedelta(days=10),
+        )
+        self._make_order(upcoming, 'U-1', datetime(2024, 6, 1, 12, 0), 1, '50.00')
+        resp = self.client.get(reverse('tickets:event_detail', args=[upcoming.id]))
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.context['pacing_today_days_before'], 10)
+        self.assertContains(resp, 'data-today-days-before="10"')
+
+    def test_detail_hides_pacing_card_without_past_event(self):
+        # An event with no prior event to compare against.
+        lone = Event.objects.create(
+            organization=self.org, name='Lone Show', venue=self.venue,
+            start_date=date(2020, 1, 1),
+        )
+        self._make_order(lone, 'L-1', datetime(2019, 12, 1, 12, 0), 1, '50.00')
+        resp = self.client.get(reverse('tickets:event_detail', args=[lone.id]))
+        self.assertEqual(resp.status_code, 200)
+        self.assertFalse(resp.context['show_pacing_card'])
+        # No Analytics tab when there's nothing to compare against.
+        self.assertNotContains(resp, 'data-bs-target="#tab-analytics"')
+
+    def test_pacing_api_returns_series(self):
+        self._make_order(self.past_event, 'PP-1', datetime(2024, 3, 1, 12, 0), 4, '200.00')
+        resp = self.client.get(reverse('tickets:event_pacing_api', args=[self.past_event.id]))
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertEqual(data['id'], str(self.past_event.id))
+        self.assertEqual(data['name'], 'Past Show')
+        self.assertEqual(data['total_tickets'], 4)
+        self.assertEqual(data['start_date'], '2024-03-10')
+
+    def test_pacing_api_scoped_to_org(self):
+        other_venue = Venue.objects.create(organization=self.other_org, name='X', city='LA')
+        other_event = Event.objects.create(
+            organization=self.other_org, name='Other Event', venue=other_venue,
+            start_date=date(2024, 5, 1),
+        )
+        resp = self.client.get(reverse('tickets:event_pacing_api', args=[other_event.id]))
+        self.assertEqual(resp.status_code, 404)
+
+
+
+class AdminImpersonationTests(TestCase):
+    """Tests for the internal-admin "Log in as another user" flow."""
+
+    def setUp(self):
+        self.client = Client()
+        self.org = Organization.objects.create(name='Impersonate Org', slug='impersonate-org')
+
+        # Internal Cue admin.
+        self.admin = User.objects.create_superuser(
+            username='cueadmin', email='cueadmin@example.com', password='testpass123',
+        )
+
+        # Target customer account (an organizer so tickets:home renders).
+        self.target = User.objects.create_user(
+            username='customer', email='customer@example.com', password='targetpass123',
+        )
+        UserProfile.objects.create(
+            user=self.target, organization=self.org,
+            role=UserProfile.Role.ORGANIZER, org_role=UserProfile.OrgRole.OWNER,
+        )
+        OrganizationMembership.objects.create(
+            user=self.target, organization=self.org, org_role=UserProfile.OrgRole.OWNER,
+        )
+
+        # Another privileged account that must never be impersonable.
+        self.staff = User.objects.create_user(
+            username='staffer', email='staffer@example.com', password='staffpass123',
+            is_staff=True,
+        )
+
+    def _start_url(self, user):
+        return reverse('tickets:admin_impersonate_start', args=[user.id])
+
+    def test_superuser_can_start_impersonation(self):
+        self.client.login(username='cueadmin@example.com', password='testpass123')
+        response = self.client.get(self._start_url(self.target))
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.url, reverse('tickets:home'))
+        session = self.client.session
+        self.assertEqual(session['_impersonator_id'], self.admin.pk)
+        # The authenticated user is now the target.
+        self.assertEqual(int(session['_auth_user_id']), self.target.pk)
+
+    def test_impersonation_banner_shows(self):
+        self.client.login(username='cueadmin@example.com', password='testpass123')
+        self.client.get(self._start_url(self.target))
+        response = self.client.get(reverse('tickets:home'))
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.context['is_impersonating'])
+        self.assertContains(response, 'Impersonating')
+
+    def test_non_superuser_cannot_start(self):
+        self.client.login(username='customer@example.com', password='targetpass123')
+        response = self.client.get(self._start_url(self.target))
+        self.assertEqual(response.status_code, 403)
+
+    def test_cannot_impersonate_staff(self):
+        self.client.login(username='cueadmin@example.com', password='testpass123')
+        response = self.client.get(self._start_url(self.staff))
+        self.assertEqual(response.status_code, 302)
+        session = self.client.session
+        self.assertNotIn('_impersonator_id', session)
+        # Still authenticated as the admin, not the staff target.
+        self.assertEqual(int(session['_auth_user_id']), self.admin.pk)
+
+    def test_stop_restores_admin(self):
+        self.client.login(username='cueadmin@example.com', password='testpass123')
+        self.client.get(self._start_url(self.target))
+        response = self.client.post(reverse('tickets:admin_impersonate_stop'))
+        self.assertEqual(response.status_code, 302)
+        session = self.client.session
+        self.assertNotIn('_impersonator_id', session)
+        self.assertEqual(int(session['_auth_user_id']), self.admin.pk)
+
+    def test_stop_requires_post(self):
+        self.client.login(username='cueadmin@example.com', password='testpass123')
+        self.client.get(self._start_url(self.target))
+        response = self.client.get(reverse('tickets:admin_impersonate_stop'))
+        self.assertEqual(response.status_code, 405)
+
+
+class AudienceAnalyticsViewTests(TestCase):
+    """Tests for the audience_analytics view and AudienceGrowthCalculator."""
+
+    def setUp(self):
+        self.client = Client()
+        self.org = Organization.objects.create(name='Audience Org', slug='audience-org')
+        self.user = User.objects.create_user(
+            username='audhost', email='audhost@example.com', password='testpass123',
+        )
+        UserProfile.objects.create(
+            user=self.user, organization=self.org, org_role=UserProfile.OrgRole.HOST,
+        )
+        OrganizationMembership.objects.create(
+            user=self.user, organization=self.org, org_role=UserProfile.OrgRole.HOST,
+        )
+        self.client.login(username='audhost@example.com', password='testpass123')
+        self.client.get(reverse('tickets:home'))  # seed _org_id in session
+
+        # Two markets, one market-less event.
+        self.austin = Market.objects.create(
+            organization=self.org, name='Austin', geography_level='city', geography_value='austin',
+        )
+        self.dallas = Market.objects.create(
+            organization=self.org, name='Dallas', geography_level='city', geography_value='dallas',
+        )
+        venue = Venue.objects.create(organization=self.org, name='V', city='TX')
+        self.ev_austin = Event.objects.create(
+            organization=self.org, name='ATX', venue=venue, market=self.austin,
+            start_date=date(2024, 1, 10), start_time=time(19, 0),
+        )
+        self.ev_dallas = Event.objects.create(
+            organization=self.org, name='DAL', venue=venue, market=self.dallas,
+            start_date=date(2024, 1, 10), start_time=time(19, 0),
+        )
+        self.ev_nomarket = Event.objects.create(
+            organization=self.org, name='NM', venue=venue,
+            start_date=date(2024, 1, 10), start_time=time(19, 0),
+        )
+
+        self._n = 0
+        # c1: first order Austin Jan; c2: Austin Feb.
+        self.c1 = self._customer('c1')
+        self.c2 = self._customer('c2')
+        # c3: first order overall is Dallas Jan, plus an Austin order in Mar
+        # (must be counted under BOTH markets).
+        self.c3 = self._customer('c3')
+        # c4: only a market-less order in Apr.
+        self.c4 = self._customer('c4')
+
+        self._order(self.c1, self.ev_austin, '2024-01-05 10:00:00')
+        self._order(self.c2, self.ev_austin, '2024-02-05 10:00:00')
+        self._order(self.c3, self.ev_dallas, '2024-01-06 10:00:00')
+        self._order(self.c3, self.ev_austin, '2024-03-06 10:00:00')
+        self._order(self.c4, self.ev_nomarket, '2024-04-06 10:00:00')
+
+    def _customer(self, name):
+        return Customer.objects.create(
+            organization=self.org, email=f'{name}@example.com', name=name,
+        )
+
+    def _order(self, customer, event, order_date):
+        self._n += 1
+        return TicketOrder.objects.create(
+            customer=customer, event=event, order_number=f'AUD-{self._n}',
+            order_date=order_date, total_amount=Decimal('50.00'),
+        )
+
+    def _get(self, market=None):
+        url = reverse('tickets:audience_analytics')
+        if market is not None:
+            url += f'?market={market}'
+        return self.client.get(url)
+
+    def _get_q(self, query):
+        return self.client.get(reverse('tickets:audience_analytics') + '?' + query)
+
+    def test_all_markets_counts_every_customer_once(self):
+        resp = self._get()
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.context['summary']['total_customers'], 4)
+        series = json.loads(resp.context['series_json'])
+        self.assertTrue(series)
+        # cumulative is the running sum of new_customers, filling month gaps.
+        running = 0
+        for row in series:
+            running += row['new_customers']
+            self.assertEqual(row['cumulative'], running)
+        self.assertEqual(series[-1]['cumulative'], 4)
+
+    def test_market_filter_counts_cross_market_customer(self):
+        resp = self._get(market=self.austin.id)
+        self.assertEqual(resp.status_code, 200)
+        # c1, c2, and c3 (via their Austin order) => 3.
+        self.assertEqual(resp.context['summary']['total_customers'], 3)
+
+        resp_dal = self._get(market=self.dallas.id)
+        self.assertEqual(resp_dal.context['summary']['total_customers'], 1)
+
+    def test_no_market_option(self):
+        resp = self._get(market='none')
+        self.assertEqual(resp.status_code, 200)
+        self.assertTrue(resp.context['has_no_market'])
+        self.assertEqual(resp.context['summary']['total_customers'], 1)
+
+    def test_invalid_market_falls_back_to_all(self):
+        resp = self._get(market=str(uuid.uuid4()))
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.context['selected_market'], '')
+        self.assertEqual(resp.context['summary']['total_customers'], 4)
+
+    def test_default_window_is_all_time(self):
+        resp = self._get()
+        self.assertEqual(resp.context['active_window'], 'all')
+        self.assertTrue(resp.context['has_data'])
+
+    def test_custom_window_trims_months_but_keeps_true_cumulative(self):
+        resp = self._get_q('window=custom&start=2024-02-01&end=2024-12-31')
+        self.assertEqual(resp.status_code, 200)
+        # Grand total is unaffected by the window.
+        self.assertEqual(resp.context['summary']['total_customers'], 4)
+        # New within the window: c2 (Feb) + c4 (Apr).
+        self.assertEqual(resp.context['summary']['new_in_window'], 2)
+        series = json.loads(resp.context['series_json'])
+        # First shown month is Feb, and the line "starts high": cumulative already
+        # includes the 2 customers acquired in Jan (before the window).
+        self.assertEqual(series[0]['month'], '2024-02')
+        self.assertEqual(series[0]['cumulative'], 3)
+
+    def test_window_and_market_combine(self):
+        resp = self._get_q(
+            f'market={self.austin.id}&window=custom&start=2024-03-01&end=2024-12-31'
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.context['selected_market'], str(self.austin.id))
+        # Austin scope: c1 (Jan), c2 (Feb), c3 (Mar) => grand total 3.
+        self.assertEqual(resp.context['summary']['total_customers'], 3)
+        # Window Mar+ shows only c3's Austin order as new.
+        self.assertEqual(resp.context['summary']['new_in_window'], 1)
+        series = json.loads(resp.context['series_json'])
+        self.assertEqual(series[0]['month'], '2024-03')
+        self.assertEqual(series[0]['cumulative'], 3)
+
+    def test_window_with_no_activity_shows_empty_but_keeps_total(self):
+        resp = self._get_q('window=custom&start=2025-01-01&end=2025-12-31')
+        self.assertEqual(resp.status_code, 200)
+        self.assertFalse(resp.context['has_data'])
+        self.assertEqual(resp.context['summary']['total_customers'], 4)
+        self.assertEqual(resp.context['summary']['new_in_window'], 0)
+
+
+class CustomerExportCsvTests(TestCase):
+    """Streaming CSV export from the Customers page (customer_export_csv)."""
+
+    def setUp(self):
+        self.client = Client()
+        self.org = Organization.objects.create(name='Export Org', slug='export-org')
+        self.other_org = Organization.objects.create(name='Export Other', slug='export-other')
+        self.user = User.objects.create_user(
+            username='export-owner', email='export-owner@example.com', password='pw',
+        )
+        UserProfile.objects.create(
+            user=self.user, organization=self.org, org_role=UserProfile.OrgRole.OWNER,
+        )
+        OrganizationMembership.objects.create(
+            user=self.user, organization=self.org, org_role=UserProfile.OrgRole.OWNER,
+        )
+
+        # In-org customers spanning the filterable dimensions.
+        self.champ = Customer.objects.create(
+            organization=self.org, email='champ@example.com', name='Ada Champion',
+            lifetime_value=Decimal('500.00'), rfm_segment='Champions',
+            phone='+15551230000', sms_opt_in=True,
+            last_order_date=date(2026, 6, 1),
+        )
+        self.risk = Customer.objects.create(
+            organization=self.org, email='risk@example.com', name='Bob Risk',
+            lifetime_value=Decimal('25.00'), rfm_segment='At Risk',
+            phone='+15559990000', sms_opt_in=False,
+            last_order_date=date(2026, 1, 15),
+        )
+        # Placeholder-email customer (CSV import w/o real email) — never exported.
+        self.placeholder = Customer.objects.create(
+            organization=self.org, email='ghost@placeholder.local', name='Ghost',
+            lifetime_value=Decimal('10.00'),
+        )
+        # Foreign-org customer — must never leak.
+        self.foreign = Customer.objects.create(
+            organization=self.other_org, email='foreign@example.com', name='Foreign Fred',
+            lifetime_value=Decimal('999.00'),
+        )
+
+    def _login(self):
+        self.client.force_login(self.user)
+        self.client.get(reverse('tickets:home'))  # seed session org
+
+    def _rows(self, response):
+        import csv
+        body = b''.join(response.streaming_content).decode('utf-8')
+        return list(csv.reader(body.splitlines()))
+
+    def _url(self, **params):
+        from urllib.parse import urlencode
+        base = reverse('tickets:customer_export_csv')
+        return f'{base}?{urlencode(params, doseq=True)}' if params else base
+
+    # ── auth / scoping ────────────────────────────────────────────────
+    def test_requires_login(self):
+        response = self.client.get(reverse('tickets:customer_export_csv'))
+        self.assertEqual(response.status_code, 302)
+        self.assertIn('/login', response['Location'])
+
+    def test_org_scoped_and_excludes_placeholder(self):
+        self._login()
+        rows = self._rows(self.client.get(self._url(mode='all')))
+        emails = {r[1] for r in rows[1:]}
+        self.assertEqual(emails, {'champ@example.com', 'risk@example.com'})
+        self.assertNotIn('foreign@example.com', emails)
+        self.assertNotIn('ghost@placeholder.local', emails)
+
+    # ── response shape / headers ──────────────────────────────────────
+    def test_response_shape(self):
+        self._login()
+        response = self.client.get(self._url(mode='all'))
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response['Content-Type'], 'text/csv')
+        self.assertTrue(
+            response['Content-Disposition'].startswith('attachment; filename="customers-')
+        )
+
+    # ── columns ───────────────────────────────────────────────────────
+    def test_default_header_columns(self):
+        self._login()
+        header = self._rows(self.client.get(self._url(mode='all')))[0]
+        self.assertEqual(header, [
+            'Name', 'Email', 'Phone', 'SMS Opt-In', 'Segment', 'Lifetime Value',
+            'Last Order Date', 'Total Orders', 'Tags',
+        ])
+
+    def test_points_column_when_loyalty_enabled(self):
+        self.org.loyalty_feature_enabled = True
+        self.org.save(update_fields=['loyalty_feature_enabled'])
+        self._login()
+        header = self._rows(self.client.get(self._url(mode='all')))[0]
+        self.assertIn('Points Balance', header)
+
+    def test_market_columns_when_market_filter_active(self):
+        venue = Venue.objects.create(organization=self.org, name='Hall', city='Austin')
+        market = Market.objects.create(
+            organization=self.org, name='Austin', geography_level='city',
+            geography_value='Austin',
+        )
+        event = Event.objects.create(
+            organization=self.org, name='Austin Show', venue=venue,
+            start_date=date(2026, 5, 1), market=market,
+        )
+        TicketOrder.objects.create(
+            customer=self.champ, event=event, order_number='M-1',
+            order_date='2026-05-02 10:00:00', total_amount=Decimal('60.00'),
+        )
+        self._login()
+        header = self._rows(self.client.get(self._url(mode='all', market=str(market.id))))[0]
+        self.assertIn('Market LTV', header)
+        self.assertIn('Market Last Order', header)
+
+    # ── filters respected ─────────────────────────────────────────────
+    def test_segment_filter_respected(self):
+        self._login()
+        rows = self._rows(self.client.get(self._url(mode='all', segment='Champions')))
+        emails = {r[1] for r in rows[1:]}
+        self.assertEqual(emails, {'champ@example.com'})
+
+    def test_min_ltv_filter_respected(self):
+        # Regression guard: the min_ltv filter must be honored by the export
+        # (the older SMS bulk "select all" path dropped it).
+        self._login()
+        rows = self._rows(self.client.get(self._url(mode='all', min_ltv='100')))
+        emails = {r[1] for r in rows[1:]}
+        self.assertEqual(emails, {'champ@example.com'})
+
+    def test_sms_filter_respected(self):
+        self._login()
+        rows = self._rows(self.client.get(self._url(mode='all', sms_filter='1')))
+        emails = {r[1] for r in rows[1:]}
+        self.assertEqual(emails, {'champ@example.com'})
+
+    def test_phone_filter_respected(self):
+        self._login()
+        rows = self._rows(self.client.get(self._url(mode='all', phone_filter='5559990000')))
+        emails = {r[1] for r in rows[1:]}
+        self.assertEqual(emails, {'risk@example.com'})
+
+    def test_last_order_date_filter_respected(self):
+        self._login()
+        rows = self._rows(self.client.get(self._url(mode='all', last_order_from='2026-03-01')))
+        emails = {r[1] for r in rows[1:]}
+        self.assertEqual(emails, {'champ@example.com'})
+
+    # ── selection ─────────────────────────────────────────────────────
+    def test_selected_ids_subset(self):
+        self._login()
+        rows = self._rows(self.client.get(self._url(ids=[str(self.risk.id)])))
+        emails = {r[1] for r in rows[1:]}
+        self.assertEqual(emails, {'risk@example.com'})
+
+    def test_foreign_id_excluded_even_if_selected(self):
+        self._login()
+        rows = self._rows(self.client.get(self._url(ids=[str(self.foreign.id)])))
+        self.assertEqual(len(rows), 1)  # header only
+
+    def test_select_all_ignores_ids_and_exports_filtered_set(self):
+        self._login()
+        # select_all=1 with a segment filter -> full filtered set regardless of ids.
+        rows = self._rows(self.client.get(
+            self._url(select_all='1', segment='Champions', ids=[str(self.risk.id)])
+        ))
+        emails = {r[1] for r in rows[1:]}
+        self.assertEqual(emails, {'champ@example.com'})
+
+    # ── dedup ─────────────────────────────────────────────────────────
+    def test_or_search_does_not_duplicate_rows(self):
+        # Customer whose name and email both match the search term must appear once.
+        Customer.objects.create(
+            organization=self.org, email='match@example.com', name='match person',
+            lifetime_value=Decimal('5.00'),
+        )
+        self._login()
+        rows = self._rows(self.client.get(self._url(mode='all', search='match')))
+        self.assertEqual(len(rows) - 1, 1)
+
+    def test_market_join_does_not_duplicate_rows(self):
+        venue = Venue.objects.create(organization=self.org, name='Hall2', city='Dallas')
+        market = Market.objects.create(
+            organization=self.org, name='Dallas', geography_level='city',
+            geography_value='Dallas',
+        )
+        event = Event.objects.create(
+            organization=self.org, name='Dallas Show', venue=venue,
+            start_date=date(2026, 4, 1), market=market,
+        )
+        for i in range(3):
+            TicketOrder.objects.create(
+                customer=self.champ, event=event, order_number=f'D-{i}',
+                order_date='2026-04-02 10:00:00', total_amount=Decimal('20.00'),
+            )
+        self._login()
+        rows = self._rows(self.client.get(self._url(mode='all', market=str(market.id))))
+        emails = [r[1] for r in rows[1:]]
+        self.assertEqual(emails.count('champ@example.com'), 1)
+
+    # ── formatting ────────────────────────────────────────────────────
+    def test_value_formatting(self):
+        # Null last_order -> empty cell; bool -> Yes/No; tags joined.
+        tag_a = CustomerTag.objects.create(organization=self.org, name='VIP')
+        tag_b = CustomerTag.objects.create(organization=self.org, name='Press')
+        blank = Customer.objects.create(
+            organization=self.org, email='blank@example.com', name='Blank',
+            lifetime_value=Decimal('0.00'), last_order_date=None, sms_opt_in=False,
+        )
+        blank.tags.add(tag_a, tag_b)
+        self._login()
+        rows = self._rows(self.client.get(self._url(ids=[str(blank.id)])))
+        row = rows[1]
+        header = rows[0]
+        self.assertEqual(row[header.index('Last Order Date')], '')
+        self.assertEqual(row[header.index('SMS Opt-In')], 'No')
+        tags_cell = row[header.index('Tags')]
+        self.assertIn('VIP', tags_cell)
+        self.assertIn('Press', tags_cell)
+        self.assertIn(';', tags_cell)
+
+    def test_decimal_not_scientific(self):
+        self._login()
+        rows = self._rows(self.client.get(self._url(ids=[str(self.champ.id)])))
+        header, row = rows[0], rows[1]
+        self.assertEqual(row[header.index('Lifetime Value')], '500.00')
+
+    # ── scale sanity (chunked iterator + prefetch) ───────────────────
+    def test_bulk_export_streams_all_rows(self):
+        Customer.objects.bulk_create([
+            Customer(
+                organization=self.org, email=f'bulk{i}@example.com',
+                name=f'Bulk {i}', lifetime_value=Decimal('1.00'),
+            )
+            for i in range(2000)
+        ])
+        self._login()
+        rows = self._rows(self.client.get(self._url(mode='all')))
+        # 2000 bulk + champ + risk (placeholder excluded) + header.
+        self.assertEqual(len(rows), 2000 + 2 + 1)
+
+
+class SurveyUnsendableEmailTests(TestCase):
+    """Invalid recipient addresses (e.g. the Apple 'Hide My Email' placeholder that
+    can slip in via CSV import) must not loop forever in the survey send task."""
+
+    def setUp(self):
+        self.org = Organization.objects.create(
+            name='Survey Org', slug='survey-org', external_events_enabled=True,
+        )
+        self.venue = Venue.objects.create(organization=self.org, name='The Hall', city='LA')
+        self.event = Event.objects.create(
+            organization=self.org, name='Night Show', venue=self.venue,
+            start_date=date.today(),
+        )
+
+    def _invitation(self, email):
+        customer = Customer.objects.create(
+            organization=self.org, email=email, name='Buyer',
+        )
+        return SurveyInvitation.objects.create(
+            event=self.event, customer=customer, organization=self.org, email=email,
+        )
+
+    def _run_task(self):
+        from tickets.tasks import send_survey_emails_task
+        send_survey_emails_task.apply(args=[str(self.event.id), str(self.org.id)])
+
+    def test_invalid_email_is_marked_and_not_retried(self):
+        from django.core import mail
+        invitation = self._invitation('hide my email')
+
+        self._run_task()
+
+        invitation.refresh_from_db()
+        self.assertIsNone(invitation.sent_at)
+        self.assertIsNotNone(invitation.send_failed_at)
+        self.assertEqual(invitation.send_error, 'invalid_email')
+        self.assertEqual(len(mail.outbox), 0)
+
+        # Second run must not re-select the failed row (no more log spam / sends).
+        with patch('django.core.mail.EmailMultiAlternatives') as mock_email:
+            self._run_task()
+            mock_email.assert_not_called()
+
+    def test_valid_email_still_sends(self):
+        from django.core import mail
+        invitation = self._invitation('real@example.com')
+
+        self._run_task()
+
+        invitation.refresh_from_db()
+        self.assertIsNotNone(invitation.sent_at)
+        self.assertIsNone(invitation.send_failed_at)
+        self.assertEqual(len(mail.outbox), 1)
+
+    def test_recipient_refused_is_permanent(self):
+        import smtplib
+        invitation = self._invitation('real@example.com')
+
+        with patch('django.core.mail.EmailMultiAlternatives') as mock_email:
+            mock_email.return_value.send.side_effect = smtplib.SMTPRecipientsRefused(
+                {'real@example.com': (501, b'Recipient syntax error')}
+            )
+            self._run_task()
+
+        invitation.refresh_from_db()
+        self.assertIsNone(invitation.sent_at)
+        self.assertIsNotNone(invitation.send_failed_at)
+        self.assertEqual(invitation.send_error, 'recipient_refused')
+
+    def test_transient_failure_stays_retryable(self):
+        import smtplib
+        invitation = self._invitation('real@example.com')
+
+        with patch('django.core.mail.EmailMultiAlternatives') as mock_email:
+            mock_email.return_value.send.side_effect = smtplib.SMTPServerDisconnected(
+                'connection reset'
+            )
+            self._run_task()
+
+        invitation.refresh_from_db()
+        self.assertIsNone(invitation.sent_at)
+        self.assertIsNone(invitation.send_failed_at)  # left for a future retry
+
+    def test_transient_recipient_refusal_stays_retryable(self):
+        # 450 = greylisting — smtplib raises SMTPRecipientsRefused for it, but it
+        # is not a permanent failure and must not stamp send_failed_at.
+        import smtplib
+        invitation = self._invitation('real@example.com')
+
+        with patch('django.core.mail.EmailMultiAlternatives') as mock_email:
+            mock_email.return_value.send.side_effect = smtplib.SMTPRecipientsRefused(
+                {'real@example.com': (450, b'Greylisted, try again later')}
+            )
+            self._run_task()
+
+        invitation.refresh_from_db()
+        self.assertIsNone(invitation.sent_at)
+        self.assertIsNone(invitation.send_failed_at)
+
+    def test_transient_sender_refusal_stays_retryable(self):
+        # 421 = server busy / rate limit — raised as SMTPSenderRefused but transient.
+        import smtplib
+        invitation = self._invitation('real@example.com')
+
+        with patch('django.core.mail.EmailMultiAlternatives') as mock_email:
+            mock_email.return_value.send.side_effect = smtplib.SMTPSenderRefused(
+                421, b'Too many messages', 'surveys@cueup.co'
+            )
+            self._run_task()
+
+        invitation.refresh_from_db()
+        self.assertIsNone(invitation.sent_at)
+        self.assertIsNone(invitation.send_failed_at)
+
+    def test_dispatch_skips_events_whose_invitations_all_failed(self):
+        # A permanently-failed invitation still has sent_at NULL; the dispatcher
+        # must not keep enqueueing the send task for its event on every cron run.
+        invitation = self._invitation('hide my email')
+        invitation.scheduled_send_at = timezone.now() - timedelta(hours=1)
+        invitation.send_failed_at = timezone.now()
+        invitation.send_error = 'invalid_email'
+        invitation.save(update_fields=['scheduled_send_at', 'send_failed_at', 'send_error'])
+
+        with patch(
+            'tickets.management.commands.send_due_survey_invitations.send_survey_emails_task'
+        ) as mock_task:
+            call_command('send_due_survey_invitations', '--no-arm')
+            mock_task.delay.assert_not_called()
+            mock_task.apply.assert_not_called()
+
+    def test_cleanup_command_marks_existing_bad_rows(self):
+        bad = self._invitation('hide my email')
+        good = self._invitation('real@example.com')
+
+        call_command('mark_unsendable_survey_invitations', '--apply')
+
+        bad.refresh_from_db()
+        good.refresh_from_db()
+        self.assertIsNotNone(bad.send_failed_at)
+        self.assertEqual(bad.send_error, 'invalid_email')
+        self.assertIsNone(good.send_failed_at)
+
+
+class CSVImportEmailValidationTests(TestCase):
+    """CSV import must reject unparseable customer emails so they never reach the
+    DB and later break survey/marketing sends."""
+
+    def setUp(self):
+        self.org = Organization.objects.create(
+            name='Email Org', slug='email-org', external_events_enabled=True,
+        )
+        self.csv_format = CSVFormat.objects.create(
+            organization=self.org,
+            name='Email Import Format',
+            column_mapping={
+                'order_date': ['order_date'],
+                'customer_email': ['customer_email'],
+                'customer_name': ['customer_name'],
+                'ticket_type': ['ticket_type'],
+            },
+        )
+
+    def _import(self, csv_body):
+        import io
+        upload = UploadedFile.objects.create(
+            organization=self.org,
+            csv_format=self.csv_format,
+            filename='emails.csv',
+            status='pending',
+            metadata={'event_name': 'Email Show', 'event_start_date': '2025-06-01'},
+        )
+        from tickets.csv_processor import CSVProcessor
+        return CSVProcessor(upload, self.csv_format).process_and_save(
+            io.BytesIO(csv_body.encode('utf-8'))
+        )
+
+    def test_invalid_email_is_not_stored(self):
+        csv_body = (
+            "order_date,customer_email,customer_name,ticket_type\n"
+            "2025-06-01,real@example.com,Real Buyer,GA\n"
+            "2025-06-01,hide my email,Placeholder Buyer,GA\n"
+        )
+        self._import(csv_body)
+
+        # The valid address is stored; the placeholder never becomes a Customer.email.
+        self.assertTrue(
+            Customer.objects.filter(organization=self.org, email='real@example.com').exists()
+        )
+        self.assertFalse(
+            Customer.objects.filter(
+                organization=self.org, email='hide my email'
+            ).exists()
+        )
+
+
+class ExpenseInlineCreateTests(TestCase):
+    """AJAX (inline) add-expense flow on the event detail page."""
+
+    def setUp(self):
+        self.client = Client()
+        self.org = Organization.objects.create(
+            name='Inline Expense Org',
+            slug='inline-expense-org',
+        )
+        self.user = User.objects.create_user(
+            username='inline-expense-owner',
+            email='inline-expense-owner@example.com',
+            password='pw',
+        )
+        UserProfile.objects.create(
+            user=self.user,
+            organization=self.org,
+            org_role=UserProfile.OrgRole.OWNER,
+        )
+        OrganizationMembership.objects.create(
+            user=self.user,
+            organization=self.org,
+            org_role=UserProfile.OrgRole.OWNER,
+        )
+        self.client.force_login(self.user)
+        self.client.get(reverse('tickets:home'))
+        self.venue = Venue.objects.create(
+            organization=self.org,
+            name='Inline Expense Venue',
+            city='Austin',
+            state='TX',
+            country='US',
+        )
+        self.event = Event.objects.create(
+            organization=self.org,
+            name='Inline Expense Show',
+            venue=self.venue,
+            start_date=date(2025, 3, 1),
+            start_time=time(20, 0),
+            end_date=date(2025, 3, 1),
+            end_time=time(22, 0),
+        )
+        self.url = reverse('tickets:expense_create', args=[self.event.id])
+
+    def test_ajax_post_creates_expense_and_returns_json(self):
+        response = self.client.post(
+            self.url,
+            {
+                'category': 'production',
+                'description': 'Sound engineer',
+                'amount': '150.00',
+                'expense_date': '2025-03-01',
+                'notes': '',
+            },
+            HTTP_X_REQUESTED_WITH='XMLHttpRequest',
+        )
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertTrue(data['ok'])
+        self.assertEqual(data['expense']['description'], 'Sound engineer')
+        self.assertEqual(data['expense']['amount_display'], '150.00')
+        self.assertEqual(data['expense']['category_display'], 'Production / AV / Sound')
+        self.assertIn('edit_url', data['expense'])
+        self.assertIn('delete_url', data['expense'])
+        self.assertEqual(data['totals']['total_expenses_display'], '150.00')
+        self.assertTrue(
+            any(c['label'] == 'Production / AV / Sound' for c in data['categories'])
+        )
+        self.assertTrue(
+            EventExpense.objects.filter(
+                event=self.event, description='Sound engineer'
+            ).exists()
+        )
+
+    def test_ajax_post_invalid_returns_422_with_field_errors(self):
+        response = self.client.post(
+            self.url,
+            {
+                'category': 'production',
+                'description': 'Missing amount',
+                'amount': '',
+            },
+            HTTP_X_REQUESTED_WITH='XMLHttpRequest',
+        )
+        self.assertEqual(response.status_code, 422)
+        data = response.json()
+        self.assertFalse(data['ok'])
+        self.assertIn('amount', data['errors'])
+        self.assertFalse(
+            EventExpense.objects.filter(
+                event=self.event, description='Missing amount'
+            ).exists()
+        )
+
+    def test_event_detail_renders_inline_expense_form(self):
+        response = self.client.get(reverse('tickets:event_detail', args=[self.event.id]))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'data-expense-form')
+        self.assertContains(response, 'data-expense-body')
+        self.assertContains(response, 'data-expense-add-url')
+
+    def test_non_ajax_post_still_redirects(self):
+        response = self.client.post(
+            self.url,
+            {
+                'category': 'venue',
+                'description': 'Room rental',
+                'amount': '500.00',
+                'expense_date': '2025-03-01',
+            },
+        )
+        self.assertRedirects(
+            response,
+            reverse('tickets:event_detail', args=[self.event.id]),
+        )
+        self.assertTrue(
+            EventExpense.objects.filter(
+                event=self.event, description='Room rental'
+            ).exists()
+        )
+
+
+class EventIncomeInlineCreateTests(TestCase):
+    """AJAX (inline) add-income flow on the event detail page."""
+
+    def setUp(self):
+        from .models import IncomeSource, EventIncome
+        self.IncomeSource = IncomeSource
+        self.EventIncome = EventIncome
+        self.client = Client()
+        self.org = Organization.objects.create(
+            name='Inline Income Org',
+            slug='inline-income-org',
+        )
+        self.user = User.objects.create_user(
+            username='inline-income-owner',
+            email='inline-income-owner@example.com',
+            password='pw',
+        )
+        UserProfile.objects.create(
+            user=self.user,
+            organization=self.org,
+            org_role=UserProfile.OrgRole.OWNER,
+        )
+        OrganizationMembership.objects.create(
+            user=self.user,
+            organization=self.org,
+            org_role=UserProfile.OrgRole.OWNER,
+        )
+        self.client.force_login(self.user)
+        self.client.get(reverse('tickets:home'))
+        self.venue = Venue.objects.create(
+            organization=self.org,
+            name='Inline Income Venue',
+            city='Austin',
+            state='TX',
+            country='US',
+        )
+        self.event = Event.objects.create(
+            organization=self.org,
+            name='Inline Income Show',
+            venue=self.venue,
+            start_date=date(2025, 3, 1),
+            start_time=time(20, 0),
+            end_date=date(2025, 3, 1),
+            end_time=time(22, 0),
+        )
+        self.source = IncomeSource.objects.create(
+            organization=self.org, name='Bar Splits', order=0,
+        )
+        self.url = reverse('tickets:event_income_create', args=[self.event.id])
+
+    def test_ajax_post_creates_income_and_returns_json(self):
+        response = self.client.post(
+            self.url,
+            {
+                'income_source': str(self.source.id),
+                'amount': '500.00',
+                'income_date': '2025-03-01',
+                'notes': '',
+            },
+            HTTP_X_REQUESTED_WITH='XMLHttpRequest',
+        )
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertTrue(data['ok'])
+        self.assertEqual(data['income']['source_name'], 'Bar Splits')
+        self.assertEqual(data['income']['amount_display'], '500.00')
+        self.assertIn('edit_url', data['income'])
+        self.assertIn('delete_url', data['income'])
+        self.assertEqual(data['totals']['total_additional_income_display'], '500.00')
+        self.assertTrue(data['totals']['has_additional_income'])
+        self.assertTrue(
+            self.EventIncome.objects.filter(
+                event=self.event, income_source=self.source, amount=Decimal('500.00')
+            ).exists()
+        )
+
+    def test_ajax_post_invalid_returns_422_with_field_errors(self):
+        response = self.client.post(
+            self.url,
+            {
+                'income_source': str(self.source.id),
+                'amount': '',
+            },
+            HTTP_X_REQUESTED_WITH='XMLHttpRequest',
+        )
+        self.assertEqual(response.status_code, 422)
+        data = response.json()
+        self.assertFalse(data['ok'])
+        self.assertIn('amount', data['errors'])
+        self.assertFalse(
+            self.EventIncome.objects.filter(event=self.event).exists()
+        )
+
+    def test_event_detail_renders_inline_income_form(self):
+        response = self.client.get(reverse('tickets:event_detail', args=[self.event.id]))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'data-income-form')
+        self.assertContains(response, 'data-income-body')
+        self.assertContains(response, 'data-income-add-url')
+
+    def test_non_ajax_post_still_redirects(self):
+        response = self.client.post(
+            self.url,
+            {
+                'income_source': str(self.source.id),
+                'amount': '200.00',
+                'income_date': '2025-03-01',
+            },
+        )
+        self.assertRedirects(
+            response,
+            reverse('tickets:event_detail', args=[self.event.id]),
+        )
+        self.assertTrue(
+            self.EventIncome.objects.filter(
+                event=self.event, amount=Decimal('200.00')
+            ).exists()
+        )
