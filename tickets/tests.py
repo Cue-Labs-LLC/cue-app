@@ -18403,3 +18403,198 @@ class CustomerExportCsvTests(TestCase):
         rows = self._rows(self.client.get(self._url(mode='all')))
         # 2000 bulk + champ + risk (placeholder excluded) + header.
         self.assertEqual(len(rows), 2000 + 2 + 1)
+
+
+class SurveyUnsendableEmailTests(TestCase):
+    """Invalid recipient addresses (e.g. the Apple 'Hide My Email' placeholder that
+    can slip in via CSV import) must not loop forever in the survey send task."""
+
+    def setUp(self):
+        self.org = Organization.objects.create(
+            name='Survey Org', slug='survey-org', external_events_enabled=True,
+        )
+        self.venue = Venue.objects.create(organization=self.org, name='The Hall', city='LA')
+        self.event = Event.objects.create(
+            organization=self.org, name='Night Show', venue=self.venue,
+            start_date=date.today(),
+        )
+
+    def _invitation(self, email):
+        customer = Customer.objects.create(
+            organization=self.org, email=email, name='Buyer',
+        )
+        return SurveyInvitation.objects.create(
+            event=self.event, customer=customer, organization=self.org, email=email,
+        )
+
+    def _run_task(self):
+        from tickets.tasks import send_survey_emails_task
+        send_survey_emails_task.apply(args=[str(self.event.id), str(self.org.id)])
+
+    def test_invalid_email_is_marked_and_not_retried(self):
+        from django.core import mail
+        invitation = self._invitation('hide my email')
+
+        self._run_task()
+
+        invitation.refresh_from_db()
+        self.assertIsNone(invitation.sent_at)
+        self.assertIsNotNone(invitation.send_failed_at)
+        self.assertEqual(invitation.send_error, 'invalid_email')
+        self.assertEqual(len(mail.outbox), 0)
+
+        # Second run must not re-select the failed row (no more log spam / sends).
+        with patch('django.core.mail.EmailMultiAlternatives') as mock_email:
+            self._run_task()
+            mock_email.assert_not_called()
+
+    def test_valid_email_still_sends(self):
+        from django.core import mail
+        invitation = self._invitation('real@example.com')
+
+        self._run_task()
+
+        invitation.refresh_from_db()
+        self.assertIsNotNone(invitation.sent_at)
+        self.assertIsNone(invitation.send_failed_at)
+        self.assertEqual(len(mail.outbox), 1)
+
+    def test_recipient_refused_is_permanent(self):
+        import smtplib
+        invitation = self._invitation('real@example.com')
+
+        with patch('django.core.mail.EmailMultiAlternatives') as mock_email:
+            mock_email.return_value.send.side_effect = smtplib.SMTPRecipientsRefused(
+                {'real@example.com': (501, b'Recipient syntax error')}
+            )
+            self._run_task()
+
+        invitation.refresh_from_db()
+        self.assertIsNone(invitation.sent_at)
+        self.assertIsNotNone(invitation.send_failed_at)
+        self.assertEqual(invitation.send_error, 'recipient_refused')
+
+    def test_transient_failure_stays_retryable(self):
+        import smtplib
+        invitation = self._invitation('real@example.com')
+
+        with patch('django.core.mail.EmailMultiAlternatives') as mock_email:
+            mock_email.return_value.send.side_effect = smtplib.SMTPServerDisconnected(
+                'connection reset'
+            )
+            self._run_task()
+
+        invitation.refresh_from_db()
+        self.assertIsNone(invitation.sent_at)
+        self.assertIsNone(invitation.send_failed_at)  # left for a future retry
+
+    def test_transient_recipient_refusal_stays_retryable(self):
+        # 450 = greylisting — smtplib raises SMTPRecipientsRefused for it, but it
+        # is not a permanent failure and must not stamp send_failed_at.
+        import smtplib
+        invitation = self._invitation('real@example.com')
+
+        with patch('django.core.mail.EmailMultiAlternatives') as mock_email:
+            mock_email.return_value.send.side_effect = smtplib.SMTPRecipientsRefused(
+                {'real@example.com': (450, b'Greylisted, try again later')}
+            )
+            self._run_task()
+
+        invitation.refresh_from_db()
+        self.assertIsNone(invitation.sent_at)
+        self.assertIsNone(invitation.send_failed_at)
+
+    def test_transient_sender_refusal_stays_retryable(self):
+        # 421 = server busy / rate limit — raised as SMTPSenderRefused but transient.
+        import smtplib
+        invitation = self._invitation('real@example.com')
+
+        with patch('django.core.mail.EmailMultiAlternatives') as mock_email:
+            mock_email.return_value.send.side_effect = smtplib.SMTPSenderRefused(
+                421, b'Too many messages', 'surveys@cueup.co'
+            )
+            self._run_task()
+
+        invitation.refresh_from_db()
+        self.assertIsNone(invitation.sent_at)
+        self.assertIsNone(invitation.send_failed_at)
+
+    def test_dispatch_skips_events_whose_invitations_all_failed(self):
+        # A permanently-failed invitation still has sent_at NULL; the dispatcher
+        # must not keep enqueueing the send task for its event on every cron run.
+        invitation = self._invitation('hide my email')
+        invitation.scheduled_send_at = timezone.now() - timedelta(hours=1)
+        invitation.send_failed_at = timezone.now()
+        invitation.send_error = 'invalid_email'
+        invitation.save(update_fields=['scheduled_send_at', 'send_failed_at', 'send_error'])
+
+        with patch(
+            'tickets.management.commands.send_due_survey_invitations.send_survey_emails_task'
+        ) as mock_task:
+            call_command('send_due_survey_invitations', '--no-arm')
+            mock_task.delay.assert_not_called()
+            mock_task.apply.assert_not_called()
+
+    def test_cleanup_command_marks_existing_bad_rows(self):
+        bad = self._invitation('hide my email')
+        good = self._invitation('real@example.com')
+
+        call_command('mark_unsendable_survey_invitations', '--apply')
+
+        bad.refresh_from_db()
+        good.refresh_from_db()
+        self.assertIsNotNone(bad.send_failed_at)
+        self.assertEqual(bad.send_error, 'invalid_email')
+        self.assertIsNone(good.send_failed_at)
+
+
+class CSVImportEmailValidationTests(TestCase):
+    """CSV import must reject unparseable customer emails so they never reach the
+    DB and later break survey/marketing sends."""
+
+    def setUp(self):
+        self.org = Organization.objects.create(
+            name='Email Org', slug='email-org', external_events_enabled=True,
+        )
+        self.csv_format = CSVFormat.objects.create(
+            organization=self.org,
+            name='Email Import Format',
+            column_mapping={
+                'order_date': ['order_date'],
+                'customer_email': ['customer_email'],
+                'customer_name': ['customer_name'],
+                'ticket_type': ['ticket_type'],
+            },
+        )
+
+    def _import(self, csv_body):
+        import io
+        upload = UploadedFile.objects.create(
+            organization=self.org,
+            csv_format=self.csv_format,
+            filename='emails.csv',
+            status='pending',
+            metadata={'event_name': 'Email Show', 'event_start_date': '2025-06-01'},
+        )
+        from tickets.csv_processor import CSVProcessor
+        return CSVProcessor(upload, self.csv_format).process_and_save(
+            io.BytesIO(csv_body.encode('utf-8'))
+        )
+
+    def test_invalid_email_is_not_stored(self):
+        csv_body = (
+            "order_date,customer_email,customer_name,ticket_type\n"
+            "2025-06-01,real@example.com,Real Buyer,GA\n"
+            "2025-06-01,hide my email,Placeholder Buyer,GA\n"
+        )
+        self._import(csv_body)
+
+        # The valid address is stored; the placeholder never becomes a Customer.email.
+        self.assertTrue(
+            Customer.objects.filter(organization=self.org, email='real@example.com').exists()
+        )
+        self.assertFalse(
+            Customer.objects.filter(
+                organization=self.org, email='hide my email'
+            ).exists()
+        )
