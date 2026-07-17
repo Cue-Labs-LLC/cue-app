@@ -450,6 +450,18 @@
         {% endif %}
 
         <div class="cd-attr-row">
+            <div class="cd-attr-label">Source</div>
+            <div class="cd-attr-value">
+                {% if customer.acquisition_source %}
+                <span class="badge bg-{{ acquisition_source_badge_color }} fs-6">{{ customer.get_acquisition_source_display }}</span>
+                {% else %}
+                <span class="badge bg-secondary fs-6">Unknown</span>
+                {% endif %}
+                <span class="cd-muted">How this customer was acquired</span>
+            </div>
+        </div>
+
+        <div class="cd-attr-row">
             <div class="cd-attr-label">Tags</div>
             <div class="cd-attr-value">
                 {% for tag in assigned_tags %}

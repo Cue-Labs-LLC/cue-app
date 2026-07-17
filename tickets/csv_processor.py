@@ -522,7 +522,10 @@ class CSVProcessor:
             placeholder_customer, _ = Customer.objects.get_or_create(
                 organization=org,
                 email=placeholder_email,
-                defaults={'name': 'In-Person Sales'},
+                defaults={
+                    'name': 'In-Person Sales',
+                    'acquisition_source': Customer.AcquisitionSource.IMPORT,
+                },
             )
             existing_customers[placeholder_email] = placeholder_customer
 
@@ -530,7 +533,10 @@ class CSVProcessor:
             no_contact_customer, _ = Customer.objects.get_or_create(
                 organization=org,
                 email=no_contact_email,
-                defaults={'name': 'Guest (No Contact Info)'},
+                defaults={
+                    'name': 'Guest (No Contact Info)',
+                    'acquisition_source': Customer.AcquisitionSource.IMPORT,
+                },
             )
             existing_customers[no_contact_email] = no_contact_customer
 
@@ -719,6 +725,7 @@ class CSVProcessor:
                                         email=customer_email,
                                         name=mapped_row.get('customer_name', ''),
                                         phone=_e164_or_raw(mapped_row.get('customer_phone', '')),
+                                        acquisition_source=Customer.AcquisitionSource.IMPORT,
                                         **({'organization': org} if org is not None else {}),
                                     )
                                     # Consent is only granted, never revoked, on import. SMS

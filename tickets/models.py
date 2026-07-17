@@ -885,6 +885,13 @@ class UploadedFile(AuditBaseModel):
 
 class Customer(BaseModel):
     """Customer information with lifetime value tracking."""
+
+    class AcquisitionSource(models.TextChoices):
+        SUBSCRIBE_FORM  = 'subscribe_form',  'Opt-in form'
+        TICKET_PURCHASE = 'ticket_purchase', 'Ticket purchase'
+        IMPORT          = 'import',          'Import'
+        MANUAL          = 'manual',          'Manual'
+
     organization = models.ForeignKey(
         Organization,
         on_delete=models.CASCADE,
@@ -954,6 +961,16 @@ class Customer(BaseModel):
     # drives the min_lifetime_points tier rule.
     points_balance = models.PositiveIntegerField(default=0)
     lifetime_points = models.PositiveIntegerField(default=0)
+    # How this customer first entered the org. Set once at creation and treated as
+    # immutable — creation sites stamp it, nothing overwrites it. Blank = Unknown
+    # (unattributed legacy rows the backfill couldn't classify).
+    acquisition_source = models.CharField(
+        max_length=20,
+        blank=True,
+        db_index=True,
+        choices=AcquisitionSource.choices,
+        help_text="How this customer first entered the org. Set once at creation; immutable.",
+    )
 
     class Meta:
         ordering = ['-lifetime_value', 'name']
