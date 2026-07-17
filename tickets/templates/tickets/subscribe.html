@@ -30,17 +30,19 @@
       min-height:100dvh; display:flex; justify-content:center;
       padding:max(28px,env(safe-area-inset-top)) 22px calc(40px + env(safe-area-inset-bottom));
     }
-    .wrap{width:100%;max-width:420px;margin:auto;display:flex;flex-direction:column;gap:26px}
+    .wrap{width:100%;max-width:420px;margin:auto;display:flex;flex-direction:column;gap:24px}
     /* Brand */
     .brand{display:flex;flex-direction:column;align-items:center;text-align:center;gap:12px}
-    .avatar{width:88px;height:88px;border-radius:50%;object-fit:cover;
-      background:var(--surface);border:1px solid var(--border)}
+    .avatar{width:84px;height:84px;border-radius:50%;object-fit:cover;
+      background:var(--surface);border:1px solid var(--border-mid)}
     .avatar--initial{display:flex;align-items:center;justify-content:center;
       font-family:var(--font-display);font-weight:800;font-size:2.2rem;color:var(--text)}
     .org-name{font-family:var(--font-display);font-weight:800;font-size:2.1rem;
       line-height:1.02;letter-spacing:0.01em;color:var(--text)}
     .org-desc{font-size:0.86rem;color:var(--text-3);max-width:36ch}
     /* Form */
+    .form-title{font-family:var(--font-display);font-weight:700;font-size:1.2rem;
+      line-height:1.15;letter-spacing:0.02em;color:var(--text);text-align:center;margin:0 0 2px}
     form{display:flex;flex-direction:column;gap:16px}
     .field{display:flex;flex-direction:column;gap:7px}
     .form-label{font-family:var(--font-body);font-size:0.7rem;font-weight:500;
@@ -53,6 +55,12 @@
     }
     .form-control::placeholder{color:var(--text-3)}
     .form-control:focus{border-color:var(--border-strong);background:var(--surface-3)}
+    /* Custom caret so the market select looks designed, not default-native */
+    select.form-control{
+      appearance:none;-webkit-appearance:none;cursor:pointer;padding-right:38px;
+      background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1.5 6 6.5 11 1.5' fill='none' stroke='%23C8C5C1' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+      background-repeat:no-repeat;background-position:right 14px center;
+    }
     .field--error .form-control{border-color:var(--danger)}
     .err{font-family:var(--font-body);font-size:0.7rem;letter-spacing:0.03em;color:var(--danger)}
     /* Consent */
@@ -109,6 +117,7 @@
 
     {% elif step == 'form' %}
       {% if send_error %}<div class="banner" role="alert">{{ send_error }}</div>{% endif %}
+      {% if org.sms_subscribe_title %}<h2 class="form-title">{{ org.sms_subscribe_title }}</h2>{% endif %}
       <form method="post" action="{% url 'tickets:subscribe' org.slug %}" novalidate>
         {% csrf_token %}
         <div class="field {% if form.phone.errors %}field--error{% endif %}">
