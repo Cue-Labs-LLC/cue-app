@@ -103,6 +103,34 @@
                         their name, email, and mobile, confirm a texted code, and join your SMS list.
                         No Cue account needed.
                     </p>
+                    {% if market_count > 1 %}
+                    <form method="post" action="{% url 'tickets:marketing_subscribe_settings' %}" class="mb-3">
+                        {% csrf_token %}
+                        <div class="form-check form-switch mb-1">
+                            <input class="form-check-input" type="checkbox" role="switch"
+                                   id="segmentByMarket" name="segment_by_market"
+                                   {% if segment_by_market %}checked{% endif %}
+                                   onchange="this.form.submit()">
+                            <label class="form-check-label" for="segmentByMarket">Ask subscribers which market they're in</label>
+                        </div>
+                        <p class="text-secondary small mb-0" style="margin-left:2.6em;">
+                            When on, the subscribe page adds an area picker so new fans join the right
+                            market — market-specific texts then reach them right away.
+                        </p>
+                    </form>
+                    {% if segment_by_market %}
+                    <form method="post" action="{% url 'tickets:marketing_subscribe_settings' %}" class="mb-3" style="margin-left:2.6em;">
+                        {% csrf_token %}
+                        <label class="form-label small text-secondary mb-1" for="marketLabelInput">Picker label</label>
+                        <div class="input-group input-group-sm" style="max-width:340px;">
+                            <input type="text" class="form-control" id="marketLabelInput" name="market_label"
+                                   maxlength="60" value="{{ market_label }}" placeholder="Your area">
+                            <button class="btn btn-outline-secondary" type="submit">Save</button>
+                        </div>
+                        <p class="text-secondary small mt-1 mb-0">Shown above the area picker (e.g. "Which city?"). Blank uses "Your area".</p>
+                    </form>
+                    {% endif %}
+                    {% endif %}
                     <div class="input-group">
                         <input type="text" class="form-control" id="subscribeLinkInput"
                                value="{{ subscribe_url }}" readonly aria-label="Your subscribe link">

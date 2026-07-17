@@ -217,6 +217,30 @@ class FilterCustomersRegressionTests(TestCase):
         )
         self.assertEqual(emails, {'vip@x.com'})
 
+    def test_filter_customers_home_market_subscriber(self):
+        # A direct subscriber (market-tagged subscribe link) with NO purchase history
+        # is reachable by a market-scoped campaign via Customer.home_market, is scoped
+        # to that market only, and is NOT swept into the "No market" bucket.
+        from .services.customer_filters import NO_MARKET_VALUE, filter_customers
+        make_customer(self.org, 'sub@x.com', name='Subby',
+                      rfm_segment='New', home_market=self.market)
+        in_austin = set(
+            filter_customers(self.org, {'market_id': str(self.market.id)})
+            .distinct().values_list('email', flat=True)
+        )
+        self.assertIn('sub@x.com', in_austin)   # home_market match, no orders
+        self.assertIn('vip@x.com', in_austin)   # purchase-derived match still works
+        in_seattle = set(
+            filter_customers(self.org, {'market_id': str(self.other_market.id)})
+            .distinct().values_list('email', flat=True)
+        )
+        self.assertNotIn('sub@x.com', in_seattle)
+        no_market = set(
+            filter_customers(self.org, {'market_id': NO_MARKET_VALUE})
+            .distinct().values_list('email', flat=True)
+        )
+        self.assertNotIn('sub@x.com', no_market)
+
     def test_no_market_filter(self):
         from .services.customer_filters import NO_MARKET_VALUE
         resp = self.client.get(reverse('tickets:customer_list'), {'market': NO_MARKET_VALUE})
@@ -2338,3 +2362,144 @@ class SMSTicketLinkTests(TestCase):
         self.org.save(update_fields=['sms_marketing_enabled'])
         resp = self.client.post(self.url, {'event': str(self.live.id)})
         self.assertEqual(resp.status_code, 404)
+
+
+@override_settings(E2E_TEST_MODE=True)
+class SubscribeMarketTagTests(TestCase):
+    """The public subscribe page asks new subscribers which market they're in — but
+    ONLY when the org enabled segmentation AND has >1 market. The choice lands on
+    Customer.home_market so market-scoped SMS campaigns reach them with no purchase.
+    In E2E mode the OTP is '000000'."""
+
+    def setUp(self):
+        self.client = Client()
+        self.org = Organization.objects.create(
+            name='Familiar Faces', slug='familiar-faces',
+            sms_marketing_enabled=True, sms_subscribe_segment_by_market=True,
+        )
+        self.austin = Market.objects.create(
+            organization=self.org, name='Austin', geography_level='city', geography_value='Austin',
+        )
+        self.dallas = Market.objects.create(
+            organization=self.org, name='Dallas', geography_level='city', geography_value='Dallas',
+        )
+
+    def _subscribe(self, market_field=None):
+        """Run the two-step subscribe→verify flow; return the created Customer (or None
+        if signup was blocked, e.g. a required/invalid market)."""
+        sub_url = reverse('tickets:subscribe', args=[self.org.slug])
+        post = {'name': 'Ada', 'email': 'ada@x.com', 'phone': '+13105551234', 'sms_consent': 'on'}
+        if market_field is not None:
+            post['market'] = market_field
+        self.client.post(sub_url, post)
+        self.client.post(reverse('tickets:subscribe_verify', args=[self.org.slug]),
+                         {'otp_code': '000000'})
+        return Customer.objects.filter(organization=self.org, email='ada@x.com').first()
+
+    # -- selector visibility gate --
+
+    def test_selector_shown_when_enabled_and_multi_market(self):
+        resp = self.client.get(reverse('tickets:subscribe', args=[self.org.slug]))
+        self.assertContains(resp, 'name="market"')
+        self.assertContains(resp, 'Austin')
+        self.assertContains(resp, 'Dallas')
+
+    def test_selector_hidden_when_toggle_off(self):
+        self.org.sms_subscribe_segment_by_market = False
+        self.org.save(update_fields=['sms_subscribe_segment_by_market'])
+        resp = self.client.get(reverse('tickets:subscribe', args=[self.org.slug]))
+        self.assertNotContains(resp, 'name="market"')
+
+    def test_selector_hidden_when_single_market(self):
+        self.dallas.delete()
+        resp = self.client.get(reverse('tickets:subscribe', args=[self.org.slug]))
+        self.assertNotContains(resp, 'name="market"')
+
+    def test_default_picker_label(self):
+        resp = self.client.get(reverse('tickets:subscribe', args=[self.org.slug]))
+        self.assertContains(resp, '>Your area</label>')
+
+    def test_custom_picker_label(self):
+        self.org.sms_subscribe_market_label = 'Which city?'
+        self.org.save(update_fields=['sms_subscribe_market_label'])
+        resp = self.client.get(reverse('tickets:subscribe', args=[self.org.slug]))
+        self.assertContains(resp, '>Which city?</label>')
+        self.assertNotContains(resp, '>Your area</label>')
+
+    # -- capture --
+
+    def test_selected_market_sets_home_market(self):
+        customer = self._subscribe(market_field=str(self.dallas.id))
+        self.assertEqual(customer.home_market_id, self.dallas.id)
+        self.assertTrue(customer.sms_opt_in)
+
+    def test_market_required_when_shown(self):
+        # No market posted → form error, no OTP sent, no consent record, no customer.
+        from .models import SMSConsentRecord
+        sub_url = reverse('tickets:subscribe', args=[self.org.slug])
+        resp = self.client.post(sub_url, {
+            'name': 'Ada', 'email': 'ada@x.com', 'phone': '+13105551234', 'sms_consent': 'on',
+        })
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, 'Please choose your area.')
+        self.assertFalse(SMSConsentRecord.objects.filter(organization=self.org).exists())
+        self.assertFalse(Customer.objects.filter(organization=self.org, email='ada@x.com').exists())
+
+    def test_no_segmentation_leaves_home_market_null(self):
+        self.org.sms_subscribe_segment_by_market = False
+        self.org.save(update_fields=['sms_subscribe_segment_by_market'])
+        customer = self._subscribe()
+        self.assertIsNotNone(customer)
+        self.assertIsNone(customer.home_market_id)
+
+    def test_foreign_market_rejected(self):
+        # A market id from another org isn't in the choices → form rejects, signup blocked.
+        other = Organization.objects.create(name='Other', slug='other-org')
+        foreign = Market.objects.create(
+            organization=other, name='NYC', geography_level='city', geography_value='NYC',
+        )
+        customer = self._subscribe(market_field=str(foreign.id))
+        self.assertIsNone(customer)
+
+    # -- organizer toggle endpoint --
+
+    def test_toggle_endpoint_updates_org(self):
+        user = User.objects.create_user('own', 'own@test.com', 'pw')
+        UserProfile.objects.create(
+            user=user, organization=self.org, org_role=UserProfile.OrgRole.OWNER,
+        )
+        self.client.login(username='own@test.com', password='pw')
+        self.client.get(reverse('tickets:home'))  # prime session org
+        self.org.sms_subscribe_segment_by_market = False
+        self.org.save(update_fields=['sms_subscribe_segment_by_market'])
+
+        resp = self.client.post(reverse('tickets:marketing_subscribe_settings'),
+                                {'segment_by_market': 'on'})
+        self.assertEqual(resp.status_code, 302)
+        self.org.refresh_from_db()
+        self.assertTrue(self.org.sms_subscribe_segment_by_market)
+
+        # An unchecked switch omits the field entirely → turns segmentation off.
+        self.client.post(reverse('tickets:marketing_subscribe_settings'), {})
+        self.org.refresh_from_db()
+        self.assertFalse(self.org.sms_subscribe_segment_by_market)
+
+    def test_label_endpoint_updates_without_clobbering_toggle(self):
+        user = User.objects.create_user('own2', 'own2@test.com', 'pw')
+        UserProfile.objects.create(
+            user=user, organization=self.org, org_role=UserProfile.OrgRole.OWNER,
+        )
+        self.client.login(username='own2@test.com', password='pw')
+        self.client.get(reverse('tickets:home'))  # prime session org
+        # org starts with segmentation ON (setUp). Saving a label must not turn it off.
+        resp = self.client.post(reverse('tickets:marketing_subscribe_settings'),
+                                {'market_label': '  Which city?  '})
+        self.assertEqual(resp.status_code, 302)
+        self.org.refresh_from_db()
+        self.assertEqual(self.org.sms_subscribe_market_label, 'Which city?')  # trimmed
+        self.assertTrue(self.org.sms_subscribe_segment_by_market)  # untouched
+        # Toggling (no market_label key) must not wipe the saved label.
+        self.client.post(reverse('tickets:marketing_subscribe_settings'),
+                         {'segment_by_market': 'on'})
+        self.org.refresh_from_db()
+        self.assertEqual(self.org.sms_subscribe_market_label, 'Which city?')

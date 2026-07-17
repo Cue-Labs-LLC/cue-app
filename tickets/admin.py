@@ -824,7 +824,7 @@ class OrganizationAdmin(admin.ModelAdmin):
     inlines = [OrganizationMembershipInline]
     fieldsets = (
         ('Basic', {'fields': ('name', 'slug', 'rfm_recalc_in_progress')}),
-        ('Feature Flags', {'fields': ('external_events_enabled', 'waitlist_feature_enabled', 'sms_marketing_enabled', 'loyalty_feature_enabled', 'ai_event_summary_enabled')}),
+        ('Feature Flags', {'fields': ('external_events_enabled', 'waitlist_feature_enabled', 'sms_marketing_enabled', 'sms_subscribe_segment_by_market', 'sms_subscribe_market_label', 'loyalty_feature_enabled', 'ai_event_summary_enabled')}),
         ('SMS Credits', {'fields': ('sms_credit_balance_cents',), 'description': 'Prepaid wallet balance in cents. For audited changes prefer creating an SMS credit transaction.'}),
         ('Stripe Connect', {'fields': ('stripe_account_id', 'stripe_onboarding_complete')}),
         ('Meta Ads', {

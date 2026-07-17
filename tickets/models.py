@@ -144,6 +144,23 @@ class Organization(BaseModel):
             'orgs, so the SMS gate lives here.'
         ),
     )
+    sms_subscribe_segment_by_market = models.BooleanField(
+        default=False,
+        help_text=(
+            "When on (and the org has >1 market), the public subscribe page asks each "
+            "new subscriber which market they're in and stores it on Customer.home_market, "
+            "so market-scoped SMS campaigns can reach them before any purchase."
+        ),
+    )
+    sms_subscribe_market_label = models.CharField(
+        max_length=60,
+        blank=True,
+        default='',
+        help_text=(
+            "Custom label for the market picker on the public subscribe page "
+            "(e.g. 'Which city?'). Blank falls back to the default 'Your area'."
+        ),
+    )
     loyalty_feature_enabled = models.BooleanField(
         default=False,
         help_text=(
@@ -896,6 +913,18 @@ class Customer(BaseModel):
     tags = models.ManyToManyField('CustomerTag', blank=True, related_name='customers')
     sms_opt_in = models.BooleanField(default=False)
     sms_opt_in_date = models.DateTimeField(null=True, blank=True)
+    # Market this customer self-declared by joining through a market-tagged subscribe
+    # link (/subscribe/<org>/?m=<market_id>). Unions with purchase-derived market
+    # membership in customer_filters so a market-scoped SMS campaign reaches direct
+    # subscribers who have not (yet) bought a ticket. Null = untagged / org-wide.
+    home_market = models.ForeignKey(
+        'Market',
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name='home_subscribers',
+        db_index=True,
+    )
     # Loyalty program tier (denormalized; assigned by LoyaltyTierAssigner, mirrors RFM fields)
     loyalty_tier = models.ForeignKey(
         'LoyaltyTier',

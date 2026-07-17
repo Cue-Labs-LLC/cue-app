@@ -134,6 +134,10 @@ def filter_customers(org, criteria):
         market_q = Q()
         if market_ids:
             market_q |= Q(ticket_orders__event__organization=org, ticket_orders__event__market_id__in=market_ids)
+            # Direct subscribers who joined via a market-tagged subscribe link
+            # (Customer.home_market) but have no purchase history — union them in so
+            # a market-scoped campaign reaches them, not just past ticket-buyers.
+            market_q |= Q(home_market_id__in=market_ids)
         if include_no_market:
             market_q |= Q(ticket_orders__event__organization=org, ticket_orders__event__market__isnull=True)
         qs = qs.filter(market_q)
