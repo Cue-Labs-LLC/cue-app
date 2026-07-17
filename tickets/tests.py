@@ -18485,7 +18485,7 @@ class CustomerExportCsvTests(TestCase):
         self._login()
         header = self._rows(self.client.get(self._url(mode='all')))[0]
         self.assertEqual(header, [
-            'Name', 'Email', 'Phone', 'SMS Opt-In', 'Segment', 'Lifetime Value',
+            'Name', 'Email', 'Phone', 'SMS Opt-In', 'Segment', 'Source', 'Lifetime Value',
             'Last Order Date', 'Total Orders', 'Tags',
         ])
 
