@@ -2038,6 +2038,9 @@ class SMSCampaignForm(forms.ModelForm):
         return cleaned
 
 
+SUBSCRIBE_MARKET_LABEL_DEFAULT = 'Your area'
+
+
 class SubscribeForm(forms.Form):
     """Public subscribe-to-an-organizer form: name + email + phone + SMS consent.
 
@@ -2060,6 +2063,29 @@ class SubscribeForm(forms.Form):
         required=True,
         error_messages={'required': 'Please agree to receive texts to continue.'},
     )
+    # Shown only when the org opted into market segmentation AND has >1 market (the
+    # field is popped otherwise, so it's never rendered or validated). Required when
+    # shown — the organizer opted in specifically to capture the subscriber's market.
+    market = forms.ChoiceField(
+        required=True,
+        error_messages={'required': 'Please choose your area.'},
+        widget=forms.Select(attrs={'data-testid': 'subscribe-market'}),
+    )
+
+    def __init__(self, *args, organization=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        markets = []
+        if organization is not None and organization.sms_subscribe_segment_by_market:
+            markets, _ = market_filter_options(organization)  # real markets only
+        if len(markets) > 1:
+            self.fields['market'].label = (
+                (organization.sms_subscribe_market_label or '').strip() or SUBSCRIBE_MARKET_LABEL_DEFAULT
+            )
+            self.fields['market'].choices = (
+                [('', 'Choose…')] + [(str(m.id), m.name) for m in markets]
+            )
+        else:
+            self.fields.pop('market', None)
 
     def clean_email(self):
         return self.cleaned_data['email'].lower().strip()

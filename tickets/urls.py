@@ -273,6 +273,7 @@ urlpatterns = [
 
     # Marketing
     path('marketing/', views.marketing_overview, name='marketing_overview'),
+    path('marketing/subscribe-settings/', views.marketing_subscribe_settings, name='marketing_subscribe_settings'),
     path('marketing/analyze/', views.marketing_ai_analyze, name='marketing_ai_analyze'),
 
     # Marketing SMS — campaigns

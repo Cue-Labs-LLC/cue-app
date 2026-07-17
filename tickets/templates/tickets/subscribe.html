@@ -129,6 +129,17 @@
                  value="{{ form.phone.value|default:'' }}" required aria-describedby="err_phone">
           {% if form.phone.errors %}<p class="err" id="err_phone" aria-live="polite">{{ form.phone.errors.0 }}</p>{% endif %}
         </div>
+        {% if form.market %}
+        <div class="field {% if form.market.errors %}field--error{% endif %}">
+          <label class="form-label" for="id_market">{{ form.market.label }}</label>
+          <select class="form-control" id="id_market" name="market" required aria-describedby="err_market">
+            {% for value, label in form.market.field.choices %}
+            <option value="{{ value }}" {% if form.market.value|stringformat:'s' == value|stringformat:'s' %}selected{% endif %}>{{ label }}</option>
+            {% endfor %}
+          </select>
+          {% if form.market.errors %}<p class="err" id="err_market" aria-live="polite">{{ form.market.errors.0 }}</p>{% endif %}
+        </div>
+        {% endif %}
         <div class="consent">
           <input type="checkbox" id="id_sms_consent" name="sms_consent" required
                  {% if form.sms_consent.value %}checked{% endif %} aria-describedby="err_consent">

@@ -3613,11 +3613,16 @@ def marketing_overview(request):
     # grow their SMS audience. Built absolute so copy/QR work off-dashboard.
     import base64
     from .utils import generate_qr_png_bytes
+    from .services.customer_filters import market_filter_options
     subscribe_url = request.build_absolute_uri(reverse('tickets:subscribe', args=[org.slug]))
     _qr_png = generate_qr_png_bytes(subscribe_url)
     subscribe_qr = (
         'data:image/png;base64,' + base64.b64encode(_qr_png).decode() if _qr_png else ''
     )
+    # Market segmentation on the subscribe form is only offered when the org has >1
+    # market (otherwise there's nothing to segment). The toggle stores the choice on
+    # the org; the subscribe form then asks each new fan which market they're in.
+    market_count = len(market_filter_options(org)[0])
 
     context = {
         'metrics': metrics,
@@ -3631,9 +3636,33 @@ def marketing_overview(request):
         'org_sms_marketing_enabled': org.sms_marketing_enabled,
         'subscribe_url': subscribe_url,
         'subscribe_qr': subscribe_qr,
+        'market_count': market_count,
+        'segment_by_market': org.sms_subscribe_segment_by_market,
+        'market_label': org.sms_subscribe_market_label,
         'marketing_section': 'overview',
     }
     return render(request, 'tickets/marketing_overview.html', context)
+
+
+@login_required
+@require_org
+@require_admin
+@require_http_methods(["POST"])
+def marketing_subscribe_settings(request):
+    """Configure the public subscribe page's market segmentation. Small dedicated
+    endpoint so the heavy GET marketing_overview stays GET-only. Two independent
+    controls post here: the on/off switch, and the picker's custom label. Each only
+    touches its own field (presence of 'market_label' selects the label branch) so
+    saving one never clobbers the other."""
+    org = get_organization(request)
+    if 'market_label' in request.POST:
+        org.sms_subscribe_market_label = request.POST.get('market_label', '').strip()[:60]
+        org.save(update_fields=['sms_subscribe_market_label', 'updated_at'])
+    else:
+        org.sms_subscribe_segment_by_market = bool(request.POST.get('segment_by_market'))
+        org.save(update_fields=['sms_subscribe_segment_by_market', 'updated_at'])
+    messages.success(request, 'Subscribe settings updated.')
+    return redirect('tickets:marketing_overview')
 
 
 @login_required
@@ -12900,15 +12929,19 @@ def subscribe_view(request, org_slug):
         return _subscribe_render(request, org, step='unavailable')
 
     if request.method != 'POST':
-        return _subscribe_render(request, org, step='form', form=SubscribeForm())
+        return _subscribe_render(request, org, step='form',
+                                 form=SubscribeForm(organization=org))
 
-    form = SubscribeForm(request.POST)
+    form = SubscribeForm(request.POST, organization=org)
     if not form.is_valid():
         return _subscribe_render(request, org, step='form', form=form)
 
     name = form.cleaned_data['name']
     email = form.cleaned_data['email']
     phone = form.cleaned_data['phone']
+    # '' when the org isn't segmenting by market (the field is popped). When shown, the
+    # ChoiceField restricts the value to this org's markets; verify re-checks existence.
+    market_id = form.cleaned_data.get('market', '')
     ip = _subscribe_client_ip(request)
 
     if not _subscribe_rate_ok(org, ip, phone):
@@ -12934,6 +12967,7 @@ def subscribe_view(request, org_slug):
     )
     request.session['subscribe_flow'] = {
         'org_id': str(org.id), 'record_id': str(record.id), 'phone': phone,
+        'market_id': market_id,
     }
     return _subscribe_render(request, org, step='code', masked_phone=phone[-4:])
 
@@ -12947,7 +12981,7 @@ def subscribe_verify_view(request, org_slug):
 
     flow = request.session.get('subscribe_flow')
     if not flow or flow.get('org_id') != str(org.id):
-        return _subscribe_render(request, org, step='form', form=SubscribeForm(),
+        return _subscribe_render(request, org, step='form', form=SubscribeForm(organization=org),
                                  send_error='Your session expired. Please start again.')
     masked = flow['phone'][-4:]
 
@@ -12974,7 +13008,7 @@ def subscribe_verify_view(request, org_slug):
 
     record = SMSConsentRecord.objects.filter(id=flow['record_id'], organization=org).first()
     if record is None:
-        return _subscribe_render(request, org, step='form', form=SubscribeForm(),
+        return _subscribe_render(request, org, step='form', form=SubscribeForm(organization=org),
                                  send_error='Your session expired. Please start again.')
 
     with transaction.atomic():
@@ -12987,7 +13021,15 @@ def subscribe_verify_view(request, org_slug):
             customer.phone = phone
         customer.sms_opt_in = True
         customer.sms_opt_in_date = django_tz.now()
-        customer.save(update_fields=['phone', 'sms_opt_in', 'sms_opt_in_date', 'updated_at'])
+        update_fields = ['phone', 'sms_opt_in', 'sms_opt_in_date', 'updated_at']
+        # Seed home_market from the tagged link (?m=). Last tagged signup wins so a
+        # subscriber re-joining via a different city's link updates their market.
+        # Re-check existence to avoid an FK violation if the market was deleted mid-flow.
+        market_id = flow.get('market_id') or ''
+        if market_id and Market.objects.filter(organization=org, id=market_id).exists():
+            customer.home_market_id = market_id
+            update_fields.append('home_market')
+        customer.save(update_fields=update_fields)
 
         # Suppression reconciliation.
         # Per-org unsubscribe: fresh express consent overrides it → delete.
