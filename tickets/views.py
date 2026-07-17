@@ -2822,6 +2822,14 @@ def build_customer_queryset(org, params, *, for_export=False):
     max_ltv = params.get('max_ltv', '').strip()
     min_orders = params.get('min_orders', '').strip()
     max_orders = params.get('max_orders', '').strip()
+    # Audience tab (a clean partition of the org's people):
+    #   'customers'   = has purchased (order_count > 0)
+    #   'subscribers' = on the SMS list, no purchase (sms_opt_in & order_count == 0)
+    #   'contacts'    = no purchase, not on the SMS list
+    #   ''            = all
+    customer_type = params.get('type', '').strip()
+    if customer_type not in ('customers', 'subscribers', 'contacts'):
+        customer_type = ''
     sms_opt_in_filter = True if sms_filter == '1' else (False if sms_filter == '0' else None)
     has_active_filters = any([
         search_query,
@@ -2864,6 +2872,20 @@ def build_customer_queryset(org, params, *, for_export=False):
             customers = customers.filter(order_count__lte=int(max_orders))
         except ValueError:
             pass
+
+    # Audience-tab counts, computed BEFORE the type filter so they reflect any other
+    # active filters (search/market/etc). The three buckets partition the set, so
+    # total = their sum (no extra COUNT).
+    customers_count = customers.filter(order_count__gt=0).count()
+    subscribers_count = customers.filter(order_count=0, sms_opt_in=True).count()
+    contacts_count = customers.filter(order_count=0, sms_opt_in=False).count()
+    total_count = customers_count + subscribers_count + contacts_count
+    if customer_type == 'customers':
+        customers = customers.filter(order_count__gt=0)
+    elif customer_type == 'subscribers':
+        customers = customers.filter(order_count=0, sms_opt_in=True)
+    elif customer_type == 'contacts':
+        customers = customers.filter(order_count=0, sms_opt_in=False)
 
     # T6: when a market filter is active, annotate each customer row with
     # market-scoped net LTV and last-order date via isolated Subqueries.
@@ -2949,7 +2971,8 @@ def build_customer_queryset(org, params, *, for_export=False):
     else:
         customers = customers.order_by(sort_by)
 
-    _fp = {k: v for k, v in {
+    # Params EXCLUDING the audience tab — the tab pills append their own `type=`.
+    _fp_notype = {k: v for k, v in {
         'search': search_query,
         'segment': segment_filter,
         'tag': tag_filter,
@@ -2963,6 +2986,8 @@ def build_customer_queryset(org, params, *, for_export=False):
         'min_orders': min_orders,
         'max_orders': max_orders,
     }.items() if v}
+    # Full set incl. the tab — sort links preserve the active tab.
+    _fp = dict(_fp_notype, **({'type': customer_type} if customer_type else {}))
 
     meta = {
         'market_context': market_context,
@@ -2980,7 +3005,13 @@ def build_customer_queryset(org, params, *, for_export=False):
         'max_ltv': max_ltv,
         'min_orders': min_orders,
         'max_orders': max_orders,
+        'customer_type': customer_type,
+        'total_count': total_count,
+        'customers_count': customers_count,
+        'subscribers_count': subscribers_count,
+        'contacts_count': contacts_count,
         'filter_params_qs': urlencode(_fp),
+        'filter_params_qs_notype': urlencode(_fp_notype),
         'has_active_filters': has_active_filters,
     }
     return customers, meta
@@ -2998,6 +3029,9 @@ def customer_list(request):
 
     # prefetch_related must go AFTER the OR search chain to avoid Django dropping it
     customers = customers.prefetch_related('tags')
+    # The Subscribers/Contacts tabs render a Home market column — pull it in one join.
+    if meta['customer_type'] in ('subscribers', 'contacts'):
+        customers = customers.select_related('home_market')
 
     # Pagination
     paginator = Paginator(customers, 50)
@@ -3051,7 +3085,13 @@ def customer_list(request):
         'min_orders': meta['min_orders'],
         'max_orders': meta['max_orders'],
         'filter_params_qs': meta['filter_params_qs'],
+        'filter_params_qs_notype': meta['filter_params_qs_notype'],
         'has_active_filters': meta['has_active_filters'],
+        'customer_type': meta['customer_type'],
+        'total_count': meta['total_count'],
+        'customers_count': meta['customers_count'],
+        'subscribers_count': meta['subscribers_count'],
+        'contacts_count': meta['contacts_count'],
         'segment_choices': segment_choices,
         'segment_badge_colors': SEGMENT_BADGE_COLORS,
         'current_segment_definition': current_segment_definition,

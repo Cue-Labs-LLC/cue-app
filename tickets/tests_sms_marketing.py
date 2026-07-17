@@ -2596,3 +2596,91 @@ class SubscribeMarketTagTests(TestCase):
                          {'segment_by_market': 'on'})
         self.org.refresh_from_db()
         self.assertEqual(self.org.sms_subscribe_market_label, 'Which city?')
+
+
+@override_settings(E2E_TEST_MODE=True)
+class CustomerListAudienceTabsTests(TestCase):
+    """Customers list partitions the org's people into Customers (purchased),
+    Subscribers (on the SMS list, no purchase), and Contacts (no purchase, not on the
+    list) via tabs, with legible rows and adaptive columns."""
+
+    def setUp(self):
+        self.client = Client()
+        self.org = Organization.objects.create(
+            name='Tabs Org', slug='tabs-org', sms_marketing_enabled=True,
+        )
+        self.user = User.objects.create_user('t', 't@test.com', 'pw')
+        UserProfile.objects.create(
+            user=self.user, organization=self.org, org_role=UserProfile.OrgRole.OWNER,
+        )
+        self.client.login(username='t@test.com', password='pw')
+        self.client.get(reverse('tickets:home'))  # prime session org
+        # Subscriber: phone-only, opted in, no orders.
+        self.sub = Customer.objects.create(
+            organization=self.org, email='', name='', phone='+13105550001', sms_opt_in=True,
+        )
+        # Contact: has an email, NOT opted in, no orders, no segment.
+        self.contact = make_customer(
+            self.org, 'contact@x.com', name='Connie', phone='+13105550002',
+            opt_in=False, rfm_segment='',
+        )
+        # Customer: has a purchase.
+        self.buyer = make_customer(self.org, 'buyer@x.com', name='Buyer',
+                                   phone='+13105550003', rfm_segment='VIP')
+        venue = Venue.objects.create(organization=self.org, name='Hall', city='Austin')
+        event = Event.objects.create(
+            organization=self.org, name='Show', venue=venue, start_date=date(2026, 1, 1),
+        )
+        fmt = CSVFormat.objects.create(organization=self.org, name='F', column_mapping={'order_number': 'O'})
+        up = UploadedFile.objects.create(
+            organization=self.org, csv_format=fmt, filename='f.csv', status='completed',
+        )
+        TicketOrder.objects.create(
+            customer=self.buyer, event=event, uploaded_file=up, order_number='O-1',
+            order_date=timezone.now(), total_amount=Decimal('50.00'),
+        )
+        self.url = reverse('tickets:customer_list')
+
+    def _phones(self, resp):
+        return {c.phone for c in resp.context['page_obj']}
+
+    def test_all_tab_partitions_with_counts(self):
+        resp = self.client.get(self.url)
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(self._phones(resp),
+                         {'+13105550001', '+13105550002', '+13105550003'})
+        self.assertEqual(resp.context['customers_count'], 1)
+        self.assertEqual(resp.context['subscribers_count'], 1)
+        self.assertEqual(resp.context['contacts_count'], 1)
+        self.assertEqual(resp.context['total_count'], 3)  # buckets sum to All
+
+    def test_customers_tab(self):
+        resp = self.client.get(self.url, {'type': 'customers'})
+        self.assertEqual(self._phones(resp), {'+13105550003'})
+        self.assertContains(resp, 'Lifetime Value')
+        self.assertNotContains(resp, 'Home market')
+
+    def test_subscribers_tab_adaptive_columns(self):
+        resp = self.client.get(self.url, {'type': 'subscribers'})
+        self.assertEqual(self._phones(resp), {'+13105550001'})
+        self.assertContains(resp, 'Home market')
+        self.assertContains(resp, '>Joined</div>')
+        self.assertNotContains(resp, 'Lifetime Value')
+
+    def test_contacts_tab_adaptive_columns(self):
+        resp = self.client.get(self.url, {'type': 'contacts'})
+        self.assertEqual(self._phones(resp), {'+13105550002'})
+        self.assertContains(resp, '>Added</div>')  # created_at column
+        self.assertNotContains(resp, 'Lifetime Value')
+
+    def test_row_pills_are_legible(self):
+        resp = self.client.get(self.url)
+        self.assertContains(resp, 'SMS subscriber')  # name fallback for phone-only sub
+        self.assertContains(resp, 'text-info-emphasis">Subscriber<')  # subscriber pill
+        self.assertContains(resp, 'text-secondary-emphasis">Contact<')  # contact pill
+
+    def test_counts_respect_active_search(self):
+        resp = self.client.get(self.url, {'search': 'Buyer'})
+        self.assertEqual(resp.context['customers_count'], 1)
+        self.assertEqual(resp.context['subscribers_count'], 0)
+        self.assertEqual(resp.context['contacts_count'], 0)
