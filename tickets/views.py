@@ -13050,9 +13050,16 @@ def subscribe_verify_view(request, org_slug):
         customer = (Customer.objects.filter(organization=org, phone=phone)
                     .exclude(phone='').first())
         if customer is None:
-            customer = Customer.objects.create(
-                organization=org, email='', name='', phone=phone,
-            )
+            try:
+                with transaction.atomic():
+                    customer = Customer.objects.create(
+                        organization=org, email='', name='', phone=phone,
+                    )
+            except IntegrityError:
+                customer = (Customer.objects.filter(organization=org, phone=phone)
+                            .exclude(phone='').first())
+                if customer is None:
+                    raise
         if not customer.phone:
             customer.phone = phone
         customer.sms_opt_in = True

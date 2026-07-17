@@ -962,6 +962,11 @@ class Customer(BaseModel):
                 condition=~models.Q(email=''),
                 name='customer_org_email_unique',
             ),
+            models.UniqueConstraint(
+                fields=['organization', 'phone'],
+                condition=models.Q(email='') & ~models.Q(phone=''),
+                name='customer_org_phone_phone_only_unique',
+            ),
         ]
 
     def __str__(self):

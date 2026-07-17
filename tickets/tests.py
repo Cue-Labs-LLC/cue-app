@@ -17935,6 +17935,38 @@ class PhoneSubscriberReconciliationTests(TestCase):
         self.assertEqual(customer.email, 'new@example.com')
         self.assertTrue(Customer.objects.filter(organization=self.org, email='new@example.com').exists())
 
+    def test_purchase_create_race_refetches_existing_customer(self):
+        from tickets.utils import get_or_create_customer_for_purchase
+
+        class FirstResult:
+            def __init__(self, result):
+                self.result = result
+
+            def first(self):
+                return self.result
+
+        existing = Customer.objects.create(
+            organization=self.org, email='race@example.com', name='Winner',
+        )
+        with patch.object(Customer.objects, 'filter',
+                          side_effect=[FirstResult(None), FirstResult(existing)]):
+            with patch.object(Customer.objects, 'create', side_effect=IntegrityError):
+                customer = get_or_create_customer_for_purchase(
+                    self.org, email='race@example.com', name='Race',
+                )
+        self.assertEqual(customer.pk, existing.pk)
+
+    def test_phone_only_subscribers_unique_per_org_phone(self):
+        self._subscriber('+13105550077')
+        with self.assertRaises(IntegrityError):
+            with transaction.atomic():
+                self._subscriber('+13105550077')
+        Customer.objects.create(
+            organization=self.org, email='with-email@example.com',
+            name='Email Buyer', phone='+13105550077',
+        )
+        self.assertEqual(Customer.objects.filter(organization=self.org, phone='+13105550077').count(), 2)
+
 
 class SalesPacingTests(TestCase):
     """Sales pacing service, view context, and comparison API."""

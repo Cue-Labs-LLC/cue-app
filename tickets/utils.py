@@ -5,6 +5,7 @@ import io
 import logging
 from functools import wraps
 
+from django.db import IntegrityError, transaction
 from django.shortcuts import redirect
 
 
@@ -290,8 +291,14 @@ def get_or_create_customer_for_purchase(org, *, email, name):
     from .models import Customer
     from django.contrib.auth.models import User
     email = (email or '').lower().strip()
+
+    def existing_by_email():
+        if not email:
+            return None
+        return Customer.objects.filter(organization=org, email=email).first()
+
     if email:
-        existing = Customer.objects.filter(organization=org, email=email).first()
+        existing = existing_by_email()
         if existing:
             return existing
     user = (User.objects.filter(email__iexact=email).select_related('profile').first()
@@ -305,9 +312,23 @@ def get_or_create_customer_for_purchase(org, *, email, name):
             if name and not sub.name:
                 sub.name = name
                 fields.append('name')
-            sub.save(update_fields=fields + ['updated_at'])
-            return sub
-    return Customer.objects.create(organization=org, email=email, name=name or '')
+            try:
+                with transaction.atomic():
+                    sub.save(update_fields=fields + ['updated_at'])
+                return sub
+            except IntegrityError:
+                existing = existing_by_email()
+                if existing:
+                    return existing
+                raise
+    try:
+        with transaction.atomic():
+            return Customer.objects.create(organization=org, email=email, name=name or '')
+    except IntegrityError:
+        existing = existing_by_email()
+        if existing:
+            return existing
+        raise
 
 
 def calculate_platform_fee_cents(subtotal_cents: int) -> int:
