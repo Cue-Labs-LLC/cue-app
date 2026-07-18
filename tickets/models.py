@@ -896,7 +896,7 @@ class Customer(BaseModel):
     class AcquisitionSource(models.TextChoices):
         SUBSCRIBE_FORM  = 'subscribe_form',  'Opt-in form'
         TICKET_PURCHASE = 'ticket_purchase', 'Ticket purchase'
-        IMPORT          = 'import',          'Import'
+        IMPORT          = 'import',          'CSV Import'
         MANUAL          = 'manual',          'Manual'
 
     organization = models.ForeignKey(
