@@ -1185,3 +1185,92 @@ def regenerate_event_summary_task(self, event_id):
 
     logger.info("Regenerated AI summary for event %s", event_id)
     return 'regenerated'
+
+
+# Max chars of the receiver's response body we persist. Kept small: it's only
+# for debugging, and we never want to store large or sensitive internal responses.
+WEBHOOK_RESPONSE_BODY_LIMIT = 500
+
+
+@shared_task(bind=True, max_retries=2, default_retry_delay=30)
+def deliver_webhook_task(self, endpoint_id, event_type, delivery_id, payload):
+    """Deliver a signed webhook POST to one endpoint, logging every attempt.
+
+    Enqueued by `tickets.services.webhooks.dispatch.dispatch`. Writes one
+    WebhookDelivery row per attempt (retries produce new rows with an incremented
+    `attempt`, all sharing `delivery_id`). Retries on connection errors, timeouts,
+    and 5xx responses; a 4xx is treated as a permanent (terminal) failure and is
+    NOT retried.
+    """
+    import requests
+    from django.conf import settings
+    from django.utils import timezone
+
+    from tickets.models import WebhookEndpoint, WebhookDelivery
+    from tickets.services.webhooks.signing import build_signed_request
+    from tickets.services.webhooks.validation import is_webhook_url_allowed
+
+    try:
+        endpoint = WebhookEndpoint.objects.select_related('organization').get(id=endpoint_id)
+    except WebhookEndpoint.DoesNotExist:
+        logger.warning("WebhookEndpoint %s not found, skipping delivery", endpoint_id)
+        return
+    if not endpoint.is_active:
+        return
+
+    delivery = WebhookDelivery(
+        endpoint=endpoint,
+        organization=endpoint.organization,
+        event_type=event_type,
+        delivery_id=delivery_id,
+        payload=payload,
+        attempt=self.request.retries + 1,
+    )
+
+    # SSRF guard at send time (defense in depth vs DNS rebinding / rows created
+    # before validation existed). A blocked URL is terminal — never retried.
+    if not is_webhook_url_allowed(endpoint.url):
+        delivery.success = False
+        delivery.error_message = 'Blocked: URL resolves to a private/reserved address or non-https scheme.'
+        delivery.save()
+        logger.warning("Webhook delivery blocked (SSRF guard) endpoint=%s url=%s", endpoint_id, endpoint.url)
+        return
+
+    timeout = getattr(settings, 'WEBHOOK_DELIVERY_TIMEOUT', 10)
+    body, headers = build_signed_request(endpoint.secret, event_type, delivery_id, payload)
+
+    try:
+        resp = requests.post(endpoint.url, data=body, headers=headers, timeout=timeout)
+    except requests.RequestException as exc:
+        # No response (connection error / timeout) — transient, retry.
+        delivery.success = False
+        delivery.error_message = str(exc)[:1000]
+        delivery.save()
+        logger.exception("Webhook delivery failed (no response) endpoint=%s (%s)", endpoint_id, event_type)
+        raise self.retry(exc=exc)
+
+    delivery.response_status = resp.status_code
+    delivery.response_body = (resp.text or '')[:WEBHOOK_RESPONSE_BODY_LIMIT]
+    delivery.success = 200 <= resp.status_code < 300
+    if not delivery.success:
+        delivery.error_message = f"HTTP {resp.status_code}"[:1000]
+    delivery.save()
+
+    endpoint.last_used_at = timezone.now()
+    endpoint.save(update_fields=['last_used_at'])
+
+    if delivery.success:
+        return
+    if 400 <= resp.status_code < 500:
+        # Client error — the request is permanently wrong. Don't retry.
+        logger.warning(
+            "Webhook delivery got terminal %s endpoint=%s (%s), not retrying",
+            resp.status_code, endpoint_id, event_type,
+        )
+        return
+    # 5xx (or anything else non-2xx) — transient, retry.
+    logger.warning(
+        "Webhook delivery got %s endpoint=%s (%s), retrying",
+        resp.status_code, endpoint_id, event_type,
+    )
+    raise self.retry(exc=requests.RequestException(f"HTTP {resp.status_code}"))
