@@ -151,6 +151,7 @@ from .utils import get_organization, require_org, require_organizer, require_hos
 from .feature_flags import (
     smart_pricing_recommendations_enabled,
     browse_events_enabled,
+    loyalty_enabled,
 )
 
 from django.core.cache import cache as django_cache
@@ -3112,9 +3113,13 @@ def customer_list(request):
     else:
         visible_columns = list(DEFAULT_CUSTOMER_LIST_COLUMN_KEYS)
     apply_column_prefs = meta['customer_type'] not in ('subscribers', 'contacts')
+    # The Points column only renders when the loyalty program is enabled, so don't
+    # offer it in the picker (and don't leak its label) when the flag is off.
+    loyalty_on = loyalty_enabled(org)
     customer_list_columns = [
         {'key': k, 'label': label, 'checked': k in visible_columns}
         for k, label in CUSTOMER_LIST_COLUMNS
+        if k != 'points' or loyalty_on
     ]
 
     context = {
