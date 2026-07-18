@@ -1,0 +1,91 @@
+{% extends 'tickets/base.html' %}
+
+{% block title %}Webhook Delivery Log{% endblock %}
+
+{% block content %}
+<nav aria-label="breadcrumb">
+    <ol class="breadcrumb">
+        <li class="breadcrumb-item"><a href="{% url 'tickets:webhook_endpoint_list' %}">Webhooks</a></li>
+        <li class="breadcrumb-item active">Delivery log</li>
+    </ol>
+</nav>
+
+<div class="page-header">
+    <div>
+        <h1>Delivery Log</h1>
+        <p class="text-muted mb-0" style="font-size: 13px;">Every outbound delivery attempt. Retries appear as separate rows sharing a delivery id.</p>
+    </div>
+    <div class="page-header-actions">
+        <form method="get" class="d-flex align-items-center gap-2">
+            <select name="endpoint" class="form-select form-select-sm" onchange="this.form.submit()">
+                <option value="">All endpoints</option>
+                {% for ep in endpoints %}
+                <option value="{{ ep.id }}"{% if selected_endpoint and selected_endpoint.id == ep.id %} selected{% endif %}>{{ ep.label }}</option>
+                {% endfor %}
+            </select>
+        </form>
+    </div>
+</div>
+
+{% if deliveries %}
+<div class="card">
+    <div class="card-body p-0">
+        <div class="table-responsive">
+            <table class="table table-hover mb-0">
+                <thead>
+                    <tr>
+                        <th>When</th>
+                        <th>Event</th>
+                        <th>Endpoint</th>
+                        <th>Result</th>
+                        <th>HTTP</th>
+                        <th>Attempt</th>
+                        <th></th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for d in deliveries %}
+                    <tr>
+                        <td style="font-size: 13px;">{{ d.created_at|date:"M j, g:i:s A" }}</td>
+                        <td><span class="badge bg-secondary">{{ d.event_type }}</span></td>
+                        <td style="font-size: 13px;">{{ d.endpoint.label }}</td>
+                        <td>
+                            {% if d.success %}
+                            <span class="badge bg-success">Delivered</span>
+                            {% else %}
+                            <span class="badge bg-danger">Failed</span>
+                            {% endif %}
+                        </td>
+                        <td style="font-size: 13px;">{{ d.response_status|default:"—" }}</td>
+                        <td style="font-size: 13px;">{{ d.attempt }}</td>
+                        <td class="text-end"><a href="{% url 'tickets:webhook_delivery_detail' d.id %}" class="btn btn-sm btn-outline-secondary">Details</a></td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+{% if page_obj.has_other_pages %}
+<nav class="mt-3">
+    <ul class="pagination pagination-sm justify-content-center">
+        {% if page_obj.has_previous %}
+        <li class="page-item"><a class="page-link" href="?{% if selected_endpoint %}endpoint={{ selected_endpoint.id }}&amp;{% endif %}page={{ page_obj.previous_page_number }}">Previous</a></li>
+        {% endif %}
+        <li class="page-item disabled"><span class="page-link">Page {{ page_obj.number }} of {{ page_obj.paginator.num_pages }}</span></li>
+        {% if page_obj.has_next %}
+        <li class="page-item"><a class="page-link" href="?{% if selected_endpoint %}endpoint={{ selected_endpoint.id }}&amp;{% endif %}page={{ page_obj.next_page_number }}">Next</a></li>
+        {% endif %}
+    </ul>
+</nav>
+{% endif %}
+{% else %}
+<div class="empty-state">
+    <i class="bi bi-list-check d-block"></i>
+    <h3>No deliveries yet</h3>
+    <p class="text-muted">Deliveries appear here once a subscribed event fires or you send a test from an endpoint.</p>
+    <a href="{% url 'tickets:webhook_endpoint_list' %}" class="btn btn-outline-secondary"><i class="bi bi-arrow-left"></i> Back to Webhooks</a>
+</div>
+{% endif %}
+{% endblock %}

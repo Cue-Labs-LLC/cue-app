@@ -1,0 +1,33 @@
+{% extends 'tickets/base.html' %}
+
+{% block title %}Delete Webhook Endpoint{% endblock %}
+
+{% block content %}
+<nav aria-label="breadcrumb">
+    <ol class="breadcrumb">
+        <li class="breadcrumb-item"><a href="{% url 'tickets:home' %}">Dashboard</a></li>
+        <li class="breadcrumb-item"><a href="{% url 'tickets:webhook_endpoint_list' %}">Webhooks</a></li>
+        <li class="breadcrumb-item active">Delete</li>
+    </ol>
+</nav>
+
+<div class="page-header">
+    <h1>Delete Webhook Endpoint</h1>
+</div>
+
+<div class="row">
+    <div class="col-md-6">
+        <div class="card">
+            <div class="card-body">
+                <p>Are you sure you want to delete the endpoint <strong>"{{ endpoint.label }}"</strong>?</p>
+                <p class="text-muted small">Its delivery history is removed and any in-flight or pending deliveries are abandoned. This cannot be undone.</p>
+                <form method="post">
+                    {% csrf_token %}
+                    <button type="submit" class="btn btn-danger">Yes, Delete</button>
+                    <a href="{% url 'tickets:webhook_endpoint_list' %}" class="btn btn-outline-secondary">Cancel</a>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

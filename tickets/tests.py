@@ -19552,3 +19552,165 @@ class CustomerListColumnsTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.context['visible_columns'], ['ltv'])
         self.assertTrue(response.context['apply_column_prefs'])
+
+
+@override_settings(CELERY_TASK_ALWAYS_EAGER=True, CELERY_TASK_EAGER_PROPAGATES=True)
+class WebhookUITests(TestCase):
+    """Self-serve webhook management UI (integrations hub)."""
+
+    def setUp(self):
+        from .models import WebhookEndpoint
+        self.client = Client()
+        self.org = Organization.objects.create(name='UI Org', slug='ui-org')
+        self.other_org = Organization.objects.create(name='UI Other', slug='ui-other')
+
+        self.admin = User.objects.create_user('uiadmin', 'uiadmin@example.com', 'pw123456')
+        UserProfile.objects.create(user=self.admin, organization=self.org, org_role=UserProfile.OrgRole.OWNER)
+        OrganizationMembership.objects.create(user=self.admin, organization=self.org, org_role=UserProfile.OrgRole.OWNER)
+
+        self.host = User.objects.create_user('uihost', 'uihost@example.com', 'pw123456')
+        UserProfile.objects.create(user=self.host, organization=self.org, org_role=UserProfile.OrgRole.HOST)
+        OrganizationMembership.objects.create(user=self.host, organization=self.org, org_role=UserProfile.OrgRole.HOST)
+
+        self.endpoint = WebhookEndpoint.objects.create(
+            organization=self.org, label='Primary', url='https://example.test/hook',
+            event_types=['event.created', 'order.created'],
+        )
+        self.other_endpoint = WebhookEndpoint.objects.create(
+            organization=self.other_org, label='Other', url='https://example.test/other',
+            event_types=['event.created'],
+        )
+        # example.test won't resolve; allow it so test-send can exercise delivery.
+        patcher = patch('tickets.services.webhooks.validation.is_webhook_url_allowed', return_value=True)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _ok(self, status=200):
+        resp = MagicMock(); resp.status_code = status; resp.text = 'ok'
+        return resp
+
+    # --- list ---------------------------------------------------------------
+
+    def test_list_shows_only_own_org_endpoints(self):
+        self.client.force_login(self.admin)
+        resp = self.client.get(reverse('tickets:webhook_endpoint_list'))
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, 'Primary')
+        self.assertNotContains(resp, 'Other')  # other org's endpoint hidden
+
+    # --- create -------------------------------------------------------------
+
+    def test_create_valid_generates_secret_and_redirects_to_edit(self):
+        from .models import WebhookEndpoint
+        self.client.force_login(self.admin)
+        resp = self.client.post(reverse('tickets:webhook_endpoint_create'), {
+            'label': 'New Hook',
+            'url': 'https://8.8.8.8/hook',          # public IP literal → passes SSRF guard, no DNS
+            'event_types': ['event.created', 'customer.created'],
+            'is_active': 'on',
+        })
+        ep = WebhookEndpoint.objects.get(organization=self.org, label='New Hook')
+        self.assertRedirects(resp, reverse('tickets:webhook_endpoint_edit', args=[ep.id]))
+        self.assertTrue(ep.secret.startswith('whsec_'))
+        self.assertEqual(sorted(ep.event_types), ['customer.created', 'event.created'])
+
+    def test_create_rejects_private_url(self):
+        from .models import WebhookEndpoint
+        self.client.force_login(self.admin)
+        before = WebhookEndpoint.objects.filter(organization=self.org).count()
+        resp = self.client.post(reverse('tickets:webhook_endpoint_create'), {
+            'label': 'Bad', 'url': 'https://127.0.0.1/x', 'event_types': ['event.created'], 'is_active': 'on',
+        })
+        self.assertEqual(resp.status_code, 200)  # re-render with error
+        self.assertContains(resp, 'private')
+        self.assertEqual(WebhookEndpoint.objects.filter(organization=self.org).count(), before)
+
+    # --- edit / delete ------------------------------------------------------
+
+    def test_edit_updates_fields(self):
+        self.client.force_login(self.admin)
+        resp = self.client.post(reverse('tickets:webhook_endpoint_edit', args=[self.endpoint.id]), {
+            'label': 'Renamed', 'url': 'https://8.8.8.8/hook', 'event_types': ['order.created'], 'is_active': 'on',
+        })
+        self.assertEqual(resp.status_code, 302)
+        self.endpoint.refresh_from_db()
+        self.assertEqual(self.endpoint.label, 'Renamed')
+        self.assertEqual(self.endpoint.event_types, ['order.created'])
+
+    def test_delete_removes_endpoint(self):
+        from .models import WebhookEndpoint
+        self.client.force_login(self.admin)
+        self.assertEqual(self.client.get(reverse('tickets:webhook_endpoint_delete', args=[self.endpoint.id])).status_code, 200)
+        resp = self.client.post(reverse('tickets:webhook_endpoint_delete', args=[self.endpoint.id]))
+        self.assertRedirects(resp, reverse('tickets:webhook_endpoint_list'))
+        self.assertFalse(WebhookEndpoint.objects.filter(id=self.endpoint.id).exists())
+
+    # --- rotate secret ------------------------------------------------------
+
+    def test_rotate_secret_changes_value(self):
+        self.client.force_login(self.admin)
+        old = self.endpoint.secret
+        resp = self.client.post(reverse('tickets:webhook_endpoint_rotate_secret', args=[self.endpoint.id]))
+        self.assertEqual(resp.status_code, 302)
+        self.endpoint.refresh_from_db()
+        self.assertNotEqual(self.endpoint.secret, old)
+        self.assertTrue(self.endpoint.secret.startswith('whsec_'))
+
+    def test_rotate_secret_get_not_allowed(self):
+        self.client.force_login(self.admin)
+        self.assertEqual(self.client.get(reverse('tickets:webhook_endpoint_rotate_secret', args=[self.endpoint.id])).status_code, 405)
+
+    # --- test-send ----------------------------------------------------------
+
+    def test_test_send_active_creates_delivery(self):
+        from .models import WebhookDelivery
+        self.client.force_login(self.admin)
+        with patch('requests.post', return_value=self._ok()) as mock_post:
+            resp = self.client.post(reverse('tickets:webhook_endpoint_test', args=[self.endpoint.id]))
+        self.assertEqual(resp.status_code, 302)
+        self.assertEqual(mock_post.call_count, 1)
+        d = WebhookDelivery.objects.get(endpoint=self.endpoint)
+        self.assertTrue(d.payload.get('test'))
+
+    def test_test_send_inactive_does_not_send(self):
+        from .models import WebhookDelivery
+        self.endpoint.is_active = False
+        self.endpoint.save(update_fields=['is_active'])
+        self.client.force_login(self.admin)
+        with patch('requests.post', return_value=self._ok()) as mock_post:
+            self.client.post(reverse('tickets:webhook_endpoint_test', args=[self.endpoint.id]))
+        mock_post.assert_not_called()
+        self.assertEqual(WebhookDelivery.objects.filter(endpoint=self.endpoint).count(), 0)
+
+    # --- delivery log -------------------------------------------------------
+
+    def test_delivery_list_is_org_scoped_and_filters(self):
+        from .models import WebhookDelivery
+        WebhookDelivery.objects.create(organization=self.org, endpoint=self.endpoint, event_type='event.created', success=True)
+        WebhookDelivery.objects.create(organization=self.other_org, endpoint=self.other_endpoint, event_type='event.created', success=True)
+        self.client.force_login(self.admin)
+        resp = self.client.get(reverse('tickets:webhook_delivery_list'))
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(len(resp.context['deliveries']), 1)  # only own org
+        # filter by endpoint
+        resp2 = self.client.get(reverse('tickets:webhook_delivery_list') + f'?endpoint={self.endpoint.id}')
+        self.assertEqual(len(resp2.context['deliveries']), 1)
+
+    def test_delivery_detail_cross_org_404(self):
+        from .models import WebhookDelivery
+        d_other = WebhookDelivery.objects.create(
+            organization=self.other_org, endpoint=self.other_endpoint, event_type='event.created', success=True,
+        )
+        self.client.force_login(self.admin)
+        self.assertEqual(self.client.get(reverse('tickets:webhook_delivery_detail', args=[d_other.id])).status_code, 404)
+
+    # --- authz --------------------------------------------------------------
+
+    def test_non_admin_forbidden(self):
+        self.client.force_login(self.host)  # HOST is below admin/owner
+        resp = self.client.get(reverse('tickets:webhook_endpoint_list'))
+        self.assertIn(resp.status_code, (302, 403))
+
+    def test_cross_org_endpoint_404(self):
+        self.client.force_login(self.admin)
+        self.assertEqual(self.client.get(reverse('tickets:webhook_endpoint_edit', args=[self.other_endpoint.id])).status_code, 404)
