@@ -18005,7 +18005,8 @@ class AcquisitionSourceTests(TestCase):
 
     def test_purchase_create_stamps_ticket_purchase(self):
         from tickets.utils import get_or_create_customer_for_purchase
-        c = get_or_create_customer_for_purchase(self.org, email='p@example.com', name='P')
+        c, created = get_or_create_customer_for_purchase(self.org, email='p@example.com', name='P')
+        self.assertTrue(created)
         self.assertEqual(c.acquisition_source, Customer.AcquisitionSource.TICKET_PURCHASE)
 
     def test_purchase_adoption_preserves_original_source(self):
@@ -18019,7 +18020,8 @@ class AcquisitionSourceTests(TestCase):
             user=user, organization=self.org, phone_number='+13105559001',
             role=UserProfile.Role.ATTENDEE,
         )
-        c = get_or_create_customer_for_purchase(self.org, email='b@example.com', name='B')
+        c, created = get_or_create_customer_for_purchase(self.org, email='b@example.com', name='B')
+        self.assertFalse(created)  # adopted, not created
         self.assertEqual(c.pk, sub.pk)  # adopted, not forked
         self.assertEqual(c.acquisition_source, Customer.AcquisitionSource.SUBSCRIBE_FORM)
 
