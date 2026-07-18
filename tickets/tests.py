@@ -17968,6 +17968,89 @@ class PhoneSubscriberReconciliationTests(TestCase):
         self.assertEqual(Customer.objects.filter(organization=self.org, phone='+13105550077').count(), 2)
 
 
+class AcquisitionSourceTests(TestCase):
+    """Customer.acquisition_source is stamped at every creation path, treated as
+    immutable, and backfilled for legacy rows by the 0192 data migration."""
+
+    def setUp(self):
+        self.org = Organization.objects.create(
+            name='Acq Org', slug='acq-org', external_events_enabled=True,
+        )
+        self.csv_format = CSVFormat.objects.create(
+            organization=self.org, name='Acq Format',
+            column_mapping={
+                'order_date': ['order_date'],
+                'customer_email': ['customer_email'],
+                'customer_name': ['customer_name'],
+                'customer_phone': ['customer_phone'],
+                'ticket_type': ['ticket_type'],
+            },
+        )
+
+    def _import(self, csv_body):
+        import io
+        upload = UploadedFile.objects.create(
+            organization=self.org, csv_format=self.csv_format, filename='acq.csv',
+            status='pending',
+            metadata={'event_name': 'Acq Show', 'event_start_date': '2025-06-01'},
+        )
+        from tickets.csv_processor import CSVProcessor
+        return CSVProcessor(upload, self.csv_format).process_and_save(
+            io.BytesIO(csv_body.encode('utf-8'))
+        )
+
+    def test_purchase_create_stamps_ticket_purchase(self):
+        from tickets.utils import get_or_create_customer_for_purchase
+        c = get_or_create_customer_for_purchase(self.org, email='p@example.com', name='P')
+        self.assertEqual(c.acquisition_source, Customer.AcquisitionSource.TICKET_PURCHASE)
+
+    def test_purchase_adoption_preserves_original_source(self):
+        from tickets.utils import get_or_create_customer_for_purchase
+        sub = Customer.objects.create(
+            organization=self.org, email='', name='', phone='+13105559001',
+            sms_opt_in=True, acquisition_source=Customer.AcquisitionSource.SUBSCRIBE_FORM,
+        )
+        user = User.objects.create_user(username='b9001', email='b@example.com', password='pw123456')
+        UserProfile.objects.create(
+            user=user, organization=self.org, phone_number='+13105559001',
+            role=UserProfile.Role.ATTENDEE,
+        )
+        c = get_or_create_customer_for_purchase(self.org, email='b@example.com', name='B')
+        self.assertEqual(c.pk, sub.pk)  # adopted, not forked
+        self.assertEqual(c.acquisition_source, Customer.AcquisitionSource.SUBSCRIBE_FORM)
+
+    def test_csv_import_stamps_import(self):
+        self._import(
+            "order_date,customer_email,customer_name,customer_phone,ticket_type\n"
+            "2025-06-01,fan@example.com,Fan,(310) 555-9002,GA\n"
+        )
+        c = Customer.objects.get(organization=self.org, email='fan@example.com')
+        self.assertEqual(c.acquisition_source, Customer.AcquisitionSource.IMPORT)
+
+    def test_backfill_classifies_legacy_rows(self):
+        import importlib
+        from django.apps import apps as global_apps
+        # Legacy rows created with a blank source (bypassing the stamped paths).
+        sub = Customer.objects.create(
+            organization=self.org, email='', name='', phone='+13105559003', sms_opt_in=True,
+        )
+        contact = Customer.objects.create(
+            organization=self.org, email='', name='', phone='+13105559004', sms_opt_in=False,
+        )
+        buyer = Customer.objects.create(
+            organization=self.org, email='legacy@example.com', name='Legacy',
+        )
+        mod = importlib.import_module('tickets.migrations.0192_customer_acquisition_source')
+        mod.backfill_acquisition_source(global_apps, None)
+        for row, expected in (
+            (sub, Customer.AcquisitionSource.SUBSCRIBE_FORM),
+            (contact, Customer.AcquisitionSource.IMPORT),
+            (buyer, Customer.AcquisitionSource.IMPORT),
+        ):
+            row.refresh_from_db()
+            self.assertEqual(row.acquisition_source, expected)
+
+
 class SalesPacingTests(TestCase):
     """Sales pacing service, view context, and comparison API."""
 
@@ -18402,7 +18485,7 @@ class CustomerExportCsvTests(TestCase):
         self._login()
         header = self._rows(self.client.get(self._url(mode='all')))[0]
         self.assertEqual(header, [
-            'Name', 'Email', 'Phone', 'SMS Opt-In', 'Segment', 'Lifetime Value',
+            'Name', 'Email', 'Phone', 'SMS Opt-In', 'Segment', 'Source', 'Lifetime Value',
             'Last Order Date', 'Total Orders', 'Tags',
         ])
 
