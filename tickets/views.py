@@ -69,6 +69,7 @@ from .csv_processor import CSVProcessor
 from .services.forecasting.preview import generate_forecast_preview
 from .services.pricing import SmartPricingRecommender
 from .services.markets import MarketBuilder, NO_MARKET_LABEL
+from .services.webhooks import fire_event_created, fire_order_created, fire_customer_created
 from .services.churn_detection.churn_calculator import ChurnDetectionService, THRESHOLD_OPTIONS
 from .services.segmentation import (
     BEHAVIOR_PROFILE_BADGE_COLORS,
@@ -7290,6 +7291,7 @@ def event_create(request, ticketing_type):
                     _invalidate_marketing_cache(org)
                     messages.success(request, f"Event '{event.name}' created successfully.")
                     _sync_event_to_google_calendar(event)
+                    fire_event_created(event)
                     return redirect('tickets:event_detail', event_id=event.id)
         else:
             form = DirectEventForm(organization=org)
@@ -7345,6 +7347,7 @@ def event_create(request, ticketing_type):
             _invalidate_marketing_cache(org)
             messages.success(request, f"Event '{event.name}' created successfully.")
             _sync_event_to_google_calendar(event)
+            fire_event_created(event)
             return redirect('tickets:event_detail', event_id=event.id)
     else:
         form = EventForm(
@@ -11512,7 +11515,9 @@ def checkout_payment(request, public_id):
 
         with transaction.atomic():
             org = event.organization
-            customer = get_or_create_customer_for_purchase(org, email=buyer_email, name=buyer_name)
+            customer, customer_created = get_or_create_customer_for_purchase(org, email=buyer_email, name=buyer_name)
+            if customer_created:
+                fire_customer_created(customer)
             link_customer_to_buyer(customer, buyer_email)
             sms_opt_in = request.POST.get('sms_opt_in') == '1'
             if sms_opt_in and not customer.sms_opt_in:
@@ -11576,6 +11581,7 @@ def checkout_payment(request, public_id):
                 logger.exception("Points award failed for order %s", order.id)
             _invalidate_event_list_cache(org)
             _invalidate_marketing_cache(org)
+            fire_order_created(order)
 
         if order.attribution:
             _recompute_utm_attribution_for_event(org, event)
@@ -12381,7 +12387,9 @@ def _fulfill_payment_intent(payment_intent):
         email = session_obj.buyer_email
         name = session_obj.buyer_name or email
 
-        customer = get_or_create_customer_for_purchase(org, email=email, name=name)
+        customer, customer_created = get_or_create_customer_for_purchase(org, email=email, name=name)
+        if customer_created:
+            fire_customer_created(customer)
         link_customer_to_buyer(customer, email)
         if session_obj.sms_opt_in and not customer.sms_opt_in:
             customer.sms_opt_in = True
@@ -12509,6 +12517,7 @@ def _fulfill_payment_intent(payment_intent):
 
         from tickets.tasks import send_order_confirmation_email_task
         send_order_confirmation_email_task.delay(str(order.id))
+        fire_order_created(order)
 
         pixel_id = event.facebook_pixel_id
         capi_token = getattr(org, 'meta_capi_access_token', '')
@@ -13051,6 +13060,7 @@ def subscribe_verify_view(request, org_slug):
         # existing customer that already has this phone (e.g. a prior checkout), else
         # create a fresh phone-only subscriber. A later purchase/import reconciles by
         # phone and can backfill an email onto this row.
+        customer_created = False
         customer = (Customer.objects.filter(organization=org, phone=phone)
                     .exclude(phone='').first())
         if customer is None:
@@ -13059,6 +13069,7 @@ def subscribe_verify_view(request, org_slug):
                     customer = Customer.objects.create(
                         organization=org, email='', name='', phone=phone,
                     )
+                customer_created = True
             except IntegrityError:
                 customer = (Customer.objects.filter(organization=org, phone=phone)
                             .exclude(phone='').first())
@@ -13093,6 +13104,9 @@ def subscribe_verify_view(request, org_slug):
         record.verified_at = django_tz.now()
         record.pending_start = pending_start
         record.save(update_fields=['customer', 'verified_at', 'pending_start', 'updated_at'])
+
+        if customer_created:
+            fire_customer_created(customer)
 
     otp_clear(request, purpose=SUBSCRIBE_OTP_PURPOSE)
     request.session.pop('subscribe_flow', None)

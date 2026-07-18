@@ -1614,11 +1614,14 @@ def _finalize_in_person_sale(event, payment_intent_id, buyer_name, buyer_email, 
     total_amount = (Decimal(charged_cents) / 100).quantize(Decimal('0.01'))
 
     now = timezone.now()
-    customer, _ = Customer.objects.get_or_create(
+    customer, customer_created = Customer.objects.get_or_create(
         email=buyer_email,
         organization=org,
         defaults={'name': buyer_name or buyer_email},
     )
+    if customer_created:
+        from .services.webhooks import fire_customer_created
+        fire_customer_created(customer)
     link_customer_to_buyer(customer, buyer_email)
 
     with transaction.atomic():
@@ -1679,6 +1682,9 @@ def _finalize_in_person_sale(event, payment_intent_id, buyer_name, buyer_email, 
                 'fulfilled_at': now,
             },
         )
+
+        from .services.webhooks import fire_order_created
+        fire_order_created(order)
 
     customer.update_lifetime_value()
     # Loyalty points: swallow failures — the sale must never fail on points.
