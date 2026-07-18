@@ -361,6 +361,10 @@ TYPEFORM_WEBHOOK_TAG = os.environ.get('TYPEFORM_WEBHOOK_TAG', 'cue')
 # during local development). Falls back to SITE_URL when empty.
 TYPEFORM_WEBHOOK_BASE_URL = os.environ.get('TYPEFORM_WEBHOOK_BASE_URL', '')
 
+# Outbound (general-purpose) webhooks
+# Per-delivery HTTP timeout in seconds for signed webhook POSTs (deliver_webhook_task).
+WEBHOOK_DELIVERY_TIMEOUT = int(os.environ.get('WEBHOOK_DELIVERY_TIMEOUT', '10'))
+
 # Email backend configuration — SendGrid SMTP for all environments
 EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
 EMAIL_HOST = 'smtp.sendgrid.net'

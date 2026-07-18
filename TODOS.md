@@ -460,3 +460,51 @@
 **Context:** Flagged in /plan-design-review of the subscribe page (2026-07-05), which rated design-system alignment 8/10 only because it leaned on implicit conventions. Existing references: dashboard.css, base.html, public_org_profile.html.
 
 **Depends on:** —
+
+---
+
+## Webhooks: Transactional Outbox for Guaranteed Enqueue
+
+**What:** Replace best-effort `deliver_webhook_task.delay()` with a transactional outbox: write a `pending` delivery row in the same DB transaction as the domain write, then a poller/beat task publishes and marks them sent.
+
+**Why:** Today `dispatch()` enqueues after commit and only logs if `.delay()` fails (broker outage, serializer error). The business action succeeds but the webhook is lost forever with no retry path. Flagged by the Codex outside-voice review (finding #4).
+
+**Pros:** True at-least-once delivery even across broker outages. Also gives a natural place to enforce ordering and backpressure.
+
+**Cons:** New table + periodic publisher + dedup logic; more moving parts. Broker outages are rare, so this is reliability insurance, not a hot-path fix.
+
+**Context:** Enqueue failures are currently logged at error level in `tickets/services/webhooks/dispatch.py` (search "delivery lost") so they're alertable in the interim. The delivery task, signing, and `WebhookDelivery` log already exist; an outbox would add a `WebhookOutbox` (or reuse `WebhookDelivery` with a `pending` state) plus a Celery-beat publisher.
+
+**Depends on:** Nothing; independent follow-up.
+
+---
+
+## Webhooks: WebhookDelivery Retention / Pruning
+
+**What:** Add a periodic task to delete `WebhookDelivery` rows older than N days (configurable, e.g. `WEBHOOK_DELIVERY_RETENTION_DAYS`).
+
+**Why:** One row is written per delivery attempt with a full payload snapshot. A high-volume org (many orders) grows this table unbounded. It's an append-only audit log with no cleanup.
+
+**Pros:** Bounds table growth and admin query cost. Small, isolated task.
+
+**Cons:** Deletes audit history past the window — pick the window carefully (support/debugging needs).
+
+**Context:** `WebhookDelivery` (tickets/models.py) is indexed on `(success, created_at)` and `(organization, event_type, created_at)`, so a windowed delete is cheap. Model this on the existing SMS/loyalty cleanup patterns if present.
+
+**Depends on:** Nothing.
+
+---
+
+## Webhooks: Self-Serve Endpoint Management UI
+
+**What:** Org-facing pages under `settings/integrations/webhooks/` to list, create, edit, delete, rotate-secret, and test-send `WebhookEndpoint`s, plus a delivery-log viewer.
+
+**Why:** Endpoints are currently managed only via Django admin (not org-friendly). Orgs can't self-serve webhook setup.
+
+**Pros:** Real product feature; matches the existing integrations hub. Test-send + delivery viewer make debugging self-service.
+
+**Cons:** Full UI surface (templates, forms, views, URLs); the largest remaining chunk of the webhook feature.
+
+**Context:** Backend (models, dispatch, signing, delivery log, triggers, admin) already ships. UI would reuse `WebhookEndpointForm` and the `settings/integrations/` conventions. HMAC verification docs for consumers should ship alongside (sign base is `timestamp.event_type.delivery_id.body`, header `X-Cue-Signature: t=…,v1=…`).
+
+**Depends on:** Nothing.

@@ -386,6 +386,10 @@ def _generate_access_token():
     return f"cue_at_{secrets.token_urlsafe(32)}"
 
 
+def _generate_webhook_secret():
+    return f"whsec_{secrets.token_hex(32)}"
+
+
 class OrganizationAPIKey(BaseModel):
     """Per-organization API key for external AI agent access."""
     organization = models.ForeignKey(
@@ -412,6 +416,116 @@ class OrganizationAPIKey(BaseModel):
     @property
     def masked_key(self):
         return f"{self.key[:14]}...{self.key[-4:]}"
+
+
+class WebhookEndpoint(BaseModel):
+    """Per-organization outbound webhook endpoint.
+
+    An org registers a URL and subscribes it to one or more domain event types
+    (e.g. 'event.created'). When a subscribed event fires, a signed HTTP POST is
+    delivered to `url` asynchronously via `deliver_webhook_task`. Each attempt is
+    recorded as a WebhookDelivery row.
+    """
+    organization = models.ForeignKey(
+        Organization,
+        on_delete=models.CASCADE,
+        related_name='webhook_endpoints',
+    )
+    label = models.CharField(max_length=100, help_text="Label to identify this endpoint, e.g. 'Zapier — new orders'")
+    url = models.URLField(max_length=500)
+    secret = models.CharField(
+        max_length=100,
+        default=_generate_webhook_secret,
+        help_text="Used to HMAC-sign each delivery. Verify with the X-Cue-Signature header. "
+                  "Deliveries sign with the CURRENT secret at send time, so rotating it can "
+                  "cause in-flight/retrying deliveries to fail verification with the old secret.",
+    )
+    event_types = models.JSONField(
+        default=list,
+        blank=True,
+        help_text="List of subscribed event-type strings, e.g. ['event.created', 'order.created'].",
+    )
+    is_active = models.BooleanField(default=True)
+    description = models.CharField(max_length=255, blank=True, default='')
+    last_used_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['organization', 'is_active']),
+        ]
+        verbose_name = 'Webhook endpoint'
+        verbose_name_plural = 'Webhook endpoints'
+
+    def __str__(self):
+        return f"{self.organization.name} — {self.label}"
+
+    def clean(self):
+        # Validate subscribed event types against the canonical set.
+        from tickets.services.webhooks.constants import WEBHOOK_EVENT_TYPES
+        types = self.event_types or []
+        if not isinstance(types, list):
+            raise ValidationError({'event_types': 'Must be a list of event-type strings.'})
+        invalid = [t for t in types if t not in WEBHOOK_EVENT_TYPES]
+        if invalid:
+            raise ValidationError({
+                'event_types': f"Unknown event type(s): {', '.join(map(str, invalid))}. "
+                               f"Valid: {', '.join(WEBHOOK_EVENT_TYPES)}.",
+            })
+        # SSRF guard: reject non-https / private / loopback / reserved destinations.
+        from tickets.services.webhooks.validation import validate_webhook_url
+        if self.url:
+            try:
+                validate_webhook_url(self.url)
+            except ValidationError as exc:
+                raise ValidationError({'url': exc.messages})
+
+    @property
+    def masked_secret(self):
+        return f"{self.secret[:11]}...{self.secret[-4:]}"
+
+
+class WebhookDelivery(BaseModel):
+    """Append-only log of a single outbound webhook delivery attempt.
+
+    One row per attempt: a Celery retry produces a new row with an incremented
+    `attempt`. `payload` is the exact dict that was signed and POSTed, enabling
+    debugging and replay. `created_at` (from BaseModel) is the attempt timestamp.
+    """
+    endpoint = models.ForeignKey(
+        WebhookEndpoint,
+        on_delete=models.CASCADE,
+        related_name='deliveries',
+    )
+    organization = models.ForeignKey(
+        Organization,
+        on_delete=models.CASCADE,
+        related_name='webhook_deliveries',
+    )
+    event_type = models.CharField(max_length=50, db_index=True)
+    # Stable across all retry attempts of one delivery; sent as X-Cue-Delivery-Id
+    # so consumers can dedupe at-least-once redeliveries. Null only for legacy rows.
+    delivery_id = models.UUIDField(null=True, blank=True, db_index=True)
+    payload = models.JSONField(default=dict)
+    response_status = models.IntegerField(null=True, blank=True)
+    response_body = models.TextField(blank=True, default='')
+    attempt = models.PositiveIntegerField(default=1)
+    success = models.BooleanField(default=False, db_index=True)
+    error_message = models.CharField(max_length=1000, blank=True, default='')
+
+    class Meta:
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['endpoint', 'created_at']),
+            models.Index(fields=['organization', 'event_type', 'created_at']),
+            models.Index(fields=['success', 'created_at']),
+        ]
+        verbose_name = 'Webhook delivery'
+        verbose_name_plural = 'Webhook deliveries'
+
+    def __str__(self):
+        status = 'ok' if self.success else 'fail'
+        return f"{self.event_type} → {self.endpoint_id} [{status}]"
 
 
 class OAuthClient(BaseModel):

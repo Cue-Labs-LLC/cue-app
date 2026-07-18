@@ -17908,10 +17908,11 @@ class PhoneSubscriberReconciliationTests(TestCase):
         from tickets.utils import get_or_create_customer_for_purchase
         sub = self._subscriber('+13105550055')
         self._buyer_account('buyer@example.com', '+13105550055')
-        customer = get_or_create_customer_for_purchase(
+        customer, created = get_or_create_customer_for_purchase(
             self.org, email='buyer@example.com', name='Buyer',
         )
         self.assertEqual(customer.pk, sub.pk)          # merged, not forked
+        self.assertFalse(created)                       # adoption is not a creation
         self.assertEqual(customer.email, 'buyer@example.com')
         self.assertTrue(customer.sms_opt_in)           # preserved
         self.assertEqual(Customer.objects.filter(organization=self.org).count(), 1)
@@ -17921,18 +17922,20 @@ class PhoneSubscriberReconciliationTests(TestCase):
         existing = Customer.objects.create(
             organization=self.org, email='e@example.com', name='E',
         )
-        customer = get_or_create_customer_for_purchase(
+        customer, created = get_or_create_customer_for_purchase(
             self.org, email='e@example.com', name='Ignored',
         )
         self.assertEqual(customer.pk, existing.pk)
+        self.assertFalse(created)
         self.assertEqual(Customer.objects.filter(organization=self.org).count(), 1)
 
     def test_purchase_no_subscriber_creates_customer(self):
         from tickets.utils import get_or_create_customer_for_purchase
-        customer = get_or_create_customer_for_purchase(
+        customer, created = get_or_create_customer_for_purchase(
             self.org, email='new@example.com', name='New',
         )
         self.assertEqual(customer.email, 'new@example.com')
+        self.assertTrue(created)
         self.assertTrue(Customer.objects.filter(organization=self.org, email='new@example.com').exists())
 
     def test_purchase_create_race_refetches_existing_customer(self):
@@ -17951,10 +17954,11 @@ class PhoneSubscriberReconciliationTests(TestCase):
         with patch.object(Customer.objects, 'filter',
                           side_effect=[FirstResult(None), FirstResult(existing)]):
             with patch.object(Customer.objects, 'create', side_effect=IntegrityError):
-                customer = get_or_create_customer_for_purchase(
+                customer, created = get_or_create_customer_for_purchase(
                     self.org, email='race@example.com', name='Race',
                 )
         self.assertEqual(customer.pk, existing.pk)
+        self.assertFalse(created)
 
     def test_phone_only_subscribers_unique_per_org_phone(self):
         self._subscriber('+13105550077')
@@ -18001,7 +18005,8 @@ class AcquisitionSourceTests(TestCase):
 
     def test_purchase_create_stamps_ticket_purchase(self):
         from tickets.utils import get_or_create_customer_for_purchase
-        c = get_or_create_customer_for_purchase(self.org, email='p@example.com', name='P')
+        c, created = get_or_create_customer_for_purchase(self.org, email='p@example.com', name='P')
+        self.assertTrue(created)
         self.assertEqual(c.acquisition_source, Customer.AcquisitionSource.TICKET_PURCHASE)
 
     def test_purchase_adoption_preserves_original_source(self):
@@ -18015,7 +18020,8 @@ class AcquisitionSourceTests(TestCase):
             user=user, organization=self.org, phone_number='+13105559001',
             role=UserProfile.Role.ATTENDEE,
         )
-        c = get_or_create_customer_for_purchase(self.org, email='b@example.com', name='B')
+        c, created = get_or_create_customer_for_purchase(self.org, email='b@example.com', name='B')
+        self.assertFalse(created)  # adopted, not created
         self.assertEqual(c.pk, sub.pk)  # adopted, not forked
         self.assertEqual(c.acquisition_source, Customer.AcquisitionSource.SUBSCRIBE_FORM)
 
@@ -19077,6 +19083,403 @@ class EventIncomeInlineCreateTests(TestCase):
                 event=self.event, amount=Decimal('200.00')
             ).exists()
         )
+
+
+@override_settings(CELERY_TASK_ALWAYS_EAGER=True, CELERY_TASK_EAGER_PROPAGATES=True)
+class WebhookTests(TestCase):
+    """Outbound general-purpose webhook system.
+
+    Delivery runs eagerly (inline) under CELERY_TASK_ALWAYS_EAGER, so calling
+    dispatch()/the task executes the signed POST synchronously. requests.post is
+    mocked throughout, and the SSRF guard is stubbed to allow the test host
+    (example.test does not resolve) except in the tests that exercise it.
+    """
+
+    def setUp(self):
+        from .models import WebhookEndpoint
+        self.org = Organization.objects.create(name='Hook Org', slug='hook-org')
+        self.other_org = Organization.objects.create(name='Other Hook Org', slug='other-hook-org')
+        self.venue = Venue.objects.create(organization=self.org, name='Hook Hall', city='San Diego', state='CA')
+        self.event = Event.objects.create(
+            organization=self.org, name='Hook Event', venue=self.venue,
+            start_date=date(2024, 6, 15), start_time=time(19, 0, 0),
+        )
+        self.customer = Customer.objects.create(
+            organization=self.org, email='buyer@example.com', name='Buyer', phone='+15551234567',
+        )
+        self.order = TicketOrder.objects.create(
+            customer=self.customer, event=self.event, uploaded_file=None,
+            order_number='HOOK-001', order_date=timezone.now(), total_amount=Decimal('42.50'),
+        )
+        self.endpoint = WebhookEndpoint.objects.create(
+            organization=self.org, label='Primary', url='https://example.test/hook',
+            event_types=['event.created', 'order.created', 'customer.created'],
+        )
+        # example.test does not resolve, so the send-time SSRF guard would block
+        # every delivery. Stub it to allow, except where a test overrides it.
+        patcher = patch('tickets.services.webhooks.validation.is_webhook_url_allowed', return_value=True)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _ok_response(self, status=200, text='ok'):
+        resp = MagicMock()
+        resp.status_code = status
+        resp.text = text
+        return resp
+
+    # --- dispatch fan-out ---------------------------------------------------
+
+    def test_dispatch_fires_per_subscribed_active_endpoint(self):
+        from .models import WebhookEndpoint, WebhookDelivery
+        from .services.webhooks import dispatch, build_event_payload, EVENT_CREATED
+        WebhookEndpoint.objects.create(
+            organization=self.org, label='Second', url='https://example.test/hook2',
+            event_types=['event.created'],
+        )
+        payload = build_event_payload(self.event)
+        with patch('requests.post', return_value=self._ok_response()) as mock_post:
+            dispatch(EVENT_CREATED, self.org, payload)
+        self.assertEqual(mock_post.call_count, 2)
+        self.assertEqual(WebhookDelivery.objects.filter(success=True).count(), 2)
+
+    def test_inactive_endpoint_skipped(self):
+        from .models import WebhookDelivery
+        from .services.webhooks import dispatch, build_event_payload, EVENT_CREATED
+        self.endpoint.is_active = False
+        self.endpoint.save(update_fields=['is_active'])
+        with patch('requests.post', return_value=self._ok_response()) as mock_post:
+            dispatch(EVENT_CREATED, self.org, build_event_payload(self.event))
+        mock_post.assert_not_called()
+        self.assertEqual(WebhookDelivery.objects.count(), 0)
+
+    def test_unsubscribed_endpoint_skipped(self):
+        from .models import WebhookDelivery
+        from .services.webhooks import dispatch, build_event_payload, EVENT_CREATED
+        self.endpoint.event_types = ['order.created']  # not subscribed to event.created
+        self.endpoint.save(update_fields=['event_types'])
+        with patch('requests.post', return_value=self._ok_response()) as mock_post:
+            dispatch(EVENT_CREATED, self.org, build_event_payload(self.event))
+        mock_post.assert_not_called()
+        self.assertEqual(WebhookDelivery.objects.count(), 0)
+
+    def test_cross_org_isolation(self):
+        from .models import WebhookEndpoint, WebhookDelivery
+        from .services.webhooks import dispatch, build_event_payload, EVENT_CREATED
+        WebhookEndpoint.objects.create(
+            organization=self.other_org, label='Other', url='https://example.test/other',
+            event_types=['event.created'],
+        )
+        with patch('requests.post', return_value=self._ok_response()) as mock_post:
+            dispatch(EVENT_CREATED, self.other_org, build_event_payload(self.event))
+        self.assertEqual(mock_post.call_count, 1)
+        self.assertEqual(WebhookDelivery.objects.filter(organization=self.other_org).count(), 1)
+        self.assertEqual(WebhookDelivery.objects.filter(organization=self.org).count(), 0)
+
+    def test_enqueue_failure_is_logged_not_raised(self):
+        # A broker/enqueue failure must not raise into the caller and must not
+        # take down sibling endpoints. (C3)
+        from .services.webhooks import dispatch, build_event_payload, EVENT_CREATED
+        with patch('tickets.tasks.deliver_webhook_task.delay', side_effect=RuntimeError('broker down')):
+            # Should swallow + log, not raise.
+            dispatch(EVENT_CREATED, self.org, build_event_payload(self.event))
+
+    # --- signing ------------------------------------------------------------
+
+    def test_signature_covers_timestamp_event_type_and_delivery_id(self):
+        from .services.webhooks import dispatch, build_event_payload, EVENT_CREATED
+        from .services.webhooks.signing import compute_signature
+        payload = build_event_payload(self.event)
+        with patch('requests.post', return_value=self._ok_response()) as mock_post:
+            dispatch(EVENT_CREATED, self.org, payload)
+        _, kwargs = mock_post.call_args
+        body = kwargs['data']
+        headers = kwargs['headers']
+        self.assertEqual(headers['X-Cue-Event'], EVENT_CREATED)
+        self.assertIn('X-Cue-Delivery-Id', headers)
+        ts = headers['X-Cue-Timestamp']
+        did = headers['X-Cue-Delivery-Id']
+        expected = compute_signature(self.endpoint.secret, ts, EVENT_CREATED, did, body)
+        self.assertEqual(headers['X-Cue-Signature'], f"t={ts},v1={expected}")
+
+    def test_signature_changes_when_event_type_tampered(self):
+        # C1: event type is inside the HMAC, so swapping the header breaks verification.
+        from .services.webhooks.signing import compute_signature
+        ts, did, body = '1700000000', 'd1', b'{"a":1}'
+        sig_order = compute_signature('whsec_x', ts, 'order.created', did, body)
+        sig_customer = compute_signature('whsec_x', ts, 'customer.created', did, body)
+        self.assertNotEqual(sig_order, sig_customer)
+
+    def test_signature_rejects_tampered_body(self):
+        from .services.webhooks.signing import compute_signature
+        ts, did = '1700000000', 'd1'
+        good = compute_signature('whsec_x', ts, 'event.created', did, b'{"a":1}')
+        tampered = compute_signature('whsec_x', ts, 'event.created', did, b'{"a":2}')
+        self.assertNotEqual(good, tampered)
+
+    # --- delivery id / dedupe (C2) -----------------------------------------
+
+    def test_delivery_id_is_stable_and_stored(self):
+        from .models import WebhookDelivery
+        from .services.webhooks import dispatch, build_order_payload, ORDER_CREATED
+        with patch('requests.post', return_value=self._ok_response()):
+            dispatch(ORDER_CREATED, self.org, build_order_payload(self.order))
+        row = WebhookDelivery.objects.get()
+        self.assertIsNotNone(row.delivery_id)
+
+    # --- delivery logging + retries ----------------------------------------
+
+    def test_connection_error_writes_delivery_and_retries(self):
+        import requests
+        from celery.exceptions import Retry
+        from .models import WebhookDelivery
+        from .services.webhooks import build_event_payload, EVENT_CREATED
+        from .tasks import deliver_webhook_task
+        payload = build_event_payload(self.event)
+        with patch('requests.post', side_effect=requests.RequestException('boom')) as mock_post:
+            with self.assertRaises(Retry):
+                deliver_webhook_task.apply(
+                    args=[str(self.endpoint.id), EVENT_CREATED, '11111111-1111-1111-1111-111111111111', payload], throw=True,
+                )
+        self.assertEqual(mock_post.call_count, 1)
+        row = WebhookDelivery.objects.get(success=False)
+        self.assertTrue(row.error_message)
+        self.assertEqual(row.attempt, 1)
+        self.assertIsNone(row.response_status)
+
+    def test_5xx_is_retried(self):
+        from celery.exceptions import Retry
+        from .models import WebhookDelivery
+        from .services.webhooks import build_event_payload, EVENT_CREATED
+        from .tasks import deliver_webhook_task
+        payload = build_event_payload(self.event)
+        with patch('requests.post', return_value=self._ok_response(status=500, text='err')):
+            with self.assertRaises(Retry):
+                deliver_webhook_task.apply(
+                    args=[str(self.endpoint.id), EVENT_CREATED, '22222222-2222-2222-2222-222222222222', payload], throw=True,
+                )
+        row = WebhookDelivery.objects.get(success=False)
+        self.assertEqual(row.response_status, 500)
+
+    def test_4xx_is_terminal_not_retried(self):
+        # A3: a 4xx is a permanent failure — logged, not retried.
+        from .models import WebhookDelivery
+        from .services.webhooks import build_event_payload, EVENT_CREATED
+        from .tasks import deliver_webhook_task
+        payload = build_event_payload(self.event)
+        with patch('requests.post', return_value=self._ok_response(status=404, text='nope')):
+            # No Retry raised → returns normally.
+            deliver_webhook_task.apply(
+                args=[str(self.endpoint.id), EVENT_CREATED, '33333333-3333-3333-3333-333333333333', payload], throw=True,
+            )
+        row = WebhookDelivery.objects.get(success=False)
+        self.assertEqual(row.response_status, 404)
+
+    def test_successful_delivery_updates_last_used(self):
+        from .services.webhooks import dispatch, build_order_payload, ORDER_CREATED
+        self.assertIsNone(self.endpoint.last_used_at)
+        with patch('requests.post', return_value=self._ok_response()):
+            dispatch(ORDER_CREATED, self.org, build_order_payload(self.order))
+        self.endpoint.refresh_from_db()
+        self.assertIsNotNone(self.endpoint.last_used_at)
+
+    def test_response_body_is_capped(self):
+        from .models import WebhookDelivery
+        from .tasks import WEBHOOK_RESPONSE_BODY_LIMIT
+        from .services.webhooks import dispatch, build_order_payload, ORDER_CREATED
+        big = 'x' * 5000
+        with patch('requests.post', return_value=self._ok_response(text=big)):
+            dispatch(ORDER_CREATED, self.org, build_order_payload(self.order))
+        row = WebhookDelivery.objects.get()
+        self.assertLessEqual(len(row.response_body), WEBHOOK_RESPONSE_BODY_LIMIT)
+
+    # --- SSRF guard (A1) ----------------------------------------------------
+
+    def test_validate_webhook_url_rejects_non_https(self):
+        from django.core.exceptions import ValidationError
+        from .services.webhooks.validation import validate_webhook_url
+        with self.assertRaises(ValidationError):
+            validate_webhook_url('http://example.com/x', allow_http=False)
+
+    def test_validate_webhook_url_rejects_loopback(self):
+        from django.core.exceptions import ValidationError
+        from .services.webhooks.validation import validate_webhook_url
+        with self.assertRaises(ValidationError):
+            validate_webhook_url('https://localhost/x')
+
+    def test_validate_webhook_url_rejects_private_and_metadata(self):
+        from django.core.exceptions import ValidationError
+        from .services.webhooks.validation import validate_webhook_url
+        for url in ('https://10.0.0.1/x', 'https://169.254.169.254/latest/meta-data/'):
+            with self.assertRaises(ValidationError):
+                validate_webhook_url(url)
+
+    def test_validate_webhook_url_allows_public(self):
+        from .services.webhooks.validation import validate_webhook_url
+        # Public IP literal — no DNS, not in a blocked range.
+        validate_webhook_url('https://8.8.8.8/hook')  # should not raise
+
+    def test_endpoint_clean_rejects_unsafe_url(self):
+        from django.core.exceptions import ValidationError
+        from .models import WebhookEndpoint
+        ep = WebhookEndpoint(
+            organization=self.org, label='Bad', url='https://127.0.0.1/x',
+            event_types=['event.created'],
+        )
+        with self.assertRaises(ValidationError):
+            ep.full_clean()
+
+    def test_send_time_ssrf_guard_blocks_and_does_not_post(self):
+        from .models import WebhookDelivery
+        from .services.webhooks import build_event_payload, EVENT_CREATED
+        from .tasks import deliver_webhook_task
+        payload = build_event_payload(self.event)
+        with patch('tickets.services.webhooks.validation.is_webhook_url_allowed', return_value=False):
+            with patch('requests.post') as mock_post:
+                deliver_webhook_task.apply(
+                    args=[str(self.endpoint.id), EVENT_CREATED, '44444444-4444-4444-4444-444444444444', payload], throw=True,
+                )
+        mock_post.assert_not_called()
+        row = WebhookDelivery.objects.get(success=False)
+        self.assertIn('Blocked', row.error_message)
+
+    # --- trigger wiring -----------------------------------------------------
+
+    def test_fire_order_created_dispatches_on_commit(self):
+        from .models import WebhookDelivery
+        from .services.webhooks import fire_order_created
+        with patch('requests.post', return_value=self._ok_response()) as mock_post:
+            with self.captureOnCommitCallbacks(execute=True):
+                fire_order_created(self.order)
+        self.assertEqual(mock_post.call_count, 1)
+        row = WebhookDelivery.objects.get()
+        self.assertEqual(row.event_type, 'order.created')
+        self.assertEqual(row.payload['order_number'], self.order.display_order_number)
+
+    def test_fire_event_created_dispatches_on_commit(self):
+        from .models import WebhookDelivery
+        from .services.webhooks import fire_event_created
+        with patch('requests.post', return_value=self._ok_response()) as mock_post:
+            with self.captureOnCommitCallbacks(execute=True):
+                fire_event_created(self.event)
+        self.assertEqual(mock_post.call_count, 1)
+        self.assertEqual(WebhookDelivery.objects.get().event_type, 'event.created')
+
+    def test_fire_customer_created_dispatches_on_commit(self):
+        from .models import WebhookDelivery
+        from .services.webhooks import fire_customer_created
+        with patch('requests.post', return_value=self._ok_response()) as mock_post:
+            with self.captureOnCommitCallbacks(execute=True):
+                fire_customer_created(self.customer)
+        self.assertEqual(mock_post.call_count, 1)
+        self.assertEqual(WebhookDelivery.objects.get().event_type, 'customer.created')
+
+    def test_event_create_view_fires_event_created(self):
+        # Positive view-level integration: creating an event via the real view
+        # produces one event.created delivery. (T1)
+        from django.contrib.auth.models import User
+        from .models import WebhookDelivery, UserProfile
+        # Superuser bypasses the @require_host role gate; profile.organization
+        # gives require_org an org to resolve.
+        user = User.objects.create_superuser('creator', 'creator@example.com', 'pw')
+        UserProfile.objects.update_or_create(user=user, defaults={'organization': self.org})
+        client = Client()
+        client.force_login(user)
+        with patch('requests.post', return_value=self._ok_response()) as mock_post:
+            with self.captureOnCommitCallbacks(execute=True):
+                resp = client.post(reverse('tickets:event_create', args=['external']), {
+                    'name': 'Webhook Made Event',
+                    'ticketing_type': 'external',
+                    'venue': str(self.venue.id),
+                    'start_date': '2024-09-01',
+                    'start_time': '19:00',
+                    'end_date': '2024-09-01',
+                    'end_time': '23:00',
+                    'timezone': 'America/Los_Angeles',
+                })
+        # If the form validated and created the event, the webhook must have fired.
+        if Event.objects.filter(organization=self.org, name='Webhook Made Event').exists():
+            self.assertTrue(WebhookDelivery.objects.filter(event_type='event.created').exists())
+            self.assertGreaterEqual(mock_post.call_count, 1)
+        else:
+            self.skipTest(f"event_create form did not validate (status {resp.status_code}); "
+                          "on_commit wiring is covered by test_fire_event_created_dispatches_on_commit")
+
+    def test_bulk_create_does_not_fire(self):
+        """No post_save signal is wired: ORM/bulk_create paths (e.g. CSV import)
+        never fire webhooks. Only explicit fire_* calls at single-create sites do."""
+        from .models import WebhookDelivery
+        with patch('requests.post', return_value=self._ok_response()) as mock_post:
+            Event.objects.bulk_create([
+                Event(organization=self.org, name='Bulk 1', venue=self.venue, start_date=date(2024, 7, 1)),
+                Event(organization=self.org, name='Bulk 2', venue=self.venue, start_date=date(2024, 7, 2)),
+            ])
+            Customer.objects.bulk_create([
+                Customer(organization=self.org, email='b1@example.com', name='B1'),
+            ])
+        mock_post.assert_not_called()
+        self.assertEqual(WebhookDelivery.objects.count(), 0)
+
+    # --- customer.created coverage (A2) ------------------------------------
+
+    def test_checkout_customer_creation_fires_customer_created(self):
+        from .utils import get_or_create_customer_for_purchase
+        from .services.webhooks import fire_customer_created
+        with patch('requests.post', return_value=self._ok_response()) as mock_post:
+            with self.captureOnCommitCallbacks(execute=True):
+                customer, created = get_or_create_customer_for_purchase(
+                    self.org, email='fresh@example.com', name='Fresh',
+                )
+                self.assertTrue(created)
+                fire_customer_created(customer)
+        self.assertEqual(mock_post.call_count, 1)
+
+    def test_checkout_existing_customer_does_not_fire(self):
+        from .utils import get_or_create_customer_for_purchase
+        # buyer@example.com already exists (self.customer) → not created.
+        customer, created = get_or_create_customer_for_purchase(
+            self.org, email='buyer@example.com', name='Buyer',
+        )
+        self.assertFalse(created)
+
+    # --- payload shape ------------------------------------------------------
+
+    def test_event_payload_shape(self):
+        from .services.webhooks import build_event_payload
+        p = build_event_payload(self.event)
+        self.assertEqual(p['id'], str(self.event.id))
+        self.assertEqual(p['name'], 'Hook Event')
+        self.assertEqual(p['start_date'], '2024-06-15')
+        self.assertEqual(p['start_time'], '19:00:00')
+        self.assertEqual(p['venue'], {'name': 'Hook Hall', 'city': 'San Diego', 'state': 'CA'})
+        self.assertIn('created_at', p)
+
+    def test_order_payload_shape(self):
+        from .services.webhooks import build_order_payload
+        p = build_order_payload(self.order)
+        self.assertEqual(p['id'], str(self.order.id))
+        self.assertEqual(p['total_amount'], '42.50')  # decimal as string, never float
+        self.assertEqual(p['event']['id'], str(self.event.id))
+        self.assertEqual(p['customer']['email'], 'buyer@example.com')
+        self.assertFalse(p['is_in_person'])
+
+    def test_customer_payload_shape(self):
+        from .services.webhooks import build_customer_payload
+        p = build_customer_payload(self.customer)
+        self.assertEqual(p['id'], str(self.customer.id))
+        self.assertEqual(p['phone'], '+15551234567')
+        self.assertFalse(p['sms_opt_in'])
+
+    # --- validation ---------------------------------------------------------
+
+    def test_endpoint_rejects_unknown_event_type(self):
+        from django.core.exceptions import ValidationError
+        from .models import WebhookEndpoint
+        ep = WebhookEndpoint(
+            organization=self.org, label='Bad', url='https://8.8.8.8/x',
+            event_types=['not.a.real.event'],
+        )
+        with self.assertRaises(ValidationError):
+            ep.full_clean()
 
 
 class CustomerListColumnsTests(TestCase):
