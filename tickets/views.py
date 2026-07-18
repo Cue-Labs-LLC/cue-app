@@ -151,6 +151,7 @@ from .utils import get_organization, require_org, require_organizer, require_hos
 from .feature_flags import (
     smart_pricing_recommendations_enabled,
     browse_events_enabled,
+    loyalty_enabled,
 )
 
 from django.core.cache import cache as django_cache
@@ -3038,6 +3039,18 @@ def build_customer_queryset(org, params, *, for_export=False):
     return customers, meta
 
 
+# Optional columns on the Customers table, in display order. Name is intentionally
+# excluded — it's the mandatory clickable identifier. Keys are stored on
+# Organization.customer_list_columns; null there means "show all defaults".
+CUSTOMER_LIST_COLUMNS = [
+    ('email', 'Email'), ('phone', 'Phone'), ('sms', 'SMS Subscriber'),
+    ('segment', 'Segment'), ('source', 'Source'), ('ltv', 'Lifetime Value'),
+    ('points', 'Points Balance'), ('last_order', 'Last Order'),
+    ('orders', 'Total Orders'), ('tags', 'Tags'),
+]
+DEFAULT_CUSTOMER_LIST_COLUMN_KEYS = [k for k, _ in CUSTOMER_LIST_COLUMNS]
+
+
 @login_required
 @require_org
 @require_host
@@ -3090,8 +3103,30 @@ def customer_list(request):
             }
 
     org_tags = CustomerTag.objects.filter(organization=org)
+
+    # Column visibility (per-org preference). A saved list scopes visible columns;
+    # null/None means "show everything". Preferences apply only to the buyers/Everyone
+    # layout — the Subscribers/Contacts tabs keep their own tailored columns.
+    saved_columns = org.customer_list_columns
+    if isinstance(saved_columns, list):
+        visible_columns = [k for k in saved_columns if k in DEFAULT_CUSTOMER_LIST_COLUMN_KEYS]
+    else:
+        visible_columns = list(DEFAULT_CUSTOMER_LIST_COLUMN_KEYS)
+    apply_column_prefs = meta['customer_type'] not in ('subscribers', 'contacts')
+    # The Points column only renders when the loyalty program is enabled, so don't
+    # offer it in the picker (and don't leak its label) when the flag is off.
+    loyalty_on = loyalty_enabled(org)
+    customer_list_columns = [
+        {'key': k, 'label': label, 'checked': k in visible_columns}
+        for k, label in CUSTOMER_LIST_COLUMNS
+        if k != 'points' or loyalty_on
+    ]
+
     context = {
         'page_obj': page_obj,
+        'visible_columns': visible_columns,
+        'apply_column_prefs': apply_column_prefs,
+        'customer_list_columns': customer_list_columns,
         'search_query': meta['search_query'],
         'sort_by': meta['sort_by'],
         'segment_filter': segment_filter,
@@ -3126,6 +3161,28 @@ def customer_list(request):
     }
     context.update(market_context)
     return render(request, 'tickets/customer_list.html', context)
+
+
+@login_required
+@require_org
+@require_admin
+@require_http_methods(["POST"])
+def customer_list_columns_save(request):
+    """Save the org's visible-column preference for the Customers table (admins only)."""
+    org = get_organization(request)
+    selected = request.POST.getlist('columns')
+    # Keep the canonical order and drop anything not in the known column set.
+    org.customer_list_columns = [
+        k for k in DEFAULT_CUSTOMER_LIST_COLUMN_KEYS if k in selected
+    ]
+    org.save(update_fields=['customer_list_columns'])
+
+    next_url = request.POST.get('next', '')
+    if next_url and url_has_allowed_host_and_scheme(
+        next_url, allowed_hosts={request.get_host()}
+    ):
+        return redirect(next_url)
+    return redirect('tickets:customer_list')
 
 
 class _Echo:

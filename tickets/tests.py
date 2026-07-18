@@ -19077,3 +19077,75 @@ class EventIncomeInlineCreateTests(TestCase):
                 event=self.event, amount=Decimal('200.00')
             ).exists()
         )
+
+
+class CustomerListColumnsTests(TestCase):
+    """Tests for the per-org Customers table column preference."""
+
+    def setUp(self):
+        self.client = Client()
+        self.org = Organization.objects.create(name='Cols Org', slug='cols-org')
+
+        self.admin_user = User.objects.create_user(
+            username='colsadmin', email='colsadmin@example.com', password='testpass123',
+        )
+        UserProfile.objects.create(
+            user=self.admin_user, organization=self.org, org_role=UserProfile.OrgRole.OWNER,
+        )
+        OrganizationMembership.objects.create(
+            user=self.admin_user, organization=self.org, org_role=UserProfile.OrgRole.OWNER,
+        )
+
+        self.host_user = User.objects.create_user(
+            username='colshost', email='colshost@example.com', password='testpass123',
+        )
+        UserProfile.objects.create(
+            user=self.host_user, organization=self.org, org_role=UserProfile.OrgRole.HOST,
+        )
+        OrganizationMembership.objects.create(
+            user=self.host_user, organization=self.org, org_role=UserProfile.OrgRole.HOST,
+        )
+
+    def _login(self, email):
+        self.client.login(username=email, password='testpass123')
+        self.client.get(reverse('tickets:home'))
+
+    def test_admin_saves_subset_and_strips_invalid_keys(self):
+        self._login('colsadmin@example.com')
+        response = self.client.post(
+            reverse('tickets:customer_list_columns_save'),
+            {'columns': ['email', 'ltv', 'bogus'], 'next': reverse('tickets:customer_list')},
+        )
+        self.assertEqual(response.status_code, 302)
+        self.org.refresh_from_db()
+        # Invalid keys dropped; canonical order preserved (email before ltv).
+        self.assertEqual(self.org.customer_list_columns, ['email', 'ltv'])
+
+    def test_saving_empty_selection_hides_all_optional_columns(self):
+        self._login('colsadmin@example.com')
+        self.client.post(reverse('tickets:customer_list_columns_save'), {})
+        self.org.refresh_from_db()
+        self.assertEqual(self.org.customer_list_columns, [])
+
+    def test_non_admin_forbidden(self):
+        self._login('colshost@example.com')
+        response = self.client.post(
+            reverse('tickets:customer_list_columns_save'), {'columns': ['email']},
+        )
+        self.assertEqual(response.status_code, 403)
+        self.org.refresh_from_db()
+        self.assertIsNone(self.org.customer_list_columns)
+
+    def test_get_not_allowed(self):
+        self._login('colsadmin@example.com')
+        response = self.client.get(reverse('tickets:customer_list_columns_save'))
+        self.assertEqual(response.status_code, 405)
+
+    def test_customer_list_renders_with_saved_columns(self):
+        self.org.customer_list_columns = ['ltv']
+        self.org.save(update_fields=['customer_list_columns'])
+        self._login('colsadmin@example.com')
+        response = self.client.get(reverse('tickets:customer_list'))
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context['visible_columns'], ['ltv'])
+        self.assertTrue(response.context['apply_column_prefs'])
