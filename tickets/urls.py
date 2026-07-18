@@ -10,6 +10,7 @@ from .integrations import (
     typeform as typeform_views,
     google_calendar as google_calendar_views,
     hub as integrations_hub,
+    webhooks_ui as webhooks_views,
 )
 
 app_name = 'tickets'
@@ -353,6 +354,16 @@ urlpatterns = [
 
     path('settings/integrations/google-calendar/', google_calendar_views.settings_google_calendar, name='settings_google_calendar'),
     path('settings/integrations/google-calendar/disconnect/', google_calendar_views.settings_google_calendar_disconnect, name='settings_google_calendar_disconnect'),
+
+    # Outbound webhooks (self-serve endpoint management + delivery log)
+    path('settings/integrations/webhooks/', webhooks_views.webhook_endpoint_list, name='webhook_endpoint_list'),
+    path('settings/integrations/webhooks/create/', webhooks_views.webhook_endpoint_create, name='webhook_endpoint_create'),
+    path('settings/integrations/webhooks/deliveries/', webhooks_views.webhook_delivery_list, name='webhook_delivery_list'),
+    path('settings/integrations/webhooks/deliveries/<uuid:delivery_id>/', webhooks_views.webhook_delivery_detail, name='webhook_delivery_detail'),
+    path('settings/integrations/webhooks/<uuid:endpoint_id>/edit/', webhooks_views.webhook_endpoint_edit, name='webhook_endpoint_edit'),
+    path('settings/integrations/webhooks/<uuid:endpoint_id>/delete/', webhooks_views.webhook_endpoint_delete, name='webhook_endpoint_delete'),
+    path('settings/integrations/webhooks/<uuid:endpoint_id>/rotate-secret/', webhooks_views.webhook_endpoint_rotate_secret, name='webhook_endpoint_rotate_secret'),
+    path('settings/integrations/webhooks/<uuid:endpoint_id>/test/', webhooks_views.webhook_endpoint_test, name='webhook_endpoint_test'),
     path('settings/profile/', views.org_profile, name='org_profile'),
     path('settings/api-keys/', views.settings_api_keys, name='settings_api_keys'),
     path('settings/ai-token-usage/', views.ai_token_usage_dashboard, name='ai_token_usage'),

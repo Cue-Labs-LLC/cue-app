@@ -76,6 +76,11 @@
         <span class="hub-link-title">API Keys</span>
         <p class="hub-link-copy">Create and revoke organization API credentials.</p>
     </a>
+    <a href="{% url 'tickets:webhook_endpoint_list' %}" class="hub-link">
+        <span class="hub-link-icon"><i class="bi bi-hdd-network"></i></span>
+        <span class="hub-link-title">Webhooks</span>
+        <p class="hub-link-copy">Send signed HTTP callbacks to your systems when events, orders, and customers are created.</p>
+    </a>
     <a href="{% url 'tickets:ai_token_usage' %}" class="hub-link">
         <span class="hub-link-icon"><i class="bi bi-cpu"></i></span>
         <span class="hub-link-title">AI Token Usage</span>

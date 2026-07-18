@@ -1,0 +1,66 @@
+{% extends 'tickets/base.html' %}
+
+{% block title %}Webhook Delivery{% endblock %}
+
+{% block content %}
+<nav aria-label="breadcrumb">
+    <ol class="breadcrumb">
+        <li class="breadcrumb-item"><a href="{% url 'tickets:webhook_endpoint_list' %}">Webhooks</a></li>
+        <li class="breadcrumb-item"><a href="{% url 'tickets:webhook_delivery_list' %}">Delivery log</a></li>
+        <li class="breadcrumb-item active">Delivery</li>
+    </ol>
+</nav>
+
+<div class="page-header">
+    <h1>Delivery detail</h1>
+</div>
+
+<div class="row">
+    <div class="col-lg-5">
+        <div class="card">
+            <div class="card-header"><h5 class="mb-0">Summary</h5></div>
+            <div class="card-body">
+                <dl class="row mb-0 small">
+                    <dt class="col-5">Result</dt>
+                    <dd class="col-7">{% if delivery.success %}<span class="badge bg-success">Delivered</span>{% else %}<span class="badge bg-danger">Failed</span>{% endif %}</dd>
+                    <dt class="col-5">Event</dt>
+                    <dd class="col-7"><code>{{ delivery.event_type }}</code></dd>
+                    <dt class="col-5">Endpoint</dt>
+                    <dd class="col-7">{{ delivery.endpoint.label }}</dd>
+                    <dt class="col-5">Delivery ID</dt>
+                    <dd class="col-7"><code class="user-select-all">{{ delivery.delivery_id|default:"—" }}</code></dd>
+                    <dt class="col-5">Attempt</dt>
+                    <dd class="col-7">{{ delivery.attempt }}</dd>
+                    <dt class="col-5">HTTP status</dt>
+                    <dd class="col-7">{{ delivery.response_status|default:"— (no response)" }}</dd>
+                    <dt class="col-5">When</dt>
+                    <dd class="col-7">{{ delivery.created_at|date:"M j, Y g:i:s A" }}</dd>
+                </dl>
+                {% if delivery.error_message %}
+                <hr>
+                <p class="small mb-1 text-danger-emphasis"><strong>Error</strong></p>
+                <p class="small font-monospace mb-0">{{ delivery.error_message }}</p>
+                {% endif %}
+                <hr>
+                <p class="small text-muted mb-0">Sent with a signed <code>X-Cue-Signature</code> header over <code>timestamp.event_type.delivery_id.body</code>, plus <code>X-Cue-Event</code>, <code>X-Cue-Delivery-Id</code>, and <code>X-Cue-Timestamp</code>.</p>
+            </div>
+        </div>
+    </div>
+    <div class="col-lg-7">
+        <div class="card">
+            <div class="card-header"><h5 class="mb-0">Payload</h5></div>
+            <div class="card-body">
+                <pre class="mb-0" style="max-height: 340px; overflow: auto; font-size: 12px;"><code>{{ payload_json }}</code></pre>
+            </div>
+        </div>
+        {% if delivery.response_body %}
+        <div class="card mt-3">
+            <div class="card-header"><h5 class="mb-0">Response body</h5></div>
+            <div class="card-body">
+                <pre class="mb-0" style="max-height: 200px; overflow: auto; font-size: 12px;"><code>{{ delivery.response_body }}</code></pre>
+            </div>
+        </div>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}

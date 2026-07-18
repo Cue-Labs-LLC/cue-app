@@ -1,0 +1,107 @@
+{% extends 'tickets/base.html' %}
+{% load crispy_forms_tags %}
+
+{% block title %}{{ action }} Webhook Endpoint{% endblock %}
+
+{% block content %}
+<nav aria-label="breadcrumb">
+    <ol class="breadcrumb">
+        <li class="breadcrumb-item"><a href="{% url 'tickets:home' %}">Dashboard</a></li>
+        <li class="breadcrumb-item"><a href="{% url 'tickets:webhook_endpoint_list' %}">Webhooks</a></li>
+        <li class="breadcrumb-item active">{{ action }}</li>
+    </ol>
+</nav>
+
+<div class="page-header">
+    <h1>{{ action }} Webhook Endpoint</h1>
+</div>
+
+<div class="row">
+    <div class="col-lg-7">
+        <div class="card">
+            <div class="card-header"><h5 class="mb-0">Endpoint</h5></div>
+            <div class="card-body">
+                <form method="post">
+                    {% csrf_token %}
+                    {% crispy form %}
+                </form>
+            </div>
+        </div>
+        <div class="d-flex gap-2 mt-3">
+            <a href="{% url 'tickets:webhook_endpoint_list' %}" class="btn btn-outline-secondary"><i class="bi bi-arrow-left"></i> Back to Webhooks</a>
+        </div>
+    </div>
+
+    {% if endpoint %}
+    <div class="col-lg-5">
+        <div class="card">
+            <div class="card-header"><h5 class="mb-0">Signing secret</h5></div>
+            <div class="card-body">
+                <p class="small text-muted">Each delivery is HMAC-signed with this secret. Verify it on your receiver via the <code>X-Cue-Signature</code> header (signed base: <code>timestamp.event_type.delivery_id.body</code>).</p>
+                <div class="input-group input-group-sm mb-2">
+                    <input type="password" id="secret-value" class="form-control font-monospace" value="{{ endpoint.secret }}" readonly>
+                    <button type="button" class="btn btn-outline-secondary" id="secret-toggle" title="Show/hide"><i class="bi bi-eye"></i></button>
+                    <button type="button" class="btn btn-outline-secondary" id="secret-copy" title="Copy"><i class="bi bi-clipboard"></i></button>
+                </div>
+                <form method="post" action="{% url 'tickets:webhook_endpoint_rotate_secret' endpoint.id %}" class="d-inline"
+                      onsubmit="return confirm('Rotate the signing secret? Deliveries will sign with the new value and your receiver must be updated.');">
+                    {% csrf_token %}
+                    <button type="submit" class="btn btn-sm btn-outline-warning"><i class="bi bi-arrow-repeat"></i> Rotate secret</button>
+                </form>
+            </div>
+        </div>
+
+        <div class="card mt-3">
+            <div class="card-header"><h5 class="mb-0">Test</h5></div>
+            <div class="card-body">
+                <p class="small text-muted">Send a sample delivery for a subscribed event type so you can confirm your receiver works.</p>
+                {% if endpoint.is_active %}
+                <form method="post" action="{% url 'tickets:webhook_endpoint_test' endpoint.id %}">
+                    {% csrf_token %}
+                    <button type="submit" class="btn btn-sm btn-outline-primary"><i class="bi bi-send"></i> Send test delivery</button>
+                </form>
+                {% else %}
+                <p class="small text-muted mb-0"><i class="bi bi-info-circle"></i> Activate the endpoint to send a test.</p>
+                {% endif %}
+                <a href="{% url 'tickets:webhook_delivery_list' %}?endpoint={{ endpoint.id }}" class="small d-inline-block mt-2">View this endpoint's delivery log</a>
+            </div>
+        </div>
+
+        <div class="card mt-3 border-danger-subtle">
+            <div class="card-body">
+                <form method="post" action="{% url 'tickets:webhook_endpoint_delete' endpoint.id %}"
+                      onsubmit="return confirm('Delete “{{ endpoint.label }}”? This cannot be undone.');">
+                    {% csrf_token %}
+                    <button type="submit" class="btn btn-sm btn-outline-danger"><i class="bi bi-trash"></i> Delete endpoint</button>
+                </form>
+            </div>
+        </div>
+    </div>
+    {% endif %}
+</div>
+{% endblock %}
+
+{% block extra_js %}
+{% if endpoint %}
+<script>
+document.addEventListener('DOMContentLoaded', function () {
+    var input = document.getElementById('secret-value');
+    var toggle = document.getElementById('secret-toggle');
+    var copy = document.getElementById('secret-copy');
+    if (toggle) {
+        toggle.addEventListener('click', function () {
+            input.type = input.type === 'password' ? 'text' : 'password';
+            toggle.querySelector('i').className = input.type === 'password' ? 'bi bi-eye' : 'bi bi-eye-slash';
+        });
+    }
+    if (copy) {
+        copy.addEventListener('click', function () {
+            navigator.clipboard.writeText(input.value).then(function () {
+                if (window.showCueToast) { window.showCueToast('Secret copied to clipboard', 'success'); }
+            });
+        });
+    }
+});
+</script>
+{% endif %}
+{% endblock %}

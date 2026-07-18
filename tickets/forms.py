@@ -7,7 +7,7 @@ from crispy_forms.helper import FormHelper
 from crispy_forms.layout import Layout, Row, Column, Submit, Field
 from django.forms import inlineformset_factory
 from django.utils import timezone
-from .models import Organization, CSVFormat, Venue, Event, EventTalent, EventExpense, CustomField, CustomFieldOption, IncomeSource, EventIncome, SaleableTicketType, SaleableTicketTypeTier, UserProfile, PromoCode, OrganizerWaitlist, CustomerTag, SMSCampaign, LoyaltyProgram, LoyaltyTier, SurveyQuestion, SurveyQuestionOption, Market, TicketOrder
+from .models import Organization, CSVFormat, Venue, Event, EventTalent, EventExpense, CustomField, CustomFieldOption, IncomeSource, EventIncome, SaleableTicketType, SaleableTicketTypeTier, UserProfile, PromoCode, OrganizerWaitlist, CustomerTag, SMSCampaign, LoyaltyProgram, LoyaltyTier, SurveyQuestion, SurveyQuestionOption, Market, TicketOrder, WebhookEndpoint
 from .services.customer_filters import NO_MARKET_VALUE, market_filter_options
 
 
@@ -2086,3 +2086,54 @@ class SubscribeForm(forms.Form):
         if not _re.match(r'^\+[1-9]\d{6,14}$', phone):
             raise forms.ValidationError('Enter a valid mobile number.')
         return phone
+
+
+class WebhookEndpointForm(forms.ModelForm):
+    """Front-end form for creating/editing a webhook endpoint.
+
+    The signing secret is auto-generated and managed separately (shown/rotated on
+    the endpoint page), so it is not a form field. `event_types` renders as a
+    checkbox set validated against the canonical event types.
+    """
+
+    class Meta:
+        model = WebhookEndpoint
+        fields = ['label', 'url', 'event_types', 'description', 'is_active']
+        widgets = {
+            'label': forms.TextInput(attrs={'class': 'form-control', 'placeholder': 'e.g., Zapier — new orders'}),
+            'url': forms.URLInput(attrs={'class': 'form-control', 'placeholder': 'https://...'}),
+            'description': forms.Textarea(attrs={'rows': 2, 'class': 'form-control', 'placeholder': 'Optional note'}),
+            'is_active': forms.CheckboxInput(attrs={'class': 'form-check-input'}),
+        }
+
+    def __init__(self, *args, **kwargs):
+        kwargs.pop('organization', None)  # accepted for call-site symmetry; org is set in the view
+        super().__init__(*args, **kwargs)
+        from tickets.services.webhooks.constants import WEBHOOK_EVENT_TYPE_CHOICES
+        self.fields['description'].required = False
+        self.fields['event_types'] = forms.MultipleChoiceField(
+            choices=WEBHOOK_EVENT_TYPE_CHOICES,
+            widget=forms.CheckboxSelectMultiple,
+            required=True,
+            label='Event types',
+            help_text='Domain events this endpoint should receive.',
+        )
+        submit_label = 'Save changes' if (self.instance and self.instance.pk) else 'Create endpoint'
+        self.helper = FormHelper()
+        self.helper.form_tag = False
+        self.helper.layout = Layout(
+            Field('label'),
+            Field('url'),
+            Field('event_types'),
+            Field('description'),
+            Field('is_active'),
+            Submit('submit', submit_label, css_class='btn btn-primary'),
+        )
+
+    def clean_url(self):
+        # Reject non-https / private / loopback / reserved destinations up front so
+        # the user gets a clear field error instead of silently-failing deliveries.
+        from tickets.services.webhooks.validation import validate_webhook_url
+        url = self.cleaned_data['url']
+        validate_webhook_url(url)  # raises forms/ValidationError, surfaced on the field
+        return url
