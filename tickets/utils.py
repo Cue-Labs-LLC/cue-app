@@ -327,7 +327,10 @@ def get_or_create_customer_for_purchase(org, *, email, name):
                 raise
     try:
         with transaction.atomic():
-            return Customer.objects.create(organization=org, email=email, name=name or ''), True
+            return Customer.objects.create(
+                organization=org, email=email, name=name or '',
+                acquisition_source=Customer.AcquisitionSource.TICKET_PURCHASE,
+            ), True
     except IntegrityError:
         existing = existing_by_email()
         if existing:

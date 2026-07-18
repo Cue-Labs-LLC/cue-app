@@ -1617,7 +1617,10 @@ def _finalize_in_person_sale(event, payment_intent_id, buyer_name, buyer_email, 
     customer, customer_created = Customer.objects.get_or_create(
         email=buyer_email,
         organization=org,
-        defaults={'name': buyer_name or buyer_email},
+        defaults={
+            'name': buyer_name or buyer_email,
+            'acquisition_source': Customer.AcquisitionSource.TICKET_PURCHASE,
+        },
     )
     if customer_created:
         from .services.webhooks import fire_customer_created

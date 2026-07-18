@@ -152,6 +152,7 @@ from .utils import get_organization, require_org, require_organizer, require_hos
 from .feature_flags import (
     smart_pricing_recommendations_enabled,
     browse_events_enabled,
+    loyalty_enabled,
 )
 
 from django.core.cache import cache as django_cache
@@ -2784,6 +2785,15 @@ def upload_delete(request, file_id):
         return redirect('tickets:home')
 
 
+# Bootstrap badge color per acquisition source. Blank/unknown falls back to secondary.
+ACQUISITION_SOURCE_BADGE_COLORS = {
+    'subscribe_form': 'info',
+    'ticket_purchase': 'success',
+    'import': 'secondary',
+    'manual': 'primary',
+}
+
+
 def build_customer_queryset(org, params, *, for_export=False):
     """Build the filtered/annotated/sorted ``Customer`` queryset for the list.
 
@@ -2804,6 +2814,12 @@ def build_customer_queryset(org, params, *, for_export=False):
 
     # Segment filter
     segment_filter = params.get('segment', '').strip()
+
+    # Acquisition source filter — validate against the model's choices so a bad
+    # query param can't inject an arbitrary lookup value.
+    source_filter = params.get('source', '').strip()
+    if source_filter not in Customer.AcquisitionSource.values:
+        source_filter = ''
 
     # Tag filter — validate UUID to avoid ValueError on bad input
     tag_filter = params.get('tag', '').strip()
@@ -2835,6 +2851,7 @@ def build_customer_queryset(org, params, *, for_export=False):
     has_active_filters = any([
         search_query,
         segment_filter,
+        source_filter,
         tag_filter,
         market_context['market_filter'],
         last_order_from,
@@ -2851,6 +2868,7 @@ def build_customer_queryset(org, params, *, for_export=False):
     # recipient lists) so filtering logic lives in one place.
     customers = filter_customers(org, {
         'rfm_segment': segment_filter or None,
+        'acquisition_source': source_filter or None,
         'tag_id': tag_filter or None,
         'search': search_query or None,
         'market_id': market_context['market_filter'] or None,
@@ -2950,6 +2968,7 @@ def build_customer_queryset(org, params, *, for_export=False):
         'lifetime_value', '-lifetime_value',
         'last_order_date', '-last_order_date',
         'rfm_segment', '-rfm_segment',
+        'acquisition_source', '-acquisition_source',
         'first_tag_name', '-first_tag_name',
         'points_balance', '-points_balance',
     }
@@ -2976,6 +2995,7 @@ def build_customer_queryset(org, params, *, for_export=False):
     _fp_notype = {k: v for k, v in {
         'search': search_query,
         'segment': segment_filter,
+        'source': source_filter,
         'tag': tag_filter,
         'market': market_context['market_filter'],
         'last_order_from': last_order_from,
@@ -2997,6 +3017,8 @@ def build_customer_queryset(org, params, *, for_export=False):
         'sort_by': sort_by,
         'search_query': search_query,
         'segment_filter': segment_filter,
+        'source_filter': source_filter,
+        'source_choices': Customer.AcquisitionSource.choices,
         'tag_filter': tag_filter,
         'last_order_from': last_order_from,
         'last_order_to': last_order_to,
@@ -3016,6 +3038,18 @@ def build_customer_queryset(org, params, *, for_export=False):
         'has_active_filters': has_active_filters,
     }
     return customers, meta
+
+
+# Optional columns on the Customers table, in display order. Name is intentionally
+# excluded — it's the mandatory clickable identifier. Keys are stored on
+# Organization.customer_list_columns; null there means "show all defaults".
+CUSTOMER_LIST_COLUMNS = [
+    ('email', 'Email'), ('phone', 'Phone'), ('sms', 'SMS Subscriber'),
+    ('segment', 'Segment'), ('source', 'Source'), ('ltv', 'Lifetime Value'),
+    ('points', 'Points Balance'), ('last_order', 'Last Order'),
+    ('orders', 'Total Orders'), ('tags', 'Tags'),
+]
+DEFAULT_CUSTOMER_LIST_COLUMN_KEYS = [k for k, _ in CUSTOMER_LIST_COLUMNS]
 
 
 @login_required
@@ -3070,8 +3104,30 @@ def customer_list(request):
             }
 
     org_tags = CustomerTag.objects.filter(organization=org)
+
+    # Column visibility (per-org preference). A saved list scopes visible columns;
+    # null/None means "show everything". Preferences apply only to the buyers/Everyone
+    # layout — the Subscribers/Contacts tabs keep their own tailored columns.
+    saved_columns = org.customer_list_columns
+    if isinstance(saved_columns, list):
+        visible_columns = [k for k in saved_columns if k in DEFAULT_CUSTOMER_LIST_COLUMN_KEYS]
+    else:
+        visible_columns = list(DEFAULT_CUSTOMER_LIST_COLUMN_KEYS)
+    apply_column_prefs = meta['customer_type'] not in ('subscribers', 'contacts')
+    # The Points column only renders when the loyalty program is enabled, so don't
+    # offer it in the picker (and don't leak its label) when the flag is off.
+    loyalty_on = loyalty_enabled(org)
+    customer_list_columns = [
+        {'key': k, 'label': label, 'checked': k in visible_columns}
+        for k, label in CUSTOMER_LIST_COLUMNS
+        if k != 'points' or loyalty_on
+    ]
+
     context = {
         'page_obj': page_obj,
+        'visible_columns': visible_columns,
+        'apply_column_prefs': apply_column_prefs,
+        'customer_list_columns': customer_list_columns,
         'search_query': meta['search_query'],
         'sort_by': meta['sort_by'],
         'segment_filter': segment_filter,
@@ -3096,6 +3152,9 @@ def customer_list(request):
         'segment_choices': segment_choices,
         'segment_badge_colors': SEGMENT_BADGE_COLORS,
         'current_segment_definition': current_segment_definition,
+        'source_filter': meta['source_filter'],
+        'source_choices': meta['source_choices'],
+        'source_badge_colors': ACQUISITION_SOURCE_BADGE_COLORS,
         'org_tags': org_tags,
         # Onboarding "Review consent" step lands here with ?focus=consent to
         # explain how SMS consent works and where the controls are.
@@ -3103,6 +3162,28 @@ def customer_list(request):
     }
     context.update(market_context)
     return render(request, 'tickets/customer_list.html', context)
+
+
+@login_required
+@require_org
+@require_admin
+@require_http_methods(["POST"])
+def customer_list_columns_save(request):
+    """Save the org's visible-column preference for the Customers table (admins only)."""
+    org = get_organization(request)
+    selected = request.POST.getlist('columns')
+    # Keep the canonical order and drop anything not in the known column set.
+    org.customer_list_columns = [
+        k for k in DEFAULT_CUSTOMER_LIST_COLUMN_KEYS if k in selected
+    ]
+    org.save(update_fields=['customer_list_columns'])
+
+    next_url = request.POST.get('next', '')
+    if next_url and url_has_allowed_host_and_scheme(
+        next_url, allowed_hosts={request.get_host()}
+    ):
+        return redirect(next_url)
+    return redirect('tickets:customer_list')
 
 
 class _Echo:
@@ -3157,7 +3238,7 @@ def customer_export_csv(request):
     has_market = meta['has_market']
     loyalty = org.loyalty_feature_enabled
 
-    header = ['Name', 'Email', 'Phone', 'SMS Opt-In', 'Segment', 'Lifetime Value']
+    header = ['Name', 'Email', 'Phone', 'SMS Opt-In', 'Segment', 'Source', 'Lifetime Value']
     if loyalty:
         header.append('Points Balance')
     header += ['Last Order Date', 'Total Orders']
@@ -3177,6 +3258,7 @@ def customer_export_csv(request):
                 c.phone or '',
                 'Yes' if c.sms_opt_in else 'No',
                 c.rfm_segment or '',
+                c.get_acquisition_source_display() if c.acquisition_source else '',
                 _csv_money(c.lifetime_value),
             ]
             if loyalty:
@@ -4526,6 +4608,9 @@ def customer_detail(request, customer_id):
     behavior_profile_badge_color = BEHAVIOR_PROFILE_BADGE_COLORS.get(
         (customer.behavior_profile or '').strip(), 'secondary'
     )
+    acquisition_source_badge_color = ACQUISITION_SOURCE_BADGE_COLORS.get(
+        (customer.acquisition_source or '').strip(), 'secondary'
+    )
     rfm_recency_label = RFM_RECENCY_LABELS.get(customer.rfm_recency_score)
     rfm_frequency_label = RFM_FREQUENCY_LABELS.get(customer.rfm_frequency_score)
     rfm_monetary_label = RFM_MONETARY_LABELS.get(customer.rfm_monetary_score)
@@ -4632,6 +4717,7 @@ def customer_detail(request, customer_id):
         'page_obj': page_obj,
         'segment_badge_color': segment_badge_color,
         'behavior_profile_badge_color': behavior_profile_badge_color,
+        'acquisition_source_badge_color': acquisition_source_badge_color,
         'rfm_recency_label': rfm_recency_label,
         'rfm_frequency_label': rfm_frequency_label,
         'rfm_monetary_label': rfm_monetary_label,
@@ -13068,6 +13154,7 @@ def subscribe_verify_view(request, org_slug):
                 with transaction.atomic():
                     customer = Customer.objects.create(
                         organization=org, email='', name='', phone=phone,
+                        acquisition_source=Customer.AcquisitionSource.SUBSCRIBE_FORM,
                     )
                 customer_created = True
             except IntegrityError:

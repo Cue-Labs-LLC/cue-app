@@ -115,6 +115,7 @@ urlpatterns = [
 
     # Customers
     path('customers/', views.customer_list, name='customer_list'),
+    path('customers/columns/', views.customer_list_columns_save, name='customer_list_columns_save'),
     path('customers/export.csv', views.customer_export_csv, name='customer_export_csv'),
     path('customers/bulk-tag/', sms_views.customers_bulk_tag, name='customers_bulk_tag'),
     path('customers/bulk-sms-status/', sms_views.customers_bulk_sms_status, name='customers_bulk_sms_status'),
