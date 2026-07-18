@@ -18,6 +18,7 @@ from .models import (
     OrganizerWaitlist,
     PipedreamCalendarConnection,
     OrganizationAPIKey,
+    WebhookEndpoint, WebhookDelivery,
     OAuthClient,
     OAuthAccessToken,
     FeatureFlagSettings,
@@ -55,8 +56,31 @@ class JSONWidget(forms.Textarea):
         return str(value)
 
 
+class OrgScopedModelAdmin(admin.ModelAdmin):
+    """Mixin: scope the changelist to the request user's organization (superusers
+    see everything) and auto-assign that org when creating a row. Extracted so the
+    identical org-scoping logic lives in one place instead of being copy-pasted
+    into every org-owned model's admin."""
+
+    def get_queryset(self, request):
+        qs = super().get_queryset(request)
+        if request.user.is_superuser:
+            return qs
+        profile = getattr(request.user, 'profile', None)
+        if profile and profile.organization_id:
+            return qs.filter(organization=profile.organization)
+        return qs.none()
+
+    def save_model(self, request, obj, form, change):
+        if not change and not getattr(obj, 'organization_id', None):
+            profile = getattr(request.user, 'profile', None)
+            if profile and profile.organization_id:
+                obj.organization = profile.organization
+        super().save_model(request, obj, form, change)
+
+
 @admin.register(CSVFormat)
-class CSVFormatAdmin(admin.ModelAdmin):
+class CSVFormatAdmin(OrgScopedModelAdmin):
     list_display = ['name', 'organization', 'is_default', 'requires_manual_pricing', 'uses_tiers', 'created_at']
     list_filter = ['organization', 'is_default', 'requires_manual_pricing', 'uses_tiers', 'created_at']
     search_fields = ['name', 'description']
@@ -85,25 +109,9 @@ class CSVFormatAdmin(admin.ModelAdmin):
         }),
     )
 
-    def get_queryset(self, request):
-        qs = super().get_queryset(request)
-        if request.user.is_superuser:
-            return qs
-        profile = getattr(request.user, 'profile', None)
-        if profile and profile.organization_id:
-            return qs.filter(organization=profile.organization)
-        return qs.none()
-
-    def save_model(self, request, obj, form, change):
-        if not change and not getattr(obj, 'organization_id', None):
-            profile = getattr(request.user, 'profile', None)
-            if profile and profile.organization_id:
-                obj.organization = profile.organization
-        super().save_model(request, obj, form, change)
-
 
 @admin.register(UploadedFile)
-class UploadedFileAdmin(admin.ModelAdmin):
+class UploadedFileAdmin(OrgScopedModelAdmin):
     list_display = ['filename', 'csv_format', 'organization', 'status', 'total_rows', 'processed_rows', 'uploaded_at']
     list_filter = ['organization', 'status', 'csv_format', 'uploaded_at']
     search_fields = ['filename', 'description', 'source']
@@ -123,22 +131,6 @@ class UploadedFileAdmin(admin.ModelAdmin):
             'classes': ('collapse',)
         }),
     )
-
-    def get_queryset(self, request):
-        qs = super().get_queryset(request)
-        if request.user.is_superuser:
-            return qs
-        profile = getattr(request.user, 'profile', None)
-        if profile and profile.organization_id:
-            return qs.filter(organization=profile.organization)
-        return qs.none()
-
-    def save_model(self, request, obj, form, change):
-        if not change and not getattr(obj, 'organization_id', None):
-            profile = getattr(request.user, 'profile', None)
-            if profile and profile.organization_id:
-                obj.organization = profile.organization
-        super().save_model(request, obj, form, change)
 
 
 class TicketInline(admin.TabularInline):
@@ -1543,3 +1535,68 @@ class LoyaltyTierTransitionAdmin(admin.ModelAdmin):
 
     def has_delete_permission(self, request, obj=None):
         return False
+
+
+class WebhookEndpointForm(forms.ModelForm):
+    """Render event_types as checkboxes validated against the canonical set."""
+    class Meta:
+        model = WebhookEndpoint
+        fields = '__all__'
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        from tickets.services.webhooks.constants import WEBHOOK_EVENT_TYPE_CHOICES
+        self.fields['event_types'] = forms.MultipleChoiceField(
+            choices=WEBHOOK_EVENT_TYPE_CHOICES,
+            widget=forms.CheckboxSelectMultiple,
+            required=False,
+            help_text="Domain events this endpoint receives.",
+        )
+
+
+@admin.register(WebhookEndpoint)
+class WebhookEndpointAdmin(OrgScopedModelAdmin):
+    form = WebhookEndpointForm
+    list_display = ['label', 'organization', 'url', 'is_active', 'last_used_at', 'created_at']
+    list_filter = ['organization', 'is_active', 'created_at']
+    list_select_related = ['organization']
+    search_fields = ['label', 'url', 'description']
+    readonly_fields = ['id', 'masked_secret', 'last_used_at', 'created_at', 'updated_at']
+
+    fieldsets = (
+        ('Endpoint', {
+            'fields': ('label', 'url', 'event_types', 'is_active', 'description')
+        }),
+        ('Signing', {
+            'fields': ('secret', 'masked_secret'),
+            'description': 'The secret HMAC-signs each delivery (X-Cue-Signature header). '
+                           'Rotating it invalidates existing receiver verification.'
+        }),
+        ('Metadata', {
+            'fields': ('id', 'last_used_at', 'created_at', 'updated_at'),
+            'classes': ('collapse',)
+        }),
+    )
+
+
+@admin.register(WebhookDelivery)
+class WebhookDeliveryAdmin(OrgScopedModelAdmin):
+    """Read-only append-only delivery log."""
+    list_display = ['event_type', 'endpoint', 'organization', 'success', 'response_status', 'attempt', 'created_at']
+    list_filter = ['organization', 'event_type', 'success', 'created_at']
+    list_select_related = ['endpoint', 'organization']
+    search_fields = ['endpoint__label', 'event_type']
+    readonly_fields = [
+        'id', 'endpoint', 'organization', 'event_type', 'delivery_id', 'payload',
+        'response_status', 'response_body', 'attempt', 'success',
+        'error_message', 'created_at', 'updated_at',
+    ]
+    date_hierarchy = 'created_at'
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+
