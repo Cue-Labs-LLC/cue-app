@@ -152,6 +152,27 @@
        default (overflow-x: auto) so the table scrolls on narrow screens;
        col-filter dropdowns use Popper's fixed strategy instead (see JS below). */
     .customer-list-card { overflow: visible; }
+
+    /* The table card comes after this row in the DOM and (being opaque) paints
+       over any dropdown that spills below the row. Give the row its own stacking
+       context above the card — same trick #custActionBar uses — so the Columns
+       menu sits on top. */
+    .customer-toolbar-row { position: relative; z-index: 30; }
+
+    /* Column picker menu: opaque panel above the table, with a heading that
+       shows (col-filter-label is display:none). */
+    .column-picker-menu {
+        z-index: 1055;
+        min-width: 220px;
+        background: var(--bg-surface) !important;
+        border: 1px solid var(--border) !important;
+        border-radius: var(--radius) !important;
+        box-shadow: 0 8px 32px rgba(0, 0, 0, 0.25) !important;
+    }
+    .column-picker-heading {
+        font-size: 11px; font-weight: 600; text-transform: uppercase;
+        letter-spacing: .04em; color: var(--muted, #6c757d);
+    }
 </style>
 {% endblock %}
 
@@ -207,7 +228,7 @@
 </p>
 
 <!-- Compact search + count bar -->
-<div class="d-flex align-items-center gap-2 mb-3 flex-wrap">
+<div class="d-flex align-items-center gap-2 mb-3 flex-wrap customer-toolbar-row">
     <div class="input-group input-group-sm" style="max-width: 260px;">
         <span class="input-group-text"><i class="bi bi-search"></i></span>
         <input type="text" id="customerSearch" class="form-control"
@@ -227,6 +248,30 @@
     <span class="text-muted small ms-auto">
         {% if has_active_filters %}{{ page_obj.paginator.count|intcomma }} matching {% else %}{{ page_obj.paginator.count|intcomma }} {% endif %}customer{{ page_obj.paginator.count|pluralize }}
     </span>
+    {% if is_org_admin and apply_column_prefs %}
+    <div class="dropdown">
+        <button class="btn btn-sm btn-outline-secondary column-picker-btn" type="button" data-bs-toggle="dropdown"
+                data-bs-auto-close="outside" title="Choose which columns to show">
+            <i class="bi bi-layout-three-columns"></i> Columns
+        </button>
+        <div class="dropdown-menu dropdown-menu-end p-3 column-picker-menu">
+            <form method="post" action="{% url 'tickets:customer_list_columns_save' %}">
+                {% csrf_token %}
+                <input type="hidden" name="next" value="{{ request.get_full_path }}">
+                <div class="column-picker-heading mb-2">Show columns</div>
+                {% for col in customer_list_columns %}
+                <div class="form-check">
+                    <input class="form-check-input" type="checkbox" name="columns"
+                           value="{{ col.key }}" id="colToggle_{{ col.key }}"
+                           {% if col.checked %}checked{% endif %}>
+                    <label class="form-check-label" for="colToggle_{{ col.key }}">{{ col.label }}</label>
+                </div>
+                {% endfor %}
+                <button type="submit" class="btn btn-sm btn-primary w-100 mt-2">Save</button>
+            </form>
+        </div>
+    </div>
+    {% endif %}
     {% if has_active_filters %}
     <a href="{% url 'tickets:customer_list' %}{% if customer_type %}?type={{ customer_type }}{% endif %}" class="btn btn-sm btn-outline-secondary">Clear filters</a>
     {% endif %}
@@ -341,6 +386,7 @@
                             </div>
                         </th>
                         <!-- Email: sort only -->
+                        {% if not apply_column_prefs or 'email' in visible_columns %}
                         <th>
                             <div class="th-inner">
                                 {% with asc='email' desc='-email' %}
@@ -352,7 +398,9 @@
                                 {% endwith %}
                             </div>
                         </th>
+                        {% endif %}
                         <!-- Phone: filter by text -->
+                        {% if not apply_column_prefs or 'phone' in visible_columns %}
                         <th class="d-none d-sm-table-cell">
                             <div class="th-inner">
                                 Phone
@@ -375,7 +423,9 @@
                                 </div>
                             </div>
                         </th>
+                        {% endif %}
                         <!-- SMS Subscriber: boolean select -->
+                        {% if not apply_column_prefs or 'sms' in visible_columns %}
                         <th class="d-none d-sm-table-cell">
                             <div class="th-inner">
                                 SMS Subscriber
@@ -397,12 +447,14 @@
                                 </div>
                             </div>
                         </th>
+                        {% endif %}
                         {% if customer_type == 'subscribers' or customer_type == 'contacts' %}
                         <!-- Non-buyer columns: no purchase analytics to show -->
                         <th class="d-none d-sm-table-cell"><div class="th-inner">{% if customer_type == 'contacts' %}Added{% else %}Joined{% endif %}</div></th>
                         <th class="d-none d-sm-table-cell"><div class="th-inner">Home market</div></th>
                         {% else %}
                         <!-- Segment: select from choices -->
+                        {% if not apply_column_prefs or 'segment' in visible_columns %}
                         <th>
                             <div class="th-inner">
                                 {% with asc='rfm_segment' desc='-rfm_segment' %}
@@ -431,7 +483,9 @@
                                 </div>
                             </div>
                         </th>
+                        {% endif %}
                         <!-- Lifetime Value: min/max number range -->
+                        {% if not apply_column_prefs or 'ltv' in visible_columns %}
                         <th>
                             <div class="th-inner">
                                 {% with asc='lifetime_value' desc='-lifetime_value' %}
@@ -464,7 +518,8 @@
                                 </div>
                             </div>
                         </th>
-                        {% if loyalty_feature_enabled %}
+                        {% endif %}
+                        {% if loyalty_feature_enabled and not apply_column_prefs or loyalty_feature_enabled and 'points' in visible_columns %}
                         <th class="d-none d-sm-table-cell">
                             <div class="th-inner">
                                 {% with asc='points_balance' desc='-points_balance' %}
@@ -478,6 +533,7 @@
                         </th>
                         {% endif %}
                         <!-- Last Order: date range -->
+                        {% if not apply_column_prefs or 'last_order' in visible_columns %}
                         <th class="d-none d-sm-table-cell">
                             <div class="th-inner">
                                 {% with asc='last_order_date' desc='-last_order_date' %}
@@ -510,7 +566,9 @@
                                 </div>
                             </div>
                         </th>
+                        {% endif %}
                         <!-- Total Orders: min/max integer range -->
+                        {% if not apply_column_prefs or 'orders' in visible_columns %}
                         <th class="d-none d-sm-table-cell">
                             <div class="th-inner">
                                 Total Orders
@@ -538,7 +596,9 @@
                             </div>
                         </th>
                         {% endif %}
+                        {% endif %}
                         <!-- Tags: select from org_tags -->
+                        {% if not apply_column_prefs or 'tags' in visible_columns %}
                         <th class="d-none d-md-table-cell">
                             <div class="th-inner">
                                 {% with asc='first_tag_name' desc='-first_tag_name' %}
@@ -569,6 +629,7 @@
                                 {% endif %}
                             </div>
                         </th>
+                        {% endif %}
                     </tr>
                 </thead>
                 <tbody>
@@ -598,8 +659,13 @@
                                 {% endif %}
                             </div>
                         </td>
+                        {% if not apply_column_prefs or 'email' in visible_columns %}
                         <td>{{ customer.email|default:"—" }}</td>
+                        {% endif %}
+                        {% if not apply_column_prefs or 'phone' in visible_columns %}
                         <td class="d-none d-sm-table-cell">{{ customer.phone|default:"-" }}</td>
+                        {% endif %}
+                        {% if not apply_column_prefs or 'sms' in visible_columns %}
                         <td class="d-none d-sm-table-cell">
                             {% if customer.sms_suppressed %}
                             <span class="text-danger" title="Opted out via STOP — can only re-subscribe by texting START"><i class="bi bi-slash-circle-fill"></i> STOP</span>
@@ -609,10 +675,12 @@
                             <span class="text-muted">&mdash;</span>
                             {% endif %}
                         </td>
+                        {% endif %}
                         {% if customer_type == 'subscribers' or customer_type == 'contacts' %}
                         <td class="d-none d-sm-table-cell">{% if customer_type == 'contacts' %}{{ customer.created_at|date:"M d, Y"|default:"-" }}{% else %}{{ customer.sms_opt_in_date|date:"M d, Y"|default:"-" }}{% endif %}</td>
                         <td class="d-none d-sm-table-cell">{{ customer.home_market.name|default:"—" }}</td>
                         {% else %}
+                        {% if not apply_column_prefs or 'segment' in visible_columns %}
                         <td>
                             {% if customer.rfm_segment %}
                             <span class="badge bg-{{ segment_badge_colors|get_item:customer.rfm_segment }}">{{ customer.rfm_segment }}</span>
@@ -624,18 +692,27 @@
                             <span class="text-muted">-</span>
                             {% endif %}
                         </td>
+                        {% endif %}
+                        {% if not apply_column_prefs or 'ltv' in visible_columns %}
                         <td><span class="revenue">${{ customer.lifetime_value|currency }}</span></td>
-                        {% if loyalty_feature_enabled %}
+                        {% endif %}
+                        {% if loyalty_feature_enabled and not apply_column_prefs or loyalty_feature_enabled and 'points' in visible_columns %}
                         <td class="d-none d-sm-table-cell">{{ customer.points_balance|intcomma }}</td>
                         {% endif %}
+                        {% if not apply_column_prefs or 'last_order' in visible_columns %}
                         <td class="d-none d-sm-table-cell">{{ customer.last_order_date|date:"M d, Y"|default:"-" }}</td>
+                        {% endif %}
+                        {% if not apply_column_prefs or 'orders' in visible_columns %}
                         <td class="d-none d-sm-table-cell">{{ customer.order_count }}</td>
                         {% endif %}
+                        {% endif %}
+                        {% if not apply_column_prefs or 'tags' in visible_columns %}
                         <td class="d-none d-md-table-cell">
                             {% for tag in customer.tags.all %}
                             <span class="badge {% if tag.color == 'blue' %}bg-primary{% elif tag.color == 'green' %}bg-success{% elif tag.color == 'red' %}bg-danger{% elif tag.color == 'yellow' %}bg-warning text-dark{% elif tag.color == 'orange' %}bg-warning text-dark{% elif tag.color == 'purple' %}badge-purple{% else %}bg-secondary{% endif %} me-1">{{ tag.name }}</span>
                             {% endfor %}
                         </td>
+                        {% endif %}
                     </tr>
                     {% empty %}
                     <tr>
