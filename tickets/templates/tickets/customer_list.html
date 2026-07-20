@@ -216,14 +216,14 @@
     <a class="nav-link{% if customer_type == 'customers' %} active{% endif %}"
        href="{{ base_url }}?{% if filter_params_qs_notype %}{{ filter_params_qs_notype }}&{% endif %}type=customers">Ticket buyers <span class="ms-1 opacity-75">{{ customers_count|intcomma }}</span></a>
     <a class="nav-link{% if customer_type == 'subscribers' %} active{% endif %}"
-       href="{{ base_url }}?{% if filter_params_qs_notype %}{{ filter_params_qs_notype }}&{% endif %}type=subscribers">SMS subscribers <span class="ms-1 opacity-75">{{ subscribers_count|intcomma }}</span></a>
+       href="{{ base_url }}?{% if filter_params_qs_notype %}{{ filter_params_qs_notype }}&{% endif %}type=subscribers">SMS subscribers who haven't purchased <span class="ms-1 opacity-75">{{ subscribers_count|intcomma }}</span></a>
     <a class="nav-link{% if customer_type == 'contacts' %} active{% endif %}"
-       href="{{ base_url }}?{% if filter_params_qs_notype %}{{ filter_params_qs_notype }}&{% endif %}type=contacts">Not subscribed <span class="ms-1 opacity-75">{{ contacts_count|intcomma }}</span></a>
+       href="{{ base_url }}?{% if filter_params_qs_notype %}{{ filter_params_qs_notype }}&{% endif %}type=contacts">Not subscribed, no purchase <span class="ms-1 opacity-75">{{ contacts_count|intcomma }}</span></a>
 </nav>
 <p class="text-secondary small mb-3" style="margin-top:-8px;">
-    {% if customer_type == 'customers' %}People who have bought at least one ticket.
-    {% elif customer_type == 'subscribers' %}On your SMS list — haven't bought a ticket yet.
-    {% elif customer_type == 'contacts' %}No tickets bought and not subscribed to your SMS list.
+    {% if customer_type == 'customers' %}People who have bought at least one ticket. Use the SMS Subscriber column filter to see which buyers are or aren't subscribed.
+    {% elif customer_type == 'subscribers' %}On your SMS list but haven't bought a ticket yet.
+    {% elif customer_type == 'contacts' %}Haven't bought a ticket and aren't on your SMS list.
     {% else %}Everyone in your audience — buyers, SMS subscribers, and other contacts.{% endif %}
 </p>
 
