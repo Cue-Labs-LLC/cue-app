@@ -283,9 +283,10 @@ def _build_step_criteria(organization, base_criteria, event):
     Event plans default to the market covering the event's venue (city > state > country)
     when one exists — a geographic campaign to everyone who's come to shows in that market
     beats blasting the whole list for a local event. When no market matches the venue, fall
-    back to ALL of the org's SMS subscribers (the event stays linked for attribution + the
-    ticket link). The organizer can narrow any step to the event's ticket buyers or another
-    segment via the audience editor. Segment plans reuse the plan's base audience.
+    back to ALL of the org's SMS subscribers. Either way the campaign stays linked to the
+    plan's event for attribution + the ticket link (see ``_plan_step_event``). The organizer
+    can narrow any step to the event's ticket buyers or another segment via the audience
+    editor. Segment plans reuse the plan's base audience.
     """
     if event is not None:
         from tickets.services.markets import MarketBuilder
