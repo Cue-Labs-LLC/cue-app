@@ -463,6 +463,22 @@
 
 ---
 
+## SMS: At-most-once send (atomic pre-send claim or Twilio idempotency)
+
+**What:** Close the one remaining true-duplicate path in marketing-SMS sending: make a recipient send atomic so a message can never go to Twilio twice.
+
+**Why:** The double-text fix (drop the `queued` regression + gate re-send/finalize on `twilio_sid`) closes the observed bug, but a residual race survives: if a worker dies after `send_sms()` reaches Twilio but before `send_sms_chunk_task` persists the SID (`tickets/tasks.py:1064-1083`), the row stays `(status=queued, twilio_sid='')` and the recovery cron re-sends it. Same window if a slow-but-healthy send overlaps a recovery re-dispatch and two chunk tasks load the same unsent row before either saves its SID. The `twilio_sid` guard can't catch this because the SID isn't persisted yet.
+
+**Pros:** True at-most-once delivery; removes the last way a recipient can be texted twice; makes the recovery cron fully safe even under worker death / overlap.
+
+**Cons:** Real design work. A compare-and-swap claim (`filter(id=.., status=QUEUED, twilio_sid='').update(...)` before calling Twilio) risks the opposite failure — under-send if the send then fails — so it needs a claimed/leased state + reaper. Twilio's Messages API idempotency support needs verifying before relying on a per-(campaign,recipient) key.
+
+**Context:** Surfaced by the Codex outside-voice review during the double-text fix (plan: `.context/plans/sms-double-text-fix.md`). The observed 2026-07-20 incident did NOT hit this path (waves were cleanly 15+ min apart, no overlap) — it was purely the `queued`-callback regression. `STUCK_MINUTES` was raised 15→30 in `send_due_sms_campaigns.py` as a cheap mitigation against the overlap trigger, but that is not a real guarantee. Options to evaluate: (a) atomic pre-send claim with a lease + reaper for failed claims; (b) deterministic Twilio idempotency key per (campaign, recipient).
+
+**Depends on:** Double-text fix shipped.
+
+---
+
 ## Webhooks: Transactional Outbox for Guaranteed Enqueue
 
 **What:** Replace best-effort `deliver_webhook_task.delay()` with a transactional outbox: write a `pending` delivery row in the same DB transaction as the domain write, then a poller/beat task publishes and marks them sent.

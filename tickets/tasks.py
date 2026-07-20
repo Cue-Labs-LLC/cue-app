@@ -966,9 +966,12 @@ def send_sms_campaign_task(self, campaign_id):
             audience_size=SMSMessageRecipient.objects.filter(campaign=campaign).count()
         )
 
+    # "Unsent" == QUEUED with no twilio_sid. A row that carries a SID was already
+    # accepted by Twilio, so it must never be re-sent — even if a stale callback
+    # regressed its status to QUEUED. Recovery and finalize share this predicate.
     queued_ids = [
         str(i) for i in SMSMessageRecipient.objects.filter(
-            campaign=campaign, status=SMSMessageRecipient.Status.QUEUED
+            campaign=campaign, status=SMSMessageRecipient.Status.QUEUED, twilio_sid=''
         ).values_list('id', flat=True)
     ]
     if not queued_ids:
@@ -1030,7 +1033,7 @@ def send_sms_chunk_task(self, campaign_id, recipient_ids):
     # delayed send), re-include the footer for compliance — rare, may cost one
     # unbilled segment, and only ever errs toward disclosing.
     queued = list(SMSMessageRecipient.objects.filter(
-        id__in=recipient_ids, status=SMSMessageRecipient.Status.QUEUED
+        id__in=recipient_ids, status=SMSMessageRecipient.Status.QUEUED, twilio_sid=''
     ))
     disclosed_now = SMSMessageRecipient.recently_disclosed_phones(
         campaign.organization, [r.phone for r in queued], as_of=tz.now()
@@ -1097,10 +1100,12 @@ def _finalize_sms_campaign(campaign_id):
     if not campaign or campaign.status == SMSCampaign.Status.CANCELED:
         return
     if SMSMessageRecipient.objects.filter(
-        campaign=campaign, status=SMSMessageRecipient.Status.QUEUED
+        campaign=campaign, status=SMSMessageRecipient.Status.QUEUED, twilio_sid=''
     ).exists():
-        # Still work outstanding (e.g. a chunk errored); leave 'sending' for the
-        # cron recovery pass to re-dispatch.
+        # Still genuinely unsent work outstanding (e.g. a chunk errored); leave
+        # 'sending' for the cron recovery pass to re-dispatch. A row that already
+        # carries a twilio_sid is done — don't block finalize on it, or a stale
+        # callback that regressed its status would hang the campaign forever.
         return
     SMSCampaign.objects.filter(id=campaign.id).update(
         status=SMSCampaign.Status.SENT, sent_at=tz.now()
