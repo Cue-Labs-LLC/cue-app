@@ -422,6 +422,20 @@ def sms_campaign_list(request):
         ).select_related('event').order_by('scheduled_at')
     )
 
+    # In-progress band: native campaigns actively sending — or stuck mid-send after
+    # a chunk errored (status stays 'sending' until the cron recovery pass finishes
+    # it). Not window-filtered (sent_at is null while sending) so an in-flight send
+    # is always visible; annotated so the table can show sent-so-far vs audience,
+    # which is what distinguishes a healthy send from a stalled one. Newest first.
+    sending_campaigns = list(
+        _annotate_counts(
+            SMSCampaign.objects.filter(
+                organization=org, deleted_at__isnull=True,
+                status=SMSCampaign.Status.SENDING,
+            ).select_related('event')
+        ).order_by('-started_at')
+    )
+
     # Broadcast audience over time + by market. The cached series is
     # market-independent; the market filter is applied here in Python.
     series = metrics['broadcast_audience']
@@ -486,6 +500,7 @@ def sms_campaign_list(request):
     return render(request, 'tickets/marketing/sms/campaign_list.html', {
         'campaigns_page': campaigns_page,
         'scheduled_campaigns': scheduled_campaigns,
+        'sending_campaigns': sending_campaigns,
         'balance_cents': org.sms_credit_balance_cents,
         'sms_native_enabled': native,
         'marketing_section': 'sms',
