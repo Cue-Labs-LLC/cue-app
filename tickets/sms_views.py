@@ -970,8 +970,11 @@ def sms_campaign_link_event(request, pk):
 # Twilio webhooks (public, signature-validated)
 # ---------------------------------------------------------------------------
 
+# Twilio's 'queued' is intentionally absent: a message we track by twilio_sid has
+# already been handed off, so a 'queued' callback is always stale. Mapping it to
+# Status.QUEUED used to regress an already-sent row back into the send queue, which
+# the recovery cron then re-sent (the double-text bug). Unmapped statuses no-op.
 _TWILIO_STATUS_MAP = {
-    'queued': SMSMessageRecipient.Status.QUEUED,
     'sending': SMSMessageRecipient.Status.SENT,
     'sent': SMSMessageRecipient.Status.SENT,
     'delivered': SMSMessageRecipient.Status.DELIVERED,
@@ -992,6 +995,14 @@ def twilio_sms_status_webhook(request):
     recipient = SMSMessageRecipient.objects.filter(twilio_sid=sid).first()
     if not recipient or not new_status:
         return HttpResponse(status=200)  # unknown sid / status → no-op, never 500
+
+    # Callbacks are unordered and retried, so a transient 'sent'/'sending' can land
+    # after a terminal one. Only let SENT advance a still-unsent (QUEUED) row; never
+    # pull a handed-off or terminal row backward. Terminal-vs-terminal stays
+    # last-write-wins — we don't store event timestamps to order them.
+    if (new_status == SMSMessageRecipient.Status.SENT
+            and recipient.status != SMSMessageRecipient.Status.QUEUED):
+        return HttpResponse(status=200)
 
     recipient.status = new_status
     if new_status == SMSMessageRecipient.Status.DELIVERED and not recipient.delivered_at:

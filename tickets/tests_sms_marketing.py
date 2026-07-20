@@ -532,6 +532,34 @@ class SMSCampaignSendTests(TestCase):
         send_sms_campaign_task.delay(str(c.id))  # re-dispatch
         self.assertEqual(SMSMessageRecipient.objects.filter(campaign=c).count(), 3)
 
+    @override_settings(TWILIO_VALIDATE_WEBHOOKS=False, E2E_TEST_MODE=False)
+    def test_late_queued_callback_does_not_cause_resend(self):
+        # End-to-end double-text guard: send → out-of-order 'queued' callback →
+        # recovery cron → the recipient is not regressed and nothing re-sends.
+        from django.test import Client
+        from .tasks import send_sms_campaign_task
+        c = self._campaign()
+        with patch('tickets.sms.send_sms',
+                   side_effect=lambda to, body, status_callback=None: (True, 'SM' + to[-4:], None)):
+            send_sms_campaign_task.delay(str(c.id))
+        c.refresh_from_db()
+        self.assertEqual(c.status, SMSCampaign.Status.SENT)
+
+        r = SMSMessageRecipient.objects.filter(campaign=c).first()
+        Client().post(reverse('tickets:twilio_sms_status_webhook'), {
+            'MessageSid': r.twilio_sid, 'MessageStatus': 'queued',
+        })
+        r.refresh_from_db()
+        self.assertEqual(r.status, 'sent')  # not dragged back to QUEUED
+
+        resent = []
+        with patch('tickets.sms.send_sms',
+                   side_effect=lambda *a, **k: resent.append(a) or (True, 'X', None)):
+            call_command('send_due_sms_campaigns')
+        self.assertEqual(resent, [])
+        c.refresh_from_db()
+        self.assertEqual(c.status, SMSCampaign.Status.SENT)
+
     def test_failure_isolation(self):
         from .tasks import send_sms_campaign_task
 
@@ -909,15 +937,32 @@ class SMSSchedulerCommandTests(TestCase):
         self.assertEqual(c.status, SMSCampaign.Status.CANCELED)
 
     def test_stuck_sending_is_recovered(self):
-        c = self._campaign(SMSCampaign.Status.SENDING, started_at=timezone.now() - timedelta(minutes=30))
-        # A queued recipient remains (worker died mid-send).
+        c = self._campaign(SMSCampaign.Status.SENDING, started_at=timezone.now() - timedelta(minutes=40))
+        # A genuinely-unsent recipient remains (worker died mid-send): queued, no SID.
         SMSMessageRecipient.objects.create(campaign=c, phone='+13105553001', status='queued')
         call_command('send_due_sms_campaigns')
         c.refresh_from_db()
         self.assertEqual(c.status, SMSCampaign.Status.SENT)
         self.assertFalse(
-            SMSMessageRecipient.objects.filter(campaign=c, status='queued').exists()
+            SMSMessageRecipient.objects.filter(campaign=c, status='queued', twilio_sid='').exists()
         )
+
+    def test_recovery_does_not_resend_row_with_sid(self):
+        # Regression: a row regressed to QUEUED by a stale callback but already
+        # carrying a twilio_sid was accepted by Twilio — recovery must NOT re-send
+        # it, and finalize must NOT hang on it.
+        c = self._campaign(SMSCampaign.Status.SENDING, started_at=timezone.now() - timedelta(minutes=40))
+        r = SMSMessageRecipient.objects.create(
+            campaign=c, phone='+13105553001', status='queued', twilio_sid='SMalready',
+        )
+        sent_calls = []
+        with patch('tickets.sms.send_sms', side_effect=lambda *a, **k: sent_calls.append(a) or (True, 'SMnew', None)):
+            call_command('send_due_sms_campaigns')
+        self.assertEqual(sent_calls, [])            # never re-sent
+        r.refresh_from_db()
+        self.assertEqual(r.twilio_sid, 'SMalready')  # untouched
+        c.refresh_from_db()
+        self.assertEqual(c.status, SMSCampaign.Status.SENT)  # finalize did not hang
 
 
 class SMSWebhookTests(TestCase):
@@ -949,6 +994,40 @@ class SMSWebhookTests(TestCase):
             self.client.post(url, {'MessageSid': 'SM123', 'MessageStatus': 'delivered'})
         delivered = SMSMessageRecipient.objects.filter(campaign=self.campaign, status='delivered').count()
         self.assertEqual(delivered, 1)
+
+    @override_settings(TWILIO_VALIDATE_WEBHOOKS=False, E2E_TEST_MODE=False)
+    def test_status_webhook_queued_callback_does_not_regress(self):
+        # The double-text root cause: a late/retried 'queued' callback arriving
+        # after 'delivered' must NOT drag the row back to QUEUED (which the
+        # recovery cron would then re-send).
+        url = reverse('tickets:twilio_sms_status_webhook')
+        self.client.post(url, {'MessageSid': 'SM123', 'MessageStatus': 'delivered'})
+        resp = self.client.post(url, {'MessageSid': 'SM123', 'MessageStatus': 'queued'})
+        self.assertEqual(resp.status_code, 200)
+        self.recipient.refresh_from_db()
+        self.assertEqual(self.recipient.status, 'delivered')
+
+    @override_settings(TWILIO_VALIDATE_WEBHOOKS=False, E2E_TEST_MODE=False)
+    def test_status_webhook_late_sent_does_not_demote_terminal(self):
+        # A transient 'sent'/'sending' callback arriving after a terminal status
+        # must not overwrite it.
+        url = reverse('tickets:twilio_sms_status_webhook')
+        self.client.post(url, {'MessageSid': 'SM123', 'MessageStatus': 'delivered'})
+        for late in ('sent', 'sending'):
+            self.client.post(url, {'MessageSid': 'SM123', 'MessageStatus': late})
+            self.recipient.refresh_from_db()
+            self.assertEqual(self.recipient.status, 'delivered')
+
+    @override_settings(TWILIO_VALIDATE_WEBHOOKS=False, E2E_TEST_MODE=False)
+    def test_status_webhook_sent_advances_queued_row(self):
+        # A 'sent' callback still advances a genuinely-unsent (QUEUED) row.
+        self.recipient.status = 'queued'
+        self.recipient.save(update_fields=['status'])
+        self.client.post(reverse('tickets:twilio_sms_status_webhook'), {
+            'MessageSid': 'SM123', 'MessageStatus': 'sent',
+        })
+        self.recipient.refresh_from_db()
+        self.assertEqual(self.recipient.status, 'sent')
 
     @override_settings(TWILIO_VALIDATE_WEBHOOKS=False, E2E_TEST_MODE=False)
     def test_status_webhook_unknown_sid_is_noop(self):

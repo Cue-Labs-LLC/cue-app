@@ -17,8 +17,11 @@ class Command(BaseCommand):
     help = "Dispatch scheduled marketing SMS campaigns that are due; recover stuck sends."
 
     # A campaign stuck in 'sending' longer than this (worker died mid-send) is
-    # re-dispatched; the orchestrator resends only still-queued recipients.
-    STUCK_MINUTES = 15
+    # re-dispatched; the orchestrator resends only still-queued recipients. Set
+    # comfortably above the worst-case wall-clock of a healthy max-size send
+    # (SMS_CAMPAIGN_MAX_RECIPIENTS under Twilio throttling) so recovery never
+    # fires alongside a slow-but-live send and double-dispatches it.
+    STUCK_MINUTES = 30
 
     def add_arguments(self, parser):
         parser.add_argument(
