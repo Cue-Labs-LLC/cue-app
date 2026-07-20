@@ -1085,6 +1085,34 @@ class SMSViewTests(TestCase):
         resp = self.client.get(reverse('tickets:sms_campaign_list'))
         self.assertNotContains(resp, '>Scheduled<')
 
+    def test_campaign_list_shows_sending_campaigns(self):
+        # In-progress ('sending') campaigns surface in a "Sending" band above the
+        # sent list — otherwise a send that stalled mid-flight would be invisible
+        # (the sent list is SENT-only and the scheduled band is SCHEDULED-only).
+        from tickets.models import SMSCampaign
+        SMSCampaign.objects.create(
+            organization=self.org, name='In Flight', body='Going out now',
+            status=SMSCampaign.Status.SENDING,
+            started_at=timezone.now() - timedelta(minutes=5), audience_size=25,
+        )
+        resp = self.client.get(reverse('tickets:sms_campaign_list'))
+        self.assertEqual(resp.status_code, 200)
+        html = resp.content.decode()
+        self.assertIn('>Sending<', html)
+        self.assertIn('In Flight', html)
+        # The row links to the campaign's detail page.
+        self.assertIn(reverse('tickets:sms_campaign_detail', args=[
+            SMSCampaign.objects.get(name='In Flight').id]), html)
+
+    def test_campaign_list_no_sending_band_when_none_sending(self):
+        from tickets.models import SMSCampaign
+        SMSCampaign.objects.create(
+            organization=self.org, name='Sent Only', body='Done',
+            status=SMSCampaign.Status.SENT, sent_at=timezone.now(), audience_size=5,
+        )
+        resp = self.client.get(reverse('tickets:sms_campaign_list'))
+        self.assertNotContains(resp, '>Sending<')
+
     def test_campaign_list_audience_view(self):
         # The Audience sub-view renders the broadcast chart + by-market table.
         resp = self.client.get(reverse('tickets:sms_campaign_list'), {'view': 'audience'})
