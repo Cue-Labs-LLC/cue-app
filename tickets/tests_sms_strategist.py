@@ -20,6 +20,7 @@ from .services.sms_strategist import (
     CampaignPlan, PlanStep, generate_campaign_plan,
     _top_prior_campaigns, _recent_campaign_bodies,
 )
+from .sms_views import _plan_step_event
 
 
 def _fake_plan():
@@ -591,6 +592,24 @@ class SMSStrategistViewTests(TestCase):
         plan.refresh_from_db()
         self.assertEqual(plan.steps[0]['launched_campaign_id'], str(c.id))
         self.assertIn('launched_at', plan.steps[0])
+
+    @patch('langchain_openai.ChatOpenAI')
+    def test_market_step_links_campaign_to_plan_event(self, mock_openai):
+        # Regression: when the event's venue matches a Market, plan steps get a
+        # {'market_ids': [...]} audience (not all_subscribers). The launched campaign must
+        # still link to the plan's event so it shows up on the SMS list + event marketing tab.
+        mock_openai.return_value = _fake_structured_llm()
+        market = Market.objects.create(
+            organization=self.org, name='Austin', geography_level=MARKET_GEOGRAPHY_CITY,
+            geography_value='Austin',
+        )
+        plan = self._make_event_plan()
+        # Sanity: the plan really did resolve to a market audience (the buggy shape).
+        self.assertEqual(plan.steps[0]['audience_criteria'], {'market_ids': [str(market.id)]})
+
+        event = _plan_step_event(self.org, plan, plan.steps[0]['audience_criteria'])
+        self.assertIsNotNone(event)
+        self.assertEqual(event.id, self.event.id)
 
     @patch('langchain_openai.ChatOpenAI')
     def test_launched_step_shows_scheduled_not_launched(self, mock_openai):

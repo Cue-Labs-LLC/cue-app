@@ -1981,14 +1981,15 @@ def _mark_plan_step_launched(org, plan_id, step, campaign_id):
 def _plan_step_event(org, plan, criteria):
     """The Event a step's campaign should link to (for attribution), from its criteria.
 
-    An ``event_id`` audience (ticket buyers) links to that event; an ``all_subscribers``
-    step on an event plan links to the plan's event; otherwise no event link.
+    An ``event_id`` audience (ticket buyers) links to that event. Any other step of an
+    event plan — all-subscribers or a market/geo audience — links to the plan's own event,
+    since the whole plan was generated to promote it. Segment plans have no event link.
     """
     if criteria.get('event_id'):
         return Event.objects.filter(
             organization=org, deleted_at__isnull=True, id=criteria['event_id'],
         ).first()
-    if criteria.get('all_subscribers') and plan.event_id:
+    if plan.event_id:
         return plan.event
     return None
 
