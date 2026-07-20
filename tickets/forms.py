@@ -58,10 +58,13 @@ class OrgProfileForm(forms.ModelForm):
 
     class Meta:
         model = Organization
-        fields = ['photo', 'description', 'website']
+        fields = ['photo', 'description', 'website', 'instagram_url', 'youtube_url', 'tiktok_url']
         widgets = {
-            'description': forms.Textarea(attrs={'rows': 3, 'maxlength': 500}),
-            'website':     forms.URLInput(attrs={'placeholder': 'https://'}),
+            'description':   forms.Textarea(attrs={'rows': 3, 'maxlength': 500}),
+            'website':       forms.URLInput(attrs={'placeholder': 'https://'}),
+            'instagram_url': forms.URLInput(attrs={'placeholder': 'https://instagram.com/yourhandle'}),
+            'youtube_url':   forms.URLInput(attrs={'placeholder': 'https://youtube.com/@yourchannel'}),
+            'tiktok_url':    forms.URLInput(attrs={'placeholder': 'https://tiktok.com/@yourhandle'}),
         }
 
     def __init__(self, *args, **kwargs):
@@ -72,6 +75,9 @@ class OrgProfileForm(forms.ModelForm):
             'photo',
             'description',
             'website',
+            'instagram_url',
+            'youtube_url',
+            'tiktok_url',
         )
 
 

@@ -314,6 +314,21 @@ class Organization(BaseModel):
         blank=True,
         default='',
     )
+    instagram_url = models.URLField(
+        max_length=255,
+        blank=True,
+        default='',
+    )
+    youtube_url = models.URLField(
+        max_length=255,
+        blank=True,
+        default='',
+    )
+    tiktok_url = models.URLField(
+        max_length=255,
+        blank=True,
+        default='',
+    )
     # Set when the organizer dismisses the dashboard "Getting started" checklist.
     # The checklist's step completion is derived from existing data (events, Stripe
     # onboarding); this only records that the card should stay hidden.
