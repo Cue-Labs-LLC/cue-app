@@ -2514,9 +2514,19 @@ def scanner_receipt(request):
         return Response({'error': 'channel not supported'}, status=422)
 
     if order_id:
+        # The client may send either the human order_number ("#00042") or the
+        # order's UUID pk — the in-person sale response (_finalize_in_person_sale)
+        # returns both, so accept whichever the app passes. Only add the pk
+        # branch when order_id actually parses as a UUID, else id= raises.
+        lookup = Q(order_number=order_id)
+        import uuid as _uuid
+        try:
+            lookup |= Q(pk=_uuid.UUID(order_id))
+        except (ValueError, AttributeError, TypeError):
+            pass
         order = (
             TicketOrder.objects
-            .filter(customer__organization=org, order_number=order_id)
+            .filter(Q(customer__organization=org) & lookup)
             .only('id')
             .first()
         )

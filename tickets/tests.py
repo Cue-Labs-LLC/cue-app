@@ -9461,11 +9461,70 @@ class TapToPayEndpointsTests(TestCase):
         self.assertEqual(log.channel, 'email')
         self.assertEqual(log.status, 'sent')
 
+    def test_receipt_by_order_uuid_pk_sends_and_logs(self):
+        """The in-person sale response returns both order_number and the UUID
+        pk; the app may send either as order_id. A UUID pk must resolve too."""
+        from django.core import mail
+        from .models import ReceiptSend
+
+        res = self.client.post(
+            '/api/scanner/receipt/',
+            data=json.dumps({
+                'order_id': str(self.order.pk),
+                'channel': 'email',
+                'contact': 'guest@example.com',
+            }),
+            content_type='application/json',
+            HTTP_AUTHORIZATION=self.auth,
+        )
+        self.assertEqual(res.status_code, 200, res.content)
+        self.assertEqual(len(mail.outbox), 1)
+        log = ReceiptSend.objects.get(organization=self.org)
+        self.assertEqual(log.ticket_order_id, self.order.pk)
+        self.assertEqual(log.status, 'sent')
+
+    def test_receipt_via_organizer_route(self):
+        """Fix: /api/organizer/receipt/ resolves to the same dual-auth view,
+        so the organizer app (which posts there) no longer 404s."""
+        from django.core import mail
+        from .models import ReceiptSend
+
+        res = self.client.post(
+            '/api/organizer/receipt/',
+            data=json.dumps({
+                'order_id': '#TTP001',
+                'channel': 'email',
+                'contact': 'guest@example.com',
+            }),
+            content_type='application/json',
+            HTTP_AUTHORIZATION=self.auth,
+        )
+        self.assertEqual(res.status_code, 200, res.content)
+        self.assertEqual(len(mail.outbox), 1)
+        log = ReceiptSend.objects.get(organization=self.org)
+        self.assertEqual(log.ticket_order_id, self.order.pk)
+        self.assertEqual(log.status, 'sent')
+
     def test_receipt_order_not_found(self):
         res = self.client.post(
             '/api/scanner/receipt/',
             data=json.dumps({
                 'order_id': '#NOPE',
+                'channel': 'email',
+                'contact': 'guest@example.com',
+            }),
+            content_type='application/json',
+            HTTP_AUTHORIZATION=self.auth,
+        )
+        self.assertEqual(res.status_code, 404)
+
+    def test_receipt_unknown_uuid_pk_returns_404(self):
+        """A well-formed but non-existent UUID must not error — it 404s
+        cleanly (the pk branch only widens matching, it doesn't crash)."""
+        res = self.client.post(
+            '/api/scanner/receipt/',
+            data=json.dumps({
+                'order_id': str(uuid.uuid4()),
                 'channel': 'email',
                 'contact': 'guest@example.com',
             }),
@@ -9547,6 +9606,47 @@ class TapToPayEndpointsTests(TestCase):
         self.assertIn('No charge was made to your card.', body)
         log = ReceiptSend.objects.get(organization=self.org)
         self.assertEqual(log.payment_intent_id, 'pi_3OBxYzABC')
+        self.assertIsNone(log.ticket_order_id)
+        self.assertEqual(log.status, 'sent')
+
+    def test_receipt_by_payment_intent_id_succeeded(self):
+        """The success path: an approved PaymentIntent emails an 'Approved'
+        summary (no order needed), resolves the event via PI metadata, and
+        omits the 'no charge' disclaimer used for declines."""
+        from django.core import mail
+        from .models import ReceiptSend
+
+        fake_pi = MagicMock()
+        fake_pi.id = 'pi_3OBxYzOK'
+        fake_pi.status = 'succeeded'
+        fake_pi.amount = 2500
+        fake_pi.currency = 'usd'
+        fake_pi.created = 1700000000
+        fake_pi.metadata = {'event_id': str(self.event.id)}
+        fake_pi.last_payment_error = None
+
+        with patch('stripe.PaymentIntent.retrieve', return_value=fake_pi):
+            res = self.client.post(
+                '/api/scanner/receipt/',
+                data=json.dumps({
+                    'payment_intent_id': 'pi_3OBxYzOK',
+                    'channel': 'email',
+                    'contact': 'guest@example.com',
+                }),
+                content_type='application/json',
+                HTTP_AUTHORIZATION=self.auth,
+            )
+
+        self.assertEqual(res.status_code, 200, res.content)
+        self.assertEqual(len(mail.outbox), 1)
+        body = mail.outbox[0].body
+        self.assertIn('Your payment was approved.', body)
+        self.assertIn('Status: Approved', body)
+        self.assertIn('Amount: 25.00 USD', body)
+        self.assertIn('TTP Event', body)  # resolved from PI metadata event_id
+        self.assertNotIn('No charge was made to your card.', body)
+        log = ReceiptSend.objects.get(organization=self.org)
+        self.assertEqual(log.payment_intent_id, 'pi_3OBxYzOK')
         self.assertIsNone(log.ticket_order_id)
         self.assertEqual(log.status, 'sent')
 
