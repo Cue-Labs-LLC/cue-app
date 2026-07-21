@@ -6658,6 +6658,7 @@ class TapToPayEndpointsTests(TestCase):
             order_number='#TTP001',
             order_date=timezone.now(),
             total_amount=Decimal('25.00'),
+            stripe_payment_intent_id='pi_test_TTP001',
         )
         self.session = ScannerSession.objects.create(event=self.event)
         self.auth = f'Scanner {self.session.token}'
@@ -6738,218 +6739,283 @@ class TapToPayEndpointsTests(TestCase):
         self.assertEqual(res.status_code, 403)
 
     # ---- scanner_receipt ----
+    # Thin wrapper around stripe.PaymentIntent.modify(receipt_email=...).
+    # Stripe sends the branded receipt email; we don't template anything.
 
-    def test_receipt_by_order_id_sends_and_logs(self):
-        from django.core import mail
-        from .models import ReceiptSend
-
-        res = self.client.post(
+    def _post_receipt(self, body, auth=None):
+        return self.client.post(
             '/api/scanner/receipt/',
-            data=json.dumps({
-                'order_id': '#TTP001',
+            data=json.dumps(body),
+            content_type='application/json',
+            HTTP_AUTHORIZATION=auth or self.auth,
+        )
+
+    def test_receipt_by_order_id_calls_stripe_modify(self):
+        self.org.stripe_account_id = 'acct_test_modify'
+        self.org.save(update_fields=['stripe_account_id'])
+
+        with patch('stripe.PaymentIntent.modify') as modify_mock:
+            res = self._post_receipt({
+                'order_id': str(self.order.pk),
                 'channel': 'email',
                 'contact': 'guest@example.com',
-            }),
-            content_type='application/json',
-            HTTP_AUTHORIZATION=self.auth,
-        )
+            })
+
         self.assertEqual(res.status_code, 200, res.content)
-        self.assertEqual(len(mail.outbox), 1)
-        self.assertEqual(mail.outbox[0].to, ['guest@example.com'])
-        log = ReceiptSend.objects.get(organization=self.org)
-        self.assertEqual(log.ticket_order_id, self.order.pk)
-        self.assertEqual(log.channel, 'email')
-        self.assertEqual(log.status, 'sent')
+        self.assertEqual(res.json(), {'ok': True})
+        modify_mock.assert_called_once_with(
+            'pi_test_TTP001',
+            receipt_email='guest@example.com',
+            stripe_account='acct_test_modify',
+        )
 
-    def test_receipt_order_not_found(self):
-        res = self.client.post(
-            '/api/scanner/receipt/',
-            data=json.dumps({
-                'order_id': '#NOPE',
+    def test_receipt_by_payment_intent_id_calls_stripe_modify(self):
+        self.org.stripe_account_id = 'acct_test_modify'
+        self.org.save(update_fields=['stripe_account_id'])
+
+        with patch('stripe.PaymentIntent.modify') as modify_mock:
+            res = self._post_receipt({
+                'payment_intent_id': 'pi_test_456',
                 'channel': 'email',
                 'contact': 'guest@example.com',
-            }),
-            content_type='application/json',
-            HTTP_AUTHORIZATION=self.auth,
+            })
+
+        self.assertEqual(res.status_code, 200, res.content)
+        modify_mock.assert_called_once_with(
+            'pi_test_456',
+            receipt_email='guest@example.com',
+            stripe_account='acct_test_modify',
         )
-        self.assertEqual(res.status_code, 404)
+
+    def test_receipt_unknown_order_returns_422(self):
+        # Per spec, 404 is reserved for "endpoint missing" iOS copy. All
+        # lookup-failure modes collapse to 422 ("That email looks invalid…").
+        with patch('stripe.PaymentIntent.modify') as modify_mock:
+            res = self._post_receipt({
+                'order_id': str(uuid.uuid4()),
+                'channel': 'email',
+                'contact': 'guest@example.com',
+            })
+        self.assertEqual(res.status_code, 422)
+        modify_mock.assert_not_called()
+
+    def test_receipt_non_uuid_order_id_returns_422(self):
+        with patch('stripe.PaymentIntent.modify') as modify_mock:
+            res = self._post_receipt({
+                'order_id': '#TTP001',  # order_number, not a UUID
+                'channel': 'email',
+                'contact': 'guest@example.com',
+            })
+        self.assertEqual(res.status_code, 422)
+        modify_mock.assert_not_called()
+
+    def test_receipt_order_without_pi_returns_422(self):
+        no_pi_order = TicketOrder.objects.create(
+            customer=self.customer,
+            event=self.event,
+            order_number='#TTP-NOPI',
+            order_date=timezone.now(),
+            total_amount=Decimal('5.00'),
+            stripe_payment_intent_id='',
+        )
+        with patch('stripe.PaymentIntent.modify') as modify_mock:
+            res = self._post_receipt({
+                'order_id': str(no_pi_order.pk),
+                'channel': 'email',
+                'contact': 'guest@example.com',
+            })
+        self.assertEqual(res.status_code, 422)
+        modify_mock.assert_not_called()
 
     def test_receipt_rejects_both_identifiers(self):
-        res = self.client.post(
-            '/api/scanner/receipt/',
-            data=json.dumps({
-                'order_id': '#TTP001',
-                'payment_intent_id': 'pi_abc',
-                'channel': 'email',
-                'contact': 'guest@example.com',
-            }),
-            content_type='application/json',
-            HTTP_AUTHORIZATION=self.auth,
-        )
+        res = self._post_receipt({
+            'order_id': str(self.order.pk),
+            'payment_intent_id': 'pi_abc',
+            'channel': 'email',
+            'contact': 'guest@example.com',
+        })
         self.assertEqual(res.status_code, 400)
 
     def test_receipt_rejects_neither_identifier(self):
-        res = self.client.post(
-            '/api/scanner/receipt/',
-            data=json.dumps({
-                'channel': 'email',
-                'contact': 'guest@example.com',
-            }),
-            content_type='application/json',
-            HTTP_AUTHORIZATION=self.auth,
-        )
+        res = self._post_receipt({
+            'channel': 'email',
+            'contact': 'guest@example.com',
+        })
         self.assertEqual(res.status_code, 400)
 
-    def test_receipt_sms_returns_422(self):
-        res = self.client.post(
-            '/api/scanner/receipt/',
-            data=json.dumps({
-                'order_id': '#TTP001',
-                'channel': 'sms',
-                'contact': '+15555550100',
-            }),
-            content_type='application/json',
-            HTTP_AUTHORIZATION=self.auth,
-        )
-        self.assertEqual(res.status_code, 422)
+    def test_receipt_channel_sms_returns_400(self):
+        # Spec: channel is always 'email'. SMS (legacy) → 400.
+        res = self._post_receipt({
+            'order_id': str(self.order.pk),
+            'channel': 'sms',
+            'contact': '+15555550100',
+        })
+        self.assertEqual(res.status_code, 400)
 
-    def test_receipt_by_payment_intent_id_declined(self):
-        from django.core import mail
-        from .models import ReceiptSend
+    def test_receipt_channel_missing_returns_400(self):
+        # Strict validation: missing channel → 400 (no silent defaulting).
+        res = self._post_receipt({
+            'order_id': str(self.order.pk),
+            'contact': 'guest@example.com',
+        })
+        self.assertEqual(res.status_code, 400)
 
-        fake_pi = MagicMock()
-        fake_pi.id = 'pi_3OBxYzABC'
-        fake_pi.status = 'requires_payment_method'
-        fake_pi.amount = 2500
-        fake_pi.currency = 'usd'
-        fake_pi.created = 1700000000
-        fake_pi.metadata = {}
-        lpe = MagicMock()
-        lpe.message = 'Your card was declined.'
-        fake_pi.last_payment_error = lpe
+    def test_receipt_rejects_blank_contact(self):
+        res = self._post_receipt({
+            'order_id': str(self.order.pk),
+            'channel': 'email',
+            'contact': '   ',
+        })
+        self.assertEqual(res.status_code, 400)
 
-        with patch('stripe.PaymentIntent.retrieve', return_value=fake_pi):
-            res = self.client.post(
-                '/api/scanner/receipt/',
-                data=json.dumps({
-                    'payment_intent_id': 'pi_3OBxYzABC',
-                    'channel': 'email',
-                    'contact': 'guest@example.com',
-                }),
-                content_type='application/json',
-                HTTP_AUTHORIZATION=self.auth,
-            )
-
-        self.assertEqual(res.status_code, 200, res.content)
-        self.assertEqual(len(mail.outbox), 1)
-        body = mail.outbox[0].body
-        self.assertIn('Declined', body)
-        self.assertIn('No charge was made to your card.', body)
-        log = ReceiptSend.objects.get(organization=self.org)
-        self.assertEqual(log.payment_intent_id, 'pi_3OBxYzABC')
-        self.assertIsNone(log.ticket_order_id)
-        self.assertEqual(log.status, 'sent')
-
-    def test_receipt_payment_intent_not_found(self):
+    def test_receipt_invalid_request_error_returns_422_and_logs(self):
         import stripe as stripe_lib
 
         with patch(
-            'stripe.PaymentIntent.retrieve',
-            side_effect=stripe_lib.error.InvalidRequestError('No such PI', 'id'),
+            'stripe.PaymentIntent.modify',
+            side_effect=stripe_lib.error.InvalidRequestError('bad email', None),
         ):
-            res = self.client.post(
-                '/api/scanner/receipt/',
-                data=json.dumps({
-                    'payment_intent_id': 'pi_missing',
+            with self.assertLogs('tickets.api_views', level='WARNING') as log_ctx:
+                res = self._post_receipt({
+                    'order_id': str(self.order.pk),
                     'channel': 'email',
-                    'contact': 'guest@example.com',
-                }),
-                content_type='application/json',
-                HTTP_AUTHORIZATION=self.auth,
-            )
-        self.assertEqual(res.status_code, 404)
-        self.assertEqual(res.json(), {'error': 'payment intent not found'})
+                    'contact': 'not-an-email',
+                })
 
-    def test_receipt_rejects_blank_contact(self):
-        res = self.client.post(
-            '/api/scanner/receipt/',
-            data=json.dumps({
-                'order_id': '#TTP001',
-                'channel': 'email',
-                'contact': '   ',
-            }),
-            content_type='application/json',
-            HTTP_AUTHORIZATION=self.auth,
+        self.assertEqual(res.status_code, 422)
+        # Stripe reason captured in the warning for support visibility.
+        self.assertTrue(
+            any('Stripe rejected modify' in line for line in log_ctx.output),
+            log_ctx.output,
         )
-        self.assertEqual(res.status_code, 400)
+
+    def test_receipt_stripe_upstream_error_returns_503(self):
+        import stripe as stripe_lib
+
+        with patch(
+            'stripe.PaymentIntent.modify',
+            side_effect=stripe_lib.error.APIConnectionError('boom'),
+        ):
+            res = self._post_receipt({
+                'payment_intent_id': 'pi_anything',
+                'channel': 'email',
+                'contact': 'guest@example.com',
+            })
+        self.assertEqual(res.status_code, 503)
 
     def test_receipt_accepts_organizer_token_auth(self):
-        """Spec: dual auth — organizer DRF Token works without a scanner PIN session."""
-        from django.core import mail
-        from .models import ReceiptSend
-
+        """Spec dual auth: organizer DRF Token works without a scanner PIN session."""
         user = User.objects.create_user(username='organizer-ttp', password='x')
         UserProfile.objects.create(user=user, organization=self.org)
         token = Token.objects.create(user=user)
 
-        res = self.client.post(
-            '/api/scanner/receipt/',
-            data=json.dumps({
-                'order_id': '#TTP001',
-                'channel': 'email',
-                'contact': 'guest@example.com',
-            }),
-            content_type='application/json',
-            HTTP_AUTHORIZATION=f'Token {token.key}',
-        )
+        with patch('stripe.PaymentIntent.modify') as modify_mock:
+            res = self._post_receipt(
+                {
+                    'order_id': str(self.order.pk),
+                    'channel': 'email',
+                    'contact': 'guest@example.com',
+                },
+                auth=f'Token {token.key}',
+            )
         self.assertEqual(res.status_code, 200, res.content)
-        self.assertEqual(len(mail.outbox), 1)
-        log = ReceiptSend.objects.get(organization=self.org)
-        self.assertEqual(log.status, 'sent')
-
-    def test_receipt_finds_order_across_events_in_same_org(self):
-        """An order from a different event in the same org is resolvable —
-        the lookup is org-scoped, not session-event-scoped."""
-        other_event = Event.objects.create(
-            organization=self.org,
-            name='Other TTP Event',
-            venue=self.venue,
-            start_date=date.today(),
-        )
-        other_order = TicketOrder.objects.create(
-            customer=self.customer,
-            event=other_event,
-            order_number='#TTP002',
-            order_date=timezone.now(),
-            total_amount=Decimal('15.00'),
-        )
-
-        res = self.client.post(
-            '/api/scanner/receipt/',
-            data=json.dumps({
-                'order_id': '#TTP002',
-                'channel': 'email',
-                'contact': 'guest@example.com',
-            }),
-            content_type='application/json',
-            HTTP_AUTHORIZATION=self.auth,
-        )
-        self.assertEqual(res.status_code, 200, res.content)
-        from .models import ReceiptSend
-        log = ReceiptSend.objects.get(organization=self.org)
-        self.assertEqual(log.ticket_order_id, other_order.pk)
+        modify_mock.assert_called_once()
 
     def test_receipt_rejects_unauthenticated(self):
         res = self.client.post(
             '/api/scanner/receipt/',
             data=json.dumps({
-                'order_id': '#TTP001',
+                'order_id': str(self.order.pk),
                 'channel': 'email',
                 'contact': 'guest@example.com',
             }),
             content_type='application/json',
         )
         self.assertEqual(res.status_code, 403)
+
+    def test_receipt_cross_tenant_order_returns_422(self):
+        """Multi-tenancy guard: an org's Token must not reach another org's order."""
+        other_org = Organization.objects.create(name='Other Org', slug='other-org')
+        other_customer = Customer.objects.create(
+            organization=other_org, name='Other Buyer', email='other@example.com',
+        )
+        other_event = Event.objects.create(
+            organization=other_org,
+            name='Other Event',
+            venue=Venue.objects.create(organization=other_org, name='V', city='SF'),
+            start_date=date.today(),
+        )
+        other_order = TicketOrder.objects.create(
+            customer=other_customer,
+            event=other_event,
+            order_number='#OTHER001',
+            order_date=timezone.now(),
+            total_amount=Decimal('10.00'),
+            stripe_payment_intent_id='pi_other_secret',
+        )
+        # Authenticate as self.org's organizer.
+        user = User.objects.create_user(username='leaker', password='x')
+        UserProfile.objects.create(user=user, organization=self.org)
+        token = Token.objects.create(user=user)
+
+        with patch('stripe.PaymentIntent.modify') as modify_mock:
+            res = self._post_receipt(
+                {
+                    'order_id': str(other_order.pk),
+                    'channel': 'email',
+                    'contact': 'attacker@example.com',
+                },
+                auth=f'Token {token.key}',
+            )
+
+        self.assertEqual(res.status_code, 422)
+        modify_mock.assert_not_called()  # never reaches Stripe
+
+    def test_receipt_double_tap_idempotent(self):
+        """Two rapid calls with the same args both succeed (Stripe-level idempotent)."""
+        with patch('stripe.PaymentIntent.modify') as modify_mock:
+            for _ in range(2):
+                res = self._post_receipt({
+                    'order_id': str(self.order.pk),
+                    'channel': 'email',
+                    'contact': 'guest@example.com',
+                })
+                self.assertEqual(res.status_code, 200, res.content)
+        self.assertEqual(modify_mock.call_count, 2)
+
+    def test_receipt_email_correction(self):
+        """Re-submit with a different email — last write wins, both 200."""
+        with patch('stripe.PaymentIntent.modify') as modify_mock:
+            self._post_receipt({
+                'order_id': str(self.order.pk),
+                'channel': 'email',
+                'contact': 'typo@example.com',
+            })
+            res = self._post_receipt({
+                'order_id': str(self.order.pk),
+                'channel': 'email',
+                'contact': 'correct@example.com',
+            })
+        self.assertEqual(res.status_code, 200, res.content)
+        # Second call carries the corrected email.
+        last_call_kwargs = modify_mock.call_args_list[-1].kwargs
+        self.assertEqual(last_call_kwargs['receipt_email'], 'correct@example.com')
+
+    def test_receipt_no_stripe_account_id(self):
+        """Org without stripe_account_id: modify is called without that kwarg."""
+        # setUp leaves stripe_account_id empty by default — verify it's still empty.
+        self.assertEqual(self.org.stripe_account_id, '')
+        with patch('stripe.PaymentIntent.modify') as modify_mock:
+            res = self._post_receipt({
+                'payment_intent_id': 'pi_no_connect',
+                'channel': 'email',
+                'contact': 'guest@example.com',
+            })
+        self.assertEqual(res.status_code, 200, res.content)
+        modify_mock.assert_called_once_with(
+            'pi_no_connect',
+            receipt_email='guest@example.com',
+        )
 
     # ---- merchant_status ----
 
@@ -7395,6 +7461,32 @@ class ScannerInPersonSellTests(TestCase):
 
         self.tt.refresh_from_db()
         self.assertEqual(self.tt.quantity_sold, 2)
+
+    def test_in_person_sell_persists_payment_intent_id(self):
+        """The PI ID flows from scanner_sell into TicketOrder so /api/scanner/receipt/
+        can later look it up and attach receipt_email to the Stripe PaymentIntent."""
+        fake_pi = MagicMock()
+        fake_pi.status = 'succeeded'
+        with patch('stripe.PaymentIntent.retrieve', return_value=fake_pi):
+            res = self.client.post(
+                '/api/scanner/sell/',
+                data=json.dumps({
+                    'event_id': str(self.event.pk),
+                    'payment_intent_id': 'pi_persist_me',
+                    'buyer_email': 'walkup@example.com',
+                    'line_items': [{
+                        'ticket_type_id': str(self.tt.pk),
+                        'quantity': 1,
+                        'name': 'General Admission',
+                        'price': '25.00',
+                    }],
+                }),
+                content_type='application/json',
+                HTTP_AUTHORIZATION=self.auth,
+            )
+        self.assertEqual(res.status_code, 201, res.content)
+        order = TicketOrder.objects.get(pk=res.json()['order_id'])
+        self.assertEqual(order.stripe_payment_intent_id, 'pi_persist_me')
 
     def test_sell_rejects_mismatched_event_id(self):
         with patch('stripe.PaymentIntent.retrieve') as pi_mock:

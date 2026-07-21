@@ -1579,6 +1579,7 @@ def _finalize_in_person_sale(event, payment_intent_id, buyer_name, buyer_email, 
             is_in_person=True,
             checked_in_at=now,
             checked_in_by=checked_in_by,
+            stripe_payment_intent_id=payment_intent_id or '',
         )
 
         ticket_count = 0
@@ -2062,89 +2063,6 @@ def _client_ip(request):
     return request.META.get('REMOTE_ADDR') or None
 
 
-def _send_receipt_email_for_order(order, to_email):
-    """Send the standard order-confirmation email synchronously to an arbitrary address.
-
-    Mirrors send_order_confirmation_email_task in tickets/tasks.py but runs inline
-    (this is a manual scanner action — no need to queue Celery) and lets the caller
-    override the recipient.
-    Returns (status, error_message): ('sent', '') or ('failed', '<reason>').
-    """
-    from email.mime.image import MIMEImage
-    from decimal import Decimal as _Decimal
-
-    from django.core.mail import EmailMultiAlternatives
-    from django.template.loader import render_to_string
-    from django.conf import settings as django_settings
-    from tickets.utils import generate_qr_png_bytes
-
-    qr_png_bytes = generate_qr_png_bytes(order.order_number)
-    try:
-        service_fee = _Decimal(order.stripe_checkout_session.platform_fee_cents) / 100
-    except Exception:
-        service_fee = _Decimal('0.00')
-
-    context = {
-        'order': order,
-        'customer': order.customer,
-        'event': order.event,
-        'tickets': list(order.tickets.all()),
-        'show_qr_code': bool(qr_png_bytes),
-        'service_fee': service_fee,
-    }
-    html_body = render_to_string('tickets/buy/order_confirmation_email.html', context)
-    text_body = render_to_string('tickets/buy/order_confirmation_email.txt', context)
-
-    msg = EmailMultiAlternatives(
-        subject=f"Your receipt - {order.event.name}",
-        body=text_body,
-        from_email=django_settings.DEFAULT_FROM_EMAIL,
-        to=[to_email],
-    )
-    msg.attach_alternative(html_body, 'text/html')
-    if qr_png_bytes:
-        qr_attachment = MIMEImage(qr_png_bytes)
-        qr_attachment.add_header('Content-ID', '<qrcode>')
-        qr_attachment.add_header('Content-Disposition', 'inline', filename='qrcode.png')
-        msg.attach(qr_attachment)
-
-    try:
-        msg.send()
-        return 'sent', ''
-    except Exception as exc:
-        logger.exception("Failed to send order receipt email for order %s", order.pk)
-        return 'failed', str(exc)[:1000]
-
-
-def _send_receipt_email_for_intent(summary, to_email):
-    """Send the attempt-receipt email (declined/cancelled/etc.) for a PaymentIntent.
-
-    summary is the dict built in scanner_receipt's payment_intent_id branch.
-    Returns (status, error_message).
-    """
-    from django.core.mail import EmailMultiAlternatives
-    from django.template.loader import render_to_string
-    from django.conf import settings as django_settings
-
-    html_body = render_to_string('tickets/buy/tap_to_pay_attempt_receipt.html', summary)
-    text_body = render_to_string('tickets/buy/tap_to_pay_attempt_receipt.txt', summary)
-
-    subject_event = summary.get('event_name') or summary.get('merchant_business_name') or 'your purchase'
-    msg = EmailMultiAlternatives(
-        subject=f"Transaction receipt - {subject_event}",
-        body=text_body,
-        from_email=django_settings.DEFAULT_FROM_EMAIL,
-        to=[to_email],
-    )
-    msg.attach_alternative(html_body, 'text/html')
-    try:
-        msg.send()
-        return 'sent', ''
-    except Exception as exc:
-        logger.exception("Failed to send Tap-to-Pay attempt receipt email")
-        return 'failed', str(exc)[:1000]
-
-
 def _resolve_tap_to_pay_facts(org):
     """Inspect the org's Stripe Connect account and return a dict of facts.
 
@@ -2291,94 +2209,71 @@ def tap_to_pay_terms_acceptance(request):
 def scanner_receipt(request):
     """
     POST /api/scanner/receipt/
-    Body: {order_id?, payment_intent_id?, channel, contact}
+    Body: {order_id?, payment_intent_id?, channel: 'email', contact}
 
-    Exactly one of order_id or payment_intent_id must be supplied. When
-    order_id is present we send the standard order confirmation. When
-    payment_intent_id is present we look up the PaymentIntent in Stripe and
-    send a transaction-attempt summary (Apple §5.10: receipts must be
-    available even for declined/cancelled transactions, which have no order).
+    Thin wrapper around stripe.PaymentIntent.modify(receipt_email=...). Stripe
+    sends the branded receipt email from the Connect merchant's account; we do
+    not template or send anything ourselves. For declined/canceled PIs Stripe
+    sends nothing — Apple §5.10 only requires the UI option to exist.
 
-    Dual auth: accepts both Scanner PIN sessions and organizer DRF Tokens —
-    the iOS scanner app uses Scanner auth and a future organizer client
-    (or the same app using its organizer Token after sign-in) uses Token.
+    Dual auth: accepts both Scanner PIN sessions and organizer DRF Tokens.
     """
-    org = _resolve_dual_auth_org(request)
-    if org is None:
-        return Response({'error': 'no organization'}, status=403)
-    session = request.auth if isinstance(request.auth, ScannerSession) else None
-    scanner_event = session.event if session else None
+    import uuid as _uuid
+    import stripe as stripe_lib
+    from django.conf import settings as django_settings
 
     order_id = (request.data.get('order_id') or '').strip()
     payment_intent_id = (request.data.get('payment_intent_id') or '').strip()
     channel = (request.data.get('channel') or '').strip().lower()
     contact = (request.data.get('contact') or '').strip()
 
+    if not contact:
+        return Response({'error': 'contact required'}, status=400)
     if bool(order_id) == bool(payment_intent_id):
         return Response(
             {'error': 'exactly one of order_id and payment_intent_id is required'},
             status=400,
         )
-    if channel not in ('email', 'sms'):
-        return Response({'error': "channel must be 'email' or 'sms'"}, status=400)
-    if not contact:
-        return Response({'error': 'contact is required'}, status=400)
-    if channel == 'sms':
-        # No transactional SMS sender wired up; iOS treats 422 as the
-        # "Receipts unavailable" fallback per the entitlement spec.
-        return Response({'error': 'channel not supported'}, status=422)
+    if channel != 'email':
+        return Response({'error': "channel must be 'email'"}, status=400)
+
+    org = _resolve_dual_auth_org(request)
+    if org is None:
+        return Response({'error': 'no organization'}, status=403)
 
     if order_id:
+        try:
+            uuid_value = _uuid.UUID(order_id)
+        except ValueError:
+            return Response({'error': 'cannot send receipt for this order'}, status=422)
         order = (
             TicketOrder.objects
-            .filter(customer__organization=org, order_number=order_id)
-            .only('id')
+            .filter(customer__organization=org, id=uuid_value)
             .first()
         )
         if order is None:
-            return Response({'error': 'order not found'}, status=404)
-
-        receipt_send = ReceiptSend.objects.create(
-            organization=org,
-            ticket_order=order,
-            payment_intent_id='',
-            channel=channel,
-            contact=contact,
-            status='queued',
-            error_message='',
-        )
-        from tickets.tasks import send_receipt_email_task
-        send_receipt_email_task.delay(str(receipt_send.id))
-        return Response({'ok': True})
-
-    # payment_intent_id branch — verify the PI exists synchronously so we can
-    # honor the spec's 404 contract, then enqueue the actual send.
-    import stripe as stripe_lib
-    from django.conf import settings as django_settings
+            return Response({'error': 'cannot send receipt for this order'}, status=422)
+        pi_id = order.stripe_payment_intent_id
+        if not pi_id:
+            return Response({'error': 'cannot send receipt for this order'}, status=422)
+    else:
+        pi_id = payment_intent_id
 
     stripe_lib.api_key = django_settings.STRIPE_SECRET_KEY
-
-    retrieve_kwargs = {}
+    modify_kwargs = {'receipt_email': contact}
     if org.stripe_account_id:
-        retrieve_kwargs['stripe_account'] = org.stripe_account_id
-    try:
-        stripe_lib.PaymentIntent.retrieve(payment_intent_id, **retrieve_kwargs)
-    except stripe_lib.error.InvalidRequestError:
-        return Response({'error': 'payment intent not found'}, status=404)
-    except stripe_lib.error.StripeError as exc:
-        logger.error("Stripe PaymentIntent retrieve error: %s", exc)
-        return Response({'error': str(exc)}, status=502)
+        modify_kwargs['stripe_account'] = org.stripe_account_id
 
-    fallback_event_id = str(scanner_event.id) if scanner_event else ''
-    receipt_send = ReceiptSend.objects.create(
-        organization=org,
-        ticket_order=None,
-        payment_intent_id=payment_intent_id[:255],
-        channel=channel,
-        contact=contact,
-        status='queued',
-        error_message='',
-    )
-    from tickets.tasks import send_receipt_email_task
-    send_receipt_email_task.delay(str(receipt_send.id), fallback_event_id)
+    try:
+        stripe_lib.PaymentIntent.modify(pi_id, **modify_kwargs)
+    except stripe_lib.error.InvalidRequestError as exc:
+        logger.warning(
+            "scanner_receipt: Stripe rejected modify (pi=%s, org=%s): %s",
+            pi_id, org.pk, exc,
+        )
+        return Response({'error': str(exc)}, status=422)
+    except stripe_lib.error.StripeError as exc:
+        logger.error("scanner_receipt: Stripe upstream error: %s", exc)
+        return Response({'error': 'stripe upstream error'}, status=503)
+
     return Response({'ok': True})

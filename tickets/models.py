@@ -1534,6 +1534,12 @@ class TicketOrder(AuditBaseModel):
         on_delete=models.SET_NULL,
         related_name='checkins',
     )
+    stripe_payment_intent_id = models.CharField(
+        max_length=255,
+        blank=True,
+        db_index=True,
+        help_text='Stripe PaymentIntent ID for in-person/Tap-to-Pay sales. Used to attach Stripe-sent receipts.',
+    )
 
     class Meta:
         ordering = ['-order_date']

@@ -1,5 +1,41 @@
 # TODOS
 
+## Receipts: Drop the orphan `ReceiptSend` model
+
+**What:** Remove the `ReceiptSend` model + migration `0119_receiptsend_taptopaytermsacceptance.py` from the codebase, after exporting historical rows for posterity.
+
+**Why:** As of the scanner_receipt rewrite (Stripe-sent receipts), nothing writes to `ReceiptSend`. The table is dead weight and confuses future readers ("why does this model exist if no code touches it?").
+
+**Pros:** Removes dead schema. One less model to maintain. Cleaner mental model: receipts are entirely a Stripe concern now.
+
+**Cons:** Destructive migration on prod data. Need to export the historical rows first (Stripe-receipt audit trail from the old Django-sent flow).
+
+**Context:** The `ReceiptSend` model lives in `tickets/models.py` (~line 2576-2600). It was kept intact during the Stripe-receipt migration to preserve the audit trail. Drop steps:
+1. Export current rows: `python manage.py dumpdata tickets.ReceiptSend --indent 2 > receiptsend-archive-YYYYMMDD.json` and store in S3 or commit to a private archive.
+2. Confirm with stakeholders (support, compliance) that the archive is sufficient.
+3. Write `XXXX_drop_receiptsend.py` migration calling `migrations.DeleteModel('ReceiptSend')`.
+4. Search for any lingering admin.py / serializers references and remove.
+
+**Depends on:** scanner_receipt Stripe-wrapper rewrite shipped + at least one quarter of receipt usage data captured by Stripe for compliance.
+
+---
+
+## Receipts: Attach Stripe Customer to PaymentIntent before modify
+
+**What:** Before calling `stripe.PaymentIntent.modify(..., receipt_email=...)`, look up or create a Stripe `Customer` by email and attach via `customer=cus_xxx`.
+
+**Why:** Right now each receipt is a one-off. With a Stripe Customer attached, repeat buyers get a unified "my receipts" view in Stripe's hosted UI. Better buyer experience at near-zero cost.
+
+**Pros:** Improves the receipt UX for repeat buyers. Documented Stripe pattern. Small, contained change inside `scanner_receipt`.
+
+**Cons:** Adds one Stripe API call to the hot path (extra ~200ms p99). Stripe doesn't have a literal "create_or_retrieve" — implement as `Customer.list(email=...)` → create if empty.
+
+**Context:** Spec's "Behavioral notes" section calls this out as "optional but improves the email… not needed for v1 but worth keeping in mind." Implementation lives in `tickets/api_views.py:scanner_receipt`. The Stripe call to add goes before the `PaymentIntent.modify` call, on the Connect account: `stripe.Customer.list(email=contact, limit=1, stripe_account=org.stripe_account_id)` then create if empty, then pass `customer=customer.id` into `modify`.
+
+**Depends on:** scanner_receipt Stripe-wrapper rewrite shipped.
+
+---
+
 ## Mobile: Event Detail Meta Strip Wrapping
 
 **What:** The `detail-meta` strip below the event name (venue · date · capacity) can wrap to 2+ lines on mobile at 390px when event names are long or all three items are present.
